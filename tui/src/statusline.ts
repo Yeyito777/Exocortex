@@ -13,7 +13,7 @@ import type { UsageData, UsageWindow } from "./messages";
 const ESC = "\x1b[";
 const RESET = `${ESC}0m`;
 const DIM = `${ESC}2m`;
-const FG_ACCENT = `${ESC}38;5;75m`;
+const FG_ACCENT = `${ESC}38;2;29;154;239m`;  // #1d9aef
 const FG_WHITE = `${ESC}37m`;
 
 // ── Formatting ──────────────────────────────────────────────────────
