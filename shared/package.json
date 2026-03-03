@@ -1,0 +1,12 @@
+{
+  "name": "@exocortex/shared",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./messages": "./src/messages.ts",
+    "./protocol": "./src/protocol.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.7"
+  }
+}

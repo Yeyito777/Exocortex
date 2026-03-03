@@ -7,6 +7,9 @@
     "dev": "bun run --watch src/main.ts",
     "login": "bun run src/main.ts login"
   },
+  "dependencies": {
+    "@exocortex/shared": "workspace:*"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "^5.7"

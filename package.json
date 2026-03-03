@@ -1,0 +1,5 @@
+{
+  "name": "exocortex",
+  "private": true,
+  "workspaces": ["shared", "daemon", "tui"]
+}

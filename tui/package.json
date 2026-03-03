@@ -6,6 +6,9 @@
     "start": "bun run src/main.ts",
     "dev": "bun run --watch src/main.ts"
   },
+  "dependencies": {
+    "@exocortex/shared": "workspace:*"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "^5.7"
