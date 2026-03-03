@@ -57,12 +57,16 @@ export function usageBlock(state: RenderState): StatusBlock | null {
 
   const fiveHour = renderWindowLine("5-Hour", usage?.fiveHour ?? null, now);
   const weekly = renderWindowLine("Weekly", usage?.sevenDay ?? null, now);
+  const blockWidth = Math.max(fiveHour.width, weekly.width);
 
   return {
     id: "usage",
     priority: 1,
-    width: Math.max(fiveHour.width, weekly.width),
+    width: blockWidth,
     height: 2,
-    rows: [fiveHour.line, weekly.line],
+    rows: [
+      fiveHour.line + " ".repeat(Math.max(0, blockWidth - fiveHour.width)),
+      weekly.line + " ".repeat(Math.max(0, blockWidth - weekly.width)),
+    ],
   };
 }

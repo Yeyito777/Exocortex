@@ -14,7 +14,7 @@ function formatTokenCount(n: number): string {
 
 export function contextBlock(state: RenderState): StatusBlock | null {
   const ctxLabel = "  Context: ";
-  const ctxValue = state.contextTokens !== null ? formatTokenCount(state.contextTokens) : "?";
+  const ctxValue = formatTokenCount(state.contextTokens ?? 0);
   const maxLabel = "  Max Context: ";
   const maxValue = formatTokenCount(MAX_CONTEXT);
 
