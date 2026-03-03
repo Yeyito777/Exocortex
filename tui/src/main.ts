@@ -10,6 +10,7 @@
 
 import { DaemonClient } from "./client";
 import { parseKeys, type KeyEvent } from "./input";
+import { handlePromptKey, clearPrompt } from "./promptline";
 import { render, enter_alt, leave_alt, hide_cursor, show_cursor } from "./render";
 import { createInitialState, isStreaming } from "./state";
 import { createPendingAI, ensureCurrentBlock, type ModelId } from "./messages";
@@ -196,8 +197,7 @@ function handleSubmit(): void {
     state.messages = [];
     state.convId = null;
     state.pendingAI = null;
-    state.inputBuffer = "";
-    state.cursorPos = 0;
+    clearPrompt(state);
     state.scrollOffset = 0;
     scheduleRender();
     return;
@@ -211,15 +211,13 @@ function handleSubmit(): void {
     } else {
       state.messages.push({ role: "system", text: `Current: ${state.model}. Available: sonnet, haiku, opus`, metadata: null });
     }
-    state.inputBuffer = "";
-    state.cursorPos = 0;
+    clearPrompt(state);
     scheduleRender();
     return;
   }
 
   // Regular message
-  state.inputBuffer = "";
-  state.cursorPos = 0;
+  clearPrompt(state);
   state.scrollOffset = 0;
 
   if (isStreaming(state)) {
@@ -246,91 +244,29 @@ function handleSubmit(): void {
 }
 
 function handleKey(key: KeyEvent): void {
+  // Prompt line handles input buffer manipulation
+  const result = handlePromptKey(state, key);
+
+  if (result === "submit") {
+    handleSubmit();
+    return;
+  }
+
+  if (result === "handled") {
+    scheduleRender();
+    return;
+  }
+
+  // Unhandled by prompt line — app-level keys
   switch (key.type) {
-    case "char": {
-      if (!key.char) break;
-      state.inputBuffer =
-        state.inputBuffer.slice(0, state.cursorPos) +
-        key.char +
-        state.inputBuffer.slice(state.cursorPos);
-      state.cursorPos++;
-      break;
-    }
-    case "enter":     handleSubmit(); break;
-    case "ctrl-l": {
-      // Insert newline at cursor
-      state.inputBuffer =
-        state.inputBuffer.slice(0, state.cursorPos) +
-        "\n" +
-        state.inputBuffer.slice(state.cursorPos);
-      state.cursorPos++;
-      break;
-    }
-    case "backspace": {
-      if (state.cursorPos > 0) {
-        state.inputBuffer =
-          state.inputBuffer.slice(0, state.cursorPos - 1) +
-          state.inputBuffer.slice(state.cursorPos);
-        state.cursorPos--;
-      }
-      break;
-    }
-    case "delete": {
-      if (state.cursorPos < state.inputBuffer.length) {
-        state.inputBuffer =
-          state.inputBuffer.slice(0, state.cursorPos) +
-          state.inputBuffer.slice(state.cursorPos + 1);
-      }
-      break;
-    }
-    case "left":      if (state.cursorPos > 0) state.cursorPos--; break;
-    case "right":     if (state.cursorPos < state.inputBuffer.length) state.cursorPos++; break;
-    case "home": {
-      // Move to start of current buffer line
-      const lineStart = state.inputBuffer.lastIndexOf("\n", state.cursorPos - 1) + 1;
-      state.cursorPos = lineStart;
-      break;
-    }
-    case "end": {
-      // Move to end of current buffer line
-      const nextNl = state.inputBuffer.indexOf("\n", state.cursorPos);
-      state.cursorPos = nextNl === -1 ? state.inputBuffer.length : nextNl;
-      break;
-    }
     case "up": {
-      // If multiline input, move cursor up within the buffer
-      const buf = state.inputBuffer;
-      const currentLineStart = buf.lastIndexOf("\n", state.cursorPos - 1) + 1;
-      if (currentLineStart > 0) {
-        // There's a line above — move to it
-        const colInLine = state.cursorPos - currentLineStart;
-        const prevLineStart = buf.lastIndexOf("\n", currentLineStart - 2) + 1;
-        const prevLineLen = currentLineStart - 1 - prevLineStart;
-        state.cursorPos = prevLineStart + Math.min(colInLine, prevLineLen);
-      } else {
-        // Already on first line — scroll message area
-        const allLines = state.messages.length * 3;
-        const maxScroll = Math.max(0, allLines - (state.rows - 5));
-        state.scrollOffset = Math.min(state.scrollOffset + 3, maxScroll);
-      }
+      const allLines = state.messages.length * 3;
+      const maxScroll = Math.max(0, allLines - (state.rows - 5));
+      state.scrollOffset = Math.min(state.scrollOffset + 3, maxScroll);
       break;
     }
     case "down": {
-      // If multiline input, move cursor down within the buffer
-      const buf = state.inputBuffer;
-      const nextNl = buf.indexOf("\n", state.cursorPos);
-      if (nextNl !== -1) {
-        // There's a line below — move to it
-        const currentLineStart = buf.lastIndexOf("\n", state.cursorPos - 1) + 1;
-        const colInLine = state.cursorPos - currentLineStart;
-        const nextLineStart = nextNl + 1;
-        const nextLineEnd = buf.indexOf("\n", nextLineStart);
-        const nextLineLen = (nextLineEnd === -1 ? buf.length : nextLineEnd) - nextLineStart;
-        state.cursorPos = nextLineStart + Math.min(colInLine, nextLineLen);
-      } else {
-        // Already on last line — scroll message area
-        state.scrollOffset = Math.max(0, state.scrollOffset - 3);
-      }
+      state.scrollOffset = Math.max(0, state.scrollOffset - 3);
       break;
     }
     case "escape": {
@@ -338,8 +274,11 @@ function handleKey(key: KeyEvent): void {
       break;
     }
     case "ctrl-c":
-    case "ctrl-d":    running = false; break;
-    default:          return;
+    case "ctrl-d":
+      running = false;
+      break;
+    default:
+      return;
   }
   scheduleRender();
 }
