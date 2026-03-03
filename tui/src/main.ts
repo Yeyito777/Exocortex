@@ -152,7 +152,7 @@ function handleEvent(event: Event): void {
       pendingErrors = [];
 
       if (wasInterrupted) {
-        state.messages.push({ role: "system", text: "• Interrupted", color: "\x1b[31m", metadata: null });
+        state.messages.push({ role: "system", text: "✗ Interrupted", color: "\x1b[31m", metadata: null });
       }
       if (streamTickTimer) { clearTimeout(streamTickTimer); streamTickTimer = null; }
       break;
