@@ -48,10 +48,11 @@ export function createHandler(server: DaemonServer) {
 
       case "ping": {
         server.sendTo(client, { type: "pong", reqId: cmd.reqId });
-        // Send current usage to newly connected clients
+        // Send current state to newly connected clients
         if (lastUsage) {
           server.sendTo(client, { type: "usage_update", usage: lastUsage });
         }
+        server.sendTo(client, { type: "conversations_list", conversations: convStore.listSummaries() });
         // Refresh usage in the background
         refreshUsage();
         break;
@@ -69,6 +70,8 @@ export function createHandler(server: DaemonServer) {
           convId: id,
           model,
         });
+        // Notify all clients of the new conversation
+        server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(id)! });
         break;
       }
 
@@ -95,6 +98,51 @@ export function createHandler(server: DaemonServer) {
 
       case "send_message": {
         await handleSendMessage(server, client, cmd.reqId, cmd.convId, cmd.text, cmd.startedAt, handleHeaders, refreshUsage);
+        break;
+      }
+
+      case "list_conversations": {
+        const conversations = convStore.listSummaries();
+        server.sendTo(client, { type: "conversations_list", reqId: cmd.reqId, conversations });
+        break;
+      }
+
+      case "load_conversation": {
+        const conv = convStore.get(cmd.convId);
+        if (!conv) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        // Build display-friendly data: user texts + AI block arrays
+        const userMessages: string[] = [];
+        const messageBlocks: Block[][] = [];
+        for (const msg of conv.messages) {
+          if (msg.role === "user") {
+            userMessages.push(typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content));
+          } else if (msg.role === "assistant") {
+            // Convert API content to display blocks
+            const blocks: Block[] = [];
+            if (typeof msg.content === "string") {
+              blocks.push({ type: "text", text: msg.content });
+            } else {
+              for (const c of msg.content) {
+                if (c.type === "text") blocks.push({ type: "text", text: c.text });
+                else if (c.type === "thinking") blocks.push({ type: "thinking", text: c.thinking });
+              }
+            }
+            messageBlocks.push(blocks);
+          }
+        }
+        server.sendTo(client, {
+          type: "conversation_loaded",
+          reqId: cmd.reqId,
+          convId: conv.id,
+          model: conv.model,
+          messages: messageBlocks,
+          userMessages,
+        });
+        // Auto-subscribe
+        server.subscribe(client, conv.id);
         break;
       }
 
@@ -152,12 +200,17 @@ async function handleSendMessage(
   const callbacks: AgentCallbacks = {
     onBlockStart(blockType) {
       server.sendToSubscribers(convId, { type: "block_start", convId, blockType });
+      convStore.markDirty(convId);
+      convStore.flush(convId);
+      convStore.resetChunkCounter(convId);
     },
     onTextChunk(chunk) {
       server.sendToSubscribers(convId, { type: "text_chunk", convId, text: chunk });
+      convStore.onChunk(convId);
     },
     onThinkingChunk(chunk) {
       server.sendToSubscribers(convId, { type: "thinking_chunk", convId, text: chunk });
+      convStore.onChunk(convId);
     },
     onToolCall(block) {
       server.sendToSubscribers(convId, {
@@ -209,6 +262,11 @@ async function handleSendMessage(
 
     log("info", `handler: message complete for ${convId} (${result.tokens} tokens, ${result.blocks.length} blocks, ${endedAt - startedAt}ms)`);
 
+    // Persist and notify sidebar
+    convStore.markDirty(convId);
+    convStore.flush(convId);
+    server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
+
   } catch (err) {
     if (!ac.signal.aborted) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -219,6 +277,9 @@ async function handleSendMessage(
     }
   } finally {
     convStore.clearActiveJob(convId);
+    convStore.resetChunkCounter(convId);
+    convStore.markDirty(convId);
+    convStore.flush(convId);
     server.broadcast({ type: "streaming_stopped", convId });
     onComplete();
   }

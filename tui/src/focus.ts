@@ -1,24 +1,29 @@
 /**
- * Focus system for the Exocortex TUI.
+ * Panel-level focus routing.
  *
- * Routes key events to the correct handler based on current focus.
- * Owns focus switching and scroll logic. The only file that decides
- * what a key does based on context.
+ * Routes key events based on which panel has focus (sidebar or chat).
+ * Chat manages its own inner focus (prompt/history) via chat.ts.
+ * Sidebar manages its own keys via sidebar.ts.
+ *
+ * This is the top-level key routing — the only file main.ts calls
+ * for key handling.
  */
 
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
-import { handlePromptKey } from "./promptline";
+import { handleChatKey } from "./chat";
+import { handleSidebarKey } from "./sidebar";
 
 // ── Types ───────────────────────────────────────────────────────────
 
-export type FocusTarget = "prompt" | "history";
+export type PanelFocus = "sidebar" | "chat";
 
 export type KeyResult =
   | { type: "handled" }
   | { type: "submit" }
   | { type: "quit" }
-  | { type: "abort" };
+  | { type: "abort" }
+  | { type: "load_conversation"; convId: string };
 
 // ── Key routing ─────────────────────────────────────────────────────
 
@@ -30,79 +35,57 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
       return { type: "quit" };
     case "escape":
       return { type: "abort" };
+    case "ctrl-b":
+      // Toggle sidebar open/close + focus
+      state.sidebar.open = !state.sidebar.open;
+      state.panelFocus = state.sidebar.open ? "sidebar" : "chat";
+      return { type: "handled" };
+    case "ctrl-k":
+      // Cycle focus: sidebar ↔ chat (only if sidebar is open)
+      if (state.sidebar.open) {
+        state.panelFocus = state.panelFocus === "sidebar" ? "chat" : "sidebar";
+      }
+      return { type: "handled" };
   }
 
-  if (state.focus === "prompt") {
-    return handlePromptFocused(key, state);
+  if (state.panelFocus === "sidebar" && state.sidebar.open) {
+    return handleSidebarFocused(key, state);
   } else {
-    return handleHistoryFocused(key, state);
+    return handleChatFocused(key, state);
   }
 }
 
-// ── Prompt focus ────────────────────────────────────────────────────
+// ── Sidebar panel ───────────────────────────────────────────────────
 
-function handlePromptFocused(key: KeyEvent, state: RenderState): KeyResult {
-  // Ctrl+N → switch to history
-  if (key.type === "ctrl-n") {
-    state.focus = "history";
-    return { type: "handled" };
-  }
+function handleSidebarFocused(key: KeyEvent, state: RenderState): KeyResult {
+  const result = handleSidebarKey(key, state.sidebar);
 
-  // Delegate to promptline
-  const result = handlePromptKey(state, key);
-  if (result === "submit") return { type: "submit" };
-  if (result === "handled") return { type: "handled" };
-
-  // Unhandled by promptline (up/down on first/last line) → scroll
-  if (key.type === "up") {
-    scrollUp(state);
-    return { type: "handled" };
-  }
-  if (key.type === "down") {
-    scrollDown(state);
-    return { type: "handled" };
-  }
-
-  return { type: "handled" };
-}
-
-// ── History focus ───────────────────────────────────────────────────
-
-function handleHistoryFocused(key: KeyEvent, state: RenderState): KeyResult {
-  switch (key.type) {
-    case "char":
-      // i or a → back to prompt (vim-style insert)
-      if (key.char === "i" || key.char === "a") {
-        state.focus = "prompt";
+  switch (result.type) {
+    case "handled":
+      return { type: "handled" };
+    case "select":
+      return { type: "load_conversation", convId: result.convId };
+    case "unhandled":
+      // i/a in sidebar → switch to chat
+      if (key.type === "char" && (key.char === "i" || key.char === "a")) {
+        state.panelFocus = "chat";
         return { type: "handled" };
       }
       return { type: "handled" };
-
-    case "ctrl-n":
-      state.focus = "prompt";
-      return { type: "handled" };
-
-    case "up":
-      scrollUp(state);
-      return { type: "handled" };
-
-    case "down":
-      scrollDown(state);
-      return { type: "handled" };
-
-    default:
-      return { type: "handled" };
   }
 }
 
-// ── Scroll helpers ──────────────────────────────────────────────────
+// ── Chat panel ──────────────────────────────────────────────────────
 
-function scrollUp(state: RenderState): void {
-  const allLines = state.messages.length * 3;
-  const maxScroll = Math.max(0, allLines - (state.rows - 5));
-  state.scrollOffset = Math.min(state.scrollOffset + 3, maxScroll);
-}
+function handleChatFocused(key: KeyEvent, state: RenderState): KeyResult {
+  const result = handleChatKey(key, state);
 
-function scrollDown(state: RenderState): void {
-  state.scrollOffset = Math.max(0, state.scrollOffset - 3);
+  switch (result.type) {
+    case "submit":
+      return { type: "submit" };
+    case "handled":
+      return { type: "handled" };
+    case "unhandled":
+      return { type: "handled" };
+  }
 }

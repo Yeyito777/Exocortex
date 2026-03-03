@@ -16,8 +16,10 @@ import { tryCommand } from "./commands";
 import { render, enter_alt, leave_alt, hide_cursor, show_cursor } from "./render";
 import { createInitialState, isStreaming } from "./state";
 import { createPendingAI, ensureCurrentBlock } from "./messages";
+import { updateConversationList, updateConversation } from "./sidebar";
 import { theme } from "./theme";
 import type { Event } from "./protocol";
+import type { AIMessage } from "./messages";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -181,6 +183,47 @@ function handleEvent(event: Event): void {
       break;
     }
 
+    case "conversations_list": {
+      updateConversationList(state.sidebar, event.conversations);
+      break;
+    }
+
+    case "conversation_updated": {
+      updateConversation(state.sidebar, event.summary);
+      break;
+    }
+
+    case "conversation_loaded": {
+      // Rebuild display messages from the loaded conversation
+      state.messages = [];
+      state.pendingAI = null;
+      state.convId = event.convId;
+      state.model = event.model;
+      state.scrollOffset = 0;
+
+      // Interleave user messages and AI block arrays
+      let userIdx = 0;
+      let aiIdx = 0;
+      // Conversations alternate: user, assistant, user, assistant...
+      const totalPairs = Math.max(event.userMessages.length, event.messages.length);
+      for (let i = 0; i < totalPairs; i++) {
+        if (userIdx < event.userMessages.length) {
+          state.messages.push({ role: "user", text: event.userMessages[userIdx], metadata: null });
+          userIdx++;
+        }
+        if (aiIdx < event.messages.length) {
+          const aiMsg: AIMessage = {
+            role: "assistant",
+            blocks: event.messages[aiIdx],
+            metadata: { startedAt: 0, endedAt: 0, model: event.model, tokens: 0 },
+          };
+          state.messages.push(aiMsg);
+          aiIdx++;
+        }
+      }
+      break;
+    }
+
     case "ack":
     case "pong":
       break;
@@ -242,6 +285,9 @@ function handleKey(key: KeyEvent): void {
       break;
     case "abort":
       if (isStreaming(state) && state.convId) daemon.abort(state.convId);
+      break;
+    case "load_conversation":
+      daemon.loadConversation(result.convId);
       break;
     case "handled":
       break;

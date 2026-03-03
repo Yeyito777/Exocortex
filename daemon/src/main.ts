@@ -18,6 +18,7 @@ import { loadAuth, saveAuth, isTokenExpired } from "./store";
 import { login, refreshTokens, verifyAuth } from "./auth";
 import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
+import * as convStore from "./conversations";
 
 // ── Paths ───────────────────────────────────────────────────────────
 
@@ -121,6 +122,9 @@ async function startDaemon(): Promise<void> {
   process.on("SIGTERM", shutdown);
 
   await server.start();
+
+  // Load persisted conversations
+  convStore.loadFromDisk();
 
   // Check auth status
   const auth = loadAuth();

@@ -101,6 +101,14 @@ export class DaemonClient {
     this.send({ type: "abort", convId });
   }
 
+  listConversations(): void {
+    this.send({ type: "list_conversations" });
+  }
+
+  loadConversation(convId: string): void {
+    this.send({ type: "load_conversation", convId });
+  }
+
   // ── Internal ────────────────────────────────────────────────────
 
   private onData(data: Buffer | string): void {

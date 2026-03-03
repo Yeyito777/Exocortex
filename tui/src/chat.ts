@@ -1,0 +1,98 @@
+/**
+ * Chat panel key routing.
+ *
+ * Owns the chat's inner focus (prompt vs history) and routes
+ * keys accordingly. Delegates to promptline.ts for buffer editing
+ * and handles history scrolling directly.
+ */
+
+import type { KeyEvent } from "./input";
+import type { RenderState } from "./state";
+import { handlePromptKey } from "./promptline";
+
+// ── Types ───────────────────────────────────────────────────────────
+
+export type ChatFocus = "prompt" | "history";
+
+export type ChatKeyResult =
+  | { type: "handled" }
+  | { type: "submit" }
+  | { type: "unhandled" };
+
+// ── Key routing ─────────────────────────────────────────────────────
+
+export function handleChatKey(key: KeyEvent, state: RenderState): ChatKeyResult {
+  if (state.chatFocus === "prompt") {
+    return handlePromptFocused(key, state);
+  } else {
+    return handleHistoryFocused(key, state);
+  }
+}
+
+// ── Prompt focus ────────────────────────────────────────────────────
+
+function handlePromptFocused(key: KeyEvent, state: RenderState): ChatKeyResult {
+  // Ctrl+N → switch to history
+  if (key.type === "ctrl-n") {
+    state.chatFocus = "history";
+    return { type: "handled" };
+  }
+
+  // Delegate to promptline
+  const result = handlePromptKey(state, key);
+  if (result === "submit") return { type: "submit" };
+  if (result === "handled") return { type: "handled" };
+
+  // Unhandled by promptline (up/down on first/last line) → scroll
+  if (key.type === "up") {
+    scrollUp(state);
+    return { type: "handled" };
+  }
+  if (key.type === "down") {
+    scrollDown(state);
+    return { type: "handled" };
+  }
+
+  return { type: "unhandled" };
+}
+
+// ── History focus ───────────────────────────────────────────────────
+
+function handleHistoryFocused(key: KeyEvent, state: RenderState): ChatKeyResult {
+  switch (key.type) {
+    case "char":
+      // i or a → back to prompt (vim-style insert)
+      if (key.char === "i" || key.char === "a") {
+        state.chatFocus = "prompt";
+        return { type: "handled" };
+      }
+      return { type: "handled" };
+
+    case "ctrl-n":
+      state.chatFocus = "prompt";
+      return { type: "handled" };
+
+    case "up":
+      scrollUp(state);
+      return { type: "handled" };
+
+    case "down":
+      scrollDown(state);
+      return { type: "handled" };
+
+    default:
+      return { type: "unhandled" };
+  }
+}
+
+// ── Scroll helpers ──────────────────────────────────────────────────
+
+function scrollUp(state: RenderState): void {
+  const allLines = state.messages.length * 3;
+  const maxScroll = Math.max(0, allLines - (state.rows - 5));
+  state.scrollOffset = Math.min(state.scrollOffset + 3, maxScroll);
+}
+
+function scrollDown(state: RenderState): void {
+  state.scrollOffset = Math.max(0, state.scrollOffset - 3);
+}

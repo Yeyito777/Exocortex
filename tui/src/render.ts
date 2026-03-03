@@ -10,6 +10,7 @@ import { isStreaming, type RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { renderStatusLine, statusLineHeight } from "./statusline";
 import { renderTopbar } from "./topbar";
+import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { theme } from "./theme";
 
 // ── ANSI helpers (non-color escapes — not theme-dependent) ──────────
@@ -276,19 +277,32 @@ export function render(state: RenderState): void {
   const { cols, rows } = state;
   const out: string[] = [];
 
-  // ── Top bar (row 1) ────────────────────────────────────────────
+  // ── Layout dimensions ─────────────────────────────────────────
+  const sidebarOpen = state.sidebar.open;
+  const sidebarW = sidebarOpen ? SIDEBAR_WIDTH : 0;
+  const chatCol = sidebarW + 1;            // 1-based column where chat starts
+  const chatW = cols - sidebarW;           // width available for chat area
+
+  // ── Top bar (row 1, full width) ───────────────────────────────
   out.push(move_to(1, 1) + clear_line);
   out.push(renderTopbar(state));
 
-  // ── Separator after header ────────────────────────────────────
-  const historyColor = state.focus === "history" ? theme.accent : theme.dim;
+  // ── Separator after header (row 2) ────────────────────────────
+  const historyFocused = state.panelFocus === "chat" && state.chatFocus === "history";
+  const historyColor = historyFocused ? theme.accent : theme.dim;
   out.push(move_to(2, 1) + clear_line);
-  out.push(`${historyColor}${"─".repeat(cols)}${theme.reset}`);
+  if (sidebarOpen) {
+    const sidebarFocused = state.panelFocus === "sidebar";
+    const sbSepColor = sidebarFocused ? theme.accent : theme.dim;
+    out.push(`${sbSepColor}${"─".repeat(sidebarW)}${theme.reset}${historyColor}${"─".repeat(chatW)}${theme.reset}`);
+  } else {
+    out.push(`${historyColor}${"─".repeat(cols)}${theme.reset}`);
+  }
 
   // ── Input line wrapping ────────────────────────────────────────
   const promptLen = 3;               // " ❯ " or " + "
-  const maxInputWidth = cols - promptLen;
-  const maxInputRows = Math.min(10, Math.floor((rows - 6) / 2));  // cap at 10 or half screen
+  const maxInputWidth = chatW - promptLen;
+  const maxInputRows = Math.min(10, Math.floor((rows - 6) / 2));
 
   const { lines: inputLines, isNewLine, cursorLine, cursorCol } =
     getInputLines(state.inputBuffer, state.cursorPos, maxInputWidth, maxInputRows);
@@ -298,36 +312,60 @@ export function render(state: RenderState): void {
   // ── Bottom layout: sep | input rows | sep | status ────────────
   const slHeight = statusLineHeight(state, cols);
   const statusLines = renderStatusLine(state, cols);
-  const bottomUsed = 1 + inputRowCount + 1 + slHeight; // sep + input + sep + status
+  const bottomUsed = 1 + inputRowCount + 1 + slHeight;
   const sepAbove = rows - bottomUsed + 1;
   const firstInputRow = sepAbove + 1;
   const sepBelow = firstInputRow + inputRowCount;
 
-  // Separator above input
-  const promptColor = state.focus === "prompt" ? theme.accent : theme.dim;
-  out.push(move_to(sepAbove, 1) + clear_line);
-  out.push(`${promptColor}${"─".repeat(cols)}${theme.reset}`);
+  // Prompt separator
+  const promptFocused = state.panelFocus === "chat" && state.chatFocus === "prompt";
+  const promptColor = promptFocused ? theme.accent : theme.dim;
+
+  out.push(move_to(sepAbove, chatCol) + `${promptColor}${"─".repeat(chatW)}${theme.reset}`);
 
   // Input rows
   for (let i = 0; i < inputRowCount; i++) {
     const prompt = (i === 0 && !isNewLine[i])
       ? `${theme.bold}${theme.prompt} ❯${theme.reset} `
       : `${theme.dim} +${theme.reset} `;
-    out.push(move_to(firstInputRow + i, 1) + clear_line);
-    out.push(prompt + inputLines[i]);
+    out.push(move_to(firstInputRow + i, chatCol) + clear_line);
+    out.push(move_to(firstInputRow + i, chatCol) + prompt + inputLines[i]);
   }
 
   // Separator below input
-  out.push(move_to(sepBelow, 1) + clear_line);
-  out.push(`${promptColor}${"─".repeat(cols)}${theme.reset}`);
+  out.push(move_to(sepBelow, chatCol) + `${promptColor}${"─".repeat(chatW)}${theme.reset}`);
 
-  // Status lines
+  // Status lines (full width, below everything)
   for (let i = 0; i < slHeight; i++) {
     out.push(move_to(sepBelow + 1 + i, 1) + clear_line);
     out.push(statusLines[i]);
   }
 
-  // ── Message area (rows 3 to sepAbove-1) ────────────────────────
+  // ── Sidebar (rows 3 to sepAbove-1) ────────────────────────────
+  if (sidebarOpen) {
+    const sidebarRows = renderSidebar(
+      state.sidebar,
+      sepAbove - 2,
+      state.panelFocus === "sidebar",
+    );
+    // Sidebar title goes on row 1 (already have topbar there — skip, title is in row 3)
+    // Actually sidebar starts at row 3
+    for (let i = 0; i < sidebarRows.length && i < sepAbove - 2; i++) {
+      out.push(move_to(3 + i, 1));
+      out.push(sidebarRows[i]);
+    }
+    // Sidebar separator line for the bottom sections
+    if (sidebarOpen) {
+      const sbSepColor = state.panelFocus === "sidebar" ? theme.accent : theme.dim;
+      out.push(move_to(sepAbove, 1) + `${sbSepColor}${"─".repeat(sidebarW)}${theme.reset}`);
+      // Clear sidebar area below separator
+      for (let r = firstInputRow; r <= sepBelow; r++) {
+        out.push(move_to(r, 1) + " ".repeat(sidebarW));
+      }
+    }
+  }
+
+  // ── Message area (rows 3 to sepAbove-1, in chat column) ───────
   const messageAreaStart = 3;
   const messageAreaHeight = sepAbove - messageAreaStart;
   const allLines = buildMessageLines(state);
@@ -341,7 +379,8 @@ export function render(state: RenderState): void {
   }
 
   for (let i = 0; i < messageAreaHeight; i++) {
-    out.push(move_to(messageAreaStart + i, 1) + clear_line);
+    const row = messageAreaStart + i;
+    out.push(move_to(row, chatCol) + `\x1b[${chatCol}G\x1b[K`);
     const lineIdx = viewStart + i;
     if (lineIdx < totalLines) {
       out.push(allLines[lineIdx]);
@@ -350,7 +389,7 @@ export function render(state: RenderState): void {
 
   // ── Position cursor in input field ────────────────────────────
   const cursorScreenRow = firstInputRow + cursorLine;
-  out.push(move_to(cursorScreenRow, promptLen + cursorCol + 1));
+  out.push(move_to(cursorScreenRow, chatCol + promptLen + cursorCol));
   out.push(show_cursor);
 
   process.stdout.write(out.join(""));

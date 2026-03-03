@@ -8,7 +8,7 @@ export interface KeyEvent {
   type: "char" | "enter" | "backspace" | "delete"
       | "left" | "right" | "home" | "end"
       | "up" | "down"
-      | "ctrl-c" | "ctrl-d" | "ctrl-l" | "ctrl-n" | "escape"
+      | "ctrl-b" | "ctrl-c" | "ctrl-d" | "ctrl-k" | "ctrl-l" | "ctrl-n" | "escape"
       | "unknown";
   char?: string;
 }
@@ -22,10 +22,14 @@ export function parseKeys(data: Buffer): KeyEvent[] {
     const ch = str[i];
     const code = str.charCodeAt(i);
 
+    // Ctrl+B (sidebar toggle)
+    if (code === 2) { events.push({ type: "ctrl-b" }); i++; continue; }
     // Ctrl+C
     if (code === 3) { events.push({ type: "ctrl-c" }); i++; continue; }
     // Ctrl+D
     if (code === 4) { events.push({ type: "ctrl-d" }); i++; continue; }
+    // Ctrl+K (focus cycle)
+    if (code === 11) { events.push({ type: "ctrl-k" }); i++; continue; }
     // Ctrl+L (newline in input)
     if (code === 12) { events.push({ type: "ctrl-l" }); i++; continue; }
     // Ctrl+N (focus switch)

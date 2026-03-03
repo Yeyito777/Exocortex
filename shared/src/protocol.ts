@@ -8,8 +8,8 @@
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ModelId, Block, UsageData } from "./messages";
-export type { ModelId, Block, UsageData };
+import type { ModelId, Block, UsageData, ConversationSummary } from "./messages";
+export type { ModelId, Block, UsageData, ConversationSummary };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
@@ -51,13 +51,26 @@ export interface UnsubscribeCommand {
   convId: string;
 }
 
+export interface ListConversationsCommand {
+  type: "list_conversations";
+  reqId?: string;
+}
+
+export interface LoadConversationCommand {
+  type: "load_conversation";
+  reqId?: string;
+  convId: string;
+}
+
 export type Command =
   | PingCommand
   | NewConversationCommand
   | SendMessageCommand
   | AbortCommand
   | SubscribeCommand
-  | UnsubscribeCommand;
+  | UnsubscribeCommand
+  | ListConversationsCommand
+  | LoadConversationCommand;
 
 // ── Events (daemon → client) ────────────────────────────────────────
 
@@ -150,6 +163,27 @@ export interface UsageUpdateEvent {
   usage: UsageData;
 }
 
+export interface ConversationsListEvent {
+  type: "conversations_list";
+  reqId?: string;
+  conversations: ConversationSummary[];
+}
+
+export interface ConversationLoadedEvent {
+  type: "conversation_loaded";
+  reqId?: string;
+  convId: string;
+  model: ModelId;
+  messages: Block[][];
+  /** The raw user message texts, in order, for display. */
+  userMessages: string[];
+}
+
+export interface ConversationUpdatedEvent {
+  type: "conversation_updated";
+  summary: ConversationSummary;
+}
+
 export interface ErrorEvent {
   type: "error";
   reqId?: string;
@@ -172,4 +206,7 @@ export type Event =
   | ContextUpdateEvent
   | MessageCompleteEvent
   | UsageUpdateEvent
+  | ConversationsListEvent
+  | ConversationLoadedEvent
+  | ConversationUpdatedEvent
   | ErrorEvent;

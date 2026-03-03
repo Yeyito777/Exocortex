@@ -87,6 +87,17 @@ export interface SystemMessage {
 
 export type Message = UserMessage | AIMessage | SystemMessage;
 
+// ── Conversation summary ────────────────────────────────────────────
+
+export interface ConversationSummary {
+  id: string;
+  model: ModelId;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+  preview: string;
+}
+
 // ── Usage data ──────────────────────────────────────────────────────
 
 export interface UsageWindow {

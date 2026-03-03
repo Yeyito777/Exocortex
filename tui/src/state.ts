@@ -7,7 +7,10 @@
 
 import type { ModelId, UsageData } from "./messages";
 import type { Message, AIMessage } from "./messages";
-import type { FocusTarget } from "./focus";
+import type { PanelFocus } from "./focus";
+import type { ChatFocus } from "./chat";
+import type { SidebarState } from "./sidebar";
+import { createSidebarState } from "./sidebar";
 
 export interface RenderState {
   messages: Message[];
@@ -24,8 +27,12 @@ export interface RenderState {
   usage: UsageData | null;
   /** Input tokens from the latest API round. Null until first context_update. */
   contextTokens: number | null;
-  /** Which panel has focus — determines key routing and separator colors. */
-  focus: FocusTarget;
+  /** Which panel has focus — sidebar or chat. */
+  panelFocus: PanelFocus;
+  /** Which sub-panel within chat has focus — prompt or history. */
+  chatFocus: ChatFocus;
+  /** Conversations sidebar state. */
+  sidebar: SidebarState;
 }
 
 /** Streaming state is derived from pendingAI — no separate boolean. */
@@ -46,6 +53,8 @@ export function createInitialState(): RenderState {
     scrollOffset: 0,
     usage: null,
     contextTokens: null,
-    focus: "prompt",
+    panelFocus: "chat",
+    chatFocus: "prompt",
+    sidebar: createSidebarState(),
   };
 }
