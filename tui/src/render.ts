@@ -310,7 +310,7 @@ export function render(state: RenderState): void {
   // ── Bottom layout: sep | input rows | sep | status ────────────
   const statusLines = renderStatusLine(state.usage);
   const bottomUsed = 1 + inputRowCount + 1 + STATUS_LINE_HEIGHT; // sep + input + sep + status
-  const sepAbove = rows - bottomUsed;
+  const sepAbove = rows - bottomUsed + 1;
   const firstInputRow = sepAbove + 1;
   const sepBelow = firstInputRow + inputRowCount;
 
