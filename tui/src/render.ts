@@ -34,6 +34,105 @@ export const clear_screen = `${ESC}2J${ESC}H`;
 const clear_line = `${ESC}2K`;
 const move_to = (row: number, col: number) => `${ESC}${row};${col}H`;
 
+// ── Input line wrapping (vim-style hard wrap) ───────────────────────
+
+interface InputLinesResult {
+  /** Visible lines after wrapping + scroll. */
+  lines: string[];
+  /** true if this wrapped line starts a new buffer line (after a \n). */
+  isNewLine: boolean[];
+  /** Cursor row within the visible lines. */
+  cursorLine: number;
+  /** Cursor column within its visible line. */
+  cursorCol: number;
+}
+
+/**
+ * Split the input buffer into display lines with hard-wrapping.
+ * Long lines are broken at maxWidth (vim-style, no word boundaries).
+ * Returns the visible slice (scrolled to keep cursor in view)
+ * plus cursor position within that slice.
+ */
+function getInputLines(
+  buffer: string,
+  cursorPos: number,
+  maxWidth: number,
+  maxRows: number,
+): InputLinesResult {
+  const bufferLines = buffer.split("\n");
+  const wrapped: string[] = [];
+  const isNewLineArr: boolean[] = [];
+
+  // Track which wrapped line the cursor falls on
+  let cursorWrappedLine = 0;
+  let cursorColInLine = 0;
+  let bufOffset = 0;
+
+  for (let li = 0; li < bufferLines.length; li++) {
+    const line = bufferLines[li];
+
+    if (line.length <= maxWidth) {
+      // Cursor within this line?
+      if (cursorPos >= bufOffset && cursorPos <= bufOffset + line.length) {
+        cursorWrappedLine = wrapped.length;
+        cursorColInLine = cursorPos - bufOffset;
+      }
+      wrapped.push(line);
+      isNewLineArr.push(li > 0);
+    } else {
+      // Hard-wrap into chunks of maxWidth
+      for (let i = 0; i < line.length; i += maxWidth) {
+        const chunk = line.slice(i, i + maxWidth);
+        // Cursor within this chunk?
+        const chunkStart = bufOffset + i;
+        const chunkEnd = chunkStart + chunk.length;
+        if (cursorPos >= chunkStart && cursorPos <= chunkEnd) {
+          cursorWrappedLine = wrapped.length;
+          cursorColInLine = cursorPos - chunkStart;
+          // If cursor is at the wrap boundary and there's more text,
+          // it should be at col 0 of the next line
+          if (cursorColInLine === maxWidth && i + maxWidth < line.length) {
+            cursorWrappedLine = wrapped.length + 1;
+            cursorColInLine = 0;
+          }
+        }
+        wrapped.push(chunk);
+        isNewLineArr.push(li > 0 && i === 0);
+      }
+    }
+
+    bufOffset += line.length + 1; // +1 for the \n
+  }
+
+  // Ensure at least one line
+  if (wrapped.length === 0) {
+    wrapped.push("");
+    isNewLineArr.push(false);
+  }
+
+  // Scroll to keep cursor visible
+  if (wrapped.length <= maxRows) {
+    return {
+      lines: wrapped,
+      isNewLine: isNewLineArr,
+      cursorLine: cursorWrappedLine,
+      cursorCol: cursorColInLine,
+    };
+  }
+
+  // Cursor-following scroll
+  let scrollStart = Math.max(0, cursorWrappedLine - maxRows + 1);
+  // Don't scroll past the end
+  scrollStart = Math.min(scrollStart, wrapped.length - maxRows);
+
+  return {
+    lines: wrapped.slice(scrollStart, scrollStart + maxRows),
+    isNewLine: isNewLineArr.slice(scrollStart, scrollStart + maxRows),
+    cursorLine: cursorWrappedLine - scrollStart,
+    cursorCol: cursorColInLine,
+  };
+}
+
 // ── Word wrapping ───────────────────────────────────────────────────
 
 function wordWrap(text: string, width: number): string[] {
@@ -193,29 +292,35 @@ export function render(state: RenderState): void {
   out.push(move_to(2, 1) + clear_line);
   out.push(`${DIM}${"─".repeat(cols)}${RESET}`);
 
-  // ── Bottom layout: sep | input | sep | status ──────────────────
+  // ── Input line wrapping ────────────────────────────────────────
+  const promptLen = 3;               // " ❯ " or " + "
+  const maxInputWidth = cols - promptLen;
+  const maxInputRows = Math.min(10, Math.floor((rows - 6) / 2));  // cap at 10 or half screen
+
+  const { lines: inputLines, isNewLine, cursorLine, cursorCol } =
+    getInputLines(state.inputBuffer, state.cursorPos, maxInputWidth, maxInputRows);
+
+  const inputRowCount = inputLines.length;
+
+  // ── Bottom layout: sep | input rows | sep | status ────────────
   const statusLines = renderStatusLine(state.usage);
-  const inputRow = rows - 1 - STATUS_LINE_HEIGHT;
-  const sepAbove = inputRow - 1;
-  const sepBelow = inputRow + 1;
+  const bottomUsed = 1 + inputRowCount + 1 + STATUS_LINE_HEIGHT; // sep + input + sep + status
+  const sepAbove = rows - bottomUsed;
+  const firstInputRow = sepAbove + 1;
+  const sepBelow = firstInputRow + inputRowCount;
 
   // Separator above input
   out.push(move_to(sepAbove, 1) + clear_line);
   out.push(`${DIM}${"─".repeat(cols)}${RESET}`);
 
-  // Input prompt
-  const prompt = `${BOLD}${BLUE} ❯${RESET} `;
-  const promptLen = 3;
-  const inputWidth = cols - promptLen;
-  let displayInput = state.inputBuffer;
-  let displayCursorPos = state.cursorPos;
-  if (displayInput.length > inputWidth) {
-    const start = Math.max(0, state.cursorPos - Math.floor(inputWidth / 2));
-    displayInput = displayInput.slice(start, start + inputWidth);
-    displayCursorPos = state.cursorPos - start;
+  // Input rows
+  for (let i = 0; i < inputRowCount; i++) {
+    const prompt = (i === 0 && !isNewLine[i])
+      ? `${BOLD}${BLUE} ❯${RESET} `
+      : `${DIM} +${RESET} `;
+    out.push(move_to(firstInputRow + i, 1) + clear_line);
+    out.push(prompt + inputLines[i]);
   }
-  out.push(move_to(inputRow, 1) + clear_line);
-  out.push(prompt + displayInput);
 
   // Separator below input
   out.push(move_to(sepBelow, 1) + clear_line);
@@ -249,7 +354,8 @@ export function render(state: RenderState): void {
   }
 
   // ── Position cursor in input field ────────────────────────────
-  out.push(move_to(inputRow, promptLen + displayCursorPos + 1));
+  const cursorScreenRow = firstInputRow + cursorLine;
+  out.push(move_to(cursorScreenRow, promptLen + cursorCol + 1));
   out.push(show_cursor);
 
   process.stdout.write(out.join(""));

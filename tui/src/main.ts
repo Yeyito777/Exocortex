@@ -257,6 +257,15 @@ function handleKey(key: KeyEvent): void {
       break;
     }
     case "enter":     handleSubmit(); break;
+    case "ctrl-l": {
+      // Insert newline at cursor
+      state.inputBuffer =
+        state.inputBuffer.slice(0, state.cursorPos) +
+        "\n" +
+        state.inputBuffer.slice(state.cursorPos);
+      state.cursorPos++;
+      break;
+    }
     case "backspace": {
       if (state.cursorPos > 0) {
         state.inputBuffer =
@@ -276,16 +285,52 @@ function handleKey(key: KeyEvent): void {
     }
     case "left":      if (state.cursorPos > 0) state.cursorPos--; break;
     case "right":     if (state.cursorPos < state.inputBuffer.length) state.cursorPos++; break;
-    case "home":      state.cursorPos = 0; break;
-    case "end":       state.cursorPos = state.inputBuffer.length; break;
+    case "home": {
+      // Move to start of current buffer line
+      const lineStart = state.inputBuffer.lastIndexOf("\n", state.cursorPos - 1) + 1;
+      state.cursorPos = lineStart;
+      break;
+    }
+    case "end": {
+      // Move to end of current buffer line
+      const nextNl = state.inputBuffer.indexOf("\n", state.cursorPos);
+      state.cursorPos = nextNl === -1 ? state.inputBuffer.length : nextNl;
+      break;
+    }
     case "up": {
-      const allLines = state.messages.length * 3;
-      const maxScroll = Math.max(0, allLines - (state.rows - 5));
-      state.scrollOffset = Math.min(state.scrollOffset + 3, maxScroll);
+      // If multiline input, move cursor up within the buffer
+      const buf = state.inputBuffer;
+      const currentLineStart = buf.lastIndexOf("\n", state.cursorPos - 1) + 1;
+      if (currentLineStart > 0) {
+        // There's a line above — move to it
+        const colInLine = state.cursorPos - currentLineStart;
+        const prevLineStart = buf.lastIndexOf("\n", currentLineStart - 2) + 1;
+        const prevLineLen = currentLineStart - 1 - prevLineStart;
+        state.cursorPos = prevLineStart + Math.min(colInLine, prevLineLen);
+      } else {
+        // Already on first line — scroll message area
+        const allLines = state.messages.length * 3;
+        const maxScroll = Math.max(0, allLines - (state.rows - 5));
+        state.scrollOffset = Math.min(state.scrollOffset + 3, maxScroll);
+      }
       break;
     }
     case "down": {
-      state.scrollOffset = Math.max(0, state.scrollOffset - 3);
+      // If multiline input, move cursor down within the buffer
+      const buf = state.inputBuffer;
+      const nextNl = buf.indexOf("\n", state.cursorPos);
+      if (nextNl !== -1) {
+        // There's a line below — move to it
+        const currentLineStart = buf.lastIndexOf("\n", state.cursorPos - 1) + 1;
+        const colInLine = state.cursorPos - currentLineStart;
+        const nextLineStart = nextNl + 1;
+        const nextLineEnd = buf.indexOf("\n", nextLineStart);
+        const nextLineLen = (nextLineEnd === -1 ? buf.length : nextLineEnd) - nextLineStart;
+        state.cursorPos = nextLineStart + Math.min(colInLine, nextLineLen);
+      } else {
+        // Already on last line — scroll message area
+        state.scrollOffset = Math.max(0, state.scrollOffset - 3);
+      }
       break;
     }
     case "escape": {
