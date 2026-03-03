@@ -10,7 +10,8 @@
 
 import { DaemonClient } from "./client";
 import { parseKeys, type KeyEvent } from "./input";
-import { handlePromptKey, clearPrompt } from "./promptline";
+import { handleFocusedKey } from "./focus";
+import { clearPrompt } from "./promptline";
 import { tryCommand } from "./commands";
 import { render, enter_alt, leave_alt, hide_cursor, show_cursor } from "./render";
 import { createInitialState, isStreaming } from "./state";
@@ -225,42 +226,22 @@ function handleSubmit(): void {
 }
 
 function handleKey(key: KeyEvent): void {
-  // Prompt line handles input buffer manipulation
-  const result = handlePromptKey(state, key);
+  const result = handleFocusedKey(key, state);
 
-  if (result === "submit") {
-    handleSubmit();
-    return;
-  }
-
-  if (result === "handled") {
-    scheduleRender();
-    return;
-  }
-
-  // Unhandled by prompt line — app-level keys
-  switch (key.type) {
-    case "up": {
-      const allLines = state.messages.length * 3;
-      const maxScroll = Math.max(0, allLines - (state.rows - 5));
-      state.scrollOffset = Math.min(state.scrollOffset + 3, maxScroll);
-      break;
-    }
-    case "down": {
-      state.scrollOffset = Math.max(0, state.scrollOffset - 3);
-      break;
-    }
-    case "escape": {
-      if (isStreaming(state) && state.convId) daemon.abort(state.convId);
-      break;
-    }
-    case "ctrl-c":
-    case "ctrl-d":
+  switch (result.type) {
+    case "submit":
+      handleSubmit();
+      return;
+    case "quit":
       running = false;
       break;
-    default:
-      return;
+    case "abort":
+      if (isStreaming(state) && state.convId) daemon.abort(state.convId);
+      break;
+    case "handled":
+      break;
   }
+
   scheduleRender();
 }
 

@@ -285,8 +285,9 @@ export function render(state: RenderState): void {
   out.push(`${theme.headerBg}${title}  ${statusDot}  ${convLabel}${" ".repeat(Math.max(0, cols - 30 - state.model.length))}${modelLabel} ${theme.reset}`);
 
   // ── Separator after header ────────────────────────────────────
+  const historyColor = state.focus === "history" ? theme.accent : theme.dim;
   out.push(move_to(2, 1) + clear_line);
-  out.push(`${theme.dim}${"─".repeat(cols)}${theme.reset}`);
+  out.push(`${historyColor}${"─".repeat(cols)}${theme.reset}`);
 
   // ── Input line wrapping ────────────────────────────────────────
   const promptLen = 3;               // " ❯ " or " + "
@@ -306,8 +307,9 @@ export function render(state: RenderState): void {
   const sepBelow = firstInputRow + inputRowCount;
 
   // Separator above input
+  const promptColor = state.focus === "prompt" ? theme.accent : theme.dim;
   out.push(move_to(sepAbove, 1) + clear_line);
-  out.push(`${theme.dim}${"─".repeat(cols)}${theme.reset}`);
+  out.push(`${promptColor}${"─".repeat(cols)}${theme.reset}`);
 
   // Input rows
   for (let i = 0; i < inputRowCount; i++) {
@@ -320,7 +322,7 @@ export function render(state: RenderState): void {
 
   // Separator below input
   out.push(move_to(sepBelow, 1) + clear_line);
-  out.push(`${theme.dim}${"─".repeat(cols)}${theme.reset}`);
+  out.push(`${promptColor}${"─".repeat(cols)}${theme.reset}`);
 
   // Status lines
   for (let i = 0; i < STATUS_LINE_HEIGHT; i++) {

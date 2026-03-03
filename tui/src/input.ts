@@ -8,7 +8,7 @@ export interface KeyEvent {
   type: "char" | "enter" | "backspace" | "delete"
       | "left" | "right" | "home" | "end"
       | "up" | "down"
-      | "ctrl-c" | "ctrl-d" | "ctrl-l" | "escape"
+      | "ctrl-c" | "ctrl-d" | "ctrl-l" | "ctrl-n" | "escape"
       | "unknown";
   char?: string;
 }
@@ -28,6 +28,8 @@ export function parseKeys(data: Buffer): KeyEvent[] {
     if (code === 4) { events.push({ type: "ctrl-d" }); i++; continue; }
     // Ctrl+L (newline in input)
     if (code === 12) { events.push({ type: "ctrl-l" }); i++; continue; }
+    // Ctrl+N (focus switch)
+    if (code === 14) { events.push({ type: "ctrl-n" }); i++; continue; }
     // Enter
     if (code === 13 || code === 10) { events.push({ type: "enter" }); i++; continue; }
     // Backspace

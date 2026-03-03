@@ -7,6 +7,7 @@
 
 import type { ModelId, UsageData } from "./messages";
 import type { Message, AIMessage } from "./messages";
+import type { FocusTarget } from "./focus";
 
 export interface RenderState {
   messages: Message[];
@@ -21,6 +22,8 @@ export interface RenderState {
   scrollOffset: number;
   /** Rate-limit usage data from the daemon. Null until first update. */
   usage: UsageData | null;
+  /** Which panel has focus — determines key routing and separator colors. */
+  focus: FocusTarget;
 }
 
 /** Streaming state is derived from pendingAI — no separate boolean. */
@@ -40,5 +43,6 @@ export function createInitialState(): RenderState {
     rows: process.stdout.rows || 24,
     scrollOffset: 0,
     usage: null,
+    focus: "prompt",
   };
 }
