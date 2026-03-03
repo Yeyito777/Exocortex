@@ -173,9 +173,13 @@ async function handleSendMessage(
     log("info", `handler: message complete for ${convId} (${result.tokens} tokens, ${result.blocks.length} blocks, ${endedAt - startedAt}ms)`);
 
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log("error", `handler: stream error for ${convId}: ${msg}`);
-    server.sendToSubscribers(convId, { type: "error", convId, message: msg });
+    if (!ac.signal.aborted) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log("error", `handler: stream error for ${convId}: ${msg}`);
+      server.sendToSubscribers(convId, { type: "error", convId, message: msg });
+    } else {
+      log("info", `handler: stream interrupted for ${convId}`);
+    }
   } finally {
     convStore.clearActiveJob(convId);
     server.broadcast({ type: "streaming_stopped", convId });
