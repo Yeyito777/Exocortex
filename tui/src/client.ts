@@ -89,8 +89,8 @@ export class DaemonClient {
     this.send({ type: "subscribe", convId });
   }
 
-  sendMessage(convId: string, text: string): void {
-    this.send({ type: "send_message", convId, text });
+  sendMessage(convId: string, text: string, startedAt: number): void {
+    this.send({ type: "send_message", convId, text, startedAt });
   }
 
   abort(convId: string): void {

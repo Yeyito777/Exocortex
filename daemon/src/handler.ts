@@ -91,7 +91,7 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "send_message": {
-        await handleSendMessage(server, client, cmd.reqId, cmd.convId, cmd.text);
+        await handleSendMessage(server, client, cmd.reqId, cmd.convId, cmd.text, cmd.startedAt);
         break;
       }
 
@@ -114,6 +114,7 @@ async function handleSendMessage(
   reqId: string | undefined,
   convId: string,
   text: string,
+  startedAt: number,
 ): Promise<void> {
   // Auth check
   const auth = loadAuth();
@@ -142,8 +143,7 @@ async function handleSendMessage(
   conv.streaming = true;
   conv.abortController = ac;
 
-  const startedAt = Date.now();
-  server.broadcast({ type: "streaming_started", convId, model: conv.model, startedAt });
+  server.broadcast({ type: "streaming_started", convId, model: conv.model });
 
   // Build API messages from stored conversation
   const apiMessages: ApiMessage[] = conv.messages.map((m) => ({

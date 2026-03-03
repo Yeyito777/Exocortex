@@ -56,8 +56,8 @@ function handleEvent(event: Event): void {
 
       // If we had a pending message, send it now
       // (the message was already added to state.messages by handleSubmit)
-      if (pendingSendAfterCreate && pendingMessageText) {
-        daemon.sendMessage(event.convId, pendingMessageText);
+      if (pendingSendAfterCreate && pendingMessageText && state.pendingAI) {
+        daemon.sendMessage(event.convId, pendingMessageText, state.pendingAI.startedAt);
         pendingMessageText = "";
         pendingSendAfterCreate = false;
       }
@@ -67,10 +67,6 @@ function handleEvent(event: Event): void {
     case "streaming_started": {
       state.streaming = true;
       state.scrollOffset = 0;
-      // pendingAI already created in handleSubmit — don't overwrite
-      if (!state.pendingAI) {
-        state.pendingAI = createPendingAI(event.startedAt);
-      }
       break;
     }
 
@@ -209,8 +205,9 @@ function handleSubmit(): void {
   }
 
   // Create the AI message immediately so the timer starts now
+  const startedAt = Date.now();
   state.messages.push({ role: "user", text });
-  state.pendingAI = createPendingAI(Date.now());
+  state.pendingAI = createPendingAI(startedAt);
   state.streaming = true;
 
   // If no conversation yet, create one first
@@ -219,7 +216,7 @@ function handleSubmit(): void {
     pendingMessageText = text;
     daemon.createConversation(state.model);
   } else {
-    daemon.sendMessage(state.convId, text);
+    daemon.sendMessage(state.convId, text, startedAt);
   }
 
   scheduleRender();

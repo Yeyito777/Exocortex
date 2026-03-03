@@ -29,6 +29,8 @@ export interface SendMessageCommand {
   reqId?: string;
   convId: string;
   text: string;
+  /** Client-originated timestamp — the daemon stores this as the message start time. */
+  startedAt: number;
 }
 
 export interface AbortCommand {
@@ -81,7 +83,6 @@ export interface StreamingStartedEvent {
   type: "streaming_started";
   convId: string;
   model: ModelId;
-  startedAt: number;
 }
 
 export interface StreamingStoppedEvent {
