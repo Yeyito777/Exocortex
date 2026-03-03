@@ -58,7 +58,7 @@ function wordWrap(text: string, width: number): string[] {
 // ── Duration formatting ─────────────────────────────────────────────
 
 function formatDuration(ms: number): string {
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
   const m = Math.floor(ms / 60_000);
   const s = Math.round((ms % 60_000) / 1000);
   return `${m}m ${s}s`;
@@ -119,14 +119,9 @@ function renderAIMessage(
 ): string[] {
   const lines: string[] = [];
 
-  // Header — duration is always derived from the message timestamps.
-  // While streaming (endedAt null), show whole seconds for a clean tick.
-  // Once complete, show precise time.
+  // Duration derived from the message timestamps
   const elapsed = (msg.endedAt ?? Date.now()) - msg.startedAt;
-  const durText = msg.endedAt
-    ? formatDuration(elapsed)
-    : `${Math.floor(elapsed / 1000)}s`;
-  const dur = elapsed > 0 ? `${DIM} · ${durText}${RESET}` : "";
+  const dur = elapsed > 0 ? `${DIM} · ${formatDuration(elapsed)}${RESET}` : "";
   lines.push(`${BOLD}${GREEN}  ▌Claude${RESET}${dur}`);
 
   // Empty pending message → "thinking..."
