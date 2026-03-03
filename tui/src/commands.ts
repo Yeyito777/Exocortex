@@ -17,7 +17,8 @@ import type { ModelId } from "./messages";
 export type CommandResult =
   | { type: "handled" }
   | { type: "quit" }
-  | { type: "new_conversation" };
+  | { type: "new_conversation" }
+  | { type: "model_changed"; model: ModelId };
 
 export interface SlashCommand {
   name: string;
@@ -74,6 +75,8 @@ const commands: SlashCommand[] = [
       if (arg && MODELS.includes(arg as ModelId)) {
         state.model = arg as ModelId;
         state.messages.push({ role: "system", text: `Model set to ${state.model}`, metadata: null });
+        clearPrompt(state);
+        return { type: "model_changed", model: arg as ModelId };
       } else {
         state.messages.push({ role: "system", text: `Current: ${state.model}. Available: ${MODELS.join(", ")}`, metadata: null });
       }

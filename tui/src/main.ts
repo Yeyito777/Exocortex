@@ -78,6 +78,9 @@ function handleSubmit(): void {
       if (state.convId) daemon.unsubscribe(state.convId);
       state.convId = null;
     }
+    if (cmdResult.type === "model_changed" && state.convId) {
+      daemon.setModel(state.convId, cmdResult.model);
+    }
     scheduleRender();
     return;
   }

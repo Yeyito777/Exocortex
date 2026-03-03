@@ -99,6 +99,18 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      case "set_model": {
+        const ok = convStore.setModel(cmd.convId, cmd.model);
+        if (ok) {
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+          server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
+          log("info", `handler: model set to ${cmd.model} for ${cmd.convId}`);
+        } else {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+        }
+        break;
+      }
+
       case "list_conversations": {
         const conversations = convStore.listSummaries();
         server.sendTo(client, { type: "conversations_list", reqId: cmd.reqId, conversations });

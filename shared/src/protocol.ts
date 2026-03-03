@@ -62,10 +62,18 @@ export interface LoadConversationCommand {
   convId: string;
 }
 
+export interface SetModelCommand {
+  type: "set_model";
+  reqId?: string;
+  convId: string;
+  model: ModelId;
+}
+
 export type Command =
   | PingCommand
   | NewConversationCommand
   | SendMessageCommand
+  | SetModelCommand
   | AbortCommand
   | SubscribeCommand
   | UnsubscribeCommand

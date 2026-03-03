@@ -56,26 +56,39 @@ export async function orchestrateSendMessage(
   const ac = new AbortController();
   convStore.setActiveJob(convId, ac);
 
-  server.broadcast({ type: "streaming_started", convId, model: conv.model });
+  server.sendToSubscribers(convId, { type: "streaming_started", convId, model: conv.model });
 
   const apiMessages: ApiMessage[] = conv.messages.map((m) => ({
     role: m.role,
     content: m.content,
   }));
 
+  // Track partial content for persistence on interruption
+  const partialContent: ApiContentBlock[] = [];
+  let partialTokens = 0;
+
   const callbacks: AgentCallbacks = {
     onBlockStart(blockType) {
       server.sendToSubscribers(convId, { type: "block_start", convId, blockType });
+      if (blockType === "text") {
+        partialContent.push({ type: "text", text: "" });
+      } else if (blockType === "thinking") {
+        partialContent.push({ type: "thinking", thinking: "", signature: "" });
+      }
       convStore.markDirty(convId);
       convStore.flush(convId);
       convStore.resetChunkCounter(convId);
     },
     onTextChunk(chunk) {
       server.sendToSubscribers(convId, { type: "text_chunk", convId, text: chunk });
+      const last = partialContent[partialContent.length - 1];
+      if (last?.type === "text") last.text += chunk;
       convStore.onChunk(convId);
     },
     onThinkingChunk(chunk) {
       server.sendToSubscribers(convId, { type: "thinking_chunk", convId, text: chunk });
+      const last = partialContent[partialContent.length - 1];
+      if (last?.type === "thinking") last.thinking += chunk;
       convStore.onChunk(convId);
     },
     onToolCall(block) {
@@ -97,6 +110,7 @@ export async function orchestrateSendMessage(
       });
     },
     onTokensUpdate(tokens) {
+      partialTokens = tokens;
       server.sendToSubscribers(convId, { type: "tokens_update", convId, tokens });
     },
     onContextUpdate(contextTokens) {
@@ -155,12 +169,29 @@ export async function orchestrateSendMessage(
     } else {
       log("info", `orchestrator: stream interrupted for ${convId}`);
     }
+
+    // Save partial response if any content was received
+    const hasContent = partialContent.some(b =>
+      (b.type === "text" && b.text) || (b.type === "thinking" && b.thinking)
+    );
+    if (hasContent) {
+      conv.messages.push({
+        role: "assistant",
+        content: partialContent,
+        metadata: {
+          startedAt,
+          endedAt: Date.now(),
+          model: conv.model,
+          tokens: partialTokens,
+        },
+      });
+    }
   } finally {
     convStore.clearActiveJob(convId);
     convStore.resetChunkCounter(convId);
     convStore.markDirty(convId);
     convStore.flush(convId);
-    server.broadcast({ type: "streaming_stopped", convId });
+    server.sendToSubscribers(convId, { type: "streaming_stopped", convId });
     ext.onComplete();
   }
 }

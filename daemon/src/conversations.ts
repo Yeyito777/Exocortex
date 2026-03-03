@@ -44,6 +44,15 @@ export function getAll(): Conversation[] {
   return Array.from(conversations.values());
 }
 
+export function setModel(id: string, model: ModelId): boolean {
+  const conv = conversations.get(id);
+  if (!conv) return false;
+  conv.model = model;
+  markDirty(id);
+  flush(id);
+  return true;
+}
+
 // ── Persistence ─────────────────────────────────────────────────────
 
 /** Load all conversations from disk into memory on daemon startup. */

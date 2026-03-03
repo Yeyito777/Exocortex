@@ -19,6 +19,7 @@ export const SIDEBAR_WIDTH = 28;
 export interface SidebarState {
   open: boolean;
   conversations: ConversationSummary[];
+  selectedId: string | null;
   selectedIndex: number;
   scrollOffset: number;
 }
@@ -27,6 +28,7 @@ export function createSidebarState(): SidebarState {
   return {
     open: false,
     conversations: [],
+    selectedId: null,
     selectedIndex: 0,
     scrollOffset: 0,
   };
@@ -74,15 +76,14 @@ function moveSelection(sidebar: SidebarState, delta: number): void {
     sidebar.selectedIndex + delta,
     sidebar.conversations.length - 1,
   ));
+  sidebar.selectedId = sidebar.conversations[sidebar.selectedIndex]?.id ?? null;
 }
 
 // ── State updates ───────────────────────────────────────────────────
 
 export function updateConversationList(sidebar: SidebarState, conversations: ConversationSummary[]): void {
   sidebar.conversations = conversations;
-  if (sidebar.selectedIndex >= conversations.length) {
-    sidebar.selectedIndex = Math.max(0, conversations.length - 1);
-  }
+  syncSelectedIndex(sidebar);
 }
 
 export function updateConversation(sidebar: SidebarState, summary: ConversationSummary): void {
@@ -93,6 +94,21 @@ export function updateConversation(sidebar: SidebarState, summary: ConversationS
     sidebar.conversations.unshift(summary);
   }
   sidebar.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
+  syncSelectedIndex(sidebar);
+}
+
+/** Resolve selectedId → selectedIndex after list changes. */
+function syncSelectedIndex(sidebar: SidebarState): void {
+  if (sidebar.selectedId) {
+    const idx = sidebar.conversations.findIndex(c => c.id === sidebar.selectedId);
+    if (idx !== -1) {
+      sidebar.selectedIndex = idx;
+      return;
+    }
+  }
+  // selectedId not found — clamp index
+  sidebar.selectedIndex = Math.max(0, Math.min(sidebar.selectedIndex, sidebar.conversations.length - 1));
+  sidebar.selectedId = sidebar.conversations[sidebar.selectedIndex]?.id ?? null;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────

@@ -83,6 +83,7 @@ async function startDaemon(): Promise<void> {
   // Graceful shutdown
   const shutdown = async () => {
     log("info", "exocortexd: shutting down");
+    convStore.flushAll();
     await server.stop();
     try { unlinkSync(PID_PATH); } catch {}
     process.exit(0);

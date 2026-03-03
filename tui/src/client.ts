@@ -9,6 +9,7 @@ import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import type { Command, Event } from "./protocol";
+import type { ModelId } from "./messages";
 
 export type EventHandler = (event: Event) => void;
 
@@ -103,6 +104,10 @@ export class DaemonClient {
 
   abort(convId: string): void {
     this.send({ type: "abort", convId });
+  }
+
+  setModel(convId: string, model: ModelId): void {
+    this.send({ type: "set_model", convId, model });
   }
 
   listConversations(): void {
