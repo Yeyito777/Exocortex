@@ -89,12 +89,6 @@ function getInputLines(
         if (cursorPos >= chunkStart && cursorPos <= chunkEnd) {
           cursorWrappedLine = wrapped.length;
           cursorColInLine = cursorPos - chunkStart;
-          // If cursor is at the wrap boundary and there's more text,
-          // it should be at col 0 of the next line
-          if (cursorColInLine === maxWidth && i + maxWidth < line.length) {
-            cursorWrappedLine = wrapped.length + 1;
-            cursorColInLine = 0;
-          }
         }
         wrapped.push(chunk);
         isNewLineArr.push(li > 0 && i === 0);
@@ -108,6 +102,17 @@ function getInputLines(
   if (wrapped.length === 0) {
     wrapped.push("");
     isNewLineArr.push(false);
+  }
+
+  // Cursor at the right edge of a full-width line → drop to col 0 of next line
+  if (cursorColInLine >= maxWidth) {
+    cursorWrappedLine++;
+    cursorColInLine = 0;
+    // If there's no next line yet, insert an empty continuation line
+    if (cursorWrappedLine >= wrapped.length) {
+      wrapped.splice(cursorWrappedLine, 0, "");
+      isNewLineArr.splice(cursorWrappedLine, 0, false);
+    }
   }
 
   // Scroll to keep cursor visible
