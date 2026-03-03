@@ -64,12 +64,15 @@ export function parseUsageHeaders(headers: Headers, prev: UsageData | null): Usa
 
   if (!fiveUtil && !sevenUtil) return null;
 
+  const fiveHourUtil = fiveUtil ? parseFloat(fiveUtil) * 100 : null;
+  const sevenDayUtil = sevenUtil ? parseFloat(sevenUtil) * 100 : null;
+
   return {
-    fiveHour: fiveUtil
-      ? { utilization: parseFloat(fiveUtil) * 100, resetsAt: parseResetValue(fiveReset) ?? prev?.fiveHour?.resetsAt ?? null }
+    fiveHour: fiveHourUtil !== null
+      ? { utilization: Math.max(fiveHourUtil, prev?.fiveHour?.utilization ?? 0), resetsAt: parseResetValue(fiveReset) ?? prev?.fiveHour?.resetsAt ?? null }
       : prev?.fiveHour ?? null,
-    sevenDay: sevenUtil
-      ? { utilization: parseFloat(sevenUtil) * 100, resetsAt: parseResetValue(sevenReset) ?? prev?.sevenDay?.resetsAt ?? null }
+    sevenDay: sevenDayUtil !== null
+      ? { utilization: Math.max(sevenDayUtil, prev?.sevenDay?.utilization ?? 0), resetsAt: parseResetValue(sevenReset) ?? prev?.sevenDay?.resetsAt ?? null }
       : prev?.sevenDay ?? null,
   };
 }
