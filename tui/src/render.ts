@@ -22,6 +22,7 @@ const RED = `${ESC}31m`;
 const BLUE = `${ESC}34m`;
 const MAGENTA = `${ESC}35m`;
 const BG_DARK = `${ESC}48;5;236m`;
+const BG_USER = `${ESC}48;5;238m`;
 
 export const hide_cursor = `${ESC}?25l`;
 export const show_cursor = `${ESC}?25h`;
@@ -110,7 +111,33 @@ function renderBlock(block: Block, contentWidth: number): string[] {
   return lines;
 }
 
-// ── AI message rendering ────────────────────────────────────────────
+// ── User message rendering (right-aligned, gray background) ─────────
+
+function renderUserMessage(text: string, cols: number): string[] {
+  const padding = 2;         // horizontal padding inside bubble
+  const margin = 2;          // gap from right edge of screen
+  const maxBubbleWidth = Math.min(Math.floor(cols * 0.6), cols - margin - 1);
+  const innerWidth = maxBubbleWidth - padding * 2;
+  const wrapped = wordWrap(text, innerWidth);
+
+  // Size bubble to the longest line
+  const bubbleWidth = Math.min(
+    maxBubbleWidth,
+    Math.max(...wrapped.map(l => l.length)) + padding * 2,
+  );
+  const inner = bubbleWidth - padding * 2;
+
+  const lines: string[] = [];
+  for (const wl of wrapped) {
+    const padLeft = " ".repeat(padding);
+    const padRight = " ".repeat(Math.max(0, inner - wl.length) + padding);
+    const offset = " ".repeat(Math.max(0, cols - bubbleWidth - margin));
+    lines.push(`${offset}${BG_USER}${padLeft}${wl}${padRight}${RESET}`);
+  }
+  return lines;
+}
+
+// ── AI message rendering (left-aligned) ─────────────────────────────
 
 function renderAIMessage(
   msg: AIMessage,
@@ -118,11 +145,6 @@ function renderAIMessage(
   isStreaming: boolean,
 ): string[] {
   const lines: string[] = [];
-
-  // Duration derived from the message timestamps
-  const elapsed = (msg.endedAt ?? Date.now()) - msg.startedAt;
-  const dur = elapsed > 0 ? `${DIM} · ${formatDuration(elapsed)}${RESET}` : "";
-  lines.push(`${BOLD}${GREEN}  ▌Claude${RESET}${dur}`);
 
   // Empty pending message → "thinking..."
   if (msg.blocks.length === 0 && isStreaming) {
@@ -135,9 +157,14 @@ function renderAIMessage(
     lines.push(...renderBlock(block, contentWidth));
   }
 
-  // Streaming cursor
+  // Streaming cursor or final duration
   if (isStreaming) {
     lines.push(`  ${DIM}▍${RESET}`);
+  } else {
+    const elapsed = (msg.endedAt ?? Date.now()) - msg.startedAt;
+    if (elapsed > 0) {
+      lines.push(`  ${DIM}${formatDuration(elapsed)}${RESET}`);
+    }
   }
 
   return lines;
@@ -153,10 +180,7 @@ function buildMessageLines(state: RenderState): string[] {
     lines.push("");
 
     if (msg.role === "user") {
-      lines.push(`${BOLD}${CYAN}  ▌You${RESET}`);
-      for (const wl of wordWrap(msg.text, contentWidth)) {
-        lines.push(`  ${wl}`);
-      }
+      lines.push(...renderUserMessage(msg.text, state.cols));
     } else if (msg.role === "assistant") {
       lines.push(...renderAIMessage(msg, contentWidth, false));
     } else {
