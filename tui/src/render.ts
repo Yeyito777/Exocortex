@@ -131,11 +131,7 @@ function renderUserMessage(text: string, cols: number): string[] {
 
 // ── AI message rendering (left-aligned) ─────────────────────────────
 
-function renderAIMessage(
-  msg: AIMessage,
-  contentWidth: number,
-  isStreaming: boolean,
-): string[] {
+function renderAIMessage(msg: AIMessage, contentWidth: number): string[] {
   const lines: string[] = [];
 
   // Render each block
@@ -144,7 +140,7 @@ function renderAIMessage(
   }
 
   // Metadata
-  lines.push(...renderMetadata(msg.metadata, isStreaming));
+  lines.push(...renderMetadata(msg.metadata));
 
   return lines;
 }
@@ -161,7 +157,7 @@ function buildMessageLines(state: RenderState): string[] {
     if (msg.role === "user") {
       lines.push(...renderUserMessage(msg.text, state.cols));
     } else if (msg.role === "assistant") {
-      lines.push(...renderAIMessage(msg, contentWidth, false));
+      lines.push(...renderAIMessage(msg, contentWidth));
     } else {
       lines.push(`  ${DIM}${msg.text}${RESET}`);
     }
@@ -170,7 +166,7 @@ function buildMessageLines(state: RenderState): string[] {
   // Currently streaming AI message
   if (state.pendingAI) {
     lines.push("");
-    lines.push(...renderAIMessage(state.pendingAI, contentWidth, true));
+    lines.push(...renderAIMessage(state.pendingAI, contentWidth));
   }
 
   return lines;

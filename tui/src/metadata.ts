@@ -30,13 +30,9 @@ function formatDuration(ms: number): string {
  * Format: model · N tokens · Xs
  *
  * @param metadata  The metadata to render (null = no output).
- * @param streaming Whether this message is currently being streamed.
  * @returns Lines to append below the message content.
  */
-export function renderMetadata(
-  metadata: MessageMetadata | null,
-  streaming: boolean,
-): string[] {
+export function renderMetadata(metadata: MessageMetadata | null): string[] {
   if (!metadata) return [];
 
   const parts: string[] = [];
@@ -52,6 +48,5 @@ export function renderMetadata(
   parts.push(formatDuration(elapsed));
 
   const line = parts.join(" · ");
-  const cursor = streaming ? " ▍" : "";
-  return [`  ${DIM}${line}${cursor}${RESET}`];
+  return [`  ${DIM}${line}${RESET}`];
 }
