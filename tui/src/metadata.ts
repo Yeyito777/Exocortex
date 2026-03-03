@@ -6,12 +6,7 @@
  */
 
 import type { MessageMetadata } from "./messages";
-
-// ── ANSI ────────────────────────────────────────────────────────────
-
-const ESC = "\x1b[";
-const RESET = `${ESC}0m`;
-const DIM = `${ESC}2m`;
+import { theme } from "./theme";
 
 // ── Formatting ──────────────────────────────────────────────────────
 
@@ -48,5 +43,5 @@ export function renderMetadata(metadata: MessageMetadata | null): string[] {
   parts.push(formatDuration(elapsed));
 
   const line = parts.join(" · ");
-  return [`  ${DIM}${line}${RESET}`];
+  return [`  ${theme.dim}${line}${theme.reset}`];
 }

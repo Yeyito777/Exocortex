@@ -14,6 +14,7 @@ import { handlePromptKey, clearPrompt } from "./promptline";
 import { render, enter_alt, leave_alt, hide_cursor, show_cursor } from "./render";
 import { createInitialState, isStreaming } from "./state";
 import { createPendingAI, ensureCurrentBlock, type ModelId } from "./messages";
+import { theme } from "./theme";
 import type { Event } from "./protocol";
 
 // ── State ───────────────────────────────────────────────────────────
@@ -148,12 +149,12 @@ function handleEvent(event: Event): void {
 
       // Flush errors that arrived during streaming (after the AI message)
       for (const msg of pendingErrors) {
-        state.messages.push({ role: "system", text: `✗ ${msg}`, color: "\x1b[31m", metadata: null });
+        state.messages.push({ role: "system", text: `✗ ${msg}`, color: theme.error, metadata: null });
       }
       pendingErrors = [];
 
       if (wasInterrupted) {
-        state.messages.push({ role: "system", text: "✗ Interrupted", color: "\x1b[31m", metadata: null });
+        state.messages.push({ role: "system", text: "✗ Interrupted", color: theme.error, metadata: null });
       }
       if (streamTickTimer) { clearTimeout(streamTickTimer); streamTickTimer = null; }
       break;
@@ -163,7 +164,7 @@ function handleEvent(event: Event): void {
       if (isStreaming(state)) {
         pendingErrors.push(event.message);
       } else {
-        state.messages.push({ role: "system", text: `✗ ${event.message}`, color: "\x1b[31m", metadata: null });
+        state.messages.push({ role: "system", text: `✗ ${event.message}`, color: theme.error, metadata: null });
       }
       break;
     }
@@ -312,7 +313,7 @@ async function main(): Promise<void> {
 
   daemon.onConnectionLost(() => {
     state.pendingAI = null;
-    state.messages.push({ role: "system", text: "✗ Lost connection to daemon.", color: "\x1b[31m", metadata: null });
+    state.messages.push({ role: "system", text: "✗ Lost connection to daemon.", color: theme.error, metadata: null });
     scheduleRender();
     setTimeout(() => { running = false; }, 2000);
   });

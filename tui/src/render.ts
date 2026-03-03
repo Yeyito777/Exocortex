@@ -9,22 +9,11 @@ import type { Block, AIMessage } from "./messages";
 import { isStreaming, type RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { renderStatusLine, STATUS_LINE_HEIGHT } from "./statusline";
+import { theme } from "./theme";
 
-// ── ANSI helpers ────────────────────────────────────────────────────
+// ── ANSI helpers (non-color escapes — not theme-dependent) ──────────
 
 const ESC = "\x1b[";
-const RESET = `${ESC}0m`;
-const BOLD = `${ESC}1m`;
-const DIM = `${ESC}2m`;
-const ITALIC = `${ESC}3m`;
-const CYAN = `${ESC}36m`;
-const GREEN = `${ESC}32m`;
-const YELLOW = `${ESC}33m`;
-const RED = `${ESC}31m`;
-const BLUE = `${ESC}34m`;
-const MAGENTA = `${ESC}35m`;
-const BG_DARK = `${ESC}48;5;236m`;
-const BG_USER = `${ESC}48;5;238m`;
 
 export const hide_cursor = `${ESC}?25l`;
 export const show_cursor = `${ESC}?25h`;
@@ -170,7 +159,7 @@ function renderBlock(block: Block, contentWidth: number): string[] {
   switch (block.type) {
     case "thinking": {
       for (const wl of wordWrap(block.text, contentWidth)) {
-        lines.push(`  ${DIM}${ITALIC}${wl}${RESET}`);
+        lines.push(`  ${theme.dim}${theme.italic}${wl}${theme.reset}`);
       }
       break;
     }
@@ -181,25 +170,25 @@ function renderBlock(block: Block, contentWidth: number): string[] {
       break;
     }
     case "tool_call": {
-      const label = `${MAGENTA}  ▸ ${block.toolName}${RESET}`;
-      const summary = block.summary ? `${DIM} ${block.summary}${RESET}` : "";
+      const label = `${theme.tool}  ▸ ${block.toolName}${theme.reset}`;
+      const summary = block.summary ? `${theme.dim} ${block.summary}${theme.reset}` : "";
       lines.push(`${label}${summary}`);
       break;
     }
     case "tool_result": {
       const maxLines = 6;
-      const prefix = block.isError ? `${RED}  ✗` : `${DIM}  ↳`;
+      const prefix = block.isError ? `${theme.error}  ✗` : `${theme.dim}  ↳`;
       const outputLines = block.output.split("\n");
       const truncated = outputLines.length > maxLines;
       const visible = outputLines.slice(0, maxLines);
 
       for (const ol of visible) {
         for (const wl of wordWrap(ol, contentWidth - 2)) {
-          lines.push(`${prefix} ${wl}${RESET}`);
+          lines.push(`${prefix} ${wl}${theme.reset}`);
         }
       }
       if (truncated) {
-        lines.push(`${prefix} … (${outputLines.length - maxLines} more lines)${RESET}`);
+        lines.push(`${prefix} … (${outputLines.length - maxLines} more lines)${theme.reset}`);
       }
       break;
     }
@@ -229,7 +218,7 @@ function renderUserMessage(text: string, cols: number): string[] {
     const padLeft = " ".repeat(padding);
     const padRight = " ".repeat(Math.max(0, inner - wl.length) + padding);
     const offset = " ".repeat(Math.max(0, cols - bubbleWidth - margin));
-    lines.push(`${offset}${BG_USER}${padLeft}${wl}${padRight}${RESET}`);
+    lines.push(`${offset}${theme.userBg}${padLeft}${wl}${padRight}${theme.reset}`);
   }
   return lines;
 }
@@ -264,8 +253,8 @@ function buildMessageLines(state: RenderState): string[] {
     } else if (msg.role === "assistant") {
       lines.push(...renderAIMessage(msg, contentWidth));
     } else {
-      const color = msg.color || DIM;
-      lines.push(`  ${color}${msg.text}${RESET}`);
+      const color = msg.color || theme.dim;
+      lines.push(`  ${color}${msg.text}${theme.reset}`);
     }
   }
 
@@ -285,17 +274,17 @@ export function render(state: RenderState): void {
   const out: string[] = [];
 
   // ── Header (row 1) ────────────────────────────────────────────
-  const title = `${BOLD} Exocortex${RESET}`;
-  const modelLabel = `${DIM}${state.model}${RESET}`;
-  const convLabel = state.convId ? `${DIM}${state.convId.slice(0, 12)}${RESET}` : "";
-  const statusDot = isStreaming(state) ? `${YELLOW}●${RESET}` : `${GREEN}●${RESET}`;
+  const title = `${theme.bold} Exocortex${theme.reset}`;
+  const modelLabel = `${theme.dim}${state.model}${theme.reset}`;
+  const convLabel = state.convId ? `${theme.dim}${state.convId.slice(0, 12)}${theme.reset}` : "";
+  const statusDot = isStreaming(state) ? `${theme.warning}●${theme.reset}` : `${theme.success}●${theme.reset}`;
 
   out.push(move_to(1, 1) + clear_line);
-  out.push(`${BG_DARK}${title}  ${statusDot}  ${convLabel}${" ".repeat(Math.max(0, cols - 30 - state.model.length))}${modelLabel} ${RESET}`);
+  out.push(`${theme.headerBg}${title}  ${statusDot}  ${convLabel}${" ".repeat(Math.max(0, cols - 30 - state.model.length))}${modelLabel} ${theme.reset}`);
 
   // ── Separator after header ────────────────────────────────────
   out.push(move_to(2, 1) + clear_line);
-  out.push(`${DIM}${"─".repeat(cols)}${RESET}`);
+  out.push(`${theme.dim}${"─".repeat(cols)}${theme.reset}`);
 
   // ── Input line wrapping ────────────────────────────────────────
   const promptLen = 3;               // " ❯ " or " + "
@@ -316,20 +305,20 @@ export function render(state: RenderState): void {
 
   // Separator above input
   out.push(move_to(sepAbove, 1) + clear_line);
-  out.push(`${DIM}${"─".repeat(cols)}${RESET}`);
+  out.push(`${theme.dim}${"─".repeat(cols)}${theme.reset}`);
 
   // Input rows
   for (let i = 0; i < inputRowCount; i++) {
     const prompt = (i === 0 && !isNewLine[i])
-      ? `${BOLD}${BLUE} ❯${RESET} `
-      : `${DIM} +${RESET} `;
+      ? `${theme.bold}${theme.prompt} ❯${theme.reset} `
+      : `${theme.dim} +${theme.reset} `;
     out.push(move_to(firstInputRow + i, 1) + clear_line);
     out.push(prompt + inputLines[i]);
   }
 
   // Separator below input
   out.push(move_to(sepBelow, 1) + clear_line);
-  out.push(`${DIM}${"─".repeat(cols)}${RESET}`);
+  out.push(`${theme.dim}${"─".repeat(cols)}${theme.reset}`);
 
   // Status lines
   for (let i = 0; i < STATUS_LINE_HEIGHT; i++) {
