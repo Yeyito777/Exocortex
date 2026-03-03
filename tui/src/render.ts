@@ -157,14 +157,12 @@ function renderAIMessage(
     lines.push(...renderBlock(block, contentWidth));
   }
 
-  // Streaming cursor or final duration
+  // Footer: duration (always), streaming cursor
+  const elapsed = (msg.endedAt ?? Date.now()) - msg.startedAt;
   if (isStreaming) {
-    lines.push(`  ${DIM}▍${RESET}`);
-  } else {
-    const elapsed = (msg.endedAt ?? Date.now()) - msg.startedAt;
-    if (elapsed > 0) {
-      lines.push(`  ${DIM}${formatDuration(elapsed)}${RESET}`);
-    }
+    lines.push(`  ${DIM}${formatDuration(elapsed)} ▍${RESET}`);
+  } else if (elapsed > 0) {
+    lines.push(`  ${DIM}${formatDuration(elapsed)}${RESET}`);
   }
 
   return lines;
