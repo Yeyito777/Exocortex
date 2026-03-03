@@ -123,6 +123,45 @@ export function getSummary(id: string): ConversationSummary | null {
   };
 }
 
+// ── Display data (API format → TUI display format) ──────────────────
+
+import type { Block } from "./messages";
+
+export interface ConversationDisplayData {
+  convId: string;
+  model: ModelId;
+  userMessages: string[];
+  messageBlocks: Block[][];
+}
+
+/** Convert stored API messages to display-friendly format for the TUI. */
+export function getDisplayData(id: string): ConversationDisplayData | null {
+  const conv = conversations.get(id);
+  if (!conv) return null;
+
+  const userMessages: string[] = [];
+  const messageBlocks: Block[][] = [];
+
+  for (const msg of conv.messages) {
+    if (msg.role === "user") {
+      userMessages.push(typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content));
+    } else if (msg.role === "assistant") {
+      const blocks: Block[] = [];
+      if (typeof msg.content === "string") {
+        blocks.push({ type: "text", text: msg.content });
+      } else {
+        for (const c of msg.content) {
+          if (c.type === "text") blocks.push({ type: "text", text: c.text });
+          else if (c.type === "thinking") blocks.push({ type: "thinking", text: c.thinking });
+        }
+      }
+      messageBlocks.push(blocks);
+    }
+  }
+
+  return { convId: conv.id, model: conv.model, userMessages, messageBlocks };
+}
+
 // ── Active jobs (abort controllers for in-flight streams) ───────────
 
 /** Streaming state is derived from activeJobs — no boolean on Conversation. */

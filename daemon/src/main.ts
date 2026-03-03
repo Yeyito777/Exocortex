@@ -14,10 +14,10 @@ import { join } from "path";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync } from "fs";
 import { connect as netConnect } from "net";
 import { log } from "./log";
-import { loadAuth, saveAuth, isTokenExpired } from "./store";
-import { login, refreshTokens, verifyAuth } from "./auth";
+import { loadAuth, isTokenExpired } from "./store";
 import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
+import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
 
 // ── Paths ───────────────────────────────────────────────────────────
@@ -59,37 +59,6 @@ async function isAlreadyRunning(): Promise<boolean> {
     try { unlinkSync(SOCKET_PATH); } catch {}
   }
   return false;
-}
-
-// ── Login subcommand ────────────────────────────────────────────────
-
-async function handleLogin(): Promise<void> {
-  console.log("\n  Exocortex — Authentication\n");
-
-  // Check existing credentials
-  const existing = loadAuth();
-  if (existing?.tokens?.accessToken && !isTokenExpired(existing.tokens)) {
-    const valid = await verifyAuth(existing.tokens.accessToken);
-    if (valid) {
-      console.log(`  ✓ Already authenticated as ${existing.profile?.email ?? "unknown"}\n`);
-      return;
-    }
-  }
-
-  // Try token refresh
-  if (existing?.tokens?.refreshToken) {
-    try {
-      const newTokens = await refreshTokens(existing.tokens.refreshToken);
-      saveAuth({ ...existing, tokens: newTokens, updatedAt: new Date().toISOString() });
-      console.log(`  ✓ Session refreshed (${existing.profile?.email ?? "unknown"})\n`);
-      return;
-    } catch {}
-  }
-
-  // Full OAuth flow
-  const result = await login((msg) => console.log(`  ${msg}`));
-  saveAuth({ tokens: result.tokens, profile: result.profile, updatedAt: new Date().toISOString() });
-  console.log(`\n  ✓ Authenticated as ${result.profile?.email ?? "unknown"}\n`);
 }
 
 // ── Daemon startup ──────────────────────────────────────────────────
