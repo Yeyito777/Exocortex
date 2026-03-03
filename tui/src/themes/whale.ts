@@ -31,6 +31,6 @@ export const whale: Theme = {
   tool:     `${ESC}35m`,                 // magenta
 
   // Background colors
-  headerBg: `${ESC}48;5;236m`,           // dark gray
+  topbarBg: `${ESC}48;2;29;155;240m`,    // accent (#1d9bf0) as background
   userBg:   `${ESC}48;2;9;13;53m`,       // #090d35
 };

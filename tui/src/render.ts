@@ -9,6 +9,7 @@ import type { Block, AIMessage } from "./messages";
 import { isStreaming, type RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { renderStatusLine, statusLineHeight } from "./statusline";
+import { renderTopbar } from "./topbar";
 import { theme } from "./theme";
 
 // ── ANSI helpers (non-color escapes — not theme-dependent) ──────────
@@ -275,14 +276,9 @@ export function render(state: RenderState): void {
   const { cols, rows } = state;
   const out: string[] = [];
 
-  // ── Header (row 1) ────────────────────────────────────────────
-  const title = `${theme.bold} Exocortex${theme.reset}`;
-  const modelLabel = `${theme.dim}${state.model}${theme.reset}`;
-  const convLabel = state.convId ? `${theme.dim}${state.convId.slice(0, 12)}${theme.reset}` : "";
-  const statusDot = isStreaming(state) ? `${theme.warning}●${theme.reset}` : `${theme.success}●${theme.reset}`;
-
+  // ── Top bar (row 1) ────────────────────────────────────────────
   out.push(move_to(1, 1) + clear_line);
-  out.push(`${theme.headerBg}${title}  ${statusDot}  ${convLabel}${" ".repeat(Math.max(0, cols - 30 - state.model.length))}${modelLabel} ${theme.reset}`);
+  out.push(renderTopbar(state));
 
   // ── Separator after header ────────────────────────────────────
   const historyColor = state.focus === "history" ? theme.accent : theme.dim;

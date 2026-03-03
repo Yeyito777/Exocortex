@@ -32,7 +32,7 @@ export interface Theme {
   tool: string;        // Tool call labels
 
   // Background colors
-  headerBg: string;    // Header bar
+  topbarBg: string;    // Top bar
   userBg: string;      // User message bubble
 }
 
