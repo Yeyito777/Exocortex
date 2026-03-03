@@ -185,7 +185,7 @@ export function handleEvent(
       state.model = event.model;
       state.scrollOffset = 0;
 
-      const totalPairs = Math.max(event.userMessages.length, event.messages.length);
+      const totalPairs = Math.max(event.userMessages.length, event.aiMessages.length);
       let userIdx = 0;
       let aiIdx = 0;
       for (let i = 0; i < totalPairs; i++) {
@@ -193,11 +193,12 @@ export function handleEvent(
           state.messages.push({ role: "user", text: event.userMessages[userIdx], metadata: null });
           userIdx++;
         }
-        if (aiIdx < event.messages.length) {
+        if (aiIdx < event.aiMessages.length) {
+          const loaded = event.aiMessages[aiIdx];
           const aiMsg: AIMessage = {
             role: "assistant",
-            blocks: event.messages[aiIdx],
-            metadata: { startedAt: 0, endedAt: 0, model: event.model, tokens: 0 },
+            blocks: loaded.blocks,
+            metadata: loaded.metadata ?? { startedAt: 0, endedAt: 0, model: event.model, tokens: 0 },
           };
           state.messages.push(aiMsg);
           aiIdx++;

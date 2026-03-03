@@ -51,7 +51,7 @@ export async function orchestrateSendMessage(
     return;
   }
 
-  conv.messages.push({ role: "user", content: text });
+  conv.messages.push({ role: "user", content: text, metadata: null });
 
   const ac = new AbortController();
   convStore.setActiveJob(convId, ac);
@@ -116,9 +116,18 @@ export async function orchestrateSendMessage(
       .map(b => b.text)
       .join("\n");
 
-    conv.messages.push({ role: "assistant", content: textContent });
-
     const endedAt = Date.now();
+
+    conv.messages.push({
+      role: "assistant",
+      content: textContent,
+      metadata: {
+        startedAt,
+        endedAt,
+        model: conv.model,
+        tokens: result.tokens,
+      },
+    });
     server.sendToSubscribers(convId, {
       type: "message_complete",
       convId,

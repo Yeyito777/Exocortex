@@ -125,13 +125,18 @@ export function getSummary(id: string): ConversationSummary | null {
 
 // ── Display data (API format → TUI display format) ──────────────────
 
-import type { Block } from "./messages";
+import type { Block, MessageMetadata } from "./messages";
+
+export interface AIMessageDisplay {
+  blocks: Block[];
+  metadata: MessageMetadata | null;
+}
 
 export interface ConversationDisplayData {
   convId: string;
   model: ModelId;
   userMessages: string[];
-  messageBlocks: Block[][];
+  aiMessages: AIMessageDisplay[];
 }
 
 /** Convert stored API messages to display-friendly format for the TUI. */
@@ -140,7 +145,7 @@ export function getDisplayData(id: string): ConversationDisplayData | null {
   if (!conv) return null;
 
   const userMessages: string[] = [];
-  const messageBlocks: Block[][] = [];
+  const aiMessages: AIMessageDisplay[] = [];
 
   for (const msg of conv.messages) {
     if (msg.role === "user") {
@@ -155,11 +160,11 @@ export function getDisplayData(id: string): ConversationDisplayData | null {
           else if (c.type === "thinking") blocks.push({ type: "thinking", text: c.thinking });
         }
       }
-      messageBlocks.push(blocks);
+      aiMessages.push({ blocks, metadata: msg.metadata });
     }
   }
 
-  return { convId: conv.id, model: conv.model, userMessages, messageBlocks };
+  return { convId: conv.id, model: conv.model, userMessages, aiMessages };
 }
 
 // ── Active jobs (abort controllers for in-flight streams) ───────────

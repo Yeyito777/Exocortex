@@ -11,11 +11,11 @@ import { homedir } from "os";
 import { join } from "path";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from "fs";
 import { log } from "./log";
-import type { Conversation, ApiMessage, ModelId, ConversationSummary } from "./messages";
+import type { Conversation, StoredMessage, ApiMessage, ModelId, ConversationSummary } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 1;
+const CURRENT_VERSION = 2;
 
 interface ConversationFileV1 {
   version: 1;
@@ -26,25 +26,44 @@ interface ConversationFileV1 {
   updatedAt: number;
 }
 
-type ConversationFile = ConversationFileV1;
+interface ConversationFileV2 {
+  version: 2;
+  id: string;
+  model: ModelId;
+  messages: StoredMessage[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+type ConversationFile = ConversationFileV2;
 
 // ── Migrations ──────────────────────────────────────────────────────
 
-/**
- * Migrate a raw parsed file to the current version.
- * Add migration steps here as the schema evolves:
- *   if (data.version === 1) data = migrateV1toV2(data);
- *   if (data.version === 2) data = migrateV2toV3(data);
- *   ...
- */
+/** v1 → v2: Add null metadata to all messages. */
+function migrateV1toV2(data: ConversationFileV1): ConversationFileV2 {
+  return {
+    ...data,
+    version: 2,
+    messages: data.messages.map((msg) => ({
+      role: msg.role,
+      content: msg.content,
+      metadata: null,
+    })),
+  };
+}
+
 function migrate(data: Record<string, unknown>): ConversationFile {
-  const version = (data.version as number) ?? 0;
+  let version = (data.version as number) ?? 1;
+
+  if (version === 1) {
+    data = migrateV1toV2(data as unknown as ConversationFileV1) as unknown as Record<string, unknown>;
+    version = 2;
+  }
 
   if (version === CURRENT_VERSION) {
     return data as unknown as ConversationFile;
   }
 
-  // Unknown/future version — best effort
   log("warn", `persistence: unknown schema version ${version}, attempting to load as v${CURRENT_VERSION}`);
   return data as unknown as ConversationFile;
 }
@@ -139,7 +158,7 @@ export function loadAll(): ConversationSummary[] {
 }
 
 /** Extract a short preview from the first user message. */
-function extractPreview(messages: ApiMessage[]): string {
+function extractPreview(messages: StoredMessage[]): string {
   for (const msg of messages) {
     if (msg.role === "user" && typeof msg.content === "string") {
       return msg.content.slice(0, 80);

@@ -8,8 +8,8 @@
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ModelId, Block, UsageData, ConversationSummary } from "./messages";
-export type { ModelId, Block, UsageData, ConversationSummary };
+import type { ModelId, Block, MessageMetadata, UsageData, ConversationSummary } from "./messages";
+export type { ModelId, Block, MessageMetadata, UsageData, ConversationSummary };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
@@ -169,12 +169,17 @@ export interface ConversationsListEvent {
   conversations: ConversationSummary[];
 }
 
+export interface AIMessagePayload {
+  blocks: Block[];
+  metadata: MessageMetadata | null;
+}
+
 export interface ConversationLoadedEvent {
   type: "conversation_loaded";
   reqId?: string;
   convId: string;
   model: ModelId;
-  messages: Block[][];
+  aiMessages: AIMessagePayload[];
   /** The raw user message texts, in order, for display. */
   userMessages: string[];
 }

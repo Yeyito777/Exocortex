@@ -12,7 +12,7 @@ export * from "@exocortex/shared/messages";
 
 // ── API-level types (for stored conversations / API replay) ─────────
 
-import type { ModelId } from "@exocortex/shared/messages";
+import type { ModelId, MessageMetadata } from "@exocortex/shared/messages";
 
 export type ApiContentBlock =
   | { type: "text"; text: string; cache_control?: { type: "ephemeral" } }
@@ -25,12 +25,19 @@ export interface ApiMessage {
   content: string | ApiContentBlock[];
 }
 
+/** A message with optional metadata for persistence. */
+export interface StoredMessage {
+  role: "user" | "assistant";
+  content: string | ApiContentBlock[];
+  metadata: MessageMetadata | null;
+}
+
 // ── Conversation state ──────────────────────────────────────────────
 
 export interface Conversation {
   id: string;
   model: ModelId;
-  messages: ApiMessage[];
+  messages: StoredMessage[];
   createdAt: number;
 }
 
