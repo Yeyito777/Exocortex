@@ -90,7 +90,7 @@ export function render(state: RenderState): void {
   // ── Message area (rows 3 to sepAbove-1) ────────────────────────
   const messageAreaStart = 3;
   const messageAreaHeight = sepAbove - messageAreaStart;
-  const allLines = buildMessageLines(state);
+  const allLines = buildMessageLines(state, chatW);
   const totalLines = allLines.length;
 
   let viewStart: number;

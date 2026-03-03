@@ -122,15 +122,15 @@ function renderAIMessage(msg: AIMessage, contentWidth: number): string[] {
 
 // ── Build all display lines ─────────────────────────────────────────
 
-export function buildMessageLines(state: RenderState): string[] {
-  const contentWidth = state.cols - 4;
+export function buildMessageLines(state: RenderState, availableWidth: number): string[] {
+  const contentWidth = availableWidth - 4;
   const lines: string[] = [];
 
   for (const msg of state.messages) {
     lines.push("");
 
     if (msg.role === "user") {
-      lines.push(...renderUserMessage(msg.text, state.cols));
+      lines.push(...renderUserMessage(msg.text, availableWidth));
     } else if (msg.role === "assistant") {
       lines.push(...renderAIMessage(msg, contentWidth));
     } else {
