@@ -32,5 +32,5 @@ export const whale: Theme = {
 
   // Background colors
   headerBg: `${ESC}48;5;236m`,           // dark gray
-  userBg:   `${ESC}48;5;238m`,           // medium gray
+  userBg:   `${ESC}48;2;9;13;53m`,       // #090d35
 };
