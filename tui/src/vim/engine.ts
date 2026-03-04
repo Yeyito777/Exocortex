@@ -21,10 +21,15 @@ import * as ops from "./operators";
 
 // ── Normal mode cursor clamping ────────────────────────────────────
 
-/** In normal mode, cursor sits ON the last char, never past it. */
+/** In normal mode, cursor sits ON the last char of the line, never past it or on \n. */
 function clampNormal(buffer: string, pos: number): number {
   if (buffer.length === 0) return 0;
-  return Math.min(pos, buffer.length - 1);
+  let p = Math.min(pos, buffer.length - 1);
+  // Never sit on a newline — back up to the char before it (or stay if line is empty)
+  if (buffer[p] === "\n" && p > 0 && buffer[p - 1] !== "\n") {
+    p--;
+  }
+  return Math.max(0, p);
 }
 
 // ── Key string conversion ──────────────────────────────────────────
@@ -62,8 +67,12 @@ function handleInsertMode(key: KeyEvent, vim: VimState, buffer: string, cursor: 
   if (key.type === "escape") {
     vim.mode = "normal";
     resetPending(vim);
-    // Vim convention: cursor moves left on Esc from insert mode, clamped
-    const newCursor = clampNormal(buffer, Math.max(0, cursor - 1));
+    // Vim convention: cursor moves left on Esc, but never across \n
+    let newCursor = cursor;
+    if (newCursor > 0 && buffer[newCursor - 1] !== "\n") {
+      newCursor--;
+    }
+    newCursor = clampNormal(buffer, newCursor);
     return { type: "mode_change", mode: "normal", cursor: newCursor };
   }
   // Everything else passes through to promptline / existing system

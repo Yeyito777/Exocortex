@@ -200,11 +200,12 @@ function handleContextNavigation(dir: "up" | "down", state: RenderState): KeyRes
 // ── Normal mode cursor clamp ───────────────────────────────────────
 
 function clampCursorNormal(state: RenderState): void {
-  if (state.inputBuffer.length > 0) {
-    state.cursorPos = Math.min(state.cursorPos, state.inputBuffer.length - 1);
-  } else {
-    state.cursorPos = 0;
-  }
+  const buf = state.inputBuffer;
+  if (buf.length === 0) { state.cursorPos = 0; return; }
+  let p = Math.min(state.cursorPos, buf.length - 1);
+  // Never sit on a newline
+  if (buf[p] === "\n" && p > 0 && buf[p - 1] !== "\n") p--;
+  state.cursorPos = Math.max(0, p);
 }
 
 // ── Scroll dispatch ────────────────────────────────────────────────

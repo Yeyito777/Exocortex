@@ -23,12 +23,18 @@ function isPunct(ch: string): boolean {
 
 // ── Character motions ──────────────────────────────────────────────
 
-export function charLeft(_buffer: string, pos: number): number {
-  return Math.max(0, pos - 1);
+export function charLeft(buffer: string, pos: number): number {
+  if (pos <= 0) return 0;
+  // Don't cross newline boundary
+  if (buffer[pos - 1] === "\n") return pos;
+  return pos - 1;
 }
 
 export function charRight(buffer: string, pos: number): number {
-  return Math.min(buffer.length, pos + 1);
+  if (pos >= buffer.length) return buffer.length;
+  // Don't cross newline boundary
+  if (buffer[pos] === "\n") return pos;
+  return pos + 1;
 }
 
 // ── Word motions ───────────────────────────────────────────────────
