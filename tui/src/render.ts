@@ -12,7 +12,7 @@ import { renderTopbar } from "./topbar";
 import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { buildMessageLines } from "./conversation";
 import { getInputLines } from "./promptline";
-import { show_cursor } from "./terminal";
+import { show_cursor, hide_cursor } from "./terminal";
 import { theme } from "./theme";
 
 // ── ANSI positioning (non-color escapes) ────────────────────────────
@@ -126,7 +126,7 @@ export function render(state: RenderState): void {
   for (let i = 0; i < inputRowCount; i++) {
     const row = firstInputRow + i;
     const prompt = (i === 0 && !isNewLine[i])
-      ? `${theme.bold}${theme.prompt} ❯${theme.reset} `
+      ? `${theme.bold}${theme.prompt} >${theme.reset} `
       : `${theme.dim} +${theme.reset} `;
     out.push(move_to(row, 1) + clear_line);
     if (sidebarOpen && sbRows[row - 1]) {
@@ -152,10 +152,14 @@ export function render(state: RenderState): void {
     out.push(move_to(row, chatCol) + statusLines[i]);
   }
 
-  // ── Position cursor in input field ────────────────────────────
-  const cursorScreenRow = firstInputRow + cursorLine;
-  out.push(move_to(cursorScreenRow, chatCol + promptLen + cursorCol));
-  out.push(show_cursor);
+  // ── Cursor: visible only when prompt is focused ────────────────
+  if (promptFocused) {
+    const cursorScreenRow = firstInputRow + cursorLine;
+    out.push(move_to(cursorScreenRow, chatCol + promptLen + cursorCol));
+    out.push(show_cursor);
+  } else {
+    out.push(hide_cursor);
+  }
 
   process.stdout.write(out.join(""));
 }

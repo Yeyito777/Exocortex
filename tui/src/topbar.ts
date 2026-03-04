@@ -13,7 +13,7 @@ export function renderTopbar(state: RenderState, width?: number): string {
   const w = width ?? state.cols;
 
   const title = `${theme.bold} Exocortex${theme.reset}${theme.topbarBg}`;
-  const modelLabel = `${state.model}`;
+  const modelLabel = state.model.charAt(0).toUpperCase() + state.model.slice(1);
   const convLabel = state.convId ? state.convId.slice(0, 12) : "";
   const statusDot = isStreaming(state) ? `${theme.warning}●${theme.reset}${theme.topbarBg}` : `${theme.success}●${theme.reset}${theme.topbarBg}`;
 
