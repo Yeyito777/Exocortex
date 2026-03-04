@@ -72,7 +72,7 @@ export function createInitialState(): RenderState {
     panelFocus: "chat",
     chatFocus: "prompt",
     sidebar: createSidebarState(),
-    vim: { ...createVimState(), enabled: true },
+    vim: createVimState(),
     layout: { totalLines: 0, messageAreaHeight: 0 },
     pendingSend: { active: false, text: "" },
     errorBuffer: [],

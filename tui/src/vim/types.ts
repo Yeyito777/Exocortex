@@ -19,7 +19,6 @@ export type VimContext = "prompt" | "history" | "sidebar";
 // ── State ──────────────────────────────────────────────────────────
 
 export interface VimState {
-  enabled: boolean;
   mode: VimMode;
   /** Pending operator waiting for a motion/textobject ("d", "c", "y"). */
   pendingOperator: string | null;
@@ -32,7 +31,6 @@ export interface VimState {
 
 export function createVimState(): VimState {
   return {
-    enabled: false,
     mode: "insert",
     pendingOperator: null,
     pendingOperatorKey: null,

@@ -67,20 +67,6 @@ const commands: SlashCommand[] = [
     },
   },
   {
-    name: "/vim",
-    description: "Toggle vim keybindings",
-    handler: (_text, state) => {
-      state.vim.enabled = !state.vim.enabled;
-      if (state.vim.enabled) {
-        state.vim.mode = "insert"; // smooth transition — already typing
-      }
-      const status = state.vim.enabled ? "enabled" : "disabled";
-      state.messages.push({ role: "system", text: `Vim keybindings ${status}`, metadata: null });
-      clearPrompt(state);
-      return { type: "handled" };
-    },
-  },
-  {
     name: "/model",
     description: "Set or show the current model",
     handler: (text, state) => {

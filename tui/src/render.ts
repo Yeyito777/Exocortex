@@ -66,8 +66,7 @@ export function render(state: RenderState): void {
   out.push(`${historyColor}${"─".repeat(chatW)}${theme.reset}`);
 
   // ── Input line wrapping ────────────────────────────────────────
-  const vimEnabled = state.vim.enabled;
-  const promptLen = vimEnabled ? 4 : 3;   // "N > " vs " > "
+  const promptLen = 4;   // "N > " or "I > "
   const maxInputWidth = chatW - promptLen;
   const maxInputRows = Math.min(10, Math.floor((rows - 6) / 2));
 
@@ -133,19 +132,12 @@ export function render(state: RenderState): void {
     const promptGlyph = (i === 0 && !isNewLine[i]) ? ">" : "+";
     const promptStyle = promptFocused ? theme.accent : theme.dim;
 
-    let prompt: string;
-    if (vimEnabled) {
-      const isFirst = i === 0 && !isNewLine[i];
-      const modeChar = state.vim.mode === "normal" ? "N" : "I";
-      const modeColor = state.vim.mode === "normal" ? theme.vimNormal : theme.vimInsert;
-      if (isFirst) {
-        prompt = `${modeColor}${modeChar}${theme.reset} ${promptStyle}${promptGlyph}${theme.reset} `;
-      } else {
-        prompt = `  ${promptStyle}${promptGlyph}${theme.reset} `;
-      }
-    } else {
-      prompt = ` ${promptStyle}${promptGlyph}${theme.reset} `;
-    }
+    const isFirst = i === 0 && !isNewLine[i];
+    const modeChar = state.vim.mode === "normal" ? "N" : "I";
+    const modeColor = state.vim.mode === "normal" ? theme.vimNormal : theme.vimInsert;
+    const prompt = isFirst
+      ? `${modeColor}${modeChar}${theme.reset} ${promptStyle}${promptGlyph}${theme.reset} `
+      : `  ${promptStyle}${promptGlyph}${theme.reset} `;
 
     out.push(move_to(row, 1) + clear_line);
     if (sidebarOpen && sbRows[row - 1]) {
@@ -176,7 +168,7 @@ export function render(state: RenderState): void {
     const cursorScreenRow = firstInputRow + cursorLine;
     out.push(move_to(cursorScreenRow, chatCol + promptLen + cursorCol));
     // Vim: block cursor in normal mode, bar cursor in insert mode
-    out.push(vimEnabled && state.vim.mode === "normal" ? cursor_block : cursor_bar);
+    out.push(state.vim.mode === "normal" ? cursor_block : cursor_bar);
     out.push(show_cursor);
   } else {
     out.push(hide_cursor);

@@ -61,7 +61,7 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
     case "sidebar_prev": {
       // Don't intercept when typing in the prompt — these are regular chars
       const isPromptTyping = state.panelFocus === "chat" && state.chatFocus === "prompt"
-        && (!state.vim.enabled || state.vim.mode === "insert");
+        && state.vim.mode === "insert";
       if (isPromptTyping) break;
       if (!state.sidebar.open) state.sidebar.open = true;
       state.panelFocus = "sidebar";
@@ -80,18 +80,15 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
   if (action === "abort" && state.panelFocus === "sidebar" && state.sidebar.pendingDeleteId) {
     state.sidebar.pendingDeleteId = null;
     // Also normalize vim to normal mode so we don't eat the next Escape
-    if (state.vim.enabled && state.vim.mode === "insert") {
+    if (state.vim.mode === "insert") {
       state.vim.mode = "normal";
     }
     return { type: "handled" };
   }
 
   // ── Vim processing ─────────────────────────────────────────────
-  if (state.vim.enabled) {
-    const vimResult = processVimKey(key, state);
-    if (vimResult) return vimResult;
-    // vimResult === null means passthrough — continue to normal system
-  }
+  const vimResult = processVimKey(key, state);
+  if (vimResult) return vimResult;
 
   // ── Abort (only when vim doesn't consume Esc) ──────────────────
   if (action === "abort") {
