@@ -83,7 +83,7 @@ function renderBlock(block: Block, contentWidth: number): string[] {
 // ── User message rendering (right-aligned, themed background) ───────
 
 function renderUserMessage(text: string, cols: number): string[] {
-  const padding = 2;         // horizontal padding inside bubble
+  const padding = 1;         // horizontal padding inside bubble
   const margin = 2;          // gap from right edge of screen
   const maxBubbleWidth = Math.min(Math.floor(cols * 0.6), cols - margin - 1);
   const innerWidth = maxBubbleWidth - padding * 2;
