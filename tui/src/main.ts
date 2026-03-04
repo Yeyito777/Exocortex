@@ -30,6 +30,7 @@ const pendingSend: PendingSend = { active: false, text: "" };
 const errorBuffer: ErrorBuffer = { errors: [] };
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
+let terminalSetUp = false;
 
 // ── Render scheduling ───────────────────────────────────────────────
 
@@ -141,11 +142,14 @@ function setupTerminal(): void {
   process.stdout.write(enter_alt + hide_cursor);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
+  terminalSetUp = true;
 }
 
 function restoreTerminal(): void {
+  if (!terminalSetUp) return;
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
   process.stdout.write(show_cursor + leave_alt);
+  terminalSetUp = false;
 }
 
 // ── Main ────────────────────────────────────────────────────────────
