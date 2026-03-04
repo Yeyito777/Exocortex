@@ -17,6 +17,17 @@ export interface KeyEvent {
   char?: string;
 }
 
+/**
+ * CSI u (kitty keyboard protocol) lookup table.
+ * Key: the params portion of ESC [ <params> u  (e.g. "109;5")
+ * Value: the KeyEvent type it maps to.
+ * Codepoints are always lowercase. Shift is in the modifier bits (1-based: 2=shift, 5=ctrl, 6=ctrl+shift).
+ */
+const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
+  "109;5": "ctrl-m",         // Ctrl+M (m=109)
+  "111;6": "ctrl-shift-o",   // Ctrl+Shift+O (o=111)
+};
+
 export function parseKeys(data: Buffer): KeyEvent[] {
   const events: KeyEvent[] = [];
   const str = data.toString("utf-8");
@@ -58,15 +69,10 @@ export function parseKeys(data: Buffer): KeyEvent[] {
           const seqLen = j - i + 1;
 
           // CSI u (kitty/st extended keys): ESC [ <keycode> ; <modifiers> u
+          // Keycodes are lowercase codepoints. Shift is in the modifier bits.
           if (final === "u") {
-            const parts = params.split(";");
-            const keycode = parseInt(parts[0], 10);
-            const mods = parseInt(parts[1] ?? "1", 10);
-            const modsDecoded = mods - 1;  // CSI u modifiers are 1-based
-            const shift = (modsDecoded & 1) !== 0;
-            const ctrl = (modsDecoded & 4) !== 0;
-            if (ctrl && !shift && keycode === 109) { events.push({ type: "ctrl-m" }); i += seqLen; continue; }
-            if (ctrl && shift && keycode === 79) { events.push({ type: "ctrl-shift-o" }); i += seqLen; continue; }
+            const csiuType = CSI_U_MAP[params];
+            if (csiuType) { events.push({ type: csiuType }); i += seqLen; continue; }
             // Unknown CSI u — skip
             i += seqLen;
             continue;
