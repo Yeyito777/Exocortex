@@ -118,7 +118,12 @@ export function lookupCommand(
 /**
  * Check if `key` is a prefix of any keymap entry for the given mode+context.
  * Used to detect that "g" could become "gg" — return pending instead of noop.
+ *
+ * Returns false if the key already has an exact match for this context —
+ * e.g. "d" in sidebar is a complete command, not a prefix of "dd" (prompt-only).
  */
 export function isPrefix(mode: VimMode, context: VimContext, key: string): boolean {
+  // If there's an exact match for this context, it's not a prefix — it's complete
+  if (lookupCommand(mode, context, key)) return false;
   return _prefixes.has(`${mode}:${context}:${key}`) || _prefixes.has(`${mode}:*:${key}`);
 }
