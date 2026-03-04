@@ -98,8 +98,8 @@ function renderUserMessage(text: string, cols: number): string[] {
 
   const lines: string[] = [];
   for (const wl of wrapped) {
-    const padLeft = " ".repeat(padding);
-    const padRight = " ".repeat(Math.max(0, inner - wl.length) + padding);
+    const padLeft = " ".repeat(Math.max(0, inner - wl.length) + padding);
+    const padRight = " ".repeat(padding);
     const offset = " ".repeat(Math.max(0, cols - bubbleWidth - margin));
     lines.push(`${offset}${theme.userBg}${padLeft}${wl}${padRight}${theme.reset}`);
   }
