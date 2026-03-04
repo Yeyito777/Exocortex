@@ -52,3 +52,14 @@ export interface Theme {
 // ── Active theme ────────────────────────────────────────────────────
 
 export const theme: Theme = whale;
+
+// ── Utilities ──────────────────────────────────────────────────────
+
+/** Convert a hex color (#rrggbb) to an ANSI truecolor foreground escape. */
+export function hexToAnsi(hex: string): string {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `\x1b[38;2;${r};${g};${b}m`;
+}

@@ -17,6 +17,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import type { ToolDisplayInfo } from "./messages";
+import { theme, hexToAnsi } from "./theme";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -46,16 +47,6 @@ function loadUserStyles(): void {
   }
 }
 loadUserStyles();
-
-// ── Color conversion ───────────────────────────────────────────────
-
-function hexToAnsi(hex: string): string {
-  const h = hex.replace("#", "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return `\x1b[38;2;${r};${g};${b}m`;
-}
 
 // ── Resolution ─────────────────────────────────────────────────────
 
@@ -93,6 +84,6 @@ export function resolveToolDisplay(
     };
   }
 
-  // Fallback
-  return { label: toolName, detail: summary, fg: "\x1b[33m" };
+  // Fallback — use theme's tool color
+  return { label: toolName, detail: summary, fg: theme.tool };
 }
