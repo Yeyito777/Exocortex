@@ -73,18 +73,25 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
     case "tool_result": {
       if (!showToolOutput) break;
       const maxLines = 20;
-      const prefix = block.isError ? `${theme.error}  ✗` : `${theme.dim}  ↳`;
-      const outputLines = block.output.split("\n");
+      const fg = block.isError ? theme.error : theme.dim;
+      const symbol = block.isError ? "✗" : "↳";
+      const firstPrefix = `  ${symbol} `;
+      const contPrefix = "    ";
+      const trimmed = block.output.replace(/\n+$/, "");
+      const outputLines = trimmed.split("\n");
       const truncated = outputLines.length > maxLines;
       const visible = outputLines.slice(0, maxLines);
 
+      let first = true;
       for (const ol of visible) {
-        for (const wl of wordWrap(ol, contentWidth - 4)) {
-          lines.push(`${prefix} ${wl}${theme.reset}`);
+        for (const wl of wordWrap(ol, contentWidth - contPrefix.length)) {
+          const prefix = first ? firstPrefix : contPrefix;
+          first = false;
+          lines.push(`${fg}${prefix}${wl}${theme.reset}`);
         }
       }
       if (truncated) {
-        lines.push(`${prefix} … (${outputLines.length - maxLines} more lines)${theme.reset}`);
+        lines.push(`${fg}${contPrefix}… (${outputLines.length - maxLines} more lines)${theme.reset}`);
       }
       break;
     }
