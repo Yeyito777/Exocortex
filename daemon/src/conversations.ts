@@ -143,6 +143,7 @@ export interface ConversationDisplayData {
   model: ModelId;
   userMessages: string[];
   aiMessages: AIMessageDisplay[];
+  contextTokens: number | null;
 }
 
 /** Convert stored API messages to display-friendly format for the TUI. */
@@ -170,7 +171,7 @@ export function getDisplayData(id: string): ConversationDisplayData | null {
     }
   }
 
-  return { convId: conv.id, model: conv.model, userMessages, aiMessages };
+  return { convId: conv.id, model: conv.model, userMessages, aiMessages, contextTokens: conv.lastContextTokens };
 }
 
 // ── Active jobs (abort controllers for in-flight streams) ───────────

@@ -114,6 +114,7 @@ export async function orchestrateSendMessage(
       server.sendToSubscribers(convId, { type: "tokens_update", convId, tokens });
     },
     onContextUpdate(contextTokens) {
+      conv.lastContextTokens = contextTokens;
       server.sendToSubscribers(convId, { type: "context_update", convId, contextTokens });
     },
     onHeaders: ext.onHeaders,

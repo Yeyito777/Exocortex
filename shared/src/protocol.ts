@@ -190,6 +190,8 @@ export interface ConversationLoadedEvent {
   aiMessages: AIMessagePayload[];
   /** The raw user message texts, in order, for display. */
   userMessages: string[];
+  /** Last known input token count for this conversation. */
+  contextTokens: number | null;
 }
 
 export interface ConversationUpdatedEvent {

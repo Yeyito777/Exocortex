@@ -15,7 +15,7 @@ import type { Conversation, StoredMessage, ApiMessage, ModelId, ConversationSumm
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 2;
+const CURRENT_VERSION = 3;
 
 interface ConversationFileV1 {
   version: 1;
@@ -35,7 +35,17 @@ interface ConversationFileV2 {
   updatedAt: number;
 }
 
-type ConversationFile = ConversationFileV2;
+interface ConversationFileV3 {
+  version: 3;
+  id: string;
+  model: ModelId;
+  messages: StoredMessage[];
+  createdAt: number;
+  updatedAt: number;
+  lastContextTokens: number | null;
+}
+
+type ConversationFile = ConversationFileV3;
 
 // ── Migrations ──────────────────────────────────────────────────────
 
@@ -52,12 +62,26 @@ function migrateV1toV2(data: ConversationFileV1): ConversationFileV2 {
   };
 }
 
+/** v2 → v3: Add lastContextTokens. */
+function migrateV2toV3(data: ConversationFileV2): ConversationFileV3 {
+  return {
+    ...data,
+    version: 3,
+    lastContextTokens: null,
+  };
+}
+
 function migrate(data: Record<string, unknown>): ConversationFile {
   let version = (data.version as number) ?? 1;
 
   if (version === 1) {
     data = migrateV1toV2(data as unknown as ConversationFileV1) as unknown as Record<string, unknown>;
     version = 2;
+  }
+
+  if (version === 2) {
+    data = migrateV2toV3(data as unknown as ConversationFileV2) as unknown as Record<string, unknown>;
+    version = 3;
   }
 
   if (version === CURRENT_VERSION) {
@@ -93,6 +117,7 @@ function toFile(conv: Conversation): ConversationFile {
     messages: conv.messages,
     createdAt: conv.createdAt,
     updatedAt: Date.now(),
+    lastContextTokens: conv.lastContextTokens,
   };
 }
 
@@ -102,6 +127,7 @@ function fromFile(file: ConversationFile): Conversation {
     model: file.model,
     messages: file.messages,
     createdAt: file.createdAt,
+    lastContextTokens: file.lastContextTokens,
   };
 }
 

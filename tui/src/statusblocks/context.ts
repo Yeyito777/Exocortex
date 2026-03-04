@@ -4,19 +4,25 @@
 
 import type { RenderState } from "../state";
 import type { StatusBlock } from "../statusline";
+import type { ModelId } from "../messages";
 import { theme } from "../theme";
 
-const MAX_CONTEXT = 200_000;
+const MAX_CONTEXT: Record<ModelId, number> = {
+  sonnet: 200_000,
+  haiku: 200_000,
+  opus: 200_000,
+};
 
 function formatTokenCount(n: number): string {
   return n.toLocaleString("en-US");
 }
 
 export function contextBlock(state: RenderState): StatusBlock | null {
+  const maxCtx = MAX_CONTEXT[state.model] ?? 200_000;
   const ctxLabel = "  Context: ";
   const ctxValue = formatTokenCount(state.contextTokens ?? 0);
   const maxLabel = "  Max Context: ";
-  const maxValue = formatTokenCount(MAX_CONTEXT);
+  const maxValue = formatTokenCount(maxCtx);
 
   const width = Math.max(
     ctxLabel.length + ctxValue.length,

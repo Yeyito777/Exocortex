@@ -199,7 +199,7 @@ export function handleEvent(
       state.convId = event.convId;
       state.model = event.model;
       state.scrollOffset = 0;
-      state.contextTokens = null;
+      state.contextTokens = event.contextTokens;
 
       const totalPairs = Math.max(event.userMessages.length, event.aiMessages.length);
       let userIdx = 0;
