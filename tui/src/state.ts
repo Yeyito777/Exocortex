@@ -11,6 +11,8 @@ import type { PanelFocus } from "./focus";
 import type { ChatFocus } from "./chat";
 import type { SidebarState } from "./sidebar";
 import { createSidebarState } from "./sidebar";
+import type { VimState } from "./vim";
+import { createVimState } from "./vim";
 
 export interface RenderState {
   messages: Message[];
@@ -33,6 +35,8 @@ export interface RenderState {
   chatFocus: ChatFocus;
   /** Conversations sidebar state. */
   sidebar: SidebarState;
+  /** Vim keybind engine state. */
+  vim: VimState;
 }
 
 /** Streaming state is derived from pendingAI — no separate boolean. */
@@ -56,5 +60,6 @@ export function createInitialState(): RenderState {
     panelFocus: "chat",
     chatFocus: "prompt",
     sidebar: createSidebarState(),
+    vim: createVimState(),
   };
 }

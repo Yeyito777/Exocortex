@@ -66,7 +66,8 @@ export function render(state: RenderState): void {
   out.push(`${historyColor}${"─".repeat(chatW)}${theme.reset}`);
 
   // ── Input line wrapping ────────────────────────────────────────
-  const promptLen = 3;
+  const vimEnabled = state.vim.enabled;
+  const promptLen = vimEnabled ? 5 : 3;   // " N > " vs " > "
   const maxInputWidth = chatW - promptLen;
   const maxInputRows = Math.min(10, Math.floor((rows - 6) / 2));
 
@@ -127,7 +128,21 @@ export function render(state: RenderState): void {
     const row = firstInputRow + i;
     const promptGlyph = (i === 0 && !isNewLine[i]) ? ">" : "+";
     const promptStyle = promptFocused ? theme.accent : theme.dim;
-    const prompt = ` ${promptStyle}${promptGlyph}${theme.reset} `;
+
+    let prompt: string;
+    if (vimEnabled) {
+      const isFirst = i === 0 && !isNewLine[i];
+      const modeChar = state.vim.mode === "normal" ? "N" : "I";
+      const modeColor = state.vim.mode === "normal" ? theme.warning : theme.accent;
+      if (isFirst) {
+        prompt = `${modeColor}${modeChar}${theme.reset} ${promptStyle}${promptGlyph}${theme.reset} `;
+      } else {
+        prompt = `  ${promptStyle}${promptGlyph}${theme.reset} `;
+      }
+    } else {
+      prompt = ` ${promptStyle}${promptGlyph}${theme.reset} `;
+    }
+
     out.push(move_to(row, 1) + clear_line);
     if (sidebarOpen && sbRows[row - 1]) {
       out.push(sbRows[row - 1]);
@@ -156,6 +171,12 @@ export function render(state: RenderState): void {
   if (promptFocused) {
     const cursorScreenRow = firstInputRow + cursorLine;
     out.push(move_to(cursorScreenRow, chatCol + promptLen + cursorCol));
+    // Vim: block cursor in normal mode, bar cursor in insert mode
+    if (vimEnabled && state.vim.mode === "normal") {
+      out.push("\x1b[2 q"); // steady block
+    } else {
+      out.push("\x1b[6 q"); // steady bar
+    }
     out.push(show_cursor);
   } else {
     out.push(hide_cursor);
