@@ -88,12 +88,12 @@ function handleHistoryFocused(key: KeyEvent, state: RenderState): ChatKeyResult 
 
 // ── Scroll helpers ──────────────────────────────────────────────────
 
-function scrollUp(state: RenderState): void {
+export function scrollUp(state: RenderState): void {
   const allLines = state.messages.length * 3;
   const maxScroll = Math.max(0, allLines - (state.rows - 5));
   state.scrollOffset = Math.min(state.scrollOffset + 3, maxScroll);
 }
 
-function scrollDown(state: RenderState): void {
+export function scrollDown(state: RenderState): void {
   state.scrollOffset = Math.max(0, state.scrollOffset - 3);
 }

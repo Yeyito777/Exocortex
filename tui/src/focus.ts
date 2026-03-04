@@ -13,7 +13,7 @@
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
 import { resolveAction } from "./keybinds";
-import { handleChatKey } from "./chat";
+import { handleChatKey, scrollUp, scrollDown } from "./chat";
 import { handleSidebarKey } from "./sidebar";
 import { processKey, type VimContext } from "./vim";
 
@@ -168,13 +168,8 @@ function handleContextNavigation(dir: "up" | "down", state: RenderState): KeyRes
   }
   // History scroll
   if (state.chatFocus === "history") {
-    if (dir === "up") {
-      const allLines = state.messages.length * 3;
-      const maxScroll = Math.max(0, allLines - (state.rows - 5));
-      state.scrollOffset = Math.min(state.scrollOffset + 3, maxScroll);
-    } else {
-      state.scrollOffset = Math.max(0, state.scrollOffset - 3);
-    }
+    if (dir === "up") scrollUp(state);
+    else scrollDown(state);
   }
   return { type: "handled" };
 }

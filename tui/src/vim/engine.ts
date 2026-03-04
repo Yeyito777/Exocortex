@@ -16,6 +16,7 @@ import type {
 import { resetPending } from "./types";
 import { lookupCommand, isPrefix } from "./keymap";
 import { resolveMotion } from "./motions";
+import { lineStartOf, lineEndOf } from "./buffer";
 import * as ops from "./operators";
 
 // ── Normal mode cursor clamping ────────────────────────────────────
@@ -35,18 +36,6 @@ function keyString(key: KeyEvent): string | null {
   if (key.type === "enter") return "enter";
   // Ctrl/special keys are not handled by vim — passthrough
   return null;
-}
-
-// ── Line helpers (for mode change cursor placement) ────────────────
-
-function lineStartOf(buffer: string, pos: number): number {
-  const idx = buffer.lastIndexOf("\n", pos - 1);
-  return idx === -1 ? 0 : idx + 1;
-}
-
-function lineEndOf(buffer: string, pos: number): number {
-  const idx = buffer.indexOf("\n", pos);
-  return idx === -1 ? buffer.length : idx;
 }
 
 // ── Process key ────────────────────────────────────────────────────

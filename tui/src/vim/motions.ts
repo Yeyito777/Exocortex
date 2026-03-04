@@ -5,6 +5,8 @@
  * No side effects, no state. Easy to test, easy to compose with operators.
  */
 
+import { lineStartOf, lineEndOf } from "./buffer";
+
 // ── Character classification ───────────────────────────────────────
 
 function isWordChar(ch: string): boolean {
@@ -17,18 +19,6 @@ function isSpace(ch: string): boolean {
 
 function isPunct(ch: string): boolean {
   return !isWordChar(ch) && !isSpace(ch);
-}
-
-// ── Line helpers ───────────────────────────────────────────────────
-
-function lineStartOf(buffer: string, pos: number): number {
-  const idx = buffer.lastIndexOf("\n", pos - 1);
-  return idx === -1 ? 0 : idx + 1;
-}
-
-function lineEndOf(buffer: string, pos: number): number {
-  const idx = buffer.indexOf("\n", pos);
-  return idx === -1 ? buffer.length : idx;
 }
 
 // ── Character motions ──────────────────────────────────────────────

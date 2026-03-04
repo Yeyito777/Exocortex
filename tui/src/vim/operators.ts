@@ -6,18 +6,7 @@
  */
 
 import type { BufferEdit } from "./types";
-
-// ── Line helpers ───────────────────────────────────────────────────
-
-function lineStartOf(buffer: string, pos: number): number {
-  const idx = buffer.lastIndexOf("\n", pos - 1);
-  return idx === -1 ? 0 : idx + 1;
-}
-
-function lineEndOf(buffer: string, pos: number): number {
-  const idx = buffer.indexOf("\n", pos);
-  return idx === -1 ? buffer.length : idx;
-}
+import { lineStartOf, lineEndOf } from "./buffer";
 
 // ── Core: delete a range ───────────────────────────────────────────
 
