@@ -12,3 +12,5 @@ export const hide_cursor = `${ESC}?25l`;
 export const show_cursor = `${ESC}?25h`;
 export const enter_alt = `${ESC}?1049h`;
 export const leave_alt = `${ESC}?1049l`;
+export const cursor_block = `${ESC}2 q`;   // steady block (vim normal)
+export const cursor_bar = `${ESC}6 q`;     // steady bar (vim insert / default)

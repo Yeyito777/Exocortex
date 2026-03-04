@@ -9,7 +9,7 @@
  * response (pure conversation mode).
  */
 
-import { streamMessage, type ApiToolCall, type ContentBlock } from "./api";
+import { streamMessage, type ApiToolCall } from "./api";
 import { log } from "./log";
 import type { ModelId, Block, ToolCallBlock, ToolResultBlock, ApiMessage, ApiContentBlock } from "./messages";
 

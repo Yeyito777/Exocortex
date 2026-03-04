@@ -7,7 +7,7 @@
 
 import type { KeyEvent } from "./input";
 import type { ConversationSummary } from "./messages";
-import { resolveAction, type KeyContext } from "./keybinds";
+import { resolveAction } from "./keybinds";
 import { theme } from "./theme";
 
 // ── Constants ───────────────────────────────────────────────────────
@@ -46,8 +46,13 @@ export type SidebarKeyResult =
 
 export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarKeyResult {
   const action = resolveAction(key, "navigation");
+  if (!action) return { type: "handled" };
+  return handleSidebarAction(action, sidebar);
+}
 
-  // Any key that isn't "delete" clears the pending delete
+/** Handle a semantic action on the sidebar — used by both key handler and vim. */
+export function handleSidebarAction(action: string, sidebar: SidebarState): SidebarKeyResult {
+  // Any action that isn't "delete" clears the pending delete
   if (action !== "delete") {
     sidebar.pendingDeleteId = null;
   }

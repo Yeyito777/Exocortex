@@ -5,7 +5,7 @@
  * token refresh, and profile fetching.
  */
 
-import { createServer, type Server, type IncomingMessage, type ServerResponse } from "http";
+import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { randomBytes, createHash } from "crypto";
 import { log } from "./log";
 import type { StoredTokens, OAuthProfile } from "./store";

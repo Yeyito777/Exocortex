@@ -7,7 +7,7 @@
 
 import type { RenderState } from "./state";
 import { isStreaming } from "./state";
-import { createPendingAI, ensureCurrentBlock } from "./messages";
+import { ensureCurrentBlock } from "./messages";
 import { updateConversationList, updateConversation, syncSelectedIndex } from "./sidebar";
 import { theme } from "./theme";
 import type { Event } from "./protocol";

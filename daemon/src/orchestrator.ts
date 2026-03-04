@@ -13,7 +13,7 @@ import { runAgentLoop, type AgentCallbacks } from "./agent";
 import { buildSystemPrompt } from "./system";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import type { Block, ApiMessage, ApiContentBlock } from "./messages";
+import type { ApiMessage, ApiContentBlock } from "./messages";
 
 // ── Types ──────────────────────────────────────────────────────────
 

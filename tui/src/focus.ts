@@ -14,7 +14,7 @@ import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
 import { resolveAction } from "./keybinds";
 import { handleChatKey, scrollUp, scrollDown } from "./chat";
-import { handleSidebarKey } from "./sidebar";
+import { handleSidebarKey, handleSidebarAction } from "./sidebar";
 import { processKey, type VimContext } from "./vim";
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -136,7 +136,7 @@ function handleVimAction(action: string, state: RenderState): KeyResult {
       return handleContextNavigation("down", state);
     case "nav_select":
       if (state.panelFocus === "sidebar") {
-        const result = handleSidebarKey({ type: "enter" }, state.sidebar);
+        const result = handleSidebarAction("nav_select", state.sidebar);
         if (result.type === "select") {
           return { type: "load_conversation", convId: result.convId };
         }
@@ -144,7 +144,7 @@ function handleVimAction(action: string, state: RenderState): KeyResult {
       return { type: "handled" };
     case "delete":
       if (state.panelFocus === "sidebar") {
-        const result = handleSidebarKey({ type: "char", char: "d" }, state.sidebar);
+        const result = handleSidebarAction("delete", state.sidebar);
         if (result.type === "delete_conversation") {
           return { type: "delete_conversation", convId: result.convId };
         }
@@ -158,9 +158,7 @@ function handleVimAction(action: string, state: RenderState): KeyResult {
 /** Handle j/k vim actions in sidebar or history context. */
 function handleContextNavigation(dir: "up" | "down", state: RenderState): KeyResult {
   if (state.panelFocus === "sidebar") {
-    // Synthesize j/k for the sidebar
-    const fakeKey: KeyEvent = { type: "char", char: dir === "up" ? "k" : "j" };
-    const result = handleSidebarKey(fakeKey, state.sidebar);
+    const result = handleSidebarAction(dir === "up" ? "nav_up" : "nav_down", state.sidebar);
     if (result.type === "select") {
       return { type: "load_conversation", convId: result.convId };
     }

@@ -6,13 +6,13 @@
  * this file only composes them into screen coordinates.
  */
 
-import { isStreaming, type RenderState } from "./state";
+import type { RenderState } from "./state";
 import { renderStatusLine, statusLineHeight } from "./statusline";
 import { renderTopbar } from "./topbar";
 import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { buildMessageLines } from "./conversation";
 import { getInputLines } from "./promptline";
-import { show_cursor, hide_cursor } from "./terminal";
+import { show_cursor, hide_cursor, cursor_block, cursor_bar } from "./terminal";
 import { theme } from "./theme";
 
 // ── ANSI positioning (non-color escapes) ────────────────────────────
@@ -172,11 +172,7 @@ export function render(state: RenderState): void {
     const cursorScreenRow = firstInputRow + cursorLine;
     out.push(move_to(cursorScreenRow, chatCol + promptLen + cursorCol));
     // Vim: block cursor in normal mode, bar cursor in insert mode
-    if (vimEnabled && state.vim.mode === "normal") {
-      out.push("\x1b[2 q"); // steady block
-    } else {
-      out.push("\x1b[6 q"); // steady bar
-    }
+    out.push(vimEnabled && state.vim.mode === "normal" ? cursor_block : cursor_bar);
     out.push(show_cursor);
   } else {
     out.push(hide_cursor);

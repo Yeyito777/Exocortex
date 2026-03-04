@@ -115,8 +115,3 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
 
   return cmd.handler(text, state);
 }
-
-/** List all registered commands (for /help, autocomplete, etc). */
-function listCommands(): readonly SlashCommand[] {
-  return commands;
-}
