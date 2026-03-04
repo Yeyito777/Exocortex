@@ -53,6 +53,9 @@ export async function orchestrateSendMessage(
 
   conv.messages.push({ role: "user", content: text, metadata: null });
 
+  // Update sidebar immediately with the user's message as preview
+  server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
+
   const ac = new AbortController();
   convStore.setActiveJob(convId, ac);
 
