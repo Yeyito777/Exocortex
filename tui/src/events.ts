@@ -154,12 +154,14 @@ export function handleEvent(
       state.pendingAI = null;
 
       // Flush errors that arrived during streaming (after the AI message)
+      const hadErrors = errorBuffer.errors.length > 0;
       for (const msg of errorBuffer.errors) {
         state.messages.push({ role: "system", text: `✗ ${msg}`, color: theme.error, metadata: null });
       }
       errorBuffer.errors = [];
 
-      if (wasInterrupted) {
+      // Only show "Interrupted" if the user aborted (not on API errors)
+      if (wasInterrupted && !hadErrors) {
         state.messages.push({ role: "system", text: "✗ Interrupted", color: theme.error, metadata: null });
       }
       break;

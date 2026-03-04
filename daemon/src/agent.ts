@@ -11,7 +11,7 @@
 
 import { streamMessage, type ApiToolCall, type ContentBlock } from "./api";
 import { log } from "./log";
-import type { ModelId, Block, ToolCallBlock, ToolResultBlock, ApiMessage } from "./messages";
+import type { ModelId, Block, ToolCallBlock, ToolResultBlock, ApiMessage, ApiContentBlock } from "./messages";
 
 // ── Callbacks ───────────────────────────────────────────────────────
 
@@ -22,6 +22,8 @@ export interface AgentCallbacks {
   onTextChunk(text: string): void;
   /** A thinking chunk has arrived (append to current thinking block). */
   onThinkingChunk(text: string): void;
+  /** A thinking block's signature has been received. */
+  onSignature(signature: string): void;
   /** The API returned a tool call (after the response completes). */
   onToolCall(block: ToolCallBlock): void;
   /** A tool has finished executing. */
@@ -54,6 +56,8 @@ export type ToolExecutor = (calls: ApiToolCall[]) => Promise<ToolExecResult[]>;
 export interface AgentResult {
   /** All blocks produced during this AI message, in order. */
   blocks: Block[];
+  /** Full API content blocks with signatures — for persisting and replaying. */
+  apiContent: ApiContentBlock[];
   model: ModelId;
   tokens: number;
   durationMs: number;
@@ -91,6 +95,7 @@ export async function runAgentLoop(
   } = {},
 ): Promise<AgentResult> {
   const allBlocks: Block[] = [];
+  const allApiContent: ApiContentBlock[] = [];
   const messages = [...initialMessages];
   const startTime = Date.now();
   let totalOutputTokens = 0;
@@ -124,6 +129,7 @@ export async function runAgentLoop(
     for (const block of result.blocks) {
       if (block.type === "thinking") {
         allBlocks.push({ type: "thinking", text: block.text });
+        if (block.signature) callbacks.onSignature(block.signature);
       } else {
         allBlocks.push({ type: "text", text: block.text });
       }
@@ -140,6 +146,14 @@ export async function runAgentLoop(
     }
     for (const tc of result.toolCalls) {
       assistantContent.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
+    }
+    // Accumulate for the final result (thinking + text, with signatures)
+    for (const block of result.blocks) {
+      if (block.type === "thinking") {
+        allApiContent.push({ type: "thinking", thinking: block.text, signature: block.signature });
+      } else {
+        allApiContent.push({ type: "text", text: block.text });
+      }
     }
     messages.push({ role: "assistant", content: assistantContent });
 
@@ -199,6 +213,7 @@ export async function runAgentLoop(
 
   return {
     blocks: allBlocks,
+    apiContent: allApiContent,
     model,
     tokens: totalOutputTokens,
     durationMs: Date.now() - startTime,

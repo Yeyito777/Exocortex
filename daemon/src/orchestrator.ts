@@ -91,6 +91,15 @@ export async function orchestrateSendMessage(
       if (last?.type === "thinking") last.thinking += chunk;
       convStore.onChunk(convId);
     },
+    onSignature(signature) {
+      // Find the last thinking block and stamp the signature
+      for (let i = partialContent.length - 1; i >= 0; i--) {
+        if (partialContent[i].type === "thinking") {
+          (partialContent[i] as { type: "thinking"; thinking: string; signature: string }).signature = signature;
+          break;
+        }
+      }
+    },
     onToolCall(block) {
       server.sendToSubscribers(convId, {
         type: "tool_call", convId,
@@ -126,21 +135,11 @@ export async function orchestrateSendMessage(
       signal: ac.signal,
     });
 
-    // Store full content blocks (thinking + text) for proper reload & API continuity
-    const assistantContent: ApiContentBlock[] = [];
-    for (const b of result.blocks) {
-      if (b.type === "thinking") {
-        assistantContent.push({ type: "thinking", thinking: b.text, signature: "" });
-      } else if (b.type === "text") {
-        assistantContent.push({ type: "text", text: b.text });
-      }
-    }
-
     const endedAt = Date.now();
 
     conv.messages.push({
       role: "assistant",
-      content: assistantContent,
+      content: result.apiContent,
       metadata: {
         startedAt,
         endedAt,
