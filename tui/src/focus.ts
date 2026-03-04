@@ -33,7 +33,8 @@ export type KeyResult =
   | { type: "quit" }
   | { type: "abort" }
   | { type: "load_conversation"; convId: string }
-  | { type: "delete_conversation"; convId: string };
+  | { type: "delete_conversation"; convId: string }
+  | { type: "new_conversation" };
 
 // ── Key routing ─────────────────────────────────────────────────────
 
@@ -53,6 +54,8 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
         state.panelFocus = state.panelFocus === "sidebar" ? "chat" : "sidebar";
       }
       return { type: "handled" };
+    case "new_conversation":
+      return { type: "new_conversation" };
     case "scroll_line_up":   handleScroll(state, scrollLineUp);   return { type: "handled" };
     case "scroll_line_down": handleScroll(state, scrollLineDown); return { type: "handled" };
     case "scroll_half_up":   handleScroll(state, scrollHalfUp);   return { type: "handled" };

@@ -129,6 +129,13 @@ function handleKey(key: KeyEvent): void {
     case "load_conversation":
       daemon.loadConversation(result.convId);
       break;
+    case "new_conversation":
+      if (state.convId) daemon.unsubscribe(state.convId);
+      state.convId = null;
+      state.messages = [];
+      state.pendingAI = null;
+      state.contextTokens = null;
+      break;
     case "delete_conversation":
       daemon.deleteConversation(result.convId);
       // If deleting the current conversation, clear the chat

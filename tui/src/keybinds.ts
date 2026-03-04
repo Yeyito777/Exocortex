@@ -44,7 +44,9 @@ export type Action =
   | "scroll_half_up"
   | "scroll_half_down"
   | "scroll_page_up"
-  | "scroll_page_down";
+  | "scroll_page_down"
+  // Conversation
+  | "new_conversation";
 
 // ── Keybind map ─────────────────────────────────────────────────────
 
@@ -59,6 +61,9 @@ const BINDS: Record<string, Action> = {
 
   // Chat focus switching
   "ctrl-n":     "focus_history",
+
+  // Conversation
+  "ctrl-shift-o": "new_conversation",
 
   // Scrolling
   "ctrl-y":     "scroll_line_up",

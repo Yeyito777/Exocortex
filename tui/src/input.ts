@@ -11,6 +11,7 @@ export interface KeyEvent {
       | "ctrl-b" | "ctrl-c" | "ctrl-d" | "ctrl-e" | "ctrl-f"
       | "ctrl-j" | "ctrl-k" | "ctrl-l" | "ctrl-m" | "ctrl-n"
       | "ctrl-u" | "ctrl-y"
+      | "ctrl-shift-o"
       | "escape"
       | "unknown";
   char?: string;
@@ -61,8 +62,11 @@ export function parseKeys(data: Buffer): KeyEvent[] {
             const parts = params.split(";");
             const keycode = parseInt(parts[0], 10);
             const mods = parseInt(parts[1] ?? "1", 10);
-            const ctrl = (mods & 4) !== 0;
-            if (ctrl && keycode === 109) { events.push({ type: "ctrl-m" }); i += seqLen; continue; }
+            const modsDecoded = mods - 1;  // CSI u modifiers are 1-based
+            const shift = (modsDecoded & 1) !== 0;
+            const ctrl = (modsDecoded & 4) !== 0;
+            if (ctrl && !shift && keycode === 109) { events.push({ type: "ctrl-m" }); i += seqLen; continue; }
+            if (ctrl && shift && keycode === 79) { events.push({ type: "ctrl-shift-o" }); i += seqLen; continue; }
             // Unknown CSI u — skip
             i += seqLen;
             continue;
