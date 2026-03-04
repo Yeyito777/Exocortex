@@ -127,13 +127,13 @@ export function buildMessageLines(state: RenderState, availableWidth: number): s
   const lines: string[] = [];
 
   for (const msg of state.messages) {
-    lines.push("");
-
     if (msg.role === "user") {
       lines.push(...renderUserMessage(msg.text, availableWidth));
     } else if (msg.role === "assistant") {
+      lines.push("");
       lines.push(...renderAIMessage(msg, contentWidth));
     } else {
+      lines.push("");
       const color = msg.color || theme.dim;
       for (const sl of msg.text.split("\n")) {
         lines.push(`  ${color}${sl}${theme.reset}`);
