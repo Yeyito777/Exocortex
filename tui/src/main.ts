@@ -17,7 +17,7 @@ import { render } from "./render";
 import { enter_alt, leave_alt, hide_cursor, show_cursor } from "./terminal";
 import { createInitialState, isStreaming } from "./state";
 import { createPendingAI } from "./messages";
-import { handleEvent, type PendingSend, type ErrorBuffer } from "./events";
+import { handleEvent } from "./events";
 import { theme } from "./theme";
 import type { Event } from "./protocol";
 
@@ -26,8 +26,6 @@ import type { Event } from "./protocol";
 const state = createInitialState();
 let running = true;
 let daemon: DaemonClient;
-const pendingSend: PendingSend = { active: false, text: "" };
-const errorBuffer: ErrorBuffer = { errors: [] };
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
 let terminalSetUp = false;
@@ -55,7 +53,7 @@ function resetStreamTick(): void {
 // ── Event handler (daemon → TUI) ───────────────────────────────────
 
 function onDaemonEvent(event: Event): void {
-  handleEvent(event, state, daemon, pendingSend, errorBuffer);
+  handleEvent(event, state, daemon);
 
   // Clear stream tick on streaming_stopped
   if (event.type === "streaming_stopped") {
@@ -103,8 +101,8 @@ function handleSubmit(): void {
 
   // If no conversation yet, create one first
   if (!state.convId) {
-    pendingSend.active = true;
-    pendingSend.text = text;
+    state.pendingSend.active = true;
+    state.pendingSend.text = text;
     daemon.createConversation(state.model);
   } else {
     daemon.sendMessage(state.convId, text, startedAt);

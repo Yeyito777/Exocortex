@@ -45,6 +45,10 @@ export interface RenderState {
   vim: VimState;
   /** Cached layout values — updated each render, read by scroll functions. */
   layout: LayoutCache;
+  /** Pending message to send after conversation is created. */
+  pendingSend: { active: boolean; text: string };
+  /** Errors buffered during streaming — flushed after AI message completes. */
+  errorBuffer: string[];
 }
 
 /** Streaming state is derived from pendingAI — no separate boolean. */
@@ -70,5 +74,7 @@ export function createInitialState(): RenderState {
     sidebar: createSidebarState(),
     vim: { ...createVimState(), enabled: true },
     layout: { totalLines: 0, messageAreaHeight: 0 },
+    pendingSend: { active: false, text: "" },
+    errorBuffer: [],
   };
 }

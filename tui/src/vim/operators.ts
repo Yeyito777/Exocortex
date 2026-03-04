@@ -6,14 +6,7 @@
  */
 
 import type { BufferEdit } from "./types";
-import { lineStartOf, lineEndOf } from "./buffer";
-
-/** Clamp cursor position for normal mode. Allows buf.length when buffer ends with \n. */
-function clampPos(buf: string, pos: number): number {
-  if (buf.length === 0) return 0;
-  const max = buf[buf.length - 1] === "\n" ? buf.length : buf.length - 1;
-  return Math.max(0, Math.min(pos, max));
-}
+import { lineStartOf, lineEndOf, clampNormal } from "./buffer";
 
 // ── Core: delete a range ───────────────────────────────────────────
 
@@ -21,7 +14,7 @@ function clampPos(buf: string, pos: number): number {
 export function deleteRange(buffer: string, start: number, end: number): BufferEdit {
   if (start > end) [start, end] = [end, start];
   const newBuffer = buffer.slice(0, start) + buffer.slice(end);
-  return { buffer: newBuffer, cursor: clampPos(newBuffer, start) };
+  return { buffer: newBuffer, cursor: clampNormal(newBuffer, start) };
 }
 
 // ── Line operators ─────────────────────────────────────────────────
@@ -38,7 +31,7 @@ export function deleteLine(buffer: string, pos: number): BufferEdit {
   else if (start > 0) start--;
 
   const newBuffer = buffer.slice(0, start) + buffer.slice(end);
-  return { buffer: newBuffer, cursor: clampPos(newBuffer, start) };
+  return { buffer: newBuffer, cursor: clampNormal(newBuffer, start) };
 }
 
 /** cc — clear line content (keep the line, cursor at line start). */
@@ -68,7 +61,7 @@ export function deleteCharBefore(buffer: string, pos: number): BufferEdit {
 /** D — delete from cursor to end of line. */
 export function deleteToEnd(buffer: string, pos: number): BufferEdit {
   const le = lineEndOf(buffer, pos);
-  if (pos >= le) return { buffer, cursor: clampPos(buffer, Math.max(0, pos - 1)) };
+  if (pos >= le) return { buffer, cursor: clampNormal(buffer, Math.max(0, pos - 1)) };
   return deleteRange(buffer, pos, le);
 }
 

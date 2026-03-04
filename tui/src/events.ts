@@ -22,27 +22,12 @@ export interface DaemonActions {
   sendMessage(convId: string, text: string, startedAt: number): void;
 }
 
-// ── Pending state for conversation creation flow ────────────────────
-
-export interface PendingSend {
-  active: boolean;
-  text: string;
-}
-
-// ── Pending errors buffer ───────────────────────────────────────────
-
-export interface ErrorBuffer {
-  errors: string[];
-}
-
 // ── Event handler ───────────────────────────────────────────────────
 
 export function handleEvent(
   event: Event,
   state: RenderState,
   daemon: DaemonActions,
-  pendingSend: PendingSend,
-  errorBuffer: ErrorBuffer,
 ): void {
   switch (event.type) {
     case "conversation_created": {
@@ -51,10 +36,10 @@ export function handleEvent(
       daemon.subscribe(event.convId);
 
       // If we had a pending message, send it now
-      if (pendingSend.active && pendingSend.text && state.pendingAI) {
-        daemon.sendMessage(event.convId, pendingSend.text, state.pendingAI.metadata.startedAt);
-        pendingSend.text = "";
-        pendingSend.active = false;
+      if (state.pendingSend.active && state.pendingSend.text && state.pendingAI) {
+        daemon.sendMessage(event.convId, state.pendingSend.text, state.pendingAI.metadata.startedAt);
+        state.pendingSend.text = "";
+        state.pendingSend.active = false;
       }
       break;
     }
@@ -154,11 +139,11 @@ export function handleEvent(
       state.pendingAI = null;
 
       // Flush errors that arrived during streaming (after the AI message)
-      const hadErrors = errorBuffer.errors.length > 0;
-      for (const msg of errorBuffer.errors) {
+      const hadErrors = state.errorBuffer.length > 0;
+      for (const msg of state.errorBuffer) {
         state.messages.push({ role: "system", text: `✗ ${msg}`, color: theme.error, metadata: null });
       }
-      errorBuffer.errors = [];
+      state.errorBuffer = [];
 
       // Only show "Interrupted" if the user aborted (not on API errors)
       if (wasInterrupted && !hadErrors) {
@@ -169,7 +154,7 @@ export function handleEvent(
 
     case "error": {
       if (isStreaming(state)) {
-        errorBuffer.errors.push(event.message);
+        state.errorBuffer.push(event.message);
       } else {
         state.messages.push({ role: "system", text: `✗ ${event.message}`, color: theme.error, metadata: null });
       }

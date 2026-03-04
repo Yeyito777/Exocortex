@@ -16,19 +16,8 @@ import type {
 import { resetPending } from "./types";
 import { lookupCommand, isPrefix } from "./keymap";
 import { resolveMotion } from "./motions";
-import { lineStartOf, lineEndOf } from "./buffer";
+import { lineStartOf, lineEndOf, clampNormal } from "./buffer";
 import * as ops from "./operators";
-
-// ── Normal mode cursor clamping ────────────────────────────────────
-
-/** In normal mode, cursor sits ON the last char of the line, never past it.
- *  If buffer ends with \n, cursor can be at buf.length (the implicit empty line). */
-function clampNormal(buffer: string, pos: number): number {
-  if (buffer.length === 0) return 0;
-  // If buffer ends with \n, allow cursor at buffer.length (empty trailing line)
-  const max = buffer[buffer.length - 1] === "\n" ? buffer.length : buffer.length - 1;
-  return Math.max(0, Math.min(pos, max));
-}
 
 // ── Key string conversion ──────────────────────────────────────────
 

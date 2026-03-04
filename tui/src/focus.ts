@@ -22,6 +22,7 @@ import {
 } from "./chat";
 import { handleSidebarKey, handleSidebarAction, moveSelection } from "./sidebar";
 import { processKey, type VimContext } from "./vim";
+import { clampNormal } from "./vim/buffer";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -211,10 +212,7 @@ function handleContextNavigation(dir: "up" | "down", state: RenderState): KeyRes
 // ── Normal mode cursor clamp ───────────────────────────────────────
 
 function clampCursorNormal(state: RenderState): void {
-  const buf = state.inputBuffer;
-  if (buf.length === 0) { state.cursorPos = 0; return; }
-  const max = buf[buf.length - 1] === "\n" ? buf.length : buf.length - 1;
-  state.cursorPos = Math.max(0, Math.min(state.cursorPos, max));
+  state.cursorPos = clampNormal(state.inputBuffer, state.cursorPos);
 }
 
 // ── Scroll dispatch ────────────────────────────────────────────────
