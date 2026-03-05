@@ -48,8 +48,12 @@ export function contentBounds(plain: string): { start: number; end: number } {
   while (start < plain.length && plain[start] === " ") start++;
   let end = plain.length - 1;
   while (end > start && plain[end] === " ") end--;
-  // If line is all spaces, return 0,0
-  if (start > end) return { start: 0, end: 0 };
+  // All spaces (e.g. empty indented AI line): cursor at last space
+  // so it stays aligned with the indentation of surrounding content
+  if (start > end) {
+    const pos = Math.max(0, plain.length - 1);
+    return { start: pos, end: pos };
+  }
   return { start, end };
 }
 
