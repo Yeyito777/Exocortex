@@ -22,7 +22,7 @@ import {
   scrollToTop, scrollToBottom,
 } from "./chat";
 import { handleSidebarKey, handleSidebarAction, moveSelection } from "./sidebar";
-import { processKey, type VimContext } from "./vim";
+import { processKey, copyToClipboard, pasteFromClipboard, type VimContext } from "./vim";
 import { clampNormal } from "./vim/buffer";
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -141,6 +141,15 @@ function processVimKey(key: KeyEvent, state: RenderState): KeyResult | null {
       }
       return { type: "handled" };
 
+    case "yank":
+      copyToClipboard(result.text);
+      state.cursorPos = result.cursor;
+      return { type: "handled" };
+
+    case "paste":
+      handlePaste(result.position, state);
+      return { type: "handled" };
+
     case "mode_change":
       state.vim.mode = result.mode;
       if (result.cursor !== undefined) state.cursorPos = result.cursor;
@@ -210,6 +219,23 @@ function handleContextNavigation(dir: "up" | "down", state: RenderState): KeyRes
     else scrollDown(state);
   }
   return { type: "handled" };
+}
+
+// ── Paste handling ─────────────────────────────────────────────────
+
+/** Async paste from clipboard. Reads clipboard, inserts into buffer. */
+function handlePaste(position: "after" | "before", state: RenderState): void {
+  pasteFromClipboard().then((text) => {
+    if (!text) return;
+
+    const buf = state.inputBuffer;
+    const cursor = state.cursorPos;
+    const insertAt = position === "after" ? cursor + 1 : cursor;
+    const pos = Math.min(insertAt, buf.length);
+
+    state.inputBuffer = buf.slice(0, pos) + text + buf.slice(pos);
+    state.cursorPos = clampNormal(state.inputBuffer, pos + text.length - 1);
+  });
 }
 
 // ── Normal mode cursor clamp ───────────────────────────────────────

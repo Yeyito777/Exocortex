@@ -262,22 +262,7 @@ function executeOperatorMotion(
 
   if (start === end) return { type: "noop" };
 
-  switch (operator) {
-    case "delete": {
-      const edit = ops.deleteRange(buffer, start, end);
-      return { type: "buffer_edit", ...edit };
-    }
-    case "change": {
-      const edit = ops.deleteRange(buffer, start, end);
-      return { type: "buffer_edit", ...edit, mode: "insert" };
-    }
-    case "yank": {
-      // TODO: yank to register
-      return { type: "cursor_move", cursor: start };
-    }
-    default:
-      return { type: "noop" };
-  }
+  return applyOperatorToRange(operator, buffer, start, end);
 }
 
 // ── Operator + text object execution ──────────────────────────────
@@ -293,18 +278,30 @@ function executeOperatorTextObject(
   const range = resolveTextObject(modifier, objectKey, buffer, cursor);
   if (!range || range.start === range.end) return { type: "noop" };
 
+  return applyOperatorToRange(operator, buffer, range.start, range.end);
+}
+
+// ── Shared operator application ────────────────────────────────────
+
+/** Apply an operator to a range. Used by both motion and text object paths. */
+function applyOperatorToRange(
+  operator: string,
+  buffer: string,
+  start: number,
+  end: number,
+): VimResult {
   switch (operator) {
     case "delete": {
-      const edit = ops.deleteRange(buffer, range.start, range.end);
+      const edit = ops.deleteRange(buffer, start, end);
       return { type: "buffer_edit", ...edit };
     }
     case "change": {
-      const edit = ops.deleteRange(buffer, range.start, range.end);
+      const edit = ops.deleteRange(buffer, start, end);
       return { type: "buffer_edit", ...edit, mode: "insert" };
     }
     case "yank": {
-      // TODO: yank to register
-      return { type: "cursor_move", cursor: range.start };
+      const text = buffer.slice(start, end);
+      return { type: "yank", text, cursor: start };
     }
     default:
       return { type: "noop" };
@@ -391,14 +388,20 @@ function executeStandalone(
       vim.mode = "insert";
       return { type: "buffer_edit", ...edit, mode: "insert" };
 
-    case "yank_line":
-      // TODO: yank to register
-      return { type: "noop" };
+    case "yank_line": {
+      const ls = lineStartOf(buffer, cursor);
+      const le = lineEndOf(buffer, cursor);
+      // Include the trailing newline if it exists
+      const end = le < buffer.length ? le + 1 : le;
+      const text = buffer.slice(ls, end);
+      return { type: "yank", text, cursor: ls };
+    }
 
     case "paste_after":
+      return { type: "paste", position: "after" };
+
     case "paste_before":
-      // TODO: paste from register
-      return { type: "noop" };
+      return { type: "paste", position: "before" };
 
     default:
       return { type: "noop" };

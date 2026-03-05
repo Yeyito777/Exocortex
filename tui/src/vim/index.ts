@@ -7,4 +7,5 @@
 
 export { processKey } from "./engine";
 export { createVimState, resetPending } from "./types";
+export { copyToClipboard, pasteFromClipboard } from "./clipboard";
 export type { VimState, VimMode, VimContext, VimResult } from "./types";

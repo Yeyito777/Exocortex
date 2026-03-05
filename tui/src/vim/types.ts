@@ -66,6 +66,10 @@ export type VimResult =
   | { type: "cursor_move"; cursor: number }
   /** Mode changed. Optional cursor adjustment (e.g. Esc moves cursor left). */
   | { type: "mode_change"; mode: VimMode; cursor?: number }
+  /** Text was yanked — caller copies to clipboard. */
+  | { type: "yank"; text: string; cursor: number }
+  /** Paste requested — caller reads clipboard, inserts at position. */
+  | { type: "paste"; position: "after" | "before" }
   /** Engine consumed the key but needs more input (e.g. "d" waiting for motion). */
   | { type: "pending" }
   /** Engine doesn't handle this key — fall through to existing system. */
