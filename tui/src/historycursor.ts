@@ -9,6 +9,10 @@
  * corresponding screen position.
  */
 
+import type { Action } from "./keybinds";
+import type { RenderState } from "./state";
+import { theme } from "./theme";
+
 // ── State ──────────────────────────────────────────────────────────
 
 export interface HistoryCursor {
@@ -288,9 +292,6 @@ export function clampCursor(cursor: HistoryCursor, lines: string[]): HistoryCurs
 
 // ── Dispatch ───────────────────────────────────────────────────────
 
-import type { Action } from "./keybinds";
-import type { RenderState } from "./state";
-
 /**
  * Apply a history cursor action to state.
  * Returns true if the action was handled.
@@ -420,8 +421,6 @@ export function ensureCursorVisible(state: RenderState): void {
 }
 
 // ── Rendering ──────────────────────────────────────────────────────
-
-import { theme } from "./theme";
 
 const CURSOR_FG = "\x1b[38;2;0;0;0m";  // black text on cursor
 
