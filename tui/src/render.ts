@@ -14,7 +14,8 @@ import { buildMessageLines } from "./conversation";
 import { getInputLines } from "./promptline";
 import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar, applyLineBg } from "./terminal";
 import { theme } from "./theme";
-import { clampCursor, renderLineWithCursor } from "./historycursor";
+import { clampCursor } from "./historycursor";
+import { renderLineWithCursor } from "./cursorrender";
 
 // ── ANSI positioning (non-color escapes) ────────────────────────────
 
