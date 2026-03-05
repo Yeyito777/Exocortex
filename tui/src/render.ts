@@ -241,8 +241,7 @@ export function render(state: RenderState): void {
     const promptStyle = promptFocused ? theme.accent : theme.dim;
 
     const isFirst = i === 0 && !isNewLine[i];
-    const modeChar = state.vim.mode === "visual" ? "V"
-      : state.vim.mode === "visual-line" ? "VL"
+    const modeChar = (state.vim.mode === "visual" || state.vim.mode === "visual-line") ? "V"
       : state.vim.mode === "normal" ? "N" : "I";
     const modeColor = (state.vim.mode === "visual" || state.vim.mode === "visual-line")
       ? theme.vimVisual
