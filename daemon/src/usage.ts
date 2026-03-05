@@ -45,37 +45,29 @@ export function refreshUsage(onUpdate: (usage: UsageData) => void): void {
   });
 }
 
-async function fetchUsage(accessToken: string, retries = 3): Promise<UsageData | null> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const res = await fetch(`${BASE_URL}/api/oauth/usage`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "anthropic-beta": "oauth-2025-04-20",
-          "Content-Type": "application/json",
-          "User-Agent": "claude-code/2.1.68",
-        },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (res.status === 429 && attempt < retries) {
-        const delay = 1000 * (attempt + 1);
-        log("warn", `usage: 429, retrying in ${delay}ms (${attempt + 1}/${retries})`);
-        await new Promise((r) => setTimeout(r, delay));
-        continue;
-      }
-      if (!res.ok) {
-        log("warn", `usage: API returned ${res.status} ${res.statusText}`);
-        return null;
-      }
-      const data = await res.json();
-      log("info", `usage: fetched (5h=${data?.five_hour?.utilization}, 7d=${data?.seven_day?.utilization})`);
-      return parseUsageResponse(data);
-    } catch (err) {
-      log("warn", `usage: fetch failed: ${err instanceof Error ? err.message : err}`);
+async function fetchUsage(accessToken: string): Promise<UsageData | null> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/oauth/usage`, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "anthropic-beta": "oauth-2025-04-20",
+        "Content-Type": "application/json",
+        "User-Agent": "claude-code/2.1.68",
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) {
+      if (res.status === 429) log("info", "usage: endpoint 429'd, will use streaming headers");
+      else log("warn", `usage: API returned ${res.status} ${res.statusText}`);
       return null;
     }
+    const data = await res.json();
+    log("info", `usage: fetched (5h=${data?.five_hour?.utilization}, 7d=${data?.seven_day?.utilization})`);
+    return parseUsageResponse(data);
+  } catch (err) {
+    log("warn", `usage: fetch failed: ${err instanceof Error ? err.message : err}`);
+    return null;
   }
-  return null;
 }
 
 // ── Header parsing (mid-stream updates) ─────────────────────────────
@@ -132,8 +124,13 @@ function parseWindow(w: any): UsageWindow | null {
 
 function parseResetValue(val: any): number | null {
   if (val == null) return null;
-  if (typeof val === "number") return val;
+  if (typeof val === "number") {
+    // Unix timestamps in seconds (< 1e12) vs milliseconds (>= 1e12)
+    return val < 1e12 ? val * 1000 : val;
+  }
   if (typeof val === "string") {
+    const num = Number(val);
+    if (!isNaN(num)) return num < 1e12 ? num * 1000 : num;
     const d = new Date(val);
     return isNaN(d.getTime()) ? null : d.getTime();
   }
