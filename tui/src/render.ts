@@ -14,7 +14,7 @@ import { buildMessageLines } from "./conversation";
 import { getInputLines } from "./promptline";
 import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar } from "./terminal";
 import { theme } from "./theme";
-import { clampCursor, renderLineWithCursor } from "./historycursor";
+import { clampCursor, renderLineWithCursor, stripAnsi } from "./historycursor";
 
 // ── ANSI positioning (non-color escapes) ────────────────────────────
 
@@ -128,9 +128,11 @@ export function render(state: RenderState): void {
     const lineIdx = viewStart + i;
     if (lineIdx < totalLines) {
       if (historyFocused && lineIdx === state.historyCursor.row) {
-        // Selected line: background fill + cursor character
+        // Selected line: background fills full chat width
         const rendered = renderLineWithCursor(allLines[lineIdx], state.historyCursor.col, theme.historyLineBg);
-        out.push(`${theme.historyLineBg}${rendered}${theme.reset}`);
+        const visLen = stripAnsi(allLines[lineIdx]).length;
+        const pad = Math.max(0, chatW - visLen);
+        out.push(`${theme.historyLineBg}${rendered}${" ".repeat(pad)}${theme.reset}`);
       } else {
         out.push(allLines[lineIdx]);
       }
