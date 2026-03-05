@@ -10,6 +10,7 @@ import type { ApiToolCall } from "../api";
 import { bash } from "./bash";
 import { read } from "./read";
 import { write } from "./write";
+import { glob } from "./glob";
 
 // ── Registry ───────────────────────────────────────────────────────
 
@@ -17,6 +18,7 @@ const TOOLS: Tool[] = [
   bash,
   read,
   write,
+  glob,
 ];
 
 const toolMap = new Map<string, Tool>(TOOLS.map(t => [t.name, t]));
