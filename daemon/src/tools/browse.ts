@@ -74,11 +74,12 @@ function htmlToMarkdown(html: string): string {
   text = text.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, "- $1\n");
   text = text.replace(/<\/?(ul|ol|menu)[^>]*>/gi, "\n");
 
-  // Tables
-  text = text.replace(/<th[^>]*>([\s\S]*?)<\/th>/gi, "| $1 ");
-  text = text.replace(/<td[^>]*>([\s\S]*?)<\/td>/gi, "| $1 ");
-  text = text.replace(/<\/tr>/gi, "|\n");
-  text = text.replace(/<\/?(table|thead|tbody|tfoot|tr|caption|colgroup|col)[^>]*>/gi, "\n");
+  // Tables — strip to plain text instead of markdown table syntax.
+  // Most tables on the web are layout tables, not data tables.
+  text = text.replace(/<\/?(table|thead|tbody|tfoot|caption|colgroup|col)[^>]*>/gi, "\n");
+  text = text.replace(/<tr[^>]*>/gi, "\n");
+  text = text.replace(/<\/tr>/gi, "");
+  text = text.replace(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi, " $1 ");
 
   // Remove remaining HTML tags
   text = text.replace(/<[^>]+>/g, "");
@@ -93,7 +94,13 @@ function htmlToMarkdown(html: string): string {
   text = text.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)));
   text = text.replace(/&[a-z]+;/gi, "");
 
-  // Collapse excessive blank lines
+  // ── Post-processing cleanup ──────────────────────────────────
+  // Strip lines that are only pipes, whitespace, or orphaned markdown
+  text = text.replace(/^[ \t]*\|[ \t|]*$/gm, "");
+  text = text.replace(/^[ \t]*\*{1,2}[ \t]*$/gm, "");
+  // Strip trailing whitespace per line
+  text = text.replace(/[ \t]+$/gm, "");
+  // Collapse 3+ blank lines to 1
   text = text.replace(/\n{3,}/g, "\n\n");
   return text.trim();
 }
