@@ -271,7 +271,7 @@ function executeOperatorTextObject(
   operator: string,
   modifier: "i" | "a",
   objectKey: string,
-  vim: VimState,
+  _vim: VimState,
   buffer: string,
   cursor: number,
 ): VimResult {
