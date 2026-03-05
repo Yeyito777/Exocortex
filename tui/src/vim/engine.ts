@@ -16,6 +16,7 @@ import type {
 import { resetPending } from "./types";
 import { lookupCommand, isPrefix } from "./keymap";
 import { resolveMotion } from "./motions";
+import { resolveTextObject, isTextObjectKey } from "./textobjects";
 import { lineStartOf, lineEndOf, clampNormal } from "./buffer";
 import * as ops from "./operators";
 
@@ -113,8 +114,28 @@ function handleNormalMode(
     }
   }
 
-  // ── Pending operator + motion ──────────────────────────────────
+  // ── Pending text object modifier (operator + i/a + ???) ─────────
+  if (vim.pendingOperator && vim.pendingTextObjectModifier) {
+    if (isTextObjectKey(ks)) {
+      const result = executeOperatorTextObject(
+        vim.pendingOperator, vim.pendingTextObjectModifier, ks, vim, buffer, cursor,
+      );
+      resetPending(vim);
+      return result;
+    }
+    // Not a valid text object specifier — cancel
+    resetPending(vim);
+    return { type: "noop" };
+  }
+
+  // ── Pending operator + motion or text object modifier ──────────
   if (vim.pendingOperator) {
+    // "i" or "a" after operator → text object modifier
+    if (ks === "i" || ks === "a") {
+      vim.pendingTextObjectModifier = ks;
+      return { type: "pending" };
+    }
+
     const cmd = lookupCommand(vim.mode, context, ks);
     if (cmd && cmd.type === "motion") {
       const result = executeOperatorMotion(vim.pendingOperator, cmd.name, vim, buffer, cursor);
@@ -253,6 +274,37 @@ function executeOperatorMotion(
     case "yank": {
       // TODO: yank to register
       return { type: "cursor_move", cursor: start };
+    }
+    default:
+      return { type: "noop" };
+  }
+}
+
+// ── Operator + text object execution ──────────────────────────────
+
+function executeOperatorTextObject(
+  operator: string,
+  modifier: "i" | "a",
+  objectKey: string,
+  vim: VimState,
+  buffer: string,
+  cursor: number,
+): VimResult {
+  const range = resolveTextObject(modifier, objectKey, buffer, cursor);
+  if (!range || range.start === range.end) return { type: "noop" };
+
+  switch (operator) {
+    case "delete": {
+      const edit = ops.deleteRange(buffer, range.start, range.end);
+      return { type: "buffer_edit", ...edit };
+    }
+    case "change": {
+      const edit = ops.deleteRange(buffer, range.start, range.end);
+      return { type: "buffer_edit", ...edit, mode: "insert" };
+    }
+    case "yank": {
+      // TODO: yank to register
+      return { type: "cursor_move", cursor: range.start };
     }
     default:
       return { type: "noop" };
