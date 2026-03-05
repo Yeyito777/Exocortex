@@ -76,7 +76,7 @@ async function fetchUsage(accessToken: string): Promise<UsageData | null> {
         Authorization: `Bearer ${accessToken}`,
         "anthropic-beta": "oauth-2025-04-20",
         "Content-Type": "application/json",
-        "User-Agent": "claude-code/2.1.68",
+        "User-Agent": "exocortex/0.1.0",
       },
       signal: AbortSignal.timeout(5000),
     });
