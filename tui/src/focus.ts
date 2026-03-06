@@ -257,7 +257,7 @@ function handleVimAction(action: string, state: RenderState): KeyResult {
 
 function handleHistoryCursorAction(action: Action, state: RenderState): KeyResult {
   if (action === "history_yy") {
-    const plain = stripAnsi(state.historyLines[state.historyCursor.row] ?? "");
+    const plain = stripAnsi(state.historyLines[state.historyCursor.row] ?? "").trim();
     if (plain) copyToClipboard(plain);
     ensureCursorVisible(state);
     return { type: "handled" };
@@ -287,20 +287,21 @@ function getHistoryVisualSelection(state: RenderState): string {
   const endRow = Math.max(anchor.row, cursor.row);
 
   if (state.vim.mode === "visual-line") {
-    // Full lines
+    // Full lines — trim rendering padding (indent, right-align spaces)
     const selectedLines: string[] = [];
     for (let r = startRow; r <= endRow; r++) {
-      selectedLines.push(stripAnsi(lines[r] ?? "").trimEnd());
+      selectedLines.push(stripAnsi(lines[r] ?? "").trim());
     }
     return selectedLines.join("\n");
   }
 
-  // Character visual
+  // Character visual — columns are in rendered space, so slice first
+  // then trim the result to remove rendering padding
   if (startRow === endRow) {
     const plain = stripAnsi(lines[startRow] ?? "");
     const startCol = Math.min(anchor.col, cursor.col);
     const endCol = Math.max(anchor.col, cursor.col);
-    return plain.slice(startCol, endCol + 1);
+    return plain.slice(startCol, endCol + 1).trim();
   }
 
   // Multi-line character selection
@@ -310,11 +311,11 @@ function getHistoryVisualSelection(state: RenderState): string {
   const firstCol = startRow === anchor.row ? anchor.col : cursor.col;
   const lastCol = endRow === anchor.row ? anchor.col : cursor.col;
 
-  result.push(firstPlain.slice(firstCol));
+  result.push(firstPlain.slice(firstCol).trimEnd());
   for (let r = startRow + 1; r < endRow; r++) {
-    result.push(stripAnsi(lines[r] ?? "").trimEnd());
+    result.push(stripAnsi(lines[r] ?? "").trim());
   }
-  result.push(lastPlain.slice(0, lastCol + 1));
+  result.push(lastPlain.slice(0, lastCol + 1).trimStart());
 
   return result.join("\n");
 }
