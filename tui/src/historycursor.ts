@@ -9,6 +9,7 @@
  * corresponding screen position.
  */
 
+import type { KeyEvent } from "./input";
 import type { Action } from "./keybinds";
 import type { RenderState } from "./state";
 
@@ -423,6 +424,95 @@ export function scrollLineWithStickyCursor(state: RenderState, dir: number): voi
       { row: viewEnd, col: state.historyCursor.col }, state.historyLines,
     );
   }
+}
+
+// ── Find interception for history ────────────────────────────────
+
+/**
+ * Handle f/F/;/, for history context. Returns true if the key was a find key
+ * and was handled. Returns false if the key is not a find — caller should
+ * fall through to the engine.
+ */
+export function handleHistoryFind(key: KeyEvent, state: RenderState): boolean {
+  const vim = state.vim;
+  const lines = state.historyLines;
+
+  // Resolve pending find — waiting for the target character
+  if (vim.pendingFind) {
+    if (key.type !== "char" || !key.char) { vim.pendingFind = null; return true; }
+    const dir = vim.pendingFind;
+    vim.lastFind = { char: key.char, direction: dir };
+    vim.pendingFind = null;
+    state.historyCursor = dir === "f"
+      ? findForward(state.historyCursor, lines, key.char)
+      : findBackward(state.historyCursor, lines, key.char);
+    ensureCursorVisible(state);
+    return true;
+  }
+
+  // Initiate find
+  if (key.type === "char" && (key.char === "f" || key.char === "F")) {
+    vim.pendingFind = key.char as "f" | "F";
+    return true;
+  }
+
+  // Repeat last find
+  if (key.type === "char" && (key.char === ";" || key.char === ",")) {
+    if (!vim.lastFind) return true;
+    const dir = key.char === ";"
+      ? vim.lastFind.direction
+      : (vim.lastFind.direction === "f" ? "F" : "f") as "f" | "F";
+    state.historyCursor = dir === "f"
+      ? findForward(state.historyCursor, lines, vim.lastFind.char)
+      : findBackward(state.historyCursor, lines, vim.lastFind.char);
+    ensureCursorVisible(state);
+    return true;
+  }
+
+  return false;
+}
+
+// ── Visual selection extraction ─────────────────────────────────
+
+/** Extract the selected text from history in visual/visual-line mode. */
+export function getHistoryVisualSelection(state: RenderState): string {
+  const anchor = state.historyVisualAnchor;
+  const cursor = state.historyCursor;
+  const lines = state.historyLines;
+
+  const startRow = Math.min(anchor.row, cursor.row);
+  const endRow = Math.max(anchor.row, cursor.row);
+
+  if (state.vim.mode === "visual-line") {
+    const selectedLines: string[] = [];
+    for (let r = startRow; r <= endRow; r++) {
+      selectedLines.push(stripAnsi(lines[r] ?? "").trim());
+    }
+    return selectedLines.join("\n");
+  }
+
+  // Character visual — single line
+  if (startRow === endRow) {
+    const plain = stripAnsi(lines[startRow] ?? "");
+    const startCol = Math.min(anchor.col, cursor.col);
+    const endCol = Math.max(anchor.col, cursor.col);
+    return plain.slice(startCol, endCol + 1).trim();
+  }
+
+  // Multi-line character selection
+  const result: string[] = [];
+  const firstPlain = stripAnsi(lines[startRow] ?? "");
+  const lastPlain = stripAnsi(lines[endRow] ?? "");
+  const firstCol = startRow === anchor.row ? anchor.col : cursor.col;
+  const lastCol = endRow === anchor.row ? anchor.col : cursor.col;
+
+  result.push(firstPlain.slice(firstCol).trimEnd());
+  for (let r = startRow + 1; r < endRow; r++) {
+    result.push(stripAnsi(lines[r] ?? "").trim());
+  }
+  result.push(lastPlain.slice(0, lastCol + 1).trimStart());
+
+  return result.join("\n");
 }
 
 /** Adjust scrollOffset so the cursor row is within the visible message area. */

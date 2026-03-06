@@ -27,7 +27,8 @@ import { processKey, copyToClipboard, pasteFromClipboard, type VimContext } from
 import { clampNormal } from "./vim/buffer";
 import {
   applyHistoryAction, stripAnsi, ensureCursorVisible, placeAtBottom,
-  findForward as histFindForward, findBackward as histFindBackward,
+  handleHistoryFind as historyFindHandler,
+  getHistoryVisualSelection,
   scrollHalfPageWithCursor, scrollFullPageWithCursor, scrollLineWithStickyCursor,
 } from "./historycursor";
 
@@ -154,8 +155,7 @@ function processVimKey(key: KeyEvent, state: RenderState): KeyResult | null {
 
   // History-specific find handling: f/F/;/, operate on history lines, not prompt buffer
   if (context === "history" && state.vim.mode !== "insert") {
-    const histResult = handleHistoryFind(key, state);
-    if (histResult) return histResult;
+    if (historyFindHandler(key, state)) return { type: "handled" };
   }
 
   const result = processKey(key, state.vim, context, state.inputBuffer, state.cursorPos);
@@ -261,51 +261,6 @@ function handleVimAction(action: string, state: RenderState): KeyResult {
   }
 }
 
-// ── History find (f/F/;/,) ───────────────────────────────────────
-
-/**
- * Handle f/F/;/, for history context. Returns null if the key isn't a find key.
- * Manages vim.pendingFind and vim.lastFind directly — the engine never sees these keys.
- */
-function handleHistoryFind(key: KeyEvent, state: RenderState): KeyResult | null {
-  const vim = state.vim;
-  const lines = state.historyLines;
-
-  // Resolve pending find — waiting for the target character
-  if (vim.pendingFind) {
-    if (key.type !== "char" || !key.char) { vim.pendingFind = null; return { type: "handled" }; }
-    const dir = vim.pendingFind;
-    vim.lastFind = { char: key.char, direction: dir };
-    vim.pendingFind = null;
-    state.historyCursor = dir === "f"
-      ? histFindForward(state.historyCursor, lines, key.char)
-      : histFindBackward(state.historyCursor, lines, key.char);
-    ensureCursorVisible(state);
-    return { type: "handled" };
-  }
-
-  // Initiate find
-  if (key.type === "char" && (key.char === "f" || key.char === "F")) {
-    vim.pendingFind = key.char as "f" | "F";
-    return { type: "handled" };
-  }
-
-  // Repeat last find
-  if (key.type === "char" && (key.char === ";" || key.char === ",")) {
-    if (!vim.lastFind) return { type: "handled" };
-    const dir = key.char === ";"
-      ? vim.lastFind.direction
-      : (vim.lastFind.direction === "f" ? "F" : "f") as "f" | "F";
-    state.historyCursor = dir === "f"
-      ? histFindForward(state.historyCursor, lines, vim.lastFind.char)
-      : histFindBackward(state.historyCursor, lines, vim.lastFind.char);
-    ensureCursorVisible(state);
-    return { type: "handled" };
-  }
-
-  return null; // not a find key — let the engine handle it
-}
-
 // ── History cursor actions ────────────────────────────────────────
 
 function handleHistoryCursorAction(action: Action, state: RenderState): KeyResult {
@@ -326,51 +281,6 @@ function handleHistoryCursorAction(action: Action, state: RenderState): KeyResul
 
   applyHistoryAction(action, state);
   return { type: "handled" };
-}
-
-// ── History visual selection ──────────────────────────────────────
-
-/** Extract the selected text from history in visual/visual-line mode. */
-function getHistoryVisualSelection(state: RenderState): string {
-  const anchor = state.historyVisualAnchor;
-  const cursor = state.historyCursor;
-  const lines = state.historyLines;
-
-  const startRow = Math.min(anchor.row, cursor.row);
-  const endRow = Math.max(anchor.row, cursor.row);
-
-  if (state.vim.mode === "visual-line") {
-    // Full lines — trim rendering padding (indent, right-align spaces)
-    const selectedLines: string[] = [];
-    for (let r = startRow; r <= endRow; r++) {
-      selectedLines.push(stripAnsi(lines[r] ?? "").trim());
-    }
-    return selectedLines.join("\n");
-  }
-
-  // Character visual — columns are in rendered space, so slice first
-  // then trim the result to remove rendering padding
-  if (startRow === endRow) {
-    const plain = stripAnsi(lines[startRow] ?? "");
-    const startCol = Math.min(anchor.col, cursor.col);
-    const endCol = Math.max(anchor.col, cursor.col);
-    return plain.slice(startCol, endCol + 1).trim();
-  }
-
-  // Multi-line character selection
-  const result: string[] = [];
-  const firstPlain = stripAnsi(lines[startRow] ?? "");
-  const lastPlain = stripAnsi(lines[endRow] ?? "");
-  const firstCol = startRow === anchor.row ? anchor.col : cursor.col;
-  const lastCol = endRow === anchor.row ? anchor.col : cursor.col;
-
-  result.push(firstPlain.slice(firstCol).trimEnd());
-  for (let r = startRow + 1; r < endRow; r++) {
-    result.push(stripAnsi(lines[r] ?? "").trim());
-  }
-  result.push(lastPlain.slice(0, lastCol + 1).trimStart());
-
-  return result.join("\n");
 }
 
 /** Handle j/k vim actions in sidebar or history context. */
