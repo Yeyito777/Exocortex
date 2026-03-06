@@ -126,3 +126,15 @@ export interface KeymapEntry {
   key: string;
   command: VimCommand;
 }
+
+// ── Key string conversion ─────────────────────────────────────────
+
+import type { KeyEvent } from "../input";
+
+/** Convert a KeyEvent to the key string used in the keymap. */
+export function keyString(key: KeyEvent): string | null {
+  if (key.type === "char" && key.char) return key.char;
+  if (key.type === "escape") return "escape";
+  if (key.type === "enter") return "enter";
+  return null;
+}

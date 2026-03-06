@@ -1,17 +1,33 @@
 /**
- * Chat history cursor — read-only navigation in rendered content.
+ * Chat history cursor — state, dispatch, scroll, find, and visual selection.
  *
- * Owns the cursor position (row, col) within the rendered message
- * lines. Supports vim motions (h/j/k/l, w/W/b/B/e/E, 0/$, gg/G).
- *
- * The cursor operates on ANSI-stripped "plain" text. The renderer
- * uses (row, col) to place a reverse-video block cursor on the
- * corresponding screen position.
+ * Pure motions live in historymotions.ts.
+ * This file owns the stateful operations that depend on RenderState:
+ * action dispatch, cursor-aware scrolling, find interception,
+ * and visual selection extraction.
  */
 
 import type { KeyEvent } from "./input";
 import type { Action } from "./keybinds";
 import type { RenderState } from "./state";
+import {
+  stripAnsi, clampCursor,
+  charLeft, charRight, lineUp, lineDown, lineStart, lineEnd,
+  bufferStart, bufferEnd,
+  wordForward, wordBackward, wordEnd,
+  wordForwardBig, wordBackwardBig, wordEndBig,
+  findForward, findBackward,
+} from "./historymotions";
+
+// Re-export everything from historymotions so existing consumers don't break
+export {
+  stripAnsi, contentBounds, clampCol, clampCursor,
+  charLeft, charRight, lineUp, lineDown, lineStart, lineEnd,
+  bufferStart, bufferEnd,
+  wordForward, wordBackward, wordEnd,
+  wordForwardBig, wordBackwardBig, wordEndBig,
+  findForward, findBackward, placeAtBottom,
+} from "./historymotions";
 
 // ── State ──────────────────────────────────────────────────────────
 
@@ -22,300 +38,6 @@ export interface HistoryCursor {
 
 export function createHistoryCursor(): HistoryCursor {
   return { row: 0, col: 0 };
-}
-
-// ── ANSI stripping ─────────────────────────────────────────────────
-
-const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\]8;[^;]*;[^\x1b]*\x1b\\/g;
-
-export function stripAnsi(s: string): string {
-  return s.replace(ANSI_RE, "");
-}
-
-// ── Character classification ───────────────────────────────────────
-
-function isWordChar(ch: string): boolean { return /\w/.test(ch); }
-function isSpace(ch: string): boolean { return ch === " " || ch === "\t"; }
-
-// ── Content bounds ────────────────────────────────────────────────
-
-/**
- * Find the first and last non-space character indices in a plain line.
- * Cursor is clamped to these bounds so it can't roam into padding
- * (e.g. leading spaces from right-aligned user messages).
- */
-export function contentBounds(plain: string): { start: number; end: number } {
-  let start = 0;
-  while (start < plain.length && plain[start] === " ") start++;
-  let end = plain.length - 1;
-  while (end > start && plain[end] === " ") end--;
-  // All spaces or empty (e.g. blank indented AI line): cursor at
-  // indentation point (where text would start on this line).
-  // For "    " (4 spaces), start=4 which is past the string, so
-  // clamp to last valid position. For "", start=0 which is correct.
-  if (start >= plain.length) {
-    const pos = Math.max(0, plain.length);
-    return { start: pos, end: pos };
-  }
-  return { start, end };
-}
-
-/** Clamp a column to the content bounds of a line. */
-function clampCol(col: number, lines: string[], row: number): number {
-  const plain = stripAnsi(lines[row] ?? "");
-  if (plain.length === 0) return 0;
-  const { start, end } = contentBounds(plain);
-  return Math.max(start, Math.min(col, end));
-}
-
-// ── Motions ────────────────────────────────────────────────────────
-
-/** Move cursor left, clamped to content start. */
-export function charLeft(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  const { start } = contentBounds(stripAnsi(lines[cursor.row] ?? ""));
-  return { row: cursor.row, col: Math.max(start, cursor.col - 1) };
-}
-
-/** Move cursor right, clamped to content end. */
-export function charRight(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  const { end } = contentBounds(stripAnsi(lines[cursor.row] ?? ""));
-  return { row: cursor.row, col: Math.min(end, cursor.col + 1) };
-}
-
-/** Move cursor up one line, col clamped to content bounds. */
-export function lineUp(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  if (cursor.row <= 0) return cursor;
-  const newRow = cursor.row - 1;
-  return { row: newRow, col: clampCol(cursor.col, lines, newRow) };
-}
-
-/** Move cursor down one line, col clamped to content bounds. */
-export function lineDown(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  if (cursor.row >= lines.length - 1) return cursor;
-  const newRow = cursor.row + 1;
-  return { row: newRow, col: clampCol(cursor.col, lines, newRow) };
-}
-
-/** Move to first non-space character (like vim ^). */
-export function lineStart(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  const { start } = contentBounds(stripAnsi(lines[cursor.row] ?? ""));
-  return { row: cursor.row, col: start };
-}
-
-/** Move to last non-space character. */
-export function lineEnd(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  const { end } = contentBounds(stripAnsi(lines[cursor.row] ?? ""));
-  return { row: cursor.row, col: end };
-}
-
-/** Move to first line, col at content start. */
-export function bufferStart(lines: string[]): HistoryCursor {
-  return { row: 0, col: clampCol(0, lines, 0) };
-}
-
-/** Move to last line, col at content start. */
-export function bufferEnd(lines: string[]): HistoryCursor {
-  const row = Math.max(0, lines.length - 1);
-  return { row, col: clampCol(0, lines, row) };
-}
-
-/** word forward (w) — next word start on plain text of current line, wraps down. */
-export function wordForward(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  const plain = stripAnsi(lines[cursor.row]);
-  const { end } = contentBounds(plain);
-  let pos = cursor.col;
-
-  if (pos <= end) {
-    // Skip current word
-    if (isWordChar(plain[pos])) {
-      while (pos <= end && isWordChar(plain[pos])) pos++;
-    } else if (!isSpace(plain[pos])) {
-      while (pos <= end && !isWordChar(plain[pos]) && !isSpace(plain[pos])) pos++;
-    }
-    // Skip spaces
-    while (pos <= end && isSpace(plain[pos])) pos++;
-  }
-
-  if (pos > end) {
-    // Wrap to next non-empty line
-    for (let r = cursor.row + 1; r < lines.length; r++) {
-      const nb = contentBounds(stripAnsi(lines[r]));
-      if (nb.end >= nb.start) return { row: r, col: nb.start };
-    }
-    return { row: cursor.row, col: end };
-  }
-
-  return { row: cursor.row, col: pos };
-}
-
-/** word backward (b) */
-export function wordBackward(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  const plain = stripAnsi(lines[cursor.row]);
-  const { start } = contentBounds(plain);
-  let pos = cursor.col;
-
-  if (pos > start) {
-    pos--;
-    // Skip spaces
-    while (pos > start && isSpace(plain[pos])) pos--;
-    // Skip word
-    if (isWordChar(plain[pos])) {
-      while (pos > start && isWordChar(plain[pos - 1])) pos--;
-    } else if (!isSpace(plain[pos])) {
-      while (pos > start && !isWordChar(plain[pos - 1]) && !isSpace(plain[pos - 1])) pos--;
-    }
-    return { row: cursor.row, col: pos };
-  }
-
-  // Wrap to previous non-empty line
-  for (let r = cursor.row - 1; r >= 0; r--) {
-    const pb = contentBounds(stripAnsi(lines[r]));
-    if (pb.end >= pb.start) return { row: r, col: pb.end };
-  }
-  return cursor;
-}
-
-/** word end (e) */
-export function wordEnd(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  const plain = stripAnsi(lines[cursor.row]);
-  const { end } = contentBounds(plain);
-  let pos = cursor.col;
-
-  if (pos < end) {
-    pos++;
-    // Skip spaces
-    while (pos <= end && isSpace(plain[pos])) pos++;
-    // Run through word
-    if (pos <= end) {
-      if (isWordChar(plain[pos])) {
-        while (pos < end && isWordChar(plain[pos + 1])) pos++;
-      } else {
-        while (pos < end && !isWordChar(plain[pos + 1]) && !isSpace(plain[pos + 1])) pos++;
-      }
-      return { row: cursor.row, col: pos };
-    }
-  }
-
-  // Wrap to next non-empty line
-  for (let r = cursor.row + 1; r < lines.length; r++) {
-    const next = stripAnsi(lines[r]);
-    const nb = contentBounds(next);
-    if (nb.end >= nb.start) {
-      let c = nb.start;
-      if (isWordChar(next[c])) {
-        while (c < nb.end && isWordChar(next[c + 1])) c++;
-      } else {
-        while (c < nb.end && !isWordChar(next[c + 1]) && !isSpace(next[c + 1])) c++;
-      }
-      return { row: r, col: c };
-    }
-  }
-  return { row: cursor.row, col: end };
-}
-
-/** WORD forward (W) — whitespace-delimited */
-export function wordForwardBig(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  const plain = stripAnsi(lines[cursor.row]);
-  const { end } = contentBounds(plain);
-  let pos = cursor.col;
-
-  // Skip non-space
-  while (pos <= end && !isSpace(plain[pos])) pos++;
-  // Skip space
-  while (pos <= end && isSpace(plain[pos])) pos++;
-
-  if (pos > end) {
-    for (let r = cursor.row + 1; r < lines.length; r++) {
-      const nb = contentBounds(stripAnsi(lines[r]));
-      if (nb.end >= nb.start) return { row: r, col: nb.start };
-    }
-    return { row: cursor.row, col: end };
-  }
-  return { row: cursor.row, col: pos };
-}
-
-/** WORD backward (B) */
-export function wordBackwardBig(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  const plain = stripAnsi(lines[cursor.row]);
-  const { start } = contentBounds(plain);
-  let pos = cursor.col;
-
-  if (pos > start) {
-    pos--;
-    while (pos > start && isSpace(plain[pos])) pos--;
-    while (pos > start && !isSpace(plain[pos - 1])) pos--;
-    return { row: cursor.row, col: pos };
-  }
-
-  for (let r = cursor.row - 1; r >= 0; r--) {
-    const pb = contentBounds(stripAnsi(lines[r]));
-    if (pb.end >= pb.start) return { row: r, col: pb.end };
-  }
-  return cursor;
-}
-
-/** WORD end (E) */
-export function wordEndBig(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  const plain = stripAnsi(lines[cursor.row]);
-  const { end } = contentBounds(plain);
-  let pos = cursor.col;
-
-  if (pos < end) {
-    pos++;
-    while (pos <= end && isSpace(plain[pos])) pos++;
-    while (pos < end && !isSpace(plain[pos + 1])) pos++;
-    if (pos <= end) return { row: cursor.row, col: pos };
-  }
-
-  for (let r = cursor.row + 1; r < lines.length; r++) {
-    const nb = contentBounds(stripAnsi(lines[r]));
-    if (nb.end >= nb.start) {
-      let c = nb.start;
-      while (c < nb.end && !isSpace(stripAnsi(lines[r])[c + 1])) c++;
-      return { row: r, col: c };
-    }
-  }
-  return { row: cursor.row, col: end };
-}
-
-// ── Find motions (f/F) ─────────────────────────────────────────────
-
-/** f{char} — move to next occurrence of char on the current line within content bounds. */
-export function findForward(cursor: HistoryCursor, lines: string[], char: string): HistoryCursor {
-  const plain = stripAnsi(lines[cursor.row] ?? "");
-  const { end } = contentBounds(plain);
-  for (let i = cursor.col + 1; i <= end; i++) {
-    if (plain[i] === char) return { row: cursor.row, col: i };
-  }
-  return cursor; // not found — stay put
-}
-
-/** F{char} — move to previous occurrence of char on the current line within content bounds. */
-export function findBackward(cursor: HistoryCursor, lines: string[], char: string): HistoryCursor {
-  const plain = stripAnsi(lines[cursor.row] ?? "");
-  const { start } = contentBounds(plain);
-  for (let i = cursor.col - 1; i >= start; i--) {
-    if (plain[i] === char) return { row: cursor.row, col: i };
-  }
-  return cursor; // not found — stay put
-}
-
-// ── Placement ──────────────────────────────────────────────────────
-
-/**
- * Place cursor at the bottom of the visible content.
- * Called when entering history focus.
- */
-export function placeAtBottom(lines: string[]): HistoryCursor {
-  const row = Math.max(0, lines.length - 1);
-  return { row, col: clampCol(0, lines, row) };
-}
-
-/** Clamp cursor to valid bounds after content changes. */
-export function clampCursor(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  if (lines.length === 0) return { row: 0, col: 0 };
-  const row = Math.min(cursor.row, lines.length - 1);
-  return { row, col: clampCol(cursor.col, lines, row) };
 }
 
 // ── Dispatch ───────────────────────────────────────────────────────
