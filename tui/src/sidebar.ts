@@ -42,6 +42,7 @@ export type SidebarKeyResult =
   | { type: "handled" }
   | { type: "select"; convId: string }
   | { type: "delete_conversation"; convId: string }
+  | { type: "mark_conversation"; convId: string; marked: boolean }
   | { type: "unhandled" };
 
 export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarKeyResult {
@@ -91,6 +92,16 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       // First d — mark for deletion
       sidebar.pendingDeleteId = selectedConv.id;
       return { type: "handled" };
+    }
+
+    case "mark": {
+      if (sidebar.conversations.length === 0) return { type: "handled" };
+      const conv = sidebar.conversations[sidebar.selectedIndex];
+      if (!conv) return { type: "handled" };
+      // Optimistic toggle
+      const newMarked = !conv.marked;
+      conv.marked = newMarked;
+      return { type: "mark_conversation", convId: conv.id, marked: newMarked };
     }
 
     case "focus_prompt":
@@ -209,7 +220,8 @@ export function renderSidebar(
 
     // Build entry
     const prefix = isSelected ? "▸ " : "  ";
-    const maxTitle = innerWidth - prefix.length;
+    const markIcon = conv.marked ? "★ " : "";
+    const maxTitle = innerWidth - prefix.length - markIcon.length;
     let title = conv.preview || "(empty)";
     // Take first line only
     const nlIdx = title.indexOf("\n");
@@ -219,12 +231,13 @@ export function renderSidebar(
     const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;
     const fg = isPendingDelete ? theme.error : (isSelected || isCurrent) ? theme.text : theme.muted;
     const titleText = isCurrent && !isPendingDelete ? theme.bold + title + theme.boldOff : title;
-    const plainLen = prefix.length + title.length;
+    const markIconColored = markIcon ? theme.warning + markIcon + fg : "";
+    const plainLen = prefix.length + markIcon.length + title.length;
     const padding = Math.max(0, innerWidth - plainLen);
 
     rows.push(
       theme.reset + bg + fg +
-      prefix + titleText + " ".repeat(padding) +
+      prefix + markIconColored + titleText + " ".repeat(padding) +
       theme.reset + borderFg + "│" + theme.reset,
     );
   }

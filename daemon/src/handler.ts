@@ -114,6 +114,14 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      case "mark_conversation": {
+        const ok = convStore.mark(cmd.convId, cmd.marked);
+        if (ok) {
+          server.broadcast({ type: "conversation_marked", convId: cmd.convId, marked: cmd.marked });
+        }
+        break;
+      }
+
       case "load_conversation": {
         const data = convStore.getDisplayData(cmd.convId);
         if (!data) {

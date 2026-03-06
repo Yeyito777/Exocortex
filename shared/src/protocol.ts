@@ -75,6 +75,13 @@ export interface DeleteConversationCommand {
   convId: string;
 }
 
+export interface MarkConversationCommand {
+  type: "mark_conversation";
+  reqId?: string;
+  convId: string;
+  marked: boolean;
+}
+
 export type Command =
   | PingCommand
   | NewConversationCommand
@@ -85,7 +92,8 @@ export type Command =
   | UnsubscribeCommand
   | ListConversationsCommand
   | LoadConversationCommand
-  | DeleteConversationCommand;
+  | DeleteConversationCommand
+  | MarkConversationCommand;
 
 // ── Events (daemon → client) ────────────────────────────────────────
 
@@ -211,6 +219,12 @@ export interface ConversationDeletedEvent {
   convId: string;
 }
 
+export interface ConversationMarkedEvent {
+  type: "conversation_marked";
+  convId: string;
+  marked: boolean;
+}
+
 export interface ToolsAvailableEvent {
   type: "tools_available";
   tools: ToolDisplayInfo[];
@@ -242,5 +256,6 @@ export type Event =
   | ConversationLoadedEvent
   | ConversationUpdatedEvent
   | ConversationDeletedEvent
+  | ConversationMarkedEvent
   | ToolsAvailableEvent
   | ErrorEvent;

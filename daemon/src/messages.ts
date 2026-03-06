@@ -40,6 +40,7 @@ export interface Conversation {
   messages: StoredMessage[];
   createdAt: number;
   lastContextTokens: number | null;
+  marked: boolean;
 }
 
 export function createConversation(id: string, model: ModelId): Conversation {
@@ -49,5 +50,6 @@ export function createConversation(id: string, model: ModelId): Conversation {
     messages: [],
     createdAt: Date.now(),
     lastContextTokens: null,
+    marked: false,
   };
 }

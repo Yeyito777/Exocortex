@@ -96,6 +96,7 @@ export interface ConversationSummary {
   updatedAt: number;
   messageCount: number;
   preview: string;
+  marked: boolean;
 }
 
 // ── Tool display info (daemon → TUI on connect) ────────────────────

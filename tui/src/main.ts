@@ -144,6 +144,9 @@ function handleKey(key: KeyEvent): void {
         state.contextTokens = null;
       }
       break;
+    case "mark_conversation":
+      daemon.markConversation(result.convId, result.marked);
+      break;
     case "handled":
       break;
   }

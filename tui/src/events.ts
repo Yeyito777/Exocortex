@@ -191,6 +191,12 @@ export function handleEvent(
       break;
     }
 
+    case "conversation_marked": {
+      const conv = state.sidebar.conversations.find(c => c.id === event.convId);
+      if (conv) conv.marked = event.marked;
+      break;
+    }
+
     case "conversation_loaded": {
       // Unsubscribe from old conversation before switching
       if (state.convId && state.convId !== event.convId) {

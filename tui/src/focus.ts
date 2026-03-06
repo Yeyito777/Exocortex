@@ -44,6 +44,7 @@ export type KeyResult =
   | { type: "abort" }
   | { type: "load_conversation"; convId: string }
   | { type: "delete_conversation"; convId: string }
+  | { type: "mark_conversation"; convId: string; marked: boolean }
   | { type: "new_conversation" };
 
 // ── Key routing ─────────────────────────────────────────────────────
@@ -301,6 +302,14 @@ function handleVimAction(action: string, state: RenderState): KeyResult {
         }
       }
       return { type: "handled" };
+    case "mark":
+      if (state.panelFocus === "sidebar") {
+        const result = handleSidebarAction("mark", state.sidebar);
+        if (result.type === "mark_conversation") {
+          return { type: "mark_conversation", convId: result.convId, marked: result.marked };
+        }
+      }
+      return { type: "handled" };
     default:
       return { type: "handled" };
   }
@@ -424,6 +433,8 @@ function handleSidebarFocused(key: KeyEvent, state: RenderState): KeyResult {
       return { type: "load_conversation", convId: result.convId };
     case "delete_conversation":
       return { type: "delete_conversation", convId: result.convId };
+    case "mark_conversation":
+      return { type: "mark_conversation", convId: result.convId, marked: result.marked };
     case "unhandled":
       // focus_prompt comes back as unhandled from sidebar (i/a)
       state.panelFocus = "chat";

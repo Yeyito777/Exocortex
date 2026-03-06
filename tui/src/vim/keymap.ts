@@ -94,6 +94,7 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "normal", context: "sidebar", key: "gg", command: { type: "action", action: "scroll_top" } },
   { mode: "normal", context: "sidebar", key: "G",  command: { type: "action", action: "scroll_bottom" } },
   { mode: "normal", context: "sidebar", key: "d",  command: { type: "action", action: "delete" } },
+  { mode: "normal", context: "sidebar", key: "m",  command: { type: "action", action: "mark" } },
   { mode: "normal", context: "sidebar", key: "i",  command: { type: "mode_change", mode: "insert" } },
   { mode: "normal", context: "sidebar", key: "a",  command: { type: "mode_change", mode: "insert" } },
 

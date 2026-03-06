@@ -114,6 +114,10 @@ export class DaemonClient {
     this.send({ type: "delete_conversation", convId });
   }
 
+  markConversation(convId: string, marked: boolean): void {
+    this.send({ type: "mark_conversation", convId, marked });
+  }
+
   listConversations(): void {
     this.send({ type: "list_conversations" });
   }

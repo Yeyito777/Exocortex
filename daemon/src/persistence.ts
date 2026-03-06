@@ -15,7 +15,7 @@ import type { Conversation, StoredMessage, ApiMessage, ModelId, ConversationSumm
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 3;
+const CURRENT_VERSION = 4;
 
 interface ConversationFileV1 {
   version: 1;
@@ -45,7 +45,18 @@ interface ConversationFileV3 {
   lastContextTokens: number | null;
 }
 
-type ConversationFile = ConversationFileV3;
+interface ConversationFileV4 {
+  version: 4;
+  id: string;
+  model: ModelId;
+  messages: StoredMessage[];
+  createdAt: number;
+  updatedAt: number;
+  lastContextTokens: number | null;
+  marked: boolean;
+}
+
+type ConversationFile = ConversationFileV4;
 
 // ── Migrations ──────────────────────────────────────────────────────
 
@@ -71,6 +82,15 @@ function migrateV2toV3(data: ConversationFileV2): ConversationFileV3 {
   };
 }
 
+/** v3 → v4: Add marked flag. */
+function migrateV3toV4(data: ConversationFileV3): ConversationFileV4 {
+  return {
+    ...data,
+    version: 4,
+    marked: false,
+  };
+}
+
 function migrate(data: Record<string, unknown>): ConversationFile {
   let version = (data.version as number) ?? 1;
 
@@ -82,6 +102,11 @@ function migrate(data: Record<string, unknown>): ConversationFile {
   if (version === 2) {
     data = migrateV2toV3(data as unknown as ConversationFileV2) as unknown as Record<string, unknown>;
     version = 3;
+  }
+
+  if (version === 3) {
+    data = migrateV3toV4(data as unknown as ConversationFileV3) as unknown as Record<string, unknown>;
+    version = 4;
   }
 
   if (version === CURRENT_VERSION) {
@@ -117,6 +142,7 @@ function toFile(conv: Conversation): ConversationFile {
     createdAt: conv.createdAt,
     updatedAt: Date.now(),
     lastContextTokens: conv.lastContextTokens,
+    marked: conv.marked,
   };
 }
 
@@ -127,6 +153,7 @@ function fromFile(file: ConversationFile): Conversation {
     messages: file.messages,
     createdAt: file.createdAt,
     lastContextTokens: file.lastContextTokens,
+    marked: file.marked,
   };
 }
 
@@ -182,6 +209,7 @@ export function loadAll(): ConversationSummary[] {
         updatedAt: file.updatedAt,
         messageCount: file.messages.length,
         preview,
+        marked: file.marked,
       });
     } catch (err) {
       log("error", `persistence: failed to load summary for ${filename}: ${err}`);

@@ -38,6 +38,7 @@ export type Action =
   | "nav_down"
   | "nav_select"
   | "delete"
+  | "mark"
   // Scrolling
   | "scroll_line_up"
   | "scroll_line_down"

@@ -118,6 +118,16 @@ export function listSummaries(): ConversationSummary[] {
   return persistence.loadAll();
 }
 
+/** Toggle or set the marked flag on a conversation. */
+export function mark(id: string, marked: boolean): boolean {
+  const conv = conversations.get(id);
+  if (!conv) return false;
+  conv.marked = marked;
+  markDirty(id);
+  flush(id);
+  return true;
+}
+
 /** Get a single conversation's summary. */
 export function getSummary(id: string): ConversationSummary | null {
   const conv = conversations.get(id);
@@ -135,6 +145,7 @@ export function getSummary(id: string): ConversationSummary | null {
     updatedAt: Date.now(),
     messageCount: conv.messages.length,
     preview,
+    marked: conv.marked,
   };
 }
 
