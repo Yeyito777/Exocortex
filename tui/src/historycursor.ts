@@ -48,10 +48,12 @@ export function contentBounds(plain: string): { start: number; end: number } {
   while (start < plain.length && plain[start] === " ") start++;
   let end = plain.length - 1;
   while (end > start && plain[end] === " ") end--;
-  // All spaces (e.g. empty indented AI line): cursor at last space
-  // so it stays aligned with the indentation of surrounding content
-  if (start > end) {
-    const pos = Math.max(0, plain.length - 1);
+  // All spaces or empty (e.g. blank indented AI line): cursor at
+  // indentation point (where text would start on this line).
+  // For "    " (4 spaces), start=4 which is past the string, so
+  // clamp to last valid position. For "", start=0 which is correct.
+  if (start >= plain.length) {
+    const pos = Math.max(0, plain.length);
     return { start: pos, end: pos };
   }
   return { start, end };
