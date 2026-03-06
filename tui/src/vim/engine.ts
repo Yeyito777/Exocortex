@@ -72,6 +72,13 @@ function handleInsertMode(key: KeyEvent, vim: VimState, buffer: string, cursor: 
   return { type: "passthrough" };
 }
 
+/** Exit visual mode → normal. Used by Escape, v toggle, V toggle. */
+function exitVisual(vim: VimState, cursor: number): VimResult {
+  vim.mode = "normal";
+  resetPending(vim);
+  return { type: "mode_change", mode: "normal", cursor };
+}
+
 // ── Visual mode handling ──────────────────────────────────────────
 
 function handleVisualMode(
@@ -83,28 +90,14 @@ function handleVisualMode(
 ): VimResult {
   const ks = keyString(key);
 
-  // Escape → exit visual, return to normal
-  if (ks === "escape" || ks === null && key.type === "escape") {
-    vim.mode = "normal";
-    resetPending(vim);
-    return { type: "mode_change", mode: "normal", cursor };
+  // Exit / toggle visual modes
+  if (ks === "escape"
+    || (ks === "v" && vim.mode === "visual")
+    || (ks === "V" && vim.mode === "visual-line")) {
+    return exitVisual(vim, cursor);
   }
 
-  // v in visual → exit to normal (toggle off)
-  if (ks === "v" && vim.mode === "visual") {
-    vim.mode = "normal";
-    resetPending(vim);
-    return { type: "mode_change", mode: "normal", cursor };
-  }
-
-  // V in visual-line → exit to normal (toggle off)
-  if (ks === "V" && vim.mode === "visual-line") {
-    vim.mode = "normal";
-    resetPending(vim);
-    return { type: "mode_change", mode: "normal", cursor };
-  }
-
-  // v ↔ V: switch between visual and visual-line
+  // Switch between visual ↔ visual-line
   if (ks === "V" && vim.mode === "visual") {
     vim.mode = "visual-line";
     return { type: "mode_change", mode: "visual-line", cursor };
@@ -175,29 +168,19 @@ function executeVisualCommand(
 
       switch (cmd.name) {
         case "visual_yank":
-          vim.mode = "normal";
-          resetPending(vim);
+          exitVisual(vim, cursor);
           return { type: "yank", text };
 
         case "visual_delete": {
-          if (context !== "prompt") {
-            vim.mode = "normal";
-            resetPending(vim);
-            return { type: "noop" };
-          }
+          if (context !== "prompt") return exitVisual(vim, cursor);
           const newBuf = buffer.slice(0, start) + buffer.slice(end);
           const newCursor = clampNormal(newBuf, start);
-          vim.mode = "normal";
-          resetPending(vim);
+          exitVisual(vim, newCursor);
           return { type: "visual_edit", buffer: newBuf, cursor: newCursor, mode: "normal" };
         }
 
         case "visual_change": {
-          if (context !== "prompt") {
-            vim.mode = "normal";
-            resetPending(vim);
-            return { type: "noop" };
-          }
+          if (context !== "prompt") return exitVisual(vim, cursor);
           const newBuf = buffer.slice(0, start) + buffer.slice(end);
           vim.mode = "insert";
           resetPending(vim);

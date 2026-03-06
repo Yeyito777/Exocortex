@@ -186,10 +186,6 @@ function processVimKey(key: KeyEvent, state: RenderState): KeyResult | null {
       if (result.mode === "insert" && state.chatFocus !== "prompt") {
         state.chatFocus = "prompt";
       }
-      // Exiting visual → normal, clear history selection
-      if (result.mode === "normal") {
-        // no-op needed, just mode change — renderer checks vim.mode
-      }
       return { type: "handled" };
 
     case "action":
