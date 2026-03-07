@@ -99,7 +99,7 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
 function renderUserMessage(text: string, cols: number): string[] {
   const padding = 1;         // horizontal padding inside bubble
   const margin = 2;          // gap from right edge of screen
-  const maxBubbleWidth = Math.min(Math.floor(cols * 0.6), cols - margin - 1);
+  const maxBubbleWidth = cols - margin - 1;
   const innerWidth = maxBubbleWidth - padding * 2;
   const wrapped = wordWrap(text, innerWidth);
 
