@@ -143,6 +143,7 @@ export function buildMessageLines(state: RenderState, availableWidth: number): s
   for (const msg of state.messages) {
     if (msg.role === "user") {
       lines.push(...renderUserMessage(msg.text, availableWidth));
+      lines.push("");
     } else if (msg.role === "assistant") {
       lines.push(...renderAIMessage(msg, contentWidth, state.toolRegistry, state.showToolOutput));
       lines.push("");
