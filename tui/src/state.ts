@@ -17,6 +17,7 @@ import type { HistoryCursor } from "./historycursor";
 import { createHistoryCursor } from "./historycursor";
 import type { UndoState } from "./undo";
 import { createUndoState, markInsertEntry } from "./undo";
+import type { AutocompleteState } from "./autocomplete";
 
 /** Cached layout values — set by the renderer, read by scroll functions. */
 export interface LayoutCache {
@@ -65,6 +66,8 @@ export interface RenderState {
   historyLines: string[];
   /** Undo/redo state for the prompt line. */
   undo: UndoState;
+  /** Autocomplete popup state (command or path completion). */
+  autocomplete: AutocompleteState | null;
 }
 
 /** Streaming state is derived from pendingAI — no separate boolean. */
@@ -98,6 +101,7 @@ export function createInitialState(): RenderState {
     historyVisualAnchor: createHistoryCursor(),
     historyLines: [],
     undo: createUndoState(),
+    autocomplete: null,
   };
   // App starts in insert mode — mark entry so first Esc commits the session
   markInsertEntry(s.undo, s.inputBuffer, s.cursorPos);

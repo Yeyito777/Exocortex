@@ -234,6 +234,55 @@ export function render(state: RenderState): void {
     }
   }
 
+  // ── Autocomplete popup (overlays message area above input) ────
+  if (state.autocomplete && state.autocomplete.matches.length > 0) {
+    const { matches, selection: sel } = state.autocomplete;
+    const maxName = matches.reduce((m, c) => Math.max(m, c.name.length), 0);
+    const maxDesc = matches.reduce((m, c) => Math.max(m, c.desc.length), 0);
+    const popupWidth = Math.min(maxName + maxDesc + 6, chatW - 2);
+    const nameWidth = maxName + 1;
+    const descWidth = popupWidth - nameWidth - 4;
+
+    const maxVisible = Math.max(1, sepAbove - 3);
+    const total = matches.length;
+    const winSize = Math.min(total, maxVisible);
+    let winStart = 0;
+
+    if (total > maxVisible && sel >= 0) {
+      const ideal = sel - Math.floor(winSize / 2);
+      winStart = Math.max(0, Math.min(ideal, total - winSize));
+    }
+
+    const topRow = sepAbove - winSize;
+    for (let vi = 0; vi < winSize; vi++) {
+      const i = winStart + vi;
+      const row = topRow + vi;
+      const isSelected = sel === i;
+      const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;
+      const marker = isSelected ? "▸ " : "  ";
+      const name = matches[i].name.padEnd(nameWidth);
+      const desc = matches[i].desc.slice(0, descWidth).padEnd(descWidth);
+      out.push(
+        move_to(row, chatCol) + bg + theme.accent + marker
+        + theme.text + name + theme.dim + desc + theme.reset,
+      );
+    }
+
+    // Scroll indicators when items are clipped
+    if (winStart > 0) {
+      out.push(
+        move_to(topRow, chatCol + popupWidth - 2)
+        + theme.sidebarBg + theme.dim + " ▲" + theme.reset,
+      );
+    }
+    if (winStart + winSize < total) {
+      out.push(
+        move_to(topRow + winSize - 1, chatCol + popupWidth - 2)
+        + theme.sidebarBg + theme.dim + " ▼" + theme.reset,
+      );
+    }
+  }
+
   // ── Separator above input ─────────────────────────────────────
   out.push(move_to(sepAbove, 1) + clear_line);
   if (sidebarOpen && sbRows[sepAbove - 1]) {

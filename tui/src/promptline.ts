@@ -10,18 +10,26 @@ import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
 import { resolveAction } from "./keybinds";
 import { markInsertEntry } from "./undo";
-import { tabComplete } from "./tabcomplete";
+import { updateAutocomplete, cycleAutocomplete, tryPathComplete } from "./autocomplete";
 
 /** Returns true if the key resulted in a submit (Enter). */
 export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "handled" | "unhandled" {
   const action = resolveAction(key);
 
-  // Tab → path completion
+  // Tab → cycle autocomplete forward, or try path completion
   if (key.type === "tab") {
-    const result = tabComplete(state.inputBuffer, state.cursorPos);
-    if (result) {
-      state.inputBuffer = result.buffer;
-      state.cursorPos = result.cursor;
+    if (state.autocomplete) {
+      cycleAutocomplete(state, 1);
+    } else {
+      tryPathComplete(state);
+    }
+    return "handled";
+  }
+
+  // Shift+Tab → cycle autocomplete backward
+  if (key.type === "backtab") {
+    if (state.autocomplete) {
+      cycleAutocomplete(state, -1);
     }
     return "handled";
   }
@@ -34,11 +42,13 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
       key.char +
       state.inputBuffer.slice(state.cursorPos);
     state.cursorPos++;
+    updateAutocomplete(state);
     return "handled";
   }
 
   switch (action) {
     case "submit":
+      state.autocomplete = null;
       return "submit";
 
     case "newline": {
@@ -47,6 +57,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
         "\n" +
         state.inputBuffer.slice(state.cursorPos);
       state.cursorPos++;
+      state.autocomplete = null;
       return "handled";
     }
 
@@ -57,6 +68,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
           state.inputBuffer.slice(state.cursorPos);
         state.cursorPos--;
       }
+      updateAutocomplete(state);
       return "handled";
     }
 
@@ -66,6 +78,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
           state.inputBuffer.slice(0, state.cursorPos) +
           state.inputBuffer.slice(state.cursorPos + 1);
       }
+      updateAutocomplete(state);
       return "handled";
     }
 

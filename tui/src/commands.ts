@@ -14,6 +14,11 @@ import type { ModelId } from "./messages";
 
 // ── Types ───────────────────────────────────────────────────────────
 
+export interface CompletionItem {
+  name: string;
+  desc: string;
+}
+
 export type CommandResult =
   | { type: "handled" }
   | { type: "quit" }
@@ -101,3 +106,17 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
 
   return cmd.handler(text, state);
 }
+
+// ── Completion data ────────────────────────────────────────────────
+
+/** Command names shown in the autocomplete popup. */
+export const COMMAND_LIST: CompletionItem[] = commands
+  .filter(c => c.name !== "/exit")   // /exit is an alias — only show /quit
+  .map(c => ({ name: c.name, desc: c.description }));
+
+/** Model arguments for /model completion. */
+export const MODEL_ARGS: CompletionItem[] = [
+  { name: "sonnet", desc: "Claude Sonnet 4" },
+  { name: "haiku", desc: "Claude Haiku 4" },
+  { name: "opus", desc: "Claude Opus 4" },
+];

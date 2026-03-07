@@ -32,6 +32,7 @@ import {
   getHistoryVisualSelection,
   scrollHalfPageWithCursor, scrollFullPageWithCursor, scrollLineWithStickyCursor,
 } from "./historycursor";
+import { dismissAutocomplete } from "./autocomplete";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -60,6 +61,7 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
     const pos = state.cursorPos;
     state.inputBuffer = buf.slice(0, pos) + text + buf.slice(pos);
     state.cursorPos = pos + text.length;
+    state.autocomplete = null;
     // Ensure prompt is focused and in insert mode
     state.panelFocus = "chat";
     state.chatFocus = "prompt";
@@ -138,6 +140,13 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
       state.vim.mode = "normal";
     }
     return { type: "handled" };
+  }
+
+  // ── Autocomplete dismiss on Escape ─────────────────────────────
+  // Must happen before vim so the buffer is restored before vim
+  // computes the normal-mode cursor position.
+  if (key.type === "escape" && state.autocomplete) {
+    dismissAutocomplete(state);
   }
 
   // ── Vim processing ─────────────────────────────────────────────

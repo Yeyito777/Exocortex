@@ -5,7 +5,7 @@
  */
 
 export interface KeyEvent {
-  type: "char" | "enter" | "tab" | "backspace" | "delete"
+  type: "char" | "enter" | "tab" | "backtab" | "backspace" | "delete"
       | "left" | "right" | "home" | "end"
       | "up" | "down"
       | "ctrl-b" | "ctrl-c" | "ctrl-d" | "ctrl-e" | "ctrl-f"
@@ -111,6 +111,7 @@ export function parseKeys(data: Buffer): KeyEvent[] {
           if (params === "" && final === "D") { events.push({ type: "left" }); i += seqLen; continue; }
           if (params === "" && final === "H") { events.push({ type: "home" }); i += seqLen; continue; }
           if (params === "" && final === "F") { events.push({ type: "end" }); i += seqLen; continue; }
+          if (params === "" && final === "Z") { events.push({ type: "backtab" }); i += seqLen; continue; }
           if (params === "3" && final === "~") { events.push({ type: "delete" }); i += seqLen; continue; }
           if (params === "1" && final === "~") { events.push({ type: "home" }); i += seqLen; continue; }
           if (params === "4" && final === "~") { events.push({ type: "end" }); i += seqLen; continue; }
