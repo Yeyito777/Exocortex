@@ -8,6 +8,7 @@
 import type { RenderState } from "./state";
 import { isStreaming } from "./state";
 import { ensureCurrentBlock } from "./messages";
+import type { SystemMessage } from "./messages";
 import { updateConversationList, updateConversation, syncSelectedIndex } from "./sidebar";
 import { theme } from "./theme";
 import type { Event } from "./protocol";
@@ -129,32 +130,26 @@ export function handleEvent(
 
     case "streaming_stopped": {
       if (event.convId !== state.convId) break;
-      const wasInterrupted = state.pendingAI !== null;
       if (state.pendingAI && state.pendingAI.blocks.length > 0) {
         state.pendingAI.metadata.endedAt ??= Date.now();
         state.messages.push(state.pendingAI);
       }
       state.pendingAI = null;
 
-      // Flush errors that arrived during streaming (after the AI message)
-      const hadErrors = state.errorBuffer.length > 0;
-      for (const msg of state.errorBuffer) {
-        state.messages.push({ role: "system", text: `✗ ${msg}`, color: theme.error, metadata: null });
+      // Flush system messages that arrived during streaming (after the AI message)
+      for (const msg of state.systemMessageBuffer) {
+        state.messages.push(msg);
       }
-      state.errorBuffer = [];
-
-      // Only show "Interrupted" if the user aborted (not on API errors)
-      if (wasInterrupted && !hadErrors) {
-        state.messages.push({ role: "system", text: "✗ Interrupted", color: theme.error, metadata: null });
-      }
+      state.systemMessageBuffer = [];
       break;
     }
 
     case "error": {
+      const sysMsg: SystemMessage = { role: "system", text: `✗ ${event.message}`, color: theme.error, metadata: null };
       if (isStreaming(state)) {
-        state.errorBuffer.push(event.message);
+        state.systemMessageBuffer.push(sysMsg);
       } else {
-        state.messages.push({ role: "system", text: `✗ ${event.message}`, color: theme.error, metadata: null });
+        state.messages.push(sysMsg);
       }
       break;
     }
@@ -225,6 +220,21 @@ export function handleEvent(
       state.scrollOffset = 0;
       state.contextTokens = event.contextTokens;
 
+      // Build interleaved message list: user, AI, and system messages in order
+      const sysMap = new Map<number, typeof event.systemMessages>();
+      for (const sm of event.systemMessages) {
+        const list = sysMap.get(sm.afterIndex) ?? [];
+        list.push(sm);
+        sysMap.set(sm.afterIndex, list);
+      }
+
+      // Insert system messages that appear before any user/AI messages
+      for (const sm of sysMap.get(0) ?? []) {
+        const color = sm.color === "error" ? theme.error : theme.muted;
+        state.messages.push({ role: "system", text: sm.text, color, metadata: null });
+      }
+
+      let displayIdx = 0;
       const totalPairs = Math.max(event.userMessages.length, event.aiMessages.length);
       let userIdx = 0;
       let aiIdx = 0;
@@ -232,6 +242,11 @@ export function handleEvent(
         if (userIdx < event.userMessages.length) {
           state.messages.push({ role: "user", text: event.userMessages[userIdx], metadata: null });
           userIdx++;
+          displayIdx++;
+          for (const sm of sysMap.get(displayIdx) ?? []) {
+            const color = sm.color === "error" ? theme.error : theme.muted;
+            state.messages.push({ role: "system", text: sm.text, color, metadata: null });
+          }
         }
         if (aiIdx < event.aiMessages.length) {
           const loaded = event.aiMessages[aiIdx];
@@ -242,7 +257,25 @@ export function handleEvent(
           };
           state.messages.push(aiMsg);
           aiIdx++;
+          displayIdx++;
+          for (const sm of sysMap.get(displayIdx) ?? []) {
+            const color = sm.color === "error" ? theme.error : theme.muted;
+            state.messages.push({ role: "system", text: sm.text, color, metadata: null });
+          }
         }
+      }
+      break;
+    }
+
+    case "system_message": {
+      if (event.convId !== state.convId) break;
+      const color = event.color === "error" ? theme.error : theme.muted;
+      const sysMsg: SystemMessage = { role: "system", text: event.text, color, metadata: null };
+      if (isStreaming(state)) {
+        // Buffer during streaming so it appears after the AI message
+        state.systemMessageBuffer.push(sysMsg);
+      } else {
+        state.messages.push(sysMsg);
       }
       break;
     }

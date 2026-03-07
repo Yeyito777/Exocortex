@@ -27,7 +27,7 @@ export interface ApiMessage {
 
 /** A message with optional metadata for persistence. */
 export interface StoredMessage {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string | ApiContentBlock[];
   metadata: MessageMetadata | null;
 }

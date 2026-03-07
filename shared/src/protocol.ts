@@ -205,6 +205,13 @@ export interface AIMessagePayload {
   metadata: MessageMetadata | null;
 }
 
+export interface SystemMessagePayload {
+  text: string;
+  color?: string;
+  /** Position in the display message list (inserted after this many user+AI messages). */
+  afterIndex: number;
+}
+
 export interface ConversationLoadedEvent {
   type: "conversation_loaded";
   reqId?: string;
@@ -213,6 +220,8 @@ export interface ConversationLoadedEvent {
   aiMessages: AIMessagePayload[];
   /** The raw user message texts, in order, for display. */
   userMessages: string[];
+  /** System messages with their position in the conversation. */
+  systemMessages: SystemMessagePayload[];
   /** Last known input token count for this conversation. */
   contextTokens: number | null;
 }
@@ -237,6 +246,13 @@ export interface ConversationPinnedEvent {
   type: "conversation_pinned";
   convId: string;
   pinned: boolean;
+}
+
+export interface SystemMessageEvent {
+  type: "system_message";
+  convId: string;
+  text: string;
+  color?: string;
 }
 
 export interface ToolsAvailableEvent {
@@ -272,5 +288,6 @@ export type Event =
   | ConversationDeletedEvent
   | ConversationMarkedEvent
   | ConversationPinnedEvent
+  | SystemMessageEvent
   | ToolsAvailableEvent
   | ErrorEvent;

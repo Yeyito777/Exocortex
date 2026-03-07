@@ -66,10 +66,13 @@ export async function orchestrateSendMessage(
   server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
   server.sendToSubscribers(convId, { type: "streaming_started", convId, model: conv.model });
 
-  const apiMessages = conv.messages.map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
+  // System messages are persisted but never sent to the AI
+  const apiMessages = conv.messages
+    .filter((m) => m.role !== "system")
+    .map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
 
   // Agent state for abort recovery — the agent populates completedMessages
   // after each full round. partialContent only tracks the in-flight round.
@@ -192,7 +195,9 @@ export async function orchestrateSendMessage(
     server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
 
   } catch (err) {
-    if (!ac.signal.aborted) {
+    const isAbort = ac.signal.aborted;
+
+    if (!isAbort) {
       const msg = err instanceof Error ? err.message : String(err);
       log("error", `orchestrator: stream error for ${convId}: ${msg}`);
       server.sendToSubscribers(convId, { type: "error", convId, message: msg });
@@ -230,6 +235,18 @@ export async function orchestrateSendMessage(
           tokens: agentState.tokens,
         },
       });
+    }
+
+    // Persist and broadcast system message
+    if (isAbort) {
+      const sysText = "✗ Interrupted";
+      conv.messages.push({ role: "system", content: sysText, metadata: null });
+      server.sendToSubscribers(convId, { type: "system_message", convId, text: sysText, color: "error" });
+    } else {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const sysText = `✗ ${errMsg}`;
+      conv.messages.push({ role: "system", content: sysText, metadata: null });
+      server.sendToSubscribers(convId, { type: "system_message", convId, text: sysText, color: "error" });
     }
   } finally {
     convStore.clearActiveJob(convId);

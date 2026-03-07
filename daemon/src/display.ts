@@ -17,11 +17,19 @@ export interface AIMessageDisplay {
   metadata: MessageMetadata | null;
 }
 
+export interface SystemMessageDisplay {
+  text: string;
+  color?: string;
+  /** Position in the display list: inserted after this many user+AI messages. */
+  afterIndex: number;
+}
+
 export interface ConversationDisplayData {
   convId: string;
   model: ModelId;
   userMessages: string[];
   aiMessages: AIMessageDisplay[];
+  systemMessages: SystemMessageDisplay[];
   contextTokens: number | null;
 }
 
@@ -39,6 +47,9 @@ export function buildDisplayData(
 ): ConversationDisplayData {
   const userMessages: string[] = [];
   const aiMessages: AIMessageDisplay[] = [];
+  const systemMessages: SystemMessageDisplay[] = [];
+  /** Counts user+AI messages emitted so far, for system message positioning. */
+  let displayIndex = 0;
 
   let currentAI: { blocks: Block[]; metadata: MessageMetadata | null } | null = null;
 
@@ -46,6 +57,7 @@ export function buildDisplayData(
     if (currentAI) {
       aiMessages.push(currentAI);
       currentAI = null;
+      displayIndex++;
     }
   }
 
@@ -89,6 +101,12 @@ export function buildDisplayData(
   }
 
   for (const msg of messages) {
+    if (msg.role === "system") {
+      flushAI();
+      const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+      systemMessages.push({ text, color: "error", afterIndex: displayIndex });
+      continue;
+    }
     if (msg.role === "user") {
       if (typeof msg.content !== "string") {
         const isToolResult = (msg.content as any[]).every((c: any) => c.type === "tool_result");
@@ -99,6 +117,7 @@ export function buildDisplayData(
       }
       flushAI();
       userMessages.push(typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content));
+      displayIndex++;
     } else if (msg.role === "assistant") {
       if (currentAI) {
         currentAI.blocks.push(...extractBlocks(msg.content));
@@ -110,5 +129,5 @@ export function buildDisplayData(
   }
   flushAI();
 
-  return { convId, model, userMessages, aiMessages, contextTokens: lastContextTokens };
+  return { convId, model, userMessages, aiMessages, systemMessages, contextTokens: lastContextTokens };
 }

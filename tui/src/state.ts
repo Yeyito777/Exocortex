@@ -6,7 +6,7 @@
  */
 
 import type { ModelId, UsageData, ToolDisplayInfo } from "./messages";
-import type { Message, AIMessage } from "./messages";
+import type { Message, AIMessage, SystemMessage } from "./messages";
 import type { PanelFocus } from "./focus";
 import type { ChatFocus } from "./chat";
 import type { SidebarState } from "./sidebar";
@@ -51,8 +51,8 @@ export interface RenderState {
   layout: LayoutCache;
   /** Pending message to send after conversation is created. */
   pendingSend: { active: boolean; text: string };
-  /** Errors buffered during streaming — flushed after AI message completes. */
-  errorBuffer: string[];
+  /** System messages buffered during streaming — flushed after AI message completes. */
+  systemMessageBuffer: SystemMessage[];
   /** Available tools reported by the daemon on connect. */
   toolRegistry: ToolDisplayInfo[];
   /** Whether tool result output is visible. Toggled with Ctrl+O. */
@@ -91,7 +91,7 @@ export function createInitialState(): RenderState {
     vim: createVimState(),
     layout: { totalLines: 0, messageAreaHeight: 0 },
     pendingSend: { active: false, text: "" },
-    errorBuffer: [],
+    systemMessageBuffer: [],
     toolRegistry: [],
     showToolOutput: false,
     historyCursor: createHistoryCursor(),
