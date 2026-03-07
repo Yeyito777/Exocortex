@@ -254,7 +254,14 @@ async function readStream(res: Response, cb: StreamCallbacks): Promise<StreamRes
       }
       case "message_start": {
         const msg = event.message as Record<string, Record<string, number>> | undefined;
-        if (msg?.usage?.input_tokens != null) inputTokens = msg.usage.input_tokens;
+        if (msg?.usage) {
+          // Total context = non-cached + cache-written + cache-read.
+          // With prompt caching active, input_tokens alone is just the
+          // tiny non-cached remainder (sometimes as low as 1).
+          inputTokens = (msg.usage.input_tokens ?? 0)
+            + (msg.usage.cache_creation_input_tokens ?? 0)
+            + (msg.usage.cache_read_input_tokens ?? 0);
+        }
         break;
       }
       case "message_delta": {
