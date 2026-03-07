@@ -75,6 +75,8 @@ export interface StreamCallbacks {
   onText: (chunk: string) => void;
   onThinking: (chunk: string) => void;
   onBlockStart?: (type: "text" | "thinking") => void;
+  /** Fired incrementally when a signature_delta arrives during streaming. */
+  onSignature?: (signature: string) => void;
   onHeaders?: (headers: Headers) => void;
 }
 
@@ -237,6 +239,7 @@ async function readStream(res: Response, cb: StreamCallbacks): Promise<StreamRes
           cb.onThinking(delta.thinking);
         } else if (delta?.type === "signature_delta") {
           block.signature = delta.signature;
+          cb.onSignature?.(delta.signature);
         } else if (delta?.type === "input_json_delta") {
           block.inputJson += delta.partial_json;
         }

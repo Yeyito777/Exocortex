@@ -125,6 +125,7 @@ export async function runAgentLoop(
       onText: callbacks.onTextChunk,
       onThinking: callbacks.onThinkingChunk,
       onBlockStart: callbacks.onBlockStart,
+      onSignature: callbacks.onSignature,
       onHeaders: callbacks.onHeaders,
     }, {
       system: options.system,
