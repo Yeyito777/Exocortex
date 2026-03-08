@@ -240,6 +240,18 @@ export async function orchestrateSendMessage(
         content: m.content,
         metadata: null,
       }));
+      // Stamp metadata on the last completed assistant — mirrors the success path.
+      // Without this, when a tool round completed before abort took effect,
+      // onRoundComplete cleared partialContent and metadata would be lost.
+      const lastAssistant = [...stored].reverse().find(m => m.role === "assistant");
+      if (lastAssistant) {
+        lastAssistant.metadata = {
+          startedAt,
+          endedAt: Date.now(),
+          model: conv.model,
+          tokens: agentState.tokens,
+        };
+      }
       conv.messages.push(...stored);
     }
 
