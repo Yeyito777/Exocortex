@@ -7,6 +7,7 @@
 
 import type { KeyEvent } from "./input";
 import type { ConversationSummary } from "./messages";
+import { sortConversations } from "./messages";
 import { resolveAction } from "./keybinds";
 import { theme } from "./theme";
 
@@ -112,11 +113,7 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       if (!conv) return { type: "handled" };
       const newPinned = !conv.pinned;
       conv.pinned = newPinned;
-      // Re-sort: pinned first, then by sortOrder
-      sidebar.conversations.sort((a, b) => {
-        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-        return a.sortOrder - b.sortOrder;
-      });
+      sortConversations(sidebar.conversations);
       syncSelectedIndex(sidebar);
       return { type: "pin_conversation", convId: conv.id, pinned: newPinned };
     }
@@ -177,10 +174,7 @@ export function updateConversation(sidebar: SidebarState, summary: ConversationS
   } else {
     sidebar.conversations.unshift(summary);
   }
-  sidebar.conversations.sort((a, b) => {
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-    return a.sortOrder - b.sortOrder;
-  });
+  sortConversations(sidebar.conversations);
   syncSelectedIndex(sidebar);
 }
 

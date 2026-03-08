@@ -105,6 +105,22 @@ export interface ConversationSummary {
   sortOrder: number;
 }
 
+// ── Conversation sorting ────────────────────────────────────────────
+
+/** Canonical sort: pinned first (by sortOrder), then unpinned (by sortOrder). */
+export function sortConversations<T extends Pick<ConversationSummary, "pinned" | "sortOrder">>(list: T[]): T[] {
+  return list.sort(compareConversations);
+}
+
+/** Comparator for conversation sorting. Usable standalone with Array.sort(). */
+export function compareConversations(
+  a: Pick<ConversationSummary, "pinned" | "sortOrder">,
+  b: Pick<ConversationSummary, "pinned" | "sortOrder">,
+): number {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  return a.sortOrder - b.sortOrder;
+}
+
 // ── Tool display info (daemon → TUI on connect) ────────────────────
 
 export interface ToolDisplayInfo {

@@ -12,6 +12,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlink
 import { log } from "./log";
 import { CONFIG_DIR } from "./store";
 import type { Conversation, StoredMessage, ApiMessage, ModelId, ConversationSummary } from "./messages";
+import { sortConversations } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
@@ -309,11 +310,7 @@ export function loadAll(): ConversationSummary[] {
     }
   }
 
-  // Pinned first (by sortOrder), then unpinned (by sortOrder)
-  summaries.sort((a, b) => {
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-    return a.sortOrder - b.sortOrder;
-  });
+  sortConversations(summaries);
   return summaries;
 }
 

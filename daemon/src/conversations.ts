@@ -1,29 +1,31 @@
 /**
  * In-memory conversation store with persistence.
  *
- * Owns the conversation map, active job tracking, and dirty/flush
- * mechanism for saving to disk. Persistence operations are delegated
- * to persistence.ts.
+ * Owns the conversation map and dirty/flush mechanism for saving
+ * to disk. Persistence operations are delegated to persistence.ts.
+ * In-flight stream tracking lives in streaming.ts.
  */
 
-import type { Conversation, ModelId, ConversationSummary, Block } from "./messages";
-import { createConversation } from "./messages";
+import type { Conversation, ModelId, ConversationSummary } from "./messages";
+import { createConversation, sortConversations } from "./messages";
+import { buildDisplayData, type ConversationDisplayData } from "./display";
+import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
+import * as streaming from "./streaming";
 import { log } from "./log";
+
+// Re-export streaming functions so existing `convStore.*` call sites keep working
+export {
+  isStreaming, setActiveJob, getActiveJob, clearActiveJob, getStreamingStartedAt,
+  resetChunkCounter,
+  initStreamingBlocks, getStreamingBlocks, pushStreamingBlock, appendToStreamingBlock, clearStreamingBlocks,
+} from "./streaming";
 
 // ── State ───────────────────────────────────────────────────────────
 
 const conversations = new Map<string, Conversation>();
-const activeJobs = new Map<string, AbortController>();
 const dirty = new Set<string>();
-const chunkCounters = new Map<string, number>();
 const unread = new Set<string>();
-/** Accumulated display blocks for in-flight streams (for late-joining clients). */
-const streamingBlocks = new Map<string, Block[]>();
-/** Original startedAt timestamp per streaming job (for late-joining clients). */
-const streamingStartedAt = new Map<string, number>();
-
-const CHUNK_SAVE_INTERVAL = 5;
 
 // ── IDs ─────────────────────────────────────────────────────────────
 
@@ -54,7 +56,7 @@ export function remove(id: string): boolean {
   const existed = conversations.delete(id);
   if (existed) {
     dirty.delete(id);
-    activeJobs.delete(id);
+    streaming.clearActiveJob(id);
     persistence.deleteFile(id);
   }
   return existed;
@@ -118,18 +120,10 @@ export function flushAll(): void {
 
 /** Track chunk count and flush every N chunks. */
 export function onChunk(id: string): void {
-  const count = (chunkCounters.get(id) ?? 0) + 1;
-  chunkCounters.set(id, count);
-  if (count >= CHUNK_SAVE_INTERVAL) {
+  if (streaming.onChunk(id)) {
     markDirty(id);
     flush(id);
-    chunkCounters.set(id, 0);
   }
-}
-
-/** Reset chunk counter (call on block boundaries / message complete). */
-export function resetChunkCounter(id: string): void {
-  chunkCounters.delete(id);
 }
 
 /** Get conversation summaries for the sidebar (from in-memory state). */
@@ -139,11 +133,7 @@ export function listSummaries(): ConversationSummary[] {
     const s = getSummary(conv.id);
     if (s) summaries.push(s);
   }
-  // Pinned first (by sortOrder), then unpinned (by sortOrder)
-  summaries.sort((a, b) => {
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-    return a.sortOrder - b.sortOrder;
-  });
+  sortConversations(summaries);
   return summaries;
 }
 
@@ -230,16 +220,13 @@ export function getSummary(id: string): ConversationSummary | null {
     title: conv.title ?? null,
     marked: conv.marked,
     pinned: conv.pinned,
-    streaming: activeJobs.has(conv.id),
+    streaming: streaming.isStreaming(conv.id),
     unread: unread.has(conv.id),
     sortOrder: conv.sortOrder,
   };
 }
 
 // ── Display data ───────────────────────────────────────────────────
-
-import { buildDisplayData, type ConversationDisplayData } from "./display";
-import { summarizeTool } from "./tools/registry";
 
 export type { ConversationDisplayData, DisplayEntry } from "./display";
 
@@ -263,58 +250,3 @@ export function isUnread(convId: string): boolean {
   return unread.has(convId);
 }
 
-// ── Active jobs (abort controllers for in-flight streams) ───────────
-
-/** Streaming state is derived from activeJobs — no boolean on Conversation. */
-export function isStreaming(convId: string): boolean {
-  return activeJobs.has(convId);
-}
-
-export function setActiveJob(convId: string, ac: AbortController, startedAt: number): void {
-  activeJobs.set(convId, ac);
-  streamingStartedAt.set(convId, startedAt);
-}
-
-export function getActiveJob(convId: string): AbortController | undefined {
-  return activeJobs.get(convId);
-}
-
-export function clearActiveJob(convId: string): void {
-  activeJobs.delete(convId);
-  streamingStartedAt.delete(convId);
-}
-
-export function getStreamingStartedAt(convId: string): number | undefined {
-  return streamingStartedAt.get(convId);
-}
-
-// ── Streaming blocks (accumulated display blocks for late-joiners) ──
-
-/** Initialize streaming blocks for a new stream. */
-export function initStreamingBlocks(convId: string): void {
-  streamingBlocks.set(convId, []);
-}
-
-/** Get the accumulated streaming blocks (for late-joining clients). */
-export function getStreamingBlocks(convId: string): Block[] | undefined {
-  return streamingBlocks.get(convId);
-}
-
-/** Push a new block to the streaming accumulator. */
-export function pushStreamingBlock(convId: string, block: Block): void {
-  const blocks = streamingBlocks.get(convId);
-  if (blocks) blocks.push(block);
-}
-
-/** Append text to the last streaming block of the given type. */
-export function appendToStreamingBlock(convId: string, type: "text" | "thinking", chunk: string): void {
-  const blocks = streamingBlocks.get(convId);
-  if (!blocks) return;
-  const last = blocks[blocks.length - 1];
-  if (last?.type === type) last.text += chunk;
-}
-
-/** Clear streaming blocks (call when stream finishes). */
-export function clearStreamingBlocks(convId: string): void {
-  streamingBlocks.delete(convId);
-}

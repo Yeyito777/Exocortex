@@ -75,6 +75,8 @@ export interface AgentResult {
 export interface AgentState {
   /** Messages from fully completed rounds (not the in-flight one). */
   completedMessages: ApiMessage[];
+  /** Display blocks from fully completed rounds (for TUI abort recovery). */
+  completedBlocks: Block[];
   /** Accumulated output tokens so far. */
   tokens: number;
 }
@@ -241,6 +243,7 @@ export async function runAgentLoop(
     // Update recovery state — this round is fully complete
     if (state) {
       state.completedMessages = [...newMessages];
+      state.completedBlocks = [...allBlocks];
       state.tokens = totalOutputTokens;
     }
     callbacks.onRoundComplete?.();

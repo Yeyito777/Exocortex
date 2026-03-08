@@ -7,7 +7,7 @@
 
 import type { RenderState } from "./state";
 import { isStreaming } from "./state";
-import { ensureCurrentBlock, createPendingAI } from "./messages";
+import { ensureCurrentBlock, createPendingAI, sortConversations } from "./messages";
 import type { SystemMessage } from "./messages";
 import { updateConversationList, updateConversation, syncSelectedIndex } from "./sidebar";
 import { theme } from "./theme";
@@ -217,11 +217,7 @@ export function handleEvent(
       const conv = state.sidebar.conversations.find(c => c.id === event.convId);
       if (conv) {
         conv.pinned = event.pinned;
-        // Re-sort: pinned first, then by sortOrder
-        state.sidebar.conversations.sort((a, b) => {
-          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-          return a.sortOrder - b.sortOrder;
-        });
+        sortConversations(state.sidebar.conversations);
         syncSelectedIndex(state.sidebar);
       }
       break;

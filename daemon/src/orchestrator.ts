@@ -78,7 +78,7 @@ export async function orchestrateSendMessage(
   // Agent state for abort recovery — the agent populates completedMessages
   // after each full round. partialContent tracks the in-flight round only
   // (cleared via onRoundComplete between rounds).
-  const agentState: AgentState = { completedMessages: [], tokens: 0 };
+  const agentState: AgentState = { completedMessages: [], completedBlocks: [], tokens: 0 };
   const partialContent: import("./messages").ApiContentBlock[] = [];
   /** Blocks that survived persistence on abort/error — sent to TUI so it can trim display. */
   let abortPersistedBlocks: import("./messages").Block[] | undefined;
@@ -252,14 +252,17 @@ export async function orchestrateSendMessage(
     const hasContent = safeContent.some(b =>
       (b.type === "text" && b.text) || (b.type === "thinking" && b.thinking)
     );
-    // Convert safe content to display blocks for the TUI
-    abortPersistedBlocks = safeContent
+    // Convert safe content to display blocks for the TUI.
+    // Start with blocks from fully completed rounds (already persisted via
+    // completedMessages above), then append any salvageable in-flight content.
+    const partialBlocks: import("./messages").Block[] = safeContent
       .filter(b => (b.type === "text" && b.text) || (b.type === "thinking" && b.thinking))
       .map(b => {
         if (b.type === "thinking") return { type: "thinking" as const, text: b.thinking };
         if (b.type === "text") return { type: "text" as const, text: b.text };
         return { type: "text" as const, text: "" };
       });
+    abortPersistedBlocks = [...agentState.completedBlocks, ...partialBlocks];
 
     if (hasContent) {
       conv.messages.push({
