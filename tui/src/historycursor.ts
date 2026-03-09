@@ -52,6 +52,8 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
 
   if (lines.length === 0) return true;
 
+  const wrapCont = state.historyWrapContinuation;
+
   switch (action) {
     case "history_left":    state.historyCursor = charLeft(cur, lines); break;
     case "history_right":   state.historyCursor = charRight(cur, lines); break;
@@ -63,8 +65,8 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
     case "history_W":       state.historyCursor = wordForwardBig(cur, lines); break;
     case "history_B":       state.historyCursor = wordBackwardBig(cur, lines); break;
     case "history_E":       state.historyCursor = wordEndBig(cur, lines); break;
-    case "history_0":       state.historyCursor = lineStart(cur, lines); break;
-    case "history_dollar":  state.historyCursor = lineEnd(cur, lines); break;
+    case "history_0":       state.historyCursor = lineStart(cur, lines, wrapCont); break;
+    case "history_dollar":  state.historyCursor = lineEnd(cur, lines, wrapCont); break;
     case "history_gg":      state.historyCursor = bufferStart(lines); break;
     case "history_G":       state.historyCursor = bufferEnd(lines); break;
     case "history_yy":      return true; // caller handles clipboard

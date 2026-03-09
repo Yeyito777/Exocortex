@@ -13,45 +13,69 @@ import { theme } from "./theme";
 
 // ── Word wrapping ───────────────────────────────────────────────────
 
-export function wordWrap(text: string, width: number): string[] {
-  if (width <= 0) return [text];
-  const result: string[] = [];
+export interface WrapResult {
+  lines: string[];
+  /** true for visual lines that are continuations of the previous logical line. */
+  cont: boolean[];
+}
+
+export function wordWrap(text: string, width: number): WrapResult {
+  if (width <= 0) return { lines: [text], cont: [false] };
+  const lines: string[] = [];
+  const cont: boolean[] = [];
 
   for (const rawLine of text.split("\n")) {
     if (rawLine.length <= width) {
-      result.push(rawLine);
+      lines.push(rawLine);
+      cont.push(false);
       continue;
     }
     let line = rawLine;
+    let first = true;
     while (line.length > width) {
       let breakAt = line.lastIndexOf(" ", width);
       if (breakAt <= 0) breakAt = width;
-      result.push(line.slice(0, breakAt));
+      lines.push(line.slice(0, breakAt));
+      cont.push(!first);
+      first = false;
       line = line.slice(breakAt).trimStart();
     }
-    if (line) result.push(line);
+    if (line) {
+      lines.push(line);
+      cont.push(!first);
+    }
   }
 
-  return result;
+  return { lines, cont };
 }
 
 // ── Block rendering ─────────────────────────────────────────────────
 
-function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDisplayInfo[], showToolOutput: boolean): string[] {
+interface BlockResult {
+  lines: string[];
+  cont: boolean[];
+}
+
+function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDisplayInfo[], showToolOutput: boolean): BlockResult {
   const lines: string[] = [];
+  const cont: boolean[] = [];
 
   switch (block.type) {
     case "thinking": {
       if (!block.text.trim()) break;
-      for (const wl of wordWrap(block.text, contentWidth)) {
-        lines.push(`  ${theme.dim}${theme.italic}${wl}${theme.reset}`);
+      const w = wordWrap(block.text, contentWidth);
+      for (let i = 0; i < w.lines.length; i++) {
+        lines.push(`  ${theme.dim}${theme.italic}${w.lines[i]}${theme.reset}`);
+        cont.push(w.cont[i]);
       }
       break;
     }
     case "text": {
       const text = block.text.replace(/^\n+/, "");
-      for (const wl of wordWrap(text, contentWidth)) {
-        lines.push(`  ${wl}`);
+      const w = wordWrap(text, contentWidth);
+      for (let i = 0; i < w.lines.length; i++) {
+        lines.push(`  ${w.lines[i]}`);
+        cont.push(w.cont[i]);
       }
       break;
     }
@@ -59,16 +83,17 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
       const display = resolveToolDisplay(block.toolName, block.summary, toolRegistry);
       // Wrap the plain text, then apply colors per line
       const plainText = display.detail ? `${display.label} ${display.detail}` : display.label;
-      const wrapped = wordWrap(plainText, contentWidth - 2);
-      for (let i = 0; i < wrapped.length; i++) {
+      const w = wordWrap(plainText, contentWidth - 2);
+      for (let i = 0; i < w.lines.length; i++) {
         if (i === 0) {
           // First line: bold label + detail
           const labelLen = display.label.length;
-          const rest = wrapped[0].slice(labelLen);
+          const rest = w.lines[0].slice(labelLen);
           lines.push(`  ${display.fg}${theme.bold}${display.label}${theme.reset}${display.fg}${rest}${theme.reset}`);
         } else {
-          lines.push(`  ${display.fg}${wrapped[i]}${theme.reset}`);
+          lines.push(`  ${display.fg}${w.lines[i]}${theme.reset}`);
         }
+        cont.push(w.cont[i]);
       }
       break;
     }
@@ -83,43 +108,48 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
 
       let first = true;
       for (const ol of outputLines) {
-        for (const wl of wordWrap(ol, contentWidth - contPrefix.length)) {
+        const w = wordWrap(ol, contentWidth - contPrefix.length);
+        for (let i = 0; i < w.lines.length; i++) {
           const prefix = first ? firstPrefix : contPrefix;
           first = false;
-          lines.push(`${fg}${prefix}${wl}${theme.reset}`);
+          lines.push(`${fg}${prefix}${w.lines[i]}${theme.reset}`);
+          cont.push(w.cont[i]);
         }
       }
       break;
     }
   }
 
-  return lines;
+  return { lines, cont };
 }
 
 // ── User message rendering (right-aligned, themed background) ───────
 
-function renderUserMessage(text: string, cols: number): string[] {
+function renderUserMessage(text: string, cols: number): BlockResult {
   const padding = 1;         // horizontal padding inside bubble
   const margin = 2;          // gap from right edge of screen
   const maxBubbleWidth = cols - margin - 1;
   const innerWidth = maxBubbleWidth - padding * 2;
-  const wrapped = wordWrap(text, innerWidth);
+  const w = wordWrap(text, innerWidth);
 
   // Size bubble to the longest line
   const bubbleWidth = Math.min(
     maxBubbleWidth,
-    Math.max(...wrapped.map(l => l.length)) + padding * 2,
+    Math.max(...w.lines.map(l => l.length)) + padding * 2,
   );
   const inner = bubbleWidth - padding * 2;
 
   const lines: string[] = [];
-  for (const wl of wrapped) {
+  const cont: boolean[] = [];
+  for (let i = 0; i < w.lines.length; i++) {
+    const wl = w.lines[i];
     const padLeft = " ".repeat(Math.max(0, inner - wl.length) + padding);
     const padRight = " ".repeat(padding);
     const offset = " ".repeat(Math.max(0, cols - bubbleWidth - margin));
     lines.push(`${offset}${theme.userBg}${padLeft}${wl}${padRight}${theme.reset}`);
+    cont.push(w.cont[i]);
   }
-  return lines;
+  return { lines, cont };
 }
 
 // ── Message boundary tracking ───────────────────────────────────────
@@ -139,33 +169,46 @@ export interface MessageBound {
 export function buildMessageLines(
   state: RenderState,
   availableWidth: number,
-): { lines: string[]; messageBounds: MessageBound[] } {
+): { lines: string[]; messageBounds: MessageBound[]; wrapContinuation: boolean[] } {
   const contentWidth = availableWidth - 4;
   const lines: string[] = [];
+  const wrapContinuation: boolean[] = [];
   const messageBounds: MessageBound[] = [];
+
+  /** Append block result (lines + continuation flags). */
+  const pushBlock = (br: BlockResult) => {
+    lines.push(...br.lines);
+    wrapContinuation.push(...br.cont);
+  };
+
+  /** Append a non-wrapped line (margin, metadata, etc). */
+  const pushLine = (line: string) => {
+    lines.push(line);
+    wrapContinuation.push(false);
+  };
 
   let firstUser = true;
   for (const msg of state.messages) {
     const start = lines.length;
     if (msg.role === "user") {
-      if (!firstUser) lines.push("");  // top margin (skip for first)
-      lines.push(...renderUserMessage(msg.text, availableWidth));
+      if (!firstUser) pushLine("");  // top margin (skip for first)
+      pushBlock(renderUserMessage(msg.text, availableWidth));
       const contentEnd = lines.length;
-      lines.push("");                  // bottom margin
+      pushLine("");                  // bottom margin
       firstUser = false;
       messageBounds.push({ start, end: lines.length, contentEnd });
     } else if (msg.role === "assistant") {
       // AI messages: content blocks, then metadata
       for (const block of msg.blocks) {
-        lines.push(...renderBlock(block, contentWidth, state.toolRegistry, state.showToolOutput));
+        pushBlock(renderBlock(block, contentWidth, state.toolRegistry, state.showToolOutput));
       }
       const contentEnd = lines.length;
-      lines.push(...renderMetadata(msg.metadata));
+      for (const ml of renderMetadata(msg.metadata)) pushLine(ml);
       messageBounds.push({ start, end: lines.length, contentEnd });
     } else {
       const color = msg.color || theme.dim;
       for (const sl of msg.text.split("\n")) {
-        lines.push(`  ${color}${sl}${theme.reset}`);
+        pushLine(`  ${color}${sl}${theme.reset}`);
       }
       messageBounds.push({ start, end: lines.length, contentEnd: lines.length });
     }
@@ -175,12 +218,12 @@ export function buildMessageLines(
   if (state.pendingAI) {
     const start = lines.length;
     for (const block of state.pendingAI.blocks) {
-      lines.push(...renderBlock(block, contentWidth, state.toolRegistry, state.showToolOutput));
+      pushBlock(renderBlock(block, contentWidth, state.toolRegistry, state.showToolOutput));
     }
     const contentEnd = lines.length;
-    lines.push(...renderMetadata(state.pendingAI.metadata));
+    for (const ml of renderMetadata(state.pendingAI.metadata)) pushLine(ml);
     messageBounds.push({ start, end: lines.length, contentEnd });
   }
 
-  return { lines, messageBounds };
+  return { lines, messageBounds, wrapContinuation };
 }

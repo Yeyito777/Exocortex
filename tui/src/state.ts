@@ -65,6 +65,8 @@ export interface RenderState {
   historyVisualAnchor: HistoryCursor;
   /** Cached rendered lines for history cursor navigation (ANSI included). */
   historyLines: string[];
+  /** true for visual lines that are word-wrap continuations of the previous logical line. */
+  historyWrapContinuation: boolean[];
   /** Per-message row ranges into historyLines (set by renderer). */
   historyMessageBounds: MessageBound[];
   /** Undo/redo state for the prompt line. */
@@ -105,6 +107,7 @@ export function createInitialState(): RenderState {
     historyCursor: createHistoryCursor(),
     historyVisualAnchor: createHistoryCursor(),
     historyLines: [],
+    historyWrapContinuation: [],
     historyMessageBounds: [],
     undo: createUndoState(),
     autocomplete: null,

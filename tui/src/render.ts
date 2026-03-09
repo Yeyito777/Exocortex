@@ -145,11 +145,12 @@ export function render(state: RenderState): void {
   // ── Message area (rows 3 to sepAbove-1) ────────────────────────
   const messageAreaStart = 3;
   const messageAreaHeight = sepAbove - messageAreaStart;
-  const { lines: allLines, messageBounds } = buildMessageLines(state, chatW);
+  const { lines: allLines, messageBounds, wrapContinuation } = buildMessageLines(state, chatW);
   const totalLines = allLines.length;
 
   // Cache rendered lines and message bounds for history cursor navigation
   state.historyLines = allLines;
+  state.historyWrapContinuation = wrapContinuation;
   state.historyMessageBounds = messageBounds;
   state.historyCursor = clampCursor(state.historyCursor, allLines);
 
