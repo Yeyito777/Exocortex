@@ -22,7 +22,7 @@ import {
   scrollPageUp, scrollPageDown,
   scrollToTop, scrollToBottom,
 } from "./chat";
-import { handleSidebarKey, handleSidebarAction, moveSelection } from "./sidebar";
+import { handleSidebarKey, handleSidebarAction, moveSelection, syncSelectedIndex } from "./sidebar";
 import { processKey, copyToClipboard, pasteFromClipboard, type VimContext } from "./vim";
 import { clampNormal } from "./vim/buffer";
 import { pushUndo, markInsertEntry, commitInsertSession, undo as undoFn, redo as redoFn } from "./undo";
@@ -80,7 +80,14 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
     case "sidebar_toggle":
       state.sidebar.open = !state.sidebar.open;
       state.panelFocus = state.sidebar.open ? "sidebar" : "chat";
-      if (state.panelFocus === "sidebar") state.vim.mode = "normal";
+      if (state.panelFocus === "sidebar") {
+        state.vim.mode = "normal";
+        // Default cursor to the current conversation
+        if (state.convId) {
+          state.sidebar.selectedId = state.convId;
+          syncSelectedIndex(state.sidebar);
+        }
+      }
       return { type: "handled" };
     case "focus_cycle":
       if (state.sidebar.open) {
@@ -108,7 +115,14 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
       const isPromptTyping = state.panelFocus === "chat" && state.chatFocus === "prompt"
         && state.vim.mode === "insert";
       if (isPromptTyping) break;
-      if (!state.sidebar.open) state.sidebar.open = true;
+      if (!state.sidebar.open) {
+        state.sidebar.open = true;
+        // Default cursor to the current conversation before moving
+        if (state.convId) {
+          state.sidebar.selectedId = state.convId;
+          syncSelectedIndex(state.sidebar);
+        }
+      }
       state.panelFocus = "sidebar";
       state.vim.mode = "normal";
       moveSelection(state.sidebar, action === "sidebar_next" ? 1 : -1);
