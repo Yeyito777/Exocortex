@@ -7,6 +7,7 @@
 
 import type { ModelId, UsageData, ToolDisplayInfo } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
+import type { MessageBound } from "./conversation";
 import type { PanelFocus } from "./focus";
 import type { ChatFocus } from "./chat";
 import type { SidebarState } from "./sidebar";
@@ -64,6 +65,8 @@ export interface RenderState {
   historyVisualAnchor: HistoryCursor;
   /** Cached rendered lines for history cursor navigation (ANSI included). */
   historyLines: string[];
+  /** Per-message row ranges into historyLines (set by renderer). */
+  historyMessageBounds: MessageBound[];
   /** Undo/redo state for the prompt line. */
   undo: UndoState;
   /** Autocomplete popup state (command or path completion). */
@@ -100,6 +103,7 @@ export function createInitialState(): RenderState {
     historyCursor: createHistoryCursor(),
     historyVisualAnchor: createHistoryCursor(),
     historyLines: [],
+    historyMessageBounds: [],
     undo: createUndoState(),
     autocomplete: null,
   };

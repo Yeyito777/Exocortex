@@ -27,11 +27,12 @@ import { processKey, copyToClipboard, pasteFromClipboard, type VimContext } from
 import { clampNormal } from "./vim/buffer";
 import { pushUndo, markInsertEntry, commitInsertSession, undo as undoFn, redo as redoFn } from "./undo";
 import {
-  applyHistoryAction, stripAnsi, ensureCursorVisible, placeAtVisibleBottom,
+  applyHistoryAction, stripAnsi, contentBounds, ensureCursorVisible, placeAtVisibleBottom,
   handleHistoryFind as historyFindHandler,
   getHistoryVisualSelection,
   scrollHalfPageWithCursor, scrollFullPageWithCursor, scrollLineWithStickyCursor,
 } from "./historycursor";
+import { keyString, resetPending } from "./vim/types";
 import { dismissAutocomplete } from "./autocomplete";
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -190,6 +191,10 @@ function processVimKey(key: KeyEvent, state: RenderState): KeyResult | null {
     if (historyFindHandler(key, state)) return { type: "handled" };
   }
 
+  // Message text object (im/am) — intercept before engine for all contexts
+  const msgResult = handleMessageTextObject(key, state, context);
+  if (msgResult) return msgResult;
+
   const prevMode = state.vim.mode;
   const result = processKey(key, state.vim, context, state.inputBuffer, state.cursorPos);
 
@@ -264,6 +269,10 @@ function processVimKey(key: KeyEvent, state: RenderState): KeyResult | null {
     }
 
     case "mode_change":
+      // Clear visual text object modifier when leaving visual
+      if (result.mode !== "visual" && result.mode !== "visual-line") {
+        pendingVisualModifier = null;
+      }
       // Commit insert session when leaving insert mode
       // (prevMode needed because engine mutates vim.mode before returning)
       if (prevMode === "insert" && result.mode !== "insert") {
@@ -472,6 +481,156 @@ function handleScrollAction(action: Action, state: RenderState): void {
 function getVimContext(state: RenderState): VimContext {
   if (state.panelFocus === "sidebar") return "sidebar";
   return state.chatFocus === "prompt" ? "prompt" : "history";
+}
+
+// ── Message text object (im/am) ───────────────────────────────────
+//
+// Intercepted before the vim engine because:
+//   1. Visual mode has no text object support in the engine.
+//   2. In history context, text objects must operate on historyLines,
+//      not the prompt buffer that the engine receives.
+//   3. Only yank (y) and visual (v/V) are wired — no delete/change.
+
+/** Pending "i"/"a" modifier for visual mode text objects. */
+let pendingVisualModifier: "i" | "a" | null = null;
+
+/**
+ * Handle the message text object (im/am) across all contexts.
+ * Returns a KeyResult if the key was consumed, null to fall through to the engine.
+ */
+function handleMessageTextObject(
+  key: KeyEvent,
+  state: RenderState,
+  context: VimContext,
+): KeyResult | null {
+  const vim = state.vim;
+  const ks = keyString(key);
+  if (!ks) return null;
+
+  const inVisual = vim.mode === "visual" || vim.mode === "visual-line";
+
+  // ── Visual mode: "i"/"a" starts a text object modifier ──────────
+  if (inVisual && (ks === "i" || ks === "a")) {
+    pendingVisualModifier = ks;
+    return { type: "handled" };
+  }
+
+  // ── Visual mode: pending modifier + "m" → select message ────────
+  if (inVisual && pendingVisualModifier && ks === "m") {
+    const modifier = pendingVisualModifier;
+    pendingVisualModifier = null;
+
+    if (context === "prompt") {
+      return selectPromptMessage(modifier, state);
+    }
+    if (context === "history") {
+      return selectHistoryMessage(modifier, state);
+    }
+    return { type: "handled" };
+  }
+
+  // ── Visual mode: pending modifier + non-"m" → cancel, fall through
+  if (inVisual && pendingVisualModifier) {
+    pendingVisualModifier = null;
+    // Don't consume — let the engine handle the key as a normal visual key
+    return null;
+  }
+
+  // ── Normal mode: yank + text object modifier + "m" → yank message
+  if (vim.mode === "normal"
+    && vim.pendingOperator === "yank"
+    && vim.pendingTextObjectModifier
+    && ks === "m"
+  ) {
+    const modifier = vim.pendingTextObjectModifier;
+    resetPending(vim);
+
+    if (context === "prompt") {
+      const text = modifier === "i" ? state.inputBuffer.trim() : state.inputBuffer;
+      if (text) copyToClipboard(text);
+      return { type: "handled" };
+    }
+    if (context === "history") {
+      const text = extractHistoryMessageText(state, modifier === "i");
+      if (text) copyToClipboard(text);
+      return { type: "handled" };
+    }
+    return { type: "handled" };
+  }
+
+  return null;
+}
+
+/** vim/vam in prompt: snap visual selection to the entire buffer. */
+function selectPromptMessage(modifier: "i" | "a", state: RenderState): KeyResult {
+  const buf = state.inputBuffer;
+  if (buf.length === 0) return { type: "handled" };
+
+  let start = 0;
+  let end = buf.length;
+  if (modifier === "i") {
+    while (start < end && (buf[start] === " " || buf[start] === "\t")) start++;
+    while (end > start && (buf[end - 1] === " " || buf[end - 1] === "\t")) end--;
+    if (start >= end) return { type: "handled" };
+  }
+
+  state.vim.visualAnchor = start;
+  state.cursorPos = end - 1;
+  return { type: "handled" };
+}
+
+/** vim/vam in history: snap visual selection to the chat message at cursor. */
+function selectHistoryMessage(modifier: "i" | "a", state: RenderState): KeyResult {
+  const bounds = findMessageBoundsAtCursor(state);
+  if (!bounds) return { type: "handled" };
+
+  const lines = state.historyLines;
+  let startRow = bounds.start;
+  let endRow = bounds.end - 1; // inclusive
+
+  if (modifier === "i") {
+    while (startRow <= endRow && stripAnsi(lines[startRow]).trim() === "") startRow++;
+    while (endRow >= startRow && stripAnsi(lines[endRow]).trim() === "") endRow--;
+  }
+  if (startRow > endRow) return { type: "handled" };
+
+  const startBnd = contentBounds(stripAnsi(lines[startRow]));
+  const endBnd = contentBounds(stripAnsi(lines[endRow]));
+
+  state.historyVisualAnchor = { row: startRow, col: startBnd.start };
+  state.historyCursor = { row: endRow, col: endBnd.end };
+  ensureCursorVisible(state);
+  return { type: "handled" };
+}
+
+/** Find the MessageBound that contains the current history cursor row. */
+function findMessageBoundsAtCursor(state: RenderState): { start: number; end: number } | null {
+  const row = state.historyCursor.row;
+  for (const b of state.historyMessageBounds) {
+    if (row >= b.start && row < b.end) return b;
+  }
+  return null;
+}
+
+/** Extract plain text of the history message at the cursor row. */
+function extractHistoryMessageText(state: RenderState, inner: boolean): string {
+  const bounds = findMessageBoundsAtCursor(state);
+  if (!bounds) return "";
+
+  const lines = state.historyLines;
+  let startRow = bounds.start;
+  let endRow = bounds.end;
+
+  if (inner) {
+    while (startRow < endRow && stripAnsi(lines[startRow]).trim() === "") startRow++;
+    while (endRow > startRow && stripAnsi(lines[endRow - 1]).trim() === "") endRow--;
+  }
+
+  const result: string[] = [];
+  for (let i = startRow; i < endRow; i++) {
+    result.push(stripAnsi(lines[i]).trim());
+  }
+  return result.join("\n");
 }
 
 // ── Sidebar panel (non-vim path) ───────────────────────────────────

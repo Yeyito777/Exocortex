@@ -136,14 +136,29 @@ function renderAIMessage(msg: AIMessage, contentWidth: number, toolRegistry: Too
   return lines;
 }
 
+// ── Message boundary tracking ───────────────────────────────────────
+
+/** Row range for a single message in the rendered history lines. */
+export interface MessageBound {
+  /** First line index (inclusive). */
+  start: number;
+  /** Last line index (exclusive). */
+  end: number;
+}
+
 // ── Build all display lines ─────────────────────────────────────────
 
-export function buildMessageLines(state: RenderState, availableWidth: number): string[] {
+export function buildMessageLines(
+  state: RenderState,
+  availableWidth: number,
+): { lines: string[]; messageBounds: MessageBound[] } {
   const contentWidth = availableWidth - 4;
   const lines: string[] = [];
+  const messageBounds: MessageBound[] = [];
 
   let firstUser = true;
   for (const msg of state.messages) {
+    const start = lines.length;
     if (msg.role === "user") {
       if (!firstUser) lines.push("");  // top margin (skip for first)
       lines.push(...renderUserMessage(msg.text, availableWidth));
@@ -158,12 +173,15 @@ export function buildMessageLines(state: RenderState, availableWidth: number): s
         lines.push(`  ${color}${sl}${theme.reset}`);
       }
     }
+    messageBounds.push({ start, end: lines.length });
   }
 
   // Currently streaming AI message — no margins
   if (state.pendingAI) {
+    const start = lines.length;
     lines.push(...renderAIMessage(state.pendingAI, contentWidth, state.toolRegistry, state.showToolOutput));
+    messageBounds.push({ start, end: lines.length });
   }
 
-  return lines;
+  return { lines, messageBounds };
 }
