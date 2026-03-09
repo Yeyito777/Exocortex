@@ -34,6 +34,8 @@ export interface AgentCallbacks {
   onContextUpdate(contextTokens: number): void;
   /** Response headers received (fires once per API round, carries rate-limit info). */
   onHeaders(headers: Headers): void;
+  /** A transient stream error triggered a retry. Reset any accumulated partial state. */
+  onRetry?(attempt: number, maxAttempts: number, errorMessage: string, delaySec: number): void;
   /** A tool-use round completed — all tool results received, next API call starting. */
   onRoundComplete?(): void;
 }
@@ -131,6 +133,7 @@ export async function runAgentLoop(
       onBlockStart: callbacks.onBlockStart,
       onSignature: callbacks.onSignature,
       onHeaders: callbacks.onHeaders,
+      onRetry: callbacks.onRetry,
     }, {
       system: options.system,
       signal: options.signal,

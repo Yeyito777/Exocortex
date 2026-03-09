@@ -28,6 +28,7 @@ const CLAUDE_CODE_USER_AGENT = `claude-code/${CLAUDE_CODE_VERSION}`;
 const BETA_BASE = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05";
 const BETA_ADAPTIVE = `${BETA_BASE},adaptive-thinking-2026-01-28`;
 const STREAM_STALL_TIMEOUT = 120_000;
+const MAX_RETRIES = 10;
 
 let _userId: string | null = null;
 const _sessionId: string = randomUUID();
@@ -78,6 +79,9 @@ export interface StreamCallbacks {
   /** Fired incrementally when a signature_delta arrives during streaming. */
   onSignature?: (signature: string) => void;
   onHeaders?: (headers: Headers) => void;
+  /** Fired when a transient stream error triggers a retry.
+   *  Callers should reset any accumulated partial state (streamed blocks, etc.). */
+  onRetry?: (attempt: number, maxAttempts: number, errorMessage: string, delaySec: number) => void;
 }
 
 export interface StreamOptions {
@@ -87,8 +91,16 @@ export interface StreamOptions {
   tools?: unknown[];
 }
 
-export class OverloadError extends Error {
-  constructor(message: string) { super(message); this.name = "OverloadError"; }
+/** Non-retryable SSE error types — bad request, auth, or model not found. */
+const NON_RETRYABLE_STREAM_ERRORS = new Set([
+  "invalid_request_error",
+  "authentication_error",
+  "permission_error",
+  "not_found_error",
+]);
+
+class RetryableStreamError extends Error {
+  constructor(message: string) { super(message); this.name = "RetryableStreamError"; }
 }
 
 // ── Token management ────────────────────────────────────────────────
@@ -273,9 +285,12 @@ async function readStream(res: Response, cb: StreamCallbacks): Promise<StreamRes
       }
       case "error": {
         const err = event.error as Record<string, string> | undefined;
-        const msg = `Stream error (${err?.type ?? "unknown"}): ${err?.message ?? ""}`;
-        if (err?.type === "overloaded_error") throw new OverloadError(msg);
-        throw new Error(msg);
+        const errType = err?.type ?? "unknown";
+        // User-facing message is just the API's message field (e.g. "Overloaded").
+        // The full type (overloaded_error, api_error) is logged by retryBackoff.
+        const reason = err?.message || errType;
+        if (NON_RETRYABLE_STREAM_ERRORS.has(errType)) throw new Error(reason);
+        throw new RetryableStreamError(reason);
       }
     }
   };
@@ -300,7 +315,7 @@ async function readStream(res: Response, cb: StreamCallbacks): Promise<StreamRes
       reader.read(),
       new Promise<never>((_, reject) => {
         stallTimer = setTimeout(
-          () => reject(new Error(`Stream stalled: no data for ${STREAM_STALL_TIMEOUT / 1000}s`)),
+          () => reject(new RetryableStreamError(`No data for ${STREAM_STALL_TIMEOUT / 1000}s`)),
           STREAM_STALL_TIMEOUT,
         );
       }),
@@ -322,6 +337,21 @@ async function readStream(res: Response, cb: StreamCallbacks): Promise<StreamRes
   return { text: fullText, thinking: fullThinking, stopReason, blocks: orderedBlocks, toolCalls, inputTokens, outputTokens };
 }
 
+// ── Retry helper ───────────────────────────────────────────────────
+
+/** Exponential backoff with jitter: 1s, 2s, 4s, 8s, … capped at 30s. */
+function retryBackoff(
+  attempt: number,
+  errMsg: string,
+  callbacks: StreamCallbacks,
+): Promise<void> {
+  const delay = Math.min(1000 * Math.pow(2, attempt), 30000) + Math.random() * 1000;
+  const delaySec = Math.round(delay / 1000);
+  log("warn", `api: ${errMsg}, retry ${attempt + 1}/${MAX_RETRIES} in ${delaySec}s`);
+  callbacks.onRetry?.(attempt + 1, MAX_RETRIES, errMsg, delaySec);
+  return new Promise((r) => setTimeout(r, delay));
+}
+
 // ── Public: stream a message ────────────────────────────────────────
 
 export async function streamMessage(
@@ -333,7 +363,7 @@ export async function streamMessage(
   const { system, signal, maxTokens = 32000, tools } = options;
   let accessToken = await getAccessToken();
   let authRetried = false;
-  let overloadAttempt = 0;
+  let retryAttempt = 0;
 
   while (true) {
     const { url, init } = buildRequest(accessToken, messages, model, maxTokens, system, tools);
@@ -347,17 +377,14 @@ export async function streamMessage(
       continue;
     }
 
-    // Retryable errors → backoff
+    // Retryable HTTP errors → backoff
     if (res.status === 429 || res.status === 529 || res.status === 503) {
-      if (overloadAttempt < 5) {
-        const delay = Math.min(1000 * Math.pow(2, overloadAttempt), 30000) + Math.random() * 1000;
-        log("warn", `api: ${res.status}, retry ${overloadAttempt + 1}/5 in ${Math.round(delay / 1000)}s`);
-        await new Promise((r) => setTimeout(r, delay));
-        overloadAttempt++;
+      if (retryAttempt < MAX_RETRIES) {
+        await retryBackoff(retryAttempt++, `HTTP ${res.status}`, callbacks);
         continue;
       }
       const text = await res.text();
-      throw new OverloadError(`API error (${res.status}) after 5 retries: ${text.slice(0, 200)}`);
+      throw new RetryableStreamError(`API error (${res.status}) after ${MAX_RETRIES} retries: ${text.slice(0, 200)}`);
     }
 
     // Non-retryable errors
@@ -368,6 +395,15 @@ export async function streamMessage(
     }
 
     callbacks.onHeaders?.(res.headers);
-    return readStream(res, callbacks);
+    try {
+      return await readStream(res, callbacks);
+    } catch (err) {
+      // Retryable stream error → same backoff as HTTP-level errors
+      if (err instanceof RetryableStreamError && retryAttempt < MAX_RETRIES) {
+        await retryBackoff(retryAttempt++, (err as Error).message, callbacks);
+        continue;
+      }
+      throw err;
+    }
   }
 }

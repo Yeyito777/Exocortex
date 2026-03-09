@@ -159,6 +159,16 @@ export async function orchestrateSendMessage(
       server.sendToSubscribers(convId, { type: "context_update", convId, contextTokens });
     },
     onHeaders: ext.onHeaders,
+    onRetry(attempt, maxAttempts, errorMessage, delaySec) {
+      // Transient stream error → clear partial state so the retry starts clean
+      partialContent.length = 0;
+      convStore.initStreamingBlocks(convId);
+      // Persist as system message (survives reload) + send live event (clears TUI blocks immediately)
+      const sysText = `⟳ ${errorMessage} — retrying in ${delaySec}s (${attempt}/${maxAttempts})…`;
+      conv.messages.push({ role: "system", content: sysText, metadata: null });
+      convStore.markDirty(convId);
+      server.sendToSubscribers(convId, { type: "stream_retry", convId, attempt, maxAttempts, errorMessage, delaySec });
+    },
     onRoundComplete() {
       // Clear partial content — completed rounds are tracked via agentState.completedMessages.
       // Without this, partialContent accumulates across rounds and abort would double-persist.

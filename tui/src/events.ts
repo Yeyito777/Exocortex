@@ -262,12 +262,28 @@ export function handleEvent(
             });
             break;
           case "system": {
-            const color = entry.color === "error" ? theme.error : theme.muted;
+            const color = entry.color === "error" ? theme.error : entry.color === "warning" ? theme.warning : theme.muted;
             state.messages.push({ role: "system", text: entry.text, color, metadata: null });
             break;
           }
         }
       }
+      break;
+    }
+
+    case "stream_retry": {
+      if (event.convId !== state.convId) break;
+      // Transient stream error → clear partial blocks so the retry starts fresh
+      if (state.pendingAI) {
+        state.pendingAI.blocks = [];
+      }
+      // Show retry message immediately (not buffered like system_message during streaming)
+      state.messages.push({
+        role: "system",
+        text: `⟳ ${event.errorMessage} — retrying in ${event.delaySec}s (${event.attempt}/${event.maxAttempts})…`,
+        color: theme.warning,
+        metadata: null,
+      });
       break;
     }
 
@@ -279,7 +295,7 @@ export function handleEvent(
 
     case "system_message": {
       if (event.convId !== state.convId) break;
-      const color = event.color === "error" ? theme.error : theme.muted;
+      const color = event.color === "error" ? theme.error : event.color === "warning" ? theme.warning : theme.muted;
       const sysMsg: SystemMessage = { role: "system", text: event.text, color, metadata: null };
       if (isStreaming(state)) {
         // Buffer during streaming so it appears after the AI message

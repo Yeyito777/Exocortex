@@ -96,7 +96,8 @@ export function buildDisplayData(
     if (msg.role === "system") {
       flushAI();
       const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
-      entries.push({ type: "system", text, color: "error" });
+      const color = text.startsWith("⟳") ? "warning" : "error";
+      entries.push({ type: "system", text, color });
       continue;
     }
     if (msg.role === "user") {

@@ -289,6 +289,15 @@ export interface UserMessageEvent {
   text: string;
 }
 
+export interface StreamRetryEvent {
+  type: "stream_retry";
+  convId: string;
+  attempt: number;
+  maxAttempts: number;
+  errorMessage: string;
+  delaySec: number;
+}
+
 export interface SystemMessageEvent {
   type: "system_message";
   convId: string;
@@ -332,6 +341,7 @@ export type Event =
   | ConversationPinnedEvent
   | ConversationMovedEvent
   | UserMessageEvent
+  | StreamRetryEvent
   | SystemMessageEvent
   | ToolsAvailableEvent
   | ErrorEvent;
