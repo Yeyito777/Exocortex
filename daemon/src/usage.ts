@@ -43,6 +43,34 @@ export function getLastUsage(): UsageData | null {
   return lastUsage;
 }
 
+// ── Auto-refresh at reset boundaries ──────────────────────────────
+
+let resetTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Schedule a refreshUsage() call shortly after the earliest resetsAt
+ * timestamp. Ensures we re-poll for fresh data when a rate-limit
+ * window rolls over, instead of displaying "?" until the next message.
+ */
+function scheduleResetRefresh(usage: UsageData, onUpdate: (u: UsageData) => void): void {
+  if (resetTimer) clearTimeout(resetTimer);
+
+  const now = Date.now();
+  const candidates = [usage.fiveHour?.resetsAt, usage.sevenDay?.resetsAt]
+    .filter((t): t is number => t != null && t > now);
+
+  if (candidates.length === 0) return;
+
+  const earliest = Math.min(...candidates);
+  const delay = earliest - now + 5_000; // 5s grace for the API to reflect the reset
+
+  log("info", `usage: scheduling re-poll in ${Math.round(delay / 1000)}s (at reset boundary)`);
+  resetTimer = setTimeout(() => {
+    resetTimer = null;
+    refreshUsage(onUpdate);
+  }, delay);
+}
+
 // ── Refresh (full API fetch) ───────────────────────────────────────
 
 const BASE_URL = "https://api.anthropic.com";
@@ -63,6 +91,7 @@ export function refreshUsage(onUpdate: (usage: UsageData) => void): void {
       lastUsage = usage;
       saveToDisk(usage);
       onUpdate(usage);
+      scheduleResetRefresh(usage, onUpdate);
     } else {
       log("warn", "usage: fetch returned null");
     }
@@ -111,6 +140,7 @@ export function handleUsageHeaders(headers: Headers, onUpdate: (usage: UsageData
     lastUsage = usage;
     saveToDisk(usage);
     onUpdate(usage);
+    scheduleResetRefresh(usage, onUpdate);
   }
 }
 

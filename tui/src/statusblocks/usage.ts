@@ -22,7 +22,7 @@ function renderBar(pct: number | null): string {
 function formatTimeUntil(resetMs: number | null, now: number): string {
   if (resetMs === null) return "?";
   const diff = Math.floor((resetMs - now) / 1000);
-  if (diff <= 0) return "?";
+  if (diff <= 0) return "now";
 
   const days = Math.floor(diff / 86400);
   const hours = Math.floor((diff % 86400) / 3600);
