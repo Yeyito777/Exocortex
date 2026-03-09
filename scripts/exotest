@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# exotest — launch a worktree's daemon + TUI for testing, clean up on exit.
+#
+# Usage:
+#   exotest <worktree>
+#
+# <worktree> can be:
+#   - A bare name:       exotest fix-prompt-scroll
+#   - A relative path:   exotest .worktrees/fix-prompt-scroll
+#   - An absolute path:  exotest /home/.../Exocortex/.worktrees/fix-prompt-scroll
+#
+# Starts the worktree's daemon (if not already running), launches the TUI,
+# and kills the daemon when the TUI exits.
+
+set -euo pipefail
+
+EXOCORTEX_ROOT="$HOME/Workspace/Exocortex"
+DAEMON_PID=""
+
+die() { printf "\n  ✗ %s\n\n" "$1" >&2; exit 1; }
+
+cleanup() {
+  if [[ -n "$DAEMON_PID" ]] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    kill "$DAEMON_PID" 2>/dev/null
+    wait "$DAEMON_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+# ── Resolve worktree ────────────────────────────────────────────────
+
+INPUT="${1:-}"
+[[ -z "$INPUT" ]] && die "Usage: exotest <worktree-name|path>"
+
+if [[ "$INPUT" == /* ]]; then
+  WORKTREE_DIR="$INPUT"
+elif [[ "$INPUT" == .worktrees/* ]]; then
+  WORKTREE_DIR="$EXOCORTEX_ROOT/$INPUT"
+else
+  WORKTREE_DIR="$EXOCORTEX_ROOT/.worktrees/$INPUT"
+fi
+
+[[ -d "$WORKTREE_DIR" ]]        || die "Not found: $WORKTREE_DIR"
+[[ -d "$WORKTREE_DIR/daemon" ]] || die "No daemon/ in $WORKTREE_DIR"
+[[ -d "$WORKTREE_DIR/tui" ]]    || die "No tui/ in $WORKTREE_DIR"
+
+WT_NAME=$(basename "$WORKTREE_DIR")
+
+echo ""
+echo "  exotest — $WT_NAME"
+echo "  $WORKTREE_DIR"
+echo ""
+
+# ── Dependencies ────────────────────────────────────────────────────
+
+if [[ ! -d "$WORKTREE_DIR/node_modules" ]]; then
+  echo "  Installing dependencies..."
+  (cd "$WORKTREE_DIR" && bun install)
+  echo ""
+fi
+
+# ── Daemon ──────────────────────────────────────────────────────────
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/exocortex"
+RUNTIME_DIR="$CONFIG_DIR/runtime/$WT_NAME"
+PID_FILE="$RUNTIME_DIR/exocortexd.pid"
+SOCKET="$RUNTIME_DIR/exocortexd.sock"
+LOG="$RUNTIME_DIR/exocortexd.log"
+
+# Check if a daemon is already alive for this worktree
+DAEMON_ALIVE=false
+if [[ -f "$PID_FILE" ]]; then
+  OLD_PID=$(cat "$PID_FILE" 2>/dev/null || true)
+  if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
+    DAEMON_ALIVE=true
+  fi
+fi
+
+if $DAEMON_ALIVE; then
+  echo "  Daemon already running (pid $OLD_PID)"
+else
+  mkdir -p "$RUNTIME_DIR"
+  echo "  Starting daemon (log: $LOG)"
+  (cd "$WORKTREE_DIR/daemon" && exec bun run src/main.ts >>"$LOG" 2>&1) &
+  DAEMON_PID=$!
+
+  # Wait for socket to appear (up to 5s)
+  for _ in $(seq 1 50); do
+    [[ -S "$SOCKET" ]] && break
+    # Bail early if the daemon process died
+    kill -0 "$DAEMON_PID" 2>/dev/null || die "Daemon exited early (check $LOG)"
+    sleep 0.1
+  done
+  [[ -S "$SOCKET" ]] || die "Daemon socket didn't appear after 5s (check $LOG)"
+
+  echo "  Daemon ready (pid $DAEMON_PID)"
+fi
+
+echo ""
+
+# ── TUI ─────────────────────────────────────────────────────────────
+
+(cd "$WORKTREE_DIR/tui" && exec bun run src/main.ts)
