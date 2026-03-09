@@ -12,6 +12,7 @@ import type { Action } from "./keybinds";
 import type { RenderState } from "./state";
 import {
   stripAnsi, clampCol, clampCursor,
+  logicalLineRange,
   charLeft, charRight, lineUp, lineDown, lineStart, lineEnd,
   bufferStart, bufferEnd,
   wordForward, wordBackward, wordEnd,
@@ -22,6 +23,7 @@ import {
 // Re-export everything from historymotions so existing consumers don't break
 export {
   stripAnsi, contentBounds, clampCol, clampCursor,
+  logicalLineRange,
   charLeft, charRight, lineUp, lineDown, lineStart, lineEnd,
   bufferStart, bufferEnd,
   wordForward, wordBackward, wordEnd,
@@ -203,16 +205,18 @@ export function getHistoryVisualSelection(state: RenderState): string {
   const anchor = state.historyVisualAnchor;
   const cursor = state.historyCursor;
   const lines = state.historyLines;
+  const wrapCont = state.historyWrapContinuation;
 
-  const startRow = Math.min(anchor.row, cursor.row);
-  const endRow = Math.max(anchor.row, cursor.row);
+  let startRow = Math.min(anchor.row, cursor.row);
+  let endRow = Math.max(anchor.row, cursor.row);
 
   if (state.vim.mode === "visual-line") {
-    const selectedLines: string[] = [];
-    for (let r = startRow; r <= endRow; r++) {
-      selectedLines.push(stripAnsi(lines[r] ?? "").trim());
+    // Expand to logical line groups
+    if (wrapCont.length > 0) {
+      startRow = logicalLineRange(startRow, wrapCont).first;
+      endRow = logicalLineRange(endRow, wrapCont).last;
     }
-    return selectedLines.join("\n");
+    return joinLogicalLines(lines, wrapCont, startRow, endRow);
   }
 
   // Character visual — single line
@@ -237,6 +241,30 @@ export function getHistoryVisualSelection(state: RenderState): string {
   result.push(lastPlain.slice(0, lastCol + 1).trimStart());
 
   return result.join("\n");
+}
+
+/**
+ * Join visual rows into text, respecting wrap continuations.
+ * Wrap-continuation rows are joined with a space (same logical line).
+ * Non-continuation rows start a new \n-delimited line.
+ */
+function joinLogicalLines(
+  lines: string[],
+  wrapCont: boolean[],
+  startRow: number,
+  endRow: number,
+): string {
+  const parts: string[] = [];
+  for (let r = startRow; r <= endRow; r++) {
+    const text = stripAnsi(lines[r] ?? "").trim();
+    if (r === startRow || !wrapCont[r]) {
+      parts.push(text);
+    } else {
+      // Continuation of previous logical line — append with space
+      parts[parts.length - 1] += (text ? " " + text : "");
+    }
+  }
+  return parts.join("\n");
 }
 
 /**

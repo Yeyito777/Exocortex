@@ -51,6 +51,24 @@ export function clampCol(col: number, lines: string[], row: number): number {
   return Math.max(start, Math.min(col, end));
 }
 
+// ── Logical line groups ──────────────────────────────────────────
+
+/**
+ * Get the range of visual rows that belong to the same logical line as `row`.
+ * A logical line is a group of consecutive visual rows where all but the
+ * first have wrapCont[r] === true (they are word-wrap continuations).
+ */
+export function logicalLineRange(
+  row: number,
+  wrapCont: boolean[],
+): { first: number; last: number } {
+  let first = row;
+  while (first > 0 && wrapCont[first]) first--;
+  let last = row;
+  while (last < wrapCont.length - 1 && wrapCont[last + 1]) last++;
+  return { first, last };
+}
+
 // ── Basic motions ─────────────────────────────────────────────────
 
 export function charLeft(cursor: HistoryCursor, lines: string[]): HistoryCursor {

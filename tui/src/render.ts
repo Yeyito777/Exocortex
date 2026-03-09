@@ -14,7 +14,7 @@ import { buildMessageLines } from "./conversation";
 import { getInputLines } from "./promptline";
 import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar, applyLineBg } from "./terminal";
 import { theme } from "./theme";
-import { clampCursor, stripAnsi, contentBounds } from "./historycursor";
+import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./historycursor";
 import { renderLineWithCursor, renderLineWithSelection } from "./cursorrender";
 
 // ── ANSI positioning (non-color escapes) ────────────────────────────
@@ -177,8 +177,23 @@ export function render(state: RenderState): void {
     && (state.vim.mode === "visual" || state.vim.mode === "visual-line");
   const vAnchor = state.historyVisualAnchor;
   const vCursor = state.historyCursor;
-  const vStartRow = inVisual ? Math.min(vAnchor.row, vCursor.row) : -1;
-  const vEndRow = inVisual ? Math.max(vAnchor.row, vCursor.row) : -1;
+  let vStartRow = inVisual ? Math.min(vAnchor.row, vCursor.row) : -1;
+  let vEndRow = inVisual ? Math.max(vAnchor.row, vCursor.row) : -1;
+
+  // Visual-line: expand to full logical line groups
+  if (state.vim.mode === "visual-line" && inVisual && wrapContinuation.length > 0) {
+    vStartRow = logicalLineRange(vStartRow, wrapContinuation).first;
+    vEndRow = logicalLineRange(vEndRow, wrapContinuation).last;
+  }
+
+  // Normal-mode line highlight: all visual rows of the cursor's logical line
+  let hlFirst = -1;
+  let hlLast = -1;
+  if (historyFocused && !inVisual && wrapContinuation.length > 0) {
+    const range = logicalLineRange(state.historyCursor.row, wrapContinuation);
+    hlFirst = range.first;
+    hlLast = range.last;
+  }
 
   for (let i = 0; i < messageAreaHeight; i++) {
     const row = messageAreaStart + i;
@@ -228,9 +243,14 @@ export function render(state: RenderState): void {
           rendered = renderLineWithCursor(rendered, state.historyCursor.col);
         }
         out.push(rendered);
-      } else if (historyFocused && lineIdx === state.historyCursor.row) {
-        const withCursor = renderLineWithCursor(line, state.historyCursor.col);
-        out.push(applyLineBg(withCursor, theme.historyLineBg));
+      } else if (historyFocused && lineIdx >= hlFirst && lineIdx <= hlLast) {
+        // Normal mode: highlight the full logical line group
+        if (lineIdx === state.historyCursor.row) {
+          const withCursor = renderLineWithCursor(line, state.historyCursor.col);
+          out.push(applyLineBg(withCursor, theme.historyLineBg));
+        } else {
+          out.push(applyLineBg(line, theme.historyLineBg));
+        }
       } else {
         out.push(line);
       }
