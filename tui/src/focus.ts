@@ -50,6 +50,7 @@ export type KeyResult =
   | { type: "mark_conversation"; convId: string; marked: boolean }
   | { type: "pin_conversation"; convId: string; pinned: boolean }
   | { type: "move_conversation"; convId: string; direction: "up" | "down" }
+  | { type: "clone_conversation"; convId: string }
   | { type: "new_conversation" };
 
 // ── Key routing ─────────────────────────────────────────────────────
@@ -364,6 +365,14 @@ function handleVimAction(action: string, state: RenderState): KeyResult {
         }
       }
       return { type: "handled" };
+    case "clone":
+      if (state.panelFocus === "sidebar") {
+        const result = handleSidebarAction("clone", state.sidebar);
+        if (result.type === "clone_conversation") {
+          return { type: "clone_conversation", convId: result.convId };
+        }
+      }
+      return { type: "handled" };
     case "scroll_top":
     case "scroll_bottom":
       handleScrollAction(action as Action, state);
@@ -499,6 +508,8 @@ function handleSidebarFocused(key: KeyEvent, state: RenderState): KeyResult {
       return { type: "pin_conversation", convId: result.convId, pinned: result.pinned };
     case "move_conversation":
       return { type: "move_conversation", convId: result.convId, direction: result.direction };
+    case "clone_conversation":
+      return { type: "clone_conversation", convId: result.convId };
     case "unhandled":
       // focus_prompt comes back as unhandled from sidebar (i/a)
       state.panelFocus = "chat";

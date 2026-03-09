@@ -161,6 +161,9 @@ function handleKey(key: KeyEvent): void {
     case "move_conversation":
       daemon.moveConversation(result.convId, result.direction);
       break;
+    case "clone_conversation":
+      daemon.cloneConversation(result.convId);
+      break;
     case "handled":
       break;
   }

@@ -98,6 +98,7 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "normal", context: "sidebar", key: "p",  command: { type: "action", action: "pin" } },
   { mode: "normal", context: "sidebar", key: "e",  command: { type: "action", action: "move_up" } },
   { mode: "normal", context: "sidebar", key: "E",  command: { type: "action", action: "move_down" } },
+  { mode: "normal", context: "sidebar", key: "c",  command: { type: "action", action: "clone" } },
   { mode: "normal", context: "sidebar", key: "u",  command: { type: "action", action: "undo_delete" } },
   { mode: "normal", context: "sidebar", key: "i",  command: { type: "mode_change", mode: "insert" } },
   { mode: "normal", context: "sidebar", key: "a",  command: { type: "mode_change", mode: "insert" } },

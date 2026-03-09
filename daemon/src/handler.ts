@@ -156,6 +156,21 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      case "clone_conversation": {
+        const cloned = convStore.clone(cmd.convId);
+        if (cloned) {
+          const summary = convStore.getSummary(cloned.id);
+          if (summary) {
+            log("info", `handler: cloned conversation ${cmd.convId} → ${cloned.id}`);
+            server.broadcast({ type: "conversation_restored", reqId: cmd.reqId, summary });
+            server.broadcast({ type: "conversation_moved", conversations: convStore.listSummaries() });
+          }
+        } else {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+        }
+        break;
+      }
+
       case "undo_delete": {
         const restored = convStore.undoDelete();
         if (restored) {

@@ -103,6 +103,12 @@ export interface RenameConversationCommand {
   title: string;
 }
 
+export interface CloneConversationCommand {
+  type: "clone_conversation";
+  reqId?: string;
+  convId: string;
+}
+
 export interface UndoDeleteCommand {
   type: "undo_delete";
   reqId?: string;
@@ -123,6 +129,7 @@ export type Command =
   | PinConversationCommand
   | MoveConversationCommand
   | RenameConversationCommand
+  | CloneConversationCommand
   | UndoDeleteCommand;
 
 // ── Events (daemon → client) ────────────────────────────────────────

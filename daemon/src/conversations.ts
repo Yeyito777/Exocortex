@@ -61,6 +61,45 @@ export function bumpToTop(id: string): boolean {
   return true;
 }
 
+/** Clone a conversation: deep-copy with a new ID, placed right after the original in sort order. */
+export function clone(id: string): Conversation | null {
+  const src = conversations.get(id);
+  if (!src) return null;
+
+  const newId = generateId();
+  const now = Date.now();
+
+  // Compute a sortOrder between the original and the item after it
+  const summaries = listSummaries();
+  const srcIdx = summaries.findIndex(s => s.id === id);
+  let newOrder: number;
+  if (srcIdx >= 0 && srcIdx + 1 < summaries.length && summaries[srcIdx + 1].pinned === src.pinned) {
+    // Place between the original and the next item in the same section
+    newOrder = (src.sortOrder + summaries[srcIdx + 1].sortOrder) / 2;
+  } else {
+    // Last item in its section — place after it
+    newOrder = src.sortOrder + 1;
+  }
+
+  const conv: Conversation = {
+    id: newId,
+    model: src.model,
+    messages: JSON.parse(JSON.stringify(src.messages)),
+    createdAt: now,
+    updatedAt: now,
+    lastContextTokens: src.lastContextTokens,
+    marked: src.marked,
+    pinned: src.pinned,
+    sortOrder: newOrder,
+    title: src.title ? src.title + " (copy)" : null,
+  };
+
+  conversations.set(newId, conv);
+  markDirty(newId);
+  flush(newId);
+  return conv;
+}
+
 export function get(id: string): Conversation | undefined {
   return conversations.get(id);
 }

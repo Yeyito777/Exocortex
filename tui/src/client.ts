@@ -124,6 +124,10 @@ export class DaemonClient {
     this.send({ type: "move_conversation", convId, direction });
   }
 
+  cloneConversation(convId: string): void {
+    this.send({ type: "clone_conversation", convId });
+  }
+
   renameConversation(convId: string, title: string): void {
     this.send({ type: "rename_conversation", convId, title });
   }

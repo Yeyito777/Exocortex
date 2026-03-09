@@ -47,6 +47,7 @@ export type SidebarKeyResult =
   | { type: "mark_conversation"; convId: string; marked: boolean }
   | { type: "pin_conversation"; convId: string; pinned: boolean }
   | { type: "move_conversation"; convId: string; direction: "up" | "down" }
+  | { type: "clone_conversation"; convId: string }
   | { type: "unhandled" };
 
 export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarKeyResult {
@@ -100,6 +101,13 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
 
     case "undo_delete":
       return { type: "undo_delete" };
+
+    case "clone": {
+      if (sidebar.conversations.length === 0) return { type: "handled" };
+      const conv = sidebar.conversations[sidebar.selectedIndex];
+      if (!conv) return { type: "handled" };
+      return { type: "clone_conversation", convId: conv.id };
+    }
 
     case "mark": {
       if (sidebar.conversations.length === 0) return { type: "handled" };
