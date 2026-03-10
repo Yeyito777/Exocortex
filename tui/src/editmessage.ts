@@ -35,13 +35,11 @@ export function openEditMessageModal(state: RenderState): void {
 
   // Collect queued messages
   const queued = state.queuedMessages.filter(qm => qm.convId === state.convId);
-  for (let i = 0; i < queued.length; i++) {
-    const qmIdx = state.queuedMessages.indexOf(queued[i]);
+  for (const qm of queued) {
     items.push({
       userMessageIndex: -1,
-      text: queued[i].text,
+      text: qm.text,
       isQueued: true,
-      queueIndex: qmIdx,
     });
   }
 
@@ -92,7 +90,7 @@ export function handleEditMessageKey(key: KeyEvent, state: RenderState): EditMes
 
 export type EditConfirmResult =
   | { action: "edit_sent"; text: string; userMessageIndex: number }
-  | { action: "edit_queued"; text: string; queueIndex: number }
+  | { action: "edit_queued"; text: string }
   | { action: "cancel" };
 
 /**
@@ -114,8 +112,8 @@ export function confirmEditMessage(state: RenderState): EditConfirmResult {
   state.panelFocus = "chat";
   state.chatFocus = "prompt";
 
-  if (item.isQueued && item.queueIndex !== undefined) {
-    return { action: "edit_queued", text: item.text, queueIndex: item.queueIndex };
+  if (item.isQueued) {
+    return { action: "edit_queued", text: item.text };
   }
 
   return { action: "edit_sent", text: item.text, userMessageIndex: item.userMessageIndex };

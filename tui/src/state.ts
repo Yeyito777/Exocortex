@@ -43,8 +43,6 @@ export interface EditMessageItem {
   userMessageIndex: number;
   text: string;
   isQueued: boolean;
-  /** Index into state.queuedMessages (only set when isQueued). */
-  queueIndex?: number;
 }
 
 export interface EditMessageState {

@@ -68,7 +68,6 @@ function onDaemonEvent(event: Event): void {
     if (event.convId) {
       clearLocalQueue(state, event.convId);
     }
-
   }
 
   scheduleRender();
@@ -170,10 +169,11 @@ function handleKey(key: KeyEvent): void {
     case "edit_message_confirm": {
       const er = confirmEditMessage(state);
       if (er.action === "edit_queued") {
-        // Remove from local shadow + tell daemon
-        if (er.queueIndex >= 0 && er.queueIndex < state.queuedMessages.length) {
-          state.queuedMessages.splice(er.queueIndex, 1);
-        }
+        // Remove from local shadow by text match + tell daemon
+        const idx = state.queuedMessages.findIndex(
+          qm => qm.convId === state.convId && qm.text === er.text,
+        );
+        if (idx !== -1) state.queuedMessages.splice(idx, 1);
         if (state.convId) daemon.unqueueMessage(state.convId, er.text);
       } else if (er.action === "edit_sent" && state.convId) {
         // The daemon's unwindTo handles abort internally if streaming,
