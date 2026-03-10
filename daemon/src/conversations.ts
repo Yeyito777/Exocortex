@@ -61,6 +61,14 @@ export function bumpToTop(id: string): boolean {
   return true;
 }
 
+/** Resolve the display name for a conversation: explicit title, or first user message preview. */
+function displayName(conv: Conversation): string {
+  if (conv.title) return conv.title;
+  const first = conv.messages.find(m => m.role === "user");
+  if (first && typeof first.content === "string") return first.content.slice(0, 80);
+  return "(empty)";
+}
+
 /** Clone a conversation: deep-copy with a new ID, placed right after the original in sort order. */
 export function clone(id: string): Conversation | null {
   const src = conversations.get(id);
@@ -91,7 +99,7 @@ export function clone(id: string): Conversation | null {
     marked: src.marked,
     pinned: src.pinned,
     sortOrder: newOrder,
-    title: src.title ? src.title + " 📋" : null,
+    title: displayName(src) + " 📋",
   };
 
   conversations.set(newId, conv);
