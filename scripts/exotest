@@ -92,6 +92,7 @@ else
     sleep 0.1
   done
   [[ -S "$SOCKET" ]] || die "Daemon socket didn't appear after 5s (check $LOG)"
+  sleep 0.2  # brief grace period between socket bind and listen
 
   echo "  Daemon ready (pid $DAEMON_PID)"
 fi
