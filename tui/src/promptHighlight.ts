@@ -7,7 +7,7 @@
  * highlighting applied afterward.
  */
 
-import { COMMAND_LIST, MODEL_ARGS } from "./commands";
+import { COMMAND_LIST, COMMAND_ARGS } from "./commands";
 import { MACRO_LIST, MACRO_ARGS } from "./macros";
 import { theme } from "./theme";
 import { wrappedLineOffsets } from "./promptline";
@@ -22,7 +22,9 @@ const VALID_NAMES = new Set([
 
 /** Map of command/macro name → set of valid argument names. */
 const VALID_ARGS: Record<string, Set<string>> = {
-  "/model": new Set(MODEL_ARGS.map(a => a.name)),
+  ...Object.fromEntries(
+    Object.entries(COMMAND_ARGS).map(([cmd, args]) => [cmd, new Set(args.map(a => a.name))]),
+  ),
   ...Object.fromEntries(
     Object.entries(MACRO_ARGS).map(([cmd, args]) => [cmd, new Set(args.map(a => a.name))]),
   ),

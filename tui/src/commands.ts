@@ -207,3 +207,9 @@ export const MODEL_ARGS: CompletionItem[] = [
 export const CONVO_ARGS: CompletionItem[] = [
   { name: "copy", desc: "Copy info to clipboard" },
 ];
+
+/** All command argument lists, keyed by command name. Used by autocomplete and prompt highlighting. */
+export const COMMAND_ARGS: Record<string, CompletionItem[]> = {
+  "/model": MODEL_ARGS,
+  "/convo": CONVO_ARGS,
+};

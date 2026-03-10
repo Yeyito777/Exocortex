@@ -14,7 +14,7 @@
  */
 
 import type { RenderState } from "./state";
-import { COMMAND_LIST, MODEL_ARGS, CONVO_ARGS, type CompletionItem } from "./commands";
+import { COMMAND_LIST, COMMAND_ARGS, type CompletionItem } from "./commands";
 import { MACRO_LIST, MACRO_ARGS } from "./macros";
 import { readdirSync } from "fs";
 import { resolve, dirname, basename } from "path";
@@ -44,18 +44,11 @@ function getCommandMatches(input: string): CompletionItem[] {
   const raw = input.trimStart();
   if (!raw.startsWith("/")) return [];
 
-  // Argument completion: "/model " followed by optional partial arg
-  const modelArgMatch = raw.match(/^\/model\s+(.*)/i);
-  if (modelArgMatch) {
-    const argPrefix = modelArgMatch[1].toLowerCase();
-    return MODEL_ARGS.filter(a => a.name.startsWith(argPrefix));
-  }
-
-  // Argument completion: "/convo " followed by optional partial arg
-  const convoArgMatch = raw.match(/^\/convo\s+(.*)/i);
-  if (convoArgMatch) {
-    const argPrefix = convoArgMatch[1].toLowerCase();
-    return CONVO_ARGS.filter(a => a.name.startsWith(argPrefix));
+  // Command argument completion: "/model son", "/convo co", etc.
+  for (const [cmd, args] of Object.entries(COMMAND_ARGS)) {
+    const re = new RegExp(`^${cmd.replace(/[/\\^$*+?.()|[\]{}]/g, "\\$&")}\\s+(.*)$`, "i");
+    const m = raw.match(re);
+    if (m) return args.filter(a => a.name.toLowerCase().startsWith(m[1].toLowerCase()));
   }
 
   // Macro argument completion: "/commit m" → match args for /commit
