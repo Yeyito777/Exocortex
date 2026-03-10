@@ -52,6 +52,7 @@ export const MACRO_MAP: Record<string, string> = {
   "/gmail": `You have access to my gmail through the gmail CLI tool (IN YOUR PATH, source at ~/Workspace/gmail-cli) Run gmail -h for usage reference.`,
   "/twitter": `You have access to Twitter/X through the twitter CLI tool (IN YOUR PATH, source at /Workspace/twitter/). Run twitter -h for usage reference.`,
   "/worktree": "Work in a git worktree for this task. Create it with `git worktree add .worktrees/<name> -b <name> HEAD` from the repo root. When I say I'm satisfied, merge back to main and clean up: run `git worktree remove .worktrees/<name>`, delete the branch with `git branch -d <name>`, and remove the leftover config dirs `~/.config/exocortex/runtime/<name>/` and `~/.config/exocortex/instances/<name>/`.",
+  "/worktree ready": "Merge main into the worktree branch, resolve any merge conflicts, and give the result a code assessment. Get it to a merge-ready state.",
   "/worktree merge": "The work in the worktree is good. Merge back into main and clean up. Remove the worktree, branch, and any files it might've created in ~/.config/exocortex/instances/ and ~/.config/exocortex/runtime/ as a result of being a worktree after confirming a sucessfull merge",
 };
 
