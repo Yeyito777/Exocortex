@@ -522,26 +522,18 @@ function renderEditMessageOverlay(
 
   // Build display lines: truncated previews of each item
   const maxPreviewLen = Math.min(50, chatW - 12);
-  const itemLines: string[] = em.items.map((item) => {
+  const previews = em.items.map((item) => {
     const raw = item.text.replace(/\n/g, " ");
-    const preview = raw.length > maxPreviewLen ? raw.slice(0, maxPreviewLen) + "…" : raw;
-    return item.isQueued ? `${preview} ${theme.reset}${theme.muted}(queued)${theme.reset}` : preview;
-  });
-
-  // Compute box width from content
-  const plainItemLines = em.items.map((item) => {
-    const raw = item.text.replace(/\n/g, " ");
-    const preview = raw.length > maxPreviewLen ? raw.slice(0, maxPreviewLen) + "…" : raw;
-    return item.isQueued ? `  ${preview} (queued)` : `  ${preview}`;
+    return raw.length > maxPreviewLen ? raw.slice(0, maxPreviewLen) + "…" : raw;
   });
   const maxContentLen = Math.max(
     titleLine.length,
-    ...plainItemLines.map(l => l.length),
+    ...previews.map(p => p.length + 2), // +2 for marker "▸ "
   );
   const innerWidth = Math.min(maxContentLen + 4, chatW - 4);
   const boxWidth = innerWidth + 2;
 
-  // Max visible items (leave room for title, blank line, hint, borders)
+  // Max visible items (leave room for title, blank line, borders)
   const maxVisible = Math.min(em.items.length, Math.max(3, messageAreaHeight - 4));
 
   // Scroll window to keep selection visible
@@ -559,8 +551,8 @@ function renderEditMessageOverlay(
     const i = scrollStart + vi;
     const marker = em.selection === i ? "▸ " : "  ";
     contentLines.push({
-      text: marker + itemLines[i],
-      plain: marker + plainItemLines[i].slice(2), // strip leading "  "
+      text: marker + previews[i],
+      plain: marker + previews[i],
       style: "item",
       itemIdx: i,
     });
@@ -589,11 +581,12 @@ function renderEditMessageOverlay(
       fg = theme.text;
     } else if (cl.style === "item") {
       const isSelected = cl.itemIdx === em.selection;
+      const isQueued = cl.itemIdx !== undefined && em.items[cl.itemIdx]?.isQueued;
       if (isSelected) {
         bg = theme.sidebarSelBg;
-        fg = theme.accent;
+        fg = isQueued ? theme.dim : theme.accent;
       } else {
-        fg = theme.text;
+        fg = isQueued ? theme.dim : theme.text;
       }
     }
 
