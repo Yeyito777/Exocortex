@@ -31,6 +31,7 @@ export type CommandResult =
 export interface SlashCommand {
   name: string;
   description: string;
+  args?: CompletionItem[];
   handler: (text: string, state: RenderState) => CommandResult;
 }
 
@@ -127,6 +128,11 @@ const commands: SlashCommand[] = [
   {
     name: "/model",
     description: "Set or show the current model",
+    args: [
+      { name: "sonnet", desc: "Claude Sonnet 4" },
+      { name: "haiku", desc: "Claude Haiku 4" },
+      { name: "opus", desc: "Claude Opus 4" },
+    ],
     handler: (text, state) => {
       const parts = text.split(/\s+/);
       const arg = parts[1];
@@ -183,21 +189,14 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
   return cmd.handler(text, state);
 }
 
-// ── Completion data ────────────────────────────────────────────────
+// ── Derived completion data ────────────────────────────────────────
 
 /** Command names shown in the autocomplete popup. */
 export const COMMAND_LIST: CompletionItem[] = commands
   .filter(c => c.name !== "/exit")   // /exit is an alias — only show /quit
   .map(c => ({ name: c.name, desc: c.description }));
 
-/** Model arguments for /model completion. */
-export const MODEL_ARGS: CompletionItem[] = [
-  { name: "sonnet", desc: "Claude Sonnet 4" },
-  { name: "haiku", desc: "Claude Haiku 4" },
-  { name: "opus", desc: "Claude Opus 4" },
-];
-
 /** All command argument lists, keyed by command name. Used by autocomplete and prompt highlighting. */
-export const COMMAND_ARGS: Record<string, CompletionItem[]> = {
-  "/model": MODEL_ARGS,
-};
+export const COMMAND_ARGS: Record<string, CompletionItem[]> = Object.fromEntries(
+  commands.filter(c => c.args && c.args.length > 0).map(c => [c.name, c.args!]),
+);

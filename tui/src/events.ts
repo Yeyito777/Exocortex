@@ -11,6 +11,7 @@ import { ensureCurrentBlock, createPendingAI, sortConversations } from "./messag
 import type { AIMessage, SystemMessage, ImageAttachment } from "./messages";
 import { updateConversationList, updateConversation, syncSelectedIndex } from "./sidebar";
 import { theme } from "./theme";
+import { clearLocalQueue } from "./queue";
 import type { Event } from "./protocol";
 
 // ── Daemon actions interface ────────────────────────────────────────
@@ -222,6 +223,7 @@ export function handleEvent(
         clearPendingAI(state);
         state.contextTokens = null;
       }
+      clearLocalQueue(state, event.convId);
       break;
     }
 
@@ -250,6 +252,10 @@ export function handleEvent(
       // Unsubscribe from old conversation before switching
       if (state.convId && state.convId !== event.convId) {
         daemon.unsubscribe(state.convId);
+        // Clear stale queue shadows — the daemon owns the real queue
+        // and will drain it regardless; we won't receive streaming_stopped
+        // after unsubscribing, so clean up now.
+        clearLocalQueue(state, state.convId);
       }
       state.messages = [];
       clearPendingAI(state);
@@ -276,6 +282,14 @@ export function handleEvent(
             state.messages.push({ role: "system", text: entry.text, color, metadata: null });
             break;
           }
+        }
+      }
+
+      // Rebuild local queue shadows from daemon state
+      clearLocalQueue(state, event.convId);
+      if (event.queuedMessages && event.queuedMessages.length > 0) {
+        for (const qm of event.queuedMessages) {
+          state.queuedMessages.push({ convId: event.convId, text: qm.text, timing: qm.timing });
         }
       }
       break;

@@ -175,7 +175,10 @@ function handleKey(key: KeyEvent): void {
       daemon.loadConversation(result.convId);
       break;
     case "new_conversation":
-      if (state.convId) daemon.unsubscribe(state.convId);
+      if (state.convId) {
+        daemon.unsubscribe(state.convId);
+        clearLocalQueue(state, state.convId);
+      }
       state.convId = null;
       state.messages = [];
       clearPendingAI(state);
@@ -183,6 +186,7 @@ function handleKey(key: KeyEvent): void {
       break;
     case "delete_conversation":
       daemon.deleteConversation(result.convId);
+      clearLocalQueue(state, result.convId);
       // If deleting the current conversation, clear the chat
       if (state.convId === result.convId) {
         state.convId = null;
