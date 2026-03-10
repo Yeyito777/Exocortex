@@ -12,16 +12,7 @@
 
 import type { Range } from "./types";
 import { lineStartOf, lineEndOf } from "./buffer";
-
-// ── Helpers ─────────────────────────────────────────────────────────
-
-function isWordChar(ch: string): boolean {
-  return /\w/.test(ch);
-}
-
-function isWhitespace(ch: string): boolean {
-  return ch === " " || ch === "\t";
-}
+import { isWordChar, isSpace as isWhitespace, isWORDChar } from "../chars";
 
 // ── Word objects (iw, aw) ──────────────────────────────────────────
 
@@ -80,10 +71,6 @@ export function aWord(buf: string, cursor: number): Range | null {
 }
 
 // ── WORD objects (iW, aW) ──────────────────────────────────────────
-
-function isWORDChar(ch: string): boolean {
-  return ch !== " " && ch !== "\t" && ch !== "\n";
-}
 
 /** iW — inner WORD: contiguous non-whitespace. */
 export function innerWORD(buf: string, cursor: number): Range | null {

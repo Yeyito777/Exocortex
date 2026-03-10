@@ -8,7 +8,7 @@
 
 import type { RenderState } from "./state";
 import type { ImageAttachment } from "./messages";
-import { renderStatusLine, statusLineHeight } from "./statusline";
+import { renderStatusLine } from "./statusline";
 import { renderTopbar } from "./topbar";
 import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { buildMessageLines } from "./conversation";
@@ -154,8 +154,9 @@ export function render(state: RenderState): void {
   const inputRowCount = inputLines.length;
 
   // ── Bottom layout: sep | [imageIndicator] | input rows | sep | status
-  const slHeight = statusLineHeight(state, chatW);
-  const statusLines = renderStatusLine(state, chatW);
+  const statusResult = renderStatusLine(state, chatW);
+  const slHeight = statusResult.height;
+  const statusLines = statusResult.lines;
   const imageIndicatorRows = state.pendingImages.length > 0 ? 1 : 0;
   const bottomUsed = 1 + imageIndicatorRows + inputRowCount + 1 + slHeight;
   const sepAbove = rows - bottomUsed + 1;

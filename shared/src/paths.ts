@@ -63,6 +63,11 @@ function detectWorktree(): string | null {
 
 // ── Public API ──────────────────────────────────────────────────────
 
+/** Base config directory (~/.config/exocortex). */
+export function configDir(): string {
+  return CONFIG_DIR;
+}
+
 /** Runtime dir for socket + PID. Namespaced by worktree if applicable. */
 export function runtimeDir(): string {
   const wt = detectWorktree();

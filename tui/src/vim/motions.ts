@@ -6,20 +6,7 @@
  */
 
 import { lineStartOf, lineEndOf } from "./buffer";
-
-// ── Character classification ───────────────────────────────────────
-
-function isWordChar(ch: string): boolean {
-  return /\w/.test(ch);
-}
-
-function isSpace(ch: string): boolean {
-  return ch === " " || ch === "\t" || ch === "\n";
-}
-
-function isPunct(ch: string): boolean {
-  return !isWordChar(ch) && !isSpace(ch);
-}
+import { isWordChar, isBufferSpace as isSpace, isPunct } from "../chars";
 
 // ── Character motions ──────────────────────────────────────────────
 

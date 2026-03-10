@@ -10,6 +10,7 @@
 import type { KeyEvent } from "./input";
 import type { Action } from "./keybinds";
 import type { RenderState } from "./state";
+import { copyToClipboard } from "./vim/clipboard";
 import {
   stripAnsi, clampCol, clampCursor,
   logicalLineRange,
@@ -241,6 +242,41 @@ export function getHistoryVisualSelection(state: RenderState): string {
   result.push(lastPlain.slice(0, lastCol + 1).trimStart());
 
   return result.join("\n");
+}
+
+// ── History cursor action dispatch (yank, visual yank, motions) ───
+
+/**
+ * Handle a history cursor action. Dispatches yank/visual-yank and
+ * delegates motion actions to applyHistoryAction.
+ * Returns a KeyResult-compatible object.
+ */
+export function handleHistoryCursorAction(
+  action: Action,
+  state: RenderState,
+): { type: "handled" } {
+  if (action === "history_yy") {
+    const wrapCont = state.historyWrapContinuation;
+    const curRow = state.historyCursor.row;
+    const { first, last } = wrapCont.length > 0
+      ? logicalLineRange(curRow, wrapCont)
+      : { first: curRow, last: curRow };
+    const plain = joinLogicalLines(state.historyLines, wrapCont, first, last);
+    if (plain) copyToClipboard(plain);
+    ensureCursorVisible(state);
+    return { type: "handled" };
+  }
+
+  if (action === "history_visual_yank") {
+    const text = getHistoryVisualSelection(state);
+    if (text) copyToClipboard(text);
+    state.vim.mode = "normal";
+    ensureCursorVisible(state);
+    return { type: "handled" };
+  }
+
+  applyHistoryAction(action, state);
+  return { type: "handled" };
 }
 
 /**

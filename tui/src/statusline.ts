@@ -97,22 +97,20 @@ function composeRow(blocks: StatusBlock[], rowIdx: number, cols: number): string
 
 // ── Public API ──────────────────────────────────────────────────────
 
-/** Compute the number of rows the status line will occupy. */
-export function statusLineHeight(state: RenderState, cols: number): number {
-  const blocks = layoutBlocks(state, cols);
-  if (blocks.length === 0) return 0;
-  return Math.max(...blocks.map(b => b.height));
+export interface StatusLineResult {
+  height: number;
+  lines: string[];
 }
 
-/** Render the status line into an array of ANSI strings, one per row. */
-export function renderStatusLine(state: RenderState, cols: number): string[] {
+/** Compute and render the status line in a single pass. */
+export function renderStatusLine(state: RenderState, cols: number): StatusLineResult {
   const blocks = layoutBlocks(state, cols);
-  if (blocks.length === 0) return [];
+  if (blocks.length === 0) return { height: 0, lines: [] };
 
-  const maxH = Math.max(...blocks.map(b => b.height));
-  const rows: string[] = [];
-  for (let i = 0; i < maxH; i++) {
-    rows.push(composeRow(blocks, i, cols));
+  const height = Math.max(...blocks.map(b => b.height));
+  const lines: string[] = [];
+  for (let i = 0; i < height; i++) {
+    lines.push(composeRow(blocks, i, cols));
   }
-  return rows;
+  return { height, lines };
 }

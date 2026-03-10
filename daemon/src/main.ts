@@ -9,6 +9,9 @@
  *   bun run src/main.ts login    Authenticate with Anthropic
  */
 
+import { loadEnvFile } from "./env";
+loadEnvFile();
+
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync } from "fs";
 import { connect as netConnect } from "net";
 import { log } from "./log";

@@ -8,6 +8,7 @@
  */
 
 import type { HistoryCursor } from "./historycursor";
+import { isWordChar, isSpace } from "./chars";
 
 // ── ANSI stripping ─────────────────────────────────────────────────
 
@@ -16,11 +17,6 @@ const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\]8;[^;]*;[^\x1b]*\x1b\\/g;
 export function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, "");
 }
-
-// ── Character classification ───────────────────────────────────────
-
-function isWordChar(ch: string): boolean { return /\w/.test(ch); }
-function isSpace(ch: string): boolean { return ch === " " || ch === "\t"; }
 
 // ── Content bounds ────────────────────────────────────────────────
 

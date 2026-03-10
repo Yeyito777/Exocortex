@@ -7,7 +7,7 @@
  * highlighting applied afterward.
  */
 
-import { COMMAND_LIST, MODEL_ARGS } from "./commands";
+import { COMMAND_LIST, COMMAND_ARGS } from "./commands";
 import { MACRO_LIST, MACRO_ARGS } from "./macros";
 import { theme } from "./theme";
 import { wrappedLineOffsets } from "./promptline";
@@ -22,7 +22,9 @@ const VALID_NAMES = new Set([
 
 /** Map of command/macro name → set of valid argument names. */
 const VALID_ARGS: Record<string, Set<string>> = {
-  "/model": new Set(MODEL_ARGS.map(a => a.name)),
+  ...Object.fromEntries(
+    Object.entries(COMMAND_ARGS).map(([cmd, args]) => [cmd, new Set(args.map(a => a.name))]),
+  ),
   ...Object.fromEntries(
     Object.entries(MACRO_ARGS).map(([cmd, args]) => [cmd, new Set(args.map(a => a.name))]),
   ),
@@ -32,16 +34,18 @@ const VALID_ARGS: Record<string, Set<string>> = {
 
 interface Span { start: number; end: number }
 
+const COMMAND_SPAN_RE = /(^|[ \t\n])(\/[\w-]+)(?:[ \t]+([\w-]+))?/gm;
+
 /**
  * Find buffer ranges that contain valid command/macro tokens.
  * Each span covers the command name and, if present, a recognized argument.
  */
 function findCommandSpans(buffer: string): Span[] {
   const spans: Span[] = [];
-  const regex = /(^|[ \t\n])(\/[\w-]+)(?:[ \t]+([\w-]+))?/gm;
+  COMMAND_SPAN_RE.lastIndex = 0;
 
   let match;
-  while ((match = regex.exec(buffer)) !== null) {
+  while ((match = COMMAND_SPAN_RE.exec(buffer)) !== null) {
     const boundary = match[1];
     const cmd = match[2];
     const arg = match[3];

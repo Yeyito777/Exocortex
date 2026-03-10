@@ -27,10 +27,9 @@ import { processKey, copyToClipboard, pasteFromClipboard, type VimContext } from
 import { clampNormal } from "./vim/buffer";
 import { pushUndo, markInsertEntry, commitInsertSession, undo as undoFn, redo as redoFn } from "./undo";
 import {
-  applyHistoryAction, stripAnsi, ensureCursorVisible, placeAtVisibleBottom,
-  logicalLineRange, joinLogicalLines,
+  stripAnsi, ensureCursorVisible, placeAtVisibleBottom,
   handleHistoryFind as historyFindHandler,
-  getHistoryVisualSelection,
+  handleHistoryCursorAction,
   scrollHalfPageWithCursor, scrollFullPageWithCursor, scrollLineWithStickyCursor,
 } from "./historycursor";
 import { handleMessageTextObject } from "./vim/message";
@@ -393,34 +392,6 @@ function handleVimAction(action: string, state: RenderState): KeyResult {
     default:
       return { type: "handled" };
   }
-}
-
-// ── History cursor actions ────────────────────────────────────────
-
-function handleHistoryCursorAction(action: Action, state: RenderState): KeyResult {
-  if (action === "history_yy") {
-    const wrapCont = state.historyWrapContinuation;
-    const curRow = state.historyCursor.row;
-    // Yank the full logical line (all wrap-continuation rows joined)
-    const { first, last } = wrapCont.length > 0
-      ? logicalLineRange(curRow, wrapCont)
-      : { first: curRow, last: curRow };
-    const plain = joinLogicalLines(state.historyLines, wrapCont, first, last);
-    if (plain) copyToClipboard(plain);
-    ensureCursorVisible(state);
-    return { type: "handled" };
-  }
-
-  if (action === "history_visual_yank") {
-    const text = getHistoryVisualSelection(state);
-    if (text) copyToClipboard(text);
-    state.vim.mode = "normal";
-    ensureCursorVisible(state);
-    return { type: "handled" };
-  }
-
-  applyHistoryAction(action, state);
-  return { type: "handled" };
 }
 
 /** Handle j/k vim actions in sidebar or history context. */

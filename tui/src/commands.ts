@@ -11,6 +11,7 @@
 import type { RenderState } from "./state";
 import { clearPrompt } from "./promptline";
 import type { ModelId } from "./messages";
+import { copyToClipboard } from "./vim/clipboard";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -35,6 +36,34 @@ export interface SlashCommand {
 // ── Command definitions ─────────────────────────────────────────────
 
 const MODELS: ModelId[] = ["sonnet", "haiku", "opus"];
+
+/** Build a human-readable info string for the current conversation. */
+function formatConvoInfo(state: RenderState): string | null {
+  if (!state.convId) return null;
+
+  const conv = state.sidebar.conversations.find(c => c.id === state.convId);
+  const title = conv?.title || conv?.preview || "(untitled)";
+  const model = conv?.model ?? state.model;
+  const msgs = conv?.messageCount ?? state.messages.filter(m => m.role !== "system").length;
+  const created = conv ? new Date(conv.createdAt).toLocaleString() : "unknown";
+  const updated = conv ? new Date(conv.updatedAt).toLocaleString() : "unknown";
+  const flags = [
+    conv?.pinned && "pinned",
+    conv?.marked && "marked",
+  ].filter(Boolean).join(", ");
+
+  const lines = [
+    `Title:    ${title}`,
+    `ID:       ${state.convId}`,
+    `Model:    ${model}`,
+    `Messages: ${msgs}`,
+    `Created:  ${created}`,
+    `Updated:  ${updated}`,
+  ];
+  if (flags) lines.push(`Flags:    ${flags}`);
+
+  return lines.join("\n");
+}
 
 const commands: SlashCommand[] = [
   {
@@ -112,6 +141,29 @@ const commands: SlashCommand[] = [
       return { type: "handled" };
     },
   },
+  {
+    name: "/convo",
+    description: "Copy conversation info to clipboard",
+    handler: (_text, state) => {
+      if (!state.convId) {
+        state.messages.push({ role: "system", text: "No active conversation.", metadata: null });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      const info = formatConvoInfo(state);
+      if (!info) {
+        state.messages.push({ role: "system", text: "No active conversation.", metadata: null });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      copyToClipboard(info);
+      state.messages.push({ role: "system", text: "Conversation info copied to clipboard.", metadata: null });
+      clearPrompt(state);
+      return { type: "handled" };
+    },
+  },
 ];
 
 // ── Lookup ──────────────────────────────────────────────────────────
@@ -143,3 +195,8 @@ export const MODEL_ARGS: CompletionItem[] = [
   { name: "haiku", desc: "Claude Haiku 4" },
   { name: "opus", desc: "Claude Opus 4" },
 ];
+
+/** All command argument lists, keyed by command name. Used by autocomplete and prompt highlighting. */
+export const COMMAND_ARGS: Record<string, CompletionItem[]> = {
+  "/model": MODEL_ARGS,
+};
