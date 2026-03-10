@@ -17,6 +17,7 @@ import { theme } from "./theme";
 import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./historycursor";
 import { renderLineWithCursor, renderLineWithSelection } from "./cursorrender";
 import { highlightPromptInput } from "./promptHighlight";
+import { formatSize, imageLabel } from "./clipboard";
 
 // ── ANSI positioning (non-color escapes) ────────────────────────────
 
@@ -63,6 +64,38 @@ function highlightPromptLine(
   }
 
   return line;
+}
+
+// ── Image indicator ────────────────────────────────────────────────
+
+import type { ImageAttachment } from "./messages";
+
+function renderImageIndicator(images: ImageAttachment[], width: number): string {
+  if (width <= 0 || images.length === 0) return "";
+
+  let label: string;
+  if (images.length === 1) {
+    const img = images[0];
+    label = `📎 Image pasted (${imageLabel(img.mediaType)}, ${formatSize(img.sizeBytes)})`;
+  } else {
+    const parts = images.map(img =>
+      `${imageLabel(img.mediaType)} ${formatSize(img.sizeBytes)}`
+    );
+    label = `📎 ${images.length} images (${parts.join(", ")})`;
+  }
+
+  // Truncate if it doesn't fit (leave room for "│ " + " │")
+  const innerWidth = width - 4;
+  if (label.length > innerWidth) {
+    label = label.slice(0, Math.max(0, innerWidth - 1)) + "…";
+  }
+  const padding = Math.max(0, innerWidth - label.length);
+
+  return (
+    theme.accent + "│" +
+    theme.reset + " " + theme.dim + label + " ".repeat(padding) +
+    " " + theme.accent + "│" + theme.reset
+  );
 }
 
 export function render(state: RenderState): void {
@@ -121,12 +154,13 @@ export function render(state: RenderState): void {
 
   const inputRowCount = inputLines.length;
 
-  // ── Bottom layout: sep | input rows | sep | status ────────────
+  // ── Bottom layout: sep | [imageIndicator] | input rows | sep | status
   const slHeight = statusLineHeight(state, chatW);
   const statusLines = renderStatusLine(state, chatW);
-  const bottomUsed = 1 + inputRowCount + 1 + slHeight;
+  const imageIndicatorRows = state.pendingImages.length > 0 ? 1 : 0;
+  const bottomUsed = 1 + imageIndicatorRows + inputRowCount + 1 + slHeight;
   const sepAbove = rows - bottomUsed + 1;
-  const firstInputRow = sepAbove + 1;
+  const firstInputRow = sepAbove + 1 + imageIndicatorRows;
   const sepBelow = firstInputRow + inputRowCount;
 
   // Prompt separator
@@ -304,6 +338,16 @@ export function render(state: RenderState): void {
   }
   out.push(move_to(sepAbove, chatCol) + `${promptColor}${"─".repeat(chatW)}${theme.reset}`);
 
+  // ── Image indicator (between separator and prompt) ────────────
+  if (imageIndicatorRows > 0) {
+    const indRow = sepAbove + 1;
+    out.push(move_to(indRow, 1) + clear_line);
+    if (sidebarOpen && sbRows[indRow - 1]) {
+      out.push(sbRows[indRow - 1]);
+    }
+    out.push(move_to(indRow, chatCol) + renderImageIndicator(state.pendingImages, chatW));
+  }
+
   // ── Input rows ────────────────────────────────────────────────
   const promptInVisual = promptFocused
     && (state.vim.mode === "visual" || state.vim.mode === "visual-line");
@@ -321,13 +365,8 @@ export function render(state: RenderState): void {
     const modeColor = (state.vim.mode === "visual" || state.vim.mode === "visual-line")
       ? theme.vimVisual
       : state.vim.mode === "normal" ? theme.vimNormal : theme.vimInsert;
-    // When images are pending, show count instead of ">" glyph (e.g. "I 2>" → "I 1>")
-    const imgCount = state.pendingImages.length;
-    const glyphStr = isFirst && imgCount > 0
-      ? `${imgCount}>`
-      : promptGlyph;
     const prompt = isFirst
-      ? `${modeColor}${modeChar}${theme.reset} ${promptStyle}${glyphStr}${theme.reset} `
+      ? `${modeColor}${modeChar}${theme.reset} ${promptStyle}${promptGlyph}${theme.reset} `
       : `  ${promptStyle}${promptGlyph}${theme.reset} `;
 
     let lineContent = coloredInputLines[i];
