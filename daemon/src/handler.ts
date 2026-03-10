@@ -200,6 +200,7 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           break;
         }
+        const queued = convStore.getQueuedMessages(data.convId);
         server.sendTo(client, {
           type: "conversation_loaded",
           reqId: cmd.reqId,
@@ -207,6 +208,7 @@ export function createHandler(server: DaemonServer) {
           model: data.model,
           entries: data.entries,
           contextTokens: data.contextTokens,
+          queuedMessages: queued.length > 0 ? queued : undefined,
         });
         server.subscribe(client, data.convId);
         // If the conversation is actively streaming, tell the late-joining client

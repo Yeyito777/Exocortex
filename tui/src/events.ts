@@ -284,6 +284,13 @@ export function handleEvent(
           }
         }
       }
+
+      // Rebuild local queue shadows from daemon state
+      if (event.queuedMessages && event.queuedMessages.length > 0) {
+        for (const qm of event.queuedMessages) {
+          state.queuedMessages.push({ convId: event.convId, text: qm.text, timing: qm.timing });
+        }
+      }
       break;
     }
 
