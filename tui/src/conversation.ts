@@ -150,24 +150,25 @@ function renderUserMessage(text: string, cols: number, images?: ImageAttachment[
 
   const lines: string[] = [];
   const cont: boolean[] = [];
+  const screenOffset = " ".repeat(Math.max(0, cols - bubbleWidth - margin));
+  const padRight = " ".repeat(padding);
+
+  /** Append a right-aligned bubble line with optional style prefix. */
+  const pushBubbleLine = (text: string, isCont: boolean, style?: string) => {
+    const padLeft = " ".repeat(Math.max(0, inner - text.length) + padding);
+    const styledText = style ? `${style}${text}${theme.reset}${theme.userBg}` : text;
+    lines.push(`${screenOffset}${theme.userBg}${padLeft}${styledText}${padRight}${theme.reset}`);
+    cont.push(isCont);
+  };
 
   // Render text lines
   for (let i = 0; i < w.lines.length; i++) {
-    const wl = w.lines[i];
-    const padLeft = " ".repeat(Math.max(0, inner - wl.length) + padding);
-    const padRight = " ".repeat(padding);
-    const offset = " ".repeat(Math.max(0, cols - bubbleWidth - margin));
-    lines.push(`${offset}${theme.userBg}${padLeft}${wl}${padRight}${theme.reset}`);
-    cont.push(w.cont[i]);
+    pushBubbleLine(w.lines[i], w.cont[i]);
   }
 
   // Render image badges below text (dimmed)
   for (const badge of badgeLines) {
-    const padLeft = " ".repeat(Math.max(0, inner - badge.length) + padding);
-    const padRight = " ".repeat(padding);
-    const offset = " ".repeat(Math.max(0, cols - bubbleWidth - margin));
-    lines.push(`${offset}${theme.userBg}${padLeft}${theme.dim}${badge}${theme.reset}${theme.userBg}${padRight}${theme.reset}`);
-    cont.push(false);
+    pushBubbleLine(badge, false, theme.dim);
   }
   return { lines, cont };
 }

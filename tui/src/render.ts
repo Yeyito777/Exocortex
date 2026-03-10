@@ -7,6 +7,7 @@
  */
 
 import type { RenderState } from "./state";
+import type { ImageAttachment } from "./messages";
 import { renderStatusLine, statusLineHeight } from "./statusline";
 import { renderTopbar } from "./topbar";
 import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
@@ -67,8 +68,6 @@ function highlightPromptLine(
 }
 
 // ── Image indicator ────────────────────────────────────────────────
-
-import type { ImageAttachment } from "./messages";
 
 function renderImageIndicator(images: ImageAttachment[], width: number): string {
   if (width <= 0 || images.length === 0) return "";
