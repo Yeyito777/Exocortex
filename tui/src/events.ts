@@ -8,7 +8,7 @@
 import type { RenderState } from "./state";
 import { isStreaming } from "./state";
 import { ensureCurrentBlock, createPendingAI, sortConversations } from "./messages";
-import type { SystemMessage } from "./messages";
+import type { SystemMessage, ImageAttachment } from "./messages";
 import { updateConversationList, updateConversation, syncSelectedIndex } from "./sidebar";
 import { theme } from "./theme";
 import type { Event } from "./protocol";
@@ -19,7 +19,7 @@ import type { Event } from "./protocol";
 export interface DaemonActions {
   subscribe(convId: string): void;
   unsubscribe(convId: string): void;
-  sendMessage(convId: string, text: string, startedAt: number, images?: import("./messages").ImageAttachment[]): void;
+  sendMessage(convId: string, text: string, startedAt: number, images?: ImageAttachment[]): void;
 }
 
 // ── Event handler ───────────────────────────────────────────────────

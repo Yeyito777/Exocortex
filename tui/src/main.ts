@@ -91,18 +91,18 @@ function handleSubmit(): void {
     }
   }
 
+  if (isStreaming(state)) {
+    state.messages.push({ role: "system", text: "Still streaming — wait or press Escape to abort.", metadata: null });
+    scheduleRender();
+    return;
+  }
+
   // Regular message — expand macros before sending
   const messageText = text ? expandMacros(text) : "";
   const images = hasImages ? [...state.pendingImages] : undefined;
   clearPrompt(state);
   state.pendingImages = [];
   state.scrollOffset = 0;
-
-  if (isStreaming(state)) {
-    state.messages.push({ role: "system", text: "Still streaming — wait or press Escape to abort.", metadata: null });
-    scheduleRender();
-    return;
-  }
 
   // Create the AI message immediately so the timer starts now
   const startedAt = Date.now();

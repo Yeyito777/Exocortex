@@ -7,7 +7,7 @@
 import { connect, type Socket } from "net";
 import { existsSync } from "fs";
 import type { Command, Event } from "./protocol";
-import type { ModelId } from "./messages";
+import type { ModelId, ImageAttachment } from "./messages";
 import { socketPath } from "@exocortex/shared/paths";
 
 export type EventHandler = (event: Event) => void;
@@ -88,7 +88,7 @@ export class DaemonClient {
     this.send({ type: "unsubscribe", convId });
   }
 
-  sendMessage(convId: string, text: string, startedAt: number, images?: import("./messages").ImageAttachment[]): void {
+  sendMessage(convId: string, text: string, startedAt: number, images?: ImageAttachment[]): void {
     this.send({ type: "send_message", convId, text, startedAt, images: images?.length ? images : undefined });
   }
 

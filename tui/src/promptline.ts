@@ -83,6 +83,9 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
           state.inputBuffer.slice(0, state.cursorPos - 1) +
           state.inputBuffer.slice(state.cursorPos);
         state.cursorPos--;
+      } else if (state.pendingImages.length > 0) {
+        // Backspace at position 0 pops the last pending image
+        state.pendingImages.pop();
       }
       updateAutocomplete(state);
       return "handled";

@@ -37,7 +37,9 @@ export function readClipboardImage(): ImageAttachment | null {
         sizeBytes: result.stdout.length,
       };
     }
-  } catch {}
+  } catch {
+    // xclip missing or unexpected error — degrade silently (return null)
+  }
   return null;
 }
 

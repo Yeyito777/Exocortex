@@ -52,7 +52,7 @@ export interface RenderState {
   /** Cached layout values — updated each render, read by scroll functions. */
   layout: LayoutCache;
   /** Pending message to send after conversation is created. */
-  pendingSend: { active: boolean; text: string; images?: import("./messages").ImageAttachment[] };
+  pendingSend: { active: boolean; text: string; images?: ImageAttachment[] };
   /** System messages buffered during streaming — flushed after AI message completes. */
   systemMessageBuffer: SystemMessage[];
   /** Available tools reported by the daemon on connect. */

@@ -154,9 +154,9 @@ function renderUserMessage(text: string, cols: number, images?: ImageAttachment[
   const padRight = " ".repeat(padding);
 
   /** Append a right-aligned bubble line with optional style prefix. */
-  const pushBubbleLine = (text: string, isCont: boolean, style?: string) => {
-    const padLeft = " ".repeat(Math.max(0, inner - text.length) + padding);
-    const styledText = style ? `${style}${text}${theme.reset}${theme.userBg}` : text;
+  const pushBubbleLine = (lineText: string, isCont: boolean, style?: string) => {
+    const padLeft = " ".repeat(Math.max(0, inner - lineText.length) + padding);
+    const styledText = style ? `${style}${lineText}${theme.reset}${theme.userBg}` : lineText;
     lines.push(`${screenOffset}${theme.userBg}${padLeft}${styledText}${padRight}${theme.reset}`);
     cont.push(isCont);
   };

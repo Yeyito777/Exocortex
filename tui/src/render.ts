@@ -93,7 +93,7 @@ function renderImageIndicator(images: ImageAttachment[], width: number): string 
   return (
     theme.accent + "│" +
     theme.reset + " " + theme.dim + label + " ".repeat(padding) +
-    " " + theme.accent + "│" + theme.reset
+    theme.reset + " " + theme.accent + "│" + theme.reset
   );
 }
 
