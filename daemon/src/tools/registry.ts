@@ -67,19 +67,43 @@ export function summarizeTool(name: string, input: Record<string, unknown>): Too
   return tool.summarize(input);
 }
 
+// ── Abort race helper ─────────────────────────────────────────────
+
+/**
+ * Race a promise against an AbortSignal. If the signal fires first,
+ * the returned promise rejects immediately — the original promise
+ * continues in the background (its result is discarded) while the
+ * tool's cooperative cleanup (process kills, etc.) runs as a side effect.
+ */
+function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      signal.addEventListener("abort", () =>
+        reject(new DOMException("Aborted", "AbortError")), { once: true });
+    }),
+  ]);
+}
+
 // ── Build executor (injected into the agent loop) ──────────────────
 
-export function buildExecutor(): (calls: ApiToolCall[]) => Promise<ToolExecResult[]> {
-  return (calls) => Promise.all(calls.map(async (call): Promise<ToolExecResult> => {
+export function buildExecutor(): (calls: ApiToolCall[], signal?: AbortSignal) => Promise<ToolExecResult[]> {
+  return (calls, signal?) => Promise.all(calls.map(async (call): Promise<ToolExecResult> => {
     const tool = toolMap.get(call.name);
     let result: ToolResult;
     if (!tool) {
       result = { output: `Unknown tool: ${call.name}`, isError: true };
     } else {
       try {
-        result = await tool.execute(call.input);
+        result = await raceAbort(tool.execute(call.input, signal), signal);
       } catch (err) {
-        result = { output: `Tool error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        if (err instanceof DOMException && err.name === "AbortError") {
+          result = { output: "Tool interrupted", isError: true };
+        } else {
+          result = { output: `Tool error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+        }
       }
     }
     return {

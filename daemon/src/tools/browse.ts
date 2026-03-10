@@ -41,7 +41,7 @@ const SUMMARIZE_SYSTEM = [
   "- Output markdown.",
 ].join("\n");
 
-async function summarizeContent(url: string, markdown: string, prompt?: string): Promise<string> {
+async function summarizeContent(url: string, markdown: string, prompt?: string, signal?: AbortSignal): Promise<string> {
   const userMessage = prompt
     ? `URL: ${url}\nLooking for: ${prompt}\n\n---\n\n${markdown}`
     : `URL: ${url}\nProvide a general summary.\n\n---\n\n${markdown}`;
@@ -51,6 +51,7 @@ async function summarizeContent(url: string, markdown: string, prompt?: string):
     const result = await complete(SUMMARIZE_SYSTEM, userMessage, {
       model: "sonnet",
       maxTokens: 8192,
+      signal,
     });
     log("info", `browse: summary done (${result.text.length} chars, in=${result.inputTokens ?? "?"}, out=${result.outputTokens ?? "?"})`);
     return `Summary of ${url}:\n\n${result.text}`;
@@ -67,7 +68,7 @@ async function summarizeContent(url: string, markdown: string, prompt?: string):
 
 // ── Execution ──────────────────────────────────────────────────────
 
-async function executeBrowse(input: Record<string, unknown>): Promise<ToolResult> {
+async function executeBrowse(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
   const url = input.url as string;
   const prompt = input.prompt as string;
 
@@ -104,6 +105,7 @@ async function executeBrowse(input: Record<string, unknown>): Promise<ToolResult
           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
         redirect: "follow",
+        signal,
         tls: { rejectUnauthorized: false },
       } as RequestInit & { tls?: { rejectUnauthorized: boolean } });
 
@@ -149,7 +151,7 @@ async function executeBrowse(input: Record<string, unknown>): Promise<ToolResult
     }
 
     // ── Summarize through sonnet ───────────────────────────────
-    const summary = await summarizeContent(fetchUrl, markdown, prompt);
+    const summary = await summarizeContent(fetchUrl, markdown, prompt, signal);
     return { output: cap(summary), isError: false };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

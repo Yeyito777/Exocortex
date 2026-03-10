@@ -61,9 +61,25 @@ function spillAndPreview(output: string, byteTruncated: boolean): string {
   return tail ? head + separator + tail : head + separator;
 }
 
+// ── Process group kill ─────────────────────────────────────────────
+
+const KILL_GRACE_MS = 200;
+
+/**
+ * Kill an entire process group: SIGTERM first, then SIGKILL after a
+ * short grace period. The negative PID targets every process in the
+ * group — bash, its children, their children, etc.
+ */
+function killProcessGroup(pid: number): void {
+  try { process.kill(-pid, "SIGTERM"); } catch {}
+  setTimeout(() => {
+    try { process.kill(-pid, "SIGKILL"); } catch {}
+  }, KILL_GRACE_MS);
+}
+
 // ── Execution ──────────────────────────────────────────────────────
 
-async function executeBash(input: Record<string, unknown>): Promise<ToolResult> {
+async function executeBash(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
   const command = input.command as string;
   if (!command) return { output: "Error: missing 'command' parameter", isError: true };
 
@@ -75,6 +91,7 @@ async function executeBash(input: Record<string, unknown>): Promise<ToolResult> 
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
       timeout,
+      detached: true,   // own process group so we can kill the entire tree
     });
 
     const chunks: Buffer[] = [];
@@ -95,11 +112,22 @@ async function executeBash(input: Record<string, unknown>): Promise<ToolResult> 
     proc.stdout.on("data", collect);
     proc.stderr.on("data", collect);
 
+    // ── Abort handling: kill entire process group on signal ────
+    if (signal) {
+      const onAbort = () => { if (proc.pid) killProcessGroup(proc.pid); };
+      if (signal.aborted) {
+        onAbort();
+      } else {
+        signal.addEventListener("abort", onAbort, { once: true });
+        proc.on("close", () => signal.removeEventListener("abort", onAbort));
+      }
+    }
+
     proc.on("error", (err) => {
       resolve({ output: `Error: ${err.message}`, isError: true });
     });
 
-    proc.on("close", (code) => {
+    proc.on("close", (code, sig) => {
       let output = Buffer.concat(chunks).toString("utf8");
 
       // If output exceeds context budget, spill to file and return preview

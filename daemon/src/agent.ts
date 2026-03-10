@@ -59,8 +59,9 @@ export interface ToolExecResult {
 /**
  * A function that executes tool calls and returns results.
  * Injected by the caller — the agent loop doesn't know what tools exist.
+ * The optional signal lets the executor abort in-flight tool calls.
  */
-export type ToolExecutor = (calls: ApiToolCall[]) => Promise<ToolExecResult[]>;
+export type ToolExecutor = (calls: ApiToolCall[], signal?: AbortSignal) => Promise<ToolExecResult[]>;
 
 // ── Result ──────────────────────────────────────────────────────────
 
@@ -209,7 +210,7 @@ export async function runAgentLoop(
       break;
     }
 
-    const execResults = await options.executor(result.toolCalls);
+    const execResults = await options.executor(result.toolCalls, options.signal);
 
     // ── Emit tool result blocks + build API tool_result message ───
     const toolResultContent: ApiMessage["content"] = [];
