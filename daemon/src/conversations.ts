@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ModelId, ConversationSummary } from "./messages";
-import { createConversation, sortConversations } from "./messages";
+import { createConversation, sortConversations, displayName, extractPreview } from "./messages";
 import { buildDisplayData, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
@@ -59,14 +59,6 @@ export function bumpToTop(id: string): boolean {
   conv.sortOrder = topUnpinnedOrder(id);
   markDirty(id);
   return true;
-}
-
-/** Resolve the display name for a conversation: explicit title, or first user message preview. */
-function displayName(conv: Conversation): string {
-  if (conv.title) return conv.title;
-  const first = conv.messages.find(m => m.role === "user");
-  if (first && typeof first.content === "string") return first.content.slice(0, 80);
-  return "(empty)";
 }
 
 /** Clone a conversation: deep-copy with a new ID, placed right after the original in sort order. */
@@ -269,19 +261,13 @@ export function move(id: string, direction: "up" | "down"): boolean {
 export function getSummary(id: string): ConversationSummary | null {
   const conv = conversations.get(id);
   if (!conv) return null;
-  const firstUserMsg = conv.messages.find(m => m.role === "user");
-  const preview = firstUserMsg
-    ? typeof firstUserMsg.content === "string"
-      ? firstUserMsg.content.slice(0, 80)
-      : ""
-    : "";
   return {
     id: conv.id,
     model: conv.model,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
     messageCount: conv.messages.length,
-    preview,
+    preview: extractPreview(conv.messages),
     title: conv.title ?? null,
     marked: conv.marked,
     pinned: conv.pinned,

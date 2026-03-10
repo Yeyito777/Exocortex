@@ -48,6 +48,21 @@ export interface Conversation {
   title: string | null;
 }
 
+/** Extract a short preview from the first user message in a message list. */
+export function extractPreview(messages: StoredMessage[]): string {
+  for (const msg of messages) {
+    if (msg.role === "user" && typeof msg.content === "string") {
+      return msg.content.slice(0, 80);
+    }
+  }
+  return "";
+}
+
+/** Resolve the display name: explicit title, first-message preview, or "(empty)". */
+export function displayName(conv: Conversation): string {
+  return conv.title || extractPreview(conv.messages) || "(empty)";
+}
+
 export function createConversation(id: string, model: ModelId, sortOrder?: number): Conversation {
   const now = Date.now();
   return {

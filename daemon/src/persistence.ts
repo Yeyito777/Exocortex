@@ -14,7 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlink
 import { log } from "./log";
 import { conversationsDir, trashDir } from "@exocortex/shared/paths";
 import type { Conversation, StoredMessage, ApiMessage, ModelId, ConversationSummary } from "./messages";
-import { sortConversations } from "./messages";
+import { sortConversations, extractPreview } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
@@ -379,14 +379,4 @@ export function loadAll(): ConversationSummary[] {
 
   sortConversations(summaries);
   return summaries;
-}
-
-/** Extract a short preview from the first user message. */
-function extractPreview(messages: StoredMessage[]): string {
-  for (const msg of messages) {
-    if (msg.role === "user" && typeof msg.content === "string") {
-      return msg.content.slice(0, 80);
-    }
-  }
-  return "";
 }
