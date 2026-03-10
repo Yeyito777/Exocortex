@@ -584,9 +584,9 @@ function renderEditMessageOverlay(
       const isQueued = cl.itemIdx !== undefined && em.items[cl.itemIdx]?.isQueued;
       if (isSelected) {
         bg = theme.sidebarSelBg;
-        fg = isQueued ? theme.dim : theme.accent;
+        fg = isQueued ? theme.muted : theme.accent;
       } else {
-        fg = isQueued ? theme.dim : theme.text;
+        fg = isQueued ? theme.muted : theme.text;
       }
     }
 
