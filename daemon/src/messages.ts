@@ -16,6 +16,7 @@ import type { ModelId, MessageMetadata } from "@exocortex/shared/messages";
 
 export type ApiContentBlock =
   | { type: "text"; text: string; cache_control?: { type: "ephemeral" } }
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
   | { type: "thinking"; thinking: string; signature: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
   | { type: "tool_result"; tool_use_id: string; content: string | unknown[]; is_error?: boolean };
@@ -51,8 +52,15 @@ export interface Conversation {
 /** Extract a short preview from the first user message in a message list. */
 export function extractPreview(messages: StoredMessage[]): string {
   for (const msg of messages) {
-    if (msg.role === "user" && typeof msg.content === "string") {
+    if (msg.role !== "user") continue;
+    if (typeof msg.content === "string") {
       return msg.content.slice(0, 80);
+    }
+    // User message with image blocks — find the text block
+    if (Array.isArray(msg.content)) {
+      const textBlock = msg.content.find((b) => b.type === "text") as { type: "text"; text: string } | undefined;
+      if (textBlock) return textBlock.text.slice(0, 80);
+      return "📎 Image";
     }
   }
   return "";

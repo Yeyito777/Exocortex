@@ -5,7 +5,7 @@
  * Message and block types live in messages.ts.
  */
 
-import type { ModelId, UsageData, ToolDisplayInfo } from "./messages";
+import type { ModelId, UsageData, ToolDisplayInfo, ImageAttachment } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
 import type { MessageBound } from "./conversation";
 import type { PanelFocus } from "./focus";
@@ -52,7 +52,7 @@ export interface RenderState {
   /** Cached layout values — updated each render, read by scroll functions. */
   layout: LayoutCache;
   /** Pending message to send after conversation is created. */
-  pendingSend: { active: boolean; text: string };
+  pendingSend: { active: boolean; text: string; images?: import("./messages").ImageAttachment[] };
   /** System messages buffered during streaming — flushed after AI message completes. */
   systemMessageBuffer: SystemMessage[];
   /** Available tools reported by the daemon on connect. */
@@ -75,6 +75,8 @@ export interface RenderState {
   autocomplete: AutocompleteState | null;
   /** Scroll offset for the prompt input area (vim-style: only scrolls when cursor leaves viewport). */
   promptScrollOffset: number;
+  /** Images pasted from clipboard, waiting to be sent with the next message. */
+  pendingImages: ImageAttachment[];
 }
 
 /** Streaming state is derived from pendingAI — no separate boolean. */
@@ -112,6 +114,7 @@ export function createInitialState(): RenderState {
     undo: createUndoState(),
     autocomplete: null,
     promptScrollOffset: 0,
+    pendingImages: [],
   };
   // App starts in insert mode — mark entry so first Esc commits the session
   markInsertEntry(s.undo, s.inputBuffer, s.cursorPos);

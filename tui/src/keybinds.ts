@@ -19,6 +19,7 @@ export type Action =
   | "abort"
   | "sidebar_toggle"
   | "focus_cycle"
+  | "paste_image"
   // Chat / focus
   | "focus_prompt"
   | "focus_history"
@@ -94,6 +95,9 @@ const BINDS: Record<string, Action> = {
 
   // Conversation
   "ctrl-shift-o": "new_conversation",
+
+  // Clipboard image paste
+  "ctrl-v":       "paste_image",
 
   // Display toggles
   "ctrl-o":       "toggle_tool_output",

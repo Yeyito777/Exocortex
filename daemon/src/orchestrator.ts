@@ -14,7 +14,8 @@ import { buildSystemPrompt } from "./system";
 import { getToolDefs, buildExecutor, summarizeTool } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import type { StoredMessage } from "./messages";
+import type { StoredMessage, ApiContentBlock } from "./messages";
+import type { ImageAttachment } from "@exocortex/shared/messages";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -35,6 +36,7 @@ export async function orchestrateSendMessage(
   text: string,
   startedAt: number,
   ext: OrchestrationCallbacks,
+  images?: ImageAttachment[],
 ): Promise<void> {
   const auth = loadAuth();
   if (!auth?.tokens?.accessToken) {
@@ -52,12 +54,22 @@ export async function orchestrateSendMessage(
     return;
   }
 
-  conv.messages.push({ role: "user", content: text, metadata: null });
+  // Build user message content — structured array when images are present
+  const userContent: string | ApiContentBlock[] = images?.length
+    ? [
+        ...images.map((img): ApiContentBlock => ({
+          type: "image",
+          source: { type: "base64", media_type: img.mediaType, data: img.base64 },
+        })),
+        ...(text ? [{ type: "text" as const, text }] : []),
+      ]
+    : text;
+  conv.messages.push({ role: "user", content: userContent, metadata: null });
   conv.updatedAt = Date.now();
   convStore.bumpToTop(convId);
 
   // Notify other subscribers about the user message (sender already added it locally)
-  server.sendToSubscribersExcept(convId, { type: "user_message", convId, text }, client);
+  server.sendToSubscribersExcept(convId, { type: "user_message", convId, text, images }, client);
 
   const ac = new AbortController();
   convStore.setActiveJob(convId, ac, startedAt);

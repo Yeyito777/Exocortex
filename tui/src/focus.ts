@@ -35,6 +35,7 @@ import {
 } from "./historycursor";
 import { handleMessageTextObject } from "./vim/message";
 import { dismissAutocomplete } from "./autocomplete";
+import { readClipboardImage } from "./clipboard";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -144,6 +145,17 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
     case "toggle_tool_output":
       state.showToolOutput = !state.showToolOutput;
       return { type: "handled" };
+    case "paste_image": {
+      const img = readClipboardImage();
+      if (img) {
+        state.pendingImages.push(img);
+        // Force focus to prompt in insert mode so user can type a caption
+        state.panelFocus = "chat";
+        state.chatFocus = "prompt";
+        if (state.vim.mode !== "insert") state.vim.mode = "insert";
+      }
+      return { type: "handled" };
+    }
   }
 
   // ── Abort (Ctrl+Q) — always fires, regardless of focus or vim mode ─

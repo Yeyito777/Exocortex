@@ -10,7 +10,7 @@ export interface KeyEvent {
       | "up" | "down"
       | "ctrl-b" | "ctrl-c" | "ctrl-d" | "ctrl-e" | "ctrl-f"
       | "ctrl-j" | "ctrl-k" | "ctrl-l" | "ctrl-m" | "ctrl-n"
-      | "ctrl-o" | "ctrl-q" | "ctrl-r" | "ctrl-u" | "ctrl-y"
+      | "ctrl-o" | "ctrl-q" | "ctrl-r" | "ctrl-u" | "ctrl-v" | "ctrl-y"
       | "ctrl-shift-o"
       | "f14" | "f15" | "f16" | "f17" | "f18" | "f19"
       | "f20" | "f21" | "f22" | "f23" | "f24"
@@ -75,6 +75,7 @@ export function parseKeys(data: Buffer): KeyEvent[] {
     if (code === 17) { events.push({ type: "ctrl-q" }); i++; continue; }
     if (code === 18) { events.push({ type: "ctrl-r" }); i++; continue; }
     if (code === 21) { events.push({ type: "ctrl-u" }); i++; continue; }
+    if (code === 22) { events.push({ type: "ctrl-v" }); i++; continue; }
     if (code === 25) { events.push({ type: "ctrl-y" }); i++; continue; }
     // Ctrl+J (LF) — distinct from Enter
     if (code === 10) { events.push({ type: "ctrl-j" }); i++; continue; }

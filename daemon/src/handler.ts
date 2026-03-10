@@ -85,6 +85,7 @@ export function createHandler(server: DaemonServer) {
             onHeaders: (h) => handleUsageHeaders(h, broadcastUsage),
             onComplete: () => refreshUsage(broadcastUsage),
           },
+          cmd.images,
         );
         break;
       }

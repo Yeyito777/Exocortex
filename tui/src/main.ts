@@ -68,29 +68,34 @@ function onDaemonEvent(event: Event): void {
 
 function handleSubmit(): void {
   const text = state.inputBuffer.trim();
-  if (!text) return;
+  const hasImages = state.pendingImages.length > 0;
+  if (!text && !hasImages) return;
 
-  // Slash commands
-  const cmdResult = tryCommand(text, state);
-  if (cmdResult) {
-    if (cmdResult.type === "quit") { running = false; return; }
-    if (cmdResult.type === "new_conversation") {
-      if (state.convId) daemon.unsubscribe(state.convId);
-      state.convId = null;
+  // Slash commands (only when no images attached — pure text commands)
+  if (text && !hasImages) {
+    const cmdResult = tryCommand(text, state);
+    if (cmdResult) {
+      if (cmdResult.type === "quit") { running = false; return; }
+      if (cmdResult.type === "new_conversation") {
+        if (state.convId) daemon.unsubscribe(state.convId);
+        state.convId = null;
+      }
+      if (cmdResult.type === "model_changed" && state.convId) {
+        daemon.setModel(state.convId, cmdResult.model);
+      }
+      if (cmdResult.type === "rename_conversation" && state.convId) {
+        daemon.renameConversation(state.convId, cmdResult.title);
+      }
+      scheduleRender();
+      return;
     }
-    if (cmdResult.type === "model_changed" && state.convId) {
-      daemon.setModel(state.convId, cmdResult.model);
-    }
-    if (cmdResult.type === "rename_conversation" && state.convId) {
-      daemon.renameConversation(state.convId, cmdResult.title);
-    }
-    scheduleRender();
-    return;
   }
 
   // Regular message — expand macros before sending
-  const messageText = expandMacros(text);
+  const messageText = text ? expandMacros(text) : "";
+  const images = hasImages ? [...state.pendingImages] : undefined;
   clearPrompt(state);
+  state.pendingImages = [];
   state.scrollOffset = 0;
 
   if (isStreaming(state)) {
@@ -101,16 +106,17 @@ function handleSubmit(): void {
 
   // Create the AI message immediately so the timer starts now
   const startedAt = Date.now();
-  state.messages.push({ role: "user", text: messageText, metadata: null });
+  state.messages.push({ role: "user", text: messageText, images, metadata: null });
   state.pendingAI = createPendingAI(startedAt, state.model);
 
   // If no conversation yet, create one first
   if (!state.convId) {
     state.pendingSend.active = true;
     state.pendingSend.text = messageText;
+    state.pendingSend.images = images;
     daemon.createConversation(state.model);
   } else {
-    daemon.sendMessage(state.convId, messageText, startedAt);
+    daemon.sendMessage(state.convId, messageText, startedAt, images);
   }
 
   scheduleRender();

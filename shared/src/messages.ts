@@ -13,6 +13,16 @@
 
 export type ModelId = "sonnet" | "haiku" | "opus";
 
+// ── Image attachments ──────────────────────────────────────────────
+
+export type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+
+export interface ImageAttachment {
+  mediaType: ImageMediaType;
+  base64: string;       // base64-encoded image data
+  sizeBytes: number;    // original byte size for display
+}
+
 // ── Blocks ──────────────────────────────────────────────────────────
 
 export interface ThinkingBlock {
@@ -65,6 +75,7 @@ export interface MessageMetadata {
 export interface UserMessage {
   role: "user";
   text: string;
+  images?: ImageAttachment[];
   metadata: MessageMetadata | null;
 }
 

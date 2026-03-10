@@ -88,8 +88,8 @@ export class DaemonClient {
     this.send({ type: "unsubscribe", convId });
   }
 
-  sendMessage(convId: string, text: string, startedAt: number): void {
-    this.send({ type: "send_message", convId, text, startedAt });
+  sendMessage(convId: string, text: string, startedAt: number, images?: import("./messages").ImageAttachment[]): void {
+    this.send({ type: "send_message", convId, text, startedAt, images: images?.length ? images : undefined });
   }
 
   ping(): void {

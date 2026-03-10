@@ -5,10 +5,11 @@
  * The only file that knows how to render conversations.
  */
 
-import type { Block, ToolDisplayInfo } from "./messages";
+import type { Block, ToolDisplayInfo, ImageAttachment } from "./messages";
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { resolveToolDisplay } from "./toolstyles";
+import { formatSize, imageLabel } from "./clipboard";
 import { theme } from "./theme";
 
 // ── Word wrapping ───────────────────────────────────────────────────
@@ -120,22 +121,46 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
 
 // ── User message rendering (right-aligned, themed background) ───────
 
-function renderUserMessage(text: string, cols: number): WrapResult {
+function renderUserMessage(text: string, cols: number, images?: ImageAttachment[]): WrapResult {
   const padding = 1;         // horizontal padding inside bubble
   const margin = 2;          // gap from right edge of screen
   const maxBubbleWidth = cols - margin - 1;
   const innerWidth = maxBubbleWidth - padding * 2;
-  const w = wordWrap(text, innerWidth);
+
+  // Build image badge lines (e.g. "📎 PNG (93.1 KB)")
+  const badgeLines: string[] = [];
+  if (images?.length) {
+    for (const img of images) {
+      badgeLines.push(`📎 ${imageLabel(img.mediaType)} (${formatSize(img.sizeBytes)})`);
+    }
+  }
+
+  const w = text ? wordWrap(text, innerWidth) : { lines: [] as string[], cont: [] as boolean[] };
+
+  // Combine badges + text for width calculation
+  const allContentLines = [...badgeLines, ...w.lines];
+  if (allContentLines.length === 0) allContentLines.push("");
 
   // Size bubble to the longest line
   const bubbleWidth = Math.min(
     maxBubbleWidth,
-    Math.max(...w.lines.map(l => l.length)) + padding * 2,
+    Math.max(...allContentLines.map(l => l.length)) + padding * 2,
   );
   const inner = bubbleWidth - padding * 2;
 
   const lines: string[] = [];
   const cont: boolean[] = [];
+
+  // Render image badges (dimmed)
+  for (const badge of badgeLines) {
+    const padLeft = " ".repeat(Math.max(0, inner - badge.length) + padding);
+    const padRight = " ".repeat(padding);
+    const offset = " ".repeat(Math.max(0, cols - bubbleWidth - margin));
+    lines.push(`${offset}${theme.userBg}${padLeft}${theme.dim}${badge}${theme.reset}${theme.userBg}${padRight}${theme.reset}`);
+    cont.push(false);
+  }
+
+  // Render text lines
   for (let i = 0; i < w.lines.length; i++) {
     const wl = w.lines[i];
     const padLeft = " ".repeat(Math.max(0, inner - wl.length) + padding);
@@ -187,7 +212,7 @@ export function buildMessageLines(
     const start = lines.length;
     if (msg.role === "user") {
       if (!firstUser) pushLine("");  // top margin (skip for first)
-      pushBlock(renderUserMessage(msg.text, availableWidth));
+      pushBlock(renderUserMessage(msg.text, availableWidth, msg.images));
       const contentEnd = lines.length;
       pushLine("");                  // bottom margin
       firstUser = false;

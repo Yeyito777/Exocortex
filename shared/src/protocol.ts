@@ -8,8 +8,8 @@
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ModelId, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo } from "./messages";
-export type { ModelId, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo };
+import type { ModelId, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo, ImageAttachment } from "./messages";
+export type { ModelId, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo, ImageAttachment };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
@@ -31,6 +31,8 @@ export interface SendMessageCommand {
   text: string;
   /** Client-originated timestamp — the daemon stores this as the message start time. */
   startedAt: number;
+  /** Base64-encoded image attachments from clipboard paste. */
+  images?: ImageAttachment[];
 }
 
 export interface AbortCommand {
@@ -242,7 +244,7 @@ export interface AIMessagePayload {
 }
 
 export type DisplayEntry =
-  | { type: "user"; text: string }
+  | { type: "user"; text: string; images?: ImageAttachment[] }
   | { type: "ai"; blocks: Block[]; metadata: MessageMetadata | null }
   | { type: "system"; text: string; color?: string };
 
@@ -294,6 +296,7 @@ export interface UserMessageEvent {
   type: "user_message";
   convId: string;
   text: string;
+  images?: ImageAttachment[];
 }
 
 export interface StreamRetryEvent {

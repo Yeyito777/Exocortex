@@ -321,8 +321,13 @@ export function render(state: RenderState): void {
     const modeColor = (state.vim.mode === "visual" || state.vim.mode === "visual-line")
       ? theme.vimVisual
       : state.vim.mode === "normal" ? theme.vimNormal : theme.vimInsert;
+    // When images are pending, show count instead of ">" glyph (e.g. "I 2>" → "I 1>")
+    const imgCount = state.pendingImages.length;
+    const glyphStr = isFirst && imgCount > 0
+      ? `${imgCount}>`
+      : promptGlyph;
     const prompt = isFirst
-      ? `${modeColor}${modeChar}${theme.reset} ${promptStyle}${promptGlyph}${theme.reset} `
+      ? `${modeColor}${modeChar}${theme.reset} ${promptStyle}${glyphStr}${theme.reset} `
       : `  ${promptStyle}${promptGlyph}${theme.reset} `;
 
     let lineContent = coloredInputLines[i];

@@ -6,7 +6,7 @@
  * reach into the tool layer.
  */
 
-import type { Block, MessageMetadata } from "./messages";
+import type { Block, MessageMetadata, ImageAttachment } from "./messages";
 import type { StoredMessage, ApiContentBlock } from "./messages";
 import type { ModelId } from "./messages";
 
@@ -19,7 +19,7 @@ interface ContentPart {
 // ── Types ──────────────────────────────────────────────────────────
 
 export type DisplayEntry =
-  | { type: "user"; text: string }
+  | { type: "user"; text: string; images?: ImageAttachment[] }
   | { type: "ai"; blocks: Block[]; metadata: MessageMetadata | null }
   | { type: "system"; text: string; color?: string };
 
@@ -102,9 +102,29 @@ export function buildDisplayData(
     }
     if (msg.role === "user") {
       if (typeof msg.content !== "string") {
-        const isToolResult = (msg.content as ApiContentBlock[]).every((c) => c.type === "tool_result");
+        const contentArr = msg.content as ApiContentBlock[];
+        const isToolResult = contentArr.every((c) => c.type === "tool_result");
         if (isToolResult && currentAI) {
           currentAI.blocks.push(...extractBlocks(msg.content));
+          continue;
+        }
+        // User message with image blocks — extract text and images separately
+        const hasImages = contentArr.some((c) => c.type === "image");
+        if (hasImages) {
+          flushAI();
+          const textParts = contentArr.filter((c) => c.type === "text").map((c) => (c as { text: string }).text);
+          const text = textParts.join("\n") || "";
+          const images: ImageAttachment[] = contentArr
+            .filter((c) => c.type === "image")
+            .map((c) => {
+              const src = (c as { source: { media_type: string; data: string } }).source;
+              return {
+                mediaType: src.media_type as ImageAttachment["mediaType"],
+                base64: src.data,
+                sizeBytes: Math.ceil(src.data.length * 3 / 4),
+              };
+            });
+          entries.push({ type: "user", text, images: images.length > 0 ? images : undefined });
           continue;
         }
       }
