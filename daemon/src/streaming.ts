@@ -111,9 +111,9 @@ export function clearStreamingBlocks(convId: string): void {
 
 // ── Message queue (queued messages for delivery during/after streaming) ─
 
-/** Peek at queued messages without removing them. */
+/** Peek at queued messages without removing them (returns a shallow copy). */
 export function getQueuedMessages(convId: string): QueuedMessage[] {
-  return messageQueues.get(convId) ?? [];
+  return [...(messageQueues.get(convId) ?? [])];
 }
 
 /** Push a message onto a conversation's queue. */
