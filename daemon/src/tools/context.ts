@@ -148,31 +148,16 @@ function validateRange(
 }
 
 /**
- * Validate that a message array maintains correct alternation and
- * tool_use/tool_result pairing after a proposed modification.
+ * Validate that a message array maintains correct tool_use/tool_result
+ * pairing after a proposed modification. The Anthropic API auto-merges
+ * consecutive same-role messages, so alternation is NOT checked.
  */
 function validateConversationIntegrity(
   messages: StoredMessage[],
 ): { valid: boolean; error?: string } {
-  // Filter to non-system only
   const nonSystem = messages.filter(m => m.role !== "system");
 
   if (nonSystem.length === 0) return { valid: true };
-
-  // First non-system must be user
-  if (nonSystem[0].role !== "user") {
-    return { valid: false, error: "First non-system message must be role='user'." };
-  }
-
-  // Check alternation
-  for (let i = 1; i < nonSystem.length; i++) {
-    if (nonSystem[i].role === nonSystem[i - 1].role) {
-      return {
-        valid: false,
-        error: `Alternation broken: two consecutive '${nonSystem[i].role}' messages at positions ${i - 1} and ${i} (after filtering system messages).`,
-      };
-    }
-  }
 
   // Check tool_use/tool_result pairing
   for (let i = 0; i < nonSystem.length; i++) {
@@ -185,7 +170,7 @@ function validateConversationIntegrity(
 
     if (toolUseIds.length === 0) continue;
 
-    // Next message must be a user with matching tool_results
+    // Find the next user message with tool_results
     const next = nonSystem[i + 1];
     if (!next || next.role !== "user" || !Array.isArray(next.content)) {
       return {
@@ -572,53 +557,18 @@ Output plain text, not markdown.`;
     return { output: `Summarization failed: ${msg}`, isError: true };
   }
 
-  // Determine what to insert based on surrounding messages
-  const indicesToRemove = new Set<number>();
-  for (let t = start; t <= end; t++) indicesToRemove.add(turnMap[t]);
-
-  // Find the insertion point (position of the first removed message)
+  // Replace the range with a user+assistant summary pair.
+  // The Anthropic API auto-merges consecutive same-role messages,
+  // so we don't need to worry about alternation.
   const insertIdx = turnMap[start];
-
-  // Build candidate list without the removed messages
-  const before = conv.messages.slice(0, insertIdx).filter(m => m.role !== "system");
   const afterStart = turnMap[end] + 1;
-  const after = conv.messages.slice(afterStart).filter(m => m.role !== "system");
 
-  const prevRole = before.length > 0 ? before[before.length - 1].role : null;
-  const nextRole = after.length > 0 ? after[0].role : null;
+  const replacement: StoredMessage[] = [
+    { role: "user" as const, content: `[Summary of turns ${start}–${end}]`, metadata: null },
+    { role: "assistant" as const, content: summaryText, metadata: null },
+  ];
 
-  // Determine replacement messages
-  let replacement: StoredMessage[];
-  let replacementCount: number;
-
-  if (prevRole === "user" && nextRole === "assistant") {
-    // Both constraints: insert single user message
-    replacement = [
-      { role: "user" as const, content: `[Summary of turns ${start}–${end}]\n\n${summaryText}`, metadata: null },
-    ];
-    replacementCount = 1;
-  } else if (prevRole === "user") {
-    // Can't insert user first — insert only assistant
-    replacement = [
-      { role: "assistant" as const, content: `[Summary of turns ${start}–${end}]\n\n${summaryText}`, metadata: null },
-    ];
-    replacementCount = 1;
-  } else if (nextRole === "assistant") {
-    // Can't insert assistant last — insert only user
-    replacement = [
-      { role: "user" as const, content: `[Summary of turns ${start}–${end}]\n\n${summaryText}`, metadata: null },
-    ];
-    replacementCount = 1;
-  } else {
-    // Normal: insert user + assistant pair
-    replacement = [
-      { role: "user" as const, content: `[Summary of turns ${start}–${end}]`, metadata: null },
-      { role: "assistant" as const, content: summaryText, metadata: null },
-    ];
-    replacementCount = 2;
-  }
-
-  // Simulate the replacement to validate
+  // Validate tool_use/tool_result pairing after replacement
   const simulated = [
     ...conv.messages.slice(0, insertIdx),
     ...replacement,
@@ -641,7 +591,7 @@ Output plain text, not markdown.`;
 
   const summaryTokens = Math.round(summaryText.length / 4);
   return {
-    output: `Summarized turns ${start}–${end} into ${replacementCount} turn${replacementCount !== 1 ? "s" : ""}. Original: ~${fmt(originalTokens)} tokens → Summary: ~${fmt(summaryTokens)} tokens.`,
+    output: `Summarized turns ${start}–${end} into 2 turns. Original: ~${fmt(originalTokens)} tokens → Summary: ~${fmt(summaryTokens)} tokens.`,
     isError: false,
   };
 }
