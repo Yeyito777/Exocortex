@@ -1,7 +1,7 @@
 /**
  * Edit message modal — lets the user pick a previous user message to re-edit.
  *
- * Ctrl+E opens a modal listing all user messages in the current conversation
+ * Ctrl+W opens a modal listing all user messages in the current conversation
  * plus any queued messages. j/k navigate, Enter selects, Escape cancels.
  *
  * For sent messages: the conversation is unwound (abort if streaming, then
@@ -28,6 +28,7 @@ export function openEditMessageModal(state: RenderState): void {
         userMessageIndex: userIdx,
         text: msg.text,
         isQueued: false,
+        images: msg.images,
       });
       userIdx++;
     }
@@ -111,6 +112,11 @@ export function confirmEditMessage(state: RenderState): EditConfirmResult {
   state.vim.mode = "insert";
   state.panelFocus = "chat";
   state.chatFocus = "prompt";
+
+  // Restore image attachments so they're re-sent with the edited message
+  if (item.images?.length) {
+    state.pendingImages = [...item.images];
+  }
 
   if (item.isQueued) {
     return { action: "edit_queued", text: item.text };

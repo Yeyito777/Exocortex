@@ -47,6 +47,7 @@ export type Action =
   | "undo_delete"
   // Scrolling
   | "scroll_line_up"
+  | "scroll_line_down"
   | "scroll_half_up"
   | "scroll_half_down"
   | "scroll_page_up"
@@ -107,10 +108,11 @@ const BINDS: Record<string, Action> = {
   "char:K":     "sidebar_prev",
 
   // Conversation editing
-  "ctrl-e":     "edit_message",
+  "ctrl-w":     "edit_message",
 
   // Scrolling
   "ctrl-y":     "scroll_line_up",
+  "ctrl-e":     "scroll_line_down",
   "ctrl-u":     "scroll_half_up",
   "ctrl-d":     "scroll_half_down",
   "ctrl-b":     "scroll_page_up",

@@ -43,6 +43,7 @@ export interface EditMessageItem {
   userMessageIndex: number;
   text: string;
   isQueued: boolean;
+  images?: ImageAttachment[];
 }
 
 export interface EditMessageState {

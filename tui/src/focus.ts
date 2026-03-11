@@ -17,7 +17,7 @@ import { resolveAction } from "./keybinds";
 import {
   handleChatKey,
   scrollUp, scrollDown,
-  scrollLineUp,
+  scrollLineUp, scrollLineDown,
   scrollHalfUp, scrollHalfDown,
   scrollPageUp, scrollPageDown,
   scrollToTop, scrollToBottom,
@@ -157,6 +157,7 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
       return { type: "handled" };
     }
     case "scroll_line_up":
+    case "scroll_line_down":
     case "scroll_half_up":
     case "scroll_half_down":
     case "scroll_page_up":
@@ -472,6 +473,7 @@ function handleScrollAction(action: Action, state: RenderState): void {
     // Vim-style: cursor moves with scroll
     switch (action) {
       case "scroll_line_up":   scrollLineWithStickyCursor(state, 1);  return;
+      case "scroll_line_down": scrollLineWithStickyCursor(state, -1); return;
       case "scroll_half_up":   scrollHalfPageWithCursor(state, 1);    return;
       case "scroll_half_down": scrollHalfPageWithCursor(state, -1);   return;
       case "scroll_page_up":   scrollFullPageWithCursor(state, 1);    return;
@@ -484,6 +486,7 @@ function handleScrollAction(action: Action, state: RenderState): void {
   // Viewport-only (prompt focused, sidebar, etc.)
   switch (action) {
     case "scroll_line_up":   scrollLineUp(state);   break;
+    case "scroll_line_down": scrollLineDown(state);  break;
     case "scroll_half_up":   scrollHalfUp(state);    break;
     case "scroll_half_down": scrollHalfDown(state);  break;
     case "scroll_page_up":   scrollPageUp(state);    break;

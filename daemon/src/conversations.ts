@@ -6,7 +6,7 @@
  * In-flight stream tracking lives in streaming.ts.
  */
 
-import type { Conversation, ModelId, ConversationSummary } from "./messages";
+import type { Conversation, ModelId, ConversationSummary, StoredMessage, ApiContentBlock } from "./messages";
 import { createConversation, sortConversations, displayName, extractPreview } from "./messages";
 import { buildDisplayData, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
@@ -153,6 +153,19 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   const conv = conversations.get(id);
   if (!conv) return false;
 
+  // Validate the index before doing anything destructive.
+  // Only count real user messages — tool_result messages also have
+  // role="user" but are invisible in the TUI (folded into AI entries).
+  let spliceAt = -1;
+  let userCount = 0;
+  for (let i = 0; i < conv.messages.length; i++) {
+    if (conv.messages[i].role === "user" && !isToolResultMessage(conv.messages[i])) {
+      if (userCount === userMessageIndex) { spliceAt = i; break; }
+      userCount++;
+    }
+  }
+  if (spliceAt === -1) return false;
+
   // Clear queued messages first — prevents the orchestrator's finally block
   // from draining the queue and starting a new stream after we abort.
   streaming.clearQueuedMessages(id);
@@ -161,34 +174,35 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   const ac = streaming.getActiveJob(id);
   if (ac) {
     ac.abort();
-    await waitForStreamStop(id);
+    const stopped = await waitForStreamStop(id);
+    if (!stopped) log("warn", `conversations: stream for ${id} did not stop within timeout, unwinding anyway`);
   }
 
-  let userCount = 0;
-  for (let i = 0; i < conv.messages.length; i++) {
-    if (conv.messages[i].role === "user") {
-      if (userCount === userMessageIndex) {
-        conv.messages.splice(i);
-        conv.updatedAt = Date.now();
-        markDirty(id);
-        flush(id);
-        return true;
-      }
-      userCount++;
-    }
-  }
-  return false;
+  conv.messages.splice(spliceAt);
+  conv.updatedAt = Date.now();
+  markDirty(id);
+  flush(id);
+  return true;
 }
 
-/** Wait for a streaming job to finish (poll until activeJob clears). */
-function waitForStreamStop(id: string): Promise<void> {
+/** Wait for a streaming job to finish (poll until activeJob clears). Returns false on timeout. */
+function waitForStreamStop(id: string, timeoutMs = 10_000): Promise<boolean> {
   return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
     const check = () => {
-      if (!streaming.isStreaming(id)) return resolve();
+      if (!streaming.isStreaming(id)) return resolve(true);
+      if (Date.now() >= deadline) return resolve(false);
       setTimeout(check, 10);
     };
     check();
   });
+}
+
+/** True if the message is a tool_result (role="user" but only contains tool_result blocks). */
+function isToolResultMessage(msg: StoredMessage): boolean {
+  if (typeof msg.content === "string") return false;
+  const blocks = msg.content as ApiContentBlock[];
+  return blocks.length > 0 && blocks.every(b => b.type === "tool_result");
 }
 
 // ── Persistence ─────────────────────────────────────────────────────
