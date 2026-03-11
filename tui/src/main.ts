@@ -21,13 +21,9 @@ import { createPendingAI, type ImageAttachment } from "./messages";
 import { handleEvent } from "./events";
 import { confirmQueueMessage, cancelQueuePrompt, clearLocalQueue } from "./queue";
 import { confirmEditMessage, cancelEditMessage } from "./editmessage";
+import { generateTitle } from "./titlegen";
 import { theme } from "./theme";
 import type { Event } from "./protocol";
-
-// ── Title generation ───────────────────────────────────────────────
-
-const TITLE_GENERATION_SYSTEM = `You generate short conversation titles. Output ONLY the title — 3 to 4 lowercase words, no quotes, no punctuation, no explanation. Match this naming style:
-exo bash truncate, exo code qa, berlin airbnb, tokens bug, context tool, unbricking convo, merging img pasting, netherlands trains, exo vim linewrapping, exo msg queuing, fixing message queuing, airpods pro autoconnect, discord streaming, context management`;
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -101,28 +97,7 @@ function handleSubmit(): void {
         daemon.renameConversation(state.convId, cmdResult.title);
       }
       if (cmdResult.type === "generate_title" && state.convId) {
-        // Extract first user message for context
-        const firstUser = state.messages.find(m => m.role === "user");
-        const prompt = firstUser && "text" in firstUser ? firstUser.text.slice(0, 500) : "";
-
-        const convId = state.convId;
-        daemon.llmComplete(
-          TITLE_GENERATION_SYSTEM,
-          prompt,
-          (generatedTitle) => {
-            const title = generatedTitle.trim().toLowerCase().replace(/["""''`.]/g, "");
-            daemon.renameConversation(convId, title);
-            // Optimistic sidebar update
-            const conv = state.sidebar.conversations.find(c => c.id === convId);
-            if (conv) conv.title = title;
-            scheduleRender();
-          },
-          "haiku",
-          // Must exceed the thinking budget (10000) configured in api.ts for
-          // non-adaptive models — otherwise all tokens go to thinking and the
-          // text response is empty.
-          10200,
-        );
+        generateTitle(state.convId, state, daemon, scheduleRender);
       }
       scheduleRender();
       return;
