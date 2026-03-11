@@ -21,6 +21,7 @@ import { createPendingAI, type ImageAttachment } from "./messages";
 import { handleEvent } from "./events";
 import { confirmQueueMessage, cancelQueuePrompt, clearLocalQueue } from "./queue";
 import { confirmEditMessage, cancelEditMessage } from "./editmessage";
+import { generateTitle } from "./titlegen";
 import { theme } from "./theme";
 import type { Event } from "./protocol";
 
@@ -58,6 +59,11 @@ function resetStreamTick(): void {
 function onDaemonEvent(event: Event): void {
   handleEvent(event, state, daemon);
 
+  // Auto-generate title for new conversations
+  if (event.type === "conversation_created" && state.convId) {
+    generateTitle(state.convId, state, daemon, scheduleRender);
+  }
+
   // Clear stream tick on streaming_stopped
   if (event.type === "streaming_stopped") {
     if (streamTickTimer) { clearTimeout(streamTickTimer); streamTickTimer = null; }
@@ -94,6 +100,9 @@ function handleSubmit(): void {
       }
       if (cmdResult.type === "rename_conversation" && state.convId) {
         daemon.renameConversation(state.convId, cmdResult.title);
+      }
+      if (cmdResult.type === "generate_title" && state.convId) {
+        generateTitle(state.convId, state, daemon, scheduleRender);
       }
       scheduleRender();
       return;

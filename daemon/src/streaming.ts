@@ -27,6 +27,8 @@ const chunkCounters = new Map<string, number>();
 const streamingBlocks = new Map<string, Block[]>();
 /** Original startedAt timestamp per streaming job (for late-joining clients). */
 const streamingStartedAt = new Map<string, number>();
+/** Accumulated output token count per streaming job (for late-joining clients). */
+const streamingTokens = new Map<string, number>();
 /** Messages queued for delivery during or after streaming. */
 const messageQueues = new Map<string, QueuedMessage[]>();
 
@@ -51,10 +53,23 @@ export function getActiveJob(convId: string): AbortController | undefined {
 export function clearActiveJob(convId: string): void {
   activeJobs.delete(convId);
   streamingStartedAt.delete(convId);
+  streamingTokens.delete(convId);
 }
 
 export function getStreamingStartedAt(convId: string): number | undefined {
   return streamingStartedAt.get(convId);
+}
+
+// ── Streaming token count (for late-joining clients) ──────────────
+
+/** Update the accumulated output token count for an in-flight stream. */
+export function setStreamingTokens(convId: string, tokens: number): void {
+  streamingTokens.set(convId, tokens);
+}
+
+/** Get the accumulated output token count for an in-flight stream. */
+export function getStreamingTokens(convId: string): number {
+  return streamingTokens.get(convId) ?? 0;
 }
 
 // ── Chunk counting (for periodic persistence) ─────────────────────

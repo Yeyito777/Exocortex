@@ -36,7 +36,7 @@ export function renderMetadata(metadata: MessageMetadata | null): string[] {
   parts.push(metadata.model.charAt(0).toUpperCase() + metadata.model.slice(1));
 
   // Tokens
-  parts.push(`${metadata.tokens} tokens`);
+  parts.push(`${metadata.tokens.toLocaleString("en-US")} tokens`);
 
   // Duration
   const elapsed = (metadata.endedAt ?? Date.now()) - metadata.startedAt;

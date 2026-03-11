@@ -11,6 +11,8 @@ import type { ModelId, ImageAttachment } from "./messages";
 import { socketPath } from "@exocortex/shared/paths";
 
 export type EventHandler = (event: Event) => void;
+export type LlmCompleteCallback = (text: string) => void;
+export type LlmErrorCallback = (message: string) => void;
 
 export class DaemonClient {
   private socket: Socket | null = null;
@@ -19,6 +21,8 @@ export class DaemonClient {
   private _connected = false;
   private socketPath: string;
   private onDisconnect: (() => void) | null = null;
+  private llmCallbacks = new Map<string, { onSuccess: LlmCompleteCallback; onError?: LlmErrorCallback }>();
+  private nextReqId = 0;
 
   constructor(handler: EventHandler, overrideSocketPath?: string) {
     this.handler = handler;
@@ -152,6 +156,16 @@ export class DaemonClient {
     this.send({ type: "load_conversation", convId });
   }
 
+  llmComplete(
+    system: string, userText: string,
+    onSuccess: LlmCompleteCallback, onError?: LlmErrorCallback,
+    model?: ModelId, maxTokens?: number,
+  ): void {
+    const reqId = `llm_${++this.nextReqId}_${Date.now()}`;
+    this.llmCallbacks.set(reqId, { onSuccess, onError });
+    this.send({ type: "llm_complete", reqId, system, userText, model, maxTokens });
+  }
+
   // ── Internal ────────────────────────────────────────────────────
 
   private onData(data: Buffer | string): void {
@@ -163,7 +177,22 @@ export class DaemonClient {
       this.buffer = this.buffer.slice(idx + 1);
       if (!line) continue;
       try {
-        this.handler(JSON.parse(line) as Event);
+        const event = JSON.parse(line) as Event;
+        // Intercept llm_complete responses — resolve the matching callback
+        if (event.type === "llm_complete_result" && event.reqId) {
+          const cbs = this.llmCallbacks.get(event.reqId);
+          if (cbs) {
+            this.llmCallbacks.delete(event.reqId);
+            cbs.onSuccess(event.text);
+          }
+        } else if (event.type === "error" && event.reqId) {
+          const cbs = this.llmCallbacks.get(event.reqId);
+          if (cbs) {
+            this.llmCallbacks.delete(event.reqId);
+            cbs.onError?.(event.message);
+          }
+        }
+        this.handler(event);
       } catch (err) {
         // TUI owns stdout for rendering — stderr is safe for diagnostics.
         console.error("[daemon event error]", err);

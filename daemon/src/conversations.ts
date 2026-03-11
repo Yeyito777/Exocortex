@@ -17,6 +17,7 @@ import { log } from "./log";
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
   isStreaming, setActiveJob, getActiveJob, clearActiveJob, getStreamingStartedAt,
+  setStreamingTokens, getStreamingTokens,
   resetChunkCounter,
   initStreamingBlocks, getStreamingBlocks, pushStreamingBlock, appendToStreamingBlock, clearStreamingBlocks,
   getQueuedMessages, pushQueuedMessage, drainQueuedMessages, clearQueuedMessages, removeQueuedMessage,

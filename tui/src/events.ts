@@ -57,6 +57,10 @@ export function handleEvent(
       if (event.blocks && event.blocks.length > 0 && state.pendingAI.blocks.length === 0) {
         state.pendingAI.blocks = [...event.blocks];
       }
+      // Restore accumulated token count for late-joining clients
+      if (event.tokens && state.pendingAI.metadata!.tokens === 0) {
+        state.pendingAI.metadata!.tokens = event.tokens;
+      }
       break;
     }
 
@@ -396,6 +400,7 @@ export function handleEvent(
       break;
     }
 
+    case "llm_complete_result":
     case "ack":
     case "pong":
       break;

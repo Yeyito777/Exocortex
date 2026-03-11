@@ -10,6 +10,7 @@
 import { log } from "./log";
 import { refreshUsage, handleUsageHeaders, getLastUsage } from "./usage";
 import { orchestrateSendMessage } from "./orchestrator";
+import { complete } from "./llm";
 import { getToolDisplayInfo } from "./tools/registry";
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
@@ -250,12 +251,35 @@ export function createHandler(server: DaemonServer) {
             model: data.model,
             startedAt: convStore.getStreamingStartedAt(data.convId) ?? Date.now(),
             blocks: convStore.getStreamingBlocks(data.convId) ?? [],
+            tokens: convStore.getStreamingTokens(data.convId),
           });
         }
         // Clear unread when a client views the conversation
         if (convStore.clearUnread(data.convId)) {
           server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(data.convId)! });
         }
+        break;
+      }
+
+      case "llm_complete": {
+        const model = cmd.model ?? "haiku";
+        // Default must exceed the thinking budget (10000) for non-adaptive
+        // models, otherwise all tokens go to thinking and text is empty.
+        const maxTokens = cmd.maxTokens ?? 16000;
+        log("info", `handler: llm_complete (model=${model}, maxTokens=${maxTokens}, input=${cmd.userText.length} chars)`);
+
+        // Fire-and-forget — ack immediately, send result when ready
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+
+        complete(cmd.system, cmd.userText, { model, maxTokens })
+          .then((result) => {
+            server.sendTo(client, { type: "llm_complete_result", reqId: cmd.reqId, text: result.text });
+          })
+          .catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            log("error", `handler: llm_complete failed: ${msg}`);
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `llm_complete failed: ${msg}` });
+          });
         break;
       }
 
