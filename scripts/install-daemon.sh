@@ -14,6 +14,7 @@ Description=Exocortex daemon (exocortexd)
 [Service]
 Type=simple
 WorkingDirectory=%h/Workspace/Exocortex/daemon
+Environment=PATH=%h/.local/bin:%h/.local/bun/bin:/usr/local/bin:/usr/bin
 ExecStart=%h/.local/bun/bin/bun run src/main.ts
 Restart=on-failure
 RestartSec=2
