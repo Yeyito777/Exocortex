@@ -49,6 +49,6 @@ export interface Tool {
   /** Produce a human-readable one-liner from tool input. */
   summarize(input: Record<string, unknown>): ToolSummary;
 
-  /** Execute the tool. */
-  execute(input: Record<string, unknown>): Promise<ToolResult>;
+  /** Execute the tool. Signal allows cooperative cancellation on abort. */
+  execute(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult>;
 }

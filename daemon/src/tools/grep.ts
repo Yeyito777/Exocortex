@@ -15,7 +15,7 @@ const EXCLUDED_DIRS = [".git", ".svn", ".hg", ".bzr"];
 
 // ── Execution ──────────────────────────────────────────────────────
 
-async function executeGrep(input: Record<string, unknown>): Promise<ToolResult> {
+async function executeGrep(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
   const pattern = input.pattern as string;
   if (!pattern) return { output: "Error: missing 'pattern' parameter", isError: true };
 
@@ -81,6 +81,13 @@ async function executeGrep(input: Record<string, unknown>): Promise<ToolResult> 
       stderr: "pipe",
       env: { ...process.env, TERM: "dumb" },
     });
+
+    // Kill rg on abort
+    if (signal) {
+      const onAbort = () => proc.kill();
+      if (signal.aborted) { onAbort(); }
+      else { signal.addEventListener("abort", onAbort, { once: true }); }
+    }
 
     const [stdout, stderr] = await Promise.all([
       new Response(proc.stdout).text(),

@@ -29,12 +29,18 @@ const EXCLUDED_DIRS = [".git", ".svn", ".hg", ".bzr", "node_modules"];
  * under `cwd`.  Returns `null` when git is unavailable or `cwd` is not inside
  * a repository, so the caller can fall back gracefully.
  */
-async function getGitFiles(cwd: string): Promise<string[] | null> {
+async function getGitFiles(cwd: string, signal?: AbortSignal): Promise<string[] | null> {
   try {
     const proc = Bun.spawn(
       ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
       { cwd, stdout: "pipe", stderr: "pipe" },
     );
+    // Kill git on abort
+    if (signal) {
+      const onAbort = () => proc.kill();
+      if (signal.aborted) { onAbort(); }
+      else { signal.addEventListener("abort", onAbort, { once: true }); }
+    }
     const stdout = await new Response(proc.stdout).text();
     const code = await proc.exited;
     if (code !== 0) return null;
@@ -46,7 +52,7 @@ async function getGitFiles(cwd: string): Promise<string[] | null> {
 
 // ── Execution ─────────────────────────────────────────────────────
 
-async function executeGlob(input: Record<string, unknown>): Promise<ToolResult> {
+async function executeGlob(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
   const pattern = input.pattern as string;
   if (!pattern) return { output: "Error: missing 'pattern' parameter", isError: true };
 
@@ -67,7 +73,7 @@ async function executeGlob(input: Record<string, unknown>): Promise<ToolResult> 
         matched.push(entry);
       }
     } else {
-      const gitFiles = await getGitFiles(cwd);
+      const gitFiles = await getGitFiles(cwd, signal);
       if (gitFiles) {
         // Fast path: filter the git-known file list with the glob pattern.
         matched = gitFiles.filter(f => glob.match(f));
