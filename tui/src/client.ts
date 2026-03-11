@@ -156,9 +156,9 @@ export class DaemonClient {
       if (!line) continue;
       try {
         this.handler(JSON.parse(line) as Event);
-      } catch {
-        // Malformed event or handler error — log to stderr for debugging.
-        // Silent in production since the TUI owns stdout for rendering.
+      } catch (err) {
+        // TUI owns stdout for rendering — stderr is safe for diagnostics.
+        console.error("[daemon event error]", err);
       }
     }
   }
