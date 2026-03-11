@@ -59,6 +59,11 @@ function resetStreamTick(): void {
 function onDaemonEvent(event: Event): void {
   handleEvent(event, state, daemon);
 
+  // Auto-generate title for new conversations
+  if (event.type === "conversation_created" && state.convId) {
+    generateTitle(state.convId, state, daemon, scheduleRender);
+  }
+
   // Clear stream tick on streaming_stopped
   if (event.type === "streaming_stopped") {
     if (streamTickTimer) { clearTimeout(streamTickTimer); streamTickTimer = null; }
