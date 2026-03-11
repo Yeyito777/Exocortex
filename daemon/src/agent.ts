@@ -130,6 +130,16 @@ export async function runAgentLoop(
   const messages = [...initialMessages];
   const startTime = Date.now();
   let totalOutputTokens = 0;
+  let lastInputTokens = 0;
+
+  // Context pressure thresholds — injected as text blocks in tool result messages
+  const CONTEXT_LIMIT = 200_000;
+  const THRESHOLDS = [
+    { at: 128_000, level: "advisory" as const },
+    { at: 164_000, level: "warning" as const },
+    { at: 188_000, level: "critical" as const },
+  ];
+  let highestFiredLevel = -1; // index into THRESHOLDS, -1 = none fired
 
   // Expose state for abort recovery
   const state = options.state;
@@ -162,6 +172,7 @@ export async function runAgentLoop(
     }
 
     if (result.inputTokens) {
+      lastInputTokens = result.inputTokens;
       callbacks.onContextUpdate(result.inputTokens);
     }
 
@@ -258,6 +269,42 @@ export async function runAgentLoop(
           content: r.output,
           is_error: r.isError,
         });
+      }
+    }
+
+    // ── Context pressure hints ────────────────────────────────────
+    // Inject a text block into the tool result message when context
+    // usage crosses hardcoded thresholds. Advisory and warning fire
+    // once; critical fires every round until the AI frees space.
+    if (lastInputTokens > 0) {
+      const pct = ((lastInputTokens / CONTEXT_LIMIT) * 100).toFixed(0);
+      const usage = `${Math.round(lastInputTokens / 1000)}k/${CONTEXT_LIMIT / 1000}k tokens (${pct}%)`;
+      let hint: string | null = null;
+
+      for (let i = THRESHOLDS.length - 1; i >= 0; i--) {
+        if (lastInputTokens < THRESHOLDS[i].at) continue;
+        const { level } = THRESHOLDS[i];
+
+        if (level === "critical") {
+          hint = `[Context: ${usage} — critically low on context! Use the context tool immediately to free space.]`;
+          highestFiredLevel = Math.max(highestFiredLevel, i);
+          break;
+        }
+        if (i > highestFiredLevel) {
+          if (level === "warning") {
+            hint = `[Context: ${usage} — context is getting full. Use the context tool now to free space before you run out.]`;
+          } else {
+            hint = `[Context: ${usage} — consider using the context tool to free space. Start with strip_thinking, then summarize or delete old turns.]`;
+          }
+          highestFiredLevel = i;
+          break;
+        }
+        break;
+      }
+
+      if (hint) {
+        (toolResultContent as unknown[]).push({ type: "text", text: hint });
+        log("info", `agent: injected context pressure hint (${THRESHOLDS[Math.max(0, highestFiredLevel)].level}, ${usage})`);
       }
     }
 
