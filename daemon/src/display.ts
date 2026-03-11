@@ -103,9 +103,11 @@ export function buildDisplayData(
     if (msg.role === "user") {
       if (typeof msg.content !== "string") {
         const contentArr = msg.content as ApiContentBlock[];
-        const isToolResult = contentArr.every((c) => c.type === "tool_result");
-        if (isToolResult && currentAI) {
-          currentAI.blocks.push(...extractBlocks(msg.content));
+        const hasToolResults = contentArr.some((c) => c.type === "tool_result");
+        if (hasToolResults && currentAI) {
+          // Extract only tool_result blocks — ignore text blocks (e.g. context pressure hints)
+          const toolResults = contentArr.filter((c) => c.type === "tool_result");
+          currentAI.blocks.push(...extractBlocks(toolResults));
           continue;
         }
         // User message with image blocks — extract text and images separately

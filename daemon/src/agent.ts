@@ -52,6 +52,8 @@ export interface AgentCallbacks {
    * Returns null if no rebuild is needed.
    */
   rebuildMessages?(): ApiMessage[] | null;
+  /** Context pressure hint — fired when input tokens cross a threshold. */
+  onContextHint?(text: string): void;
 }
 
 // ── Tool execution ──────────────────────────────────────────────────
@@ -304,6 +306,7 @@ export async function runAgentLoop(
 
       if (hint) {
         (toolResultContent as unknown[]).push({ type: "text", text: hint });
+        callbacks.onContextHint?.(hint);
         log("info", `agent: injected context pressure hint (${THRESHOLDS[Math.max(0, highestFiredLevel)].level}, ${usage})`);
       }
     }

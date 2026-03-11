@@ -197,6 +197,9 @@ export async function orchestrateSendMessage(
       server.sendToSubscribers(convId, { type: "context_update", convId, contextTokens });
     },
     onHeaders: ext.onHeaders,
+    onContextHint(text) {
+      server.sendToSubscribers(convId, { type: "system_message", convId, text, color: "context" });
+    },
     onRetry(attempt, maxAttempts, errorMessage, delaySec) {
       // Transient stream error → clear partial state so the retry starts clean
       partialContent.length = 0;

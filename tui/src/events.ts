@@ -349,9 +349,15 @@ export function handleEvent(
 
     case "system_message": {
       if (event.convId !== state.convId) break;
-      const color = event.color === "error" ? theme.error : event.color === "warning" ? theme.warning : theme.muted;
+      const color = event.color === "error" ? theme.error
+        : event.color === "warning" ? theme.warning
+        : event.color === "context" ? theme.warning
+        : theme.muted;
       const sysMsg: SystemMessage = { role: "system", text: event.text, color, metadata: null };
-      if (isStreaming(state)) {
+      if (event.color === "context") {
+        // Context pressure hints render immediately (not buffered) — same as stream_retry
+        state.messages.push(sysMsg);
+      } else if (isStreaming(state)) {
         // Buffer during streaming so it appears after the AI message
         state.systemMessageBuffer.push(sysMsg);
       } else {
