@@ -141,6 +141,17 @@ export interface UnwindConversationCommand {
   userMessageIndex: number;
 }
 
+export interface LlmCompleteCommand {
+  type: "llm_complete";
+  reqId?: string;
+  system: string;
+  userText: string;
+  /** Model to use. Defaults to "haiku". */
+  model?: ModelId;
+  /** Max output tokens. Defaults to 256. */
+  maxTokens?: number;
+}
+
 export type Command =
   | PingCommand
   | NewConversationCommand
@@ -160,7 +171,8 @@ export type Command =
   | UndoDeleteCommand
   | QueueMessageCommand
   | UnqueueMessageCommand
-  | UnwindConversationCommand;
+  | UnwindConversationCommand
+  | LlmCompleteCommand;
 
 // ── Events (daemon → client) ────────────────────────────────────────
 
@@ -357,6 +369,12 @@ export interface ToolsAvailableEvent {
   tools: ToolDisplayInfo[];
 }
 
+export interface LlmCompleteResultEvent {
+  type: "llm_complete_result";
+  reqId?: string;
+  text: string;
+}
+
 export interface ErrorEvent {
   type: "error";
   reqId?: string;
@@ -391,4 +409,5 @@ export type Event =
   | StreamRetryEvent
   | SystemMessageEvent
   | ToolsAvailableEvent
+  | LlmCompleteResultEvent
   | ErrorEvent;

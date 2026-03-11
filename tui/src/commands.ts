@@ -26,7 +26,8 @@ export type CommandResult =
   | { type: "quit" }
   | { type: "new_conversation" }
   | { type: "model_changed"; model: ModelId }
-  | { type: "rename_conversation"; title: string };
+  | { type: "rename_conversation"; title: string }
+  | { type: "generate_title" };
 
 export interface SlashCommand {
   name: string;
@@ -105,18 +106,20 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/rename",
-    description: "Rename the current conversation",
+    description: "Rename the current conversation (auto-generates if no title given)",
     handler: (text, state) => {
-      const title = text.slice("/rename".length).trim();
-      if (!title) {
-        state.messages.push({ role: "system", text: "Usage: /rename <title>", metadata: null });
-        clearPrompt(state);
-        return { type: "handled" };
-      }
       if (!state.convId) {
         state.messages.push({ role: "system", text: "No active conversation to rename.", metadata: null });
         clearPrompt(state);
         return { type: "handled" };
+      }
+      const title = text.slice("/rename".length).trim();
+      if (!title) {
+        // Auto-generate: set placeholder and request LLM-generated title
+        const conv = state.sidebar.conversations.find(c => c.id === state.convId);
+        if (conv) conv.title = "(pending)";
+        clearPrompt(state);
+        return { type: "generate_title" };
       }
       // Optimistic update: immediately reflect in sidebar
       const conv = state.sidebar.conversations.find(c => c.id === state.convId);

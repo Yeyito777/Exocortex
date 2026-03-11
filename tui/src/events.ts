@@ -369,6 +369,7 @@ export function handleEvent(
       break;
     }
 
+    case "llm_complete_result":
     case "ack":
     case "pong":
       break;

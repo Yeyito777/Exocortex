@@ -8,6 +8,8 @@ import { connect, type Socket } from "net";
 import { existsSync } from "fs";
 import type { Command, Event, QueueTiming } from "./protocol";
 import type { ModelId, ImageAttachment } from "./messages";
+
+export type LlmCompleteCallback = (text: string) => void;
 import { socketPath } from "@exocortex/shared/paths";
 
 export type EventHandler = (event: Event) => void;
@@ -19,6 +21,8 @@ export class DaemonClient {
   private _connected = false;
   private socketPath: string;
   private onDisconnect: (() => void) | null = null;
+  private llmCallbacks = new Map<string, LlmCompleteCallback>();
+  private nextReqId = 0;
 
   constructor(handler: EventHandler, overrideSocketPath?: string) {
     this.handler = handler;
@@ -152,6 +156,12 @@ export class DaemonClient {
     this.send({ type: "load_conversation", convId });
   }
 
+  llmComplete(system: string, userText: string, callback: LlmCompleteCallback, model?: ModelId, maxTokens?: number): void {
+    const reqId = `llm_${++this.nextReqId}_${Date.now()}`;
+    this.llmCallbacks.set(reqId, callback);
+    this.send({ type: "llm_complete", reqId, system, userText, model, maxTokens });
+  }
+
   // ── Internal ────────────────────────────────────────────────────
 
   private onData(data: Buffer | string): void {
@@ -163,7 +173,16 @@ export class DaemonClient {
       this.buffer = this.buffer.slice(idx + 1);
       if (!line) continue;
       try {
-        this.handler(JSON.parse(line) as Event);
+        const event = JSON.parse(line) as Event;
+        // Intercept llm_complete_result — resolve the matching callback
+        if (event.type === "llm_complete_result" && event.reqId) {
+          const cb = this.llmCallbacks.get(event.reqId);
+          if (cb) {
+            this.llmCallbacks.delete(event.reqId);
+            cb(event.text);
+          }
+        }
+        this.handler(event);
       } catch (err) {
         // TUI owns stdout for rendering — stderr is safe for diagnostics.
         console.error("[daemon event error]", err);
