@@ -481,8 +481,8 @@ function renderQueuePromptOverlay(
 
     if (i === 3 || i === 4) {
       // Options
-      const isSelected = (i === 3 && qp.selection === "next-turn") ||
-                         (i === 4 && qp.selection === "message-end");
+      const isSelected = (i === 3 && qp.selection === "message-end") ||
+                         (i === 4 && qp.selection === "next-turn");
       if (isSelected) {
         bg = theme.sidebarSelBg;
         fg = theme.accent;

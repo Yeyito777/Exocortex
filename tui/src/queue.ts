@@ -32,21 +32,21 @@ export function handleQueuePromptKey(key: KeyEvent, state: RenderState): QueueKe
   switch (key.type) {
     case "char":
       if (key.char === "h" || key.char === "k") {
-        qp.selection = "next-turn";
-      } else if (key.char === "l" || key.char === "j") {
         qp.selection = "message-end";
+      } else if (key.char === "l" || key.char === "j") {
+        qp.selection = "next-turn";
       }
       return { type: "handled" };
     case "left":
     case "up":
-      qp.selection = "next-turn";
+      qp.selection = "message-end";
       return { type: "handled" };
     case "right":
     case "down":
-      qp.selection = "message-end";
+      qp.selection = "next-turn";
       return { type: "handled" };
     case "tab":
-      qp.selection = qp.selection === "next-turn" ? "message-end" : "next-turn";
+      qp.selection = qp.selection === "message-end" ? "next-turn" : "message-end";
       return { type: "handled" };
     case "enter":
       return { type: "confirm" };
