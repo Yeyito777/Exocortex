@@ -274,10 +274,8 @@ export async function runAgentLoop(
 
     // ── Context pressure hints ────────────────────────────────────
     // Inject a text block into the tool result message when context
-    // usage crosses hardcoded thresholds. The AI sees this as a
-    // peer-level instruction alongside tool results; display.ts
-    // filters it out so it never renders in the TUI (the status bar
-    // shows context tokens in real time instead).
+    // usage crosses hardcoded thresholds. The AI sees this alongside
+    // tool results; the TUI renders them inline as dimmed text.
     if (lastInputTokens > 0) {
       const pct = ((lastInputTokens / CONTEXT_LIMIT) * 100).toFixed(0);
       const usage = `${Math.round(lastInputTokens / 1000)}k/${CONTEXT_LIMIT / 1000}k tokens (${pct}%)`;
@@ -304,6 +302,9 @@ export async function runAgentLoop(
 
       if (hint) {
         toolResultContent.push({ type: "text", text: hint } as ApiContentBlock);
+        allBlocks.push({ type: "text", text: hint });
+        callbacks.onBlockStart("text");
+        callbacks.onTextChunk(hint);
         log("info", `agent: injected context pressure hint (${THRESHOLDS[Math.max(0, highestFiredLevel)].level}, ${usage})`);
       }
     }
