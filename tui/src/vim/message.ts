@@ -2,10 +2,13 @@
  * Message text object (im/am).
  *
  * Intercepted before the vim engine because:
- *   1. Visual mode has no text object support in the engine.
- *   2. In history context, text objects must operate on historyLines,
+ *   1. In history context, text objects must operate on historyLines,
  *      not the prompt buffer that the engine receives.
- *   3. Only yank (y) and visual (v/V) are wired — no delete/change.
+ *   2. Only yank (y) and visual (v/V) are wired — no delete/change.
+ *
+ * The "i"/"a" modifier is set by the vim engine (visual.ts for visual
+ * mode, engine.ts for normal mode). This interceptor only fires when
+ * the pending modifier is already set and the specifier key is "m".
  */
 
 import type { KeyEvent } from "../input";
@@ -34,37 +37,24 @@ export function handleMessageTextObject(
 ): Handled | null {
   const vim = state.vim;
   const ks = keyString(key);
-  if (!ks) return null;
+  if (!ks || ks !== "m") return null;
 
   const inVisual = vim.mode === "visual" || vim.mode === "visual-line";
 
-  // ── Visual mode: "i"/"a" starts a text object modifier ──────────
-  if (inVisual && (ks === "i" || ks === "a")) {
-    vim.pendingVisualTextObjectModifier = ks;
-    return HANDLED;
-  }
-
   // ── Visual mode: pending modifier + "m" → select message ────────
-  if (inVisual && vim.pendingVisualTextObjectModifier && ks === "m") {
-    const modifier = vim.pendingVisualTextObjectModifier;
-    vim.pendingVisualTextObjectModifier = null;
+  if (inVisual && vim.pendingTextObjectModifier) {
+    const modifier = vim.pendingTextObjectModifier;
+    vim.pendingTextObjectModifier = null;
 
     if (context === "prompt") return selectPromptMessage(modifier, state);
     if (context === "history") return selectHistoryMessage(modifier, state);
     return HANDLED;
   }
 
-  // ── Visual mode: pending modifier + non-"m" → cancel, fall through
-  if (inVisual && vim.pendingVisualTextObjectModifier) {
-    vim.pendingVisualTextObjectModifier = null;
-    return null;
-  }
-
   // ── Normal mode: yank + text object modifier + "m" → yank message
   if (vim.mode === "normal"
     && vim.pendingOperator === "yank"
     && vim.pendingTextObjectModifier
-    && ks === "m"
   ) {
     const modifier = vim.pendingTextObjectModifier;
     resetPending(vim);

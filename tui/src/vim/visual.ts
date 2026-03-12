@@ -2,7 +2,8 @@
  * Visual and visual-line mode handling.
  *
  * Owns mode toggling, find within visual, motion-extends-selection,
- * and operator execution on selections (yank, delete, change).
+ * text object selection, and operator execution on selections
+ * (yank, delete, change).
  */
 
 import type { KeyEvent } from "../input";
@@ -10,6 +11,7 @@ import type { VimState, VimCommand, VimContext, VimResult } from "./types";
 import { resetPending, keyString } from "./types";
 import { lookupCommand, isPrefix } from "./keymap";
 import { resolveMotion, findForward, findBackward } from "./motions";
+import { resolveTextObject, isTextObjectKey } from "./textobjects";
 import { lineStartOf, lineEndOf, clampNormal } from "./buffer";
 import { swapCaseRange } from "./operators";
 
@@ -75,6 +77,29 @@ export function handleVisualMode(
       : (vim.lastFind.direction === "f" ? "F" : "f") as "f" | "F";
     const newPos = resolveFind(dir, vim.lastFind.char, buffer, cursor);
     return { type: "cursor_move", cursor: newPos };
+  }
+
+  // ── Text objects (i/a + specifier) ─────────────────────────────
+  // Pending modifier waiting for specifier key (", ', w, (, m, …).
+  // The "m" (message) specifier is handled by the pre-engine interceptor
+  // in message.ts; standard specifiers are resolved here.
+  if (vim.pendingTextObjectModifier) {
+    const modifier = vim.pendingTextObjectModifier;
+    vim.pendingTextObjectModifier = null;
+    if (isTextObjectKey(ks)) {
+      const range = resolveTextObject(modifier, ks, buffer, cursor);
+      if (range && range.start !== range.end) {
+        vim.visualAnchor = range.start;
+        return { type: "cursor_move", cursor: range.end - 1 };
+      }
+    }
+    return { type: "noop" };
+  }
+
+  // "i" or "a" → start text object modifier
+  if (ks === "i" || ks === "a") {
+    vim.pendingTextObjectModifier = ks;
+    return { type: "pending" };
   }
 
   // Multi-key sequence support (gg in visual)

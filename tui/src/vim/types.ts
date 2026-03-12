@@ -23,10 +23,9 @@ export interface VimState {
   /** Pending operator waiting for a motion/textobject ("d", "c", "y"). */
   pendingOperator: string | null;
   pendingOperatorKey: string | null;
-  /** Text object modifier ("i" or "a") after an operator, waiting for specifier. */
+  /** Text object modifier ("i" or "a") waiting for specifier key.
+   *  Set after an operator in normal mode, or standalone in visual mode. */
   pendingTextObjectModifier: "i" | "a" | null;
-  /** Text object modifier ("i" or "a") in visual mode, waiting for specifier key. */
-  pendingVisualTextObjectModifier: "i" | "a" | null;
   /** Accumulated multi-key prefix ("g" waiting for "g" → "gg"). */
   pendingKeys: string;
   /** Numeric prefix (e.g. 3 in "3w"). Null = 1. */
@@ -45,7 +44,6 @@ export function createVimState(): VimState {
     pendingOperator: null,
     pendingOperatorKey: null,
     pendingTextObjectModifier: null,
-    pendingVisualTextObjectModifier: null,
     pendingKeys: "",
     count: null,
     visualAnchor: 0,
@@ -59,7 +57,6 @@ export function resetPending(vim: VimState): void {
   vim.pendingOperator = null;
   vim.pendingOperatorKey = null;
   vim.pendingTextObjectModifier = null;
-  vim.pendingVisualTextObjectModifier = null;
   vim.pendingKeys = "";
   vim.count = null;
   vim.pendingFind = null;
