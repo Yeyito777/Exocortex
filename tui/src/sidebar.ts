@@ -7,7 +7,7 @@
 
 import type { KeyEvent } from "./input";
 import type { ConversationSummary } from "./messages";
-import { sortConversations } from "./messages";
+import { sortConversations, convDisplayName } from "./messages";
 import { resolveAction } from "./keybinds";
 import { theme } from "./theme";
 
@@ -336,9 +336,7 @@ export function renderSidebar(
     const prefix = isSelected ? "▸ " : "  ";
     const markIcon = conv.marked ? "★ " : "";
     const maxTitle = innerWidth - prefix.length - streamIcon.length - markIcon.length;
-    let title = conv.title || conv.preview || "(empty)";
-    const nlIdx = title.indexOf("\n");
-    if (nlIdx !== -1) title = title.slice(0, nlIdx);
+    let title = convDisplayName(conv, "(empty)");
     if (title.length > maxTitle) title = title.slice(0, maxTitle - 1) + "…";
 
     const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;

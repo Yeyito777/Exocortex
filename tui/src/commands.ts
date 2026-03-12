@@ -12,6 +12,7 @@ import type { RenderState } from "./state";
 import { clearPendingAI } from "./state";
 import { clearPrompt } from "./promptline";
 import type { ModelId } from "./messages";
+import { convDisplayName } from "./messages";
 import { copyToClipboard } from "./vim/clipboard";
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -45,7 +46,7 @@ function formatConvoInfo(state: RenderState): string | null {
   if (!state.convId) return null;
 
   const conv = state.sidebar.conversations.find(c => c.id === state.convId);
-  const title = conv?.title || conv?.preview || "(untitled)";
+  const title = conv ? convDisplayName(conv, "(untitled)") : "(untitled)";
   const model = conv?.model ?? state.model;
   const msgs = conv?.messageCount ?? state.messages.filter(m => m.role !== "system").length;
   const created = conv ? new Date(conv.createdAt).toLocaleString() : "unknown";

@@ -11,7 +11,18 @@ export * from "@exocortex/shared/messages";
 
 // ── TUI helpers ─────────────────────────────────────────────────────
 
-import type { AIMessage, Block, ModelId } from "@exocortex/shared/messages";
+import type { AIMessage, Block, ModelId, ConversationSummary } from "@exocortex/shared/messages";
+
+/** Resolve the display name for a conversation: title > preview > fallback. */
+export function convDisplayName(
+  conv: Pick<ConversationSummary, "title" | "preview">,
+  fallback = "",
+): string {
+  let name = conv.title || conv.preview || fallback;
+  const nl = name.indexOf("\n");
+  if (nl !== -1) name = name.slice(0, nl);
+  return name;
+}
 
 /** Create a fresh pending AI message for streaming. */
 export function createPendingAI(startedAt: number, model: ModelId): AIMessage {
