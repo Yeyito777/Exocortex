@@ -7,7 +7,7 @@
 
 import type { KeyEvent } from "./input";
 import type { ConversationSummary } from "./messages";
-import { sortConversations, convDisplayName } from "./messages";
+import { sortConversations, convDisplayName, bottomPinnedOrder, topUnpinnedOrder } from "./messages";
 import { resolveAction } from "./keybinds";
 import { theme } from "./theme";
 
@@ -128,6 +128,11 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       if (!conv) return { type: "handled" };
       const newPinned = !conv.pinned;
       conv.pinned = newPinned;
+      // Compute the sortOrder the daemon will assign so the optimistic
+      // sort matches the authoritative order and avoids a visible snap.
+      conv.sortOrder = newPinned
+        ? bottomPinnedOrder(sidebar.conversations, conv.id)
+        : topUnpinnedOrder(sidebar.conversations, conv.id);
       sortConversations(sidebar.conversations);
       syncSelectedIndex(sidebar);
       return { type: "pin_conversation", convId: conv.id, pinned: newPinned };

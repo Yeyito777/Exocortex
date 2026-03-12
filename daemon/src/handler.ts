@@ -131,8 +131,10 @@ export function createHandler(server: DaemonServer) {
       case "pin_conversation": {
         const ok = convStore.pin(cmd.convId, cmd.pinned);
         if (ok) {
-          server.broadcast({ type: "conversation_pinned", convId: cmd.convId, pinned: cmd.pinned });
-          // Broadcast full list so all clients get the updated sortOrder
+          // Single authoritative broadcast — carries the full list with
+          // correct pinned flags and sortOrders.  A separate
+          // conversation_pinned event is unnecessary and caused flicker
+          // when the TUI re-sorted with stale sortOrder values.
           server.broadcast({ type: "conversation_moved", conversations: convStore.listSummaries() });
         }
         break;

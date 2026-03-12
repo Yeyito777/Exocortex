@@ -132,6 +132,30 @@ export function compareConversations(
   return a.sortOrder - b.sortOrder;
 }
 
+// ── Sort-order placement helpers ────────────────────────────────────
+// Used by both daemon (authoritative) and TUI (optimistic) to compute
+// where a conversation lands when pinned/unpinned/created.
+
+type SortOrderEntry = Pick<ConversationSummary, "id" | "pinned" | "sortOrder">;
+
+/** sortOrder that places an item at the bottom of the pinned section. */
+export function bottomPinnedOrder(items: Iterable<SortOrderEntry>, excludeId: string): number {
+  let maxOrder = -Infinity;
+  for (const c of items) {
+    if (c.pinned && c.id !== excludeId && c.sortOrder > maxOrder) maxOrder = c.sortOrder;
+  }
+  return maxOrder === -Infinity ? 0 : maxOrder + 1;
+}
+
+/** sortOrder that places an item at the top of the unpinned section. */
+export function topUnpinnedOrder(items: Iterable<SortOrderEntry>, excludeId?: string): number {
+  let minOrder = 0;
+  for (const c of items) {
+    if (!c.pinned && c.id !== excludeId && c.sortOrder < minOrder) minOrder = c.sortOrder;
+  }
+  return minOrder - 1;
+}
+
 // ── Tool display info (daemon → TUI on connect) ────────────────────
 
 export interface ToolDisplayInfo {

@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ModelId, ConversationSummary, StoredMessage } from "./messages";
-import { createConversation, sortConversations, displayName, extractPreview, isToolResultMessage } from "./messages";
+import { createConversation, sortConversations, displayName, extractPreview, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder } from "./messages";
 import { buildDisplayData, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
@@ -37,17 +37,8 @@ export function generateId(): string {
 
 // ── Conversations ───────────────────────────────────────────────────
 
-/** Return a sortOrder value that would place an item at the top of the unpinned section. */
-function topUnpinnedOrder(excludeId?: string): number {
-  let minOrder = 0;
-  for (const c of conversations.values()) {
-    if (!c.pinned && c.id !== excludeId && c.sortOrder < minOrder) minOrder = c.sortOrder;
-  }
-  return minOrder - 1;
-}
-
 export function create(id: string, model: ModelId): Conversation {
-  const conv = createConversation(id, model, topUnpinnedOrder());
+  const conv = createConversation(id, model, topUnpinnedOrder(conversations.values()));
   conversations.set(id, conv);
   markDirty(id);
   flush(id);
@@ -58,7 +49,7 @@ export function create(id: string, model: ModelId): Conversation {
 export function bumpToTop(id: string): boolean {
   const conv = conversations.get(id);
   if (!conv || conv.pinned) return false;
-  conv.sortOrder = topUnpinnedOrder(id);
+  conv.sortOrder = topUnpinnedOrder(conversations.values(), id);
   markDirty(id);
   return true;
 }
@@ -273,17 +264,9 @@ export function pin(id: string, pinned: boolean): boolean {
   const conv = conversations.get(id);
   if (!conv) return false;
   conv.pinned = pinned;
-  if (pinned) {
-    // Pinning: place at the bottom of the pinned section
-    let maxOrder = -Infinity;
-    for (const c of conversations.values()) {
-      if (c.pinned && c.id !== id && c.sortOrder > maxOrder) maxOrder = c.sortOrder;
-    }
-    conv.sortOrder = maxOrder === -Infinity ? 0 : maxOrder + 1;
-  } else {
-    // Unpinning: place at the top of the unpinned section
-    conv.sortOrder = topUnpinnedOrder(id);
-  }
+  conv.sortOrder = pinned
+    ? bottomPinnedOrder(conversations.values(), id)
+    : topUnpinnedOrder(conversations.values(), id);
   markDirty(id);
   flush(id);
   return true;
