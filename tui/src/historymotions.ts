@@ -246,10 +246,11 @@ export function wordEndBig(cursor: HistoryCursor, lines: string[]): HistoryCurso
   }
 
   for (let r = cursor.row + 1; r < lines.length; r++) {
-    const nb = contentBounds(stripAnsi(lines[r]));
+    const next = stripAnsi(lines[r]);
+    const nb = contentBounds(next);
     if (nb.end >= nb.start) {
       let c = nb.start;
-      while (c < nb.end && !isSpace(stripAnsi(lines[r])[c + 1])) c++;
+      while (c < nb.end && !isSpace(next[c + 1])) c++;
       return { row: r, col: c };
     }
   }
