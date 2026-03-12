@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ModelId, ConversationSummary, StoredMessage } from "./messages";
-import { createConversation, sortConversations, displayName, extractPreview, isToolResultOnly } from "./messages";
+import { createConversation, sortConversations, displayName, extractPreview, isToolResultMessage } from "./messages";
 import { buildDisplayData, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
@@ -162,7 +162,7 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   let spliceAt = -1;
   let userCount = 0;
   for (let i = 0; i < conv.messages.length; i++) {
-    if (conv.messages[i].role === "user" && !isToolResultOnly(conv.messages[i])) {
+    if (conv.messages[i].role === "user" && !isToolResultMessage(conv.messages[i])) {
       if (userCount === userMessageIndex) { spliceAt = i; break; }
       userCount++;
     }

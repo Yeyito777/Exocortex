@@ -15,7 +15,7 @@
 
 import type { Tool, ToolResult } from "./types";
 import type { Conversation, StoredMessage, ApiContentBlock, ApiMessage } from "../messages";
-import { isToolResultOnly } from "../messages";
+import { isToolResultMessage } from "../messages";
 import { complete } from "../llm";
 import { log } from "../log";
 import { CONTEXT_LIMIT } from "../constants";
@@ -90,7 +90,7 @@ function oneLine(s: string, maxLen = 60): string {
 /** Classify a non-system turn as "user", "assistant", or "tool_result". */
 function turnType(msg: StoredMessage): "user" | "assistant" | "tool_result" {
   if (msg.role === "assistant") return "assistant";
-  if (isToolResultOnly(msg)) return "tool_result";
+  if (isToolResultMessage(msg)) return "tool_result";
   return "user";
 }
 

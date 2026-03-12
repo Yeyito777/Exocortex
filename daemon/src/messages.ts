@@ -72,18 +72,23 @@ export function displayName(conv: Conversation): string {
 }
 
 /**
- * True if a message's content is exclusively tool_result blocks.
+ * True if a message contains any tool_result blocks.
  *
  * Used to distinguish "real" user messages from the tool_result
  * containers the API requires between tool_use and the next
- * assistant turn.  Note: display.ts intentionally uses `some()`
- * instead — it needs to extract tool_result blocks from mixed
- * messages (those containing context pressure hints alongside
- * tool results).
+ * assistant turn.  Uses `some()` (not `every()`) so that
+ * tool_result messages with extra content — such as context
+ * pressure hints injected by the agent loop — are still
+ * recognised as tool-result messages.  This matches the logic
+ * in display.ts, which folds any message with tool_results
+ * into the AI entry.  Without this consistency, unwindTo's
+ * user-message index drifts from the TUI's index and the
+ * splice can land between a tool_use and its tool_result,
+ * bricking the conversation.
  */
-export function isToolResultOnly(msg: StoredMessage): boolean {
+export function isToolResultMessage(msg: StoredMessage): boolean {
   if (typeof msg.content === "string") return false;
-  return msg.content.length > 0 && msg.content.every(b => b.type === "tool_result");
+  return msg.content.length > 0 && msg.content.some(b => b.type === "tool_result");
 }
 
 export function createConversation(id: string, model: ModelId, sortOrder?: number): Conversation {
