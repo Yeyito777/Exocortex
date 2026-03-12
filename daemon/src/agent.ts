@@ -134,10 +134,11 @@ export async function runAgentLoop(
   let lastInputTokens = 0;
 
   // Context pressure thresholds — injected as text blocks in tool result messages
+  // TODO: REVERT — testing context hint rendering
   const THRESHOLDS = [
-    { at: 128_000, level: "advisory" as const },
-    { at: 164_000, level: "warning" as const },
-    { at: 188_000, level: "critical" as const },
+    { at: 1, level: "advisory" as const },
+    { at: 1, level: "warning" as const },
+    { at: 1, level: "critical" as const },
   ];
   let highestFiredLevel = -1; // index into THRESHOLDS, -1 = none fired
 

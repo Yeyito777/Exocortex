@@ -9,7 +9,6 @@
 import type { Block, MessageMetadata, ImageAttachment } from "./messages";
 import type { StoredMessage, ApiContentBlock } from "./messages";
 import type { ModelId } from "./messages";
-import { isToolResultMessage } from "./messages";
 import type { DisplayEntry } from "@exocortex/shared/protocol";
 
 export type { DisplayEntry };
@@ -102,11 +101,12 @@ export function buildDisplayData(
     if (msg.role === "user") {
       if (typeof msg.content !== "string") {
         const contentArr = msg.content as ApiContentBlock[];
-        if (isToolResultMessage(msg) && currentAI) {
-          // Extract only tool_result blocks — text blocks are context
-          // pressure hints injected for the AI and not shown in the TUI.
-          const toolResults = contentArr.filter((c) => c.type === "tool_result");
-          currentAI.blocks.push(...extractBlocks(toolResults));
+        const hasToolResults = contentArr.some((c) => c.type === "tool_result");
+        if (hasToolResults && currentAI) {
+          // Pass all blocks through — tool_result blocks render as tool
+          // output, and any text blocks (context pressure hints injected
+          // by agent.ts) render inline in the AI message.
+          currentAI.blocks.push(...extractBlocks(contentArr));
           continue;
         }
         // User message with image blocks — extract text and images separately
