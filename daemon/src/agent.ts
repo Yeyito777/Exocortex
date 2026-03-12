@@ -134,15 +134,10 @@ export async function runAgentLoop(
   let lastInputTokens = 0;
 
   // Context pressure thresholds — injected as text blocks in tool result messages
-  // TODO: REVERT — testing context hint rendering
-  // Staggered so each level fires on successive rounds:
-  //   Round 1 (~2-3k tokens) → advisory
-  //   Round 2 (~4-5k tokens) → warning
-  //   Round 3 (~6k+ tokens)  → critical (repeats every round)
   const THRESHOLDS = [
-    { at: 1, level: "advisory" as const },
-    { at: 4_000, level: "warning" as const },
-    { at: 6_000, level: "critical" as const },
+    { at: 128_000, level: "advisory" as const },
+    { at: 164_000, level: "warning" as const },
+    { at: 188_000, level: "critical" as const },
   ];
   let highestFiredLevel = -1; // index into THRESHOLDS, -1 = none fired
 
@@ -279,10 +274,8 @@ export async function runAgentLoop(
 
     // ── Context pressure hints ────────────────────────────────────
     // Inject a text block into the tool result message when context
-    // usage crosses hardcoded thresholds. The AI sees this as a
-    // peer-level instruction alongside tool results; display.ts
-    // filters it out so it never renders in the TUI (the status bar
-    // shows context tokens in real time instead).
+    // usage crosses hardcoded thresholds. The AI sees this alongside
+    // tool results; the TUI renders them inline as dimmed text.
     if (lastInputTokens > 0) {
       const pct = ((lastInputTokens / CONTEXT_LIMIT) * 100).toFixed(0);
       const usage = `${Math.round(lastInputTokens / 1000)}k/${CONTEXT_LIMIT / 1000}k tokens (${pct}%)`;
@@ -309,12 +302,7 @@ export async function runAgentLoop(
 
       if (hint) {
         toolResultContent.push({ type: "text", text: hint } as ApiContentBlock);
-        // Include in allBlocks so message_complete carries the hint
-        // (without this, the TUI replaces streaming blocks on completion
-        // and the hint vanishes).
         allBlocks.push({ type: "text", text: hint });
-        // Emit as streaming events so the TUI renders the hint live
-        // (without this, hints only appear on conversation reload).
         callbacks.onBlockStart("text");
         callbacks.onTextChunk(hint);
         log("info", `agent: injected context pressure hint (${THRESHOLDS[Math.max(0, highestFiredLevel)].level}, ${usage})`);

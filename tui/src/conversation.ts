@@ -68,19 +68,12 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
     }
     case "text": {
       const text = block.text.replace(/^\n+/, "");
-      // Context pressure hints: color by severity level
-      const hintColor = text.startsWith("[Context:")
-        ? text.includes("critically") ? theme.error
-          : text.includes("getting full") ? theme.warning
-          : theme.dim
-        : null;
+      const isHint = text.startsWith("[Context:");
       const w = wordWrap(text, contentWidth);
       for (let i = 0; i < w.lines.length; i++) {
-        if (hintColor) {
-          lines.push(`  ${hintColor}${w.lines[i]}${theme.reset}`);
-        } else {
-          lines.push(`  ${w.lines[i]}`);
-        }
+        lines.push(isHint
+          ? `  ${theme.dim}${w.lines[i]}${theme.reset}`
+          : `  ${w.lines[i]}`);
         cont.push(w.cont[i]);
       }
       break;
