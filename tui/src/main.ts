@@ -9,7 +9,7 @@
  */
 
 import { DaemonClient } from "./client";
-import { parseKeys, type KeyEvent } from "./input";
+import { parseKeys, PasteBuffer, type KeyEvent } from "./input";
 import { handleFocusedKey } from "./focus";
 import { clearPrompt } from "./promptline";
 import { tryCommand } from "./commands";
@@ -293,13 +293,22 @@ async function main(): Promise<void> {
 
   render(state);
 
-  process.stdin.on("data", (data: Buffer) => {
-    const keys = parseKeys(data);
+  // Buffer stdin across bracketed-paste chunk boundaries so large pastes
+  // aren't split into individual keystrokes (which turns newlines into submits).
+  const pasteBuffer = new PasteBuffer(processInput);
+
+  function processInput(str: string): void {
+    const keys = parseKeys(str);
     for (const key of keys) {
       handleKey(key);
       if (!running) break;
     }
     if (!running) cleanup();
+  }
+
+  process.stdin.on("data", (data: Buffer) => {
+    const ready = pasteBuffer.feed(data);
+    if (ready !== null) processInput(ready);
   });
 }
 
