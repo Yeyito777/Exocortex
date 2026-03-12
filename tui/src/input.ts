@@ -36,9 +36,73 @@ const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
 
-export function parseKeys(data: Buffer): KeyEvent[] {
+/**
+ * Accumulates stdin chunks across bracketed-paste boundaries.
+ *
+ * Terminals wrap pasted text in \x1b[200~ … \x1b[201~, but large
+ * pastes arrive in multiple stdin chunks. Without buffering, chunks
+ * after the first are parsed as individual keystrokes — newlines
+ * become Enter (submit). This class holds data until the paste-end
+ * marker arrives, then releases the complete buffer for parsing.
+ */
+export class PasteBuffer {
+  private buf = "";
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  /** Safety timeout (ms) — flush incomplete paste so the UI never locks up. */
+  private static TIMEOUT = 2000;
+
+  /**
+   * @param onFlush Called when the safety timeout fires and buffered
+   *   data must be flushed. Without this the UI would lock up if the
+   *   paste-end marker never arrives.
+   */
+  constructor(private onFlush: (data: string) => void) {}
+
+  /**
+   * Feed a stdin chunk. Returns the string to parse now, or null if
+   * we're still accumulating a multi-chunk paste.
+   */
+  feed(data: Buffer): string | null {
+    this.buf += data.toString("utf-8");
+
+    // Not inside a paste — return immediately
+    const startIdx = this.buf.indexOf(PASTE_START);
+    if (startIdx === -1) return this.drain();
+
+    // Inside a paste — do we have the end marker yet?
+    if (this.buf.indexOf(PASTE_END, startIdx) !== -1) return this.drain();
+
+    // Still waiting for paste end — start/reset the safety timeout
+    this.resetTimer();
+    return null;
+  }
+
+  /** Clear the buffer and return its contents, or null if empty. */
+  private drain(): string | null {
+    if (!this.buf) return null;
+    const out = this.buf;
+    this.buf = "";
+    this.clearTimer();
+    return out;
+  }
+
+  private resetTimer(): void {
+    this.clearTimer();
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      const data = this.drain();
+      if (data) this.onFlush(data);
+    }, PasteBuffer.TIMEOUT);
+  }
+
+  private clearTimer(): void {
+    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+  }
+}
+
+export function parseKeys(data: Buffer | string): KeyEvent[] {
   const events: KeyEvent[] = [];
-  const str = data.toString("utf-8");
+  const str = typeof data === "string" ? data : data.toString("utf-8");
   let i = 0;
 
   while (i < str.length) {
