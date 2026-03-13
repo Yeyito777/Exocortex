@@ -77,7 +77,7 @@ export function clone(id: string): Conversation | null {
   const conv: Conversation = {
     id: newId,
     model: src.model,
-    messages: JSON.parse(JSON.stringify(src.messages)),
+    messages: structuredClone(src.messages),
     createdAt: now,
     updatedAt: now,
     lastContextTokens: src.lastContextTokens,

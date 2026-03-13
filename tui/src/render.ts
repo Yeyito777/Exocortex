@@ -2,8 +2,13 @@
  * Layout composition for the Exocortex TUI.
  *
  * Positions all UI components: topbar, sidebar, message area,
- * prompt line, and status line. Each component renders itself —
- * this file only composes them into screen coordinates.
+ * prompt line, and status line. Most components render themselves —
+ * this file composes them into screen coordinates and also owns
+ * the queue-prompt and edit-message overlay renderers.
+ *
+ * Caches computed layout values back into state (historyLines,
+ * scrollOffset, layout.totalLines, etc.) so that scroll and cursor
+ * functions can use them between render passes.
  */
 
 import type { RenderState } from "./state";

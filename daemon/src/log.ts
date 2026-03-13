@@ -11,9 +11,9 @@
 
 import { appendFileSync, appendFile as appendFileCb, mkdirSync, existsSync, statSync, renameSync, unlinkSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
+import { configDir } from "@exocortex/shared/paths";
 
-const LOG_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "exocortex");
+const LOG_DIR = configDir();
 const LOG_FILE = join(LOG_DIR, "exocortex.log");
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const MAX_LOG_FILES = 3;

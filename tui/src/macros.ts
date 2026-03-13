@@ -69,7 +69,7 @@ const MACROS: MacroDef[] = [
     name: "/worktree", desc: "Work in a git worktree",
     expansion: "Work in a git worktree for this task. Find the repo root first (the directory containing `.git/`; don't assume CWD is it). Create the worktree with `git worktree add .worktrees/<name> -b <name> HEAD` from there. When I say I'm satisfied, merge back to main and clean up: run `git worktree remove .worktrees/<name>`, delete the branch with `git branch -d <name>`, and remove the leftover config dirs `~/.config/exocortex/runtime/<name>/` and `~/.config/exocortex/instances/<name>/`.",
     args: [
-      { name: "ready", desc: "Merge main in, resolve conflicts, assess", expansion: "Merge main into the worktree branch, resolve any merge conflicts, and give the result a code assessment. Get it to a merge-ready state." },
+      { name: "ready", desc: "Merge main in, resolve conflicts, assess", expansion: "Merge main into the worktree branch (use local main, not origin — it's always up to date), resolve any merge conflicts, and give the result a code assessment. Get it to a merge-ready state." },
       { name: "merge", desc: "Merge worktree back into main", expansion: "The work in the worktree is good. Merge back into main and clean up. Remove the worktree, branch, and any files it might've created in ~/.config/exocortex/instances/ and ~/.config/exocortex/runtime/ as a result of being a worktree after confirming a sucessfull merge" },
     ],
   },

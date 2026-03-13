@@ -13,8 +13,17 @@ import { markInsertEntry } from "./undo";
 import { updateAutocomplete, cycleAutocomplete, tryPathComplete } from "./autocomplete";
 import { getSymbol } from "./symbols";
 
-/** Returns true if the key resulted in a submit (Enter). */
-export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "handled" | "unhandled" {
+export type PromptKeyResult =
+  | { type: "handled" }
+  | { type: "submit" }
+  | { type: "unhandled" };
+
+const SUBMIT: PromptKeyResult = { type: "submit" };
+const HANDLED: PromptKeyResult = { type: "handled" };
+const UNHANDLED: PromptKeyResult = { type: "unhandled" };
+
+/** Handle a key event in the prompt. Returns a typed result object. */
+export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyResult {
   const action = resolveAction(key);
 
   // Tab → cycle autocomplete forward, or try path completion
@@ -24,7 +33,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
     } else {
       tryPathComplete(state);
     }
-    return "handled";
+    return HANDLED;
   }
 
   // Shift+Tab → cycle autocomplete backward
@@ -32,7 +41,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
     if (state.autocomplete) {
       cycleAutocomplete(state, -1);
     }
-    return "handled";
+    return HANDLED;
   }
 
   // Symbol keys (Ctrl+number row → F14-F24 from st)
@@ -44,7 +53,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
       state.inputBuffer.slice(state.cursorPos);
     state.cursorPos++;
     updateAutocomplete(state);
-    return "handled";
+    return HANDLED;
   }
 
   // Char input — in insert mode every char is typed.
@@ -52,20 +61,20 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
   // handled by focus.ts before we get here; the vim engine passthroughs all
   // chars in insert mode, so we don't gate on resolveAction.
   if (key.type === "char") {
-    if (!key.char) return "handled";
+    if (!key.char) return HANDLED;
     state.inputBuffer =
       state.inputBuffer.slice(0, state.cursorPos) +
       key.char +
       state.inputBuffer.slice(state.cursorPos);
     state.cursorPos++;
     updateAutocomplete(state);
-    return "handled";
+    return HANDLED;
   }
 
   switch (action) {
     case "submit":
       state.autocomplete = null;
-      return "submit";
+      return SUBMIT;
 
     case "newline": {
       state.inputBuffer =
@@ -74,7 +83,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
         state.inputBuffer.slice(state.cursorPos);
       state.cursorPos++;
       state.autocomplete = null;
-      return "handled";
+      return HANDLED;
     }
 
     case "delete_back": {
@@ -88,7 +97,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
         state.pendingImages.pop();
       }
       updateAutocomplete(state);
-      return "handled";
+      return HANDLED;
     }
 
     case "delete_forward": {
@@ -98,27 +107,27 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
           state.inputBuffer.slice(state.cursorPos + 1);
       }
       updateAutocomplete(state);
-      return "handled";
+      return HANDLED;
     }
 
     case "cursor_left":
       if (state.cursorPos > 0) state.cursorPos--;
-      return "handled";
+      return HANDLED;
 
     case "cursor_right":
       if (state.cursorPos < state.inputBuffer.length) state.cursorPos++;
-      return "handled";
+      return HANDLED;
 
     case "cursor_home": {
       const lineStart = state.inputBuffer.lastIndexOf("\n", state.cursorPos - 1) + 1;
       state.cursorPos = lineStart;
-      return "handled";
+      return HANDLED;
     }
 
     case "cursor_end": {
       const nextNl = state.inputBuffer.indexOf("\n", state.cursorPos);
       state.cursorPos = nextNl === -1 ? state.inputBuffer.length : nextNl;
-      return "handled";
+      return HANDLED;
     }
 
     case "cursor_up": {
@@ -129,9 +138,9 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
         const prevLineStart = buf.lastIndexOf("\n", currentLineStart - 2) + 1;
         const prevLineLen = currentLineStart - 1 - prevLineStart;
         state.cursorPos = prevLineStart + Math.min(colInLine, prevLineLen);
-        return "handled";
+        return HANDLED;
       }
-      return "unhandled";
+      return UNHANDLED;
     }
 
     case "cursor_down": {
@@ -144,13 +153,13 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): "submit" | "
         const nextLineEnd = buf.indexOf("\n", nextLineStart);
         const nextLineLen = (nextLineEnd === -1 ? buf.length : nextLineEnd) - nextLineStart;
         state.cursorPos = nextLineStart + Math.min(colInLine, nextLineLen);
-        return "handled";
+        return HANDLED;
       }
-      return "unhandled";
+      return UNHANDLED;
     }
 
     default:
-      return "unhandled";
+      return UNHANDLED;
   }
 }
 

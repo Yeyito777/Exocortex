@@ -9,16 +9,14 @@
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
 import { resolveAction } from "./keybinds";
-import { handlePromptKey } from "./promptline";
+import { handlePromptKey, type PromptKeyResult } from "./promptline";
 
 // ── Types ───────────────────────────────────────────────────────────
 
 export type ChatFocus = "prompt" | "history";
 
-export type ChatKeyResult =
-  | { type: "handled" }
-  | { type: "submit" }
-  | { type: "unhandled" };
+/** Re-export PromptKeyResult as the chat-level result type — same shape. */
+export type ChatKeyResult = PromptKeyResult;
 
 // ── Key routing ─────────────────────────────────────────────────────
 
@@ -35,10 +33,9 @@ export function handleChatKey(key: KeyEvent, state: RenderState): ChatKeyResult 
 function handlePromptFocused(key: KeyEvent, state: RenderState): ChatKeyResult {
   const action = resolveAction(key);
 
-  // Delegate to promptline
+  // Delegate to promptline — returns a typed result directly
   const result = handlePromptKey(state, key);
-  if (result === "submit") return { type: "submit" };
-  if (result === "handled") return { type: "handled" };
+  if (result.type !== "unhandled") return result;
 
   // Unhandled by promptline (up/down on first/last line) → scroll
   if (action === "cursor_up") {
