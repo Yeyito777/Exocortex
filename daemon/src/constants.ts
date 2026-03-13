@@ -10,6 +10,9 @@ export const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 /** Maximum context window size in tokens (model-dependent; using Claude's max). */
 export const CONTEXT_LIMIT = 200_000;
 
+/** Target context size after cleanup — pressure hints tell the AI to free tokens until it reaches this. */
+export const CONTEXT_TARGET = 64_000;
+
 /**
  * After this many seconds a bash tool call is "backgrounded": the process
  * keeps running but the tool result is returned immediately with the PID

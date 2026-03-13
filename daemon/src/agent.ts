@@ -13,7 +13,7 @@ import { streamMessage, type ApiToolCall } from "./api";
 import { log } from "./log";
 import type { ModelId, Block, ToolCallBlock, ToolResultBlock, ApiMessage, ApiContentBlock } from "./messages";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
-import { CONTEXT_LIMIT } from "./constants";
+import { CONTEXT_LIMIT, CONTEXT_TARGET } from "./constants";
 
 // ── Callbacks ───────────────────────────────────────────────────────
 
@@ -279,6 +279,8 @@ export async function runAgentLoop(
     if (lastInputTokens > 0) {
       const pct = ((lastInputTokens / CONTEXT_LIMIT) * 100).toFixed(0);
       const usage = `${Math.round(lastInputTokens / 1000)}k/${CONTEXT_LIMIT / 1000}k tokens (${pct}%)`;
+      const freeAtLeast = `${Math.round((lastInputTokens - CONTEXT_TARGET) / 1000)}k`;
+      const target = `${CONTEXT_TARGET / 1000}k`;
       let hint: string | null = null;
 
       // Find the highest threshold that applies (iterate high→low, process first match)
@@ -288,13 +290,13 @@ export async function runAgentLoop(
 
         if (level === "critical") {
           // Critical fires every round until the AI frees space
-          hint = `[Context: ${usage} — critically low on context! Use the context tool immediately to free space.]`;
+          hint = `[Context: ${usage} — critically low on context! Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool immediately.]`;
           highestFiredLevel = Math.max(highestFiredLevel, i);
         } else if (i > highestFiredLevel) {
           // Advisory and warning fire once
           hint = level === "warning"
-            ? `[Context: ${usage} — context is getting full. Use the context tool now to free space before you run out.]`
-            : `[Context: ${usage} — consider using the context tool to free space. Start with strip_thinking, then summarize or delete old turns.]`;
+            ? `[Context: ${usage} — context is getting full. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool now before you run out.]`
+            : `[Context: ${usage} — approaching context limit. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Start with strip_thinking, then strip_results where findings are already captured in your responses, then summarize or delete old turns.]`;
           highestFiredLevel = i;
         }
         break; // Only process the highest matching threshold
