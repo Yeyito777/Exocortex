@@ -29,6 +29,7 @@ import { pushUndo, markInsertEntry, commitInsertSession, undo as undoFn, redo as
 import {
   stripAnsi, ensureCursorVisible, placeAtVisibleBottom,
   handleHistoryFind as historyFindHandler,
+  handleHistoryTextObject as historyTextObjectHandler,
   handleHistoryCursorAction,
   scrollHalfPageWithCursor, scrollFullPageWithCursor, scrollLineWithStickyCursor,
 } from "./historycursor";
@@ -232,6 +233,13 @@ function processVimKey(key: KeyEvent, state: RenderState): KeyResult | null {
   // Message text object (im/am) — intercept before engine for all contexts
   const msgResult = handleMessageTextObject(key, state, context);
   if (msgResult) return msgResult;
+
+  // History text objects (iw, aw, i", a", vi(, etc.) — resolve against
+  // history lines instead of the prompt buffer the engine receives
+  if (context === "history" && state.vim.pendingTextObjectModifier) {
+    const htResult = historyTextObjectHandler(key, state);
+    if (htResult) return htResult;
+  }
 
   const prevMode = state.vim.mode;
   const result = processKey(key, state.vim, context, state.inputBuffer, state.cursorPos);
