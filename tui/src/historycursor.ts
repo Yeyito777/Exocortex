@@ -11,8 +11,10 @@ import type { KeyEvent } from "./input";
 import type { Action } from "./keybinds";
 import type { RenderState } from "./state";
 import { copyToClipboard } from "./vim/clipboard";
+import { keyString, resetPending } from "./vim/types";
+import { resolveTextObject, isTextObjectKey } from "./vim/textobjects";
 import {
-  stripAnsi, clampCol, clampCursor,
+  stripAnsi, contentBounds, clampCol, clampCursor,
   logicalLineRange,
   charLeft, charRight, lineUp, lineDown, lineStart, lineEnd,
   bufferStart, bufferEnd,
@@ -197,6 +199,71 @@ export function handleHistoryFind(key: KeyEvent, state: RenderState): boolean {
   }
 
   return false;
+}
+
+// ── History text objects ──────────────────────────────────────────
+
+/**
+ * Handle standard text objects (iw, aw, iW, aW, i", a", i(, etc.)
+ * in history context.
+ *
+ * Intercepts before the vim engine so text objects resolve against
+ * the ANSI-stripped history line under the cursor, not the prompt
+ * buffer that the engine receives.
+ *
+ * Returns { type: "handled" } if the key was consumed, null to
+ * fall through to the engine.
+ */
+export function handleHistoryTextObject(
+  key: KeyEvent,
+  state: RenderState,
+): { type: "handled" } | null {
+  const vim = state.vim;
+  const ks = keyString(key);
+  if (!ks || !vim.pendingTextObjectModifier || !isTextObjectKey(ks)) return null;
+
+  const modifier = vim.pendingTextObjectModifier;
+  vim.pendingTextObjectModifier = null;
+
+  const lines = state.historyLines;
+  const cursor = state.historyCursor;
+  const row = cursor.row;
+  const plain = stripAnsi(lines[row] ?? "");
+
+  const range = resolveTextObject(modifier, ks, plain, cursor.col);
+  if (!range || range.start >= range.end) {
+    resetPending(vim);
+    return { type: "handled" };
+  }
+
+  // Clamp to content bounds — cursor can't roam into padding
+  const { start: cbStart, end: cbEnd } = contentBounds(plain);
+  const rangeStart = Math.max(range.start, cbStart);
+  const rangeEnd = Math.min(range.end, cbEnd + 1); // end is exclusive
+
+  if (rangeStart >= rangeEnd) {
+    resetPending(vim);
+    return { type: "handled" };
+  }
+
+  const inVisual = vim.mode === "visual" || vim.mode === "visual-line";
+
+  if (inVisual) {
+    // Snap visual selection to the text object range
+    state.historyVisualAnchor = { row, col: rangeStart };
+    state.historyCursor = { row, col: rangeEnd - 1 }; // inclusive
+    ensureCursorVisible(state);
+    return { type: "handled" };
+  }
+
+  // Operator mode (yank only — history is read-only)
+  if (vim.pendingOperator === "yank") {
+    const text = plain.slice(rangeStart, rangeEnd);
+    if (text) copyToClipboard(text);
+  }
+
+  resetPending(vim);
+  return { type: "handled" };
 }
 
 // ── Visual selection extraction ─────────────────────────────────
