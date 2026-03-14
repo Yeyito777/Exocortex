@@ -13,6 +13,13 @@
 
 export type ModelId = "sonnet" | "haiku" | "opus";
 
+/** Maximum context window size in tokens, per model. */
+export const MAX_CONTEXT: Record<ModelId, number> = {
+  sonnet: 1_000_000,
+  haiku: 1_000_000,
+  opus: 1_000_000,
+};
+
 // ── Image attachments ──────────────────────────────────────────────
 
 export type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";

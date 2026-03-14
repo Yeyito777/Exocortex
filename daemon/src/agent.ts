@@ -13,7 +13,7 @@ import { streamMessage, type ApiToolCall } from "./api";
 import { log } from "./log";
 import type { ModelId, Block, ToolCallBlock, ToolResultBlock, ApiMessage, ApiContentBlock } from "./messages";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
-import { CONTEXT_LIMIT, CONTEXT_TARGET } from "./constants";
+import { MAX_CONTEXT, CONTEXT_TARGET } from "./constants";
 
 // ── Callbacks ───────────────────────────────────────────────────────
 
@@ -279,8 +279,9 @@ export async function runAgentLoop(
     // usage crosses hardcoded thresholds. The AI sees this alongside
     // tool results; the TUI renders them inline as dimmed text.
     if (lastInputTokens > 0) {
-      const pct = ((lastInputTokens / CONTEXT_LIMIT) * 100).toFixed(0);
-      const usage = `${Math.round(lastInputTokens / 1000)}k/${CONTEXT_LIMIT / 1000}k tokens (${pct}%)`;
+      const contextLimit = MAX_CONTEXT[model];
+      const pct = ((lastInputTokens / contextLimit) * 100).toFixed(0);
+      const usage = `${Math.round(lastInputTokens / 1000)}k/${contextLimit / 1000}k tokens (${pct}%)`;
       const freeAtLeast = `${Math.round((lastInputTokens - CONTEXT_TARGET) / 1000)}k`;
       const target = `${CONTEXT_TARGET / 1000}k`;
       let hint: string | null = null;

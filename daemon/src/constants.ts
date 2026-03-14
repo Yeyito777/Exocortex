@@ -5,10 +5,9 @@
  * duplication and prevent circular imports.
  */
 
-export const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+export { MAX_CONTEXT } from "@exocortex/shared/messages";
 
-/** Maximum context window size in tokens (model-dependent; using Claude's max). */
-export const CONTEXT_LIMIT = 1_000_000;
+export const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 
 /** Target context size after cleanup — pressure hints tell the AI to free tokens until it reaches this. */
 export const CONTEXT_TARGET = 100_000;

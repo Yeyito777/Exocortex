@@ -4,21 +4,15 @@
 
 import type { RenderState } from "../state";
 import type { StatusBlock } from "../statusline";
-import type { ModelId } from "../messages";
+import { MAX_CONTEXT } from "@exocortex/shared/messages";
 import { theme } from "../theme";
-
-const MAX_CONTEXT: Record<ModelId, number> = {
-  sonnet: 1_000_000,
-  haiku: 1_000_000,
-  opus: 1_000_000,
-};
 
 function formatTokenCount(n: number): string {
   return n.toLocaleString("en-US");
 }
 
 export function contextBlock(state: RenderState): StatusBlock | null {
-  const maxCtx = MAX_CONTEXT[state.model] ?? 1_000_000;
+  const maxCtx = MAX_CONTEXT[state.model];
   const ctxLabel = "  Context: ";
   const ctxValue = formatTokenCount(state.contextTokens ?? 0);
   const maxLabel = "  Max Context: ";
