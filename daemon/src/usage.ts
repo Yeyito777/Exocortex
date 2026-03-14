@@ -170,18 +170,18 @@ function parseHeaders(headers: Headers): UsageData | null {
 function parseUsageResponse(data: unknown): UsageData {
   const obj = data as Record<string, unknown> | null | undefined;
   return {
-    fiveHour: parseWindow(obj?.five_hour),
-    sevenDay: parseWindow(obj?.seven_day),
+    fiveHour: parseWindow(obj?.five_hour, lastUsage?.fiveHour),
+    sevenDay: parseWindow(obj?.seven_day, lastUsage?.sevenDay),
   };
 }
 
-function parseWindow(w: unknown): UsageWindow | null {
+function parseWindow(w: unknown, prev?: UsageWindow | null): UsageWindow | null {
   if (!w || typeof w !== "object") return null;
   const obj = w as Record<string, unknown>;
   if (typeof obj.utilization !== "number") return null;
   return {
     utilization: obj.utilization,
-    resetsAt: parseResetValue(obj.resets_at),
+    resetsAt: parseResetValue(obj.resets_at) ?? prev?.resetsAt ?? null,
   };
 }
 
