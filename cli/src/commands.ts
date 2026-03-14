@@ -108,18 +108,13 @@ export async function ls(conn: Connection, opts: OutputOptions): Promise<number>
     if (event.conversations.length === 0) {
       process.stdout.write("No conversations.\n");
     } else {
-      // Table format
-      const header = padRight("ID", 10) + padRight("MODEL", 8) + padRight("MSGS", 6) + padRight("TITLE", 40) + "UPDATED";
-      process.stdout.write(header + "\n");
-      process.stdout.write("─".repeat(header.length) + "\n");
       for (const c of event.conversations) {
-        const id = c.id.slice(0, 8);
-        const prefix = (c.pinned ? "📌" : c.marked ? "★ " : "  ");
+        const prefix = c.pinned ? "📌" : c.marked ? "★ " : "  ";
         const streaming = c.streaming ? " ⟳" : "";
-        const date = new Date(c.updatedAt).toLocaleString();
         const title = c.title || "(untitled)";
+        const date = new Date(c.updatedAt).toLocaleString();
         process.stdout.write(
-          prefix + padRight(id, 10) + padRight(c.model, 8) + padRight(String(c.messageCount), 6) + padRight(truncate(title, 38), 40) + date + streaming + "\n"
+          `${prefix}${c.id}  ${c.model}  ${c.messageCount} msgs  ${title}  ${date}${streaming}\n`
         );
       }
     }
@@ -131,27 +126,49 @@ export async function ls(conn: Connection, opts: OutputOptions): Promise<number>
 // ── info ────────────────────────────────────────────────────────────
 
 export async function info(conn: Connection, convId: string, opts: OutputOptions): Promise<number> {
-  const reqId = nextReqId();
-  const event = await conn.request<ConversationLoadedEvent>(
-    { type: "load_conversation", reqId, convId },
-    (e): e is ConversationLoadedEvent => e.type === "conversation_loaded" && e.reqId === reqId,
-  );
+  // Fetch both the summary (title, pinned, marked) and the loaded conversation (context tokens)
+  const listReqId = nextReqId();
+  const loadReqId = nextReqId();
+
+  const [listEvent, loadEvent] = await Promise.all([
+    conn.request<ConversationsListEvent>(
+      { type: "list_conversations", reqId: listReqId },
+      (e): e is ConversationsListEvent => e.type === "conversations_list" && e.reqId === listReqId,
+    ),
+    conn.request<ConversationLoadedEvent>(
+      { type: "load_conversation", reqId: loadReqId, convId },
+      (e): e is ConversationLoadedEvent => e.type === "conversation_loaded" && e.reqId === loadReqId,
+    ),
+  ]);
+
+  const summary = listEvent.conversations.find((c) => c.id === convId);
 
   if (opts.json) {
     process.stdout.write(JSON.stringify({
-      convId: event.convId,
-      model: event.model,
-      contextTokens: event.contextTokens,
-      messageCount: event.entries.length,
-      queuedMessages: event.queuedMessages ?? [],
+      convId: loadEvent.convId,
+      title: summary?.title ?? "",
+      model: loadEvent.model,
+      contextTokens: loadEvent.contextTokens,
+      messageCount: loadEvent.entries.length,
+      pinned: summary?.pinned ?? false,
+      marked: summary?.marked ?? false,
+      streaming: summary?.streaming ?? false,
+      createdAt: summary?.createdAt ?? null,
+      updatedAt: summary?.updatedAt ?? null,
+      queuedMessages: loadEvent.queuedMessages ?? [],
     }) + "\n");
   } else {
-    process.stdout.write(`Conversation: ${event.convId}\n`);
-    process.stdout.write(`Model:        ${event.model}\n`);
-    process.stdout.write(`Messages:     ${event.entries.length}\n`);
-    process.stdout.write(`Context:      ${event.contextTokens ?? "unknown"} tokens\n`);
-    if (event.queuedMessages?.length) {
-      process.stdout.write(`Queued:       ${event.queuedMessages.length} message(s)\n`);
+    const title = summary?.title || "(untitled)";
+    process.stdout.write(`Conversation: ${loadEvent.convId}\n`);
+    process.stdout.write(`Title:        ${title}\n`);
+    process.stdout.write(`Model:        ${loadEvent.model}\n`);
+    process.stdout.write(`Messages:     ${loadEvent.entries.length}\n`);
+    process.stdout.write(`Context:      ${loadEvent.contextTokens ?? "unknown"} tokens\n`);
+    if (summary?.pinned) process.stdout.write(`Pinned:       yes\n`);
+    if (summary?.marked) process.stdout.write(`Marked:       yes\n`);
+    if (summary?.streaming) process.stdout.write(`Streaming:    yes\n`);
+    if (loadEvent.queuedMessages?.length) {
+      process.stdout.write(`Queued:       ${loadEvent.queuedMessages.length} message(s)\n`);
     }
   }
 
@@ -185,6 +202,7 @@ export async function rm(conn: Connection, convId: string): Promise<number> {
     { type: "delete_conversation", reqId, convId },
     (e): e is ConversationDeletedEvent => e.type === "conversation_deleted" && e.convId === convId,
   );
+  process.stdout.write(`Deleted ${convId}\n`);
   return 0;
 }
 
@@ -208,6 +226,7 @@ export async function rename(conn: Connection, convId: string, title: string): P
     { type: "rename_conversation", reqId, convId, title },
     (e): e is ConversationUpdatedEvent => e.type === "conversation_updated" && e.summary.id === convId,
   );
+  process.stdout.write(`Renamed ${convId}\n`);
   return 0;
 }
 
