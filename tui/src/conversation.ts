@@ -11,6 +11,13 @@ import { renderMetadata } from "./metadata";
 import { resolveToolDisplay } from "./toolstyles";
 import { formatSize, imageLabel } from "./clipboard";
 import { theme } from "./theme";
+import {
+  markdownWordWrap,
+  formatMarkdown,
+  isCodeBlockLine,
+  isBoxDrawingLine,
+  isHorizontalRule,
+} from "./markdown";
 
 // ── Word wrapping ───────────────────────────────────────────────────
 
@@ -69,12 +76,33 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
     case "text": {
       const text = block.text.replace(/^\n+/, "");
       const isHint = text.startsWith("[Context:");
-      const w = wordWrap(text, contentWidth);
-      for (let i = 0; i < w.lines.length; i++) {
-        lines.push(isHint
-          ? `  ${theme.dim}${w.lines[i]}${theme.reset}`
-          : `  ${w.lines[i]}`);
-        cont.push(w.cont[i]);
+
+      if (isHint) {
+        // Context hints: plain dim text, no markdown processing
+        const w = wordWrap(text, contentWidth);
+        for (let i = 0; i < w.lines.length; i++) {
+          lines.push(`  ${theme.dim}${w.lines[i]}${theme.reset}`);
+          cont.push(w.cont[i]);
+        }
+      } else {
+        // Assistant text blocks: full markdown rendering
+        // bgRestore = theme.reset signals "assistant mode" to enable
+        // code blocks, tables, horizontal rules, and inline formatting
+        const mdLines = markdownWordWrap(text, contentWidth, theme.reset);
+        for (const line of mdLines) {
+          // Code block lines and box-drawing table lines already have
+          // ANSI formatting baked in — just indent them.
+          // Regular lines get inline markdown formatting applied.
+          if (isCodeBlockLine(line) || isBoxDrawingLine(line)) {
+            lines.push(`  ${line}`);
+          } else if (line === "") {
+            lines.push("");
+          } else {
+            const fmt = formatMarkdown(line, theme.reset);
+            lines.push(`  ${fmt.text}`);
+          }
+          cont.push(false);
+        }
       }
       break;
     }
