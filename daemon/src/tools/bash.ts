@@ -116,7 +116,7 @@ async function executeBash(input: Record<string, unknown>, signal?: AbortSignal)
 // Commands that are expected to take a long time (subagent calls, etc).
 // When one of these is detected and no explicit `await` is set, the
 // background threshold is raised to 30 minutes instead of the default 60s.
-const LONG_RUNNING_COMMANDS = ["exo ","exo\n","cat <<", "cat<<"];
+const LONG_RUNNING_COMMANDS = ["exo ", "exo\n"];
 const LONG_RUNNING_BG_MS = 30 * 60 * 1000; // 30 minutes
 
 export async function executeBashBackgroundable(
