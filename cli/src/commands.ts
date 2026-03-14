@@ -4,7 +4,16 @@
  */
 
 import type { Connection } from "./conn";
-import type { Event, ModelId, ConversationSummary, ConversationLoadedEvent, ConversationCreatedEvent, LlmCompleteResultEvent } from "@exocortex/shared/protocol";
+import type {
+  ModelId,
+  ConversationCreatedEvent,
+  ConversationsListEvent,
+  ConversationLoadedEvent,
+  ConversationDeletedEvent,
+  ConversationUpdatedEvent,
+  AckEvent,
+  LlmCompleteResultEvent,
+} from "@exocortex/shared/protocol";
 import { collectResponse, type StreamCallback } from "./collect";
 import { formatBlocksAsText, formatResponseAsJson, formatEntriesAsText, formatEntriesAsJson } from "./format";
 
@@ -14,6 +23,21 @@ export interface OutputOptions {
   stream: boolean;
   idOnly: boolean;
   timeout: number;
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+let reqCounter = 0;
+function nextReqId(): string {
+  return `cli_${++reqCounter}_${Date.now()}`;
+}
+
+function padRight(s: string, width: number): string {
+  return s.length >= width ? s.slice(0, width) : s + " ".repeat(width - s.length);
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max - 1) + "…";
 }
 
 // ── send ────────────────────────────────────────────────────────────
@@ -27,7 +51,7 @@ export async function send(
 ): Promise<number> {
   // Create conversation if needed
   if (!convId) {
-    const reqId = `cli_${Date.now()}`;
+    const reqId = nextReqId();
     const created = await conn.request<ConversationCreatedEvent>(
       { type: "new_conversation", reqId, model: model ?? undefined },
       (e): e is ConversationCreatedEvent => e.type === "conversation_created" && e.reqId === reqId,
@@ -58,11 +82,11 @@ export async function send(
   } else if (opts.json) {
     process.stdout.write(formatResponseAsJson(response) + "\n");
   } else if (!opts.stream) {
-    // In stream mode we already printed events; just print the convId
-    const text = formatBlocksAsText(response.blocks, opts.full);
-    if (text) process.stdout.write(text + "\n");
+    const output = formatBlocksAsText(response.blocks, opts.full);
+    if (output) process.stdout.write(output + "\n");
     process.stdout.write(`\nexo:${response.convId}\n`);
   } else {
+    // In stream mode we already printed events; just print the convId
     process.stdout.write(`\nexo:${response.convId}\n`);
   }
 
@@ -72,26 +96,23 @@ export async function send(
 // ── ls ──────────────────────────────────────────────────────────────
 
 export async function ls(conn: Connection, opts: OutputOptions): Promise<number> {
-  const reqId = `cli_${Date.now()}`;
-  const event = await conn.request(
+  const reqId = nextReqId();
+  const event = await conn.request<ConversationsListEvent>(
     { type: "list_conversations", reqId },
-    (e): e is Event & { type: "conversations_list"; conversations: ConversationSummary[] } =>
-      e.type === "conversations_list" && "reqId" in e && e.reqId === reqId,
+    (e): e is ConversationsListEvent => e.type === "conversations_list" && e.reqId === reqId,
   );
 
-  const convs = (event as any).conversations as ConversationSummary[];
-
   if (opts.json) {
-    process.stdout.write(JSON.stringify(convs) + "\n");
+    process.stdout.write(JSON.stringify(event.conversations) + "\n");
   } else {
-    if (convs.length === 0) {
+    if (event.conversations.length === 0) {
       process.stdout.write("No conversations.\n");
     } else {
       // Table format
       const header = padRight("ID", 10) + padRight("MODEL", 8) + padRight("MSGS", 6) + padRight("TITLE", 40) + "UPDATED";
       process.stdout.write(header + "\n");
       process.stdout.write("─".repeat(header.length) + "\n");
-      for (const c of convs) {
+      for (const c of event.conversations) {
         const id = c.id.slice(0, 8);
         const prefix = (c.pinned ? "📌" : c.marked ? "★ " : "  ");
         const streaming = c.streaming ? " ⟳" : "";
@@ -110,7 +131,7 @@ export async function ls(conn: Connection, opts: OutputOptions): Promise<number>
 // ── info ────────────────────────────────────────────────────────────
 
 export async function info(conn: Connection, convId: string, opts: OutputOptions): Promise<number> {
-  const reqId = `cli_${Date.now()}`;
+  const reqId = nextReqId();
   const event = await conn.request<ConversationLoadedEvent>(
     { type: "load_conversation", reqId, convId },
     (e): e is ConversationLoadedEvent => e.type === "conversation_loaded" && e.reqId === reqId,
@@ -140,7 +161,7 @@ export async function info(conn: Connection, convId: string, opts: OutputOptions
 // ── history ─────────────────────────────────────────────────────────
 
 export async function history(conn: Connection, convId: string, opts: OutputOptions): Promise<number> {
-  const reqId = `cli_${Date.now()}`;
+  const reqId = nextReqId();
   const event = await conn.request<ConversationLoadedEvent>(
     { type: "load_conversation", reqId, convId },
     (e): e is ConversationLoadedEvent => e.type === "conversation_loaded" && e.reqId === reqId,
@@ -149,8 +170,8 @@ export async function history(conn: Connection, convId: string, opts: OutputOpti
   if (opts.json) {
     process.stdout.write(formatEntriesAsJson(event.entries) + "\n");
   } else {
-    const text = formatEntriesAsText(event.entries, opts.full);
-    if (text) process.stdout.write(text + "\n");
+    const output = formatEntriesAsText(event.entries, opts.full);
+    if (output) process.stdout.write(output + "\n");
   }
 
   return 0;
@@ -159,10 +180,10 @@ export async function history(conn: Connection, convId: string, opts: OutputOpti
 // ── rm ──────────────────────────────────────────────────────────────
 
 export async function rm(conn: Connection, convId: string): Promise<number> {
-  const reqId = `cli_${Date.now()}`;
-  await conn.request(
+  const reqId = nextReqId();
+  await conn.request<ConversationDeletedEvent>(
     { type: "delete_conversation", reqId, convId },
-    (e): e is Event => e.type === "conversation_deleted" && "convId" in e && (e as any).convId === convId,
+    (e): e is ConversationDeletedEvent => e.type === "conversation_deleted" && e.convId === convId,
   );
   return 0;
 }
@@ -170,10 +191,10 @@ export async function rm(conn: Connection, convId: string): Promise<number> {
 // ── abort ───────────────────────────────────────────────────────────
 
 export async function abort(conn: Connection, convId: string): Promise<number> {
-  const reqId = `cli_${Date.now()}`;
-  await conn.request(
+  const reqId = nextReqId();
+  await conn.request<AckEvent>(
     { type: "abort", reqId, convId },
-    (e): e is Event => e.type === "ack" && "reqId" in e && (e as any).reqId === reqId,
+    (e): e is AckEvent => e.type === "ack" && e.reqId === reqId,
   );
   process.stdout.write("Aborted.\n");
   return 0;
@@ -182,10 +203,10 @@ export async function abort(conn: Connection, convId: string): Promise<number> {
 // ── rename ──────────────────────────────────────────────────────────
 
 export async function rename(conn: Connection, convId: string, title: string): Promise<number> {
-  const reqId = `cli_${Date.now()}`;
-  await conn.request(
+  const reqId = nextReqId();
+  await conn.request<ConversationUpdatedEvent>(
     { type: "rename_conversation", reqId, convId, title },
-    (e): e is Event => e.type === "conversation_updated" && "summary" in e && (e as any).summary.id === convId,
+    (e): e is ConversationUpdatedEvent => e.type === "conversation_updated" && e.summary.id === convId,
   );
   return 0;
 }
@@ -199,7 +220,7 @@ export async function llm(
   model: ModelId | null,
   opts: OutputOptions,
 ): Promise<number> {
-  const reqId = `cli_${Date.now()}`;
+  const reqId = nextReqId();
   const event = await conn.request<LlmCompleteResultEvent>(
     { type: "llm_complete", reqId, system, userText, model: model ?? undefined },
     (e): e is LlmCompleteResultEvent => e.type === "llm_complete_result" && e.reqId === reqId,
@@ -213,14 +234,4 @@ export async function llm(
   }
 
   return 0;
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────
-
-function padRight(s: string, width: number): string {
-  return s.length >= width ? s.slice(0, width) : s + " ".repeat(width - s.length);
-}
-
-function truncate(s: string, max: number): string {
-  return s.length <= max ? s : s.slice(0, max - 1) + "…";
 }

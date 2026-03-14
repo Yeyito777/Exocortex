@@ -98,8 +98,7 @@ export class Connection {
 
       const cleanup = () => {
         clearTimeout(timer);
-        const idx = this.listeners.indexOf(handler);
-        if (idx !== -1) this.listeners.splice(idx, 1);
+        this.offEvent(handler);
       };
 
       this.listeners.push(handler);
