@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# exo — Exocortex CLI client.
+# Thin wrapper that resolves the project root and runs the TypeScript entry point.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+exec bun run "$PROJECT_DIR/src/main.ts" "$@"
