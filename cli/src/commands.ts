@@ -42,9 +42,10 @@ function truncate(s: string, max: number): string {
 
 /** Auto-generate a conversation title from the first message. */
 function autoTitle(text: string): string {
-  // Take the first line, collapse whitespace, truncate
+  // Take the first line, collapse whitespace, truncate. Prefixed so
+  // CLI-originated conversations are easy to distinguish from human ones.
   const firstLine = text.split("\n")[0].trim();
-  return truncate(firstLine, 80);
+  return "cli: " + truncate(firstLine, 75);
 }
 
 // ── send ────────────────────────────────────────────────────────────
