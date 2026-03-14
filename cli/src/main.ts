@@ -38,6 +38,35 @@ import type { ModelId } from "@exocortex/shared/protocol";
 
 const SUBCOMMANDS = new Set(["ls", "info", "history", "rm", "abort", "rename", "llm", "status", "help"]);
 
+// Aliases → canonical subcommand name
+const ALIASES: Record<string, string> = {
+  list: "ls",
+  delete: "rm",
+  remove: "rm",
+  del: "rm",
+  kill: "abort",
+  cancel: "abort",
+  mv: "rename",
+  title: "rename",
+  ping: "status",
+  health: "status",
+  log: "history",
+  show: "info",
+  send: "send",        // explicit send (not a real subcommand, handled in default)
+  chat: "send",
+  ask: "send",
+  one: "llm",          // "exo one 'quick question'" as shorthand for llm
+};
+
+// Words that look like they could be command attempts (for the safety heuristic)
+function looksLikeCommand(word: string): boolean {
+  // Single lowercase word, no spaces, short enough to be a command, not a path/URL
+  return /^[a-z][-a-z0-9]{1,15}$/.test(word)
+    && !word.includes("/")
+    && !word.includes(".")
+    && !word.startsWith("http");
+}
+
 interface ParsedArgs {
   subcommand: string | null;
   positionals: string[];
@@ -97,9 +126,17 @@ function parseArgs(argv: string[]): ParsedArgs {
     i++;
   }
 
-  // Detect subcommand: first positional if it's a known command
-  if (result.positionals.length > 0 && SUBCOMMANDS.has(result.positionals[0])) {
-    result.subcommand = result.positionals.shift()!;
+  // Detect subcommand: first positional if it's a known command or alias
+  if (result.positionals.length > 0) {
+    const first = result.positionals[0];
+    if (SUBCOMMANDS.has(first)) {
+      result.subcommand = result.positionals.shift()!;
+    } else if (first in ALIASES) {
+      result.positionals.shift();
+      const resolved = ALIASES[first];
+      // "send", "chat", "ask" resolve to "send" which is the default path (null subcommand)
+      result.subcommand = resolved === "send" ? null : resolved;
+    }
   }
 
   return result;
@@ -223,6 +260,21 @@ async function main(): Promise<number> {
           text = args.positionals.join(" ");
         }
         if (!text) { printHelp(); return 0; }
+
+        // Safety heuristic: if ALL positionals are short lowercase words,
+        // they probably meant a command, not a message to send to the AI.
+        if (args.positionals.length <= 3 && args.positionals.every(w => looksLikeCommand(w)) && !args.conv) {
+          const allCommands = [...SUBCOMMANDS].filter(c => c !== "help").concat(Object.keys(ALIASES));
+          process.stderr.write(
+            `Unknown command: ${text}\n` +
+            `Available commands: ${[...SUBCOMMANDS].filter(c => c !== "help").join(", ")}\n` +
+            `Aliases: ${Object.entries(ALIASES).map(([a, c]) => `${a}→${c}`).join(", ")}\n\n` +
+            `If you meant to send this as a message, quote it:\n` +
+            `  exo "${text}"\n`
+          );
+          return 1;
+        }
+
         return await send(conn, text, args.conv, args.model, opts);
       }
     }
