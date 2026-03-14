@@ -164,6 +164,14 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       return { type: "move_conversation", convId: conv.id, direction };
     }
 
+    case "nav_next_streaming":
+      moveToStreaming(sidebar, 1);
+      return { type: "handled" };
+
+    case "nav_prev_streaming":
+      moveToStreaming(sidebar, -1);
+      return { type: "handled" };
+
     case "focus_prompt":
       return { type: "unhandled" };
 
@@ -178,6 +186,21 @@ export function moveSelection(sidebar: SidebarState, delta: number): void {
     sidebar.conversations.length - 1,
   ));
   sidebar.selectedId = sidebar.conversations[sidebar.selectedIndex]?.id ?? null;
+}
+
+/** Jump to the next (delta=1) or previous (delta=-1) conversation with a streaming indicator, wrapping around. */
+function moveToStreaming(sidebar: SidebarState, delta: 1 | -1): void {
+  const len = sidebar.conversations.length;
+  if (len === 0) return;
+  for (let step = 1; step < len; step++) {
+    const idx = ((sidebar.selectedIndex + delta * step) % len + len) % len;
+    const conv = sidebar.conversations[idx];
+    if (conv.streaming || conv.unread) {
+      sidebar.selectedIndex = idx;
+      sidebar.selectedId = conv.id;
+      return;
+    }
+  }
 }
 
 // ── State updates ───────────────────────────────────────────────────

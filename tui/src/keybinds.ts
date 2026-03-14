@@ -62,6 +62,9 @@ export type Action =
   // Sidebar navigation (from any panel)
   | "sidebar_next"
   | "sidebar_prev"
+  // Streaming navigation
+  | "nav_prev_streaming"
+  | "nav_next_streaming"
   // History cursor motions
   | "history_left"
   | "history_right"
@@ -148,6 +151,8 @@ const NAV_BINDS: Record<string, Action> = {
   "char:E":     "move_down",
   "char:c":     "clone",
   "char:u":     "undo_delete",
+  "char:{":     "nav_prev_streaming",
+  "char:}":     "nav_next_streaming",
 };
 
 // ── Context ─────────────────────────────────────────────────────────
