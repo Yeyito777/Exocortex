@@ -15,7 +15,7 @@ import type { ModelId } from "./messages";
 import { convDisplayName } from "./messages";
 import { copyToClipboard } from "./vim/clipboard";
 import { PENDING_TITLE } from "./titlegen";
-import { getMarkPrefix, MARKS } from "./marks";
+import { getMarkPrefix, getMarkFromTitle } from "./marks";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -53,8 +53,7 @@ function formatConvoInfo(state: RenderState): string | null {
   const msgs = conv?.messageCount ?? state.messages.filter(m => m.role !== "system").length;
   const created = conv ? new Date(conv.createdAt).toLocaleString() : "unknown";
   const updated = conv ? new Date(conv.updatedAt).toLocaleString() : "unknown";
-  const markInfo = conv ? getMarkPrefix(conv.title) : null;
-  const markLabel = markInfo ? MARKS.find(m => m.emoji === markInfo)?.label ?? "marked" : null;
+  const markLabel = conv ? getMarkFromTitle(conv.title)?.label ?? null : null;
   const flags = [
     conv?.pinned && "pinned",
     markLabel,

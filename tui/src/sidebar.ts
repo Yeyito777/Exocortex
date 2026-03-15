@@ -387,7 +387,8 @@ export function renderSidebar(
 
     const maxTitle = innerWidth - prefix.length - streamIcon.length - markIconWidth;
     // Strip the emoji prefix from the display name (it's rendered separately)
-    let title = mark ? stripMark(convDisplayName(conv, "(empty)")) : convDisplayName(conv, "(empty)");
+    let title = convDisplayName(conv, "(empty)");
+    if (mark) title = stripMark(title);
     if (title.length > maxTitle) title = title.slice(0, maxTitle - 1) + "…";
 
     const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;
