@@ -15,8 +15,8 @@ import { getToolDisplayInfo } from "./tools/registry";
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command } from "./protocol";
-import { loadAuth, saveAuth, isTokenExpired, clearAuth } from "./store";
-import { login, refreshTokens, verifyAuth } from "./auth";
+import { clearAuth } from "./store";
+import { ensureAuthenticated } from "./auth";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
@@ -291,49 +291,24 @@ export function createHandler(server: DaemonServer) {
         // Fire-and-forget — ack immediately, send result when ready
         server.sendTo(client, { type: "ack", reqId: cmd.reqId });
 
-        (async () => {
-          // Check existing credentials
-          const existing = loadAuth();
-          if (existing?.tokens?.accessToken && !isTokenExpired(existing.tokens)) {
-            const valid = await verifyAuth(existing.tokens.accessToken);
-            if (valid) {
-              server.sendTo(client, {
-                type: "auth_status", reqId: cmd.reqId,
-                message: `Already authenticated as ${existing.profile?.email ?? "unknown"}`,
-              });
-              return;
-            }
-          }
+        const statusMessages = {
+          already_authenticated: (e: string) => `Already authenticated as ${e}`,
+          refreshed: (e: string) => `Session refreshed (${e})`,
+          logged_in: (e: string) => `Authenticated as ${e}`,
+        };
 
-          // Try token refresh
-          if (existing?.tokens?.refreshToken) {
-            try {
-              const newTokens = await refreshTokens(existing.tokens.refreshToken);
-              saveAuth({ ...existing, tokens: newTokens, updatedAt: new Date().toISOString() });
-              server.sendTo(client, {
-                type: "auth_status", reqId: cmd.reqId,
-                message: `Session refreshed (${existing.profile?.email ?? "unknown"})`,
-              });
-              return;
-            } catch { /* refresh failed — fall through to full login */ }
-          }
-
-          // Full OAuth flow — send the URL to the TUI so it can open the browser
-          const result = await login({
-            onProgress: (msg) => {
-              server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: msg });
-            },
-            onOpenUrl: (url) => {
-              server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: "Opening browser for authentication…", openUrl: url });
-            },
-          });
-          saveAuth({ tokens: result.tokens, profile: result.profile, updatedAt: new Date().toISOString() });
-          server.sendTo(client, {
-            type: "auth_status", reqId: cmd.reqId,
-            message: `Authenticated as ${result.profile?.email ?? "unknown"}`,
-          });
-          log("info", `handler: login successful (${result.profile?.email ?? "unknown"})`);
-        })().catch((err) => {
+        ensureAuthenticated({
+          onProgress: (msg) => {
+            server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: msg });
+          },
+          onOpenUrl: (url) => {
+            server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: "Opening browser for authentication…", openUrl: url });
+          },
+        }).then(({ status, email }) => {
+          const label = email ?? "unknown";
+          server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: statusMessages[status](label) });
+          log("info", `handler: login ${status} (${label})`);
+        }).catch((err) => {
           const msg = err instanceof Error ? err.message : String(err);
           log("error", `handler: login failed: ${msg}`);
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Login failed: ${msg}` });
@@ -342,14 +317,9 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "logout": {
-        const existing = loadAuth();
         clearAuth();
-        const email = existing?.profile?.email;
-        server.sendTo(client, {
-          type: "auth_status", reqId: cmd.reqId,
-          message: email ? `Logged out (was ${email})` : "Logged out",
-        });
-        log("info", `handler: logout (was ${email ?? "unknown"})`);
+        server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: "Logged out" });
+        log("info", "handler: logout");
         break;
       }
 

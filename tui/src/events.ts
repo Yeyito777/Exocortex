@@ -14,6 +14,15 @@ import { theme } from "./theme";
 import { clearLocalQueue, removeLocalQueueEntry } from "./queue";
 import type { Event, DisplayEntry } from "./protocol";
 
+// ── Helpers ─────────────────────────────────────────────────────────
+
+/** Map a semantic color name to the corresponding theme value. */
+function themeColor(name: string | undefined): string {
+  if (name === "error") return theme.error;
+  if (name === "warning") return theme.warning;
+  return theme.muted;
+}
+
 // ── Display entry → TUI message conversion ─────────────────────────
 
 /**
@@ -34,11 +43,9 @@ function pushDisplayEntries(state: RenderState, entries: DisplayEntry[]): void {
           metadata: entry.metadata ?? null,
         });
         break;
-      case "system": {
-        const color = entry.color === "error" ? theme.error : entry.color === "warning" ? theme.warning : theme.muted;
-        state.messages.push({ role: "system", text: entry.text, color, metadata: null });
+      case "system":
+        state.messages.push({ role: "system", text: entry.text, color: themeColor(entry.color), metadata: null });
         break;
-      }
     }
   }
 }
@@ -351,10 +358,7 @@ export function handleEvent(
 
     case "system_message": {
       if (event.convId !== state.convId) break;
-      const color = event.color === "error" ? theme.error
-        : event.color === "warning" ? theme.warning
-        : theme.muted;
-      const sysMsg: SystemMessage = { role: "system", text: event.text, color, metadata: null };
+      const sysMsg: SystemMessage = { role: "system", text: event.text, color: themeColor(event.color), metadata: null };
       if (isStreaming(state)) {
         state.systemMessageBuffer.push(sysMsg);
       } else {
@@ -381,7 +385,7 @@ export function handleEvent(
     }
 
     case "auth_status": {
-      state.messages.push({ role: "system", text: event.message, metadata: null });
+      state.messages.push({ role: "system", text: event.message, color: theme.muted, metadata: null });
       if (event.openUrl) {
         Bun.spawn(["xdg-open", event.openUrl], { stdout: "ignore", stderr: "ignore" }).unref();
       }

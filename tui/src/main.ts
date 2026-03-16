@@ -87,25 +87,31 @@ function handleSubmit(): void {
   if (text && !hasImages) {
     const cmdResult = tryCommand(text, state);
     if (cmdResult) {
-      if (cmdResult.type === "quit") { running = false; return; }
-      if (cmdResult.type === "new_conversation") {
-        if (state.convId) daemon.unsubscribe(state.convId);
-        state.convId = null;
-      }
-      if (cmdResult.type === "model_changed" && state.convId) {
-        daemon.setModel(state.convId, cmdResult.model);
-      }
-      if (cmdResult.type === "rename_conversation" && state.convId) {
-        daemon.renameConversation(state.convId, cmdResult.title);
-      }
-      if (cmdResult.type === "generate_title" && state.convId) {
-        generateTitle(state.convId, state, daemon, scheduleRender);
-      }
-      if (cmdResult.type === "login") {
-        daemon.login();
-      }
-      if (cmdResult.type === "logout") {
-        daemon.logout();
+      switch (cmdResult.type) {
+        case "quit":
+          running = false;
+          return;
+        case "new_conversation":
+          if (state.convId) daemon.unsubscribe(state.convId);
+          state.convId = null;
+          break;
+        case "model_changed":
+          if (state.convId) daemon.setModel(state.convId, cmdResult.model);
+          break;
+        case "rename_conversation":
+          if (state.convId) daemon.renameConversation(state.convId, cmdResult.title);
+          break;
+        case "generate_title":
+          if (state.convId) generateTitle(state.convId, state, daemon, scheduleRender);
+          break;
+        case "login":
+          daemon.login();
+          break;
+        case "logout":
+          daemon.logout();
+          break;
+        case "handled":
+          break;
       }
       scheduleRender();
       return;
