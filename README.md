@@ -5,12 +5,12 @@ A daemon-driven AI assistant with a clean client/server architecture.
 ```
 ┌─────────────┐                              ┌──────────────┐
 │  exocortex  │         Unix Socket          │              │
-│    (TUI)    │◄───────────────────────────►│              │
-│  for humans │   Commands ──►              │  exocortexd  │
+│    (TUI)    │◄────────────────────────────►│              │
+│  for humans │   Commands ──►               │  exocortexd  │
 └─────────────┘          ◄── Events          │   (daemon)   │
                                              │              │
 ┌─────────────┐    (JSON-lines protocol)     │              │
-│     exo     │◄───────────────────────────►│              │
+│     exo     │◄────────────────────────────►│              │
 │    (CLI)    │   Stateless req/response     │              │
 │   for AIs   │                              └──────┬───────┘
 └─────────────┘                                     │
@@ -18,7 +18,7 @@ A daemon-driven AI assistant with a clean client/server architecture.
                                                     │  Messages API
                                                     ▼
                                               ┌──────────┐
-                                              │  Claude   │
+                                              │  Claude  │
                                               └──────────┘
 ```
 
