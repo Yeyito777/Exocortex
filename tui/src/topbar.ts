@@ -27,11 +27,10 @@ export function renderTopbar(state: RenderState, width?: number): string {
 
   const title = `${theme.bold} Exocortex${theme.reset}${theme.topbarBg}`;
   const modelLabel = state.model.charAt(0).toUpperCase() + state.model.slice(1);
-  const effortLabel = state.effort !== "high" ? ` ⚡${state.effort.toUpperCase()}` : "";
   const label = convLabel(state);
   const separator = label ? " — " : "";
 
-  const rightLabel = modelLabel + effortLabel;
+  const rightLabel = `${modelLabel} — ${state.effort}`;
   const inner = `${title}${separator}${label}`;
   const visibleUsed = " Exocortex".length + separator.length + label.length;
   const padding = Math.max(0, w - visibleUsed - rightLabel.length - 1);
