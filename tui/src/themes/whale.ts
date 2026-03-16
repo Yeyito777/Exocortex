@@ -44,6 +44,7 @@ export const whale: Theme = {
   cursorBg:      `${ESC}48;2;72;202;228m`,    // #48cae4 (matches vimNormal)
   historyLineBg: `${ESC}48;2;9;13;53m`,     // #090d35 (matches userBg)
   selectionBg:   `${ESC}48;2;79;82;88m`,    // #4f5258
+  appBg:         `${ESC}48;2;0;5;15m`,      // #00050f
 
   // Border colors
   borderFocused:   `${ESC}38;2;28;148;229m`,  // #1c94e5

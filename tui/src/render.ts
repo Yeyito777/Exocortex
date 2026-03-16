@@ -108,6 +108,13 @@ export function render(state: RenderState): void {
   const { cols, rows } = state;
   const out: string[] = [];
 
+  // App-wide background: fills empty areas and persists through resets
+  const appBg = theme.appBg ?? '';
+  const cl = appBg + clear_line;      // clear_line pre-filled with app bg
+  const bgLine = appBg
+    ? (line: string) => applyLineBg(line, appBg)
+    : (line: string) => line;
+
   // ── Layout dimensions ─────────────────────────────────────────
   const sidebarOpen = state.sidebar.open;
   const sidebarW = sidebarOpen ? SIDEBAR_WIDTH : 0;
@@ -128,7 +135,7 @@ export function render(state: RenderState): void {
   }
 
   // ── Top bar (row 1, full width) ───────────────────────────────
-  out.push(move_to(1, 1) + clear_line);
+  out.push(move_to(1, 1) + cl);
   if (sidebarOpen) {
     out.push(sbRows[0]);
     // Chat portion of topbar starts at chatCol
@@ -139,12 +146,12 @@ export function render(state: RenderState): void {
   // ── Row 2: separator ──────────────────────────────────────────
   const historyFocused = state.panelFocus === "chat" && state.chatFocus === "history";
   const historyColor = historyFocused ? theme.accent : theme.dim;
-  out.push(move_to(2, 1) + clear_line);
+  out.push(move_to(2, 1) + cl);
   if (sidebarOpen) {
     out.push(sbRows[1]);
     out.push(move_to(2, chatCol));
   }
-  out.push(`${historyColor}${"─".repeat(chatW)}${theme.reset}`);
+  out.push(bgLine(`${historyColor}${"─".repeat(chatW)}${theme.reset}`));
 
   // ── Input line wrapping ────────────────────────────────────────
   const promptLen = 4;   // "N > " or "I > "
@@ -229,7 +236,7 @@ export function render(state: RenderState): void {
 
   for (let i = 0; i < messageAreaHeight; i++) {
     const row = messageAreaStart + i;
-    out.push(move_to(row, 1) + clear_line);
+    out.push(move_to(row, 1) + cl);
     // Sidebar column (if open)
     if (sidebarOpen && sbRows[row - 1]) {
       out.push(sbRows[row - 1]);
@@ -274,7 +281,7 @@ export function render(state: RenderState): void {
         if (lineIdx === state.historyCursor.row) {
           rendered = renderLineWithCursor(rendered, state.historyCursor.col);
         }
-        out.push(rendered);
+        out.push(bgLine(rendered));
       } else if (historyFocused && lineIdx >= hlFirst && lineIdx <= hlLast) {
         // Normal mode: highlight the full logical line group
         if (lineIdx === state.historyCursor.row) {
@@ -284,7 +291,7 @@ export function render(state: RenderState): void {
           out.push(applyLineBg(line, theme.historyLineBg));
         }
       } else {
-        out.push(line);
+        out.push(bgLine(line));
       }
     }
   }
@@ -339,20 +346,20 @@ export function render(state: RenderState): void {
   }
 
   // ── Separator above input ─────────────────────────────────────
-  out.push(move_to(sepAbove, 1) + clear_line);
+  out.push(move_to(sepAbove, 1) + cl);
   if (sidebarOpen && sbRows[sepAbove - 1]) {
     out.push(sbRows[sepAbove - 1]);
   }
-  out.push(move_to(sepAbove, chatCol) + `${promptColor}${"─".repeat(chatW)}${theme.reset}`);
+  out.push(move_to(sepAbove, chatCol) + bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
 
   // ── Image indicator (between separator and prompt) ────────────
   if (imageIndicatorRows > 0) {
     const indRow = sepAbove + 1;
-    out.push(move_to(indRow, 1) + clear_line);
+    out.push(move_to(indRow, 1) + cl);
     if (sidebarOpen && sbRows[indRow - 1]) {
       out.push(sbRows[indRow - 1]);
     }
-    out.push(move_to(indRow, chatCol) + renderImageIndicator(state.pendingImages, chatW));
+    out.push(move_to(indRow, chatCol) + bgLine(renderImageIndicator(state.pendingImages, chatW)));
   }
 
   // ── Input rows ────────────────────────────────────────────────
@@ -386,28 +393,28 @@ export function render(state: RenderState): void {
         state.inputBuffer, inputOffsets, state.vim.mode === "visual-line");
     }
 
-    out.push(move_to(row, 1) + clear_line);
+    out.push(move_to(row, 1) + cl);
     if (sidebarOpen && sbRows[row - 1]) {
       out.push(sbRows[row - 1]);
     }
-    out.push(move_to(row, chatCol) + prompt + lineContent);
+    out.push(move_to(row, chatCol) + bgLine(prompt + lineContent));
   }
 
   // ── Separator below input ─────────────────────────────────────
-  out.push(move_to(sepBelow, 1) + clear_line);
+  out.push(move_to(sepBelow, 1) + cl);
   if (sidebarOpen && sbRows[sepBelow - 1]) {
     out.push(sbRows[sepBelow - 1]);
   }
-  out.push(move_to(sepBelow, chatCol) + `${promptColor}${"─".repeat(chatW)}${theme.reset}`);
+  out.push(move_to(sepBelow, chatCol) + bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
 
   // ── Status lines (chat area width) ─────────────────────────────
   for (let i = 0; i < slHeight; i++) {
     const row = sepBelow + 1 + i;
-    out.push(move_to(row, 1) + clear_line);
+    out.push(move_to(row, 1) + cl);
     if (sidebarOpen && sbRows[row - 1]) {
       out.push(sbRows[row - 1]);
     }
-    out.push(move_to(row, chatCol) + statusLines[i]);
+    out.push(move_to(row, chatCol) + bgLine(statusLines[i]));
   }
 
   // ── Queue prompt overlay ───────────────────────────────────────
