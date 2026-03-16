@@ -37,12 +37,14 @@ const CRON_DIR = join(configDir(), "cron");
 
 // ── Types ───────────────────────────────────────────────────────────
 
-interface CronField {
+/** @internal Exported for testing only. */
+export interface CronField {
   type: "any" | "values";
   values: number[]; // populated when type === "values"
 }
 
-interface ParsedSchedule {
+/** @internal Exported for testing only. */
+export interface ParsedSchedule {
   minute: CronField;
   hour: CronField;
   dayOfMonth: CronField;
@@ -74,11 +76,16 @@ interface CronJob {
 // ── Cron expression parser ──────────────────────────────────────────
 
 /**
- * Parse a single cron field (e.g. "0", "*", "1,15", "1-5", "* /10").
+ * Parse a single cron field (e.g. "0", "1,15", "1-5", "∗/10").
  * Supports: literal values, comma-separated lists, ranges (1-5),
- * and step values (* /10, 1-30/5).
+ * and step values (star/10, 1-30/5).
+ *
+ * Values outside [min, max] are rejected (returns null).
+ * Non-numeric tokens are rejected (returns null).
+ *
+ * @internal Exported for testing only.
  */
-function parseCronField(field: string, min: number, max: number): CronField {
+export function parseCronField(field: string, min: number, max: number): CronField | null {
   if (field === "*") return { type: "any", values: [] };
 
   const values = new Set<number>();
@@ -88,6 +95,7 @@ function parseCronField(field: string, min: number, max: number): CronField {
     if (stepMatch) {
       const [, range, stepStr] = stepMatch;
       const step = parseInt(stepStr, 10);
+      if (isNaN(step) || step <= 0) return null;
       let start = min;
       let end = max;
 
@@ -98,47 +106,58 @@ function parseCronField(field: string, min: number, max: number): CronField {
           end = parseInt(rangeMatch[2], 10);
         } else {
           start = parseInt(range, 10);
+          if (isNaN(start)) return null;
           end = max;
         }
       }
+
+      if (isNaN(start) || isNaN(end)) return null;
+      if (start < min || start > max || end < min || end > max) return null;
 
       for (let i = start; i <= end; i += step) values.add(i);
     } else if (part.includes("-")) {
       const [startStr, endStr] = part.split("-");
       const start = parseInt(startStr, 10);
       const end = parseInt(endStr, 10);
+      if (isNaN(start) || isNaN(end)) return null;
+      if (start < min || start > max || end < min || end > max) return null;
       for (let i = start; i <= end; i++) values.add(i);
     } else {
-      values.add(parseInt(part, 10));
+      const val = parseInt(part, 10);
+      if (isNaN(val)) return null;
+      if (val < min || val > max) return null;
+      values.add(val);
     }
   }
 
+  if (values.size === 0) return null;
   return { type: "values", values: [...values].sort((a, b) => a - b) };
 }
 
-function parseSchedule(expr: string): ParsedSchedule | null {
+/** @internal Exported for testing only. */
+export function parseSchedule(expr: string): ParsedSchedule | null {
   const parts = expr.trim().split(/\s+/);
   if (parts.length !== 5) return null;
 
-  try {
-    return {
-      minute: parseCronField(parts[0], 0, 59),
-      hour: parseCronField(parts[1], 0, 23),
-      dayOfMonth: parseCronField(parts[2], 1, 31),
-      month: parseCronField(parts[3], 1, 12),
-      dayOfWeek: parseCronField(parts[4], 0, 6), // 0 = Sunday
-    };
-  } catch {
-    return null;
-  }
+  const minute = parseCronField(parts[0], 0, 59);
+  const hour = parseCronField(parts[1], 0, 23);
+  const dayOfMonth = parseCronField(parts[2], 1, 31);
+  const month = parseCronField(parts[3], 1, 12);
+  const dayOfWeek = parseCronField(parts[4], 0, 6); // 0 = Sunday
+
+  if (!minute || !hour || !dayOfMonth || !month || !dayOfWeek) return null;
+
+  return { minute, hour, dayOfMonth, month, dayOfWeek };
 }
 
-function fieldMatches(field: CronField, value: number): boolean {
+/** @internal Exported for testing only. */
+export function fieldMatches(field: CronField, value: number): boolean {
   if (field.type === "any") return true;
   return field.values.includes(value);
 }
 
-function scheduleMatches(schedule: ParsedSchedule, date: Date): boolean {
+/** @internal Exported for testing only. */
+export function scheduleMatches(schedule: ParsedSchedule, date: Date): boolean {
   return (
     fieldMatches(schedule.minute, date.getMinutes()) &&
     fieldMatches(schedule.hour, date.getHours()) &&
@@ -150,13 +169,15 @@ function scheduleMatches(schedule: ParsedSchedule, date: Date): boolean {
 
 // ── Script header parser ────────────────────────────────────────────
 
-interface ScriptHeaders {
+/** @internal Exported for testing only. */
+export interface ScriptHeaders {
   schedule: string | null;
   description: string;
   timeout: number;
 }
 
-function parseHeaders(content: string): ScriptHeaders {
+/** @internal Exported for testing only. */
+export function parseHeaders(content: string): ScriptHeaders {
   const headers: ScriptHeaders = {
     schedule: null,
     description: "",
@@ -278,6 +299,9 @@ function loadAllJobs(): Map<string, CronJob> {
 
 // ── Job execution ───────────────────────────────────────────────────
 
+/** Maximum bytes to accumulate from stdout/stderr per job run. */
+const MAX_OUTPUT_BYTES = 64 * 1024; // 64 KB
+
 function isExecutable(filePath: string): boolean {
   try {
     const stat = statSync(filePath);
@@ -322,13 +346,25 @@ function runJob(job: CronJob): void {
 
   let stdout = "";
   let stderr = "";
+  let stdoutCapped = false;
+  let stderrCapped = false;
 
   child.stdout.on("data", (data: Buffer) => {
+    if (stdoutCapped) return;
     stdout += data.toString();
+    if (stdout.length > MAX_OUTPUT_BYTES) {
+      stdout = stdout.slice(0, MAX_OUTPUT_BYTES);
+      stdoutCapped = true;
+    }
   });
 
   child.stderr.on("data", (data: Buffer) => {
+    if (stderrCapped) return;
     stderr += data.toString();
+    if (stderr.length > MAX_OUTPUT_BYTES) {
+      stderr = stderr.slice(0, MAX_OUTPUT_BYTES);
+      stderrCapped = true;
+    }
   });
 
   // Timeout guard
@@ -357,7 +393,7 @@ function runJob(job: CronJob): void {
       log("warn", `scheduler: "${job.name}" exited with code ${code} (${durationSec}s)`);
     }
 
-    // Log stdout/stderr if non-empty (truncate to keep logs manageable)
+    // Log stdout/stderr if non-empty (truncate to keep log entries manageable)
     const maxLogLen = 2000;
     if (stdout.trim()) {
       const truncated = stdout.length > maxLogLen ? stdout.slice(0, maxLogLen) + "…" : stdout;
@@ -382,24 +418,21 @@ function runJob(job: CronJob): void {
 let jobs: Map<string, CronJob> = new Map();
 let tickInterval: ReturnType<typeof setInterval> | null = null;
 let watcher: FSWatcher | null = null;
-let lastTickMinute = -1;
+let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+let lastTickKey = "";
 
 /**
  * Check all jobs against the current time and run any that match.
- * Called once per minute. Uses lastTickMinute to avoid double-firing
+ * Called once per minute. Uses lastTickKey to avoid double-firing
  * if the interval drifts.
  */
 function tick(): void {
   const now = new Date();
-  const currentMinute = now.getFullYear() * 1_000_000 +
-    (now.getMonth() + 1) * 10_000 +
-    now.getDate() * 100 +
-    now.getHours() * 60 +
-    now.getMinutes();
+  const key = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}`;
 
   // Don't fire twice in the same minute
-  if (currentMinute === lastTickMinute) return;
-  lastTickMinute = currentMinute;
+  if (key === lastTickKey) return;
+  lastTickKey = key;
 
   for (const job of jobs.values()) {
     if (scheduleMatches(job.schedule, now)) {
@@ -448,7 +481,7 @@ export function startScheduler(): void {
   jobs = loadAllJobs();
   log("info", `scheduler: loaded ${jobs.size} job(s)`);
 
-  // Tick every 15 seconds. The dedup logic (lastTickMinute) ensures
+  // Tick every 15 seconds. The dedup logic (lastTickKey) ensures
   // jobs only fire once per minute, but checking more frequently than
   // 60s means we don't miss the window if startup was slow.
   tickInterval = setInterval(tick, 15_000);
@@ -459,12 +492,10 @@ export function startScheduler(): void {
   // Watch for changes
   if (existsSync(CRON_DIR)) {
     try {
-      // Debounce reloads — file editors often write multiple events
-      let reloadTimer: ReturnType<typeof setTimeout> | null = null;
-
       watcher = watch(CRON_DIR, (eventType, filename) => {
         if (filename && !filename.endsWith(".sh")) return;
 
+        // Debounce reloads — file editors often write multiple events
         if (reloadTimer) clearTimeout(reloadTimer);
         reloadTimer = setTimeout(() => {
           log("info", `scheduler: change detected${filename ? ` (${filename})` : ""}, reloading`);
@@ -485,6 +516,12 @@ export function stopScheduler(): void {
   if (tickInterval) {
     clearInterval(tickInterval);
     tickInterval = null;
+  }
+
+  // Cancel any pending debounced reload
+  if (reloadTimer) {
+    clearTimeout(reloadTimer);
+    reloadTimer = null;
   }
 
   if (watcher) {

@@ -2,148 +2,24 @@
  * Tests for the cron scheduler.
  *
  * Tests the cron expression parser, schedule matching, and script
- * header parsing independently of the filesystem/process machinery.
+ * header parsing by importing the actual functions from scheduler.ts.
  */
 
 import { describe, test, expect } from "bun:test";
+import {
+  parseCronField,
+  parseSchedule,
+  fieldMatches,
+  scheduleMatches,
+  parseHeaders,
+} from "./scheduler";
 
-// We need to test internal functions, so we'll import the module and
-// use a test-oriented approach: extract the pure functions we want to test.
-// Since the module doesn't export internals, we replicate the parsing
-// logic here for unit testing. This is intentional — the scheduler
-// module keeps a small public API surface, and we test the logic directly.
-
-// ── Cron field parser (replicated for testing) ──────────────────────
-
-interface CronField {
-  type: "any" | "values";
-  values: number[];
-}
-
-function parseCronField(field: string, min: number, max: number): CronField {
-  if (field === "*") return { type: "any", values: [] };
-
-  const values = new Set<number>();
-
-  for (const part of field.split(",")) {
-    const stepMatch = part.match(/^(.+)\/(\d+)$/);
-    if (stepMatch) {
-      const [, range, stepStr] = stepMatch;
-      const step = parseInt(stepStr, 10);
-      let start = min;
-      let end = max;
-
-      if (range !== "*") {
-        const rangeMatch = range.match(/^(\d+)-(\d+)$/);
-        if (rangeMatch) {
-          start = parseInt(rangeMatch[1], 10);
-          end = parseInt(rangeMatch[2], 10);
-        } else {
-          start = parseInt(range, 10);
-          end = max;
-        }
-      }
-
-      for (let i = start; i <= end; i += step) values.add(i);
-    } else if (part.includes("-")) {
-      const [startStr, endStr] = part.split("-");
-      const start = parseInt(startStr, 10);
-      const end = parseInt(endStr, 10);
-      for (let i = start; i <= end; i++) values.add(i);
-    } else {
-      values.add(parseInt(part, 10));
-    }
-  }
-
-  return { type: "values", values: [...values].sort((a, b) => a - b) };
-}
-
-interface ParsedSchedule {
-  minute: CronField;
-  hour: CronField;
-  dayOfMonth: CronField;
-  month: CronField;
-  dayOfWeek: CronField;
-}
-
-function parseSchedule(expr: string): ParsedSchedule | null {
-  const parts = expr.trim().split(/\s+/);
-  if (parts.length !== 5) return null;
-
-  try {
-    return {
-      minute: parseCronField(parts[0], 0, 59),
-      hour: parseCronField(parts[1], 0, 23),
-      dayOfMonth: parseCronField(parts[2], 1, 31),
-      month: parseCronField(parts[3], 1, 12),
-      dayOfWeek: parseCronField(parts[4], 0, 6),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function fieldMatches(field: CronField, value: number): boolean {
-  if (field.type === "any") return true;
-  return field.values.includes(value);
-}
-
-function scheduleMatches(schedule: ParsedSchedule, date: Date): boolean {
-  return (
-    fieldMatches(schedule.minute, date.getMinutes()) &&
-    fieldMatches(schedule.hour, date.getHours()) &&
-    fieldMatches(schedule.dayOfMonth, date.getDate()) &&
-    fieldMatches(schedule.month, date.getMonth() + 1) &&
-    fieldMatches(schedule.dayOfWeek, date.getDay())
-  );
-}
-
-interface ScriptHeaders {
-  schedule: string | null;
-  description: string;
-  timeout: number;
-}
-
-function parseHeaders(content: string): ScriptHeaders {
-  const headers: ScriptHeaders = {
-    schedule: null,
-    description: "",
-    timeout: 300,
-  };
-
-  const lines = content.split("\n").slice(0, 20);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("#")) continue;
-
-    const scheduleMatch = trimmed.match(/^#\s*schedule:\s*(.+)$/i);
-    if (scheduleMatch) {
-      headers.schedule = scheduleMatch[1].trim();
-      continue;
-    }
-
-    const descMatch = trimmed.match(/^#\s*description:\s*(.+)$/i);
-    if (descMatch) {
-      headers.description = descMatch[1].trim();
-      continue;
-    }
-
-    const timeoutMatch = trimmed.match(/^#\s*timeout:\s*(\d+)$/i);
-    if (timeoutMatch) {
-      headers.timeout = parseInt(timeoutMatch[1], 10);
-      continue;
-    }
-  }
-
-  return headers;
-}
-
-// ── Tests ───────────────────────────────────────────────────────────
+// ── parseCronField ──────────────────────────────────────────────────
 
 describe("parseCronField", () => {
   test("wildcard", () => {
     const f = parseCronField("*", 0, 59);
-    expect(f.type).toBe("any");
+    expect(f).toEqual({ type: "any", values: [] });
   });
 
   test("single value", () => {
@@ -175,7 +51,57 @@ describe("parseCronField", () => {
     const f = parseCronField("1-3,7,10-12", 1, 31);
     expect(f).toEqual({ type: "values", values: [1, 2, 3, 7, 10, 11, 12] });
   });
+
+  // ── Validation ──────────────────────────────────────────────────
+
+  test("rejects value below min", () => {
+    expect(parseCronField("0", 1, 31)).toBeNull();
+  });
+
+  test("rejects value above max", () => {
+    expect(parseCronField("60", 0, 59)).toBeNull();
+  });
+
+  test("rejects range with out-of-bounds start", () => {
+    expect(parseCronField("0-5", 1, 31)).toBeNull();
+  });
+
+  test("rejects range with out-of-bounds end", () => {
+    expect(parseCronField("55-65", 0, 59)).toBeNull();
+  });
+
+  test("rejects non-numeric value", () => {
+    expect(parseCronField("abc", 0, 59)).toBeNull();
+  });
+
+  test("rejects non-numeric in range", () => {
+    expect(parseCronField("a-5", 0, 59)).toBeNull();
+  });
+
+  test("rejects non-numeric step", () => {
+    expect(parseCronField("*/abc", 0, 59)).toBeNull();
+  });
+
+  test("rejects zero step", () => {
+    expect(parseCronField("*/0", 0, 59)).toBeNull();
+  });
+
+  test("rejects step range with out-of-bounds", () => {
+    expect(parseCronField("0-70/5", 0, 59)).toBeNull();
+  });
+
+  test("boundary: min value accepted", () => {
+    const f = parseCronField("0", 0, 59);
+    expect(f).toEqual({ type: "values", values: [0] });
+  });
+
+  test("boundary: max value accepted", () => {
+    const f = parseCronField("59", 0, 59);
+    expect(f).toEqual({ type: "values", values: [59] });
+  });
 });
+
+// ── parseSchedule ───────────────────────────────────────────────────
 
 describe("parseSchedule", () => {
   test("parses standard 5-field expression", () => {
@@ -201,7 +127,28 @@ describe("parseSchedule", () => {
     expect(s).not.toBeNull();
     expect(s!.minute).toEqual({ type: "values", values: [0, 30] });
   });
+
+  test("rejects expression with out-of-range field", () => {
+    // minute 99 is invalid
+    expect(parseSchedule("99 9 * * *")).toBeNull();
+  });
+
+  test("rejects expression with non-numeric field", () => {
+    expect(parseSchedule("abc 9 * * *")).toBeNull();
+  });
+
+  test("rejects expression with invalid month", () => {
+    // month 13 is invalid (range 1-12)
+    expect(parseSchedule("0 9 * 13 *")).toBeNull();
+  });
+
+  test("rejects expression with invalid day-of-week", () => {
+    // day-of-week 7 is invalid (range 0-6)
+    expect(parseSchedule("0 9 * * 7")).toBeNull();
+  });
 });
+
+// ── scheduleMatches ─────────────────────────────────────────────────
 
 describe("scheduleMatches", () => {
   test("every minute matches any time", () => {
@@ -247,6 +194,8 @@ describe("scheduleMatches", () => {
     expect(scheduleMatches(s, new Date(2026, 1, 1, 0, 0))).toBe(false);
   });
 });
+
+// ── parseHeaders ────────────────────────────────────────────────────
 
 describe("parseHeaders", () => {
   test("parses all headers", () => {
