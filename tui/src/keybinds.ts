@@ -91,6 +91,7 @@ const BINDS: Record<string, Action> = {
   "ctrl-c":     "quit",
   "ctrl-q":     "abort",
   "ctrl-m":     "sidebar_toggle",
+  "ctrl-s":     "sidebar_toggle",
   "ctrl-j":     "focus_cycle",
   "ctrl-k":     "focus_cycle",
 
@@ -124,6 +125,7 @@ const BINDS: Record<string, Action> = {
   // Prompt editing
   "enter":      "submit",
   "ctrl-l":     "newline",
+  "shift-enter": "newline",
   "backspace":  "delete_back",
   "delete":     "delete_forward",
   "left":       "cursor_left",

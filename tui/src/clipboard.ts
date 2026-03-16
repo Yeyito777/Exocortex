@@ -1,46 +1,107 @@
 /**
- * Clipboard image reading via xclip.
+ * Clipboard image reading.
  *
  * Reads image data from the system clipboard and returns it
  * as a base64-encoded ImageAttachment for the Anthropic API.
+ *
+ * Supports both X11 (xclip) and Wayland (wl-paste).
  */
 
 import { spawnSync } from "child_process";
 import type { ImageAttachment, ImageMediaType } from "./messages";
 
+// ── Backend detection ────────────────────────────────────────────
+
+type ImageClipboardBackend = "xclip" | "wl" | null;
+
+let backend: ImageClipboardBackend | undefined;
+
+function detectBackend(): ImageClipboardBackend {
+  if (backend !== undefined) return backend;
+
+  // Check for Wayland first
+  if (process.env.WAYLAND_DISPLAY) {
+    try {
+      const r = spawnSync("which", ["wl-paste"], { timeout: 1000 });
+      if (r.status === 0) { backend = "wl"; return backend; }
+    } catch { /* wl-paste not available */ }
+  }
+
+  // X11
+  try {
+    const r = spawnSync("which", ["xclip"], { timeout: 1000 });
+    if (r.status === 0) { backend = "xclip"; return backend; }
+  } catch { /* xclip not available */ }
+
+  backend = null;
+  return backend;
+}
+
+// ── Image formats ────────────────────────────────────────────────
+
+const IMAGE_FORMATS: { mime: ImageMediaType; target: string }[] = [
+  { mime: "image/png", target: "image/png" },
+  { mime: "image/jpeg", target: "image/jpeg" },
+  { mime: "image/gif", target: "image/gif" },
+  { mime: "image/webp", target: "image/webp" },
+];
+
+// ── Backend implementations ──────────────────────────────────────
+
+function readImageXclip(): ImageAttachment | null {
+  const targets = spawnSync("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], { timeout: 1000 });
+  if (targets.status !== 0 || !targets.stdout) return null;
+  const available = targets.stdout.toString();
+
+  for (const fmt of IMAGE_FORMATS) {
+    if (!available.includes(fmt.target)) continue;
+    const result = spawnSync("xclip", ["-selection", "clipboard", "-t", fmt.target, "-o"], {
+      timeout: 5000,
+      maxBuffer: 50 * 1024 * 1024,  // 50 MB
+    });
+    if (result.status !== 0 || !result.stdout || result.stdout.length === 0) continue;
+    return {
+      mediaType: fmt.mime,
+      base64: Buffer.from(result.stdout).toString("base64"),
+      sizeBytes: result.stdout.length,
+    };
+  }
+  return null;
+}
+
+function readImageWayland(): ImageAttachment | null {
+  const targets = spawnSync("wl-paste", ["--list-types"], { timeout: 1000 });
+  if (targets.status !== 0 || !targets.stdout) return null;
+  const available = targets.stdout.toString();
+
+  for (const fmt of IMAGE_FORMATS) {
+    if (!available.includes(fmt.target)) continue;
+    const result = spawnSync("wl-paste", ["--type", fmt.target], {
+      timeout: 5000,
+      maxBuffer: 50 * 1024 * 1024,  // 50 MB
+    });
+    if (result.status !== 0 || !result.stdout || result.stdout.length === 0) continue;
+    return {
+      mediaType: fmt.mime,
+      base64: Buffer.from(result.stdout).toString("base64"),
+      sizeBytes: result.stdout.length,
+    };
+  }
+  return null;
+}
+
+// ── Public API ───────────────────────────────────────────────────
+
 /** Read an image from the system clipboard. Returns null if no image is available. */
 export function readClipboardImage(): ImageAttachment | null {
   try {
-    // Check what MIME types are available on the clipboard
-    const targets = spawnSync("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], { timeout: 1000 });
-    if (targets.status !== 0 || !targets.stdout) return null;
-    const available = targets.stdout.toString();
-
-    // Try image formats in order of preference
-    const formats: { mime: ImageMediaType; target: string }[] = [
-      { mime: "image/png", target: "image/png" },
-      { mime: "image/jpeg", target: "image/jpeg" },
-      { mime: "image/gif", target: "image/gif" },
-      { mime: "image/webp", target: "image/webp" },
-    ];
-
-    for (const fmt of formats) {
-      if (!available.includes(fmt.target)) continue;
-      const result = spawnSync("xclip", ["-selection", "clipboard", "-t", fmt.target, "-o"], {
-        timeout: 5000,
-        maxBuffer: 50 * 1024 * 1024,  // 50 MB
-      });
-      if (result.status !== 0 || !result.stdout || result.stdout.length === 0) continue;
-      return {
-        mediaType: fmt.mime,
-        base64: Buffer.from(result.stdout).toString("base64"),
-        sizeBytes: result.stdout.length,
-      };
-    }
+    const be = detectBackend();
+    if (!be) return null;
+    return be === "wl" ? readImageWayland() : readImageXclip();
   } catch {
-    // xclip missing or unexpected error — degrade silently (return null)
+    // Missing tool or unexpected error — degrade silently
+    return null;
   }
-  return null;
 }
 
 /** Format a byte size for display (e.g. "93.1 KB"). */

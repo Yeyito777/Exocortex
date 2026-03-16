@@ -10,8 +10,9 @@ export interface KeyEvent {
       | "up" | "down"
       | "ctrl-b" | "ctrl-c" | "ctrl-d" | "ctrl-e" | "ctrl-f"
       | "ctrl-j" | "ctrl-k" | "ctrl-l" | "ctrl-m" | "ctrl-n"
-      | "ctrl-o" | "ctrl-q" | "ctrl-r" | "ctrl-u" | "ctrl-v" | "ctrl-w" | "ctrl-y"
+      | "ctrl-o" | "ctrl-q" | "ctrl-r" | "ctrl-s" | "ctrl-u" | "ctrl-v" | "ctrl-w" | "ctrl-y"
       | "ctrl-shift-o"
+      | "shift-enter"
       | "f14" | "f15" | "f16" | "f17" | "f18" | "f19"
       | "f20" | "f21" | "f22" | "f23" | "f24"
       | "escape"
@@ -29,8 +30,37 @@ export interface KeyEvent {
  * Codepoints are always lowercase. Shift is in the modifier bits (1-based: 2=shift, 5=ctrl, 6=ctrl+shift).
  */
 const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
+  // Keys that become ambiguous under kitty keyboard protocol flag 1 (disambiguate).
+  // Without these, Enter/Tab/Backspace/Escape go dead on kitty.
+  "13":    "enter",           // Enter (CR=13, no modifiers)
+  "9":     "tab",             // Tab (HT=9, no modifiers)
+  "9;2":   "backtab",         // Shift+Tab
+  "127":   "backspace",       // Backspace (DEL=127, no modifiers)
+  "27":    "escape",          // Escape (ESC=27, no modifiers)
+
+  // Ctrl+letter keys — kitty sends these as CSI u instead of raw bytes 1-26
+  "98;5":  "ctrl-b",         // Ctrl+B (b=98)
+  "99;5":  "ctrl-c",         // Ctrl+C (c=99)
+  "100;5": "ctrl-d",         // Ctrl+D (d=100)
+  "101;5": "ctrl-e",         // Ctrl+E (e=101)
+  "102;5": "ctrl-f",         // Ctrl+F (f=102)
+  "106;5": "ctrl-j",         // Ctrl+J (j=106)
+  "107;5": "ctrl-k",         // Ctrl+K (k=107)
+  "108;5": "ctrl-l",         // Ctrl+L (l=108)
   "109;5": "ctrl-m",         // Ctrl+M (m=109)
+  "110;5": "ctrl-n",         // Ctrl+N (n=110)
+  "111;5": "ctrl-o",         // Ctrl+O (o=111)
+  "113;5": "ctrl-q",         // Ctrl+Q (q=113)
+  "114;5": "ctrl-r",         // Ctrl+R (r=114)
+  "115;5": "ctrl-s",         // Ctrl+S (s=115)
+  "117;5": "ctrl-u",         // Ctrl+U (u=117)
+  "118;5": "ctrl-v",         // Ctrl+V (v=118)
+  "119;5": "ctrl-w",         // Ctrl+W (w=119)
+  "121;5": "ctrl-y",         // Ctrl+Y (y=121)
+
+  // Modified keys — only distinguishable via CSI u
   "111;6": "ctrl-shift-o",   // Ctrl+Shift+O (o=111)
+  "13;2":  "shift-enter",    // Shift+Enter (CR=13, shift=2)
 };
 
 const PASTE_START = "\x1b[200~";
@@ -138,6 +168,7 @@ export function parseKeys(data: Buffer | string): KeyEvent[] {
     if (code === 15) { events.push({ type: "ctrl-o" }); i++; continue; }
     if (code === 17) { events.push({ type: "ctrl-q" }); i++; continue; }
     if (code === 18) { events.push({ type: "ctrl-r" }); i++; continue; }
+    if (code === 19) { events.push({ type: "ctrl-s" }); i++; continue; }
     if (code === 21) { events.push({ type: "ctrl-u" }); i++; continue; }
     if (code === 22) { events.push({ type: "ctrl-v" }); i++; continue; }
     if (code === 23) { events.push({ type: "ctrl-w" }); i++; continue; }

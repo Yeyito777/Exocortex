@@ -15,7 +15,7 @@ import { clearPrompt } from "./promptline";
 import { tryCommand } from "./commands";
 import { expandMacros } from "./macros";
 import { render } from "./render";
-import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste } from "./terminal";
+import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd } from "./terminal";
 import { createInitialState, isStreaming, clearPendingAI } from "./state";
 import { createPendingAI, type ImageAttachment } from "./messages";
 import { handleEvent } from "./events";
@@ -262,7 +262,7 @@ function handleKey(key: KeyEvent): void {
 // ── Terminal setup ──────────────────────────────────────────────────
 
 function setupTerminal(): void {
-  process.stdout.write(enter_alt + hide_cursor + enable_bracketed_paste);
+  process.stdout.write(enter_alt + hide_cursor + enable_bracketed_paste + enable_kitty_kbd);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
   terminalSetUp = true;
@@ -271,7 +271,7 @@ function setupTerminal(): void {
 function restoreTerminal(): void {
   if (!terminalSetUp) return;
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
-  process.stdout.write(disable_bracketed_paste + show_cursor + leave_alt);
+  process.stdout.write(disable_kitty_kbd + disable_bracketed_paste + show_cursor + leave_alt);
   terminalSetUp = false;
 }
 
