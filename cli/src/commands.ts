@@ -6,6 +6,7 @@
 import type { Connection } from "./conn";
 import type {
   ModelId,
+  Event,
   PongEvent,
   ConversationCreatedEvent,
   ConversationsListEvent,
@@ -16,7 +17,7 @@ import type {
   LlmCompleteResultEvent,
 } from "@exocortex/shared/protocol";
 import { collectResponse, type StreamCallback } from "./collect";
-import { formatBlocksAsText, formatResponseAsJson, formatEntriesAsText, formatEntriesAsJson } from "./format";
+import { formatResponseAsJson, formatEntriesAsText, formatEntriesAsJson } from "./format";
 
 export interface OutputOptions {
   json: boolean;
@@ -47,6 +48,71 @@ function autoTitle(text: string): string {
 
 // ── send ────────────────────────────────────────────────────────────
 
+/**
+ * Build a StreamCallback that writes human-readable text to stdout
+ * as events arrive — live streaming for the default text mode.
+ *
+ * Handles text chunks, tool call summaries, and (with --full)
+ * thinking chunks and tool result output.
+ */
+function makeLiveStreamCallback(targetConvId: string, full: boolean): StreamCallback {
+  // Track cursor position so we insert exactly the right separators —
+  // matching what formatBlocksAsText() produces with parts.join("\n").
+  let wroteAnything = false;
+  let atLineStart = true;
+
+  return (event: Event) => {
+    if (!("convId" in event) || event.convId !== targetConvId) return;
+
+    switch (event.type) {
+      case "block_start":
+        if (event.blockType === "text") {
+          // Separate from whatever came before (thinking, tool output, etc.)
+          if (wroteAnything && !atLineStart) process.stdout.write("\n");
+        } else if (event.blockType === "thinking" && full) {
+          // Match buffered format: `  💭 ` prefix for the thinking block
+          process.stdout.write("  💭 ");
+          atLineStart = false;
+        }
+        break;
+
+      case "text_chunk":
+        process.stdout.write(event.text);
+        wroteAnything = true;
+        atLineStart = event.text.endsWith("\n");
+        break;
+
+      case "thinking_chunk":
+        if (full) {
+          process.stdout.write(event.text);
+          wroteAnything = true;
+          atLineStart = event.text.endsWith("\n");
+        }
+        break;
+
+      case "tool_call":
+        // Terminate the current line if mid-line, then print summary
+        if (!atLineStart) process.stdout.write("\n");
+        process.stdout.write(`  ╸ ${event.summary}\n`);
+        wroteAnything = true;
+        atLineStart = true;
+        break;
+
+      case "tool_result":
+        if (full) {
+          const prefix = event.isError ? "  ✗ " : "  ┃ ";
+          const indented = event.output
+            .split("\n")
+            .map((l: string) => prefix + l)
+            .join("\n");
+          process.stdout.write(indented + "\n");
+          atLineStart = true;
+        }
+        break;
+    }
+  };
+}
+
 export async function send(
   conn: Connection,
   text: string,
@@ -71,14 +137,20 @@ export async function send(
   // Subscribe to get streaming events
   conn.send({ type: "subscribe", convId });
 
-  // Set up stream callback for --stream mode
+  // Decide which stream callback to use:
+  //  - --stream:              raw NDJSON events
+  //  - --json / --id:         no streaming (buffer for structured output)
+  //  - default text mode:     live human-readable streaming
+  const liveText = !opts.json && !opts.stream && !opts.idOnly;
   const onStream: StreamCallback | undefined = opts.stream
     ? (event) => {
         if ("convId" in event && event.convId === convId) {
           process.stdout.write(JSON.stringify(event) + "\n");
         }
       }
-    : undefined;
+    : liveText
+      ? makeLiveStreamCallback(convId, opts.full)
+      : undefined;
 
   const response = await collectResponse(conn, convId, text, opts.timeout, onStream);
 
@@ -92,12 +164,9 @@ export async function send(
     process.stdout.write(response.convId + "\n");
   } else if (opts.json) {
     process.stdout.write(formatResponseAsJson(response) + "\n");
-  } else if (!opts.stream) {
-    const output = formatBlocksAsText(response.blocks, opts.full);
-    if (output) process.stdout.write(output + "\n");
-    process.stdout.write(`\nexo:${response.convId}\n`);
   } else {
-    // In stream mode we already printed events; just print the convId
+    // In both live-text and --stream modes the content was already
+    // written incrementally; just append the conversation ID footer.
     process.stdout.write(`\nexo:${response.convId}\n`);
   }
 
