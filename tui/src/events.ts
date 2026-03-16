@@ -387,6 +387,14 @@ export function handleEvent(
       break;
     }
 
+    case "auth_status": {
+      state.messages.push({ role: "system", text: event.message, metadata: null });
+      if (event.openUrl) {
+        Bun.spawn(["xdg-open", event.openUrl], { stdout: "ignore", stderr: "ignore" }).unref();
+      }
+      break;
+    }
+
     case "llm_complete_result":
     case "ack":
     case "pong":

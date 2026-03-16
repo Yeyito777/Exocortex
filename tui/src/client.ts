@@ -160,6 +160,14 @@ export class DaemonClient {
     this.send({ type: "load_conversation", convId });
   }
 
+  login(): void {
+    this.send({ type: "login" });
+  }
+
+  logout(): void {
+    this.send({ type: "logout" });
+  }
+
   llmComplete(
     system: string, userText: string,
     onSuccess: LlmCompleteCallback, onError?: LlmErrorCallback,

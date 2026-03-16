@@ -23,10 +23,10 @@ const API_VERSION = "2023-06-01";
 // custom name (e.g. "exocortex/0.1.0") causes consistent load shedding
 // (overloaded_error). Update these when Claude Code releases a new version.
 // See reference/api-request-identity.md for the full story.
-const CLAUDE_CODE_VERSION = "2.1.68";
+const CLAUDE_CODE_VERSION = "2.1.76";
 const CLAUDE_CODE_USER_AGENT = `claude-code/${CLAUDE_CODE_VERSION}`;
-const BETA_BASE = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05";
-const BETA_ADAPTIVE = `${BETA_BASE},adaptive-thinking-2026-01-28`;
+const BETA_FLAGS = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05,effort-2025-11-24";
+const BILLING_HEADER = `x-anthropic-billing-header: cc_version=${CLAUDE_CODE_VERSION}; cc_entrypoint=cli;`;
 const STREAM_STALL_TIMEOUT = 120_000;
 const MAX_RETRIES = 10;
 
@@ -153,9 +153,13 @@ function buildRequest(
     output_config: { effort },
   };
   if (tools && tools.length > 0) body.tools = injectToolBreakpoints(tools);
+  // Billing header must be the first system block — identifies this as a
+  // Claude Code request so the API routes to the correct backend.
+  const systemBlocks: unknown[] = [{ type: "text", text: BILLING_HEADER }];
   if (system) {
-    body.system = [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
+    systemBlocks.push({ type: "text", text: system, cache_control: { type: "ephemeral" } });
   }
+  body.system = systemBlocks;
 
   return {
     url: `${ANTHROPIC_BASE_URL}/v1/messages?beta=true`,
@@ -164,7 +168,7 @@ function buildRequest(
       headers: {
         "Authorization": `Bearer ${accessToken}`,
         "anthropic-version": API_VERSION,
-        "anthropic-beta": adaptive ? BETA_ADAPTIVE : BETA_BASE,
+        "anthropic-beta": BETA_FLAGS,
         "Content-Type": "application/json",
         "User-Agent": CLAUDE_CODE_USER_AGENT,
         "x-app": "cli",

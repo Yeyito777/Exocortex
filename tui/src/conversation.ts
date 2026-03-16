@@ -326,7 +326,9 @@ export function buildMessageLines(
       messageBounds.push({ start, end: lines.length, contentEnd });
     } else {
       const color = msg.color || theme.dim;
-      for (const sl of msg.text.split("\n")) {
+      const sysWidth = availableWidth - 2; // 2-char indent
+      const { lines: wrapped } = wordWrap(msg.text, sysWidth > 0 ? sysWidth : 1);
+      for (const sl of wrapped) {
         pushLine(`  ${color}${sl}${theme.reset}`);
       }
       messageBounds.push({ start, end: lines.length, contentEnd: lines.length });

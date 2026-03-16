@@ -5,7 +5,7 @@
  */
 
 import { join } from "path";
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { log } from "./log";
 import { configDir } from "@exocortex/shared/paths";
 
@@ -61,6 +61,14 @@ export function loadAuth(): StoredAuth | null {
     catch (err) { log("warn", `store: failed to parse ${CRED_FILE}: ${err}`); }
   }
   return null;
+}
+
+export function clearAuth(): boolean {
+  if (existsSync(CRED_FILE)) {
+    try { unlinkSync(CRED_FILE); return true; }
+    catch (err) { log("warn", `store: failed to remove ${CRED_FILE}: ${err}`); }
+  }
+  return false;
 }
 
 export function isTokenExpired(tokens: StoredTokens): boolean {

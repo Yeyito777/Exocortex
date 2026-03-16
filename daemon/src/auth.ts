@@ -251,8 +251,18 @@ export interface LoginResult {
   profile: OAuthProfile | null;
 }
 
-export async function login(onProgress?: (msg: string) => void): Promise<LoginResult> {
-  const say = onProgress ?? console.log;
+export interface LoginCallbacks {
+  onProgress?: (msg: string) => void;
+  onOpenUrl?: (url: string) => void;
+}
+
+export async function login(callbacks?: LoginCallbacks | ((msg: string) => void)): Promise<LoginResult> {
+  // Support legacy single-callback form
+  const cbs: LoginCallbacks = typeof callbacks === "function" ? { onProgress: callbacks } : callbacks ?? {};
+  const say = cbs.onProgress ?? console.log;
+  const openUrl = cbs.onOpenUrl ?? ((url: string) => {
+    Bun.spawn(["xdg-open", url], { stdout: "ignore", stderr: "ignore" }).unref();
+  });
 
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = generateCodeChallenge(codeVerifier);
@@ -272,9 +282,8 @@ export async function login(onProgress?: (msg: string) => void): Promise<LoginRe
     url.searchParams.set("state", state);
 
     say("Opening browser for authentication...");
+    openUrl(url.toString());
     say(`If the browser doesn't open, visit:\n${url.toString()}`);
-
-    Bun.spawn(["xdg-open", url.toString()], { stdout: "ignore", stderr: "ignore" }).unref();
 
     say("Waiting for authentication...");
     const callback = await waitForCallback();
