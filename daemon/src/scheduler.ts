@@ -302,13 +302,23 @@ function runJob(job: CronJob): void {
   log("info", `scheduler: running "${job.name}"${job.description ? ` (${job.description})` : ""}`);
   job.lastRunAt = Date.now();
 
+  // Spawn in a new process group (detached) so we can kill the entire
+  // tree on timeout/shutdown — without this, children like `sleep` or
+  // `exo` survive after bash is killed and become orphans.
   const child = spawn("bash", [job.path], {
     cwd: process.env.HOME,
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
   });
 
   job.running = child;
+  const pgid = child.pid!;
+
+  /** Kill the entire process group (negative PID). */
+  function killGroup(signal: NodeJS.Signals): void {
+    try { process.kill(-pgid, signal); } catch { /* already dead */ }
+  }
 
   let stdout = "";
   let stderr = "";
@@ -324,11 +334,11 @@ function runJob(job: CronJob): void {
   // Timeout guard
   const timer = setTimeout(() => {
     log("warn", `scheduler: "${job.name}" timed out after ${job.timeout}s — killing`);
-    child.kill("SIGTERM");
+    killGroup("SIGTERM");
     // Give it 5s to clean up, then SIGKILL
     setTimeout(() => {
       if (job.running === child) {
-        child.kill("SIGKILL");
+        killGroup("SIGKILL");
       }
     }, 5000);
   }, job.timeout * 1000);
@@ -406,11 +416,11 @@ function tick(): void {
 function reloadJobs(): void {
   const newJobs = loadAllJobs();
 
-  // Kill running processes for removed jobs
+  // Kill running processes for removed jobs (entire process group)
   for (const [name, oldJob] of jobs) {
-    if (!newJobs.has(name) && oldJob.running) {
+    if (!newJobs.has(name) && oldJob.running && oldJob.running.pid) {
       log("info", `scheduler: killing removed job "${name}"`);
-      oldJob.running.kill("SIGTERM");
+      try { process.kill(-oldJob.running.pid, "SIGTERM"); } catch { /* already dead */ }
     }
   }
 
@@ -482,11 +492,11 @@ export function stopScheduler(): void {
     watcher = null;
   }
 
-  // Kill any running jobs
+  // Kill any running jobs (kill entire process group to avoid orphans)
   for (const job of jobs.values()) {
-    if (job.running) {
+    if (job.running && job.running.pid) {
       log("info", `scheduler: killing running job "${job.name}" on shutdown`);
-      job.running.kill("SIGTERM");
+      try { process.kill(-job.running.pid, "SIGTERM"); } catch { /* already dead */ }
     }
   }
 
