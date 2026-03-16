@@ -9,7 +9,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { randomBytes, createHash } from "crypto";
 import { log } from "./log";
 import { ANTHROPIC_BASE_URL } from "./constants";
-import type { StoredTokens, OAuthProfile } from "./store";
+import { loadAuth, saveAuth, isTokenExpired, type StoredTokens, type OAuthProfile } from "./store";
 
 // ── Constants (matching Claude Code) ────────────────────────────────
 
@@ -254,6 +254,42 @@ export interface LoginResult {
 export interface LoginCallbacks {
   onProgress?: (msg: string) => void;
   onOpenUrl?: (url: string) => void;
+}
+
+export interface EnsureAuthResult {
+  status: "already_authenticated" | "refreshed" | "logged_in";
+  email: string | null;
+}
+
+/**
+ * Ensure the user is authenticated — checks existing credentials,
+ * tries a token refresh, or falls through to a full OAuth login.
+ * Persists updated credentials on success.
+ */
+export async function ensureAuthenticated(callbacks?: LoginCallbacks): Promise<EnsureAuthResult> {
+  const existing = loadAuth();
+
+  // Check existing credentials
+  if (existing?.tokens?.accessToken && !isTokenExpired(existing.tokens)) {
+    const valid = await verifyAuth(existing.tokens.accessToken);
+    if (valid) {
+      return { status: "already_authenticated", email: existing.profile?.email ?? null };
+    }
+  }
+
+  // Try token refresh
+  if (existing?.tokens?.refreshToken) {
+    try {
+      const newTokens = await refreshTokens(existing.tokens.refreshToken);
+      saveAuth({ ...existing, tokens: newTokens, updatedAt: new Date().toISOString() });
+      return { status: "refreshed", email: existing.profile?.email ?? null };
+    } catch { /* refresh failed — fall through to full login */ }
+  }
+
+  // Full OAuth flow
+  const result = await login(callbacks);
+  saveAuth({ tokens: result.tokens, profile: result.profile, updatedAt: new Date().toISOString() });
+  return { status: "logged_in", email: result.profile?.email ?? null };
 }
 
 export async function login(callbacks?: LoginCallbacks | ((msg: string) => void)): Promise<LoginResult> {
