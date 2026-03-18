@@ -397,6 +397,11 @@ export function handleEvent(
       break;
     }
 
+    case "system_prompt": {
+      state.messages.push({ role: "system", text: event.systemPrompt, metadata: null });
+      break;
+    }
+
     case "llm_complete_result":
     case "ack":
     case "pong":

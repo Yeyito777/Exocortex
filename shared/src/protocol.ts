@@ -162,6 +162,11 @@ export interface LlmCompleteCommand {
   maxTokens?: number;
 }
 
+export interface GetSystemPromptCommand {
+  type: "get_system_prompt";
+  reqId?: string;
+}
+
 export interface LoginCommand {
   type: "login";
   reqId?: string;
@@ -194,6 +199,7 @@ export type Command =
   | UnqueueMessageCommand
   | UnwindConversationCommand
   | LlmCompleteCommand
+  | GetSystemPromptCommand
   | LoginCommand
   | LogoutCommand;
 
@@ -408,6 +414,12 @@ export interface LlmCompleteResultEvent {
   text: string;
 }
 
+export interface SystemPromptEvent {
+  type: "system_prompt";
+  reqId?: string;
+  systemPrompt: string;
+}
+
 export interface AuthStatusEvent {
   type: "auth_status";
   reqId?: string;
@@ -452,5 +464,6 @@ export type Event =
   | ToolsAvailableEvent
   | HistoryUpdatedEvent
   | LlmCompleteResultEvent
+  | SystemPromptEvent
   | AuthStatusEvent
   | ErrorEvent;

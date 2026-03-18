@@ -169,6 +169,10 @@ export class DaemonClient {
     this.send({ type: "logout" });
   }
 
+  getSystemPrompt(): void {
+    this.send({ type: "get_system_prompt" });
+  }
+
   llmComplete(
     system: string, userText: string,
     onSuccess: LlmCompleteCallback, onError?: LlmErrorCallback,

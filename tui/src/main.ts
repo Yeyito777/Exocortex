@@ -113,6 +113,9 @@ function handleSubmit(): void {
             process.stdout.write(set_cursor_color(theme.cursorColor));
           }
           break;
+        case "get_system_prompt":
+          daemon.getSystemPrompt();
+          break;
         case "login":
           daemon.login();
           break;

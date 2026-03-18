@@ -11,6 +11,7 @@ import { log } from "./log";
 import { refreshUsage, handleUsageHeaders, getLastUsage } from "./usage";
 import { orchestrateSendMessage } from "./orchestrator";
 import { complete } from "./llm";
+import { buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
 import { EFFORT_LEVELS } from "./messages";
 import * as convStore from "./conversations";
@@ -281,6 +282,11 @@ export function createHandler(server: DaemonServer) {
         if (convStore.clearUnread(data.convId)) {
           server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(data.convId)! });
         }
+        break;
+      }
+
+      case "get_system_prompt": {
+        server.sendTo(client, { type: "system_prompt", reqId: cmd.reqId, systemPrompt: buildSystemPrompt() });
         break;
       }
 
