@@ -25,7 +25,7 @@ const API_VERSION = "2023-06-01";
 // See reference/api-request-identity.md for the full story.
 const CLAUDE_CODE_VERSION = "2.1.77";
 const CLAUDE_CODE_USER_AGENT = `claude-code/${CLAUDE_CODE_VERSION}`;
-const BETA_FLAGS = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05,effort-2025-11-24";
+const BETA_FLAGS = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05,effort-2025-11-24,adaptive-thinking-2026-01-28";
 const BILLING_SALT = "59cf53e54c78";
 
 /** Compute the version hash that Claude Code appends to cc_version.
