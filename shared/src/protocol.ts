@@ -8,8 +8,8 @@
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo, ImageAttachment } from "./messages";
-export type { ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo, ImageAttachment };
+import type { ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo, ExternalToolStyle, ImageAttachment } from "./messages";
+export type { ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo, ExternalToolStyle, ImageAttachment };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
@@ -391,6 +391,7 @@ export interface SystemMessageEvent {
 export interface ToolsAvailableEvent {
   type: "tools_available";
   tools: ToolDisplayInfo[];
+  externalToolStyles?: ExternalToolStyle[];
 }
 
 export interface HistoryUpdatedEvent {

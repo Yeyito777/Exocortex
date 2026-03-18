@@ -9,6 +9,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { buildToolSystemHints } from "./tools/registry";
+import { getExternalToolHints } from "./external-tools";
 import { configDir } from "@exocortex/shared/paths";
 
 // ── User system prompt addendum ───────────────────────────────────
@@ -45,6 +46,9 @@ export function buildSystemPrompt(): string {
 
   const toolHints = buildToolSystemHints();
   if (toolHints) parts.push(toolHints);
+
+  const externalHints = getExternalToolHints();
+  if (externalHints) parts.push("# External tools\n" + externalHints);
 
   if (_userAddendum) parts.push(_userAddendum);
 

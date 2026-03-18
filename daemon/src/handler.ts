@@ -12,6 +12,7 @@ import { refreshUsage, handleUsageHeaders, getLastUsage } from "./usage";
 import { orchestrateSendMessage } from "./orchestrator";
 import { complete } from "./llm";
 import { getToolDisplayInfo } from "./tools/registry";
+import { getExternalToolStyles } from "./external-tools";
 import { EFFORT_LEVELS } from "./messages";
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
@@ -31,7 +32,12 @@ export function createHandler(server: DaemonServer) {
 
       case "ping": {
         server.sendTo(client, { type: "pong", reqId: cmd.reqId });
-        server.sendTo(client, { type: "tools_available", tools: getToolDisplayInfo() });
+        const externalStyles = getExternalToolStyles();
+        server.sendTo(client, {
+          type: "tools_available",
+          tools: getToolDisplayInfo(),
+          ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
+        });
         const lastUsage = getLastUsage();
         if (lastUsage) {
           server.sendTo(client, { type: "usage_update", usage: lastUsage });

@@ -374,6 +374,7 @@ export function handleEvent(
 
     case "tools_available": {
       state.toolRegistry = event.tools;
+      state.externalToolStyles = event.externalToolStyles ?? [];
       break;
     }
 

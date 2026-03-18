@@ -178,6 +178,17 @@ export interface ToolDisplayInfo {
   color: string;    // hex color "#d19a66"
 }
 
+/**
+ * External tool style — maps a bash sub-command prefix to TUI display
+ * properties. Sent alongside ToolDisplayInfo so the TUI can style
+ * bash invocations of external tools (e.g. "gmail" → Gmail label + color).
+ */
+export interface ExternalToolStyle {
+  cmd: string;      // command prefix to match (e.g. "gmail")
+  label: string;    // TUI label (e.g. "Gmail")
+  color: string;    // hex color "#4ddbb7"
+}
+
 // ── Usage data ──────────────────────────────────────────────────────
 
 export interface UsageWindow {

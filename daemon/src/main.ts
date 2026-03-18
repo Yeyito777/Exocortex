@@ -21,6 +21,8 @@ import { createHandler } from "./handler";
 import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
 import { startScheduler, stopScheduler, getCronDir, getJobs } from "./scheduler";
+import { initExternalTools, stopExternalTools, getExternalToolCount, getExternalToolStyles } from "./external-tools";
+import { getToolDisplayInfo } from "./tools/registry";
 import { socketPath, pidPath, runtimeDir, worktreeName } from "@exocortex/shared/paths";
 
 // ── Paths ───────────────────────────────────────────────────────────
@@ -81,6 +83,7 @@ async function startDaemon(): Promise<void> {
   // Graceful shutdown
   const shutdown = async () => {
     log("info", "exocortexd: shutting down");
+    stopExternalTools();
     stopScheduler();
     convStore.flushAll();
     await server.stop();
@@ -95,6 +98,17 @@ async function startDaemon(): Promise<void> {
   // Load persisted conversations
   convStore.loadFromDisk();
 
+  // Initialize external tools (scan + watch for changes)
+  initExternalTools(() => {
+    // Broadcast updated tool styles to all connected clients
+    const externalStyles = getExternalToolStyles();
+    server.broadcast({
+      type: "tools_available",
+      tools: getToolDisplayInfo(),
+      ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
+    });
+  });
+
   // Start cron scheduler
   startScheduler();
 
@@ -104,10 +118,12 @@ async function startDaemon(): Promise<void> {
 
   const wt = worktreeName();
   const cronJobs = getJobs();
+  const extToolCount = getExternalToolCount();
   console.log(`\n  exocortexd running (pid ${process.pid})${wt ? ` [worktree: ${wt}]` : ""}`);
   console.log(`  socket: ${SOCKET_PATH}`);
   console.log(`  auth:   ${authOk ? `✓ ${auth?.profile?.email ?? "authenticated"}` : "✗ not authenticated — run: bun run login"}`);
   console.log(`  cron:   ${cronJobs.length} job(s) in ${getCronDir()}`);
+  console.log(`  tools:  ${extToolCount} external tool(s)`);
   console.log(`\n  Waiting for connections...\n`);
 
   log("info", `exocortexd: ready on ${SOCKET_PATH} (auth=${!!authOk}, cron=${cronJobs.length})`);

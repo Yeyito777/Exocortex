@@ -5,7 +5,7 @@
  * The only file that knows how to render conversations.
  */
 
-import type { Block, ToolDisplayInfo, ImageAttachment } from "./messages";
+import type { Block, ToolDisplayInfo, ExternalToolStyle, ImageAttachment } from "./messages";
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { resolveToolDisplay } from "./toolstyles";
@@ -87,6 +87,7 @@ function renderBlockCached(
   block: Block,
   contentWidth: number,
   toolRegistry: ToolDisplayInfo[],
+  externalToolStyles: ExternalToolStyle[],
   showToolOutput: boolean,
 ): WrapResult {
   const contentLen = blockContentKey(block);
@@ -100,14 +101,14 @@ function renderBlockCached(
     return cached.result;
   }
 
-  const result = renderBlock(block, contentWidth, toolRegistry, showToolOutput);
+  const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput);
   blockRenderCache.set(block, { contentLen, width: contentWidth, showToolOutput, result });
   return result;
 }
 
 // ── Block rendering ─────────────────────────────────────────────────
 
-function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDisplayInfo[], showToolOutput: boolean): WrapResult {
+function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDisplayInfo[], externalToolStyles: ExternalToolStyle[], showToolOutput: boolean): WrapResult {
   const lines: string[] = [];
   const cont: boolean[] = [];
 
@@ -145,7 +146,7 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
       break;
     }
     case "tool_call": {
-      const display = resolveToolDisplay(block.toolName, block.summary, toolRegistry);
+      const display = resolveToolDisplay(block.toolName, block.summary, toolRegistry, externalToolStyles);
 
       // Build logical display lines. Each entry: { text, hasLabel }.
       // hasLabel tracks structurally whether the line starts with a
@@ -319,7 +320,7 @@ export function buildMessageLines(
     } else if (msg.role === "assistant") {
       // AI messages: content blocks, then metadata
       for (const block of msg.blocks) {
-        pushBlock(renderBlockCached(block, contentWidth, state.toolRegistry, state.showToolOutput));
+        pushBlock(renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
       }
       const contentEnd = lines.length;
       for (const ml of renderMetadata(msg.metadata)) pushLine(ml);
@@ -339,7 +340,7 @@ export function buildMessageLines(
   if (state.pendingAI) {
     const start = lines.length;
     for (const block of state.pendingAI.blocks) {
-      pushBlock(renderBlockCached(block, contentWidth, state.toolRegistry, state.showToolOutput));
+      pushBlock(renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
     }
     const contentEnd = lines.length;
     for (const ml of renderMetadata(state.pendingAI.metadata)) pushLine(ml);
