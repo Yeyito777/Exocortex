@@ -45,12 +45,16 @@ function escapeRegex(s: string): string {
  * Try to match argument completion against a registry.
  * If `raw` matches "/command arg…" for any entry in `registry`,
  * returns the filtered argument completions. Otherwise returns null.
+ *
+ * Entries are tried longest-key-first so deeper matches (e.g. "/tool install")
+ * take priority over shallower ones (e.g. "/tool").
  */
 function matchArgCompletion(
   raw: string,
   registry: Record<string, CompletionItem[]>,
 ): CompletionItem[] | null {
-  for (const [cmd, args] of Object.entries(registry)) {
+  const entries = Object.entries(registry).sort((a, b) => b[0].length - a[0].length);
+  for (const [cmd, args] of entries) {
     const re = new RegExp(`^${escapeRegex(cmd)}\\s+(.*)$`, "i");
     const m = raw.match(re);
     if (m) return args.filter(a => a.name.toLowerCase().startsWith(m[1].toLowerCase()));
@@ -118,12 +122,11 @@ function atWordBoundary(input: string, pos: number): boolean {
 
 /**
  * Extract a slash-prefixed token at the cursor position.
- * Scans backwards from cursor to find a "/" at a word boundary
- * (start of input or preceded by whitespace).
+ * Scans backwards across multiple words from the cursor to find a word
+ * starting with "/" at a word boundary (start of input or after whitespace).
  *
- * Also handles macro arguments: if the word at cursor doesn't start
- * with "/", looks back one more word. If that word is a "/command",
- * returns the combined "/command arg" token so argument completion works.
+ * Handles arbitrarily deep macro arguments: "/tool install discord"
+ * is returned as a single token when the cursor is anywhere after "/tool".
  *
  * Returns the token text and its start offset, or null.
  */
@@ -131,34 +134,25 @@ function extractSlashToken(
   input: string,
   cursorPos: number,
 ): { token: string; start: number } | null {
-  const start = tokenStart(input, cursorPos);
-  const token = input.slice(start, cursorPos);
+  const wordStart = tokenStart(input, cursorPos);
+  const currentWord = input.slice(wordStart, cursorPos);
 
-  if (token.length === 0) {
-    // Cursor is right after whitespace — check if previous word is a /command.
-    // This handles "text /commit |" → token="/commit " so arg completion activates.
-    if (cursorPos > 0 && input[cursorPos - 1] === " ") {
-      const cmdStart = tokenStart(input, cursorPos - 1);
-      const prevWord = input.slice(cmdStart, cursorPos - 1);
-      if (prevWord.startsWith("/") && atWordBoundary(input, cmdStart)) {
-        return { token: input.slice(cmdStart, cursorPos), start: cmdStart };
-      }
-    }
-    return null;
+  // If the current word starts with /, we found the token directly
+  if (currentWord.startsWith("/") && atWordBoundary(input, wordStart)) {
+    return { token: currentWord, start: wordStart };
   }
 
-  if (token.startsWith("/")) {
-    if (!atWordBoundary(input, start)) return null;
-    return { token, start };
-  }
+  // Walk backward through preceding words to find one starting with "/"
+  let scanPos = wordStart;
+  while (scanPos > 0 && input[scanPos - 1] === " ") {
+    const prevStart = tokenStart(input, scanPos - 1);
+    const prevWord = input.slice(prevStart, scanPos - 1);
 
-  // Token doesn't start with / — look back one more word for "/command arg"
-  if (start > 0 && input[start - 1] === " ") {
-    const cmdStart = tokenStart(input, start - 1);
-    const prevWord = input.slice(cmdStart, start - 1);
-    if (prevWord.startsWith("/") && atWordBoundary(input, cmdStart)) {
-      return { token: input.slice(cmdStart, cursorPos), start: cmdStart };
+    if (prevWord.startsWith("/") && atWordBoundary(input, prevStart)) {
+      return { token: input.slice(prevStart, cursorPos), start: prevStart };
     }
+
+    scanPos = prevStart;
   }
 
   return null;
@@ -241,10 +235,10 @@ function fillAutocomplete(state: RenderState, name: string): void {
   if (ac.type === "path" || ac.type === "macro") {
     const before = state.inputBuffer.slice(0, ac.tokenStart);
     const after = state.inputBuffer.slice(state.cursorPos);
-    // For macro arg completion, preserve the "/command " prefix
+    // For macro arg completion, preserve the "/command arg1 ..." prefix
     let fillText = name;
     if (ac.type === "macro") {
-      const spaceIdx = ac.prefix.indexOf(" ");
+      const spaceIdx = ac.prefix.lastIndexOf(" ");
       if (spaceIdx >= 0) {
         fillText = ac.prefix.slice(0, spaceIdx + 1) + name;
       }
@@ -254,12 +248,15 @@ function fillAutocomplete(state: RenderState, name: string): void {
     return;
   }
 
-  // Command: check if we're completing an argument ("/model son")
-  const prefix = ac.prefix.trimStart();
-  const cmdPart = prefix.match(/^(\/[\w-]+\s+)/i)?.[1];
-  if (cmdPart && !name.startsWith("/")) {
-    const leading = (ac.prefix.match(/^(\s*)/)?.[1]) ?? "";
-    state.inputBuffer = leading + cmdPart + name;
+  // Command: check if we're completing an argument ("/tool install disc" → "/tool install discord")
+  if (!name.startsWith("/")) {
+    // Completing an argument — preserve everything before the last word
+    const lastSpace = ac.prefix.lastIndexOf(" ");
+    if (lastSpace >= 0) {
+      state.inputBuffer = ac.prefix.slice(0, lastSpace + 1) + name;
+    } else {
+      state.inputBuffer = name;
+    }
   } else {
     state.inputBuffer = name;
   }

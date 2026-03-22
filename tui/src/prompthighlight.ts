@@ -34,11 +34,13 @@ const VALID_ARGS: Record<string, Set<string>> = {
 
 interface Span { start: number; end: number }
 
-const COMMAND_SPAN_RE = /(^|[ \t\n])(\/[\w-]+)(?:[ \t]+([\w-]+))?/gm;
+/** Captures a slash command followed by any number of trailing words. */
+const COMMAND_SPAN_RE = /(^|[ \t\n])(\/[\w-]+(?:[ \t]+[\w-]+)*)/gm;
 
 /**
  * Find buffer ranges that contain valid command/macro tokens.
- * Each span covers the command name and, if present, a recognized argument.
+ * Each span covers the command name and as many recognized nested
+ * arguments as possible (e.g. "/tool install discord" highlights fully).
  */
 function findCommandSpans(buffer: string): Span[] {
   const spans: Span[] = [];
@@ -47,20 +49,32 @@ function findCommandSpans(buffer: string): Span[] {
   let match;
   while ((match = COMMAND_SPAN_RE.exec(buffer)) !== null) {
     const boundary = match[1];
-    const cmd = match[2];
-    const arg = match[3];
-
-    if (!VALID_NAMES.has(cmd)) continue;
-
+    const full = match[2]; // e.g. "/tool install discord"
     const cmdStart = match.index + boundary.length;
-    let spanEnd: number;
 
-    if (arg && VALID_ARGS[cmd]?.has(arg)) {
-      // Highlight command + space(s) + arg
-      spanEnd = match.index + match[0].length;
-    } else {
-      // Highlight command name only
-      spanEnd = cmdStart + cmd.length;
+    // Parse word positions within the captured group
+    const wordRe = /[\w-]+/g;
+    const wordPositions: { word: string; end: number }[] = [];
+    let wm;
+    while ((wm = wordRe.exec(full)) !== null) {
+      wordPositions.push({ word: wm[0], end: wm.index + wm[0].length });
+    }
+    if (wordPositions.length === 0) continue;
+
+    // First word (with /) must be a known command or macro
+    const baseCmd = full.slice(0, wordPositions[0].end);
+    if (!VALID_NAMES.has(baseCmd)) continue;
+    let spanEnd = cmdStart + wordPositions[0].end;
+
+    // Walk through subsequent words, extending highlight while args are valid
+    let key = baseCmd;
+    for (let i = 1; i < wordPositions.length; i++) {
+      if (VALID_ARGS[key]?.has(wordPositions[i].word)) {
+        spanEnd = cmdStart + wordPositions[i].end;
+        key = key + " " + wordPositions[i].word;
+      } else {
+        break;
+      }
     }
 
     spans.push({ start: cmdStart, end: spanEnd });

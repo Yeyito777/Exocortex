@@ -27,17 +27,58 @@
  *       { name: "foo", desc: "Foo variant", expansion: "Expansion for /example foo" },
  *     ],
  *   }
+ *
+ * Args can nest arbitrarily deep (e.g. "/tool install discord"):
+ *
+ *   {
+ *     name: "/tool",
+ *     desc: "Manage tools",
+ *     expansion: "...",
+ *     args: [
+ *       {
+ *         name: "install", desc: "Install a tool", expansion: "...",
+ *         args: [
+ *           { name: "discord", desc: "discord-cli", expansion: "Install discord-cli..." },
+ *         ],
+ *       },
+ *     ],
+ *   }
  */
 
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
 import type { CompletionItem } from "./commands";
 
+// ── Exocortex root (derived from this file's location) ─────────
+
+const __filename_ = typeof __filename !== "undefined" ? __filename : fileURLToPath(import.meta.url);
+/** Absolute path to the Exocortex repo root (e.g. /home/user/Workspace/Exocortex). */
+const EXO_ROOT = resolve(dirname(__filename_), "..", "..");
+const TOOLS_DIR = `${EXO_ROOT}/external-tools`;
+
 // ── Single source of truth ───────────────────────────────────────
+
+interface MacroArg {
+  name: string;
+  desc: string;
+  expansion: string;
+  args?: MacroArg[];
+}
 
 interface MacroDef {
   name: string;
   desc: string;
   expansion: string;
-  args?: { name: string; desc: string; expansion: string }[];
+  args?: MacroArg[];
+}
+
+/** Build a tool-install expansion string with the dynamic paths. */
+function toolInstall(cliName: string, repo: string): MacroArg {
+  const shortName = cliName.replace(/-cli$/, "");
+  return {
+    name: shortName, desc: cliName,
+    expansion: `Install the ${cliName} tool for yourself. Clone ${repo} into ${TOOLS_DIR}/${cliName}, then follow the README/setup instructions to build and install it. If the tool requires authentication or API tokens, walk me through the setup step by step — ask me for any credentials or config values you need.`,
+  };
 }
 
 const MACROS: MacroDef[] = [
@@ -45,7 +86,7 @@ const MACROS: MacroDef[] = [
   {
     name: "/commit", desc: "Commit and push", expansion: "If you haven't already, commit your work and push it.",
     args: [
-      { name: "exocortex", desc: "Commit ~/Workspace/Exocortex", expansion: "If you haven't already, commit and push the work inside the Exocortex directory (~/Workspace/Exocortex)." },
+      { name: "exocortex", desc: `Commit ${EXO_ROOT}`, expansion: `If you haven't already, commit and push the work inside the Exocortex directory (${EXO_ROOT}).` },
     ],
   },
   { name: "/noop", desc: "Thoughts only, no edits", expansion: "Don't write or edit any files yet. Just tell me your thoughts on this." },
@@ -70,26 +111,64 @@ const MACROS: MacroDef[] = [
       { name: "merge", desc: "Merge worktree back into main", expansion: "The work in the worktree is good. Merge back into main and clean up. Remove the worktree, branch, and any files it might've created in ~/.config/exocortex/data/instances/ and ~/.config/exocortex/runtime/ as a result of being a worktree after confirming a sucessfull merge" },
     ],
   },
+  {
+    name: "/tool",
+    desc: "Manage external tools",
+    expansion: "Manage external tools. Use '/tool install <name>' to install a tool.",
+    args: [
+      {
+        name: "install", desc: "Install an external tool",
+        expansion: `Install an external tool for yourself. Available tools: discord, exo, gmail, qutebrowser, twitter, whatsapp, xenv. Clone the repo into ${TOOLS_DIR}/ and follow the README/setup instructions to build and install it. If the tool requires authentication or API tokens, walk me through the setup step by step — ask me for any credentials or config values you need.`,
+        args: [
+          toolInstall("discord-cli", "git@github.com:Yeyito777/discord-cli.git"),
+          toolInstall("exo-cli", "https://github.com/Yeyito777/exo-cli.git"),
+          toolInstall("gmail-cli", "https://github.com/Yeyito777/gmail-cli.git"),
+          toolInstall("qutebrowser-cli", "https://github.com/Yeyito777/qutebrowser-cli.git"),
+          toolInstall("twitter-cli", "https://github.com/Yeyito777/twitter-cli.git"),
+          toolInstall("whatsapp-cli", "https://github.com/Yeyito777/whatsapp-cli.git"),
+          toolInstall("xenv-cli", "https://github.com/Yeyito777/xenv-cli.git"),
+        ],
+      },
+    ],
+  },
 ];
+
+// ── Recursive flattening helpers ────────────────────────────────
+
+/** Flatten a macro tree into [key, expansion] pairs for MACRO_MAP. */
+function flattenExpansions(prefix: string, node: { expansion: string; args?: MacroArg[] }): [string, string][] {
+  const entries: [string, string][] = [[prefix, node.expansion]];
+  for (const arg of node.args ?? []) {
+    entries.push(...flattenExpansions(`${prefix} ${arg.name}`, arg));
+  }
+  return entries;
+}
+
+/** Flatten a macro tree into [key, CompletionItem[]] pairs for MACRO_ARGS. */
+function flattenArgLists(prefix: string, node: { args?: MacroArg[] }): [string, CompletionItem[]][] {
+  if (!node.args || node.args.length === 0) return [];
+  const entries: [string, CompletionItem[]][] = [
+    [prefix, node.args.map(a => ({ name: a.name, desc: a.desc }))],
+  ];
+  for (const arg of node.args) {
+    entries.push(...flattenArgLists(`${prefix} ${arg.name}`, arg));
+  }
+  return entries;
+}
 
 // ── Derived exports ──────────────────────────────────────────────
 
 /** Autocomplete entries for macros (base names only — args appear after selecting the base command). */
 export const MACRO_LIST: CompletionItem[] = MACROS.map(m => ({ name: m.name, desc: m.desc }));
 
-/** Expansion text for each macro, keyed by "/name" or "/name arg". */
+/** Expansion text for each macro, keyed by "/name" or "/name arg1 arg2 ...". */
 export const MACRO_MAP: Record<string, string> = Object.fromEntries(
-  MACROS.flatMap(m => [
-    [m.name, m.expansion],
-    ...(m.args ?? []).map(a => [`${m.name} ${a.name}`, a.expansion]),
-  ]),
+  MACROS.flatMap(m => flattenExpansions(m.name, m)),
 );
 
-/** Sub-argument lists for macros that have them (used by autocomplete and prompt highlighting). */
+/** Sub-argument lists, keyed by "/name" or "/name arg1 ...". Used by autocomplete and prompt highlighting. */
 export const MACRO_ARGS: Record<string, CompletionItem[]> = Object.fromEntries(
-  MACROS
-    .filter(m => m.args && m.args.length > 0)
-    .map(m => [m.name, m.args!.map(a => ({ name: a.name, desc: a.desc }))]),
+  MACROS.flatMap(m => flattenArgLists(m.name, m)),
 );
 
 // ── Expansion ─────────────────────────────────────────────────────
@@ -97,19 +176,23 @@ export const MACRO_ARGS: Record<string, CompletionItem[]> = Object.fromEntries(
 /**
  * Expand macro commands in user message text.
  *
- * Tries "command + arg" first (e.g. "/commit exocortex"), then falls
- * back to the bare command (preserving unrecognized arg words).
+ * Captures a slash command followed by any number of trailing words,
+ * then tries longest-prefix match in MACRO_MAP. Unrecognised trailing
+ * words are preserved after the expansion.
+ *
  * Only matches at word boundaries (start of line or after whitespace).
  */
 export function expandMacros(text: string): string {
-  return text.replace(/(?<=^|\s)(\/[\w-]+)(?:[ \t]+([\w-]+))?/gm, (_full, cmd, arg) => {
-    if (arg) {
-      const withArg = cmd + " " + arg;
-      if (MACRO_MAP[withArg]) return MACRO_MAP[withArg];
+  return text.replace(/(?<=^|\s)(\/[\w-]+(?:[ \t]+[\w-]+)*)/gm, (full) => {
+    const words = full.split(/[ \t]+/);
+    // Try longest prefix first
+    for (let len = words.length; len >= 1; len--) {
+      const key = words.slice(0, len).join(" ");
+      if (MACRO_MAP[key]) {
+        const remainder = words.slice(len).join(" ");
+        return remainder ? MACRO_MAP[key] + " " + remainder : MACRO_MAP[key];
+      }
     }
-    if (MACRO_MAP[cmd]) {
-      return arg ? MACRO_MAP[cmd] + " " + arg : MACRO_MAP[cmd];
-    }
-    return arg ? cmd + " " + arg : cmd;
+    return full;
   });
 }
