@@ -1,7 +1,7 @@
 /**
  * Cron scheduler for exocortexd.
  *
- * Scans ~/.config/exocortex/storage/cron/ for executable .sh files, parses
+ * Scans <repo>/config/cron/ for executable .sh files, parses
  * cron schedule headers, and runs them on schedule. Each script is
  * a standalone bash file that can use `exo` or any other tool.
  *
@@ -28,12 +28,12 @@ import {
   type FSWatcher,
 } from "fs";
 import { join, basename } from "path";
-import { storageDir } from "@exocortex/shared/paths";
+import { cronDir } from "@exocortex/shared/paths";
 import { log } from "./log";
 
 // ── Cron directory ──────────────────────────────────────────────────
 
-const CRON_DIR = join(storageDir(), "cron");
+const CRON_DIR = cronDir();
 
 // ── Types ───────────────────────────────────────────────────────────
 

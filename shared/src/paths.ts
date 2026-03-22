@@ -11,7 +11,8 @@
  *   secrets/            env, credentials.json (never tracked)
  *   data/               conversations/, trash/ (bulk data, never tracked)
  *   runtime/            PID, socket, logs, usage.json (ephemeral)
- *   storage/            cron/, fix-auth.md (persistent user-local, not tracked)
+ *   cron/               scheduled job scripts (persistent, not tracked)
+ *   storage/            fix-auth.md (persistent user-local, not tracked)
  *
  * When running from a linked git worktree, runtime paths (socket, PID, logs)
  * and data paths (conversations) are namespaced by worktree name.
@@ -99,7 +100,12 @@ export function dataDir(): string {
     : join(CONFIG_DIR, "data");
 }
 
-/** Storage directory — cron scripts, docs. Persistent user-local files. */
+/** Cron directory — scheduled job scripts. */
+export function cronDir(): string {
+  return join(CONFIG_DIR, "cron");
+}
+
+/** Storage directory — docs, misc persistent user-local files. */
 export function storageDir(): string {
   return join(CONFIG_DIR, "storage");
 }

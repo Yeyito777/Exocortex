@@ -1,5 +1,5 @@
 # Cron jobs
-You can create scheduled tasks by writing bash scripts to ~/.config/exocortex/storage/cron/. The daemon picks them up automatically (no restart needed).
+You can create scheduled tasks by writing bash scripts to config/cron/ (relative to the repo root). The daemon picks them up automatically (no restart needed).
 
 Required header:
   # schedule: <5-field cron expression>    (e.g. "0 9 * * 1-5" for weekdays at 9am)

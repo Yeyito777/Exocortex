@@ -9,5 +9,7 @@ config/secrets/
 config/data/
 config/runtime/
 config/storage/
+config/cron/*
+!config/cron/.gitkeep
 *.lock*
 *.log
