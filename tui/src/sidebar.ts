@@ -159,6 +159,14 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       const tmp = conv.sortOrder;
       conv.sortOrder = target.sortOrder;
       target.sortOrder = tmp;
+      // If sortOrders were equal the swap is a no-op — differentiate them
+      if (conv.sortOrder === target.sortOrder) {
+        if (direction === "up") {
+          conv.sortOrder -= 0.5;
+        } else {
+          conv.sortOrder += 0.5;
+        }
+      }
       // Follow the moved item
       sidebar.selectedIndex = targetIdx;
       sidebar.selectedId = conv.id;

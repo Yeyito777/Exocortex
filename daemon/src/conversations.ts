@@ -215,6 +215,27 @@ export function loadFromDisk(): void {
     }
   }
   log("info", `conversations: loaded ${conversations.size} from disk`);
+
+  // Deduplicate sortOrders — duplicate values cause move operations to
+  // be no-ops (swapping identical values).  Walk each section (pinned,
+  // unpinned) in order and bump any collision by a small offset.
+  const sorted = [...conversations.values()].sort(
+    (a, b) => (a.pinned === b.pinned ? 0 : a.pinned ? -1 : 1) || a.sortOrder - b.sortOrder,
+  );
+  const seen = new Set<string>();    // "pinned:sortOrder"
+  let fixed = 0;
+  for (const conv of sorted) {
+    const key = `${conv.pinned}:${conv.sortOrder}`;
+    if (seen.has(key)) {
+      conv.sortOrder += 0.001 * ++fixed;
+      markDirty(conv.id);
+    }
+    seen.add(`${conv.pinned}:${conv.sortOrder}`);
+  }
+  if (fixed > 0) {
+    log("info", `conversations: deduplicated ${fixed} colliding sortOrder(s)`);
+    flushAll();
+  }
 }
 
 /** Mark a conversation as needing a save. */
@@ -302,6 +323,16 @@ export function move(id: string, direction: "up" | "down"): boolean {
   const tmp = currentConv.sortOrder;
   currentConv.sortOrder = targetConv.sortOrder;
   targetConv.sortOrder = tmp;
+
+  // If sortOrders were equal the swap is a no-op — differentiate them
+  // so the move actually takes effect.
+  if (currentConv.sortOrder === targetConv.sortOrder) {
+    if (direction === "up") {
+      currentConv.sortOrder -= 0.5;
+    } else {
+      currentConv.sortOrder += 0.5;
+    }
+  }
 
   markDirty(id);
   markDirty(target.id);
