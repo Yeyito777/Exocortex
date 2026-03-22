@@ -32,16 +32,21 @@ export const reset_cursor_color = `\x1b]112\x1b\\`;
 /**
  * Apply a background color as a layer beneath line content.
  *
- * - Prefixes with bg so all content sits on it
+ * - Sets bg then immediately erases to EOL, flooding the rest of
+ *   the row with the desired background
+ * - Content is drawn on top, overwriting the filled cells
  * - Replaces every \x1b[0m reset with reset + re-apply bg
  *   (so bg persists through styled spans)
- * - Appends \x1b[K to fill to terminal edge
  * - Resets at end so subsequent lines are clean
+ *
+ * erase_to_eol comes *before* the content so that full-width lines
+ * (e.g. separator ─ rows) don't lose their last character to a
+ * trailing \x1b[K issued at the rightmost column.
  *
  * Works for any line: text, empty, metadata, padding.
  */
 export function applyLineBg(line: string, bg: string): string {
   // Replace all resets with reset + bg re-apply
   const patched = line.replaceAll(RESET, `${RESET}${bg}`);
-  return `${bg}${patched}${erase_to_eol}${RESET}`;
+  return `${bg}${erase_to_eol}${patched}${RESET}`;
 }
