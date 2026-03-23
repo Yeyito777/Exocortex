@@ -21,7 +21,7 @@ import { createHandler } from "./handler";
 import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
 import { startScheduler, stopScheduler, getCronDir, getJobs } from "./scheduler";
-import { initExternalTools, stopExternalTools, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
+import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
 import { getToolDisplayInfo } from "./tools/registry";
 import { socketPath, pidPath, runtimeDir, worktreeName } from "@exocortex/shared/paths";
 
@@ -83,9 +83,9 @@ async function startDaemon(): Promise<void> {
   // Graceful shutdown
   const shutdown = async () => {
     log("info", "exocortexd: shutting down");
-    stopExternalTools();
     stopScheduler();
     convStore.flushAll();
+    await stopExternalToolsAsync();
     await server.stop();
     try { unlinkSync(PID_PATH); } catch { /* best-effort cleanup */ }
     process.exit(0);

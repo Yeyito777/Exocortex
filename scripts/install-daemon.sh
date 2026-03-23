@@ -22,6 +22,7 @@ WorkingDirectory=$REPO_DIR/daemon
 ExecStart=$BUN_PATH run src/main.ts
 Restart=on-failure
 RestartSec=2
+TimeoutStopSec=10
 
 [Install]
 WantedBy=default.target

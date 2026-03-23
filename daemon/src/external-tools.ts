@@ -113,6 +113,7 @@ function spawnDaemonProcess(managed: ManagedDaemon): void {
       cwd: managed.toolDir,
       stdio: ["ignore", logFd, logFd],
       env: { ...process.env, ...managed.config.env },
+      detached: true,
     });
 
     managed.child = child;
@@ -129,10 +130,7 @@ function spawnDaemonProcess(managed: ManagedDaemon): void {
     child.on("exit", (code, signal) => {
       managed.child = null;
 
-      if (managed.stopping) {
-        log("info", `external-tools: daemon '${managed.toolName}' stopped`);
-        return;
-      }
+      if (managed.stopping) return;
 
       log("warn", `external-tools: daemon '${managed.toolName}' exited (code=${code}, signal=${signal})`);
 
@@ -190,9 +188,9 @@ function startToolDaemon(tool: LoadedTool): void {
   spawnDaemonProcess(managed);
 }
 
-function stopToolDaemon(name: string): void {
+function stopToolDaemon(name: string): Promise<void> {
   const managed = _daemons.get(name);
-  if (!managed) return;
+  if (!managed) return Promise.resolve();
 
   managed.stopping = true;
 
@@ -201,27 +199,61 @@ function stopToolDaemon(name: string): void {
     managed.restartTimer = null;
   }
 
-  if (managed.child) {
-    const pid = managed.child.pid;
-    managed.child.kill("SIGTERM");
+  if (!managed.child || !managed.child.pid) {
+    _daemons.delete(name);
+    return Promise.resolve();
+  }
 
-    // Force-kill after 5s if still alive
-    const forceKill = setTimeout(() => {
-      if (managed.child) {
-        log("warn", `external-tools: force-killing daemon '${name}' (pid ${pid})`);
-        managed.child.kill("SIGKILL");
+  const child = managed.child;
+  const pid = child.pid!;
+
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(forceKillTimer);
+      clearTimeout(bailTimer);
+      managed.child = null;
+      _daemons.delete(name);
+      resolve();
+    };
+
+    child.once("exit", () => {
+      log("info", `external-tools: daemon '${name}' stopped (pid ${pid})`);
+      settle();
+    });
+
+    // Send SIGTERM to the entire process group (negative PID)
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      // Process group already dead
+      settle();
+      return;
+    }
+
+    // Escalate to SIGKILL after 5s
+    const forceKillTimer = setTimeout(() => {
+      log("warn", `external-tools: force-killing daemon '${name}' (pgid ${pid})`);
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        // already dead
       }
     }, 5_000);
-    forceKill.unref?.();
-  }
 
-  _daemons.delete(name);
+    // Bail-out: resolve even if exit event never fires (7s total)
+    const bailTimer = setTimeout(() => {
+      log("warn", `external-tools: giving up waiting for daemon '${name}' (pid ${pid})`);
+      settle();
+    }, 7_000);
+  });
 }
 
-function stopAllDaemons(): void {
-  for (const name of [..._daemons.keys()]) {
-    stopToolDaemon(name);
-  }
+function stopAllDaemons(): Promise<void> {
+  const promises = [..._daemons.keys()].map((name) => stopToolDaemon(name));
+  return Promise.all(promises).then(() => {});
 }
 
 // ── External tools directory ─────────────────────────────────────
@@ -397,7 +429,7 @@ export function initExternalTools(onUpdate?: () => void): void {
   }
 }
 
-/** Stop the filesystem watcher and all supervised daemons. */
+/** Stop the filesystem watcher and all supervised daemons (fire-and-forget). */
 export function stopExternalTools(): void {
   if (_debounceTimer) {
     clearTimeout(_debounceTimer);
@@ -408,6 +440,19 @@ export function stopExternalTools(): void {
     _watcher = null;
   }
   stopAllDaemons();
+}
+
+/** Stop watcher and await all supervised daemons to exit. */
+export async function stopExternalToolsAsync(): Promise<void> {
+  if (_debounceTimer) {
+    clearTimeout(_debounceTimer);
+    _debounceTimer = null;
+  }
+  if (_watcher) {
+    _watcher.close();
+    _watcher = null;
+  }
+  await stopAllDaemons();
 }
 
 /** Aggregated system hints from all loaded external tools. */
