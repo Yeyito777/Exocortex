@@ -14,7 +14,7 @@
 import { spawn } from "child_process";
 import { writeFileSync, createWriteStream, type WriteStream } from "fs";
 import type { Tool, ToolResult, ToolSummary } from "./types";
-import { MAX_OUTPUT_CHARS, getString, getNumber } from "./util";
+import { MAX_OUTPUT_CHARS, getString, getNumber, safeSlice } from "./util";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ const TAIL_BUDGET = 8_000;            // chars for tail preview
 /** Truncate a single line if it exceeds the per-line budget. */
 function truncLine(line: string, budget: number): string {
   if (line.length <= budget) return line;
-  return line.slice(0, budget) + `... [truncated, ${line.length} chars total]`;
+  return safeSlice(line, budget) + `... [truncated, ${line.length} chars total]`;
 }
 
 /**

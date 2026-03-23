@@ -4,10 +4,30 @@
 
 export const MAX_OUTPUT_CHARS = 30_000;
 
+/**
+ * Truncate a string without splitting UTF-16 surrogate pairs.
+ *
+ * JavaScript's `.slice()` operates on UTF-16 code units.  Characters outside
+ * the Basic Multilingual Plane (most emoji) are stored as two code units —
+ * a high surrogate (D800–DBFF) followed by a low surrogate (DC00–DFFF).
+ * Slicing between them produces a lone surrogate which is invalid in JSON
+ * and will cause Anthropic API 400 errors.
+ */
+export function safeSlice(str: string, end: number): string {
+  if (str.length <= end) return str;
+  const sliced = str.slice(0, end);
+  // If the last char is a high surrogate, its low surrogate was cut off
+  const lastCode = sliced.charCodeAt(end - 1);
+  if (lastCode >= 0xD800 && lastCode <= 0xDBFF) {
+    return sliced.slice(0, -1);
+  }
+  return sliced;
+}
+
 /** Truncate output to MAX_OUTPUT_CHARS with a message. */
 export function cap(text: string): string {
   if (text.length <= MAX_OUTPUT_CHARS) return text;
-  return text.slice(0, MAX_OUTPUT_CHARS) +
+  return safeSlice(text, MAX_OUTPUT_CHARS) +
     `\n... output truncated (showed ${MAX_OUTPUT_CHARS} of ${text.length} characters)`;
 }
 

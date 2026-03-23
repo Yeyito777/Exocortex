@@ -19,6 +19,7 @@ import { isToolResultMessage } from "../messages";
 import { complete } from "../llm";
 import { log } from "../log";
 import { MAX_CONTEXT } from "../constants";
+import { safeSlice } from "./util";
 
 // ── Context tool environment ──────────────────────────────────────
 
@@ -84,7 +85,7 @@ function fmt(n: number): string {
 function oneLine(s: string, maxLen = 60): string {
   const clean = s.replace(/\s+/g, " ").trim();
   if (clean.length <= maxLen) return clean;
-  return clean.slice(0, maxLen) + "…";
+  return safeSlice(clean, maxLen) + "…";
 }
 
 /**
@@ -299,7 +300,7 @@ function actionList(env: ContextToolEnv): ToolResult {
             .filter((b: ApiContentBlock) => b.type === "text")
             .map((b: ApiContentBlock) => (b as { type: "text"; text: string }).text)
             .join(" ");
-      const preview = text.slice(0, 60).replace(/\n/g, "\\n");
+      const preview = safeSlice(text, 60).replace(/\n/g, "\\n");
       content = `"${preview}${text.length > 60 ? "…" : ""}"`;
     }
 

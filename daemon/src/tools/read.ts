@@ -7,7 +7,7 @@
  */
 
 import type { Tool, ToolResult, ToolSummary } from "./types";
-import { cap, getString, getNumber } from "./util";
+import { cap, getString, getNumber, safeSlice } from "./util";
 import { log } from "../log";
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -191,7 +191,7 @@ async function readTextFile(
     const maxNumWidth = String(endIdx).length;
     const formatted = slice.map((line, i) => {
       const lineNum = String(startIdx + i + 1).padStart(maxNumWidth);
-      const truncated = line.length > MAX_LINE_CHARS ? line.slice(0, MAX_LINE_CHARS) + "..." : line;
+      const truncated = line.length > MAX_LINE_CHARS ? safeSlice(line, MAX_LINE_CHARS) + "..." : line;
       return `${lineNum}\t${truncated}`;
     });
 
