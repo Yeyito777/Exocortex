@@ -403,6 +403,16 @@ export function handleEvent(
       break;
     }
 
+    case "system_instructions": {
+      if (event.convId !== state.convId) break;
+      if (event.instructions) {
+        state.messages.push({ role: "system", text: `── System instructions ──\n${event.instructions}`, metadata: null });
+      } else {
+        state.messages.push({ role: "system", text: "No system instructions set for this conversation.", color: theme.muted, metadata: null });
+      }
+      break;
+    }
+
     case "llm_complete_result":
     case "ack":
     case "pong":

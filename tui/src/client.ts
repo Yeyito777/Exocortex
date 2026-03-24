@@ -184,6 +184,18 @@ export class DaemonClient {
     this.send({ type: "get_system_prompt" });
   }
 
+  setSystemInstructions(convId: string, instructions: string): void {
+    this.send({ type: "set_system_instructions", convId, instructions });
+  }
+
+  getSystemInstructions(convId: string): void {
+    this.send({ type: "get_system_instructions", convId });
+  }
+
+  clearSystemInstructions(convId: string): void {
+    this.send({ type: "clear_system_instructions", convId });
+  }
+
   llmComplete(
     system: string, userText: string,
     onSuccess: LlmCompleteCallback, onError?: LlmErrorCallback,
