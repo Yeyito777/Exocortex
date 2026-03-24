@@ -1,0 +1,38 @@
+name: Release Windows Build
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Cross-compile Windows executables
+        run: |
+          mkdir -p dist
+          bun build --compile --target=bun-windows-x64 daemon/src/main.ts --outfile dist/exocortexd.exe
+          bun build --compile --target=bun-windows-x64 tui/src/main.ts --outfile dist/exocortex.exe
+          bun build --compile --target=bun-windows-x64 external-tools/exo-cli/src/main.ts --outfile dist/exo.exe
+          cp scripts/exocortex.bat dist/exocortex.bat
+
+      - name: Zip release
+        run: cd dist && zip -9 ../exocortex-windows-x64.zip *
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: exocortex-windows-x64.zip
+          generate_release_notes: true
