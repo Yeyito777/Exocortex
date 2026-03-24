@@ -60,7 +60,17 @@ export class DaemonClient {
       });
       socket.on("error", (err) => {
         this._connected = false;
-        if (!resolved) reject(new Error(`Failed to connect: ${err.message}`));
+        if (!resolved) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (isWindows && (code === "ENOENT" || code === "ECONNREFUSED")) {
+            reject(new Error(
+              "exocortexd socket not found. Is the daemon running?\n" +
+              "Start it with: cd daemon && bun run start"
+            ));
+          } else {
+            reject(new Error(`Failed to connect: ${err.message}`));
+          }
+        }
       });
     });
   }

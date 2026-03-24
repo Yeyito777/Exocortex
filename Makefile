@@ -59,7 +59,7 @@ remove-links:
 # ── Systemd service ─────────────────────────────────────────────────
 
 service:
-	@bash $(REPO_DIR)/scripts/install-daemon.sh
+	@UNIT_NAME=$(UNIT_NAME) bash $(REPO_DIR)/scripts/install-daemon.sh
 
 remove-service:
 	@if systemctl --user is-active --quiet $(UNIT_NAME) 2>/dev/null; then \

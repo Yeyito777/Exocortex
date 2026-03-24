@@ -7,8 +7,12 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 BUN_PATH="$(command -v bun)" || { echo "  ✗ bun not found in PATH"; exit 1; }
 
+# UNIT_NAME is passed by the Makefile; abort if missing.
+: "${UNIT_NAME:?UNIT_NAME must be set (e.g. exocortex-daemon.service)}"
+UNIT_STEM="${UNIT_NAME%.service}"
+
 UNIT_DIR="$HOME/.config/systemd/user"
-UNIT_FILE="$UNIT_DIR/exocortex-daemon.service"
+UNIT_FILE="$UNIT_DIR/$UNIT_NAME"
 
 mkdir -p "$UNIT_DIR"
 
@@ -32,12 +36,12 @@ EOF
 echo "  Wrote $UNIT_FILE"
 
 systemctl --user daemon-reload
-systemctl --user enable exocortex-daemon
-echo "  ✓ Installed and enabled exocortex-daemon.service"
+systemctl --user enable "$UNIT_STEM"
+echo "  ✓ Installed and enabled $UNIT_NAME"
 
-if ! systemctl --user is-active --quiet exocortex-daemon; then
-  systemctl --user start exocortex-daemon
-  echo "  ✓ Started exocortex-daemon.service"
+if ! systemctl --user is-active --quiet "$UNIT_STEM"; then
+  systemctl --user start "$UNIT_STEM"
+  echo "  ✓ Started $UNIT_NAME"
 else
-  echo "  • exocortex-daemon.service is already running (restart with: systemctl --user restart exocortex-daemon)"
+  echo "  • $UNIT_NAME is already running (restart with: systemctl --user restart $UNIT_STEM)"
 fi
