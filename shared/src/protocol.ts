@@ -167,6 +167,25 @@ export interface GetSystemPromptCommand {
   reqId?: string;
 }
 
+export interface SetSystemInstructionsCommand {
+  type: "set_system_instructions";
+  reqId?: string;
+  convId: string;
+  instructions: string;
+}
+
+export interface GetSystemInstructionsCommand {
+  type: "get_system_instructions";
+  reqId?: string;
+  convId: string;
+}
+
+export interface ClearSystemInstructionsCommand {
+  type: "clear_system_instructions";
+  reqId?: string;
+  convId: string;
+}
+
 export interface LoginCommand {
   type: "login";
   reqId?: string;
@@ -200,6 +219,9 @@ export type Command =
   | UnwindConversationCommand
   | LlmCompleteCommand
   | GetSystemPromptCommand
+  | SetSystemInstructionsCommand
+  | GetSystemInstructionsCommand
+  | ClearSystemInstructionsCommand
   | LoginCommand
   | LogoutCommand;
 
@@ -421,6 +443,14 @@ export interface SystemPromptEvent {
   systemPrompt: string;
 }
 
+export interface SystemInstructionsEvent {
+  type: "system_instructions";
+  reqId?: string;
+  convId: string;
+  /** The current per-conversation system instructions, or null if none are set. */
+  instructions: string | null;
+}
+
 export interface AuthStatusEvent {
   type: "auth_status";
   reqId?: string;
@@ -466,5 +496,6 @@ export type Event =
   | HistoryUpdatedEvent
   | LlmCompleteResultEvent
   | SystemPromptEvent
+  | SystemInstructionsEvent
   | AuthStatusEvent
   | ErrorEvent;

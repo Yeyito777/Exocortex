@@ -266,8 +266,13 @@ export async function orchestrateSendMessage(
   };
 
   try {
+    const basePrompt = buildSystemPrompt();
+    const system = conv.systemInstructions
+      ? basePrompt + "\n\n" + conv.systemInstructions
+      : basePrompt;
+
     const result = await runAgentLoop(apiMessages, conv.model, callbacks, {
-      system: buildSystemPrompt(),
+      system,
       signal: ac.signal,
       tools: getToolDefs(),
       executor: buildExecutor(contextEnv),

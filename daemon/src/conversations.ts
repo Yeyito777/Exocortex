@@ -87,6 +87,7 @@ export function clone(id: string): Conversation | null {
     pinned: src.pinned,
     sortOrder: newOrder,
     title: (src.title || "clone") + " 📋",
+    ...(src.systemInstructions !== undefined ? { systemInstructions: src.systemInstructions } : {}),
   };
 
   conversations.set(newId, conv);
@@ -143,6 +144,33 @@ export function rename(id: string, title: string): boolean {
   const conv = conversations.get(id);
   if (!conv) return false;
   conv.title = title;
+  markDirty(id);
+  flush(id);
+  return true;
+}
+
+/** Set per-conversation system instructions. Pass an empty string to effectively disable them. */
+export function setSystemInstructions(id: string, instructions: string): boolean {
+  const conv = conversations.get(id);
+  if (!conv) return false;
+  conv.systemInstructions = instructions;
+  markDirty(id);
+  flush(id);
+  return true;
+}
+
+/** Get per-conversation system instructions. Returns null if the conversation is not found. */
+export function getSystemInstructions(id: string): string | null {
+  const conv = conversations.get(id);
+  if (!conv) return null;
+  return conv.systemInstructions ?? "";
+}
+
+/** Clear per-conversation system instructions (removes the field entirely). */
+export function clearSystemInstructions(id: string): boolean {
+  const conv = conversations.get(id);
+  if (!conv) return false;
+  delete conv.systemInstructions;
   markDirty(id);
   flush(id);
   return true;

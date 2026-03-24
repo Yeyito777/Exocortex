@@ -296,6 +296,43 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      case "set_system_instructions": {
+        const ok = convStore.setSystemInstructions(cmd.convId, cmd.instructions);
+        if (ok) {
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+          log("info", `handler: set system instructions for ${cmd.convId} (${cmd.instructions.length} chars)`);
+        } else {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+        }
+        break;
+      }
+
+      case "get_system_instructions": {
+        const instructions = convStore.getSystemInstructions(cmd.convId);
+        if (instructions === null) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+        } else {
+          server.sendTo(client, {
+            type: "system_instructions",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            instructions: instructions || null,
+          });
+        }
+        break;
+      }
+
+      case "clear_system_instructions": {
+        const ok = convStore.clearSystemInstructions(cmd.convId);
+        if (ok) {
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+          log("info", `handler: cleared system instructions for ${cmd.convId}`);
+        } else {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+        }
+        break;
+      }
+
       case "llm_complete": {
         const model = cmd.model ?? "haiku";
         // Default must exceed the thinking budget (10000) for non-adaptive

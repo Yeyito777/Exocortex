@@ -48,6 +48,12 @@ export interface Conversation {
   sortOrder: number;
   /** Client-set title. The daemon stores it as-is — naming logic lives in the client. */
   title: string;
+  /**
+   * Optional per-conversation system instructions.
+   * When set, appended to the global system prompt for every API call in this conversation.
+   * Persisted in the conversation JSON file.
+   */
+  systemInstructions?: string;
 }
 
 /**
