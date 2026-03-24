@@ -28,9 +28,22 @@ import { join, basename, resolve, dirname } from "path";
 // On Windows (compiled exe): import.meta.dir is meaningless inside the bundle,
 // so we use the directory containing the executable as the root.
 
-const REPO_ROOT = process.platform === "win32"
-  ? dirname(process.execPath)
-  : resolve(import.meta.dir, "../..");
+function detectRepoRoot(): string {
+  if (process.platform !== "win32") {
+    return resolve(import.meta.dir, "../..");
+  }
+  // Compiled Bun exe on Windows — try multiple approaches
+  if (process.execPath && dirname(process.execPath) !== "\\") {
+    return dirname(process.execPath);
+  }
+  if (process.argv[0] && dirname(resolve(process.argv[0])) !== "\\") {
+    return dirname(resolve(process.argv[0]));
+  }
+  // Last resort: use CWD (user should run from the exe's directory)
+  return process.cwd();
+}
+
+const REPO_ROOT = detectRepoRoot();
 const CONFIG_DIR = join(REPO_ROOT, "config");
 
 // ── Worktree detection ──────────────────────────────────────────────
