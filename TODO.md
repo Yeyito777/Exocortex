@@ -5,7 +5,7 @@ No Bun, no WSL, no setup — just download and run.
 
 ## Plan
 
-### 1. Platform-abstract socket paths
+### ~~1. Platform-abstract socket paths~~ ✅
 `shared/src/paths.ts` — `socketPath()` should return a Windows named pipe
 (`\\.\pipe\exocortexd`) on Windows instead of a Unix socket file path.
 Gate on `os.platform()`. Named pipes work with Node/Bun's `net` module
