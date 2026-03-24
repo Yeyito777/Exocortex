@@ -298,8 +298,9 @@ export async function login(callbacks?: LoginCallbacks | ((msg: string) => void)
   const cbs: LoginCallbacks = typeof callbacks === "function" ? { onProgress: callbacks } : callbacks ?? {};
   const say = cbs.onProgress ?? console.log;
   const openUrl = cbs.onOpenUrl ?? ((url: string) => {
-    // On Windows, the URL must be quoted because cmd.exe treats & as a command separator
-    const openCmd = isWindows ? ["cmd", "/c", `start "" "${url}"`] : ["xdg-open", url];
+    const openCmd = isWindows
+      ? ["powershell", "-NoProfile", "-Command", `Start-Process "${url}"`]
+      : ["xdg-open", url];
     Bun.spawn(openCmd, { stdout: "ignore", stderr: "ignore" }).unref();
   });
 
