@@ -123,6 +123,7 @@ export async function orchestrateSendMessage(
 
   const callbacks: AgentCallbacks = {
     onBlockStart(blockType) {
+      convStore.touchActivity(convId);
       server.sendToSubscribers(convId, { type: "block_start", convId, blockType });
       if (blockType === "text") {
         partialContent.push({ type: "text", text: "" });
@@ -140,14 +141,16 @@ export async function orchestrateSendMessage(
       const last = partialContent[partialContent.length - 1];
       if (last?.type === "text") last.text += chunk;
       convStore.appendToStreamingBlock(convId, "text", chunk);
-      convStore.onChunk(convId);
+      // touchActivity piggybacks on the chunk counter — fires every CHUNK_SAVE_INTERVAL
+      // chunks rather than on every single SSE event, keeping overhead negligible.
+      if (convStore.onChunk(convId)) convStore.touchActivity(convId);
     },
     onThinkingChunk(chunk) {
       server.sendToSubscribers(convId, { type: "thinking_chunk", convId, text: chunk });
       const last = partialContent[partialContent.length - 1];
       if (last?.type === "thinking") last.thinking += chunk;
       convStore.appendToStreamingBlock(convId, "thinking", chunk);
-      convStore.onChunk(convId);
+      if (convStore.onChunk(convId)) convStore.touchActivity(convId);
     },
     onSignature(signature) {
       for (let i = partialContent.length - 1; i >= 0; i--) {
@@ -158,6 +161,7 @@ export async function orchestrateSendMessage(
       }
     },
     onToolCall(block) {
+      convStore.touchActivity(convId);
       server.sendToSubscribers(convId, {
         type: "tool_call", convId,
         toolCallId: block.toolCallId,
@@ -174,6 +178,7 @@ export async function orchestrateSendMessage(
       });
     },
     onToolResult(block) {
+      convStore.touchActivity(convId);
       server.sendToSubscribers(convId, {
         type: "tool_result", convId,
         toolCallId: block.toolCallId,
@@ -197,8 +202,12 @@ export async function orchestrateSendMessage(
       conv.lastContextTokens = contextTokens;
       server.sendToSubscribers(convId, { type: "context_update", convId, contextTokens });
     },
-    onHeaders: ext.onHeaders,
+    onHeaders(headers) {
+      convStore.touchActivity(convId);
+      ext.onHeaders(headers);
+    },
     onRetry(attempt, maxAttempts, errorMessage, delaySec) {
+      convStore.touchActivity(convId);
       // Transient stream error → clear partial state so the retry starts clean
       partialContent.length = 0;
       convStore.initStreamingBlocks(convId);

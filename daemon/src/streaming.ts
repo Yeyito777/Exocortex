@@ -31,8 +31,13 @@ const streamingStartedAt = new Map<string, number>();
 const streamingTokens = new Map<string, number>();
 /** Messages queued for delivery during or after streaming. */
 const messageQueues = new Map<string, QueuedMessage[]>();
+/** Last meaningful activity timestamp per streaming job (for stale stream detection). */
+const lastActivityAt = new Map<string, number>();
 
 const CHUNK_SAVE_INTERVAL = 5;
+
+/** How long a stream can be inactive before the watchdog considers it stale. */
+export const STALE_STREAM_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 
 // ── Active jobs (abort controllers for in-flight streams) ───────────
 
@@ -44,6 +49,7 @@ export function isStreaming(convId: string): boolean {
 export function setActiveJob(convId: string, ac: AbortController, startedAt: number): void {
   activeJobs.set(convId, ac);
   streamingStartedAt.set(convId, startedAt);
+  lastActivityAt.set(convId, startedAt);
 }
 
 export function getActiveJob(convId: string): AbortController | undefined {
@@ -54,6 +60,7 @@ export function clearActiveJob(convId: string): void {
   activeJobs.delete(convId);
   streamingStartedAt.delete(convId);
   streamingTokens.delete(convId);
+  lastActivityAt.delete(convId);
 }
 
 export function getStreamingStartedAt(convId: string): number | undefined {
@@ -70,6 +77,30 @@ export function setStreamingTokens(convId: string, tokens: number): void {
 /** Get the accumulated output token count for an in-flight stream. */
 export function getStreamingTokens(convId: string): number {
   return streamingTokens.get(convId) ?? 0;
+}
+
+// ── Activity tracking (for stale stream detection) ──────────────────
+
+/** Record meaningful activity on a stream (chunks, tool calls, retries, etc.). */
+export function touchActivity(convId: string): void {
+  if (activeJobs.has(convId)) lastActivityAt.set(convId, Date.now());
+}
+
+/**
+ * Return all streams that have been inactive for longer than STALE_STREAM_TIMEOUT.
+ * Returns [convId, AbortController, inactiveMs][] for the watchdog to act on.
+ */
+export function getStaleStreams(): Array<[string, AbortController, number]> {
+  const now = Date.now();
+  const stale: Array<[string, AbortController, number]> = [];
+  for (const [convId, ac] of activeJobs) {
+    const last = lastActivityAt.get(convId) ?? 0;
+    const inactive = now - last;
+    if (inactive >= STALE_STREAM_TIMEOUT) {
+      stale.push([convId, ac, inactive]);
+    }
+  }
+  return stale;
 }
 
 // ── Chunk counting (for periodic persistence) ─────────────────────

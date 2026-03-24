@@ -18,6 +18,7 @@ import { log } from "./log";
 export {
   isStreaming, setActiveJob, getActiveJob, clearActiveJob, getStreamingStartedAt,
   setStreamingTokens, getStreamingTokens,
+  touchActivity,
   resetChunkCounter,
   initStreamingBlocks, getStreamingBlocks, pushStreamingBlock, appendToStreamingBlock, clearStreamingBlocks,
   getQueuedMessages, pushQueuedMessage, drainQueuedMessages, clearQueuedMessages, removeQueuedMessage,
@@ -261,12 +262,14 @@ export function flushAll(): void {
   dirty.clear();
 }
 
-/** Track chunk count and flush every N chunks. */
-export function onChunk(id: string): void {
+/** Track chunk count and flush every N chunks. Returns true on save boundaries. */
+export function onChunk(id: string): boolean {
   if (streaming.onChunk(id)) {
     markDirty(id);
     flush(id);
+    return true;
   }
+  return false;
 }
 
 /** Get conversation summaries for the sidebar (from in-memory state). */

@@ -21,6 +21,7 @@ import { createHandler } from "./handler";
 import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
 import { startScheduler, stopScheduler, getCronDir, getJobs } from "./scheduler";
+import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
 import { getToolDisplayInfo } from "./tools/registry";
 import { socketPath, pidPath, runtimeDir, worktreeName } from "@exocortex/shared/paths";
@@ -83,6 +84,7 @@ async function startDaemon(): Promise<void> {
   // Graceful shutdown
   const shutdown = async () => {
     log("info", "exocortexd: shutting down");
+    stopWatchdog();
     stopScheduler();
     convStore.flushAll();
     await stopExternalToolsAsync();
@@ -109,8 +111,9 @@ async function startDaemon(): Promise<void> {
     });
   });
 
-  // Start cron scheduler
+  // Start cron scheduler + stale stream watchdog
   startScheduler();
+  startWatchdog();
 
   // Check auth status
   const auth = loadAuth();
