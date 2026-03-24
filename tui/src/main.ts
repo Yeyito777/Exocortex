@@ -117,6 +117,15 @@ function handleSubmit(): void {
         case "get_system_prompt":
           daemon.getSystemPrompt();
           break;
+        case "get_system_instructions":
+          if (state.convId) daemon.getSystemInstructions(state.convId);
+          break;
+        case "set_system_instructions":
+          if (state.convId) daemon.setSystemInstructions(state.convId, cmdResult.instructions);
+          break;
+        case "clear_system_instructions":
+          if (state.convId) daemon.clearSystemInstructions(state.convId);
+          break;
         case "login":
           daemon.login();
           break;

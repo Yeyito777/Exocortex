@@ -36,7 +36,10 @@ export type CommandResult =
   | { type: "login" }
   | { type: "logout" }
   | { type: "theme_changed" }
-  | { type: "get_system_prompt" };
+  | { type: "get_system_prompt" }
+  | { type: "get_system_instructions" }
+  | { type: "set_system_instructions"; instructions: string }
+  | { type: "clear_system_instructions" };
 
 export interface SlashCommand {
   name: string;
@@ -239,6 +242,34 @@ const commands: SlashCommand[] = [
     handler: (_text, state) => {
       clearPrompt(state);
       return { type: "get_system_prompt" };
+    },
+  },
+  {
+    name: "/instructions",
+    description: "View, set, or clear per-conversation system instructions",
+    args: [
+      { name: "clear", desc: "Remove custom instructions" },
+    ],
+    handler: (text, state) => {
+      if (!state.convId) {
+        state.messages.push({ role: "system", text: "No active conversation.", metadata: null });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      const arg = text.slice("/instructions".length).trim();
+      if (!arg) {
+        clearPrompt(state);
+        return { type: "get_system_instructions" };
+      }
+      if (arg === "clear") {
+        state.messages.push({ role: "system", text: "System instructions cleared.", metadata: null });
+        clearPrompt(state);
+        return { type: "clear_system_instructions" };
+      }
+      // Everything after the command name is the instructions text
+      state.messages.push({ role: "system", text: "System instructions updated.", metadata: null });
+      clearPrompt(state);
+      return { type: "set_system_instructions", instructions: arg };
     },
   },
   {
