@@ -17,7 +17,7 @@ transparently — no code changes needed in `server.ts` or `client.ts`.
 Also fix process group handling: Windows doesn't have `kill(-pgid)`, use
 `taskkill /T /PID` or just `child.kill()`.
 
-### 3. Platform-abstract clipboard
+### ~~3. Platform-abstract clipboard~~ ✅
 `tui/src/clipboard.ts` — add a `powershell` backend that uses
 `powershell -Command Get-Clipboard` for text and image clipboard reading.
 

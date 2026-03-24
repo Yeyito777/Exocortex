@@ -4,20 +4,25 @@
  * Reads image data from the system clipboard and returns it
  * as a base64-encoded ImageAttachment for the Anthropic API.
  *
- * Supports both X11 (xclip) and Wayland (wl-paste).
+ * Supports X11 (xclip), Wayland (wl-paste), and Windows (PowerShell).
  */
 
 import { spawnSync } from "child_process";
+import { readFileSync, unlinkSync } from "fs";
+import { isWindows } from "@exocortex/shared/paths";
 import type { ImageAttachment, ImageMediaType } from "./messages";
 
 // ── Backend detection ────────────────────────────────────────────
 
-type ImageClipboardBackend = "xclip" | "wl" | null;
+type ImageClipboardBackend = "xclip" | "wl" | "powershell" | null;
 
 let backend: ImageClipboardBackend | undefined;
 
 function detectBackend(): ImageClipboardBackend {
   if (backend !== undefined) return backend;
+
+  // Windows — PowerShell is always available
+  if (isWindows) { backend = "powershell"; return backend; }
 
   // Check for Wayland first
   if (process.env.WAYLAND_DISPLAY) {
@@ -90,6 +95,41 @@ function readImageWayland(): ImageAttachment | null {
   return null;
 }
 
+function readImagePowerShell(): ImageAttachment | null {
+  // Always saves as PNG regardless of original clipboard format.
+  const script = [
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$img = [System.Windows.Forms.Clipboard]::GetImage()",
+    "if ($img) {",
+    "  try {",
+    "    $path = [System.IO.Path]::GetTempFileName()",
+    "    $img.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)",
+    "    Write-Output $path",
+    "  } finally {",
+    "    $img.Dispose()",
+    "  }",
+    "}",
+  ].join("\n");
+
+  const result = spawnSync("powershell", ["-NoProfile", "-Command", script], { timeout: 5000 });
+  if (result.status !== 0 || !result.stdout) return null;
+
+  const tmpPath = result.stdout.toString().trim();
+  if (!tmpPath) return null;
+
+  try {
+    const buf = readFileSync(tmpPath);
+    if (buf.length === 0) return null;
+    return {
+      mediaType: "image/png",
+      base64: buf.toString("base64"),
+      sizeBytes: buf.length,
+    };
+  } finally {
+    try { unlinkSync(tmpPath); } catch { /* already gone */ }
+  }
+}
+
 // ── Public API ───────────────────────────────────────────────────
 
 /** Read an image from the system clipboard. Returns null if no image is available. */
@@ -97,6 +137,7 @@ export function readClipboardImage(): ImageAttachment | null {
   try {
     const be = detectBackend();
     if (!be) return null;
+    if (be === "powershell") return readImagePowerShell();
     return be === "wl" ? readImageWayland() : readImageXclip();
   } catch {
     // Missing tool or unexpected error — degrade silently
