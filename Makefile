@@ -40,6 +40,7 @@ check-bun:
 # ── Dependencies ─────────────────────────────────────────────────────
 
 deps:
+	@bash $(REPO_DIR)/scripts/check-ipv6.sh
 	@printf '  Installing dependencies...\n'
 	@bun install --frozen-lockfile
 	@printf '  ✓ Dependencies installed\n'
