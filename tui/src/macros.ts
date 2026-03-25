@@ -89,7 +89,7 @@ const MACROS: MacroDef[] = [
       { name: "exocortex", desc: `Commit ${EXO_ROOT}`, expansion: `If you haven't already, commit and push the work inside the Exocortex directory (${EXO_ROOT}).` },
     ],
   },
-  { name: "/noop", desc: "Thoughts only, no edits", expansion: "Don't write or edit any files yet. Just tell me your thoughts on this." },
+  { name: "/noop", desc: "Thoughts only, no edits", expansion: "Don't do any destructive or modificating actions just yet just tell me your thoughts on this" },
   {
     name: "/plan", desc: "Plan only, no edits", expansion: "Come up with a plan for this and tell me it. Don't write or edit any files.",
     args: [
@@ -131,6 +131,7 @@ const MACROS: MacroDef[] = [
       },
     ],
   },
+  { name: "/update", desc: "Update Exocortex", expansion: `Update Exocortex. Pull the latest changes from git, install dependencies, and restart the daemon:\n\n  cd ${EXO_ROOT} && git pull && bun install --frozen-lockfile && systemctl --user restart exocortex-daemon.service\n\nWarn me before restarting the daemon — it will kill your current session.` },
 ];
 
 // ── Recursive flattening helpers ────────────────────────────────
