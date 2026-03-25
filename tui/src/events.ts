@@ -7,7 +7,7 @@
 
 import type { RenderState } from "./state";
 import { isStreaming, clearPendingAI } from "./state";
-import { ensureCurrentBlock, createPendingAI } from "./messages";
+import { ensureCurrentBlock, createPendingAI, truncateToCompletedRounds } from "./messages";
 import type { AIMessage, SystemMessage, ImageAttachment } from "./messages";
 import { updateConversationList, updateConversation, syncSelectedIndex } from "./sidebar";
 import { theme } from "./theme";
@@ -305,10 +305,9 @@ export function handleEvent(
 
     case "stream_retry": {
       if (event.convId !== state.convId) break;
-      // Transient stream error → clear partial blocks so the retry starts fresh
-      if (state.pendingAI) {
-        state.pendingAI.blocks = [];
-      }
+      // Transient stream error → clear only partial blocks from the current
+      // streaming round. Blocks from completed rounds are preserved.
+      if (state.pendingAI) truncateToCompletedRounds(state.pendingAI);
       // Show retry message immediately (not buffered like system_message during streaming)
       state.messages.push({
         role: "system",

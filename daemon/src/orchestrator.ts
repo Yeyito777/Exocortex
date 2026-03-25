@@ -215,7 +215,12 @@ export async function orchestrateSendMessage(
       convStore.touchActivity(convId);
       // Transient stream error → clear partial state so the retry starts clean
       partialContent.length = 0;
+      // Reset streaming blocks to completed rounds only — preserves them for
+      // late-joining clients while clearing partial blocks from the failed stream.
       convStore.initStreamingBlocks(convId);
+      for (const block of agentState.completedBlocks) {
+        convStore.pushStreamingBlock(convId, block);
+      }
       // Persist as system message (survives reload) + send live event (clears TUI blocks immediately)
       const sysText = `⟳ ${errorMessage} — retrying in ${delaySec}s (${attempt}/${maxAttempts})…`;
       conv.messages.push({ role: "system", content: sysText, metadata: null });

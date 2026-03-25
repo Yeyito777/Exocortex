@@ -34,6 +34,30 @@ export function createPendingAI(startedAt: number, model: ModelId): AIMessage {
 }
 
 /**
+ * Truncate an AI message's blocks to the last completed tool round.
+ *
+ * "Completed" means everything through the last tool_result or tool_call
+ * block. Trailing text/thinking blocks (partial content from a failed
+ * streaming attempt) are discarded. This is safe because tool_call and
+ * tool_result blocks are only appended by the agent loop after the API
+ * call returns — they're never partial.
+ *
+ * Used on stream retry to clear stale partial output without losing
+ * blocks from earlier, fully-completed rounds.
+ */
+export function truncateToCompletedRounds(msg: AIMessage): void {
+  let lastCompletedIdx = -1;
+  for (let i = msg.blocks.length - 1; i >= 0; i--) {
+    const t = msg.blocks[i].type;
+    if (t === "tool_result" || t === "tool_call") {
+      lastCompletedIdx = i;
+      break;
+    }
+  }
+  msg.blocks.length = lastCompletedIdx + 1;
+}
+
+/**
  * Get or create the last block of the given type in an AI message.
  * Used during streaming to append chunks to the right block.
  */
