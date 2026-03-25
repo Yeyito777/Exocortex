@@ -6,8 +6,10 @@
  * Requires absolute paths.
  */
 
+import { dirname } from "path";
 import type { Tool, ToolResult, ToolSummary } from "./types";
 import { getString } from "./util";
+import { isWindows } from "@exocortex/shared/paths";
 import { log } from "../log";
 
 // ── Execution ──────────────────────────────────────────────────────
@@ -18,7 +20,8 @@ async function executeWrite(input: Record<string, unknown>): Promise<ToolResult>
 
   if (!filePath) return { output: "Error: missing 'file_path' parameter", isError: true };
   if (content == null) return { output: "Error: missing 'content' parameter", isError: true };
-  if (!filePath.startsWith("/")) {
+  const isAbsolute = isWindows ? /^[A-Za-z]:[\\\/]/.test(filePath) : filePath.startsWith("/");
+  if (!isAbsolute) {
     return { output: `Error: file_path must be absolute, got: ${filePath}`, isError: true };
   }
 
@@ -27,8 +30,8 @@ async function executeWrite(input: Record<string, unknown>): Promise<ToolResult>
     const existed = await file.exists();
 
     // Create parent directories if needed
-    const dir = filePath.slice(0, filePath.lastIndexOf("/"));
-    if (dir) {
+    const dir = dirname(filePath);
+    if (dir && dir !== filePath) {
       const { mkdirSync } = await import("fs");
       try { mkdirSync(dir, { recursive: true }); } catch { /* directory may already exist */ }
     }

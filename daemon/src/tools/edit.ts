@@ -8,6 +8,7 @@
 
 import type { Tool, ToolResult, ToolSummary } from "./types";
 import { getString, getBoolean } from "./util";
+import { isWindows } from "@exocortex/shared/paths";
 import { log } from "../log";
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -25,7 +26,8 @@ async function executeEdit(input: Record<string, unknown>): Promise<ToolResult> 
   if (!filePath) return { output: "Error: missing 'file_path' parameter", isError: true };
   if (oldString == null) return { output: "Error: missing 'old_string' parameter", isError: true };
   if (newString == null) return { output: "Error: missing 'new_string' parameter", isError: true };
-  if (!filePath.startsWith("/")) {
+  const isAbsolute = isWindows ? /^[A-Za-z]:[\\\/]/.test(filePath) : filePath.startsWith("/");
+  if (!isAbsolute) {
     return { output: `Error: file_path must be absolute, got: ${filePath}`, isError: true };
   }
   if (oldString === newString) {

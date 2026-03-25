@@ -168,7 +168,7 @@ async function executeBashImpl(
         env: process.env,
         stdio: ["ignore", "pipe", "pipe"],
         timeout,
-        detached: true,   // own process group so we can kill the entire tree
+        detached: !isWindows,   // own process group so we can kill the entire tree (breaks on Windows)
         windowsHide: isWindows,
       },
     );
