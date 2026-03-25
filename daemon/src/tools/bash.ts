@@ -214,7 +214,10 @@ async function executeBashImpl(
         settled = true;
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         const partial = Buffer.concat(chunks).toString("utf8").trimEnd();
-        let output = `User interrupted after ${elapsed}s of execution.`;
+        const reason = signal.reason === "watchdog"
+          ? `Watchdog timed out after ${elapsed}s (stream was inactive too long).`
+          : `User interrupted after ${elapsed}s of execution.`;
+        let output = reason;
         if (partial) output += ` Partial output captured:\n${partial}`;
         resolve({ output, isError: false });
       };

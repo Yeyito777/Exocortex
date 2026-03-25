@@ -27,7 +27,7 @@ export function startWatchdog(): void {
     for (const [convId, ac, inactiveMs] of stale) {
       const inactiveSec = Math.round(inactiveMs / 1000);
       log("warn", `watchdog: aborting stale stream for ${convId} (inactive ${inactiveSec}s, threshold ${STALE_STREAM_TIMEOUT / 1000}s)`);
-      ac.abort();
+      ac.abort("watchdog");
     }
   }, CHECK_INTERVAL);
   // Don't keep the process alive just for the watchdog

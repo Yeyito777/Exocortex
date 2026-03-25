@@ -119,7 +119,10 @@ async function execTool(
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      return { toolCallId: call.id, toolName: call.name, output: `User interrupted after ${elapsed}s of execution.`, isError: false };
+      const msg = signal?.reason === "watchdog"
+        ? `Watchdog timed out after ${elapsed}s (stream was inactive too long).`
+        : `User interrupted after ${elapsed}s of execution.`;
+      return { toolCallId: call.id, toolName: call.name, output: msg, isError: false };
     }
     return { toolCallId: call.id, toolName: call.name, output: `Tool error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
   }
