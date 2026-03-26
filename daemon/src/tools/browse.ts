@@ -16,6 +16,7 @@ import { log } from "../log";
 // ── Constants ──────────────────────────────────────────────────────
 
 const CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+const MAX_CACHE_ENTRIES = 50;
 
 // ── Cache ──────────────────────────────────────────────────────────
 
@@ -26,6 +27,19 @@ function cleanCache(): void {
   for (const [key, entry] of fetchCache) {
     if (now - entry.ts > CACHE_TTL) fetchCache.delete(key);
   }
+}
+
+function setCacheEntry(url: string, content: string): void {
+  // Evict the oldest entry by timestamp when at capacity
+  if (fetchCache.size >= MAX_CACHE_ENTRIES) {
+    let oldestKey: string | null = null;
+    let oldestTs = Infinity;
+    for (const [k, v] of fetchCache) {
+      if (v.ts < oldestTs) { oldestTs = v.ts; oldestKey = k; }
+    }
+    if (oldestKey !== null) fetchCache.delete(oldestKey);
+  }
+  fetchCache.set(url, { content, ts: Date.now() });
 }
 
 // ── LLM summarization ─────────────────────────────────────────────
@@ -143,8 +157,8 @@ async function executeBrowse(input: Record<string, unknown>, signal?: AbortSigna
         markdown = rawBody;
       }
 
-      // Cache the result
-      fetchCache.set(fetchUrl, { content: markdown, ts: Date.now() });
+      // Cache the result (respects MAX_CACHE_ENTRIES, evicts oldest by timestamp)
+      setCacheEntry(fetchUrl, markdown);
     }
 
     if (!markdown.trim()) {

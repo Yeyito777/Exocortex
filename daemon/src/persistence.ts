@@ -250,6 +250,13 @@ const CONV_DIR = conversationsDir();
 const TRASH_DIR = trashDir();
 const TRASH_META = join(TRASH_DIR, "trash.json");
 
+/** Reject IDs that contain path separators or parent-directory traversal sequences. */
+function assertSafeId(id: string): void {
+  if (/[\/\\]|\.\./.test(id)) {
+    throw new Error(`Invalid conversation ID (path traversal attempt): ${id}`);
+  }
+}
+
 function ensureDir(): void {
   if (!existsSync(CONV_DIR)) {
     mkdirSync(CONV_DIR, { recursive: true, mode: 0o700 });
@@ -263,10 +270,12 @@ function ensureTrashDir(): void {
 }
 
 function convPath(id: string): string {
+  assertSafeId(id);
   return join(CONV_DIR, `${id}.json`);
 }
 
 function trashPath(id: string): string {
+  assertSafeId(id);
   return join(TRASH_DIR, `${id}.json`);
 }
 
@@ -324,6 +333,7 @@ function fromFile(file: ConversationFile): Conversation {
 
 /** Save a conversation to disk (atomic write-then-rename). */
 export function save(conv: Conversation): void {
+  assertSafeId(conv.id);
   ensureDir();
   const file = toFile(conv);
   const dest = convPath(conv.id);
@@ -334,6 +344,7 @@ export function save(conv: Conversation): void {
 
 /** Move a conversation file to trash instead of deleting it. */
 export function trashFile(id: string): void {
+  assertSafeId(id);
   const src = convPath(id);
   try {
     if (!existsSync(src)) return;
@@ -382,6 +393,7 @@ export function restoreLatest(): Conversation | null {
 
 /** Load a single conversation from disk. Returns null if not found or corrupt. */
 export function load(id: string): Conversation | null {
+  assertSafeId(id);
   const path = convPath(id);
   if (!existsSync(path)) return null;
   try {

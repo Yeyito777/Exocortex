@@ -5,10 +5,10 @@ dist/
 external-tools/*
 !external-tools/TOOL_STANDARD.md
 !external-tools/PORT_PROMPT.md
-config/secrets/
-config/data/
-config/runtime/
-config/storage/
+config/secrets
+config/data
+config/runtime
+config/storage
 config/cron/*
 !config/cron/.gitkeep
 *.lock*

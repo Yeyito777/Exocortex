@@ -5,36 +5,23 @@
  * Each function is a complete subcommand — runs and exits.
  */
 
-import { loadAuth, saveAuth, isTokenExpired } from "./store";
-import { login, refreshTokens, verifyAuth } from "./auth";
+import { ensureAuthenticated } from "./auth";
 
 // ── Login ──────────────────────────────────────────────────────────
 
 export async function handleLogin(): Promise<void> {
   console.log("\n  Exocortex — Authentication\n");
 
-  // Check existing credentials
-  const existing = loadAuth();
-  if (existing?.tokens?.accessToken && !isTokenExpired(existing.tokens)) {
-    const valid = await verifyAuth(existing.tokens.accessToken);
-    if (valid) {
-      console.log(`  ✓ Already authenticated as ${existing.profile?.email ?? "unknown"}\n`);
-      return;
-    }
-  }
+  const { status, email } = await ensureAuthenticated({
+    onProgress: (msg) => console.log(`  ${msg}`),
+  });
 
-  // Try token refresh
-  if (existing?.tokens?.refreshToken) {
-    try {
-      const newTokens = await refreshTokens(existing.tokens.refreshToken);
-      saveAuth({ ...existing, tokens: newTokens, updatedAt: new Date().toISOString() });
-      console.log(`  ✓ Session refreshed (${existing.profile?.email ?? "unknown"})\n`);
-      return;
-    } catch { /* refresh failed — fall through to full login */ }
+  const name = email ?? "unknown";
+  if (status === "already_authenticated") {
+    console.log(`  ✓ Already authenticated as ${name}\n`);
+  } else if (status === "refreshed") {
+    console.log(`  ✓ Session refreshed (${name})\n`);
+  } else {
+    console.log(`\n  ✓ Authenticated as ${name}\n`);
   }
-
-  // Full OAuth flow
-  const result = await login((msg) => console.log(`  ${msg}`));
-  saveAuth({ tokens: result.tokens, profile: result.profile, updatedAt: new Date().toISOString() });
-  console.log(`\n  ✓ Authenticated as ${result.profile?.email ?? "unknown"}\n`);
 }

@@ -137,6 +137,29 @@ export function clearPendingAI(state: RenderState): void {
   state.pendingAI = null;
 }
 
+// ── Focus transition helpers ──────────────────────────────────────
+// Centralise the mode+focus combos that are repeated across call sites.
+
+/** Focus the prompt in insert mode. */
+export function focusPrompt(state: RenderState): void {
+  state.panelFocus = "chat";
+  state.chatFocus = "prompt";
+  if (state.vim.mode !== "insert") state.vim.mode = "insert";
+}
+
+/** Focus chat history in normal mode. */
+export function focusHistory(state: RenderState): void {
+  state.panelFocus = "chat";
+  state.chatFocus = "history";
+  state.vim.mode = "normal";
+}
+
+/** Focus the sidebar in normal mode. */
+export function focusSidebar(state: RenderState): void {
+  state.panelFocus = "sidebar";
+  state.vim.mode = "normal";
+}
+
 export function createInitialState(): RenderState {
   const s: RenderState = {
     messages: [],

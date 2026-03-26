@@ -25,8 +25,8 @@ import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./histo
 import { renderLineWithCursor, renderLineWithSelection } from "./cursorrender";
 import { highlightPromptInput } from "./prompthighlight";
 import { formatSize, imageLabel } from "./clipboard";
-
-import type { QueuePromptState, EditMessageState } from "./state";
+import { renderQueuePromptOverlay } from "./overlays";
+import { renderEditMessageOverlay } from "./overlays";
 
 // ── ANSI positioning (non-color escapes) ────────────────────────────
 
@@ -105,6 +105,265 @@ function renderImageIndicator(images: ImageAttachment[], width: number): string 
   );
 }
 
+// ── Shared render context ───────────────────────────────────────────
+
+/**
+ * Shared rendering primitives computed once in render() and threaded
+ * through extracted sub-functions. Avoids long parameter lists.
+ */
+interface RenderCtx {
+  /** Output buffer — sub-functions push ANSI strings here. */
+  out: string[];
+  /** Clear-line escape pre-filled with app background. */
+  cl: string;
+  /** Whether the sidebar is currently open. */
+  sidebarOpen: boolean;
+  /** Pre-rendered sidebar rows (one per screen row). */
+  sbRows: string[];
+  /** 1-based column where the chat area starts (after sidebar). */
+  chatCol: number;
+  /** Apply app background to a line (identity when no appBg). */
+  bgLine: (line: string) => string;
+}
+
+/** Emit a sidebar column for the given screen row (if sidebar is open). */
+function emitSidebarCol(ctx: RenderCtx, screenRow: number): void {
+  if (ctx.sidebarOpen && ctx.sbRows[screenRow - 1]) {
+    ctx.out.push(ctx.sbRows[screenRow - 1]);
+  }
+}
+
+// ── Extracted sub-functions ──────────────────────────────────────────
+
+/**
+ * Render the scrollable message/history area (rows 3 to sepAbove-1).
+ * Handles visual selection highlighting, normal-mode line highlight,
+ * and history cursor rendering.
+ */
+function renderMessageArea(
+  ctx: RenderCtx,
+  allLines: string[],
+  totalLines: number,
+  viewStart: number,
+  messageAreaStart: number,
+  messageAreaHeight: number,
+  historyFocused: boolean,
+  inVisual: boolean,
+  vimMode: string,
+  vAnchor: { row: number; col: number },
+  vCursor: { row: number; col: number },
+  vStartRow: number,
+  vEndRow: number,
+  hlFirst: number,
+  hlLast: number,
+): void {
+  const { out, cl, chatCol, bgLine } = ctx;
+
+  for (let i = 0; i < messageAreaHeight; i++) {
+    const row = messageAreaStart + i;
+    out.push(move_to(row, 1) + cl);
+    emitSidebarCol(ctx, row);
+    // Chat content at chatCol
+    out.push(move_to(row, chatCol));
+    const lineIdx = viewStart + i;
+    if (lineIdx < totalLines) {
+      const line = allLines[lineIdx];
+
+      if (inVisual && lineIdx >= vStartRow && lineIdx <= vEndRow) {
+        // This line is part of the visual selection — text-bound highlight
+        const plain = stripAnsi(line);
+        const bounds = contentBounds(plain);
+        let startCol: number;
+        let endCol: number;
+
+        if (vimMode === "visual-line") {
+          // Line mode: highlight content bounds (not full terminal width)
+          startCol = bounds.start;
+          endCol = bounds.end;
+        } else if (vStartRow === vEndRow) {
+          // Single-line character selection
+          startCol = Math.min(vAnchor.col, vCursor.col);
+          endCol = Math.max(vAnchor.col, vCursor.col);
+        } else if (lineIdx === vStartRow) {
+          const anchorIsStart = vAnchor.row <= vCursor.row;
+          startCol = anchorIsStart ? vAnchor.col : vCursor.col;
+          endCol = bounds.end;
+        } else if (lineIdx === vEndRow) {
+          const anchorIsStart = vAnchor.row <= vCursor.row;
+          startCol = bounds.start;
+          endCol = anchorIsStart ? vCursor.col : vAnchor.col;
+        } else {
+          // Middle lines: full content bounds
+          startCol = bounds.start;
+          endCol = bounds.end;
+        }
+
+        let rendered = renderLineWithSelection(line, startCol, endCol);
+        // Cursor overlay on cursor row
+        if (lineIdx === vCursor.row) {
+          rendered = renderLineWithCursor(rendered, vCursor.col);
+        }
+        out.push(bgLine(rendered));
+      } else if (historyFocused && lineIdx >= hlFirst && lineIdx <= hlLast) {
+        // Normal mode: highlight the full logical line group
+        if (lineIdx === vCursor.row) {
+          const withCursor = renderLineWithCursor(line, vCursor.col);
+          out.push(applyLineBg(withCursor, theme.historyLineBg));
+        } else {
+          out.push(applyLineBg(line, theme.historyLineBg));
+        }
+      } else {
+        out.push(bgLine(line));
+      }
+    }
+  }
+}
+
+/**
+ * Render the autocomplete popup overlay above the input area.
+ * Floats over the message area when the autocomplete state is active.
+ */
+function renderAutocompletePopup(
+  ctx: RenderCtx,
+  state: RenderState,
+  chatW: number,
+  sepAbove: number,
+): void {
+  if (!state.autocomplete || state.autocomplete.matches.length === 0) return;
+
+  const { out, chatCol } = ctx;
+  const { matches, selection: sel } = state.autocomplete;
+  const maxName = matches.reduce((m, c) => Math.max(m, c.name.length), 0);
+  const maxDesc = matches.reduce((m, c) => Math.max(m, c.desc.length), 0);
+  const popupWidth = Math.min(maxName + maxDesc + 6, chatW - 2);
+  const nameWidth = maxName + 1;
+  const descWidth = popupWidth - nameWidth - 4;
+
+  const maxVisible = Math.max(1, sepAbove - 3);
+  const total = matches.length;
+  const winSize = Math.min(total, maxVisible);
+  let winStart = 0;
+
+  if (total > maxVisible && sel >= 0) {
+    const ideal = sel - Math.floor(winSize / 2);
+    winStart = Math.max(0, Math.min(ideal, total - winSize));
+  }
+
+  const topRow = sepAbove - winSize;
+  for (let vi = 0; vi < winSize; vi++) {
+    const i = winStart + vi;
+    const row = topRow + vi;
+    const isSelected = sel === i;
+    const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;
+    const marker = isSelected ? "▸ " : "  ";
+    const name = matches[i].name.padEnd(nameWidth);
+    const desc = matches[i].desc.slice(0, descWidth).padEnd(descWidth);
+    out.push(
+      move_to(row, chatCol) + bg + theme.accent + marker
+      + theme.text + name + theme.dim + desc + theme.reset,
+    );
+  }
+
+  // Scroll indicators when items are clipped
+  if (winStart > 0) {
+    out.push(
+      move_to(topRow, chatCol + popupWidth - 2)
+      + theme.sidebarBg + theme.dim + " ▲" + theme.reset,
+    );
+  }
+  if (winStart + winSize < total) {
+    out.push(
+      move_to(topRow + winSize - 1, chatCol + popupWidth - 2)
+      + theme.sidebarBg + theme.dim + " ▼" + theme.reset,
+    );
+  }
+}
+
+/**
+ * Render the prompt input rows (mode indicator, prompt glyph, and
+ * syntax-highlighted input text with optional visual selection).
+ */
+function renderInputArea(
+  ctx: RenderCtx,
+  state: RenderState,
+  inputRowCount: number,
+  firstInputRow: number,
+  coloredInputLines: string[],
+  isNewLine: boolean[],
+  maxInputWidth: number,
+  newPromptScroll: number,
+  promptFocused: boolean,
+): void {
+  const { out, cl, chatCol, bgLine } = ctx;
+  const promptInVisual = promptFocused
+    && (state.vim.mode === "visual" || state.vim.mode === "visual-line");
+  // Compute once for all visual-selection calls inside the loop
+  const inputOffsets = promptInVisual ? wrappedLineOffsets(state.inputBuffer, maxInputWidth) : [];
+
+  for (let i = 0; i < inputRowCount; i++) {
+    const row = firstInputRow + i;
+    const promptStyle = promptFocused ? theme.accent : theme.dim;
+
+    const isFirst = i === 0 && !isNewLine[i];
+    const promptGlyph = isFirst ? ">" : "+";
+    const modeChar = (state.vim.mode === "visual" || state.vim.mode === "visual-line") ? "V"
+      : state.vim.mode === "normal" ? "N"
+        : "I";
+    const modeColor = (state.vim.mode === "visual" || state.vim.mode === "visual-line")
+      ? theme.vimVisual
+      : state.vim.mode === "normal" ? theme.vimNormal : theme.vimInsert;
+    const prompt = isFirst
+      ? `${modeColor}${modeChar}${theme.reset} ${promptStyle}${promptGlyph}${theme.reset} `
+      : `  ${promptStyle}${promptGlyph}${theme.reset} `;
+
+    let lineContent = coloredInputLines[i];
+    if (promptInVisual) {
+      // Apply selection highlight to prompt input line (works on ANSI-colored text)
+      const selStart = Math.min(state.vim.visualAnchor, state.cursorPos);
+      const selEnd = Math.max(state.vim.visualAnchor, state.cursorPos);
+      lineContent = highlightPromptLine(lineContent, newPromptScroll + i, selStart, selEnd,
+        state.inputBuffer, inputOffsets, state.vim.mode === "visual-line");
+    }
+
+    out.push(move_to(row, 1) + cl);
+    emitSidebarCol(ctx, row);
+    out.push(move_to(row, chatCol) + bgLine(prompt + lineContent));
+  }
+}
+
+/**
+ * Position the terminal cursor and set its shape based on the current
+ * focus and vim mode. Hides the cursor when history is focused (the
+ * history cursor is rendered inline via reverse video).
+ */
+function renderCursorPosition(
+  ctx: RenderCtx,
+  state: RenderState,
+  promptFocused: boolean,
+  firstInputRow: number,
+  cursorLine: number,
+  cursorCol: number,
+  promptLen: number,
+): void {
+  const { out, chatCol } = ctx;
+  if (promptFocused) {
+    const cursorScreenRow = firstInputRow + cursorLine;
+    out.push(move_to(cursorScreenRow, chatCol + promptLen + cursorCol));
+    // Vim: block cursor in normal mode, bar cursor in insert mode
+    out.push(
+      state.vim.mode === "insert" ? cursor_bar
+        : (state.vim.pendingOperator || state.vim.pendingReplace) ? cursor_underline
+        : cursor_block,
+    );
+    out.push(show_cursor);
+  } else {
+    // History cursor is rendered inline (reverse video) — hide hardware cursor
+    out.push(hide_cursor);
+  }
+}
+
+// ── Main render ─────────────────────────────────────────────────────
+
 export function render(state: RenderState): void {
   const { cols, rows } = state;
   const out: string[] = [];
@@ -123,8 +382,6 @@ export function render(state: RenderState): void {
   const chatW = Math.max(1, cols - sidebarW); // width available for chat area
 
   // ── Pre-render sidebar ────────────────────────────────────────
-  // renderSidebar returns one row per screen row: header, separator,
-  // then list entries. Each row includes the right border │.
   let sbRows: string[] = [];
   if (sidebarOpen) {
     sbRows = renderSidebar(
@@ -135,11 +392,13 @@ export function render(state: RenderState): void {
     );
   }
 
+  // ── Shared render context ─────────────────────────────────────
+  const ctx: RenderCtx = { out, cl, sidebarOpen, sbRows, chatCol, bgLine };
+
   // ── Top bar (row 1, full width) ───────────────────────────────
   out.push(move_to(1, 1) + cl);
   if (sidebarOpen) {
     out.push(sbRows[0]);
-    // Chat portion of topbar starts at chatCol
     out.push(move_to(1, chatCol));
   }
   out.push(renderTopbar(state, chatW));
@@ -234,186 +493,47 @@ export function render(state: RenderState): void {
     hlLast = range.last;
   }
 
-  for (let i = 0; i < messageAreaHeight; i++) {
-    const row = messageAreaStart + i;
-    out.push(move_to(row, 1) + cl);
-    // Sidebar column (if open)
-    if (sidebarOpen && sbRows[row - 1]) {
-      out.push(sbRows[row - 1]);
-    }
-    // Chat content at chatCol
-    out.push(move_to(row, chatCol));
-    const lineIdx = viewStart + i;
-    if (lineIdx < totalLines) {
-      const line = allLines[lineIdx];
-
-      if (inVisual && lineIdx >= vStartRow && lineIdx <= vEndRow) {
-        // This line is part of the visual selection — text-bound highlight
-        const plain = stripAnsi(line);
-        const bounds = contentBounds(plain);
-        let startCol: number;
-        let endCol: number;
-
-        if (state.vim.mode === "visual-line") {
-          // Line mode: highlight content bounds (not full terminal width)
-          startCol = bounds.start;
-          endCol = bounds.end;
-        } else if (vStartRow === vEndRow) {
-          // Single-line character selection
-          startCol = Math.min(vAnchor.col, vCursor.col);
-          endCol = Math.max(vAnchor.col, vCursor.col);
-        } else if (lineIdx === vStartRow) {
-          const anchorIsStart = vAnchor.row <= vCursor.row;
-          startCol = anchorIsStart ? vAnchor.col : vCursor.col;
-          endCol = bounds.end;
-        } else if (lineIdx === vEndRow) {
-          const anchorIsStart = vAnchor.row <= vCursor.row;
-          startCol = bounds.start;
-          endCol = anchorIsStart ? vCursor.col : vAnchor.col;
-        } else {
-          // Middle lines: full content bounds
-          startCol = bounds.start;
-          endCol = bounds.end;
-        }
-
-        let rendered = renderLineWithSelection(line, startCol, endCol);
-        // Cursor overlay on cursor row
-        if (lineIdx === state.historyCursor.row) {
-          rendered = renderLineWithCursor(rendered, state.historyCursor.col);
-        }
-        out.push(bgLine(rendered));
-      } else if (historyFocused && lineIdx >= hlFirst && lineIdx <= hlLast) {
-        // Normal mode: highlight the full logical line group
-        if (lineIdx === state.historyCursor.row) {
-          const withCursor = renderLineWithCursor(line, state.historyCursor.col);
-          out.push(applyLineBg(withCursor, theme.historyLineBg));
-        } else {
-          out.push(applyLineBg(line, theme.historyLineBg));
-        }
-      } else {
-        out.push(bgLine(line));
-      }
-    }
-  }
+  renderMessageArea(
+    ctx, allLines, totalLines, viewStart,
+    messageAreaStart, messageAreaHeight,
+    historyFocused, inVisual, state.vim.mode,
+    vAnchor, vCursor, vStartRow, vEndRow,
+    hlFirst, hlLast,
+  );
 
   // ── Autocomplete popup (overlays message area above input) ────
-  if (state.autocomplete && state.autocomplete.matches.length > 0) {
-    const { matches, selection: sel } = state.autocomplete;
-    const maxName = matches.reduce((m, c) => Math.max(m, c.name.length), 0);
-    const maxDesc = matches.reduce((m, c) => Math.max(m, c.desc.length), 0);
-    const popupWidth = Math.min(maxName + maxDesc + 6, chatW - 2);
-    const nameWidth = maxName + 1;
-    const descWidth = popupWidth - nameWidth - 4;
-
-    const maxVisible = Math.max(1, sepAbove - 3);
-    const total = matches.length;
-    const winSize = Math.min(total, maxVisible);
-    let winStart = 0;
-
-    if (total > maxVisible && sel >= 0) {
-      const ideal = sel - Math.floor(winSize / 2);
-      winStart = Math.max(0, Math.min(ideal, total - winSize));
-    }
-
-    const topRow = sepAbove - winSize;
-    for (let vi = 0; vi < winSize; vi++) {
-      const i = winStart + vi;
-      const row = topRow + vi;
-      const isSelected = sel === i;
-      const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;
-      const marker = isSelected ? "▸ " : "  ";
-      const name = matches[i].name.padEnd(nameWidth);
-      const desc = matches[i].desc.slice(0, descWidth).padEnd(descWidth);
-      out.push(
-        move_to(row, chatCol) + bg + theme.accent + marker
-        + theme.text + name + theme.dim + desc + theme.reset,
-      );
-    }
-
-    // Scroll indicators when items are clipped
-    if (winStart > 0) {
-      out.push(
-        move_to(topRow, chatCol + popupWidth - 2)
-        + theme.sidebarBg + theme.dim + " ▲" + theme.reset,
-      );
-    }
-    if (winStart + winSize < total) {
-      out.push(
-        move_to(topRow + winSize - 1, chatCol + popupWidth - 2)
-        + theme.sidebarBg + theme.dim + " ▼" + theme.reset,
-      );
-    }
-  }
+  renderAutocompletePopup(ctx, state, chatW, sepAbove);
 
   // ── Separator above input ─────────────────────────────────────
   out.push(move_to(sepAbove, 1) + cl);
-  if (sidebarOpen && sbRows[sepAbove - 1]) {
-    out.push(sbRows[sepAbove - 1]);
-  }
+  emitSidebarCol(ctx, sepAbove);
   out.push(move_to(sepAbove, chatCol) + bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
 
   // ── Image indicator (between separator and prompt) ────────────
   if (imageIndicatorRows > 0) {
     const indRow = sepAbove + 1;
     out.push(move_to(indRow, 1) + cl);
-    if (sidebarOpen && sbRows[indRow - 1]) {
-      out.push(sbRows[indRow - 1]);
-    }
+    emitSidebarCol(ctx, indRow);
     out.push(move_to(indRow, chatCol) + bgLine(renderImageIndicator(state.pendingImages, chatW)));
   }
 
   // ── Input rows ────────────────────────────────────────────────
-  const promptInVisual = promptFocused
-    && (state.vim.mode === "visual" || state.vim.mode === "visual-line");
-  // Compute once for all visual-selection calls inside the loop
-  const inputOffsets = promptInVisual ? wrappedLineOffsets(state.inputBuffer, maxInputWidth) : [];
-
-  for (let i = 0; i < inputRowCount; i++) {
-    const row = firstInputRow + i;
-    const promptGlyph = (i === 0 && !isNewLine[i]) ? ">" : "+";
-    const promptStyle = promptFocused ? theme.accent : theme.dim;
-
-    const isFirst = i === 0 && !isNewLine[i];
-    const modeChar = (state.vim.mode === "visual" || state.vim.mode === "visual-line") ? "V"
-      : state.vim.mode === "normal" ? "N"
-        : "I";
-    const modeColor = (state.vim.mode === "visual" || state.vim.mode === "visual-line")
-      ? theme.vimVisual
-      : state.vim.mode === "normal" ? theme.vimNormal : theme.vimInsert;
-    const prompt = isFirst
-      ? `${modeColor}${modeChar}${theme.reset} ${promptStyle}${promptGlyph}${theme.reset} `
-      : `  ${promptStyle}${promptGlyph}${theme.reset} `;
-
-    let lineContent = coloredInputLines[i];
-    if (promptInVisual) {
-      // Apply selection highlight to prompt input line (works on ANSI-colored text)
-      const selStart = Math.min(state.vim.visualAnchor, state.cursorPos);
-      const selEnd = Math.max(state.vim.visualAnchor, state.cursorPos);
-      lineContent = highlightPromptLine(lineContent, newPromptScroll + i, selStart, selEnd,
-        state.inputBuffer, inputOffsets, state.vim.mode === "visual-line");
-    }
-
-    out.push(move_to(row, 1) + cl);
-    if (sidebarOpen && sbRows[row - 1]) {
-      out.push(sbRows[row - 1]);
-    }
-    out.push(move_to(row, chatCol) + bgLine(prompt + lineContent));
-  }
+  renderInputArea(
+    ctx, state, inputRowCount, firstInputRow,
+    coloredInputLines, isNewLine, maxInputWidth, newPromptScroll,
+    promptFocused,
+  );
 
   // ── Separator below input ─────────────────────────────────────
   out.push(move_to(sepBelow, 1) + cl);
-  if (sidebarOpen && sbRows[sepBelow - 1]) {
-    out.push(sbRows[sepBelow - 1]);
-  }
+  emitSidebarCol(ctx, sepBelow);
   out.push(move_to(sepBelow, chatCol) + bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
 
   // ── Status lines (chat area width) ─────────────────────────────
   for (let i = 0; i < slHeight; i++) {
     const row = sepBelow + 1 + i;
     out.push(move_to(row, 1) + cl);
-    if (sidebarOpen && sbRows[row - 1]) {
-      out.push(sbRows[row - 1]);
-    }
+    emitSidebarCol(ctx, row);
     out.push(move_to(row, chatCol) + bgLine(statusLines[i]));
   }
 
@@ -428,205 +548,7 @@ export function render(state: RenderState): void {
   }
 
   // ── Cursor ─────────────────────────────────────────────────────
-  if (promptFocused) {
-    const cursorScreenRow = firstInputRow + cursorLine;
-    out.push(move_to(cursorScreenRow, chatCol + promptLen + cursorCol));
-    // Vim: block cursor in normal mode, bar cursor in insert mode
-    out.push(
-      state.vim.mode === "insert" ? cursor_bar
-        : (state.vim.pendingOperator || state.vim.pendingReplace) ? cursor_underline
-        : cursor_block,
-    );
-    out.push(show_cursor);
-  } else {
-    // History cursor is rendered inline (reverse video) — hide hardware cursor
-    out.push(hide_cursor);
-  }
+  renderCursorPosition(ctx, state, promptFocused, firstInputRow, cursorLine, cursorCol, promptLen);
 
   process.stdout.write(out.join(""));
-}
-
-// ── Queue prompt overlay ───────────────────────────────────────────
-
-function renderQueuePromptOverlay(
-  qp: QueuePromptState,
-  chatW: number,
-  chatCol: number,
-  sepRow: number,
-): string {
-  let result = "";
-
-  // Preview of the message being queued (truncated)
-  const preview = qp.text.replace(/\n/g, " ").slice(0, 40);
-  const previewLabel = preview.length < qp.text.replace(/\n/g, " ").length ? preview + "…" : preview;
-
-  // Box content lines
-  const titleLine = "Queue message:";
-  const msgLine = `"${previewLabel}"`;
-  const optLine1 = `${qp.selection === "message-end" ? "▸ " : "  "}message end`;
-  const optLine2 = `${qp.selection === "next-turn" ? "▸ " : "  "}next turn`;
-  const contentLines = [titleLine, msgLine, "", optLine1, optLine2];
-  const innerWidth = Math.min(
-    Math.max(...contentLines.map(l => l.length)) + 4,
-    chatW - 4,
-  );
-  const boxWidth = innerWidth + 2; // +2 for borders
-
-  // Position: centered horizontally in chat area, just above input separator
-  const boxLeft = chatCol + Math.floor((chatW - boxWidth) / 2);
-  const boxTop = Math.max(3, sepRow - contentLines.length - 2);
-
-  // Top border
-  result += move_to(boxTop, boxLeft);
-  result += `${theme.sidebarBg}${theme.accent}┌${"─".repeat(innerWidth)}┐${theme.reset}`;
-
-  // Content lines
-  for (let i = 0; i < contentLines.length; i++) {
-    const row = boxTop + 1 + i;
-    if (row >= sepRow) break; // don't overlap input area
-    const line = contentLines[i];
-    const padRight = Math.max(0, innerWidth - line.length);
-
-    let fg = theme.muted;
-    let bg = theme.sidebarBg;
-    if (i === 0) fg = theme.text;    // title
-    if (i === 1) fg = theme.muted;   // preview
-
-    if (i === 3 || i === 4) {
-      // Options
-      const isSelected = (i === 3 && qp.selection === "message-end") ||
-                         (i === 4 && qp.selection === "next-turn");
-      if (isSelected) {
-        bg = theme.sidebarSelBg;
-        fg = theme.accent;
-      } else {
-        fg = theme.text;
-      }
-    }
-
-    result += move_to(row, boxLeft);
-    result += `${theme.sidebarBg}${theme.accent}│${bg}${fg}`;
-    result += `${line}${" ".repeat(padRight)}`;
-    result += `${theme.reset}${theme.sidebarBg}${theme.accent}│${theme.reset}`;
-  }
-
-  // Bottom border
-  const bottomRow = boxTop + 1 + contentLines.length;
-  if (bottomRow < sepRow) {
-    result += move_to(bottomRow, boxLeft);
-    result += `${theme.sidebarBg}${theme.accent}└${"─".repeat(innerWidth)}┘${theme.reset}`;
-  }
-
-  return result;
-}
-
-// ── Edit message overlay ──────────────────────────────────────────
-
-function renderEditMessageOverlay(
-  em: EditMessageState,
-  chatW: number,
-  chatCol: number,
-  sepRow: number,
-  messageAreaHeight: number,
-): string {
-  let result = "";
-
-  const titleLine = "Edit message:";
-
-  // Build display lines: truncated previews of each item
-  const maxPreviewLen = Math.min(50, chatW - 12);
-  const previews = em.items.map((item) => {
-    const raw = item.text.replace(/\n/g, " ");
-    return raw.length > maxPreviewLen ? raw.slice(0, maxPreviewLen) + "…" : raw;
-  });
-  const maxContentLen = Math.max(
-    titleLine.length,
-    ...previews.map(p => p.length + 2), // +2 for marker "▸ "
-  );
-  const innerWidth = Math.min(maxContentLen + 4, chatW - 4);
-  const boxWidth = innerWidth + 2;
-
-  // Max visible items (leave room for title, blank line, borders)
-  const maxVisible = Math.min(em.items.length, Math.max(3, messageAreaHeight - 4));
-
-  // Scroll window to keep selection visible
-  let scrollStart = em.scrollOffset;
-  if (em.selection < scrollStart) scrollStart = em.selection;
-  if (em.selection >= scrollStart + maxVisible) scrollStart = em.selection - maxVisible + 1;
-  scrollStart = Math.max(0, Math.min(scrollStart, em.items.length - maxVisible));
-  em.scrollOffset = scrollStart;
-
-  // Content: title, blank, visible items
-  const contentLines: { text: string; plain: string; style: "title" | "item" | "blank"; itemIdx?: number }[] = [];
-  contentLines.push({ text: titleLine, plain: titleLine, style: "title" });
-  contentLines.push({ text: "", plain: "", style: "blank" });
-  for (let vi = 0; vi < maxVisible; vi++) {
-    const i = scrollStart + vi;
-    const marker = em.selection === i ? "▸ " : "  ";
-    contentLines.push({
-      text: marker + previews[i],
-      plain: marker + previews[i],
-      style: "item",
-      itemIdx: i,
-    });
-  }
-
-  // Position: centered horizontally, anchored above input separator
-  const boxLeft = chatCol + Math.floor((chatW - boxWidth) / 2);
-  const boxTop = Math.max(3, sepRow - contentLines.length - 2);
-
-  // Top border
-  result += move_to(boxTop, boxLeft);
-  result += `${theme.sidebarBg}${theme.accent}┌${"─".repeat(innerWidth)}┐${theme.reset}`;
-
-  // Content lines
-  for (let i = 0; i < contentLines.length; i++) {
-    const row = boxTop + 1 + i;
-    if (row >= sepRow) break;
-    const cl = contentLines[i];
-    const plainLen = cl.plain.length;
-    const padRight = Math.max(0, innerWidth - plainLen);
-
-    let fg = theme.text;
-    let bg = theme.sidebarBg;
-
-    if (cl.style === "title") {
-      fg = theme.text;
-    } else if (cl.style === "item") {
-      const isSelected = cl.itemIdx === em.selection;
-      const isQueued = cl.itemIdx !== undefined && em.items[cl.itemIdx]?.isQueued;
-      if (isSelected) {
-        bg = theme.sidebarSelBg;
-        fg = isQueued ? theme.muted : theme.accent;
-      } else {
-        fg = isQueued ? theme.muted : theme.text;
-      }
-    }
-
-    result += move_to(row, boxLeft);
-    result += `${theme.sidebarBg}${theme.accent}│${bg}${fg}`;
-    result += `${cl.text}${" ".repeat(padRight)}`;
-    result += `${theme.reset}${theme.sidebarBg}${theme.accent}│${theme.reset}`;
-  }
-
-  // Scroll indicators
-  if (scrollStart > 0) {
-    const indRow = boxTop + 3; // first item row
-    result += move_to(indRow, boxLeft + boxWidth - 3);
-    result += `${theme.sidebarBg}${theme.dim} ▲${theme.reset}`;
-  }
-  if (scrollStart + maxVisible < em.items.length) {
-    const indRow = boxTop + 2 + maxVisible; // last item row
-    result += move_to(indRow, boxLeft + boxWidth - 3);
-    result += `${theme.sidebarBg}${theme.dim} ▼${theme.reset}`;
-  }
-
-  // Bottom border
-  const bottomRow = boxTop + 1 + contentLines.length;
-  if (bottomRow < sepRow) {
-    result += move_to(bottomRow, boxLeft);
-    result += `${theme.sidebarBg}${theme.accent}└${"─".repeat(innerWidth)}┘${theme.reset}`;
-  }
-
-  return result;
 }
