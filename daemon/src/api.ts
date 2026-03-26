@@ -115,6 +115,16 @@ export interface StreamOptions {
   effort?: EffortLevel;
 }
 
+// ── Simulated SSE error (for testing) ─────────────────────────────
+// When enabled, each AI turn has a 1-in-3 chance of hitting a fake
+// "Overloaded" SSE error mid-stream (after some content has arrived).
+// The retry machinery handles it like a real overloaded_error.
+// Remove this block (and the injection in readStream) when done testing.
+const SIMULATE_SSE_ERRORS = true;
+const SIMULATE_ERROR_PROBABILITY = 1 / 3;
+/** Min content_block_delta events before injecting the simulated error. */
+const SIMULATE_MIN_DELTAS = 3;
+
 /** Non-retryable SSE error types — bad request, auth, or model not found. */
 const NON_RETRYABLE_STREAM_ERRORS = new Set([
   "invalid_request_error",
@@ -239,7 +249,7 @@ function finalizeBlock(
   }
 }
 
-async function readStream(res: Response, cb: StreamCallbacks): Promise<StreamResult> {
+async function readStream(res: Response, cb: StreamCallbacks, simulateError = false): Promise<StreamResult> {
   if (!res.body) throw new Error("No response body");
 
   let fullText = "";
@@ -250,6 +260,9 @@ async function readStream(res: Response, cb: StreamCallbacks): Promise<StreamRes
   const toolCalls: ApiToolCall[] = [];
   const orderedBlocks: ContentBlock[] = [];
   const blocks = new Map<number, BlockState>();
+
+  // Simulated SSE error state — counts content_block_delta events
+  let simulateDeltaCount = 0;
 
   const processEvent = (event: Record<string, unknown>) => {
     switch (event.type) {
@@ -290,6 +303,11 @@ async function readStream(res: Response, cb: StreamCallbacks): Promise<StreamRes
           cb.onSignature?.(delta.signature);
         } else if (delta?.type === "input_json_delta") {
           block.inputJson += delta.partial_json;
+        }
+        // ── Simulated SSE overloaded error ──────────────────────
+        if (simulateError && ++simulateDeltaCount >= SIMULATE_MIN_DELTAS) {
+          log("warn", "api: [SIMULATED] injecting fake SSE overloaded_error mid-stream");
+          throw new RetryableStreamError("Overloaded");
         }
         break;
       }
@@ -400,6 +418,11 @@ export async function streamMessage(
   let authRetried = false;
   let retryAttempt = 0;
 
+  // Decide once per streamMessage call whether to simulate an error.
+  // Only fires on the first attempt — retries proceed normally.
+  const simulateError = SIMULATE_SSE_ERRORS && Math.random() < SIMULATE_ERROR_PROBABILITY;
+  if (simulateError) log("warn", "api: [SIMULATED] this stream will hit a fake overloaded_error mid-stream");
+
   while (true) {
     const { url, init } = buildRequest(accessToken, messages, model, maxTokens, system, tools, effort);
     const res = await fetch(url, { ...init, signal });
@@ -431,7 +454,8 @@ export async function streamMessage(
 
     callbacks.onHeaders?.(res.headers);
     try {
-      return await readStream(res, callbacks);
+      // Only inject simulated error on the first attempt — retries succeed.
+      return await readStream(res, callbacks, simulateError && retryAttempt === 0);
     } catch (err) {
       // Retryable stream error → same backoff as HTTP-level errors
       if (err instanceof RetryableStreamError && retryAttempt < MAX_RETRIES) {
