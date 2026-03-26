@@ -57,9 +57,22 @@ echo ""
 # everything is resolved, and catches stale/partial node_modules.
 (cd "$WORKTREE_DIR" && bun install --silent)
 
+# ── Shared secrets ──────────────────────────────────────────────────
+
+# Secrets (API keys, OAuth tokens) live in the main repo and are
+# gitignored, so worktrees don't get them on checkout.  Symlink the
+# main repo's secrets dir so all worktrees share the same credentials.
+MAIN_SECRETS="$EXOCORTEX_ROOT/config/secrets"
+WT_SECRETS="$WORKTREE_DIR/config/secrets"
+
+if [[ -d "$MAIN_SECRETS" && ! -e "$WT_SECRETS" ]]; then
+  mkdir -p "$(dirname "$WT_SECRETS")"
+  ln -s "$MAIN_SECRETS" "$WT_SECRETS"
+fi
+
 # ── Daemon ──────────────────────────────────────────────────────────
 
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/exocortex"
+CONFIG_DIR="$WORKTREE_DIR/config"
 RUNTIME_DIR="$CONFIG_DIR/runtime/$WT_NAME"
 PID_FILE="$RUNTIME_DIR/exocortexd.pid"
 SOCKET="$RUNTIME_DIR/exocortexd.sock"
