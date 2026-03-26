@@ -8,6 +8,7 @@
 
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
+import { focusPrompt } from "./state";
 import { resolveAction } from "./keybinds";
 import { handlePromptKey, type PromptKeyResult } from "./promptline";
 
@@ -58,8 +59,7 @@ function handleHistoryFocused(key: KeyEvent, state: RenderState): ChatKeyResult 
   switch (action) {
     case "focus_prompt":
       // i/a → prompt
-      state.chatFocus = "prompt";
-      state.vim.mode = "insert";
+      focusPrompt(state);
       return { type: "handled" };
 
     case "nav_up":

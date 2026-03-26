@@ -58,6 +58,27 @@ export function truncateToCompletedRounds(msg: AIMessage): void {
 }
 
 /**
+ * Split a pending AI message at its current position.
+ *
+ * Moves existing blocks into a finalized AI message (returned) and
+ * resets the original for continuation (blocks emptied, metadata kept).
+ * Returns null if there are no blocks to commit.
+ *
+ * Used when a mid-stream event (retry, queued user message) needs
+ * to appear inline between completed and upcoming blocks.
+ */
+export function splitPendingAI(msg: AIMessage): AIMessage | null {
+  if (msg.blocks.length === 0) return null;
+  const finalized: AIMessage = {
+    role: "assistant",
+    blocks: msg.blocks,
+    metadata: null,
+  };
+  msg.blocks = [];
+  return finalized;
+}
+
+/**
  * Get or create the last block of the given type in an AI message.
  * Used during streaming to append chunks to the right block.
  */

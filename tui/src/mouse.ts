@@ -9,6 +9,7 @@
 
 import type { MouseEvent } from "./input";
 import type { RenderState } from "./state";
+import { focusPrompt, focusSidebar } from "./state";
 import type { KeyResult } from "./focus";
 import { scrollBy, getViewStart } from "./chat";
 import { sidebarHitTest, scrollSidebar, syncSelectedIndex, SIDEBAR_WIDTH } from "./sidebar";
@@ -106,8 +107,7 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
 
   // ── Focus follows mouse ─────────────────────────────────────────
   if (inSidebar && state.panelFocus !== "sidebar") {
-    state.panelFocus = "sidebar";
-    state.vim.mode = "normal";
+    focusSidebar(state);
     // Default cursor to the current conversation
     if (state.convId) {
       state.sidebar.selectedId = state.convId;
@@ -174,9 +174,7 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
 
     // Click in prompt area → focus prompt
     if (layout.firstInputRow > 0 && row >= layout.firstInputRow && row < layout.sepBelow) {
-      state.panelFocus = "chat";
-      state.chatFocus = "prompt";
-      if (state.vim.mode !== "insert") state.vim.mode = "insert";
+      focusPrompt(state);
       return { type: "handled" };
     }
   }
