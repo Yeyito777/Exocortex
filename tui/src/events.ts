@@ -7,7 +7,7 @@
 
 import type { RenderState } from "./state";
 import { isStreaming, clearPendingAI } from "./state";
-import { ensureCurrentBlock, createPendingAI, truncateToCompletedRounds } from "./messages";
+import { ensureCurrentBlock, createPendingAI, truncateToCompletedRounds, splitPendingAI } from "./messages";
 import type { AIMessage, SystemMessage, ImageAttachment } from "./messages";
 import { updateConversationList, updateConversation, syncSelectedIndex } from "./sidebar";
 import { theme } from "./theme";
@@ -309,10 +309,14 @@ export function handleEvent(
     }
 
     case "stream_retry": {
-      // Transient stream error → clear only partial blocks from the current
-      // streaming round. Blocks from completed rounds are preserved.
-      if (state.pendingAI) truncateToCompletedRounds(state.pendingAI);
-      // Show retry message immediately (not buffered like system_message during streaming)
+      // Transient stream error mid-stream. Split pendingAI so the retry
+      // message appears inline at the correct position — same pattern as
+      // user_message interleaving. history_updated rebuilds after completion.
+      if (state.pendingAI) {
+        truncateToCompletedRounds(state.pendingAI);
+        const finalized = splitPendingAI(state.pendingAI);
+        if (finalized) state.messages.push(finalized);
+      }
       state.messages.push({
         role: "system",
         text: `⟳ ${event.errorMessage} — retrying in ${event.delaySec}s (${event.attempt}/${event.maxAttempts})…`,
@@ -327,17 +331,9 @@ export function handleEvent(
       // inline between tool rounds (after completed blocks, before new ones).
       // This is purely for visual correctness during streaming — after
       // completion, history_updated rebuilds from canonical daemon state.
-      if (state.pendingAI && state.pendingAI.blocks.length > 0) {
-        const finalized: AIMessage = {
-          role: "assistant",
-          blocks: [...state.pendingAI.blocks],
-          metadata: null,
-        };
-        state.messages.push(finalized);
-        state.pendingAI = createPendingAI(
-          state.pendingAI.metadata!.startedAt,
-          state.pendingAI.metadata!.model,
-        );
+      if (state.pendingAI) {
+        const finalized = splitPendingAI(state.pendingAI);
+        if (finalized) state.messages.push(finalized);
       }
 
       state.messages.push({ role: "user", text: event.text, images: event.images, metadata: null });

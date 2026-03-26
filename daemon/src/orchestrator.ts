@@ -17,6 +17,40 @@ import type { DaemonServer, ConnectedClient } from "./server";
 import type { StoredMessage, ApiContentBlock } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 
+// ── Helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Interleave retry system markers into a message array at the correct positions.
+ * Each marker's `afterIndex` indicates how many messages should precede it.
+ *
+ * Example: marker at afterIndex=6 goes between messages[5] and messages[6].
+ *
+ * Markers must be sorted by afterIndex (ascending). This holds naturally
+ * since they're appended chronologically and completed-round counts are
+ * monotonically non-decreasing.
+ */
+function interleaveRetryMarkers(
+  messages: StoredMessage[],
+  markers: Array<{ afterIndex: number; text: string }>,
+): StoredMessage[] {
+  if (markers.length === 0) return messages;
+  const result: StoredMessage[] = [];
+  let mi = 0;
+  for (let i = 0; i < messages.length; i++) {
+    while (mi < markers.length && markers[mi].afterIndex <= i) {
+      result.push({ role: "system", content: markers[mi].text, metadata: null });
+      mi++;
+    }
+    result.push(messages[i]);
+  }
+  // Trailing markers (after all messages)
+  while (mi < markers.length) {
+    result.push({ role: "system", content: markers[mi].text, metadata: null });
+    mi++;
+  }
+  return result;
+}
+
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface OrchestrationCallbacks {
@@ -102,6 +136,11 @@ export async function orchestrateSendMessage(
   // When true, the success path sends history_updated so the TUI
   // rebuilds its display with correct interleaving.
   let hadNextTurnInjections = false;
+
+  // Retry markers — tracked with their position (number of completed
+  // messages at the time of the retry) so they can be interleaved at
+  // the correct spot in conv.messages on the success/error path.
+  const retryMarkers: Array<{ afterIndex: number; text: string }> = [];
 
   // The current user message is the last entry in conv.messages.
   // All messages from the current agent loop (newMessages) aren't in
@@ -221,10 +260,11 @@ export async function orchestrateSendMessage(
       for (const block of agentState.completedBlocks) {
         convStore.pushStreamingBlock(convId, block);
       }
-      // Persist as system message (survives reload) + send live event (clears TUI blocks immediately)
+      // Track for correct interleaving on the success/error path.
+      // Don't push to conv.messages now — newMessages haven't been pushed yet,
+      // so a system message here would end up before all AI blocks.
       const sysText = `⟳ ${errorMessage} — retrying in ${delaySec}s (${attempt}/${maxAttempts})…`;
-      conv.messages.push({ role: "system", content: sysText, metadata: null });
-      convStore.markDirty(convId);
+      retryMarkers.push({ afterIndex: agentState.completedMessages.length, text: sysText });
       server.sendToSubscribers(convId, { type: "stream_retry", convId, attempt, maxAttempts, errorMessage, delaySec });
     },
     onRoundComplete() {
@@ -322,7 +362,10 @@ export async function orchestrateSendMessage(
 
     // Push the actual conversation messages — preserves the full
     // multi-turn structure (assistant → user[tool_result] → assistant → ...)
-    conv.messages.push(...storedMessages);
+    // Interleave retry markers at the correct positions so system messages
+    // appear between the rounds where they actually occurred.
+    const interleavedMessages = interleaveRetryMarkers(storedMessages, retryMarkers);
+    conv.messages.push(...interleavedMessages);
     conv.updatedAt = Date.now();
     convStore.bumpToTop(convId);
 
@@ -333,25 +376,6 @@ export async function orchestrateSendMessage(
       endedAt,
       tokens: result.tokens,
     });
-
-    // When next-turn messages were injected mid-stream, the TUI's live
-    // display has the user message appended after all streaming blocks
-    // (slightly wrong position). Now that conv.messages has the correct
-    // interleaved structure, send history_updated so the TUI rebuilds
-    // with proper ordering (AI part 1 → user msg → AI part 2).
-    if (hadNextTurnInjections) {
-      convStore.markDirty(convId);
-      convStore.flush(convId);
-      const displayData = convStore.getDisplayData(convId);
-      if (displayData) {
-        server.sendToSubscribers(convId, {
-          type: "history_updated",
-          convId,
-          entries: displayData.entries,
-          contextTokens: displayData.contextTokens,
-        });
-      }
-    }
 
     log("info", `orchestrator: message complete for ${convId} (${result.tokens} tokens, ${result.blocks.length} blocks, ${endedAt - startedAt}ms)`);
 
@@ -380,17 +404,18 @@ export async function orchestrateSendMessage(
       log("info", `orchestrator: stream interrupted for ${convId}`);
     }
 
-    // Persist completed rounds from the agent (full tool-use exchanges).
-    if (agentState.completedMessages.length > 0) {
-      const stored: StoredMessage[] = agentState.completedMessages.map(m => ({
-        role: m.role,
-        content: m.content,
-        metadata: null,
-      }));
+    // Persist completed rounds from the agent (full tool-use exchanges),
+    // interleaving retry markers at the correct positions.
+    const completedStored: StoredMessage[] = agentState.completedMessages.map(m => ({
+      role: m.role,
+      content: m.content,
+      metadata: null,
+    }));
+    if (completedStored.length > 0) {
       // Stamp metadata on the last completed assistant — mirrors the success path.
       // Without this, when a tool round completed before abort took effect,
       // onRoundComplete cleared partialContent and metadata would be lost.
-      const lastAssistant = [...stored].reverse().find(m => m.role === "assistant");
+      const lastAssistant = [...completedStored].reverse().find(m => m.role === "assistant");
       if (lastAssistant) {
         lastAssistant.metadata = {
           startedAt,
@@ -399,7 +424,10 @@ export async function orchestrateSendMessage(
           tokens: agentState.tokens,
         };
       }
-      conv.messages.push(...stored);
+    }
+    const interleavedCompleted = interleaveRetryMarkers(completedStored, retryMarkers);
+    if (interleavedCompleted.length > 0) {
+      conv.messages.push(...interleavedCompleted);
     }
 
     // Persist the in-flight partial response (current round's streamed content).
@@ -460,6 +488,23 @@ export async function orchestrateSendMessage(
     server.sendToSubscribers(convId, { type: "streaming_stopped", convId, persistedBlocks: abortPersistedBlocks });
     // Broadcast updated summary (streaming=false, possibly unread=true)
     server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
+
+    // When mid-stream interleaving happened (retries or next-turn injections),
+    // the TUI's live display has messages in approximate order. Now that
+    // conv.messages has the correct interleaved structure, send history_updated
+    // so the TUI rebuilds with proper ordering from canonical data.
+    if (retryMarkers.length > 0 || hadNextTurnInjections) {
+      const displayData = convStore.getDisplayData(convId);
+      if (displayData) {
+        server.sendToSubscribers(convId, {
+          type: "history_updated",
+          convId,
+          entries: displayData.entries,
+          contextTokens: displayData.contextTokens,
+        });
+      }
+    }
+
     ext.onComplete();
 
     // Drain remaining queued messages. "next-turn" messages that weren't
