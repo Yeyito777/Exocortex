@@ -305,10 +305,29 @@ export function handleEvent(
 
     case "stream_retry": {
       if (event.convId !== state.convId) break;
-      // Transient stream error → clear only partial blocks from the current
-      // streaming round. Blocks from completed rounds are preserved.
-      if (state.pendingAI) truncateToCompletedRounds(state.pendingAI);
-      // Show retry message immediately (not buffered like system_message during streaming)
+      // Transient stream error mid-stream. Split pendingAI so the retry
+      // message appears inline at the correct position — same pattern as
+      // user_message interleaving. history_updated rebuilds after completion.
+      if (state.pendingAI) {
+        // Strip partial blocks from the failed streaming attempt, keeping
+        // only blocks from fully completed tool rounds.
+        truncateToCompletedRounds(state.pendingAI);
+        // Commit completed-round blocks as a finalized AI message
+        if (state.pendingAI.blocks.length > 0) {
+          const finalized: AIMessage = {
+            role: "assistant",
+            blocks: [...state.pendingAI.blocks],
+            metadata: null,
+          };
+          state.messages.push(finalized);
+        }
+        // Fresh pendingAI for the retry's blocks
+        state.pendingAI = createPendingAI(
+          state.pendingAI.metadata!.startedAt,
+          state.pendingAI.metadata!.model,
+        );
+      }
+      // Push retry message after the committed blocks (correct visual position)
       state.messages.push({
         role: "system",
         text: `⟳ ${event.errorMessage} — retrying in ${event.delaySec}s (${event.attempt}/${event.maxAttempts})…`,
