@@ -11,7 +11,7 @@ export interface KeyEvent {
       | "up" | "down"
       | "ctrl-b" | "ctrl-c" | "ctrl-d" | "ctrl-e" | "ctrl-f"
       | "ctrl-j" | "ctrl-k" | "ctrl-l" | "ctrl-m" | "ctrl-n"
-      | "ctrl-o" | "ctrl-q" | "ctrl-r" | "ctrl-s" | "ctrl-u" | "ctrl-v" | "ctrl-w" | "ctrl-y"
+      | "ctrl-o" | "ctrl-p" | "ctrl-q" | "ctrl-r" | "ctrl-s" | "ctrl-u" | "ctrl-v" | "ctrl-w" | "ctrl-y"
       | "ctrl-shift-o"
       | "shift-enter"
       | "f14" | "f15" | "f16" | "f17" | "f18" | "f19"
@@ -68,6 +68,7 @@ const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
   "109;5": "ctrl-m",         // Ctrl+M (m=109)
   "110;5": "ctrl-n",         // Ctrl+N (n=110)
   "111;5": "ctrl-o",         // Ctrl+O (o=111)
+  "112;5": "ctrl-p",         // Ctrl+P (p=112)
   "113;5": "ctrl-q",         // Ctrl+Q (q=113)
   "114;5": "ctrl-r",         // Ctrl+R (r=114)
   "115;5": "ctrl-s",         // Ctrl+S (s=115)
@@ -192,6 +193,7 @@ export function parseInput(data: Buffer | string): InputEvent[] {
     if (code === 12) { events.push({ type: "ctrl-l" }); i++; continue; }
     if (code === 14) { events.push({ type: "ctrl-n" }); i++; continue; }
     if (code === 15) { events.push({ type: "ctrl-o" }); i++; continue; }
+    if (code === 16) { events.push({ type: "ctrl-p" }); i++; continue; }
     if (code === 17) { events.push({ type: "ctrl-q" }); i++; continue; }
     if (code === 18) { events.push({ type: "ctrl-r" }); i++; continue; }
     if (code === 19) { events.push({ type: "ctrl-s" }); i++; continue; }

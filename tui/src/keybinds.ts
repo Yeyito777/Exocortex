@@ -101,6 +101,7 @@ const BINDS: Record<string, Action> = {
   "ctrl-n":     "focus_history",
 
   // Conversation
+  "ctrl-p":       "new_conversation",
   "ctrl-shift-o": "new_conversation",
 
   // Clipboard image paste
