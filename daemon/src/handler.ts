@@ -217,7 +217,7 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "queue_message": {
-        convStore.pushQueuedMessage(cmd.convId, cmd.text, cmd.timing);
+        convStore.pushQueuedMessage(cmd.convId, cmd.text, cmd.timing, cmd.images);
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         log("info", `handler: queued ${cmd.timing} message for ${cmd.convId}: "${cmd.text.slice(0, 50)}"`);
         break;

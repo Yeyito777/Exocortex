@@ -297,7 +297,10 @@ export function handleEvent(
       clearLocalQueue(state, event.convId);
       if (event.queuedMessages && event.queuedMessages.length > 0) {
         for (const qm of event.queuedMessages) {
-          state.queuedMessages.push({ convId: event.convId, text: qm.text, timing: qm.timing });
+          state.queuedMessages.push({
+            convId: event.convId, text: qm.text, timing: qm.timing,
+            ...(qm.images?.length ? { images: qm.images } : {}),
+          });
         }
       }
       break;

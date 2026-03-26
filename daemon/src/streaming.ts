@@ -9,7 +9,7 @@
  * Conversation data and persistence live in conversations.ts.
  */
 
-import type { Block } from "./messages";
+import type { Block, ImageAttachment } from "./messages";
 import type { QueueTiming } from "./protocol";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -17,6 +17,7 @@ import type { QueueTiming } from "./protocol";
 export interface QueuedMessage {
   text: string;
   timing: QueueTiming;
+  images?: ImageAttachment[];
 }
 
 // ── State ───────────────────────────────────────────────────────────
@@ -163,13 +164,13 @@ export function getQueuedMessages(convId: string): QueuedMessage[] {
 }
 
 /** Push a message onto a conversation's queue. */
-export function pushQueuedMessage(convId: string, text: string, timing: QueueTiming): void {
+export function pushQueuedMessage(convId: string, text: string, timing: QueueTiming, images?: ImageAttachment[]): void {
   let queue = messageQueues.get(convId);
   if (!queue) {
     queue = [];
     messageQueues.set(convId, queue);
   }
-  queue.push({ text, timing });
+  queue.push({ text, timing, ...(images?.length ? { images } : {}) });
 }
 
 /**

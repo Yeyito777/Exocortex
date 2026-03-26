@@ -242,8 +242,18 @@ export async function orchestrateSendMessage(
         // Broadcast to TUI subscribers so they see the queued message appear.
         // Don't push to conv.messages — the agent loop includes injected
         // messages in newMessages, which get pushed on the success/abort path.
-        server.sendToSubscribers(convId, { type: "user_message", convId, text: qm.text });
-        apiMsgs.push({ role: "user", content: qm.text });
+        server.sendToSubscribers(convId, { type: "user_message", convId, text: qm.text, images: qm.images });
+        // Build API content — structured array when images are present
+        const content: string | import("./messages").ApiContentBlock[] = qm.images?.length
+          ? [
+              ...qm.images.map((img): import("./messages").ApiContentBlock => ({
+                type: "image",
+                source: { type: "base64", media_type: img.mediaType, data: img.base64 },
+              })),
+              ...(qm.text ? [{ type: "text" as const, text: qm.text }] : []),
+            ]
+          : qm.text;
+        apiMsgs.push({ role: "user", content });
         log("info", `orchestrator: injected next-turn message: "${qm.text.slice(0, 50)}"`);
       }
       return apiMsgs;
@@ -471,13 +481,13 @@ export async function orchestrateSendMessage(
       const first = allQueued[0];
       // Re-queue the rest for the next cycle
       for (let i = 1; i < allQueued.length; i++) {
-        convStore.pushQueuedMessage(convId, allQueued[i].text, allQueued[i].timing);
+        convStore.pushQueuedMessage(convId, allQueued[i].text, allQueued[i].timing, allQueued[i].images);
       }
       log("info", `orchestrator: draining queued message: "${first.text.slice(0, 50)}"`);
       // Kick off a new send cycle — null client so user_message broadcasts to everyone.
       // Await to keep the chain in a single promise so errors propagate and
       // the conversation stays consistent (no orphaned background streams).
-      await orchestrateSendMessage(server, null, undefined, convId, first.text, Date.now(), ext);
+      await orchestrateSendMessage(server, null, undefined, convId, first.text, Date.now(), ext, first.images);
     }
   }
 }

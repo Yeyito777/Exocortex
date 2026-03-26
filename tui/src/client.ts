@@ -152,8 +152,8 @@ export class DaemonClient {
     this.send({ type: "rename_conversation", convId, title });
   }
 
-  queueMessage(convId: string, text: string, timing: QueueTiming): void {
-    this.send({ type: "queue_message", convId, text, timing });
+  queueMessage(convId: string, text: string, timing: QueueTiming, images?: ImageAttachment[]): void {
+    this.send({ type: "queue_message", convId, text, timing, ...(images?.length ? { images } : {}) });
   }
 
   unqueueMessage(convId: string, text: string): void {

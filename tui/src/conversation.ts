@@ -358,7 +358,7 @@ export function buildMessageLines(
       const timingLabel = qm.timing === "next-turn" ? "queued: next turn" : "queued: message end";
       pushLine("");
       // Render a dimmed user bubble
-      const qr = renderUserMessage(qm.text, availableWidth);
+      const qr = renderUserMessage(qm.text, availableWidth, qm.images);
       for (let i = 0; i < qr.lines.length; i++) {
         pushLine(`${theme.muted}${qr.lines[i]}${theme.reset}`);
       }

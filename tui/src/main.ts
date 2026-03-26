@@ -135,13 +135,11 @@ function handleSubmit(): void {
   const messageText = expandMacros(text);
 
   if (isStreaming(state)) {
-    // Queue system doesn't support images yet — drop them with a warning
-    if (hasImages) {
-      state.pendingImages = [];
-      state.messages.push({ role: "system", text: "⚠ Images can't be queued — only text will be sent.", color: theme.warning, metadata: null });
-    }
+    // Preserve images in the queue prompt so they travel with the message
+    const queueImages = hasImages ? [...state.pendingImages] : undefined;
+    if (hasImages) state.pendingImages = [];
     // Show queue prompt overlay — let user choose when to send
-    state.queuePrompt = { text: messageText, selection: "message-end" };
+    state.queuePrompt = { text: messageText, selection: "message-end", images: queueImages };
     scheduleRender();
     return;
   }
@@ -183,10 +181,9 @@ function handleKey(key: KeyEvent): void {
       if (qr.action === "send_direct") {
         clearPrompt(state);
         state.scrollOffset = 0;
-        // No images — queue system is text-only (images cleared on queue entry)
-        sendDirectly(qr.text);
+        sendDirectly(qr.text, qr.images);
       } else if (qr.action === "queue") {
-        daemon.queueMessage(qr.convId, qr.text, qr.timing);
+        daemon.queueMessage(qr.convId, qr.text, qr.timing, qr.images);
       }
       break;
     }

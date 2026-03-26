@@ -14,6 +14,7 @@
  */
 
 import type { KeyEvent } from "./input";
+import type { ImageAttachment } from "./messages";
 import type { RenderState, QueueTiming, QueuedMessage } from "./state";
 import { isStreaming } from "./state";
 
@@ -62,8 +63,8 @@ export function handleQueuePromptKey(key: KeyEvent, state: RenderState): QueueKe
 // ── Confirm / cancel ───────────────────────────────────────────────
 
 export type ConfirmResult =
-  | { action: "send_direct"; text: string }
-  | { action: "queue"; convId: string; text: string; timing: QueueTiming }
+  | { action: "send_direct"; text: string; images?: ImageAttachment[] }
+  | { action: "queue"; convId: string; text: string; timing: QueueTiming; images?: ImageAttachment[] }
   | { action: "cancel" };
 
 /**
@@ -80,10 +81,11 @@ export function confirmQueueMessage(state: RenderState): ConfirmResult {
   // If streaming already finished while the overlay was showing, send directly
   if (!isStreaming(state) && convId) {
     const text = qp.text;
+    const images = qp.images;
     state.queuePrompt = null;
     state.inputBuffer = "";
     state.cursorPos = 0;
-    return { action: "send_direct", text };
+    return { action: "send_direct", text, images };
   }
 
   if (!convId) {
@@ -95,21 +97,23 @@ export function confirmQueueMessage(state: RenderState): ConfirmResult {
   }
 
   // Queue the message — local shadow for display
-  const queued: QueuedMessage = { convId, text: qp.text, timing };
+  const images = qp.images;
+  const queued: QueuedMessage = { convId, text: qp.text, timing, ...(images?.length ? { images } : {}) };
   state.queuedMessages.push(queued);
   state.queuePrompt = null;
   state.inputBuffer = "";
   state.cursorPos = 0;
-  return { action: "queue", convId, text: qp.text, timing };
+  return { action: "queue", convId, text: qp.text, timing, images };
 }
 
 /**
- * Cancel the queue prompt — restore the text to the input buffer.
+ * Cancel the queue prompt — restore the text and images to the input buffer.
  */
 export function cancelQueuePrompt(state: RenderState): void {
   const qp = state.queuePrompt!;
   state.inputBuffer = qp.text;
   state.cursorPos = qp.text.length;
+  if (qp.images?.length) state.pendingImages = qp.images;
   state.queuePrompt = null;
 }
 

@@ -30,11 +30,13 @@ export interface QueuedMessage {
   convId: string;
   text: string;
   timing: QueueTiming;
+  images?: ImageAttachment[];
 }
 
 export interface QueuePromptState {
   text: string;            // the message text being queued
   selection: QueueTiming;  // which option is highlighted
+  images?: ImageAttachment[];
 }
 
 // ── Edit message modal types ──────────────────────────────────────

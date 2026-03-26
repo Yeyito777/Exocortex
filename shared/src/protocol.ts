@@ -134,6 +134,7 @@ export interface QueueMessageCommand {
   convId: string;
   text: string;
   timing: QueueTiming;
+  images?: ImageAttachment[];
 }
 
 export interface UnqueueMessageCommand {
@@ -322,6 +323,7 @@ export type DisplayEntry =
 export interface QueuedMessageInfo {
   text: string;
   timing: QueueTiming;
+  images?: ImageAttachment[];
 }
 
 export interface ConversationLoadedEvent {

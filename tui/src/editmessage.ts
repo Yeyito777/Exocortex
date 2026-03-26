@@ -41,6 +41,7 @@ export function openEditMessageModal(state: RenderState): void {
       userMessageIndex: -1,
       text: qm.text,
       isQueued: true,
+      images: qm.images,
     });
   }
 

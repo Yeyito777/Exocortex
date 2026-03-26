@@ -460,12 +460,20 @@ function renderQueuePromptOverlay(
   const preview = qp.text.replace(/\n/g, " ").slice(0, 40);
   const previewLabel = preview.length < qp.text.replace(/\n/g, " ").length ? preview + "…" : preview;
 
+  // Image badge lines (e.g. "📎 PNG (93.1 KB)")
+  const imageBadges: string[] = [];
+  if (qp.images?.length) {
+    for (const img of qp.images) {
+      imageBadges.push(`📎 ${imageLabel(img.mediaType)} (${formatSize(img.sizeBytes)})`);
+    }
+  }
+
   // Box content lines
   const titleLine = "Queue message:";
   const msgLine = `"${previewLabel}"`;
   const optLine1 = `${qp.selection === "message-end" ? "▸ " : "  "}message end`;
   const optLine2 = `${qp.selection === "next-turn" ? "▸ " : "  "}next turn`;
-  const contentLines = [titleLine, msgLine, "", optLine1, optLine2];
+  const contentLines = [titleLine, msgLine, ...imageBadges, "", optLine1, optLine2];
   const innerWidth = Math.min(
     Math.max(...contentLines.map(l => l.length)) + 4,
     chatW - 4,
@@ -480,6 +488,10 @@ function renderQueuePromptOverlay(
   result += move_to(boxTop, boxLeft);
   result += `${theme.sidebarBg}${theme.accent}┌${"─".repeat(innerWidth)}┐${theme.reset}`;
 
+  // Indices of the two option lines (always the last two)
+  const opt1Idx = contentLines.length - 2; // "message end"
+  const opt2Idx = contentLines.length - 1; // "next turn"
+
   // Content lines
   for (let i = 0; i < contentLines.length; i++) {
     const row = boxTop + 1 + i;
@@ -492,10 +504,10 @@ function renderQueuePromptOverlay(
     if (i === 0) fg = theme.text;    // title
     if (i === 1) fg = theme.muted;   // preview
 
-    if (i === 3 || i === 4) {
+    if (i === opt1Idx || i === opt2Idx) {
       // Options
-      const isSelected = (i === 3 && qp.selection === "message-end") ||
-                         (i === 4 && qp.selection === "next-turn");
+      const isSelected = (i === opt1Idx && qp.selection === "message-end") ||
+                         (i === opt2Idx && qp.selection === "next-turn");
       if (isSelected) {
         bg = theme.sidebarSelBg;
         fg = theme.accent;
