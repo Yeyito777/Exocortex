@@ -7,7 +7,7 @@
  */
 
 import type { Tool, ToolResult, ToolSummary } from "./types";
-import { getString, summarizeParams } from "./util";
+import { getString, getBoolean, summarizeParams } from "./util";
 import { isWindows } from "@exocortex/shared/paths";
 import { log } from "../log";
 
