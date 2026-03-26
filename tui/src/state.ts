@@ -39,8 +39,13 @@ export interface QueuePromptState {
 
 // ── Edit message modal types ──────────────────────────────────────
 
+/** Sentinel index for system instructions in the edit message modal. */
+export const EDIT_INDEX_INSTRUCTIONS = -2;
+/** Sentinel index for queued messages in the edit message modal. */
+export const EDIT_INDEX_QUEUED = -1;
+
 export interface EditMessageItem {
-  /** Index counting only user messages (0-based). -1 for queued messages. */
+  /** Index counting only user messages (0-based). -1 for queued, -2 for system instructions. */
   userMessageIndex: number;
   text: string;
   isQueued: boolean;

@@ -164,6 +164,10 @@ export class DaemonClient {
     this.send({ type: "unwind_conversation", convId, userMessageIndex });
   }
 
+  setSystemInstructions(convId: string, text: string): void {
+    this.send({ type: "set_system_instructions", convId, text });
+  }
+
   listConversations(): void {
     this.send({ type: "list_conversations" });
   }
@@ -180,8 +184,8 @@ export class DaemonClient {
     this.send({ type: "logout" });
   }
 
-  getSystemPrompt(): void {
-    this.send({ type: "get_system_prompt" });
+  getSystemPrompt(convId?: string): void {
+    this.send({ type: "get_system_prompt", convId });
   }
 
   llmComplete(

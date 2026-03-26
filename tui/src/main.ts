@@ -115,7 +115,10 @@ function handleSubmit(): void {
           }
           break;
         case "get_system_prompt":
-          daemon.getSystemPrompt();
+          daemon.getSystemPrompt(state.convId ?? undefined);
+          break;
+        case "set_system_instructions":
+          if (state.convId) daemon.setSystemInstructions(state.convId, cmdResult.text);
           break;
         case "login":
           daemon.login();
@@ -204,6 +207,9 @@ function handleKey(key: KeyEvent): void {
         // The daemon's unwindTo handles abort internally if streaming,
         // waits for the stream to stop, then truncates.
         daemon.unwindConversation(state.convId, er.userMessageIndex);
+      } else if (er.action === "edit_instructions") {
+        // Text is placed in prompt as "/instructions <text>" — user edits and submits
+        // through the normal slash command flow. Nothing else to do here.
       }
       break;
     }

@@ -148,6 +148,39 @@ export function rename(id: string, title: string): boolean {
   return true;
 }
 
+/** Set or update per-conversation system instructions. Empty text clears them. */
+export function setSystemInstructions(id: string, text: string): boolean {
+  const conv = conversations.get(id);
+  if (!conv) return false;
+
+  const hasExisting = conv.messages.length > 0 && conv.messages[0].role === "system_instructions";
+
+  if (text === "") {
+    // Clear: remove the system_instructions message if present
+    if (hasExisting) conv.messages.splice(0, 1);
+  } else if (hasExisting) {
+    // Update existing
+    conv.messages[0].content = text;
+  } else {
+    // Insert new at the front
+    conv.messages.unshift({ role: "system_instructions", content: text, metadata: null });
+  }
+
+  markDirty(id);
+  flush(id);
+  return true;
+}
+
+/** Get the per-conversation system instructions text, or null if none. */
+export function getSystemInstructions(id: string): string | null {
+  const conv = conversations.get(id);
+  if (!conv) return null;
+  if (conv.messages.length > 0 && conv.messages[0].role === "system_instructions") {
+    return typeof conv.messages[0].content === "string" ? conv.messages[0].content : null;
+  }
+  return null;
+}
+
 /**
  * Unwind a conversation to before the Nth user message (0-based).
  * Removes that user message and everything after it.
@@ -161,9 +194,11 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   // Validate the index before doing anything destructive.
   // Only count real user messages — tool_result messages also have
   // role="user" but are invisible in the TUI (folded into AI entries).
+  // Skip system_instructions (always at index 0) — they're never unwound.
   let spliceAt = -1;
   let userCount = 0;
   for (let i = 0; i < conv.messages.length; i++) {
+    if (conv.messages[i].role === "system_instructions") continue;
     if (conv.messages[i].role === "user" && !isToolResultMessage(conv.messages[i])) {
       if (userCount === userMessageIndex) { spliceAt = i; break; }
       userCount++;

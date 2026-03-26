@@ -18,7 +18,7 @@ import { DEFAULT_EFFORT, sortConversations } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 9;
+const CURRENT_VERSION = 10;
 
 interface ConversationFileV1 {
   version: 1;
@@ -128,7 +128,22 @@ interface ConversationFileV9 {
   title: string;
 }
 
-type ConversationFile = ConversationFileV9;
+interface ConversationFileV10 {
+  version: 10;
+  id: string;
+  model: ModelId;
+  effort: EffortLevel;
+  messages: StoredMessage[];
+  createdAt: number;
+  updatedAt: number;
+  lastContextTokens: number | null;
+  marked: boolean;
+  pinned: boolean;
+  sortOrder: number;
+  title: string;
+}
+
+type ConversationFile = ConversationFileV10;
 
 // ── Migrations ──────────────────────────────────────────────────────
 
@@ -222,6 +237,14 @@ function migrateV8toV9(data: ConversationFileV8): ConversationFileV9 {
   };
 }
 
+/** v9 → v10: Support system_instructions message role (no-op — just bump version). */
+function migrateV9toV10(data: ConversationFileV9): ConversationFileV10 {
+  return {
+    ...data,
+    version: 10,
+  };
+}
+
 function migrate(raw: Record<string, unknown>): ConversationFile {
   // Progressive migration — each function validates and upgrades one version.
   // `any` is intentional at this deserialization boundary: the data is parsed
@@ -236,6 +259,7 @@ function migrate(raw: Record<string, unknown>): ConversationFile {
   if (data.version < 7) data = migrateV6toV7(data);
   if (data.version < 8) data = migrateV7toV8(data);
   if (data.version < 9) data = migrateV8toV9(data);
+  if (data.version < 10) data = migrateV9toV10(data);
 
   if (data.version !== CURRENT_VERSION) {
     log("warn", `persistence: unknown schema version ${data.version}, attempting to load as v${CURRENT_VERSION}`);

@@ -36,7 +36,8 @@ export type CommandResult =
   | { type: "login" }
   | { type: "logout" }
   | { type: "theme_changed" }
-  | { type: "get_system_prompt" };
+  | { type: "get_system_prompt" }
+  | { type: "set_system_instructions"; text: string };
 
 export interface SlashCommand {
   name: string;
@@ -231,6 +232,37 @@ const commands: SlashCommand[] = [
       }
       clearPrompt(state);
       return { type: "handled" };
+    },
+  },
+  {
+    name: "/instructions",
+    description: "Set, show, or clear per-conversation system instructions",
+    args: [{ name: "clear", desc: "Clear instructions" }],
+    handler: (text, state) => {
+      if (!state.convId) {
+        state.messages.push({ role: "system", text: "No active conversation.", metadata: null });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      const arg = text.slice("/instructions".length);
+      const trimmed = arg.trimStart();
+      if (!trimmed) {
+        // Show current instructions
+        const instrMsg = state.messages.find((m): m is import("./messages").SystemInstructionsMessage => m.role === "system_instructions");
+        if (instrMsg?.text.trim()) {
+          state.messages.push({ role: "system", text: `Current instructions:\n${instrMsg.text}`, metadata: null });
+        } else {
+          state.messages.push({ role: "system", text: "No system instructions set for this conversation.", metadata: null });
+        }
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      if (trimmed === "clear") {
+        clearPrompt(state);
+        return { type: "set_system_instructions", text: "" };
+      }
+      clearPrompt(state);
+      return { type: "set_system_instructions", text: trimmed };
     },
   },
   {

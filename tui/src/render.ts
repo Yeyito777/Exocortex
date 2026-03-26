@@ -27,6 +27,7 @@ import { highlightPromptInput } from "./prompthighlight";
 import { formatSize, imageLabel } from "./clipboard";
 
 import type { QueuePromptState, EditMessageState } from "./state";
+import { EDIT_INDEX_INSTRUCTIONS } from "./state";
 
 // ── ANSI positioning (non-color escapes) ────────────────────────────
 
@@ -536,7 +537,8 @@ function renderEditMessageOverlay(
   // Build display lines: truncated previews of each item
   const maxPreviewLen = Math.min(50, chatW - 12);
   const previews = em.items.map((item) => {
-    const raw = item.text.replace(/\n/g, " ");
+    const prefix = item.userMessageIndex === EDIT_INDEX_INSTRUCTIONS ? "📌 " : "";
+    const raw = prefix + item.text.replace(/\n/g, " ");
     return raw.length > maxPreviewLen ? raw.slice(0, maxPreviewLen) + "…" : raw;
   });
   const maxContentLen = Math.max(

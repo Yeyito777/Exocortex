@@ -85,9 +85,12 @@ export async function orchestrateSendMessage(
   server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
   server.sendToSubscribers(convId, { type: "streaming_started", convId, model: conv.model, startedAt });
 
-  // System messages are persisted but never sent to the AI
+  // Extract per-conversation system instructions (if present)
+  const systemInstructionsText = convStore.getSystemInstructions(convId);
+
+  // System messages and system_instructions are persisted but never sent to the AI
   const apiMessages = conv.messages
-    .filter((m) => m.role !== "system")
+    .filter((m) => m.role !== "system" && m.role !== "system_instructions")
     .map((m) => ({
       role: m.role as "user" | "assistant",
       content: m.content,
@@ -254,7 +257,7 @@ export async function orchestrateSendMessage(
       log("info", `orchestrator: context modified, rebuilding message array`);
       // Rebuild from conv.messages (now trimmed) — the source of truth for historical state
       const rebuilt = conv.messages
-        .filter(m => m.role !== "system")
+        .filter(m => m.role !== "system" && m.role !== "system_instructions")
         .map(m => ({ role: m.role as "user" | "assistant", content: m.content }));
       // Persist immediately
       convStore.markDirty(convId);
@@ -290,7 +293,7 @@ export async function orchestrateSendMessage(
 
   try {
     const result = await runAgentLoop(apiMessages, conv.model, callbacks, {
-      system: buildSystemPrompt(),
+      system: buildSystemPrompt(systemInstructionsText ?? undefined),
       signal: ac.signal,
       tools: getToolDefs(),
       executor,

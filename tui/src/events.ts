@@ -46,6 +46,9 @@ function pushDisplayEntries(state: RenderState, entries: DisplayEntry[]): void {
       case "system":
         state.messages.push({ role: "system", text: entry.text, color: themeColor(entry.color), metadata: null });
         break;
+      case "system_instructions":
+        state.messages.push({ role: "system_instructions", text: entry.text, metadata: null });
+        break;
     }
   }
 }
@@ -388,6 +391,10 @@ export function handleEvent(
       state.messages.push({ role: "system", text: event.systemPrompt, metadata: null });
       break;
     }
+
+    case "system_instructions_updated":
+      // No-op — the daemon sends history_updated which rebuilds everything.
+      break;
 
     case "llm_complete_result":
     case "ack":
