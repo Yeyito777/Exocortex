@@ -6,7 +6,7 @@
  */
 
 import type { Tool, ToolResult, ToolSummary } from "./types";
-import { cap, getString, getNumber, getBoolean } from "./util";
+import { cap, getString, getNumber, getBoolean, summarizeParams } from "./util";
 import { log } from "../log";
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -23,11 +23,11 @@ async function executeGrep(input: Record<string, unknown>, signal?: AbortSignal)
   const globPattern = getString(input, "glob");
   const fileType = getString(input, "type");
   const mode = getString(input, "output_mode") ?? "files_with_matches";
-  const beforeCtx = getNumber(input, "-B");
-  const afterCtx = getNumber(input, "-A");
-  const aroundCtx = getNumber(input, "-C");
-  const lineNumbers = getBoolean(input, "-n") ?? true;
-  const caseInsensitive = getBoolean(input, "-i") ?? false;
+  const beforeCtx = getNumber(input, "before_context") ?? getNumber(input, "-B");
+  const afterCtx = getNumber(input, "after_context") ?? getNumber(input, "-A");
+  const aroundCtx = getNumber(input, "context") ?? getNumber(input, "-C");
+  const lineNumbers = getBoolean(input, "line_numbers") ?? getBoolean(input, "-n") ?? true;
+  const caseInsensitive = getBoolean(input, "ignore_case") ?? getBoolean(input, "-i") ?? false;
   const multiline = getBoolean(input, "multiline") ?? false;
   const headLimit = getNumber(input, "head_limit");
 
@@ -123,26 +123,7 @@ async function executeGrep(input: Record<string, unknown>, signal?: AbortSignal)
 
 function summarize(input: Record<string, unknown>): ToolSummary {
   const pattern = getString(input, "pattern") ?? "";
-  const parts: string[] = [`/${pattern}/`];
-  const path = getString(input, "path");
-  if (path) parts.push(path);
-  const globPat = getString(input, "glob");
-  if (globPat) parts.push(`--glob ${globPat}`);
-  const fileType = getString(input, "type");
-  if (fileType) parts.push(`--type ${fileType}`);
-  const mode = getString(input, "output_mode");
-  if (mode && mode !== "files_with_matches") parts.push(`--${mode}`);
-  if (getBoolean(input, "-i")) parts.push("-i");
-  const A = getNumber(input, "-A");
-  if (A != null) parts.push(`-A ${A}`);
-  const B = getNumber(input, "-B");
-  if (B != null) parts.push(`-B ${B}`);
-  const C = getNumber(input, "-C");
-  if (C != null) parts.push(`-C ${C}`);
-  if (getBoolean(input, "multiline")) parts.push("--multiline");
-  const headLimit = getNumber(input, "head_limit");
-  if (headLimit != null) parts.push(`--head ${headLimit}`);
-  return { label: "Grep", detail: parts.join(" ") };
+  return { label: "Grep", detail: summarizeParams(`/${pattern}/`, input, ["pattern"]) };
 }
 
 // ── Tool definition ────────────────────────────────────────────────
@@ -162,11 +143,11 @@ export const grep: Tool = {
         enum: ["content", "files_with_matches", "count"],
         description: "\"content\" shows matching lines, \"files_with_matches\" shows file paths (default), \"count\" shows match counts.",
       },
-      "-B": { type: "number", description: "Lines to show before each match (content mode only)" },
-      "-A": { type: "number", description: "Lines to show after each match (content mode only)" },
-      "-C": { type: "number", description: "Lines of context around each match (content mode only)" },
-      "-n": { type: "boolean", description: "Show line numbers (content mode only, default true)" },
-      "-i": { type: "boolean", description: "Case insensitive search" },
+      before_context: { type: "number", description: "Lines to show before each match (content mode only)" },
+      after_context: { type: "number", description: "Lines to show after each match (content mode only)" },
+      context: { type: "number", description: "Lines of context around each match (content mode only)" },
+      line_numbers: { type: "boolean", description: "Show line numbers (content mode only, default true)" },
+      ignore_case: { type: "boolean", description: "Case insensitive search" },
       multiline: { type: "boolean", description: "Enable multiline mode where . matches newlines (default false)" },
       head_limit: { type: "number", description: "Limit output to first N lines/entries" },
     },

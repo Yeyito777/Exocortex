@@ -12,6 +12,7 @@ import {
   getString,
   getNumber,
   getBoolean,
+  summarizeParams,
 } from "./util";
 
 // ── safeSlice ─────────────────────────────────────────────────────
@@ -286,5 +287,62 @@ describe("getBoolean", () => {
 
   test("returns undefined when a different key is present", () => {
     expect(getBoolean({ other: true }, "key")).toBeUndefined();
+  });
+});
+
+// ── summarizeParams ─────────────────────────────────────────────────
+
+describe("summarizeParams", () => {
+  test("primary only — no extra params", () => {
+    expect(summarizeParams("ls -la", { command: "ls -la" }, ["command"])).toBe("ls -la");
+  });
+
+  test("string param appended as --key value", () => {
+    expect(summarizeParams("/foo/", { pattern: "/foo/", path: "src" }, ["pattern"]))
+      .toBe("/foo/ --path src");
+  });
+
+  test("number param appended as --key value", () => {
+    expect(summarizeParams("file.ts", { file_path: "file.ts", offset: 100 }, ["file_path"]))
+      .toBe("file.ts --offset 100");
+  });
+
+  test("boolean true appended as --key", () => {
+    expect(summarizeParams("**/*.ts", { pattern: "**/*.ts", no_ignore: true }, ["pattern"]))
+      .toBe("**/*.ts --no_ignore");
+  });
+
+  test("boolean false is omitted", () => {
+    expect(summarizeParams("**/*.ts", { pattern: "**/*.ts", no_ignore: false }, ["pattern"]))
+      .toBe("**/*.ts");
+  });
+
+  test("null and undefined values are omitted", () => {
+    expect(summarizeParams("cmd", { command: "cmd", opt: null, other: undefined }, ["command"]))
+      .toBe("cmd");
+  });
+
+  test("multiple skip keys are all excluded", () => {
+    expect(summarizeParams("file.ts", {
+      file_path: "file.ts", old_string: "foo", new_string: "bar", replace_all: true,
+    }, ["file_path", "old_string", "new_string"])).toBe("file.ts --replace_all");
+  });
+
+  test("multiple extra params appended in order", () => {
+    expect(summarizeParams("cmd", {
+      command: "cmd", timeout: 5000, await: 60,
+    }, ["command"])).toBe("cmd --timeout 5000 --await 60");
+  });
+
+  test("dash-prefixed keys are used as-is (backwards compat)", () => {
+    expect(summarizeParams("/pat/", {
+      pattern: "/pat/", "-i": true, "-A": 5,
+    }, ["pattern"])).toBe("/pat/ -i -A 5");
+  });
+
+  test("dash-prefixed boolean false is omitted", () => {
+    expect(summarizeParams("/pat/", {
+      pattern: "/pat/", "-i": false,
+    }, ["pattern"])).toBe("/pat/");
   });
 });

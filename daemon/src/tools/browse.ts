@@ -8,7 +8,7 @@
  */
 
 import type { Tool, ToolResult, ToolSummary } from "./types";
-import { cap, getString } from "./util";
+import { cap, getString, summarizeParams } from "./util";
 import { htmlToMarkdown } from "./html";
 import { complete } from "../llm";
 import { log } from "../log";
@@ -184,9 +184,7 @@ async function executeBrowse(input: Record<string, unknown>, signal?: AbortSigna
 
 function summarize(input: Record<string, unknown>): ToolSummary {
   const url = getString(input, "url") ?? "";
-  const prompt = getString(input, "prompt");
-  const detail = prompt ? `${url} — ${prompt}` : url;
-  return { label: "Browse", detail };
+  return { label: "Browse", detail: summarizeParams(url, input, ["url"]) };
 }
 
 // ── Tool definition ────────────────────────────────────────────────

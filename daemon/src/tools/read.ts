@@ -7,7 +7,7 @@
  */
 
 import type { Tool, ToolResult, ToolSummary } from "./types";
-import { cap, getString, getNumber, safeSlice } from "./util";
+import { cap, getString, getNumber, safeSlice, summarizeParams } from "./util";
 import { log } from "../log";
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -226,12 +226,7 @@ async function executeRead(input: Record<string, unknown>): Promise<ToolResult> 
 
 function summarize(input: Record<string, unknown>): ToolSummary {
   const filePath = getString(input, "file_path") ?? "";
-  const offset = getNumber(input, "offset");
-  const limit = getNumber(input, "limit");
-  const range = offset != null || limit != null
-    ? ` [${offset ?? 1}:${limit != null ? (offset ?? 1) + limit - 1 : "…"}]`
-    : "";
-  return { label: "Read", detail: `${filePath}${range}` };
+  return { label: "Read", detail: summarizeParams(filePath, input, ["file_path"]) };
 }
 
 // ── Tool definition ────────────────────────────────────────────────

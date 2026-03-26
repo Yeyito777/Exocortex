@@ -14,7 +14,7 @@
  */
 
 import type { Tool, ToolResult, ToolSummary } from "./types";
-import { cap, getString, getBoolean } from "./util";
+import { cap, getString, getBoolean, summarizeParams } from "./util";
 import { log } from "../log";
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -119,11 +119,7 @@ async function executeGlob(input: Record<string, unknown>, signal?: AbortSignal)
 
 function summarize(input: Record<string, unknown>): ToolSummary {
   const pattern = getString(input, "pattern") ?? "";
-  const parts: string[] = [pattern];
-  const path = getString(input, "path");
-  if (path) parts.push(`--path ${path}`);
-  if (getBoolean(input, "no_ignore")) parts.push("--no-ignore");
-  return { label: "Glob", detail: parts.join(" ") };
+  return { label: "Glob", detail: summarizeParams(pattern, input, ["pattern"]) };
 }
 
 // ── Tool definition ───────────────────────────────────────────────

@@ -50,3 +50,31 @@ export function getBoolean(input: Record<string, unknown>, key: string): boolean
   const v = input[key];
   return typeof v === "boolean" ? v : undefined;
 }
+
+// ── Summary helpers ─────────────────────────────────────────────────
+
+/**
+ * Build a summary detail string from a primary value plus all remaining
+ * input params, excluding the given skip keys.
+ *
+ * - Booleans: `true` → `--key`, `false` → omitted
+ * - Strings/numbers: `--key value`
+ * - Keys already starting with `-` are used as-is (backwards compat)
+ */
+export function summarizeParams(
+  primary: string,
+  input: Record<string, unknown>,
+  skip: string[],
+): string {
+  const parts = [primary];
+  for (const [key, value] of Object.entries(input)) {
+    if (skip.includes(key) || value == null) continue;
+    const flag = key.startsWith("-") ? key : `--${key}`;
+    if (typeof value === "boolean") {
+      if (value) parts.push(flag);
+    } else {
+      parts.push(`${flag} ${value}`);
+    }
+  }
+  return parts.join(" ");
+}

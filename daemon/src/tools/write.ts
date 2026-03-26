@@ -8,7 +8,7 @@
 
 import { dirname } from "path";
 import type { Tool, ToolResult, ToolSummary } from "./types";
-import { getString } from "./util";
+import { getString, summarizeParams } from "./util";
 import { isWindows } from "@exocortex/shared/paths";
 import { log } from "../log";
 
@@ -53,7 +53,7 @@ async function executeWrite(input: Record<string, unknown>): Promise<ToolResult>
 
 function summarize(input: Record<string, unknown>): ToolSummary {
   const filePath = getString(input, "file_path") ?? "";
-  return { label: "Write", detail: filePath };
+  return { label: "Write", detail: summarizeParams(filePath, input, ["file_path", "content"]) };
 }
 
 // ── Tool definition ────────────────────────────────────────────────
