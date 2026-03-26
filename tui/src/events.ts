@@ -59,6 +59,18 @@ export interface DaemonActions {
   sendMessage(convId: string, text: string, startedAt: number, images?: ImageAttachment[]): void;
 }
 
+// ── Conversation-scoped events ─────────────────────────────────────
+// These events are silently ignored when their convId doesn't match
+// the active conversation.  Centralised here so each case doesn't
+// need its own guard.
+
+const CONV_SCOPED: ReadonlySet<string> = new Set([
+  "streaming_started", "block_start", "text_chunk", "thinking_chunk",
+  "tool_call", "tool_result", "tokens_update", "context_update",
+  "message_complete", "streaming_stopped", "user_message", "system_message",
+  "stream_retry", "history_updated",
+]);
+
 // ── Event handler ───────────────────────────────────────────────────
 
 export function handleEvent(
@@ -66,6 +78,9 @@ export function handleEvent(
   state: RenderState,
   daemon: DaemonActions,
 ): void {
+  // Early exit for conversation-scoped events targeting a different conversation
+  if (CONV_SCOPED.has(event.type) && "convId" in event && event.convId !== state.convId) return;
+
   switch (event.type) {
     case "conversation_created": {
       state.convId = event.convId;
@@ -83,7 +98,6 @@ export function handleEvent(
     }
 
     case "streaming_started": {
-      if (event.convId !== state.convId) break;
       // Late-joining client: create pendingAI so future chunks are captured.
       // Original client already has pendingAI from handleSubmit.
       if (!state.pendingAI) {
@@ -101,7 +115,6 @@ export function handleEvent(
     }
 
     case "block_start": {
-      if (event.convId !== state.convId) break;
       if (state.pendingAI) {
         state.pendingAI.blocks.push({ type: event.blockType, text: "" });
       }
@@ -109,7 +122,6 @@ export function handleEvent(
     }
 
     case "text_chunk": {
-      if (event.convId !== state.convId) break;
       if (state.pendingAI) {
         const block = ensureCurrentBlock(state.pendingAI, "text");
         if (block.type === "text") block.text += event.text;
@@ -118,7 +130,6 @@ export function handleEvent(
     }
 
     case "thinking_chunk": {
-      if (event.convId !== state.convId) break;
       if (state.pendingAI) {
         const block = ensureCurrentBlock(state.pendingAI, "thinking");
         if (block.type === "thinking") block.text += event.text;
@@ -127,7 +138,6 @@ export function handleEvent(
     }
 
     case "tool_call": {
-      if (event.convId !== state.convId) break;
       if (state.pendingAI) {
         state.pendingAI.blocks.push({
           type: "tool_call",
@@ -141,7 +151,6 @@ export function handleEvent(
     }
 
     case "tool_result": {
-      if (event.convId !== state.convId) break;
       if (state.pendingAI) {
         state.pendingAI.blocks.push({
           type: "tool_result",
@@ -155,7 +164,6 @@ export function handleEvent(
     }
 
     case "tokens_update": {
-      if (event.convId !== state.convId) break;
       if (state.pendingAI) {
         state.pendingAI.metadata!.tokens = event.tokens;
       }
@@ -163,13 +171,11 @@ export function handleEvent(
     }
 
     case "context_update": {
-      if (event.convId !== state.convId) break;
       state.contextTokens = event.contextTokens;
       break;
     }
 
     case "message_complete": {
-      if (event.convId !== state.convId) break;
       if (state.pendingAI) {
         // Use the daemon's canonical blocks — catches anything a late-joining
         // client missed during streaming.
@@ -183,7 +189,6 @@ export function handleEvent(
     }
 
     case "streaming_stopped": {
-      if (event.convId !== state.convId) break;
       // On normal completion, message_complete already finalized pendingAI.
       // On abort/error, pendingAI is still live — finalize with persisted blocks.
       if (state.pendingAI) {
@@ -304,7 +309,6 @@ export function handleEvent(
     }
 
     case "stream_retry": {
-      if (event.convId !== state.convId) break;
       // Transient stream error → clear only partial blocks from the current
       // streaming round. Blocks from completed rounds are preserved.
       if (state.pendingAI) truncateToCompletedRounds(state.pendingAI);
@@ -319,8 +323,6 @@ export function handleEvent(
     }
 
     case "user_message": {
-      if (event.convId !== state.convId) break;
-
       // During streaming: split pendingAI so the user message appears
       // inline between tool rounds (after completed blocks, before new ones).
       // This is purely for visual correctness during streaming — after
@@ -348,7 +350,6 @@ export function handleEvent(
     }
 
     case "system_message": {
-      if (event.convId !== state.convId) break;
       const sysMsg: SystemMessage = { role: "system", text: event.text, color: themeColor(event.color), metadata: null };
       if (isStreaming(state)) {
         state.systemMessageBuffer.push(sysMsg);
@@ -365,7 +366,6 @@ export function handleEvent(
     }
 
     case "history_updated": {
-      if (event.convId !== state.convId) break;
       // Context tool modified historical messages — replace committed messages
       // but preserve pendingAI (the active streaming response).
       // Flush buffered system messages — they reference pre-modification state.
