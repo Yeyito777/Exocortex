@@ -110,6 +110,28 @@ function defaultSummarizer(name: string, _input: Record<string, unknown>): strin
   return name;
 }
 
+const CONTEXT_WARNING_FRACTION = 0.8;
+
+interface ContextPressureWarning {
+  usage: string;
+  hint: string;
+}
+
+function buildContextPressureWarning(inputTokens: number, contextLimit: number): ContextPressureWarning | null {
+  if (contextLimit <= 0) return null;
+
+  const warningAt = Math.floor(contextLimit * CONTEXT_WARNING_FRACTION);
+  if (inputTokens < warningAt) return null;
+
+  const pct = ((inputTokens / contextLimit) * 100).toFixed(0);
+  const usage = `${Math.round(inputTokens / 1000)}k/${contextLimit / 1000}k tokens (${pct}%)`;
+  const freeAtLeast = `${Math.max(0, Math.round((inputTokens - CONTEXT_TARGET) / 1000))}k`;
+  const target = `${CONTEXT_TARGET / 1000}k`;
+  const hint = `[Context: ${usage} — context is getting full. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool now before you run out.]`;
+
+  return { usage, hint };
+}
+
 // ── Agent loop ──────────────────────────────────────────────────────
 
 export async function runAgentLoop(
@@ -137,15 +159,10 @@ export async function runAgentLoop(
   let totalOutputTokens = 0;
   let lastInputTokens = 0;
 
-  // Context pressure thresholds — injected as text blocks in tool result messages.
-  // Tuned to balance usable context against "context rot" (model attention
-  // degrades in very long contexts). Every level targets 200K.
-  const THRESHOLDS = [
-    { at: 400_000, level: "advisory" as const },
-    { at: 600_000, level: "warning" as const },
-    { at: 800_000, level: "critical" as const },
-  ];
-  let highestFiredLevel = -1; // index into THRESHOLDS, -1 = none fired
+  // Context pressure warning — injected as a text block in tool result messages.
+  // This only appears on tool-use turns because it is appended to the
+  // tool_result message seen by the model and rendered inline by the TUI.
+  let contextWarningFired = false;
 
   // Expose state for abort recovery
   const state = options.state;
@@ -284,46 +301,22 @@ export async function runAgentLoop(
       }
     }
 
-    // ── Context pressure hints ────────────────────────────────────
-    // Inject a text block into the tool result message when context
-    // usage crosses hardcoded thresholds. The AI sees this alongside
-    // tool results; the TUI renders them inline as dimmed text.
-    if (lastInputTokens > 0) {
+    // ── Context pressure warning ──────────────────────────────────
+    // Inject a text block into the tool_result message once the
+    // conversation reaches 80% of the model's maximum context.
+    if (!contextWarningFired && lastInputTokens > 0) {
       const contextLimit = getMaxContext(provider, model);
       if (contextLimit == null || contextLimit <= 0) {
-        log("warn", `agent: skipping context pressure hint, unknown max context for ${provider}/${model}`);
+        log("warn", `agent: skipping context pressure warning, unknown max context for ${provider}/${model}`);
       } else {
-        const pct = ((lastInputTokens / contextLimit) * 100).toFixed(0);
-        const usage = `${Math.round(lastInputTokens / 1000)}k/${contextLimit / 1000}k tokens (${pct}%)`;
-        const freeAtLeast = `${Math.round((lastInputTokens - CONTEXT_TARGET) / 1000)}k`;
-        const target = `${CONTEXT_TARGET / 1000}k`;
-        let hint: string | null = null;
-
-        // Find the highest threshold that applies (iterate high→low, process first match)
-        for (let i = THRESHOLDS.length - 1; i >= 0; i--) {
-          if (lastInputTokens < THRESHOLDS[i].at) continue;
-          const { level } = THRESHOLDS[i];
-
-          if (level === "critical") {
-            // Critical fires every round until the AI frees space
-            hint = `[Context: ${usage} — critically low on context! Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool immediately.]`;
-            highestFiredLevel = Math.max(highestFiredLevel, i);
-          } else if (i > highestFiredLevel) {
-            // Advisory and warning fire once
-            hint = level === "warning"
-              ? `[Context: ${usage} — context is getting full. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool now before you run out.]`
-              : `[Context: ${usage} — approaching context limit. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Start with strip_thinking, then strip_results where findings are already captured in your responses, then summarize or delete old turns.]`;
-            highestFiredLevel = i;
-          }
-          break; // Only process the highest matching threshold
-        }
-
-        if (hint) {
-          toolResultContent.push({ type: "text", text: hint } as ApiContentBlock);
-          allBlocks.push({ type: "text", text: hint });
+        const warning = buildContextPressureWarning(lastInputTokens, contextLimit);
+        if (warning) {
+          toolResultContent.push({ type: "text", text: warning.hint } as ApiContentBlock);
+          allBlocks.push({ type: "text", text: warning.hint });
           callbacks.onBlockStart("text");
-          callbacks.onTextChunk(hint);
-          log("info", `agent: injected context pressure hint (${THRESHOLDS[Math.max(0, highestFiredLevel)].level}, ${usage})`);
+          callbacks.onTextChunk(warning.hint);
+          contextWarningFired = true;
+          log("info", `agent: injected context pressure warning (threshold=${Math.round(CONTEXT_WARNING_FRACTION * 100)}%, ${warning.usage})`);
         }
       }
     }
