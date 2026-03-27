@@ -165,7 +165,18 @@ export interface SystemMessage {
   metadata: MessageMetadata | null;
 }
 
-export type Message = UserMessage | AIMessage | SystemMessage;
+/**
+ * Per-conversation system instructions. Stored as messages[0], appended
+ * to the global system prompt before each API call. Never sent as an
+ * API message — only used to augment the system prompt string.
+ */
+export interface SystemInstructionsMessage {
+  role: "system_instructions";
+  text: string;
+  metadata: null;
+}
+
+export type Message = UserMessage | AIMessage | SystemMessage | SystemInstructionsMessage;
 
 // ── Conversation summary ────────────────────────────────────────────
 

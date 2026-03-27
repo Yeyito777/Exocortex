@@ -27,7 +27,7 @@ loadUserAddendum();
 
 // ── Build ─────────────────────────────────────────────────────────
 
-export function buildSystemPrompt(): string {
+export function buildSystemPrompt(conversationInstructions?: string): string {
   const cwd = process.cwd();
   const date = new Date().toLocaleDateString("en-US", {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
@@ -51,6 +51,8 @@ export function buildSystemPrompt(): string {
   if (externalHints) parts.push("# External tools\n" + externalHints);
 
   if (_userAddendum) parts.push(_userAddendum);
+
+  if (conversationInstructions) parts.push("# Conversation instructions\n" + conversationInstructions);
 
   return parts.join("\n\n");
 }

@@ -327,6 +327,29 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      case "set_system_instructions": {
+        const ok = convStore.setSystemInstructions(cmd.convId, cmd.text);
+        if (ok) {
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+          server.broadcast({ type: "system_instructions_updated", convId: cmd.convId, text: cmd.text });
+          server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
+          // Rebuild display for subscribers so the TUI shows the instructions entry
+          const data = convStore.getDisplayData(cmd.convId);
+          if (data) {
+            server.sendToSubscribers(cmd.convId, {
+              type: "history_updated",
+              convId: cmd.convId,
+              entries: data.entries,
+              contextTokens: data.contextTokens,
+            });
+          }
+          log("info", `handler: system instructions ${cmd.text ? "set" : "cleared"} for ${cmd.convId}`);
+        } else {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+        }
+        break;
+      }
+
       case "unwind_conversation": {
         const ok = await convStore.unwindTo(cmd.convId, cmd.userMessageIndex);
         if (!ok) {
@@ -394,7 +417,8 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "get_system_prompt": {
-        server.sendTo(client, { type: "system_prompt", reqId: cmd.reqId, systemPrompt: buildSystemPrompt() });
+        const instructions = cmd.convId ? convStore.getSystemInstructions(cmd.convId) : null;
+        server.sendTo(client, { type: "system_prompt", reqId: cmd.reqId, systemPrompt: buildSystemPrompt(instructions ?? undefined) });
         break;
       }
 

@@ -161,6 +161,14 @@ export interface UnwindConversationCommand {
   userMessageIndex: number;
 }
 
+export interface SetSystemInstructionsCommand {
+  type: "set_system_instructions";
+  reqId?: string;
+  convId: string;
+  /** The instructions text. Empty string clears them. */
+  text: string;
+}
+
 export interface LlmCompleteCommand {
   type: "llm_complete";
   reqId?: string;
@@ -176,6 +184,8 @@ export interface LlmCompleteCommand {
 export interface GetSystemPromptCommand {
   type: "get_system_prompt";
   reqId?: string;
+  /** If set, includes per-conversation system instructions in the output. */
+  convId?: string;
 }
 
 export interface LoginCommand {
@@ -212,6 +222,7 @@ export type Command =
   | QueueMessageCommand
   | UnqueueMessageCommand
   | UnwindConversationCommand
+  | SetSystemInstructionsCommand
   | LlmCompleteCommand
   | GetSystemPromptCommand
   | LoginCommand
@@ -334,6 +345,7 @@ export interface AIMessagePayload {
 }
 
 export type DisplayEntry =
+  | { type: "system_instructions"; text: string }
   | { type: "user"; text: string; images?: ImageAttachment[] }
   | { type: "ai"; blocks: Block[]; metadata: MessageMetadata | null }
   | { type: "system"; text: string; color?: string };
@@ -432,6 +444,13 @@ export interface HistoryUpdatedEvent {
   contextTokens: number | null;
 }
 
+export interface SystemInstructionsUpdatedEvent {
+  type: "system_instructions_updated";
+  convId: string;
+  /** The new instructions text. Empty string means cleared. */
+  text: string;
+}
+
 export interface LlmCompleteResultEvent {
   type: "llm_complete_result";
   reqId?: string;
@@ -487,6 +506,7 @@ export type Event =
   | SystemMessageEvent
   | ToolsAvailableEvent
   | HistoryUpdatedEvent
+  | SystemInstructionsUpdatedEvent
   | LlmCompleteResultEvent
   | SystemPromptEvent
   | AuthStatusEvent

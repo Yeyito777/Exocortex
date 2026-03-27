@@ -24,7 +24,6 @@ import {
 } from "./messages";
 import { convDisplayName } from "./messages";
 import { copyToClipboard } from "./vim/clipboard";
-import { PENDING_TITLE } from "./titlegen";
 import { getMarkPrefix, getMarkFromTitle } from "./marks";
 import { theme, themes, THEME_NAMES, setTheme } from "./theme";
 
@@ -39,6 +38,7 @@ export type CommandResult =
   | { type: "handled" }
   | { type: "quit" }
   | { type: "new_conversation" }
+  | { type: "create_conversation_for_instructions"; text: string }
   | { type: "model_changed"; model: ModelId }
   | { type: "effort_changed"; effort: EffortLevel }
   | { type: "fast_mode_changed"; enabled: boolean }
@@ -47,7 +47,8 @@ export type CommandResult =
   | { type: "login" }
   | { type: "logout" }
   | { type: "theme_changed" }
-  | { type: "get_system_prompt" };
+  | { type: "get_system_prompt" }
+  | { type: "set_system_instructions"; text: string };
 
 export interface SlashCommand {
   name: string;
@@ -57,6 +58,12 @@ export interface SlashCommand {
 }
 
 // ── Command definitions ─────────────────────────────────────────────
+
+function showNoSystemInstructions(state: RenderState): CommandResult {
+  state.messages.push({ role: "system", text: "No system instructions set for this conversation.", metadata: null });
+  clearPrompt(state);
+  return { type: "handled" };
+}
 
 function availableProviders(state: RenderState): ProviderId[] {
   const ids = state.providerRegistry.map((p) => p.id);
@@ -149,7 +156,7 @@ function formatConvoInfo(state: RenderState): string | null {
   const title = conv ? convDisplayName(conv, "(untitled)") : "(untitled)";
   const provider = conv?.provider ?? state.provider;
   const model = conv?.model ?? state.model;
-  const msgs = conv?.messageCount ?? state.messages.filter(m => m.role !== "system").length;
+  const msgs = conv?.messageCount ?? state.messages.filter(m => m.role !== "system" && m.role !== "system_instructions").length;
   const created = conv ? new Date(conv.createdAt).toLocaleString() : "unknown";
   const updated = conv ? new Date(conv.updatedAt).toLocaleString() : "unknown";
   const markLabel = conv ? getMarkFromTitle(conv.title)?.label ?? null : null;
@@ -223,9 +230,7 @@ const commands: SlashCommand[] = [
       }
       const rawTitle = text.slice("/rename".length).trim();
       if (!rawTitle) {
-        // Auto-generate: set placeholder and request LLM-generated title
-        const conv = state.sidebar.conversations.find(c => c.id === state.convId);
-        if (conv) conv.title = PENDING_TITLE;
+        // Auto-generate title via the title model.
         clearPrompt(state);
         return { type: "generate_title" };
       }
@@ -425,6 +430,41 @@ const commands: SlashCommand[] = [
       }
       clearPrompt(state);
       return { type: "handled" };
+    },
+  },
+  {
+    name: "/instructions",
+    description: "Set, show, or clear per-conversation system instructions",
+    args: [{ name: "clear", desc: "Clear instructions" }],
+    handler: (text, state) => {
+      const arg = text.slice("/instructions".length);
+      const trimmed = arg.trimStart();
+      if (!trimmed) {
+        if (!state.convId) {
+          return showNoSystemInstructions(state);
+        }
+        // Show current instructions
+        const instrMsg = state.messages.find((m): m is import("./messages").SystemInstructionsMessage => m.role === "system_instructions");
+        if (instrMsg?.text.trim()) {
+          state.messages.push({ role: "system", text: `Current instructions:\n${instrMsg.text}`, metadata: null });
+          clearPrompt(state);
+          return { type: "handled" };
+        }
+        return showNoSystemInstructions(state);
+      }
+      if (trimmed === "clear") {
+        if (!state.convId) {
+          return showNoSystemInstructions(state);
+        }
+        clearPrompt(state);
+        return { type: "set_system_instructions", text: "" };
+      }
+      if (!state.convId) {
+        clearPrompt(state);
+        return { type: "create_conversation_for_instructions", text: trimmed };
+      }
+      clearPrompt(state);
+      return { type: "set_system_instructions", text: trimmed };
     },
   },
   {

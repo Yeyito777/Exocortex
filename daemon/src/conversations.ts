@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, StoredMessage } from "./messages";
-import { DEFAULT_EFFORT, createConversation, sortConversations, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder } from "./messages";
+import { DEFAULT_EFFORT, createConversation, sortConversations, isToolResultMessage, countConversationMessages, topUnpinnedOrder, bottomPinnedOrder } from "./messages";
 import { buildDisplayData, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
@@ -161,6 +161,48 @@ export function rename(id: string, title: string): boolean {
   return true;
 }
 
+/** Set or update per-conversation system instructions. Empty text clears them. */
+export function setSystemInstructions(id: string, text: string): boolean {
+  const conv = conversations.get(id);
+  if (!conv) return false;
+
+  const hasExisting = conv.messages.length > 0 && conv.messages[0].role === "system_instructions";
+  let changed = false;
+
+  if (text === "") {
+    // Clear: remove the system_instructions message if present
+    if (hasExisting) {
+      conv.messages.splice(0, 1);
+      changed = true;
+    }
+  } else if (hasExisting) {
+    // Update existing
+    if (conv.messages[0].content !== text) {
+      conv.messages[0].content = text;
+      changed = true;
+    }
+  } else {
+    // Insert new at the front
+    conv.messages.unshift({ role: "system_instructions", content: text, metadata: null });
+    changed = true;
+  }
+
+  if (changed) conv.updatedAt = Date.now();
+  markDirty(id);
+  flush(id);
+  return true;
+}
+
+/** Get the per-conversation system instructions text, or null if none. */
+export function getSystemInstructions(id: string): string | null {
+  const conv = conversations.get(id);
+  if (!conv) return null;
+  if (conv.messages.length > 0 && conv.messages[0].role === "system_instructions") {
+    return typeof conv.messages[0].content === "string" ? conv.messages[0].content : null;
+  }
+  return null;
+}
+
 /**
  * Unwind a conversation to before the Nth user message (0-based).
  * Removes that user message and everything after it.
@@ -174,9 +216,11 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   // Validate the index before doing anything destructive.
   // Only count real user messages — tool_result messages also have
   // role="user" but are invisible in the TUI (folded into AI entries).
+  // Skip system_instructions (always at index 0) — they're never unwound.
   let spliceAt = -1;
   let userCount = 0;
   for (let i = 0; i < conv.messages.length; i++) {
+    if (conv.messages[i].role === "system_instructions") continue;
     if (conv.messages[i].role === "user" && !isToolResultMessage(conv.messages[i])) {
       if (userCount === userMessageIndex) { spliceAt = i; break; }
       userCount++;
@@ -374,7 +418,7 @@ export function getSummary(id: string): ConversationSummary | null {
     fastMode: conv.fastMode ?? false,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
-    messageCount: conv.messages.length,
+    messageCount: countConversationMessages(conv.messages),
     title: conv.title,
     marked: conv.marked,
     pinned: conv.pinned,

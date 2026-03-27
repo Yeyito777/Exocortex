@@ -60,8 +60,9 @@ function resetStreamTick(): void {
 function onDaemonEvent(event: Event): void {
   handleEvent(event, state, daemon);
 
-  // Auto-generate title for new conversations
-  if (event.type === "conversation_created" && state.convId) {
+  // Auto-generate title for newly created conversations when requested.
+  if (event.type === "conversation_created" && state.convId && state.pendingGenerateTitleOnCreate) {
+    state.pendingGenerateTitleOnCreate = false;
     generateTitle(state.convId, state, daemon, scheduleRender);
   }
 
@@ -96,6 +97,13 @@ function handleSubmit(): void {
           if (state.convId) daemon.unsubscribe(state.convId);
           state.convId = null;
           break;
+        case "create_conversation_for_instructions":
+          if (state.convId) daemon.unsubscribe(state.convId);
+          state.convId = null;
+          state.pendingSystemInstructions = cmdResult.text;
+          state.pendingGenerateTitleOnCreate = false;
+          daemon.createConversation(state.provider, state.model, "", state.effort);
+          break;
         case "model_changed":
           if (state.convId) daemon.setModel(state.convId, cmdResult.model);
           break;
@@ -118,7 +126,10 @@ function handleSubmit(): void {
           }
           break;
         case "get_system_prompt":
-          daemon.getSystemPrompt();
+          daemon.getSystemPrompt(state.convId ?? undefined);
+          break;
+        case "set_system_instructions":
+          if (state.convId) daemon.setSystemInstructions(state.convId, cmdResult.text);
           break;
         case "login":
           daemon.login(state.provider);
@@ -164,9 +175,18 @@ function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
     state.pendingSend.active = true;
     state.pendingSend.text = messageText;
     state.pendingSend.images = images;
+    state.pendingGenerateTitleOnCreate = true;
     daemon.createConversation(state.provider, state.model, PENDING_TITLE, state.effort, state.fastMode);
   } else {
     daemon.sendMessage(state.convId, messageText, startedAt, images);
+
+    // Instructions can create an otherwise-empty conversation before the first
+    // real user message. In that case, kick off the normal pending→generated
+    // title flow when the first user message is sent.
+    const conv = state.sidebar.conversations.find((candidate) => candidate.id === state.convId);
+    if (conv && !conv.title.trim()) {
+      generateTitle(state.convId, state, daemon, scheduleRender);
+    }
   }
 
   scheduleRender();
@@ -204,6 +224,9 @@ function handleKey(key: KeyEvent): void {
         // The daemon's unwindTo handles abort internally if streaming,
         // waits for the stream to stop, then truncates.
         daemon.unwindConversation(state.convId, er.userMessageIndex);
+      } else if (er.action === "edit_instructions") {
+        // Text is placed in prompt as "/instructions <text>" — user edits and submits
+        // through the normal slash command flow. Nothing else to do here.
       }
       break;
     }
@@ -228,6 +251,8 @@ function handleKey(key: KeyEvent): void {
       state.messages = [];
       clearPendingAI(state);
       state.contextTokens = null;
+      state.pendingSystemInstructions = null;
+      state.pendingGenerateTitleOnCreate = false;
       break;
     case "delete_conversation":
       daemon.deleteConversation(result.convId);

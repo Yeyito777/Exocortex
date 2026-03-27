@@ -97,6 +97,12 @@ export function buildDisplayData(
   }
 
   for (const msg of messages) {
+    if (msg.role === "system_instructions") {
+      flushAI();
+      const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+      entries.push({ type: "system_instructions", text });
+      continue;
+    }
     if (msg.role === "system") {
       flushAI();
       const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);

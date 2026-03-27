@@ -329,6 +329,30 @@ export function buildMessageLines(
       const contentEnd = lines.length;
       for (const ml of renderMetadata(msg.metadata)) pushLine(ml);
       messageBounds.push({ start, end: lines.length, contentStart, contentEnd });
+    } else if (msg.role === "system_instructions") {
+      if (!msg.text.trim()) {
+        messageBounds.push({ start, end: lines.length, contentStart: start, contentEnd: lines.length });
+        continue;
+      }
+      const boxWidth = availableWidth;
+      const textWidth = boxWidth - 4; // │ + space + text + space + │
+      const title = " System Instructions ";
+      const topFill = Math.max(0, boxWidth - 2 - title.length); // -2 for ┌ and ┐
+      const topLine = `┌${title}${"─".repeat(topFill)}┐`;
+      const bottomLine = `└${"─".repeat(Math.max(0, boxWidth - 2))}┘`;
+
+      pushLine(`${theme.accent}${topLine}${theme.reset}`);
+      const contentStart = lines.length;
+
+      const { lines: wrapped } = wordWrap(msg.text, textWidth > 0 ? textWidth : 1);
+      for (const sl of wrapped) {
+        const pad = " ".repeat(Math.max(0, textWidth - sl.length));
+        pushLine(`${theme.accent}│${theme.reset} ${theme.dim}${sl}${pad}${theme.reset} ${theme.accent}│${theme.reset}`);
+      }
+      const contentEnd = lines.length;
+
+      pushLine(`${theme.accent}${bottomLine}${theme.reset}`);
+      messageBounds.push({ start, end: lines.length, contentStart, contentEnd });
     } else {
       const color = msg.color || theme.dim;
       const sysWidth = availableWidth - 2; // 2-char indent

@@ -63,6 +63,11 @@ function systemEntry(entry: ReturnType<typeof build>["entries"][number]) {
   return entry;
 }
 
+function systemInstructionsEntry(entry: ReturnType<typeof build>["entries"][number]) {
+  if (entry.type !== "system_instructions") throw new Error(`Expected system_instructions entry, got ${entry.type}`);
+  return entry;
+}
+
 // ── Metadata ────────────────────────────────────────────────────────
 
 const META: MessageMetadata = {
@@ -503,7 +508,31 @@ describe("tool-result folding", () => {
   });
 });
 
-// ── System messages ─────────────────────────────────────────────────
+// ── System instructions / System messages ───────────────────────────
+
+describe("system instructions", () => {
+  test("render as dedicated entries", () => {
+    const { entries } = build([
+      { role: "system_instructions", content: "Be terse.", metadata: null },
+    ]);
+    expect(entries).toHaveLength(1);
+    expect(systemInstructionsEntry(entries[0])).toEqual({
+      type: "system_instructions",
+      text: "Be terse.",
+    });
+  });
+
+  test("flush a pending ai entry before rendering", () => {
+    const msgs: StoredMessage[] = [
+      { role: "assistant", content: "thinking...", metadata: null },
+      { role: "system_instructions", content: "Be terse.", metadata: null },
+    ];
+    const { entries } = build(msgs);
+    expect(entries).toHaveLength(2);
+    expect(entries[0].type).toBe("ai");
+    expect(entries[1].type).toBe("system_instructions");
+  });
+});
 
 describe("system messages", () => {
   test("content starting with ⟳ → color: warning", () => {

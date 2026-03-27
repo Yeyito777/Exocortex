@@ -743,6 +743,33 @@ describe("loadAll()", () => {
     expect(summaryA.unread).toBe(false);
   });
 
+  test("messageCount excludes system_instructions entries", () => {
+    const id = mkId("loadall-system-instructions-count");
+    writeFixture(id, {
+      version: 10,
+      id,
+      model: "sonnet",
+      effort: "high",
+      messages: [
+        { role: "system_instructions", content: "Be terse", metadata: null },
+        { role: "user", content: "hello", metadata: null },
+        { role: "assistant", content: "hi", metadata: null },
+      ],
+      createdAt: 123,
+      updatedAt: 456,
+      lastContextTokens: null,
+      marked: false,
+      pinned: false,
+      sortOrder: 0,
+      title: "With instructions",
+    });
+
+    const all = loadAll();
+    const summary = all.find((c) => c.id === id);
+    expect(summary).toBeDefined();
+    expect(summary!.messageCount).toBe(2);
+  });
+
   test("summaries are sorted by sortOrder ascending (lower = first)", () => {
     const idLow = mkId("loadall-sort-low");
     const idMid = mkId("loadall-sort-mid");

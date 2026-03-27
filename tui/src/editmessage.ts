@@ -11,7 +11,7 @@
 
 import type { KeyEvent } from "./input";
 import type { RenderState, EditMessageItem } from "./state";
-import { focusPrompt } from "./state";
+import { EDIT_INDEX_INSTRUCTIONS, EDIT_INDEX_QUEUED, focusPrompt } from "./state";
 
 // ── Open modal ────────────────────────────────────────────────────
 
@@ -20,6 +20,18 @@ export function openEditMessageModal(state: RenderState): void {
   if (!state.convId) return;
 
   const items: EditMessageItem[] = [];
+
+  // Collect system instructions (shown first with special marker)
+  for (const msg of state.messages) {
+    if (msg.role === "system_instructions" && msg.text.trim()) {
+      items.push({
+        userMessageIndex: EDIT_INDEX_INSTRUCTIONS,
+        text: msg.text,
+        isQueued: false,
+      });
+      break; // There's at most one
+    }
+  }
 
   // Collect sent user messages
   let userIdx = 0;
@@ -39,7 +51,7 @@ export function openEditMessageModal(state: RenderState): void {
   const queued = state.queuedMessages.filter(qm => qm.convId === state.convId);
   for (const qm of queued) {
     items.push({
-      userMessageIndex: -1,
+      userMessageIndex: EDIT_INDEX_QUEUED,
       text: qm.text,
       isQueued: true,
       images: qm.images,
@@ -94,6 +106,7 @@ export function handleEditMessageKey(key: KeyEvent, state: RenderState): EditMes
 export type EditConfirmResult =
   | { action: "edit_sent"; text: string; userMessageIndex: number }
   | { action: "edit_queued"; text: string }
+  | { action: "edit_instructions"; text: string }
   | { action: "cancel" };
 
 /**
@@ -116,6 +129,13 @@ export function confirmEditMessage(state: RenderState): EditConfirmResult {
   // Restore image attachments so they're re-sent with the edited message
   if (item.images?.length) {
     state.pendingImages = [...item.images];
+  }
+
+  if (item.userMessageIndex === EDIT_INDEX_INSTRUCTIONS) {
+    // System instructions — prepend /instructions so it routes through the slash command
+    state.inputBuffer = `/instructions ${item.text}`;
+    state.cursorPos = state.inputBuffer.length;
+    return { action: "edit_instructions", text: item.text };
   }
 
   if (item.isQueued) {

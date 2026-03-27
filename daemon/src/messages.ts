@@ -29,7 +29,7 @@ export interface ApiMessage {
 
 /** A message with optional metadata for persistence. */
 export interface StoredMessage {
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "system_instructions";
   content: string | ApiContentBlock[];
   metadata: MessageMetadata | null;
   providerData?: Record<string, unknown>;
@@ -73,6 +73,11 @@ export interface Conversation {
 export function isToolResultMessage(msg: StoredMessage): boolean {
   if (typeof msg.content === "string") return false;
   return msg.content.length > 0 && msg.content.some(b => b.type === "tool_result");
+}
+
+/** Count messages for summaries/UI, excluding per-conversation instructions metadata. */
+export function countConversationMessages(messages: StoredMessage[]): number {
+  return messages.filter((msg) => msg.role !== "system_instructions").length;
 }
 
 export function createConversation(

@@ -14,7 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlink
 import { log } from "./log";
 import { conversationsDir, trashDir } from "@exocortex/shared/paths";
 import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary } from "./messages";
-import { DEFAULT_EFFORT, sortConversations } from "./messages";
+import { DEFAULT_EFFORT, countConversationMessages, sortConversations } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
@@ -131,7 +131,11 @@ interface ConversationFileV9 {
 interface ConversationFileV10 {
   version: 10;
   id: string;
-  provider: ProviderId;
+  /**
+   * Optional for compatibility: feat-system-instructions also used v10
+   * before provider was introduced.
+   */
+  provider?: ProviderId;
   model: ModelId;
   effort: EffortLevel;
   messages: StoredMessage[];
@@ -255,20 +259,25 @@ function migrateV8toV9(data: ConversationFileV8): ConversationFileV9 {
   };
 }
 
-/** v9 → v10: Add provider field. */
+/**
+ * v9 → v10: Support system_instructions message role.
+ *
+ * No structural change — feat-system-instructions originally used v10 for
+ * this semantic expansion before provider/fastMode were added in a later schema bump.
+ */
 function migrateV9toV10(data: ConversationFileV9): ConversationFileV10 {
   return {
     ...data,
     version: 10,
-    provider: "anthropic",
   };
 }
 
-/** v10 → v11: Add fast mode flag. */
+/** v10 → v11: Add provider and fastMode fields. */
 function migrateV10toV11(data: ConversationFileV10): ConversationFileV11 {
   return {
     ...data,
     version: 11,
+    provider: data.provider ?? "anthropic",
     fastMode: false,
   };
 }
@@ -482,7 +491,7 @@ export function loadAll(): ConversationSummary[] {
         fastMode: file.fastMode,
         createdAt: file.createdAt,
         updatedAt: file.updatedAt,
-        messageCount: file.messages.length,
+        messageCount: countConversationMessages(file.messages),
         title: file.title,
         marked: file.marked,
         pinned: file.pinned,

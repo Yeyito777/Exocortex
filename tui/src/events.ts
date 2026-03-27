@@ -46,6 +46,9 @@ function pushDisplayEntries(state: RenderState, entries: DisplayEntry[]): void {
       case "system":
         state.messages.push({ role: "system", text: entry.text, color: themeColor(entry.color), metadata: null });
         break;
+      case "system_instructions":
+        state.messages.push({ role: "system_instructions", text: entry.text, metadata: null });
+        break;
     }
   }
 }
@@ -67,6 +70,7 @@ export interface DaemonActions {
   subscribe(convId: string): void;
   unsubscribe(convId: string): void;
   sendMessage(convId: string, text: string, startedAt: number, images?: ImageAttachment[]): void;
+  setSystemInstructions(convId: string, text: string): void;
 }
 
 // ── Conversation-scoped events ─────────────────────────────────────
@@ -99,6 +103,11 @@ export function handleEvent(
       state.effort = event.effort ?? state.effort;
       state.fastMode = event.fastMode ?? state.fastMode;
       daemon.subscribe(event.convId);
+
+      if (state.pendingSystemInstructions !== null) {
+        daemon.setSystemInstructions(event.convId, state.pendingSystemInstructions);
+        state.pendingSystemInstructions = null;
+      }
 
       // If we had a pending message, send it now
       if (state.pendingSend.active && (state.pendingSend.text || state.pendingSend.images) && state.pendingAI) {
@@ -419,6 +428,10 @@ export function handleEvent(
       state.messages.push({ role: "system", text: event.systemPrompt, metadata: null });
       break;
     }
+
+    case "system_instructions_updated":
+      // No-op — the daemon sends history_updated which rebuilds everything.
+      break;
 
     case "llm_complete_result":
     case "ack":
