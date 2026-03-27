@@ -357,6 +357,7 @@ export async function orchestrateSendMessage(
         return s.detail || s.label;
       },
       effort: conv.effort,
+      promptCacheKey: convId,
       state: agentState,
     });
 

@@ -8,5 +8,6 @@ export interface OpenAIAssistantProviderData {
   openai: {
     responseId?: string;
     reasoningItems?: OpenAIReasoningItem[];
+    requestShapeHash?: string;
   };
 }

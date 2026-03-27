@@ -125,6 +125,7 @@ export async function runAgentLoop(
     maxTokens?: number;
     tools?: unknown[];
     effort?: EffortLevel;
+    promptCacheKey?: string;
     /** Mutable state for abort recovery — caller reads on catch. */
     state?: AgentState;
   } = {},
@@ -170,6 +171,7 @@ export async function runAgentLoop(
       maxTokens: options.maxTokens,
       tools: options.tools,
       effort: options.effort,
+      promptCacheKey: options.promptCacheKey,
     });
 
     if (result.outputTokens) {
