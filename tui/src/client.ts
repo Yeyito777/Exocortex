@@ -7,8 +7,7 @@
 import { connect, type Socket } from "net";
 import { existsSync } from "fs";
 import type { Command, Event, QueueTiming } from "./protocol";
-import type { ModelId, EffortLevel, ImageAttachment } from "./messages";
-import { DEFAULT_EFFORT } from "./messages";
+import type { ProviderId, ModelId, EffortLevel, ImageAttachment } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 
 export type EventHandler = (event: Event) => void;
@@ -92,8 +91,8 @@ export class DaemonClient {
 
   // ── Convenience methods ─────────────────────────────────────────
 
-  createConversation(model?: import("./protocol").ModelId, title?: string, effort?: EffortLevel): void {
-    this.send({ type: "new_conversation", model, title, effort: effort !== DEFAULT_EFFORT ? effort : undefined });
+  createConversation(provider?: ProviderId, model?: import("./protocol").ModelId, title?: string, effort?: EffortLevel): void {
+    this.send({ type: "new_conversation", provider, model, title, effort });
   }
 
   subscribe(convId: string): void {
@@ -172,12 +171,12 @@ export class DaemonClient {
     this.send({ type: "load_conversation", convId });
   }
 
-  login(): void {
-    this.send({ type: "login" });
+  login(provider?: ProviderId): void {
+    this.send({ type: "login", provider });
   }
 
-  logout(): void {
-    this.send({ type: "logout" });
+  logout(provider?: ProviderId): void {
+    this.send({ type: "logout", provider });
   }
 
   getSystemPrompt(): void {
@@ -187,11 +186,11 @@ export class DaemonClient {
   llmComplete(
     system: string, userText: string,
     onSuccess: LlmCompleteCallback, onError?: LlmErrorCallback,
-    model?: ModelId, maxTokens?: number,
+    provider?: ProviderId, model?: ModelId, maxTokens?: number,
   ): void {
     const reqId = `llm_${++this.nextReqId}_${Date.now()}`;
     this.llmCallbacks.set(reqId, { onSuccess, onError });
-    this.send({ type: "llm_complete", reqId, system, userText, model, maxTokens });
+    this.send({ type: "llm_complete", reqId, system, userText, provider, model, maxTokens });
   }
 
   // ── Internal ────────────────────────────────────────────────────

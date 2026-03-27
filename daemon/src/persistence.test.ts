@@ -484,10 +484,10 @@ describe("V8 migration", () => {
   });
 });
 
-// ── V9 (current) ─────────────────────────────────────────────────────
+// ── V9 → V10 ─────────────────────────────────────────────────────────
 
-describe("V9 — current schema", () => {
-  test("loads all fields as-is without modification", () => {
+describe("V9 migration", () => {
+  test("adds anthropic as the default provider while preserving existing fields", () => {
     const id = mkId("v9-current");
     const assistantMeta = {
       startedAt: 9_000_000,
@@ -520,6 +520,7 @@ describe("V9 — current schema", () => {
     const conv = load(id);
     expect(conv).not.toBeNull();
     expect(conv!.id).toBe(id);
+    expect(conv!.provider).toBe("anthropic");
     expect(conv!.model).toBe("opus");
     expect(conv!.effort).toBe("low");
     expect(conv!.messages).toHaveLength(2);
@@ -560,7 +561,8 @@ describe("save / load round-trip", () => {
     const id = mkId("roundtrip-basic");
     const original: Conversation = {
       id,
-      model: "sonnet",
+      provider: "openai",
+      model: "gpt-5",
       effort: "medium",
       messages: [
         { role: "user", content: "Round-trip test", metadata: null },
@@ -570,8 +572,20 @@ describe("save / load round-trip", () => {
           metadata: {
             startedAt: 1_234_567,
             endedAt: 1_234_999,
-            model: "sonnet",
+            model: "gpt-5",
             tokens: 42,
+          },
+          providerData: {
+            openai: {
+              responseId: "resp_123",
+              reasoningItems: [
+                {
+                  id: "rs_123",
+                  encryptedContent: "opaque",
+                  summaries: ["checked replay state"],
+                },
+              ],
+            },
           },
         },
       ],
@@ -595,6 +609,7 @@ describe("save / load round-trip", () => {
     const id = mkId("roundtrip-overwrite");
     const base: Conversation = {
       id,
+      provider: "anthropic",
       model: "sonnet",
       effort: "high",
       messages: [],
@@ -621,6 +636,7 @@ describe("save / load round-trip", () => {
       const id = mkId(`roundtrip-effort-${effort}`);
       const conv: Conversation = {
         id,
+        provider: "anthropic",
         model: "haiku",
         effort,
         messages: [],

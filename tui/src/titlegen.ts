@@ -27,6 +27,16 @@ const MAX_CONTEXT_CHARS = 2000;
 /** Placeholder title shown while generation is in-flight. */
 export const PENDING_TITLE = "pending";
 
+function titleModelForProvider(provider: RenderState["provider"]): string {
+  switch (provider) {
+    case "openai":
+      return "gpt-5.4-mini";
+    case "anthropic":
+    default:
+      return "claude-haiku-4-5-20251001";
+  }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 /** Collect user messages into a single string, truncated to MAX_CONTEXT_CHARS. */
@@ -75,7 +85,8 @@ export function generateTitle(
       state.messages.push({ role: "system", text: `✗ Title generation failed: ${error}`, metadata: null });
       scheduleRender();
     },
-    "haiku",
+    state.provider,
+    titleModelForProvider(state.provider),
     MAX_TOKENS,
   );
 }

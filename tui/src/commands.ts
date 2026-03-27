@@ -11,7 +11,7 @@
 import type { RenderState } from "./state";
 import { clearPendingAI } from "./state";
 import { clearPrompt } from "./promptline";
-import { DEFAULT_EFFORT, EFFORT_LEVELS, type ModelId, type EffortLevel } from "./messages";
+import { DEFAULT_EFFORT, EFFORT_LEVELS, normalizeEffortForModel, type ProviderId, type ModelId, type EffortLevel, type ModelInfo, type ReasoningEffortInfo } from "./messages";
 import { convDisplayName } from "./messages";
 import { copyToClipboard } from "./vim/clipboard";
 import { PENDING_TITLE } from "./titlegen";
@@ -47,7 +47,84 @@ export interface SlashCommand {
 
 // ── Command definitions ─────────────────────────────────────────────
 
-const MODELS: ModelId[] = ["sonnet", "haiku", "opus"];
+function availableProviders(state: RenderState): ProviderId[] {
+  const ids = state.providerRegistry.map((p) => p.id);
+  return ids.length > 0 ? ids : ["anthropic", "openai"];
+}
+
+function providerInfo(state: RenderState, provider = state.provider) {
+  return state.providerRegistry.find((candidate) => candidate.id === provider) ?? null;
+}
+
+function providerModels(state: RenderState, provider = state.provider): ModelId[] {
+  return providerInfo(state, provider)?.models.map((model) => model.id) ?? [];
+}
+
+function modelInfo(state: RenderState, provider = state.provider, model = state.model): ModelInfo | null {
+  return providerInfo(state, provider)?.models.find((candidate) => candidate.id === model) ?? null;
+}
+
+function defaultModelForProvider(state: RenderState, provider = state.provider): ModelId | null {
+  return providerInfo(state, provider)?.defaultModel ?? null;
+}
+
+function providerAllowsCustomModels(state: RenderState, provider = state.provider): boolean {
+  return providerInfo(state, provider)?.allowsCustomModels ?? false;
+}
+
+function providerCompletionItems(state: RenderState): CompletionItem[] {
+  return availableProviders(state).map((provider) => ({
+    name: provider,
+    desc: providerInfo(state, provider)?.label ?? `${provider} models`,
+  }));
+}
+
+function providerModelItems(state: RenderState, provider = state.provider): CompletionItem[] {
+  const info = providerInfo(state, provider);
+  const models = info?.models ?? [];
+  return models.map((model) => ({
+    name: model.id,
+    desc: model.id === info?.defaultModel ? `${model.label} (default)` : model.label,
+  }));
+}
+
+function supportedEfforts(state: RenderState, provider = state.provider, model = state.model): ReasoningEffortInfo[] {
+  return modelInfo(state, provider, model)?.supportedEfforts ?? EFFORT_LEVELS.map((effort) => ({ effort, description: effort }));
+}
+
+function defaultEffortFor(state: RenderState, provider = state.provider, model = state.model): EffortLevel {
+  return normalizeEffortForModel(modelInfo(state, provider, model), null);
+}
+
+function effortItems(state: RenderState, provider = state.provider, model = state.model): CompletionItem[] {
+  const defaultEffort = defaultEffortFor(state, provider, model);
+  return supportedEfforts(state, provider, model).map((candidate) => ({
+    name: candidate.effort,
+    desc: candidate.effort === defaultEffort ? `${candidate.description} (default)` : candidate.description,
+  }));
+}
+
+function normalizeStateEffort(state: RenderState, provider = state.provider, model = state.model): void {
+  state.effort = normalizeEffortForModel(modelInfo(state, provider, model), state.effort);
+}
+
+function formatProviderModels(state: RenderState, provider: ProviderId): string {
+  const models = providerModels(state, provider);
+  if (models.length === 0) return `${provider}: (waiting for daemon)`;
+  return `${provider}: ${models.join(", ")}${providerAllowsCustomModels(state, provider) ? " (custom ids allowed)" : ""}`;
+}
+
+function formatEffortChoices(candidates: ReasoningEffortInfo[], current: EffortLevel, defaultEffort: EffortLevel): string {
+  return candidates
+    .map((candidate) => {
+      const suffix = [
+        candidate.effort === current ? "current" : "",
+        candidate.effort === defaultEffort ? "default" : "",
+      ].filter(Boolean).join(", ");
+      return suffix ? `${candidate.effort} (${suffix})` : candidate.effort;
+    })
+    .join(", ");
+}
 
 /** Build a human-readable info string for the current conversation. */
 function formatConvoInfo(state: RenderState): string | null {
@@ -55,6 +132,7 @@ function formatConvoInfo(state: RenderState): string | null {
 
   const conv = state.sidebar.conversations.find(c => c.id === state.convId);
   const title = conv ? convDisplayName(conv, "(untitled)") : "(untitled)";
+  const provider = conv?.provider ?? state.provider;
   const model = conv?.model ?? state.model;
   const msgs = conv?.messageCount ?? state.messages.filter(m => m.role !== "system").length;
   const created = conv ? new Date(conv.createdAt).toLocaleString() : "unknown";
@@ -69,6 +147,7 @@ function formatConvoInfo(state: RenderState): string | null {
   const lines = [
     `Title:    ${title}`,
     `ID:       ${state.convId}`,
+    `Provider: ${provider}`,
     `Model:    ${model}`,
     `Effort:   ${state.effort}`,
     `Messages: ${msgs}`,
@@ -145,42 +224,89 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/model",
-    description: "Set or show the current model",
+    description: "Set or show the current provider/model",
     args: [
-      { name: "sonnet", desc: "Claude Sonnet 4" },
-      { name: "haiku", desc: "Claude Haiku 4" },
-      { name: "opus", desc: "Claude Opus 4" },
+      { name: "anthropic", desc: "Anthropic models" },
+      { name: "openai", desc: "OpenAI models" },
     ],
     handler: (text, state) => {
-      const parts = text.split(/\s+/);
-      const arg = parts[1];
-      if (arg && MODELS.includes(arg as ModelId)) {
-        state.model = arg as ModelId;
-        state.messages.push({ role: "system", text: `Model set to ${state.model}`, metadata: null });
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      const providers = availableProviders(state);
+
+      if (parts.length === 1) {
+        state.messages.push({
+          role: "system",
+          text: `Current: ${state.provider}/${state.model}\nAvailable:\n${providers.map((provider) => formatProviderModels(state, provider)).join("\n")}\nUsage: /model <provider> <model>`,
+          metadata: null,
+        });
         clearPrompt(state);
-        return { type: "model_changed", model: arg as ModelId };
-      } else {
-        state.messages.push({ role: "system", text: `Current: ${state.model}. Available: ${MODELS.join(", ")}`, metadata: null });
+        return { type: "handled" };
       }
+
+      const provider = parts[1] as ProviderId;
+      if (!providers.includes(provider)) {
+        state.messages.push({
+          role: "system",
+          text: `Unknown provider: ${parts[1]}. Available: ${providers.join(", ")}`,
+          metadata: null,
+        });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      if (parts.length === 2) {
+        const currentModel = provider === state.provider ? state.model : defaultModelForProvider(state, provider) ?? "(unknown)";
+        const efforts = effortItems(state, provider, currentModel);
+        state.messages.push({
+          role: "system",
+          text: `Current: ${currentModel}\nAvailable: ${providerModels(state, provider).join(", ") || "(waiting for daemon)"}\nEffort: ${efforts.map((item) => item.name).join(", ") || DEFAULT_EFFORT}${providerAllowsCustomModels(state, provider) ? "\nThis provider also accepts custom model ids." : ""}`,
+          metadata: null,
+        });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      const model = parts[2] as ModelId;
+      if (state.convId && provider !== state.provider) {
+        state.messages.push({ role: "system", text: "Provider is locked for the active conversation. Start a new conversation to switch providers.", metadata: null });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      state.provider = provider;
+      state.model = model;
+      const previousEffort = state.effort;
+      normalizeStateEffort(state, provider, model);
+      const effortSuffix = state.effort !== previousEffort ? ` (effort ${state.effort})` : "";
+      state.messages.push({ role: "system", text: `Model set to ${state.provider}/${state.model}${effortSuffix}`, metadata: null });
       clearPrompt(state);
-      return { type: "handled" };
+      return state.convId ? { type: "model_changed", model } : { type: "handled" };
     },
   },
   {
     name: "/effort",
     description: "Set or show reasoning effort level",
-    args: EFFORT_LEVELS.map(e => ({ name: e, desc: e === DEFAULT_EFFORT ? `${e} (default)` : e })),
     handler: (text, state) => {
       const parts = text.split(/\s+/);
       const arg = parts[1];
-      if (arg && EFFORT_LEVELS.includes(arg as EffortLevel)) {
+      const supported = supportedEfforts(state);
+      const supportedLevels = supported.map((candidate) => candidate.effort);
+      const defaultEffort = defaultEffortFor(state);
+      if (arg && supportedLevels.includes(arg as EffortLevel)) {
         const effort = arg as EffortLevel;
         state.effort = effort;
         state.messages.push({ role: "system", text: `Effort set to ${effort}`, metadata: null });
         clearPrompt(state);
         return { type: "effort_changed", effort };
       } else {
-        state.messages.push({ role: "system", text: `Current: ${state.effort}. Available: ${EFFORT_LEVELS.join(", ")}`, metadata: null });
+        const detail = supported
+          .map((candidate) => `${candidate.effort}: ${candidate.description}`)
+          .join("\n");
+        state.messages.push({
+          role: "system",
+          text: `Current: ${state.effort}. Available: ${formatEffortChoices(supported, state.effort, defaultEffort)}${detail ? `\n${detail}` : ""}`,
+          metadata: null,
+        });
       }
       clearPrompt(state);
       return { type: "handled" };
@@ -243,7 +369,7 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/login",
-    description: "Authenticate with Anthropic",
+    description: "Authenticate with the current provider",
     handler: (_text, state) => {
       clearPrompt(state);
       return { type: "login" };
@@ -283,6 +409,18 @@ export const COMMAND_LIST: CompletionItem[] = commands
   .map(c => ({ name: c.name, desc: c.description }));
 
 /** All command argument lists, keyed by command name. Used by autocomplete and prompt highlighting. */
-export const COMMAND_ARGS: Record<string, CompletionItem[]> = Object.fromEntries(
-  commands.filter(c => c.args && c.args.length > 0).map(c => [c.name, c.args!]),
+const STATIC_COMMAND_ARGS: Record<string, CompletionItem[]> = Object.fromEntries(
+  commands
+    .filter((command) => command.name !== "/model" && command.args && command.args.length > 0)
+    .map((command) => [command.name, command.args!]),
 );
+
+export function getCommandArgs(state: RenderState): Record<string, CompletionItem[]> {
+  const registry: Record<string, CompletionItem[]> = { ...STATIC_COMMAND_ARGS };
+  registry["/model"] = providerCompletionItems(state);
+  for (const provider of availableProviders(state)) {
+    registry[`/model ${provider}`] = providerModelItems(state, provider);
+  }
+  registry["/effort"] = effortItems(state);
+  return registry;
+}

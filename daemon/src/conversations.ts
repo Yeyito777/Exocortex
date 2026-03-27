@@ -6,13 +6,14 @@
  * In-flight stream tracking lives in streaming.ts.
  */
 
-import type { Conversation, ModelId, EffortLevel, ConversationSummary, StoredMessage } from "./messages";
+import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, StoredMessage } from "./messages";
 import { DEFAULT_EFFORT, createConversation, sortConversations, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder } from "./messages";
 import { buildDisplayData, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
 import * as streaming from "./streaming";
 import { log } from "./log";
+import { normalizeEffort } from "./providers/registry";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -38,8 +39,8 @@ export function generateId(): string {
 
 // ── Conversations ───────────────────────────────────────────────────
 
-export function create(id: string, model: ModelId, title?: string, effort?: EffortLevel): Conversation {
-  const conv = createConversation(id, model, topUnpinnedOrder(conversations.values()), title, effort);
+export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel): Conversation {
+  const conv = createConversation(id, provider, model, topUnpinnedOrder(conversations.values()), title, effort);
   conversations.set(id, conv);
   markDirty(id);
   flush(id);
@@ -77,6 +78,7 @@ export function clone(id: string): Conversation | null {
 
   const conv: Conversation = {
     id: newId,
+    provider: src.provider,
     model: src.model,
     effort: src.effort ?? DEFAULT_EFFORT,
     messages: structuredClone(src.messages),
@@ -121,10 +123,11 @@ export function undoDelete(): Conversation | null {
   return conv;
 }
 
-export function setModel(id: string, model: ModelId): boolean {
+export function setModel(id: string, model: ModelId, effort?: EffortLevel): boolean {
   const conv = conversations.get(id);
   if (!conv) return false;
   conv.model = model;
+  if (effort) conv.effort = effort;
   markDirty(id);
   flush(id);
   return true;
@@ -212,6 +215,11 @@ export function loadFromDisk(): void {
     if (conversations.has(summary.id)) continue;
     const conv = persistence.load(summary.id);
     if (conv) {
+      const normalizedEffort = normalizeEffort(conv.provider, conv.model, conv.effort);
+      if (normalizedEffort !== conv.effort) {
+        conv.effort = normalizedEffort;
+        markDirty(conv.id);
+      }
       conversations.set(conv.id, conv);
     }
   }
@@ -350,6 +358,7 @@ export function getSummary(id: string): ConversationSummary | null {
   if (!conv) return null;
   return {
     id: conv.id,
+    provider: conv.provider,
     model: conv.model,
     effort: conv.effort ?? DEFAULT_EFFORT,
     createdAt: conv.createdAt,
@@ -371,7 +380,7 @@ export type { ConversationDisplayData, DisplayEntry } from "./display";
 export function getDisplayData(id: string): ConversationDisplayData | null {
   const conv = conversations.get(id);
   if (!conv) return null;
-  return buildDisplayData(conv.id, conv.model, conv.effort, conv.messages, conv.lastContextTokens, summarizeTool);
+  return buildDisplayData(conv.id, conv.provider, conv.model, conv.effort, conv.messages, conv.lastContextTokens, summarizeTool);
 }
 
 // ── Unread state (runtime only, not persisted) ──────────────────────
@@ -387,4 +396,3 @@ export function clearUnread(convId: string): boolean {
 export function isUnread(convId: string): boolean {
   return unread.has(convId);
 }
-

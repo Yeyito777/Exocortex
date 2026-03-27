@@ -8,7 +8,7 @@
 
 import type { Block, MessageMetadata, ImageAttachment } from "./messages";
 import type { StoredMessage, ApiContentBlock } from "./messages";
-import type { ModelId, EffortLevel } from "./messages";
+import type { ProviderId, ModelId, EffortLevel } from "./messages";
 import type { DisplayEntry } from "@exocortex/shared/protocol";
 
 export type { DisplayEntry };
@@ -23,6 +23,7 @@ interface ContentPart {
 
 export interface ConversationDisplayData {
   convId: string;
+  provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
   entries: DisplayEntry[];
@@ -36,6 +37,7 @@ export type ToolSummarizerFn = (name: string, input: Record<string, unknown>) =>
 
 export function buildDisplayData(
   convId: string,
+  provider: ProviderId,
   model: ModelId,
   effort: EffortLevel,
   messages: StoredMessage[],
@@ -144,5 +146,5 @@ export function buildDisplayData(
   }
   flushAI();
 
-  return { convId, model, effort, entries, contextTokens: lastContextTokens };
+  return { convId, provider, model, effort, entries, contextTokens: lastContextTokens };
 }

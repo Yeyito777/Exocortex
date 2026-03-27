@@ -18,8 +18,8 @@ import type { Conversation, StoredMessage, ApiContentBlock, ApiMessage } from ".
 import { isToolResultMessage } from "../messages";
 import { complete } from "../llm";
 import { log } from "../log";
-import { MAX_CONTEXT } from "../constants";
 import { safeSlice } from "./util";
+import { getMaxContext } from "../providers/registry";
 
 // ── Context tool environment ──────────────────────────────────────
 
@@ -225,12 +225,16 @@ function actionList(env: ContextToolEnv): ToolResult {
   );
   const totalTokens = lastCtx ?? estTokens.reduce((a, b) => a + b, 0);
 
-  const contextLimit = MAX_CONTEXT[conv.model];
-  const pct = ((totalTokens / contextLimit) * 100).toFixed(1);
+  const contextLimit = getMaxContext(conv.provider, conv.model);
   const lines: string[] = [];
 
   const tokenNote = lastCtx ? "" : "  (estimated — no API token count available yet)";
-  lines.push(`Context: ${fmt(totalTokens)} tokens / ${fmt(contextLimit)} limit  (${pct}%)${tokenNote}`);
+  if (contextLimit && contextLimit > 0) {
+    const pct = ((totalTokens / contextLimit) * 100).toFixed(1);
+    lines.push(`Context: ${fmt(totalTokens)} tokens / ${fmt(contextLimit)} limit  (${pct}%)${tokenNote}`);
+  } else {
+    lines.push(`Context: ${fmt(totalTokens)} tokens / unknown limit${tokenNote}`);
+  }
   lines.push("");
 
   // Table header

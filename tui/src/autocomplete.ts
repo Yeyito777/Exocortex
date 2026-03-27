@@ -14,7 +14,7 @@
  */
 
 import type { RenderState } from "./state";
-import { COMMAND_LIST, COMMAND_ARGS, type CompletionItem } from "./commands";
+import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
 import { MACRO_LIST, MACRO_ARGS } from "./macros";
 import { readdirSync } from "fs";
 import { resolve, dirname, basename } from "path";
@@ -68,12 +68,12 @@ function matchArgCompletion(
  * Get matching commands and macros for a single-line input starting with "/".
  * Commands and macros are shown in a unified list.
  */
-function getCommandMatches(input: string): CompletionItem[] {
+function getCommandMatches(state: RenderState, input: string): CompletionItem[] {
   const raw = input.trimStart();
   if (!raw.startsWith("/")) return [];
 
   // Argument completion against both command and macro registries
-  const argMatch = matchArgCompletion(raw, COMMAND_ARGS) ?? matchArgCompletion(raw, MACRO_ARGS);
+  const argMatch = matchArgCompletion(raw, getCommandArgs(state)) ?? matchArgCompletion(raw, MACRO_ARGS);
   if (argMatch) return argMatch;
 
   const prefix = raw.toLowerCase();
@@ -175,7 +175,7 @@ export function updateAutocomplete(state: RenderState): void {
   // Command + macro autocomplete: single-line input starts with /
   const trimmed = state.inputBuffer.trimStart();
   if (trimmed.startsWith("/") && !trimmed.includes("\n")) {
-    const matches = getCommandMatches(state.inputBuffer);
+    const matches = getCommandMatches(state, state.inputBuffer);
     if (matches.length > 0) {
       state.autocomplete = {
         type: "command",
@@ -416,5 +416,4 @@ function getFilesystemMatches(pathToken: string): CompletionItem[] {
     return [];
   }
 }
-
 

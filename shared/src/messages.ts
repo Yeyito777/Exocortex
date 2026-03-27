@@ -9,22 +9,64 @@
  * live in each package's own messages.ts and re-export from here.
  */
 
-// ── Models ──────────────────────────────────────────────────────────
+// ── Providers / Models ──────────────────────────────────────────────
 
-export type ModelId = "sonnet" | "haiku" | "opus";
+export type ProviderId = "anthropic" | "openai";
+
+/** Provider-scoped model identifier. */
+export type ModelId = string;
+
+export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface ReasoningEffortInfo {
+  effort: EffortLevel;
+  description: string;
+}
+
+export interface ModelInfo {
+  id: ModelId;
+  label: string;
+  maxContext: number;
+  supportedEfforts: ReasoningEffortInfo[];
+  defaultEffort: EffortLevel;
+}
+
+export interface ProviderInfo {
+  id: ProviderId;
+  label: string;
+  defaultModel: ModelId;
+  allowsCustomModels: boolean;
+  models: ModelInfo[];
+}
 
 // ── Effort ─────────────────────────────────────────────────────────
 
-export type EffortLevel = "low" | "medium" | "high" | "max";
-
-export const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "max"];
+export const EFFORT_LEVELS: readonly EffortLevel[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 export const DEFAULT_EFFORT: EffortLevel = "high";
 
-/** Maximum context window size in tokens, per model. */
-export const MAX_CONTEXT: Record<ModelId, number> = {
+export function supportsEffort(model: Pick<ModelInfo, "supportedEfforts"> | null | undefined, effort: EffortLevel): boolean {
+  return model?.supportedEfforts.some((candidate) => candidate.effort === effort) ?? false;
+}
+
+export function normalizeEffortForModel(
+  model: Pick<ModelInfo, "supportedEfforts" | "defaultEffort"> | null | undefined,
+  effort: EffortLevel | null | undefined,
+): EffortLevel {
+  if (effort && supportsEffort(model, effort)) return effort;
+  return model?.defaultEffort ?? DEFAULT_EFFORT;
+}
+
+/** Maximum context window size in tokens, keyed by model id. */
+export const MAX_CONTEXT: Record<string, number> = {
   sonnet: 1_000_000,
   haiku: 1_000_000,
   opus: 1_000_000,
+  "claude-sonnet-4-6": 1_000_000,
+  "claude-haiku-4-5-20251001": 1_000_000,
+  "claude-opus-4-6": 1_000_000,
+  "gpt-5": 400_000,
+  "gpt-5.4": 272_000,
+  "gpt-5.4-mini": 272_000,
 };
 
 // ── Image attachments ──────────────────────────────────────────────
@@ -116,6 +158,7 @@ export type Message = UserMessage | AIMessage | SystemMessage;
 
 export interface ConversationSummary {
   id: string;
+  provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
   createdAt: number;

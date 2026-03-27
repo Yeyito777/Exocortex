@@ -7,7 +7,8 @@
  * highlighting applied afterward.
  */
 
-import { COMMAND_LIST, COMMAND_ARGS } from "./commands";
+import type { RenderState } from "./state";
+import { COMMAND_LIST, getCommandArgs } from "./commands";
 import { MACRO_LIST, MACRO_ARGS } from "./macros";
 import { theme } from "./theme";
 import { wrappedLineOffsets } from "./promptline";
@@ -20,15 +21,24 @@ const VALID_NAMES = new Set([
   "/exit",  // alias not in COMMAND_LIST (filtered out for display)
 ]);
 
-/** Map of command/macro name → set of valid argument names. */
-const VALID_ARGS: Record<string, Set<string>> = {
-  ...Object.fromEntries(
-    Object.entries(COMMAND_ARGS).map(([cmd, args]) => [cmd, new Set(args.map(a => a.name))]),
-  ),
-  ...Object.fromEntries(
-    Object.entries(MACRO_ARGS).map(([cmd, args]) => [cmd, new Set(args.map(a => a.name))]),
-  ),
-};
+function buildValidArgs(state: RenderState): Record<string, Set<string>> {
+  return {
+    ...Object.fromEntries(
+      Object.entries(getCommandArgs(state)).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
+    ),
+    ...Object.fromEntries(
+      Object.entries(MACRO_ARGS).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
+    ),
+  };
+}
+
+function customModelProviders(state: RenderState): Set<string> {
+  return new Set(
+    state.providerRegistry
+      .filter((provider) => provider.allowsCustomModels)
+      .map((provider) => provider.id),
+  );
+}
 
 // ── Span detection ───────────────────────────────────────────────
 
@@ -42,7 +52,11 @@ const COMMAND_SPAN_RE = /(^|[ \t\n])(\/[\w-]+(?:[ \t]+[\w-]+)*)/gm;
  * Each span covers the command name and as many recognized nested
  * arguments as possible (e.g. "/tool install discord" highlights fully).
  */
-function findCommandSpans(buffer: string): Span[] {
+function findCommandSpans(
+  buffer: string,
+  validArgs: Record<string, Set<string>>,
+  providersWithCustomModels: Set<string>,
+): Span[] {
   const spans: Span[] = [];
   COMMAND_SPAN_RE.lastIndex = 0;
 
@@ -69,9 +83,12 @@ function findCommandSpans(buffer: string): Span[] {
     // Walk through subsequent words, extending highlight while args are valid
     let key = baseCmd;
     for (let i = 1; i < wordPositions.length; i++) {
-      if (VALID_ARGS[key]?.has(wordPositions[i].word)) {
+      if (validArgs[key]?.has(wordPositions[i].word)) {
         spanEnd = cmdStart + wordPositions[i].end;
         key = key + " " + wordPositions[i].word;
+      } else if (key.startsWith("/model ") && providersWithCustomModels.has(key.slice("/model ".length))) {
+        spanEnd = cmdStart + wordPositions[i].end;
+        break;
       } else {
         break;
       }
@@ -94,12 +111,13 @@ function findCommandSpans(buffer: string): Span[] {
  * visible line back to its buffer position.
  */
 export function highlightPromptInput(
+  state: RenderState,
   lines: string[],
   buffer: string,
   maxWidth: number,
   scrollOffset: number,
 ): string[] {
-  const spans = findCommandSpans(buffer);
+  const spans = findCommandSpans(buffer, buildValidArgs(state), customModelProviders(state));
   if (spans.length === 0) return lines;
 
   const offsets = wrappedLineOffsets(buffer, maxWidth);

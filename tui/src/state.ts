@@ -5,7 +5,7 @@
  * Message and block types live in messages.ts.
  */
 
-import type { ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment } from "./messages";
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment } from "./messages";
 import { DEFAULT_EFFORT } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
 import type { MessageBound } from "./conversation";
@@ -69,6 +69,7 @@ export interface RenderState {
   messages: Message[];
   /** The AI message currently being streamed (not yet finalized). */
   pendingAI: AIMessage | null;
+  provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
   convId: string | null;
@@ -77,8 +78,8 @@ export interface RenderState {
   cols: number;
   rows: number;
   scrollOffset: number;
-  /** Rate-limit usage data from the daemon. Null until first update. */
-  usage: UsageData | null;
+  /** Rate-limit usage data keyed by provider. Null until first update per provider. */
+  usageByProvider: Record<ProviderId, UsageData | null>;
   /** Input tokens from the latest API round. Null until first context_update. */
   contextTokens: number | null;
   /** Which panel has focus — sidebar or chat. */
@@ -97,6 +98,8 @@ export interface RenderState {
   systemMessageBuffer: SystemMessage[];
   /** Available tools reported by the daemon on connect. */
   toolRegistry: ToolDisplayInfo[];
+  /** Available providers and models reported by the daemon on connect. */
+  providerRegistry: ProviderInfo[];
   /** External tool styles for bash sub-command matching (from daemon). */
   externalToolStyles: ExternalToolStyle[];
   /** Whether tool result output is visible. Toggled with Ctrl+O. */
@@ -166,7 +169,8 @@ export function createInitialState(): RenderState {
   const s: RenderState = {
     messages: [],
     pendingAI: null,
-    model: "opus",
+    provider: "anthropic",
+    model: "claude-opus-4-6",
     effort: DEFAULT_EFFORT,
     convId: null,
     inputBuffer: "",
@@ -174,7 +178,10 @@ export function createInitialState(): RenderState {
     cols: process.stdout.columns || 80,
     rows: process.stdout.rows || 24,
     scrollOffset: 0,
-    usage: null,
+    usageByProvider: {
+      anthropic: null,
+      openai: null,
+    },
     contextTokens: null,
     panelFocus: "chat",
     chatFocus: "prompt",
@@ -184,6 +191,7 @@ export function createInitialState(): RenderState {
     pendingSend: { active: false, text: "" },
     systemMessageBuffer: [],
     toolRegistry: [],
+    providerRegistry: [],
     externalToolStyles: [],
     showToolOutput: false,
     historyCursor: createHistoryCursor(),

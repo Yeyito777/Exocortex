@@ -12,7 +12,7 @@ export * from "@exocortex/shared/messages";
 
 // ── API-level types (for stored conversations / API replay) ─────────
 
-import { DEFAULT_EFFORT, type ModelId, type EffortLevel, type MessageMetadata } from "@exocortex/shared/messages";
+import { DEFAULT_EFFORT, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata } from "@exocortex/shared/messages";
 
 export type ApiContentBlock =
   | { type: "text"; text: string; cache_control?: { type: "ephemeral" } }
@@ -24,6 +24,7 @@ export type ApiContentBlock =
 export interface ApiMessage {
   role: "user" | "assistant";
   content: string | ApiContentBlock[];
+  providerData?: Record<string, unknown>;
 }
 
 /** A message with optional metadata for persistence. */
@@ -31,12 +32,14 @@ export interface StoredMessage {
   role: "user" | "assistant" | "system";
   content: string | ApiContentBlock[];
   metadata: MessageMetadata | null;
+  providerData?: Record<string, unknown>;
 }
 
 // ── Conversation state ──────────────────────────────────────────────
 
 export interface Conversation {
   id: string;
+  provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
   messages: StoredMessage[];
@@ -71,10 +74,11 @@ export function isToolResultMessage(msg: StoredMessage): boolean {
   return msg.content.length > 0 && msg.content.some(b => b.type === "tool_result");
 }
 
-export function createConversation(id: string, model: ModelId, sortOrder?: number, title?: string, effort?: EffortLevel): Conversation {
+export function createConversation(id: string, provider: ProviderId, model: ModelId, sortOrder?: number, title?: string, effort?: EffortLevel): Conversation {
   const now = Date.now();
   return {
     id,
+    provider,
     model,
     effort: effort ?? DEFAULT_EFFORT,
     messages: [],

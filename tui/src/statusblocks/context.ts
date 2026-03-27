@@ -3,8 +3,8 @@
  */
 
 import type { RenderState } from "../state";
+import { MAX_CONTEXT } from "../messages";
 import type { StatusBlock } from "../statusline";
-import { MAX_CONTEXT } from "@exocortex/shared/messages";
 import { theme } from "../theme";
 
 function formatTokenCount(n: number): string {
@@ -12,11 +12,14 @@ function formatTokenCount(n: number): string {
 }
 
 export function contextBlock(state: RenderState): StatusBlock | null {
-  const maxCtx = MAX_CONTEXT[state.model];
+  const registry = state.providerRegistry ?? [];
+  const provider = registry.find((p) => p.id === state.provider);
+  const model = provider?.models.find((m) => m.id === state.model);
+  const maxCtx = model?.maxContext ?? MAX_CONTEXT[state.model] ?? 0;
   const ctxLabel = "  Context: ";
   const ctxValue = formatTokenCount(state.contextTokens ?? 0);
   const maxLabel = "  Max Context: ";
-  const maxValue = formatTokenCount(maxCtx);
+  const maxValue = maxCtx > 0 ? formatTokenCount(maxCtx) : "?";
 
   const width = Math.max(
     ctxLabel.length + ctxValue.length,

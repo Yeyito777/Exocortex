@@ -37,6 +37,7 @@ function build(
 ) {
   return buildDisplayData(
     opts?.convId ?? "conv-1",
+    "anthropic",
     "sonnet",
     "high",
     messages,
@@ -74,8 +75,9 @@ const META: MessageMetadata = {
 
 describe("buildDisplayData — return shape", () => {
   test("passes through convId, model, effort, contextTokens", () => {
-    const result = buildDisplayData("my-conv", "haiku", "low", [], 77_000, summarizer);
+    const result = buildDisplayData("my-conv", "anthropic", "haiku", "low", [], 77_000, summarizer);
     expect(result.convId).toBe("my-conv");
+    expect(result.provider).toBe("anthropic");
     expect(result.model).toBe("haiku");
     expect(result.effort).toBe("low");
     expect(result.contextTokens).toBe(77_000);

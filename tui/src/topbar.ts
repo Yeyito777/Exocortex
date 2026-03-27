@@ -26,11 +26,13 @@ export function renderTopbar(state: RenderState, width?: number): string {
   const w = width ?? state.cols;
 
   const title = `${theme.bold} Exocortex${theme.reset}${theme.topbarBg}`;
-  const modelLabel = state.model.charAt(0).toUpperCase() + state.model.slice(1);
+  const providerId = typeof state.provider === "string" && state.provider.length > 0 ? state.provider : "unknown";
+  const providerLabel = state.providerRegistry.find((provider) => provider.id === providerId)?.label
+    ?? (providerId === "openai" ? "OpenAI" : providerId.charAt(0).toUpperCase() + providerId.slice(1));
   const label = convLabel(state);
   const separator = label ? " — " : "";
 
-  const rightLabel = `${modelLabel} — ${state.effort}`;
+  const rightLabel = `${providerLabel}/${state.model} — ${state.effort}`;
   const inner = `${title}${separator}${label}`;
   const visibleUsed = " Exocortex".length + separator.length + label.length;
   const padding = Math.max(0, w - visibleUsed - rightLabel.length - 1);

@@ -423,7 +423,7 @@ export function render(state: RenderState): void {
   state.promptScrollOffset = newPromptScroll;
 
   // Syntax-highlight valid commands and macros in the input lines
-  const coloredInputLines = highlightPromptInput(inputLines, state.inputBuffer, maxInputWidth, newPromptScroll);
+  const coloredInputLines = highlightPromptInput(state, inputLines, state.inputBuffer, maxInputWidth, newPromptScroll);
 
   const inputRowCount = inputLines.length;
 

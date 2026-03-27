@@ -12,12 +12,15 @@
 
 import { streamMessage } from "./api";
 import { log } from "./log";
-import type { ModelId } from "./messages";
+import type { ProviderId, ModelId } from "./messages";
+import { getDefaultModel } from "./providers/registry";
 
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface CompleteOptions {
-  /** Model to use. Defaults to "sonnet". */
+  /** Provider to use. Defaults to "anthropic". */
+  provider?: ProviderId;
+  /** Model to use. Defaults to the provider's default model. */
   model?: ModelId;
   /** Max output tokens. Defaults to 4096. */
   maxTokens?: number;
@@ -51,16 +54,17 @@ export async function complete(
   options: CompleteOptions = {},
 ): Promise<CompleteResult> {
   const {
-    model = "sonnet",
+    provider = "anthropic",
     maxTokens = 4096,
     signal,
   } = options;
+  const model = options.model ?? getDefaultModel(provider);
 
   const messages = [{ role: "user" as const, content: userText }];
 
-  log("info", `llm: inner completion (model=${model}, maxTokens=${maxTokens}, input=${userText.length} chars)`);
+  log("info", `llm: inner completion (provider=${provider}, model=${model}, maxTokens=${maxTokens}, input=${userText.length} chars)`);
 
-  const result = await streamMessage(messages, model, {
+  const result = await streamMessage(provider, messages, model, {
     onText: noop,
     onThinking: noop,
   }, {
@@ -69,7 +73,7 @@ export async function complete(
     signal,
   });
 
-  log("info", `llm: inner completion done (in=${result.inputTokens ?? "?"}, out=${result.outputTokens ?? "?"}, text=${result.text.length} chars)`);
+  log("info", `llm: inner completion done (provider=${provider}, in=${result.inputTokens ?? "?"}, out=${result.outputTokens ?? "?"}, text=${result.text.length} chars)`);
 
   return {
     text: result.text,

@@ -11,9 +11,10 @@
 
 import { streamMessage, type ApiToolCall } from "./api";
 import { log } from "./log";
-import type { ModelId, EffortLevel, Block, ToolCallBlock, ToolResultBlock, ApiMessage, ApiContentBlock } from "./messages";
+import type { ProviderId, ModelId, EffortLevel, Block, ToolCallBlock, ToolResultBlock, ApiMessage, ApiContentBlock } from "./messages";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
-import { MAX_CONTEXT, CONTEXT_TARGET } from "./constants";
+import { CONTEXT_TARGET } from "./constants";
+import { getMaxContext } from "./providers/registry";
 
 // ── Callbacks ───────────────────────────────────────────────────────
 
@@ -113,6 +114,7 @@ function defaultSummarizer(name: string, _input: Record<string, unknown>): strin
 
 export async function runAgentLoop(
   initialMessages: ApiMessage[],
+  provider: ProviderId,
   model: ModelId,
   callbacks: AgentCallbacks,
   options: {
@@ -152,10 +154,10 @@ export async function runAgentLoop(
   }
 
   for (let round = 0; ; round++) {
-    log("info", `agent: round ${round}, messages=${messages.length}, model=${model}`);
+    log("info", `agent: round ${round}, messages=${messages.length}, provider=${provider}, model=${model}`);
 
     // ── Stream one API response ───────────────────────────────────
-    const result = await streamMessage(messages, model, {
+    const result = await streamMessage(provider, messages, model, {
       onText: callbacks.onTextChunk,
       onThinking: callbacks.onThinkingChunk,
       onBlockStart: callbacks.onBlockStart,
@@ -202,7 +204,11 @@ export async function runAgentLoop(
     for (const tc of result.toolCalls) {
       assistantContent.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
     }
-    const assistantMsg: ApiMessage = { role: "assistant", content: assistantContent };
+    const assistantMsg: ApiMessage = {
+      role: "assistant",
+      content: assistantContent,
+      ...(result.assistantProviderData ? { providerData: result.assistantProviderData } : {}),
+    };
     messages.push(assistantMsg);
     newMessages.push(assistantMsg);
 
@@ -281,38 +287,42 @@ export async function runAgentLoop(
     // usage crosses hardcoded thresholds. The AI sees this alongside
     // tool results; the TUI renders them inline as dimmed text.
     if (lastInputTokens > 0) {
-      const contextLimit = MAX_CONTEXT[model];
-      const pct = ((lastInputTokens / contextLimit) * 100).toFixed(0);
-      const usage = `${Math.round(lastInputTokens / 1000)}k/${contextLimit / 1000}k tokens (${pct}%)`;
-      const freeAtLeast = `${Math.round((lastInputTokens - CONTEXT_TARGET) / 1000)}k`;
-      const target = `${CONTEXT_TARGET / 1000}k`;
-      let hint: string | null = null;
+      const contextLimit = getMaxContext(provider, model);
+      if (contextLimit == null || contextLimit <= 0) {
+        log("warn", `agent: skipping context pressure hint, unknown max context for ${provider}/${model}`);
+      } else {
+        const pct = ((lastInputTokens / contextLimit) * 100).toFixed(0);
+        const usage = `${Math.round(lastInputTokens / 1000)}k/${contextLimit / 1000}k tokens (${pct}%)`;
+        const freeAtLeast = `${Math.round((lastInputTokens - CONTEXT_TARGET) / 1000)}k`;
+        const target = `${CONTEXT_TARGET / 1000}k`;
+        let hint: string | null = null;
 
-      // Find the highest threshold that applies (iterate high→low, process first match)
-      for (let i = THRESHOLDS.length - 1; i >= 0; i--) {
-        if (lastInputTokens < THRESHOLDS[i].at) continue;
-        const { level } = THRESHOLDS[i];
+        // Find the highest threshold that applies (iterate high→low, process first match)
+        for (let i = THRESHOLDS.length - 1; i >= 0; i--) {
+          if (lastInputTokens < THRESHOLDS[i].at) continue;
+          const { level } = THRESHOLDS[i];
 
-        if (level === "critical") {
-          // Critical fires every round until the AI frees space
-          hint = `[Context: ${usage} — critically low on context! Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool immediately.]`;
-          highestFiredLevel = Math.max(highestFiredLevel, i);
-        } else if (i > highestFiredLevel) {
-          // Advisory and warning fire once
-          hint = level === "warning"
-            ? `[Context: ${usage} — context is getting full. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool now before you run out.]`
-            : `[Context: ${usage} — approaching context limit. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Start with strip_thinking, then strip_results where findings are already captured in your responses, then summarize or delete old turns.]`;
-          highestFiredLevel = i;
+          if (level === "critical") {
+            // Critical fires every round until the AI frees space
+            hint = `[Context: ${usage} — critically low on context! Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool immediately.]`;
+            highestFiredLevel = Math.max(highestFiredLevel, i);
+          } else if (i > highestFiredLevel) {
+            // Advisory and warning fire once
+            hint = level === "warning"
+              ? `[Context: ${usage} — context is getting full. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool now before you run out.]`
+              : `[Context: ${usage} — approaching context limit. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Start with strip_thinking, then strip_results where findings are already captured in your responses, then summarize or delete old turns.]`;
+            highestFiredLevel = i;
+          }
+          break; // Only process the highest matching threshold
         }
-        break; // Only process the highest matching threshold
-      }
 
-      if (hint) {
-        toolResultContent.push({ type: "text", text: hint } as ApiContentBlock);
-        allBlocks.push({ type: "text", text: hint });
-        callbacks.onBlockStart("text");
-        callbacks.onTextChunk(hint);
-        log("info", `agent: injected context pressure hint (${THRESHOLDS[Math.max(0, highestFiredLevel)].level}, ${usage})`);
+        if (hint) {
+          toolResultContent.push({ type: "text", text: hint } as ApiContentBlock);
+          allBlocks.push({ type: "text", text: hint });
+          callbacks.onBlockStart("text");
+          callbacks.onTextChunk(hint);
+          log("info", `agent: injected context pressure hint (${THRESHOLDS[Math.max(0, highestFiredLevel)].level}, ${usage})`);
+        }
       }
     }
 

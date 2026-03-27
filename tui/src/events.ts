@@ -7,7 +7,7 @@
 
 import type { RenderState } from "./state";
 import { isStreaming, clearPendingAI } from "./state";
-import { ensureCurrentBlock, createPendingAI, truncateToCompletedRounds, splitPendingAI } from "./messages";
+import { ensureCurrentBlock, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI } from "./messages";
 import type { AIMessage, SystemMessage, ImageAttachment } from "./messages";
 import { updateConversationList, updateConversation, syncSelectedIndex } from "./sidebar";
 import { theme } from "./theme";
@@ -50,6 +50,16 @@ function pushDisplayEntries(state: RenderState, entries: DisplayEntry[]): void {
   }
 }
 
+function fallbackProvider(state: RenderState): RenderState["provider"] {
+  return state.providerRegistry[0]?.id ?? state.provider ?? "anthropic";
+}
+
+function syncModelEffortSelection(state: RenderState): void {
+  const provider = state.providerRegistry.find((candidate) => candidate.id === state.provider);
+  const model = provider?.models.find((candidate) => candidate.id === state.model) ?? null;
+  state.effort = normalizeEffortForModel(model, state.effort);
+}
+
 // ── Daemon actions interface ────────────────────────────────────────
 // Minimal interface so this file doesn't depend on DaemonClient.
 
@@ -84,7 +94,8 @@ export function handleEvent(
   switch (event.type) {
     case "conversation_created": {
       state.convId = event.convId;
-      state.model = event.model;
+      state.provider = event.provider ?? fallbackProvider(state);
+      state.model = event.model ?? state.model;
       daemon.subscribe(event.convId);
 
       // If we had a pending message, send it now
@@ -101,6 +112,7 @@ export function handleEvent(
       // Late-joining client: create pendingAI so future chunks are captured.
       // Original client already has pendingAI from handleSubmit.
       if (!state.pendingAI) {
+        state.provider = event.provider ?? fallbackProvider(state);
         state.pendingAI = createPendingAI(event.startedAt, event.model);
       }
       // Populate with accumulated blocks from daemon (late-join catch-up)
@@ -223,7 +235,7 @@ export function handleEvent(
     }
 
     case "usage_update": {
-      state.usage = event.usage;
+      state.usageByProvider[event.provider] = event.usage;
       break;
     }
 
@@ -234,9 +246,11 @@ export function handleEvent(
 
     case "conversation_updated": {
       updateConversation(state.sidebar, event.summary);
-      // Sync effort if this is the active conversation (may have changed from another client)
+      // Sync provider/model/effort if this is the active conversation
       if (event.summary.id === state.convId) {
-        state.effort = event.summary.effort;
+        state.provider = event.summary.provider ?? fallbackProvider(state);
+        state.model = event.summary.model ?? state.model;
+        state.effort = event.summary.effort ?? state.effort;
       }
       break;
     }
@@ -290,8 +304,9 @@ export function handleEvent(
       state.messages = [];
       clearPendingAI(state);
       state.convId = event.convId;
-      state.model = event.model;
-      state.effort = event.effort;
+      state.provider = event.provider ?? fallbackProvider(state);
+      state.model = event.model ?? state.model;
+      state.effort = event.effort ?? state.effort;
       state.scrollOffset = 0;
       state.contextTokens = event.contextTokens;
 
@@ -359,8 +374,21 @@ export function handleEvent(
     }
 
     case "tools_available": {
-      state.toolRegistry = event.tools;
+      if (Array.isArray(event.providers)) {
+        state.providerRegistry = event.providers;
+      }
+      state.toolRegistry = Array.isArray(event.tools) ? event.tools : [];
       state.externalToolStyles = event.externalToolStyles ?? [];
+      const registry = state.providerRegistry ?? [];
+      const provider = registry.find((p) => p.id === state.provider) ?? registry[0];
+      if (provider) {
+        state.provider = provider.id;
+        const allowsCustomModels = provider.allowsCustomModels;
+        if (!provider.models.some((m) => m.id === state.model) && !allowsCustomModels) {
+          state.model = provider.defaultModel;
+        }
+        syncModelEffortSelection(state);
+      }
       break;
     }
 

@@ -6,7 +6,7 @@
  *
  * Usage:
  *   bun run src/main.ts          Start the daemon
- *   bun run src/main.ts login    Authenticate with Anthropic
+ *   bun run src/main.ts login [provider]    Authenticate a provider
  */
 
 import { loadEnvFile } from "./env";
@@ -15,7 +15,7 @@ loadEnvFile();
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync } from "fs";
 import { connect as netConnect } from "net";
 import { log } from "./log";
-import { loadAuth, isTokenExpired } from "./store";
+import { hasConfiguredCredentials } from "./auth";
 import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
 import { handleLogin } from "./cli";
@@ -24,6 +24,7 @@ import { startScheduler, stopScheduler, getCronDir, getJobs } from "./scheduler"
 import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
 import { getToolDisplayInfo } from "./tools/registry";
+import { getProviders, refreshProviders } from "./providers/registry";
 import { socketPath, pidPath, runtimeDir, worktreeName, isWindows } from "@exocortex/shared/paths";
 
 // ── Paths ───────────────────────────────────────────────────────────
@@ -115,11 +116,25 @@ async function startDaemon(): Promise<void> {
       const externalStyles = getExternalToolStyles();
       server.broadcast({
         type: "tools_available",
+        providers: getProviders(),
         tools: getToolDisplayInfo(),
         ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
       });
     });
   }
+
+  void refreshProviders(true).then((changed) => {
+    if (!changed) return;
+    const externalStyles = isWindows ? [] : getExternalToolStyles();
+    server.broadcast({
+      type: "tools_available",
+      providers: getProviders(),
+      tools: getToolDisplayInfo(),
+      ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
+    });
+  }).catch((err) => {
+    log("warn", `exocortexd: initial provider refresh failed: ${err instanceof Error ? err.message : err}`);
+  });
 
   // Start cron scheduler + stale stream watchdog
   if (!isWindows) {
@@ -128,8 +143,9 @@ async function startDaemon(): Promise<void> {
   startWatchdog();
 
   // Check auth status
-  const auth = loadAuth();
-  const authOk = auth?.tokens?.accessToken && !isTokenExpired(auth.tokens);
+  const authSummary = getProviders()
+    .map((provider) => `${provider.id}=${hasConfiguredCredentials(provider.id) ? "✓" : "✗"}`)
+    .join(" ");
 
   const wt = worktreeName();
   const cronJobs = isWindows ? [] : getJobs();
@@ -137,12 +153,12 @@ async function startDaemon(): Promise<void> {
   const supervisedCount = isWindows ? 0 : getSupervisedDaemonCount();
   console.log(`\n  exocortexd running (pid ${process.pid})${wt ? ` [worktree: ${wt}]` : ""}`);
   console.log(`  socket: ${SOCKET_PATH}`);
-  console.log(`  auth:   ${authOk ? `✓ ${auth?.profile?.email ?? "authenticated"}` : "✗ not authenticated — run: bun run login"}`);
+  console.log(`  auth:   ${authSummary || "none configured"}`);
   console.log(`  cron:   ${cronJobs.length} job(s) in ${getCronDir()}`);
   console.log(`  tools:  ${extToolCount} external tool(s)${supervisedCount > 0 ? `, ${supervisedCount} supervised daemon(s)` : ""}`);
   console.log(`\n  Waiting for connections...\n`);
 
-  log("info", `exocortexd: ready on ${SOCKET_PATH} (auth=${!!authOk}, cron=${cronJobs.length})`);
+  log("info", `exocortexd: ready on ${SOCKET_PATH} (auth=${authSummary}, cron=${cronJobs.length})`);
 }
 
 // ── Main ────────────────────────────────────────────────────────────
@@ -150,7 +166,7 @@ async function startDaemon(): Promise<void> {
 const command = process.argv[2];
 
 if (command === "login") {
-  handleLogin().catch((err) => {
+  handleLogin(process.argv[3]).catch((err) => {
     console.error(`\n  ✗ Login failed: ${err.message}\n`);
     process.exit(1);
   });

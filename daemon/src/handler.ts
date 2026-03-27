@@ -8,24 +8,33 @@
  */
 
 import { log } from "./log";
-import { refreshUsage, handleUsageHeaders, getLastUsage } from "./usage";
+import { refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { orchestrateSendMessage } from "./orchestrator";
 import { complete } from "./llm";
 import { buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles } from "./external-tools";
 import { EFFORT_LEVELS } from "./messages";
+import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts } from "./providers/registry";
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command } from "./protocol";
-import { clearAuth } from "./store";
-import { ensureAuthenticated } from "./auth";
+import { clearAuth, ensureAuthenticated, hasConfiguredCredentials } from "./auth";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
 export function createHandler(server: DaemonServer) {
-  const broadcastUsage = (usage: import("./messages").UsageData) => {
-    server.broadcast({ type: "usage_update", usage });
+  const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
+    server.broadcast({ type: "usage_update", provider, usage });
+  };
+  const broadcastToolsAvailable = () => {
+    const externalStyles = getExternalToolStyles();
+    server.broadcast({
+      type: "tools_available",
+      providers: getProviders(),
+      tools: getToolDisplayInfo(),
+      ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
+    });
   };
 
   return async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
@@ -36,28 +45,47 @@ export function createHandler(server: DaemonServer) {
         const externalStyles = getExternalToolStyles();
         server.sendTo(client, {
           type: "tools_available",
+          providers: getProviders(),
           tools: getToolDisplayInfo(),
           ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
         });
-        const lastUsage = getLastUsage();
-        if (lastUsage) {
-          server.sendTo(client, { type: "usage_update", usage: lastUsage });
+        for (const provider of getProviders()) {
+          const lastUsage = getLastUsage(provider.id);
+          server.sendTo(client, { type: "usage_update", provider: provider.id, usage: lastUsage });
         }
         server.sendTo(client, { type: "conversations_list", conversations: convStore.listSummaries() });
-        refreshUsage(broadcastUsage);
+        for (const provider of getProviders()) {
+          if (!hasConfiguredCredentials(provider.id)) continue;
+          refreshUsage(provider.id, (usage) => broadcastUsage(provider.id, usage));
+        }
+        void refreshProviders().then((changed) => {
+          if (changed) broadcastToolsAvailable();
+        }).catch((err) => {
+          log("warn", `handler: provider refresh failed: ${err instanceof Error ? err.message : err}`);
+        });
         break;
       }
 
       case "new_conversation": {
         const id = convStore.generateId();
-        const model = cmd.model ?? "opus";
-        convStore.create(id, model, cmd.title, cmd.effort);
-        log("info", `handler: created conversation ${id} (model=${model}, title="${cmd.title ?? ""}")`);
+        const provider = cmd.provider ?? getDefaultProvider().id;
+        const providerInfo = getProvider(provider);
+        if (!providerInfo) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Unknown provider: ${provider}` });
+          break;
+        }
+        const model = cmd.model && (isKnownModel(provider, cmd.model) || allowsCustomModels(provider))
+          ? cmd.model
+          : getDefaultModel(provider);
+        const effort = normalizeEffort(provider, model, cmd.effort);
+        convStore.create(id, provider, model, cmd.title, effort);
+        log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, title="${cmd.title ?? ""}")`);
 
         server.sendTo(client, {
           type: "conversation_created",
           reqId: cmd.reqId,
           convId: id,
+          provider,
           model,
         });
         server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(id)! });
@@ -93,8 +121,14 @@ export function createHandler(server: DaemonServer) {
         await orchestrateSendMessage(
           server, client, cmd.reqId, cmd.convId, cmd.text, cmd.startedAt,
           {
-            onHeaders: (h) => handleUsageHeaders(h, broadcastUsage),
-            onComplete: () => refreshUsage(broadcastUsage),
+            onHeaders: (h) => {
+              const provider = convStore.get(cmd.convId)?.provider ?? getDefaultProvider().id;
+              handleUsageHeaders(provider, h, (usage) => broadcastUsage(provider, usage));
+            },
+            onComplete: () => {
+              const provider = convStore.get(cmd.convId)?.provider ?? getDefaultProvider().id;
+              refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
+            },
           },
           cmd.images,
         );
@@ -102,11 +136,26 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "set_model": {
-        const ok = convStore.setModel(cmd.convId, cmd.model);
+        const conv = convStore.get(cmd.convId);
+        if (!conv) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        if (!isKnownModel(conv.provider, cmd.model) && !allowsCustomModels(conv.provider)) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: `Unknown model for provider ${conv.provider}: ${cmd.model}`,
+          });
+          break;
+        }
+        const nextEffort = normalizeEffort(conv.provider, cmd.model, conv.effort);
+        const ok = convStore.setModel(cmd.convId, cmd.model, nextEffort);
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
           server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
-          log("info", `handler: model set to ${cmd.model} for ${cmd.convId}`);
+          log("info", `handler: model set to ${cmd.model} for ${cmd.convId} (effort=${nextEffort})`);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
         }
@@ -116,6 +165,21 @@ export function createHandler(server: DaemonServer) {
       case "set_effort": {
         if (!EFFORT_LEVELS.includes(cmd.effort)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Invalid effort level: ${cmd.effort}. Valid: ${EFFORT_LEVELS.join(", ")}` });
+          break;
+        }
+        const conv = convStore.get(cmd.convId);
+        if (!conv) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        if (!supportsEffort(conv.provider, conv.model, cmd.effort)) {
+          const valid = getSupportedEfforts(conv.provider, conv.model).map((candidate) => candidate.effort);
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: `Invalid effort for ${conv.provider}/${conv.model}: ${cmd.effort}. Valid: ${valid.join(", ")}`,
+          });
           break;
         }
         const ok = convStore.setEffort(cmd.convId, cmd.effort);
@@ -244,6 +308,7 @@ export function createHandler(server: DaemonServer) {
             type: "conversation_loaded",
             reqId: cmd.reqId,
             convId: data.convId,
+            provider: data.provider,
             model: data.model,
             effort: data.effort,
             entries: data.entries,
@@ -265,6 +330,7 @@ export function createHandler(server: DaemonServer) {
           type: "conversation_loaded",
           reqId: cmd.reqId,
           convId: data.convId,
+          provider: data.provider,
           model: data.model,
           effort: data.effort,
           entries: data.entries,
@@ -278,6 +344,7 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, {
             type: "streaming_started",
             convId: data.convId,
+            provider: data.provider,
             model: data.model,
             startedAt: convStore.getStreamingStartedAt(data.convId) ?? Date.now(),
             blocks: convStore.getStreamingBlocks(data.convId) ?? [],
@@ -297,16 +364,17 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "llm_complete": {
-        const model = cmd.model ?? "haiku";
+        const provider = cmd.provider ?? getDefaultProvider().id;
+        const model = cmd.model ?? getDefaultModel(provider);
         // Default must exceed the thinking budget (10000) for non-adaptive
         // models, otherwise all tokens go to thinking and text is empty.
         const maxTokens = cmd.maxTokens ?? 16000;
-        log("info", `handler: llm_complete (model=${model}, maxTokens=${maxTokens}, input=${cmd.userText.length} chars)`);
+        log("info", `handler: llm_complete (provider=${provider}, model=${model}, maxTokens=${maxTokens}, input=${cmd.userText.length} chars)`);
 
         // Fire-and-forget — ack immediately, send result when ready
         server.sendTo(client, { type: "ack", reqId: cmd.reqId });
 
-        complete(cmd.system, cmd.userText, { model, maxTokens })
+        complete(cmd.system, cmd.userText, { provider, model, maxTokens })
           .then((result) => {
             server.sendTo(client, { type: "llm_complete_result", reqId: cmd.reqId, text: result.text });
           })
@@ -328,7 +396,8 @@ export function createHandler(server: DaemonServer) {
           logged_in: (e: string) => `Authenticated as ${e}`,
         };
 
-        ensureAuthenticated({
+        const provider = cmd.provider ?? getDefaultProvider().id;
+        ensureAuthenticated(provider, {
           onProgress: (msg) => {
             server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: msg });
           },
@@ -336,9 +405,15 @@ export function createHandler(server: DaemonServer) {
             server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: "Opening browser for authentication…", openUrl: url });
           },
         }).then(({ status, email }) => {
-          const label = email ?? "unknown";
+          const label = email ?? provider;
           server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: statusMessages[status](label) });
           log("info", `handler: login ${status} (${label})`);
+          refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
+          void refreshProviders(true).then((changed) => {
+            if (changed) broadcastToolsAvailable();
+          }).catch((err) => {
+            log("warn", `handler: provider refresh after login failed: ${err instanceof Error ? err.message : err}`);
+          });
         }).catch((err) => {
           const msg = err instanceof Error ? err.message : String(err);
           log("error", `handler: login failed: ${msg}`);
@@ -348,9 +423,12 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "logout": {
-        clearAuth();
-        server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: "Logged out" });
-        log("info", "handler: logout");
+        const provider = cmd.provider ?? getDefaultProvider().id;
+        clearAuth(provider);
+        clearUsage(provider);
+        broadcastUsage(provider, null);
+        server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: `Logged out from ${provider}` });
+        log("info", `handler: logout (${provider})`);
         break;
       }
 

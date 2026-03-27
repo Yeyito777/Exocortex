@@ -118,10 +118,10 @@ function handleSubmit(): void {
           daemon.getSystemPrompt();
           break;
         case "login":
-          daemon.login();
+          daemon.login(state.provider);
           break;
         case "logout":
-          daemon.logout();
+          daemon.logout(state.provider);
           break;
         case "handled":
           break;
@@ -161,7 +161,7 @@ function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
     state.pendingSend.active = true;
     state.pendingSend.text = messageText;
     state.pendingSend.images = images;
-    daemon.createConversation(state.model, PENDING_TITLE, state.effort);
+    daemon.createConversation(state.provider, state.model, PENDING_TITLE, state.effort);
   } else {
     daemon.sendMessage(state.convId, messageText, startedAt, images);
   }
