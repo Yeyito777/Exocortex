@@ -70,6 +70,7 @@ export function generateTitle(
   const existingTitle = conv?.title ?? "";
   const markPrefix = getMarkPrefix(existingTitle);
   const pendingTitle = markPrefix ? `${markPrefix} ${PENDING_TITLE}` : PENDING_TITLE;
+  const previousStableTitle = existingTitle === pendingTitle ? (markPrefix ?? "") : existingTitle;
 
   // Make the pending title canonical immediately so daemon-driven sidebar
   // updates don't clobber the optimistic local state while generation runs.
@@ -89,7 +90,11 @@ export function generateTitle(
       scheduleRender();
     },
     (error) => {
-      // Leave as "pending" — no preview fallback exists anymore.
+      // Revert from pending to the last stable title (or empty for a brand-new
+      // conversation) so the UI doesn't get stuck showing a perpetual pending state.
+      daemon.renameConversation(convId, previousStableTitle);
+      const conv = state.sidebar.conversations.find(c => c.id === convId);
+      if (conv) conv.title = previousStableTitle;
       state.messages.push({ role: "system", text: `✗ Title generation failed: ${error}`, metadata: null });
       scheduleRender();
     },
