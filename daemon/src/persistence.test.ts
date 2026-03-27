@@ -52,18 +52,20 @@ afterAll(() => {
   }
 });
 
-// ── V1 → V9 ──────────────────────────────────────────────────────────
+// ── V1 → V11 ─────────────────────────────────────────────────────────
 //
 // V1 format: ApiMessage[] (role + content only, no metadata field).
 // Expectations after full migration chain:
-//   V1→V2  messages gain  metadata: null
-//   V2→V3  lastContextTokens: null
-//   V3→V4  marked: false
-//   V4→V5  pinned: false
-//   V5→V6  sortOrder: -updatedAt
-//   V6→V7  title: null
-//   V7→V8  title: legacyPreview(messages)
-//   V8→V9  effort: DEFAULT_EFFORT
+//   V1→V2   messages gain metadata: null
+//   V2→V3   lastContextTokens: null
+//   V3→V4   marked: false
+//   V4→V5   pinned: false
+//   V5→V6   sortOrder: -updatedAt
+//   V6→V7   title: null
+//   V7→V8   title: legacyPreview(messages)
+//   V8→V9   effort: DEFAULT_EFFORT
+//   V9→V10  provider: "anthropic"
+//   V10→V11 fastMode: false
 
 describe("V1 migration", () => {
   test("messages get metadata: null", () => {
@@ -537,6 +539,35 @@ describe("V9 migration", () => {
 
 // ── Error handling ────────────────────────────────────────────────────
 
+describe("V10 migration", () => {
+  test("fastMode defaults to false while preserving existing fields", () => {
+    const id = mkId("v10-fastmode");
+    writeFixture(id, {
+      version: 10,
+      id,
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "medium",
+      messages: [{ role: "user", content: "Hello v10", metadata: null }],
+      createdAt: 10_000_000,
+      updatedAt: 10_000_001,
+      lastContextTokens: 256,
+      marked: false,
+      pinned: false,
+      sortOrder: -10_000_001,
+      title: "My v10 conversation",
+    });
+
+    const conv = load(id);
+    expect(conv).not.toBeNull();
+    expect(conv!.provider).toBe("openai");
+    expect(conv!.model).toBe("gpt-5.4");
+    expect(conv!.effort).toBe("medium");
+    expect(conv!.fastMode).toBe(false);
+    expect(conv!.title).toBe("My v10 conversation");
+  });
+});
+
 describe("error handling", () => {
   test("corrupt JSON file returns null", () => {
     const id = mkId("corrupt-json");
@@ -564,6 +595,7 @@ describe("save / load round-trip", () => {
       provider: "openai",
       model: "gpt-5",
       effort: "medium",
+      fastMode: true,
       messages: [
         { role: "user", content: "Round-trip test", metadata: null },
         {
@@ -612,6 +644,7 @@ describe("save / load round-trip", () => {
       provider: "anthropic",
       model: "sonnet",
       effort: "high",
+      fastMode: false,
       messages: [],
       createdAt: 2_000_000,
       updatedAt: 2_000_000,
@@ -639,6 +672,7 @@ describe("save / load round-trip", () => {
         provider: "anthropic",
         model: "haiku",
         effort,
+        fastMode: false,
         messages: [],
         createdAt: 3_000_000,
         updatedAt: 3_000_000,
@@ -663,8 +697,9 @@ describe("loadAll()", () => {
     const idB = mkId("loadall-b");
 
     writeFixture(idA, {
-      version: 9,
+      version: 10,
       id: idA,
+      provider: "anthropic",
       model: "sonnet",
       effort: "high",
       messages: [{ role: "user", content: "A", metadata: null }],
@@ -677,8 +712,9 @@ describe("loadAll()", () => {
       title: "A",
     });
     writeFixture(idB, {
-      version: 9,
+      version: 10,
       id: idB,
+      provider: "anthropic",
       model: "haiku",
       effort: "low",
       messages: [],
@@ -700,6 +736,7 @@ describe("loadAll()", () => {
     const summaryA = all.find((c) => c.id === idA)!;
     expect(summaryA.model).toBe("sonnet");
     expect(summaryA.effort).toBe("high");
+    expect(summaryA.fastMode).toBe(false);
     expect(summaryA.title).toBe("A");
     expect(summaryA.messageCount).toBe(1);
     expect(summaryA.streaming).toBe(false);
@@ -717,8 +754,9 @@ describe("loadAll()", () => {
       [idHigh, 200],
     ] as const) {
       writeFixture(id, {
-        version: 9,
+        version: 10,
         id,
+        provider: "anthropic",
         model: "sonnet",
         effort: "high",
         messages: [],
@@ -743,8 +781,9 @@ describe("loadAll()", () => {
     const idUnpinned = mkId("loadall-unpinned");
 
     writeFixture(idPinned, {
-      version: 9,
+      version: 10,
       id: idPinned,
+      provider: "anthropic",
       model: "sonnet",
       effort: "high",
       messages: [],
@@ -757,8 +796,9 @@ describe("loadAll()", () => {
       title: "Pinned",
     });
     writeFixture(idUnpinned, {
-      version: 9,
+      version: 10,
       id: idUnpinned,
+      provider: "anthropic",
       model: "sonnet",
       effort: "high",
       messages: [],
@@ -783,8 +823,9 @@ describe("loadAll()", () => {
     const idBad = mkId("loadall-bad");
 
     writeFixture(idGood, {
-      version: 9,
+      version: 10,
       id: idGood,
+      provider: "anthropic",
       model: "sonnet",
       effort: "high",
       messages: [],

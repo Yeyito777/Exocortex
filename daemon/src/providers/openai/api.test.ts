@@ -39,4 +39,12 @@ describe("OpenAI replay input", () => {
 
     expect(body.max_output_tokens).toBeUndefined();
   });
+
+  test("fast mode maps to the priority service tier", () => {
+    const body = buildRequestBodyForTest([
+      { role: "user", content: "hello" },
+    ], "gpt-5.4", 1234, { serviceTier: "fast" });
+
+    expect(body.service_tier).toBe("priority");
+  });
 });

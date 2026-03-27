@@ -39,8 +39,8 @@ export function generateId(): string {
 
 // ── Conversations ───────────────────────────────────────────────────
 
-export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel): Conversation {
-  const conv = createConversation(id, provider, model, topUnpinnedOrder(conversations.values()), title, effort);
+export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode = false): Conversation {
+  const conv = createConversation(id, provider, model, topUnpinnedOrder(conversations.values()), title, effort, fastMode);
   conversations.set(id, conv);
   markDirty(id);
   flush(id);
@@ -81,6 +81,7 @@ export function clone(id: string): Conversation | null {
     provider: src.provider,
     model: src.model,
     effort: src.effort ?? DEFAULT_EFFORT,
+    fastMode: src.fastMode ?? false,
     messages: structuredClone(src.messages),
     createdAt: now,
     updatedAt: now,
@@ -137,6 +138,15 @@ export function setEffort(id: string, effort: EffortLevel): boolean {
   const conv = conversations.get(id);
   if (!conv) return false;
   conv.effort = effort;
+  markDirty(id);
+  flush(id);
+  return true;
+}
+
+export function setFastMode(id: string, enabled: boolean): boolean {
+  const conv = conversations.get(id);
+  if (!conv) return false;
+  conv.fastMode = enabled;
   markDirty(id);
   flush(id);
   return true;
@@ -361,6 +371,7 @@ export function getSummary(id: string): ConversationSummary | null {
     provider: conv.provider,
     model: conv.model,
     effort: conv.effort ?? DEFAULT_EFFORT,
+    fastMode: conv.fastMode ?? false,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
     messageCount: conv.messages.length,
@@ -380,7 +391,7 @@ export type { ConversationDisplayData, DisplayEntry } from "./display";
 export function getDisplayData(id: string): ConversationDisplayData | null {
   const conv = conversations.get(id);
   if (!conv) return null;
-  return buildDisplayData(conv.id, conv.provider, conv.model, conv.effort, conv.messages, conv.lastContextTokens, summarizeTool);
+  return buildDisplayData(conv.id, conv.provider, conv.model, conv.effort, conv.fastMode ?? false, conv.messages, conv.lastContextTokens, summarizeTool);
 }
 
 // ── Unread state (runtime only, not persisted) ──────────────────────

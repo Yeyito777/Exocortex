@@ -26,6 +26,7 @@ export interface ConversationDisplayData {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
+  fastMode: boolean;
   entries: DisplayEntry[];
   contextTokens: number | null;
 }
@@ -40,6 +41,7 @@ export function buildDisplayData(
   provider: ProviderId,
   model: ModelId,
   effort: EffortLevel,
+  fastMode: boolean,
   messages: StoredMessage[],
   lastContextTokens: number | null,
   summarizer: ToolSummarizerFn,
@@ -146,5 +148,5 @@ export function buildDisplayData(
   }
   flushAI();
 
-  return { convId, provider, model, effort, entries, contextTokens: lastContextTokens };
+  return { convId, provider, model, effort, fastMode, entries, contextTokens: lastContextTokens };
 }

@@ -31,6 +31,7 @@ export type CommandResult =
   | { type: "new_conversation" }
   | { type: "model_changed"; model: ModelId }
   | { type: "effort_changed"; effort: EffortLevel }
+  | { type: "fast_mode_changed"; enabled: boolean }
   | { type: "rename_conversation"; title: string }
   | { type: "generate_title" }
   | { type: "login" }
@@ -70,6 +71,10 @@ function defaultModelForProvider(state: RenderState, provider = state.provider):
 
 function providerAllowsCustomModels(state: RenderState, provider = state.provider): boolean {
   return providerInfo(state, provider)?.allowsCustomModels ?? false;
+}
+
+function providerSupportsFastMode(state: RenderState, provider = state.provider): boolean {
+  return providerInfo(state, provider)?.supportsFastMode ?? false;
 }
 
 function providerCompletionItems(state: RenderState): CompletionItem[] {
@@ -141,6 +146,7 @@ function formatConvoInfo(state: RenderState): string | null {
   const flags = [
     conv?.pinned && "pinned",
     conv?.marked && "starred",
+    conv?.fastMode && "fast",
     markLabel,
   ].filter(Boolean).join(", ");
 
@@ -150,6 +156,7 @@ function formatConvoInfo(state: RenderState): string | null {
     `Provider: ${provider}`,
     `Model:    ${model}`,
     `Effort:   ${state.effort}`,
+    `Fast:     ${state.fastMode ? "on" : "off"}`,
     `Messages: ${msgs}`,
     `Created:  ${created}`,
     `Updated:  ${updated}`,
@@ -276,9 +283,12 @@ const commands: SlashCommand[] = [
       state.provider = provider;
       state.model = model;
       const previousEffort = state.effort;
+      const previousFastMode = state.fastMode;
       normalizeStateEffort(state, provider, model);
+      if (!providerSupportsFastMode(state, provider)) state.fastMode = false;
       const effortSuffix = state.effort !== previousEffort ? ` (effort ${state.effort})` : "";
-      state.messages.push({ role: "system", text: `Model set to ${state.provider}/${state.model}${effortSuffix}`, metadata: null });
+      const fastSuffix = previousFastMode && !state.fastMode ? " (fast off)" : "";
+      state.messages.push({ role: "system", text: `Model set to ${state.provider}/${state.model}${effortSuffix}${fastSuffix}`, metadata: null });
       clearPrompt(state);
       return state.convId ? { type: "model_changed", model } : { type: "handled" };
     },
@@ -310,6 +320,54 @@ const commands: SlashCommand[] = [
       }
       clearPrompt(state);
       return { type: "handled" };
+    },
+  },
+  {
+    name: "/fast",
+    description: "Enable or disable OpenAI fast mode",
+    args: [
+      { name: "on", desc: "Enable fast mode for this conversation" },
+      { name: "off", desc: "Disable fast mode for this conversation" },
+      { name: "toggle", desc: "Toggle fast mode for this conversation" },
+    ],
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      const arg = parts[1]?.toLowerCase();
+      const supportsFast = providerSupportsFastMode(state);
+      const providerLabel = state.provider;
+
+      if (!arg) {
+        const availability = supportsFast
+          ? `Fast mode is ${state.fastMode ? "on" : "off"}.`
+          : `Fast mode is unavailable for provider ${providerLabel}.`;
+        state.messages.push({ role: "system", text: availability, metadata: null });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      if (!["on", "off", "toggle"].includes(arg)) {
+        state.messages.push({ role: "system", text: "Usage: /fast [on|off|toggle]", metadata: null });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      if (!supportsFast) {
+        state.messages.push({ role: "system", text: `Fast mode is only available for providers that support it. Current provider: ${providerLabel}`, metadata: null });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      const enabled = arg === "toggle" ? !state.fastMode : arg === "on";
+      if (enabled === state.fastMode) {
+        state.messages.push({ role: "system", text: `Fast mode already ${enabled ? "on" : "off"}.`, metadata: null });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      state.fastMode = enabled;
+      state.messages.push({ role: "system", text: `Fast mode ${enabled ? "enabled" : "disabled"}.`, metadata: null });
+      clearPrompt(state);
+      return state.convId ? { type: "fast_mode_changed", enabled } : { type: "handled" };
     },
   },
   {
@@ -422,5 +480,6 @@ export function getCommandArgs(state: RenderState): Record<string, CompletionIte
     registry[`/model ${provider}`] = providerModelItems(state, provider);
   }
   registry["/effort"] = effortItems(state);
+  registry["/fast"] = STATIC_COMMAND_ARGS["/fast"] ?? [];
   return registry;
 }

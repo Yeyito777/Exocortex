@@ -102,6 +102,9 @@ function handleSubmit(): void {
         case "effort_changed":
           if (state.convId) daemon.setEffort(state.convId, cmdResult.effort);
           break;
+        case "fast_mode_changed":
+          if (state.convId) daemon.setFastMode(state.convId, cmdResult.enabled);
+          break;
         case "rename_conversation":
           if (state.convId) daemon.renameConversation(state.convId, cmdResult.title);
           break;
@@ -161,7 +164,7 @@ function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
     state.pendingSend.active = true;
     state.pendingSend.text = messageText;
     state.pendingSend.images = images;
-    daemon.createConversation(state.provider, state.model, PENDING_TITLE, state.effort);
+    daemon.createConversation(state.provider, state.model, PENDING_TITLE, state.effort, state.fastMode);
   } else {
     daemon.sendMessage(state.convId, messageText, startedAt, images);
   }

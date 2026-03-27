@@ -72,6 +72,7 @@ export interface RenderState {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
+  fastMode: boolean;
   convId: string | null;
   inputBuffer: string;
   cursorPos: number;
@@ -172,6 +173,7 @@ export function createInitialState(): RenderState {
     provider: "anthropic",
     model: "claude-opus-4-6",
     effort: DEFAULT_EFFORT,
+    fastMode: false,
     convId: null,
     inputBuffer: "",
     cursorPos: 0,

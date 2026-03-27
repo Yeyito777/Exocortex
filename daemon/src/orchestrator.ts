@@ -346,6 +346,7 @@ export async function orchestrateSendMessage(
         return s.detail || s.label;
       },
       effort: conv.effort,
+      serviceTier: conv.fastMode ? "fast" : undefined,
       state: agentState,
     });
 

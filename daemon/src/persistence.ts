@@ -18,7 +18,7 @@ import { DEFAULT_EFFORT, sortConversations } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 10;
+const CURRENT_VERSION = 11;
 
 interface ConversationFileV1 {
   version: 1;
@@ -144,7 +144,24 @@ interface ConversationFileV10 {
   title: string;
 }
 
-type ConversationFile = ConversationFileV10;
+interface ConversationFileV11 {
+  version: 11;
+  id: string;
+  provider: ProviderId;
+  model: ModelId;
+  effort: EffortLevel;
+  fastMode: boolean;
+  messages: StoredMessage[];
+  createdAt: number;
+  updatedAt: number;
+  lastContextTokens: number | null;
+  marked: boolean;
+  pinned: boolean;
+  sortOrder: number;
+  title: string;
+}
+
+type ConversationFile = ConversationFileV11;
 
 // ── Migrations ──────────────────────────────────────────────────────
 
@@ -247,6 +264,15 @@ function migrateV9toV10(data: ConversationFileV9): ConversationFileV10 {
   };
 }
 
+/** v10 → v11: Add fast mode flag. */
+function migrateV10toV11(data: ConversationFileV10): ConversationFileV11 {
+  return {
+    ...data,
+    version: 11,
+    fastMode: false,
+  };
+}
+
 function migrate(raw: Record<string, unknown>): ConversationFile {
   // Progressive migration — each function validates and upgrades one version.
   // `any` is intentional at this deserialization boundary: the data is parsed
@@ -262,6 +288,7 @@ function migrate(raw: Record<string, unknown>): ConversationFile {
   if (data.version < 8) data = migrateV7toV8(data);
   if (data.version < 9) data = migrateV8toV9(data);
   if (data.version < 10) data = migrateV9toV10(data);
+  if (data.version < 11) data = migrateV10toV11(data);
 
   if (data.version !== CURRENT_VERSION) {
     log("warn", `persistence: unknown schema version ${data.version}, attempting to load as v${CURRENT_VERSION}`);
@@ -329,6 +356,7 @@ function toFile(conv: Conversation): ConversationFile {
     provider: conv.provider,
     model: conv.model,
     effort: conv.effort ?? DEFAULT_EFFORT,
+    fastMode: conv.fastMode ?? false,
     messages: conv.messages,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
@@ -346,6 +374,7 @@ function fromFile(file: ConversationFile): Conversation {
     provider: file.provider,
     model: file.model,
     effort: file.effort,
+    fastMode: file.fastMode,
     messages: file.messages,
     createdAt: file.createdAt,
     updatedAt: file.updatedAt,
@@ -450,6 +479,7 @@ export function loadAll(): ConversationSummary[] {
         provider: file.provider,
         model: file.model,
         effort: file.effort,
+        fastMode: file.fastMode,
         createdAt: file.createdAt,
         updatedAt: file.updatedAt,
         messageCount: file.messages.length,

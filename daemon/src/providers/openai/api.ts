@@ -65,6 +65,15 @@ function encodeImage(mediaType: string, base64: string): string {
   return `data:${mediaType};base64,${base64}`;
 }
 
+function mapServiceTier(serviceTier: StreamOptions["serviceTier"]): string | undefined {
+  switch (serviceTier) {
+    case "fast":
+      return "priority";
+    default:
+      return undefined;
+  }
+}
+
 function extractToolResultText(content: string | unknown[]): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return String(content ?? "");
@@ -213,6 +222,9 @@ export function buildRequestBodyForTest(
     },
     instructions: options.system || "You are a helpful assistant.",
   };
+
+  const serviceTier = mapServiceTier(options.serviceTier);
+  if (serviceTier) body.service_tier = serviceTier;
 
   if (options.tools && options.tools.length > 0) {
     body.tools = (options.tools as Array<{ name: string; description: string; input_schema: Record<string, unknown> }>).map((tool) => ({

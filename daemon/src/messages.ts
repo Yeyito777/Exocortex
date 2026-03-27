@@ -42,6 +42,7 @@ export interface Conversation {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
+  fastMode: boolean;
   messages: StoredMessage[];
   createdAt: number;
   updatedAt: number;
@@ -74,13 +75,22 @@ export function isToolResultMessage(msg: StoredMessage): boolean {
   return msg.content.length > 0 && msg.content.some(b => b.type === "tool_result");
 }
 
-export function createConversation(id: string, provider: ProviderId, model: ModelId, sortOrder?: number, title?: string, effort?: EffortLevel): Conversation {
+export function createConversation(
+  id: string,
+  provider: ProviderId,
+  model: ModelId,
+  sortOrder?: number,
+  title?: string,
+  effort?: EffortLevel,
+  fastMode = false,
+): Conversation {
   const now = Date.now();
   return {
     id,
     provider,
     model,
     effort: effort ?? DEFAULT_EFFORT,
+    fastMode,
     messages: [],
     createdAt: now,
     updatedAt: now,

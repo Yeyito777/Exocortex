@@ -24,6 +24,7 @@ export interface NewConversationCommand {
   provider?: ProviderId;
   model?: ModelId;
   effort?: EffortLevel;
+  fastMode?: boolean;
   /** Initial title. Clients that don't set this get an empty title. */
   title?: string;
 }
@@ -80,6 +81,13 @@ export interface SetEffortCommand {
   reqId?: string;
   convId: string;
   effort: EffortLevel;
+}
+
+export interface SetFastModeCommand {
+  type: "set_fast_mode";
+  reqId?: string;
+  convId: string;
+  enabled: boolean;
 }
 
 export interface DeleteConversationCommand {
@@ -188,6 +196,7 @@ export type Command =
   | SendMessageCommand
   | SetModelCommand
   | SetEffortCommand
+  | SetFastModeCommand
   | AbortCommand
   | SubscribeCommand
   | UnsubscribeCommand
@@ -227,6 +236,8 @@ export interface ConversationCreatedEvent {
   convId: string;
   provider: ProviderId;
   model: ModelId;
+  effort: EffortLevel;
+  fastMode: boolean;
 }
 
 export interface StreamingStartedEvent {
@@ -340,6 +351,7 @@ export interface ConversationLoadedEvent {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
+  fastMode: boolean;
   /** All messages in display order. */
   entries: DisplayEntry[];
   /** Last known input token count for this conversation. */

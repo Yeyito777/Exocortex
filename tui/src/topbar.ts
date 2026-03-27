@@ -32,7 +32,7 @@ export function renderTopbar(state: RenderState, width?: number): string {
   const label = convLabel(state);
   const separator = label ? " — " : "";
 
-  const rightLabel = `${providerLabel}/${state.model} — ${state.effort}`;
+  const rightLabel = `${providerLabel}/${state.model} — ${state.effort}${state.fastMode ? " — fast" : ""}`;
   const inner = `${title}${separator}${label}`;
   const visibleUsed = " Exocortex".length + separator.length + label.length;
   const padding = Math.max(0, w - visibleUsed - rightLabel.length - 1);

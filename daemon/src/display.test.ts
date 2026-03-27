@@ -26,7 +26,7 @@ const labelOnlySummarizer: ToolSummarizerFn = (name, _input) => ({
   detail: "",
 });
 
-/** Convenience: build with default convId / model / effort / no contextTokens. */
+/** Convenience: build with default convId / model / effort / fastMode / no contextTokens. */
 function build(
   messages: StoredMessage[],
   opts?: {
@@ -40,6 +40,7 @@ function build(
     "anthropic",
     "sonnet",
     "high",
+    false,
     messages,
     opts?.contextTokens ?? null,
     opts?.sum ?? summarizer,
@@ -75,7 +76,7 @@ const META: MessageMetadata = {
 
 describe("buildDisplayData — return shape", () => {
   test("passes through convId, model, effort, contextTokens", () => {
-    const result = buildDisplayData("my-conv", "anthropic", "haiku", "low", [], 77_000, summarizer);
+    const result = buildDisplayData("my-conv", "anthropic", "haiku", "low", false, [], 77_000, summarizer);
     expect(result.convId).toBe("my-conv");
     expect(result.provider).toBe("anthropic");
     expect(result.model).toBe("haiku");

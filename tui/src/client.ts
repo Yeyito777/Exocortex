@@ -91,8 +91,8 @@ export class DaemonClient {
 
   // ── Convenience methods ─────────────────────────────────────────
 
-  createConversation(provider?: ProviderId, model?: import("./protocol").ModelId, title?: string, effort?: EffortLevel): void {
-    this.send({ type: "new_conversation", provider, model, title, effort });
+  createConversation(provider?: ProviderId, model?: import("./protocol").ModelId, title?: string, effort?: EffortLevel, fastMode?: boolean): void {
+    this.send({ type: "new_conversation", provider, model, title, effort, fastMode });
   }
 
   subscribe(convId: string): void {
@@ -121,6 +121,10 @@ export class DaemonClient {
 
   setEffort(convId: string, effort: EffortLevel): void {
     this.send({ type: "set_effort", convId, effort });
+  }
+
+  setFastMode(convId: string, enabled: boolean): void {
+    this.send({ type: "set_fast_mode", convId, enabled });
   }
 
   deleteConversation(convId: string): void {

@@ -9,6 +9,7 @@ const FALLBACK_PROVIDERS: ProviderInfo[] = [
     label: "Anthropic",
     defaultModel: "claude-opus-4-6",
     allowsCustomModels: false,
+    supportsFastMode: false,
     models: [...FALLBACK_ANTHROPIC_MODELS],
   },
   {
@@ -16,6 +17,7 @@ const FALLBACK_PROVIDERS: ProviderInfo[] = [
     label: "OpenAI",
     defaultModel: "gpt-5.4",
     allowsCustomModels: true,
+    supportsFastMode: true,
     models: [...FALLBACK_OPENAI_MODELS],
   },
 ];
@@ -47,6 +49,7 @@ async function refreshProviderInfo(fallback: ProviderInfo): Promise<ProviderInfo
       label: fallback.label,
       defaultModel: chooseDefaultModel(fallback.id, models),
       allowsCustomModels: fallback.allowsCustomModels,
+      supportsFastMode: fallback.supportsFastMode,
       models,
     };
   } catch (err) {
@@ -101,6 +104,10 @@ export function isKnownModel(providerId: ProviderId, model: ModelId): boolean {
 
 export function allowsCustomModels(providerId: ProviderId): boolean {
   return getProvider(providerId)?.allowsCustomModels ?? false;
+}
+
+export function supportsFastMode(providerId: ProviderId): boolean {
+  return getProvider(providerId)?.supportsFastMode ?? false;
 }
 
 export async function refreshProviders(force = false): Promise<boolean> {

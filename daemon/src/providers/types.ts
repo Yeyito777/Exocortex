@@ -1,5 +1,7 @@
 import type { ModelId, EffortLevel, ApiMessage } from "../messages";
 
+export type ServiceTier = "fast";
+
 export interface ApiToolCall {
   id: string;
   name: string;
@@ -36,6 +38,7 @@ export interface StreamOptions {
   maxTokens?: number;
   tools?: unknown[];
   effort?: EffortLevel;
+  serviceTier?: ServiceTier;
 }
 
 export interface ProviderStreamMessage {

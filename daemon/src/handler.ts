@@ -15,7 +15,7 @@ import { buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles } from "./external-tools";
 import { EFFORT_LEVELS } from "./messages";
-import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts } from "./providers/registry";
+import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode } from "./providers/registry";
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command } from "./protocol";
@@ -78,8 +78,13 @@ export function createHandler(server: DaemonServer) {
           ? cmd.model
           : getDefaultModel(provider);
         const effort = normalizeEffort(provider, model, cmd.effort);
-        convStore.create(id, provider, model, cmd.title, effort);
-        log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, title="${cmd.title ?? ""}")`);
+        const fastMode = cmd.fastMode === true;
+        if (fastMode && !supportsFastMode(provider)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Fast mode is only available for providers that support it. Current provider: ${provider}` });
+          break;
+        }
+        convStore.create(id, provider, model, cmd.title, effort, fastMode);
+        log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, fastMode=${fastMode}, title="${cmd.title ?? ""}")`);
 
         server.sendTo(client, {
           type: "conversation_created",
@@ -87,6 +92,8 @@ export function createHandler(server: DaemonServer) {
           convId: id,
           provider,
           model,
+          effort,
+          fastMode,
         });
         server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(id)! });
         break;
@@ -187,6 +194,32 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
           server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
           log("info", `handler: effort set to ${cmd.effort} for ${cmd.convId}`);
+        } else {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+        }
+        break;
+      }
+
+      case "set_fast_mode": {
+        const conv = convStore.get(cmd.convId);
+        if (!conv) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        if (cmd.enabled && !supportsFastMode(conv.provider)) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: `Fast mode is not available for provider ${conv.provider}`,
+          });
+          break;
+        }
+        const ok = convStore.setFastMode(cmd.convId, cmd.enabled);
+        if (ok) {
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+          server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
+          log("info", `handler: fast mode ${cmd.enabled ? "enabled" : "disabled"} for ${cmd.convId}`);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
         }
@@ -311,6 +344,7 @@ export function createHandler(server: DaemonServer) {
             provider: data.provider,
             model: data.model,
             effort: data.effort,
+            fastMode: data.fastMode,
             entries: data.entries,
             contextTokens: data.contextTokens,
           });
@@ -333,6 +367,7 @@ export function createHandler(server: DaemonServer) {
           provider: data.provider,
           model: data.model,
           effort: data.effort,
+          fastMode: data.fastMode,
           entries: data.entries,
           contextTokens: data.contextTokens,
           queuedMessages: queued.length > 0 ? queued : undefined,

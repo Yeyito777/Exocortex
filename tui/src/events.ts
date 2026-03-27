@@ -96,6 +96,8 @@ export function handleEvent(
       state.convId = event.convId;
       state.provider = event.provider ?? fallbackProvider(state);
       state.model = event.model ?? state.model;
+      state.effort = event.effort ?? state.effort;
+      state.fastMode = event.fastMode ?? state.fastMode;
       daemon.subscribe(event.convId);
 
       // If we had a pending message, send it now
@@ -251,6 +253,7 @@ export function handleEvent(
         state.provider = event.summary.provider ?? fallbackProvider(state);
         state.model = event.summary.model ?? state.model;
         state.effort = event.summary.effort ?? state.effort;
+        state.fastMode = event.summary.fastMode ?? state.fastMode;
       }
       break;
     }
@@ -307,6 +310,7 @@ export function handleEvent(
       state.provider = event.provider ?? fallbackProvider(state);
       state.model = event.model ?? state.model;
       state.effort = event.effort ?? state.effort;
+      state.fastMode = event.fastMode ?? state.fastMode;
       state.scrollOffset = 0;
       state.contextTokens = event.contextTokens;
 
