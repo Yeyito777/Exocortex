@@ -19,7 +19,7 @@ GAI_FIX="precedence ::ffff:0:0/96  100"
 # ── Step 1: Is the gai.conf IPv4-preference fix already applied? ─────
 # If so, the OS will prefer IPv4 and bun install won't hang.
 
-if grep -qs 'precedence ::ffff:0:0/96' /etc/gai.conf 2>/dev/null; then
+if grep -qsE '^\s*precedence\s+::ffff:0:0/96' /etc/gai.conf 2>/dev/null; then
     exit 0
 fi
 
