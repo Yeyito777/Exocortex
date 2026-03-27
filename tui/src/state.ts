@@ -6,7 +6,7 @@
  */
 
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment } from "./messages";
-import { DEFAULT_EFFORT } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
 import type { MessageBound } from "./conversation";
 import type { PanelFocus } from "./focus";
@@ -169,8 +169,8 @@ export function createInitialState(): RenderState {
   const s: RenderState = {
     messages: [],
     pendingAI: null,
-    provider: "anthropic",
-    model: "claude-opus-4-6",
+    provider: DEFAULT_PROVIDER_ID,
+    model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID],
     effort: DEFAULT_EFFORT,
     convId: null,
     inputBuffer: "",

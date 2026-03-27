@@ -7,7 +7,7 @@
 
 import type { RenderState } from "./state";
 import { isStreaming, clearPendingAI } from "./state";
-import { ensureCurrentBlock, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI } from "./messages";
+import { DEFAULT_PROVIDER_ID, ensureCurrentBlock, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI } from "./messages";
 import type { AIMessage, SystemMessage, ImageAttachment } from "./messages";
 import { updateConversationList, updateConversation, syncSelectedIndex } from "./sidebar";
 import { theme } from "./theme";
@@ -51,7 +51,7 @@ function pushDisplayEntries(state: RenderState, entries: DisplayEntry[]): void {
 }
 
 function fallbackProvider(state: RenderState): RenderState["provider"] {
-  return state.providerRegistry[0]?.id ?? state.provider ?? "anthropic";
+  return state.providerRegistry[0]?.id ?? state.provider ?? DEFAULT_PROVIDER_ID;
 }
 
 function syncModelEffortSelection(state: RenderState): void {

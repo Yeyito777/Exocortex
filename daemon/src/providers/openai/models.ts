@@ -16,7 +16,7 @@ export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
     label: "gpt-5.4",
     maxContext: 272_000,
     supportedEfforts: FALLBACK_OPENAI_EFFORTS,
-    defaultEffort: "medium",
+    defaultEffort: "high",
   },
   {
     id: "gpt-5.4-mini",
@@ -49,6 +49,13 @@ function isPreferredLatestModel(model: OpenAICodexModel): boolean {
   return typeof model.slug === "string" && /^gpt-5\.4(?:-|$)/.test(model.slug);
 }
 
+function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel | undefined): EffortLevel {
+  // Product preference: make the primary OpenAI default land on high effort,
+  // even if the upstream model metadata reports a lower default.
+  if (modelSlug === "gpt-5.4") return "high";
+  return apiDefaultEffort ?? "medium";
+}
+
 function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
   if (!model.slug) return null;
   const supportedEfforts = (model.supported_reasoning_levels ?? [])
@@ -62,7 +69,7 @@ function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
     label: model.display_name?.trim() || model.slug,
     maxContext: model.context_window ?? 272_000,
     supportedEfforts: supportedEfforts.length > 0 ? supportedEfforts : FALLBACK_OPENAI_EFFORTS,
-    defaultEffort: model.default_reasoning_level ?? "medium",
+    defaultEffort: preferredDefaultEffort(model.slug, model.default_reasoning_level),
   };
 }
 

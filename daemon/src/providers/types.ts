@@ -36,6 +36,7 @@ export interface StreamOptions {
   maxTokens?: number;
   tools?: unknown[];
   effort?: EffortLevel;
+  promptCacheKey?: string;
 }
 
 export interface ProviderStreamMessage {
