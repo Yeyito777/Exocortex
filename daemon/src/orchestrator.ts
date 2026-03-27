@@ -74,6 +74,17 @@ function buildUserContent(text: string, images?: ImageAttachment[]): string | Ap
   ];
 }
 
+/**
+ * Whether a partially streamed thinking block is safe to persist on abort/error.
+ *
+ * Anthropic requires a signature for replayable thinking blocks, so an empty
+ * signature with empty thinking is junk. OpenAI reasoning summaries do not
+ * carry signatures, so any non-empty thinking text is still worth preserving.
+ */
+function isPersistableThinkingBlock(block: Extract<ApiContentBlock, { type: "thinking" }>): boolean {
+  return Boolean(block.thinking && (block.signature || block.thinking.trim().length > 0));
+}
+
 // ── Orchestrate a send_message ─────────────────────────────────────
 
 export async function orchestrateSendMessage(
@@ -440,9 +451,10 @@ export async function orchestrateSendMessage(
     }
 
     // Persist the in-flight partial response (current round's streamed content).
-    // Strip thinking blocks with missing signatures — API rejects them on replay.
+    // Strip only Anthropic-style empty-signature thinking blocks — OpenAI
+    // summaries don't carry signatures, so keep any non-empty thinking text.
     const safeContent = partialContent.filter(b => {
-      if (b.type === "thinking") return b.signature && b.signature.length > 0;
+      if (b.type === "thinking") return isPersistableThinkingBlock(b);
       return true;
     });
     const hasContent = safeContent.some(b =>
