@@ -14,7 +14,6 @@ import { clearPrompt } from "./promptline";
 import { DEFAULT_EFFORT, EFFORT_LEVELS, normalizeEffortForModel, type ProviderId, type ModelId, type EffortLevel, type ModelInfo, type ReasoningEffortInfo } from "./messages";
 import { convDisplayName } from "./messages";
 import { copyToClipboard } from "./vim/clipboard";
-import { PENDING_TITLE } from "./titlegen";
 import { getMarkPrefix, getMarkFromTitle } from "./marks";
 import { theme, themes, THEME_NAMES, setTheme } from "./theme";
 
@@ -207,9 +206,7 @@ const commands: SlashCommand[] = [
       }
       const rawTitle = text.slice("/rename".length).trim();
       if (!rawTitle) {
-        // Auto-generate: set placeholder and request LLM-generated title
-        const conv = state.sidebar.conversations.find(c => c.id === state.convId);
-        if (conv) conv.title = PENDING_TITLE;
+        // Auto-generate title via the title model.
         clearPrompt(state);
         return { type: "generate_title" };
       }

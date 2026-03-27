@@ -66,8 +66,16 @@ export function generateTitle(
   const prompt = `${INSTRUCTION}\n\nHere is the conversation to generate a title for:\n<prompt>\n${context}\n</prompt>`;
 
   // Preserve any emoji mark prefix across title regeneration
-  const existingTitle = state.sidebar.conversations.find(c => c.id === convId)?.title ?? "";
+  const conv = state.sidebar.conversations.find(c => c.id === convId);
+  const existingTitle = conv?.title ?? "";
   const markPrefix = getMarkPrefix(existingTitle);
+  const pendingTitle = markPrefix ? `${markPrefix} ${PENDING_TITLE}` : PENDING_TITLE;
+
+  // Make the pending title canonical immediately so daemon-driven sidebar
+  // updates don't clobber the optimistic local state while generation runs.
+  if (conv) conv.title = pendingTitle;
+  daemon.renameConversation(convId, pendingTitle);
+  scheduleRender();
 
   daemon.llmComplete(
     "",

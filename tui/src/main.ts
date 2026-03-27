@@ -179,7 +179,6 @@ function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
     // title flow when the first user message is sent.
     const conv = state.sidebar.conversations.find((candidate) => candidate.id === state.convId);
     if (conv && !conv.title.trim()) {
-      conv.title = PENDING_TITLE;
       generateTitle(state.convId, state, daemon, scheduleRender);
     }
   }
