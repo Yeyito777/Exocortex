@@ -1,24 +1,37 @@
-import { MAX_CONTEXT, normalizeEffortForModel, type ProviderId, type ProviderInfo, type ModelId, type ModelInfo, type EffortLevel, type ReasoningEffortInfo } from "@exocortex/shared/messages";
+import {
+  DEFAULT_MODEL_BY_PROVIDER,
+  DEFAULT_PROVIDER_ORDER,
+  MAX_CONTEXT,
+  normalizeEffortForModel,
+  type ProviderId,
+  type ProviderInfo,
+  type ModelId,
+  type ModelInfo,
+  type EffortLevel,
+  type ReasoningEffortInfo,
+} from "@exocortex/shared/messages";
 import { log } from "../log";
 import { fetchAnthropicModels, FALLBACK_ANTHROPIC_MODELS } from "./anthropic/models";
 import { fetchOpenAIModels, FALLBACK_OPENAI_MODELS } from "./openai/models";
 
-const FALLBACK_PROVIDERS: ProviderInfo[] = [
-  {
-    id: "anthropic",
-    label: "Anthropic",
-    defaultModel: "claude-opus-4-6",
-    allowsCustomModels: false,
-    models: [...FALLBACK_ANTHROPIC_MODELS],
-  },
-  {
+const FALLBACK_PROVIDERS_BY_ID: Record<ProviderId, ProviderInfo> = {
+  openai: {
     id: "openai",
     label: "OpenAI",
-    defaultModel: "gpt-5.4",
+    defaultModel: DEFAULT_MODEL_BY_PROVIDER.openai,
     allowsCustomModels: true,
     models: [...FALLBACK_OPENAI_MODELS],
   },
-];
+  anthropic: {
+    id: "anthropic",
+    label: "Anthropic",
+    defaultModel: DEFAULT_MODEL_BY_PROVIDER.anthropic,
+    allowsCustomModels: false,
+    models: [...FALLBACK_ANTHROPIC_MODELS],
+  },
+};
+
+const FALLBACK_PROVIDERS: ProviderInfo[] = DEFAULT_PROVIDER_ORDER.map((providerId) => FALLBACK_PROVIDERS_BY_ID[providerId]);
 
 let providerCache: ProviderInfo[] = structuredClone(FALLBACK_PROVIDERS);
 let lastRefreshAt = 0;

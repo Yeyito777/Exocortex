@@ -11,7 +11,17 @@
 import type { RenderState } from "./state";
 import { clearPendingAI } from "./state";
 import { clearPrompt } from "./promptline";
-import { DEFAULT_EFFORT, EFFORT_LEVELS, normalizeEffortForModel, type ProviderId, type ModelId, type EffortLevel, type ModelInfo, type ReasoningEffortInfo } from "./messages";
+import {
+  DEFAULT_EFFORT,
+  DEFAULT_PROVIDER_ORDER,
+  normalizeEffortForModel,
+  EFFORT_LEVELS,
+  type ProviderId,
+  type ModelId,
+  type EffortLevel,
+  type ModelInfo,
+  type ReasoningEffortInfo,
+} from "./messages";
 import { convDisplayName } from "./messages";
 import { copyToClipboard } from "./vim/clipboard";
 import { PENDING_TITLE } from "./titlegen";
@@ -49,7 +59,7 @@ export interface SlashCommand {
 
 function availableProviders(state: RenderState): ProviderId[] {
   const ids = state.providerRegistry.map((p) => p.id);
-  return ids.length > 0 ? ids : ["anthropic", "openai"];
+  return ids.length > 0 ? ids : [...DEFAULT_PROVIDER_ORDER];
 }
 
 function providerInfo(state: RenderState, provider = state.provider) {
@@ -225,10 +235,10 @@ const commands: SlashCommand[] = [
   {
     name: "/model",
     description: "Set or show the current provider/model",
-    args: [
-      { name: "anthropic", desc: "Anthropic models" },
-      { name: "openai", desc: "OpenAI models" },
-    ],
+    args: [...DEFAULT_PROVIDER_ORDER].map((provider) => ({
+      name: provider,
+      desc: provider === "openai" ? "OpenAI models" : "Anthropic models",
+    })),
     handler: (text, state) => {
       const parts = text.trim().split(/\s+/).filter(Boolean);
       const providers = availableProviders(state);
