@@ -16,7 +16,14 @@ NC='\033[0m'
 REGISTRY="registry.npmjs.org"
 GAI_FIX="precedence ::ffff:0:0/96  100"
 
-# ── Step 1: Do we even have a global IPv6 address? ───────────────────
+# ── Step 1: Is the gai.conf IPv4-preference fix already applied? ─────
+# If so, the OS will prefer IPv4 and bun install won't hang.
+
+if grep -qs 'precedence ::ffff:0:0/96' /etc/gai.conf 2>/dev/null; then
+    exit 0
+fi
+
+# ── Step 2: Do we even have a global IPv6 address? ───────────────────
 # If not, the kernel will immediately fail IPv6 connections (no hang).
 
 if ! ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'; then
@@ -24,14 +31,14 @@ if ! ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'; then
     exit 0
 fi
 
-# ── Step 2: Does the npm registry resolve to IPv6? ───────────────────
+# ── Step 3: Does the npm registry resolve to IPv6? ───────────────────
 
 if ! getent ahostsv6 "$REGISTRY" 2>/dev/null | grep -q 'STREAM'; then
     # Registry doesn't resolve to AAAA — no IPv6 connection attempt
     exit 0
 fi
 
-# ── Step 3: Can we actually connect over IPv6? ───────────────────────
+# ── Step 4: Can we actually connect over IPv6? ───────────────────────
 # This is the critical test. If IPv6 is present but broken,
 # this will time out (SYN sent, no SYN-ACK received).
 
@@ -40,7 +47,7 @@ if curl -6 --max-time 3 -sf -o /dev/null "https://$REGISTRY/" 2>/dev/null; then
     exit 0
 fi
 
-# ── Step 4: Confirm IPv4 works (so we know it's specifically IPv6) ───
+# ── Step 5: Confirm IPv4 works (so we know it's specifically IPv6) ───
 
 if ! curl -4 --max-time 5 -sf -o /dev/null "https://$REGISTRY/" 2>/dev/null; then
     # Neither works — probably a general network issue, not IPv6-specific
@@ -69,3 +76,4 @@ printf "  After applying the fix, re-run ${BOLD}make install${NC}.\n"
 printf "  See: https://github.com/yeyito/Exocortex/issues/3\n"
 printf "\n"
 exit 1
+
