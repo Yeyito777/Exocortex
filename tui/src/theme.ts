@@ -14,6 +14,12 @@ import { join } from "path";
 import { configDir } from "@exocortex/shared/paths";
 import { whale } from "./themes/whale";
 import { cerberus } from "./themes/cerberus";
+import { nord } from "./themes/nord";
+import { tokyoNight } from "./themes/tokyoNight";
+import { dracula } from "./themes/dracula";
+import { gruvbox } from "./themes/gruvbox";
+import { neofusion } from "./themes/neofusion";
+
 
 // ── Theme interface ─────────────────────────────────────────────────
 
@@ -69,6 +75,11 @@ export interface Theme {
 export const themes: Record<string, Theme> = {
   whale,
   cerberus,
+  nord,
+  tokyoNight,
+  dracula,
+  gruvbox,
+  neofusion,
 };
 
 export const THEME_NAMES = Object.keys(themes) as ThemeName[];
