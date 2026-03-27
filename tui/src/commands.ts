@@ -365,14 +365,14 @@ const commands: SlashCommand[] = [
     description: "Set, show, or clear per-conversation system instructions",
     args: [{ name: "clear", desc: "Clear instructions" }],
     handler: (text, state) => {
-      if (!state.convId) {
-        state.messages.push({ role: "system", text: "No active conversation.", metadata: null });
-        clearPrompt(state);
-        return { type: "handled" };
-      }
       const arg = text.slice("/instructions".length);
       const trimmed = arg.trimStart();
       if (!trimmed) {
+        if (!state.convId) {
+          state.messages.push({ role: "system", text: "No system instructions set for this conversation.", metadata: null });
+          clearPrompt(state);
+          return { type: "handled" };
+        }
         // Show current instructions
         const instrMsg = state.messages.find((m): m is import("./messages").SystemInstructionsMessage => m.role === "system_instructions");
         if (instrMsg?.text.trim()) {
@@ -384,8 +384,19 @@ const commands: SlashCommand[] = [
         return { type: "handled" };
       }
       if (trimmed === "clear") {
+        if (!state.convId) {
+          state.messages.push({ role: "system", text: "No system instructions set for this conversation.", metadata: null });
+          clearPrompt(state);
+          return { type: "handled" };
+        }
         clearPrompt(state);
         return { type: "set_system_instructions", text: "" };
+      }
+      if (!state.convId) {
+        state.pendingSystemInstructions = trimmed;
+        state.pendingGenerateTitleOnCreate = false;
+        clearPrompt(state);
+        return { type: "new_conversation" };
       }
       clearPrompt(state);
       return { type: "set_system_instructions", text: trimmed };

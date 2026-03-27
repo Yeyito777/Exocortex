@@ -70,6 +70,7 @@ export interface DaemonActions {
   subscribe(convId: string): void;
   unsubscribe(convId: string): void;
   sendMessage(convId: string, text: string, startedAt: number, images?: ImageAttachment[]): void;
+  setSystemInstructions(convId: string, text: string): void;
 }
 
 // ── Conversation-scoped events ─────────────────────────────────────
@@ -100,6 +101,11 @@ export function handleEvent(
       state.provider = event.provider ?? fallbackProvider(state);
       state.model = event.model ?? state.model;
       daemon.subscribe(event.convId);
+
+      if (state.pendingSystemInstructions !== null) {
+        daemon.setSystemInstructions(event.convId, state.pendingSystemInstructions);
+        state.pendingSystemInstructions = null;
+      }
 
       // If we had a pending message, send it now
       if (state.pendingSend.active && (state.pendingSend.text || state.pendingSend.images) && state.pendingAI) {

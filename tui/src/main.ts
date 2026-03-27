@@ -60,8 +60,9 @@ function resetStreamTick(): void {
 function onDaemonEvent(event: Event): void {
   handleEvent(event, state, daemon);
 
-  // Auto-generate title for new conversations
-  if (event.type === "conversation_created" && state.convId) {
+  // Auto-generate title for newly created conversations when requested.
+  if (event.type === "conversation_created" && state.convId && state.pendingGenerateTitleOnCreate) {
+    state.pendingGenerateTitleOnCreate = false;
     generateTitle(state.convId, state, daemon, scheduleRender);
   }
 
@@ -95,6 +96,10 @@ function handleSubmit(): void {
         case "new_conversation":
           if (state.convId) daemon.unsubscribe(state.convId);
           state.convId = null;
+          if (state.pendingSystemInstructions !== null) {
+            const initialTitle = state.pendingGenerateTitleOnCreate ? PENDING_TITLE : "";
+            daemon.createConversation(state.provider, state.model, initialTitle, state.effort);
+          }
           break;
         case "model_changed":
           if (state.convId) daemon.setModel(state.convId, cmdResult.model);
@@ -164,6 +169,7 @@ function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
     state.pendingSend.active = true;
     state.pendingSend.text = messageText;
     state.pendingSend.images = images;
+    state.pendingGenerateTitleOnCreate = true;
     daemon.createConversation(state.provider, state.model, PENDING_TITLE, state.effort);
   } else {
     daemon.sendMessage(state.convId, messageText, startedAt, images);
@@ -231,6 +237,8 @@ function handleKey(key: KeyEvent): void {
       state.messages = [];
       clearPendingAI(state);
       state.contextTokens = null;
+      state.pendingSystemInstructions = null;
+      state.pendingGenerateTitleOnCreate = false;
       break;
     case "delete_conversation":
       daemon.deleteConversation(result.convId);
