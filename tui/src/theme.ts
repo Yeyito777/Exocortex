@@ -9,11 +9,9 @@
  * that imported it sees changes immediately — no re-imports needed.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { readdirSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { configDir } from "@exocortex/shared/paths";
-import { whale } from "./themes/whale";
-import { cerberus } from "./themes/cerberus";
 
 // ── Theme interface ─────────────────────────────────────────────────
 
@@ -66,10 +64,9 @@ export interface Theme {
 
 // ── Available themes ────────────────────────────────────────────────
 
-export const themes: Record<string, Theme> = {
-  whale,
-  cerberus,
-};
+export const themes: Record<string, Theme> = Object.fromEntries(
+  readdirSync(join(import.meta.dir, "themes")).filter(f => f.endsWith(".ts")).map(f => { const n = f.slice(0, -3); return [n, require(join(import.meta.dir, "themes", n))[n]]; }),
+);
 
 export const THEME_NAMES = Object.keys(themes) as ThemeName[];
 export type ThemeName = keyof typeof themes;
@@ -103,7 +100,7 @@ function persistThemeName(name: string): void {
 // Start with whale, then immediately overwrite from persisted config.
 // We use Object.assign so the exported `theme` reference stays the same
 // object — every module that imported it sees mutations in-place.
-export const theme: Theme = { ...whale };
+export const theme: Theme = { ...themes.whale };
 
 const persisted = loadPersistedThemeName();
 if (persisted) {
