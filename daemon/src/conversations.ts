@@ -21,7 +21,8 @@ export {
   setStreamingTokens, getStreamingTokens,
   touchActivity, pauseActivity, resumeActivity,
   resetChunkCounter,
-  initStreamingBlocks, getStreamingBlocks, pushStreamingBlock, appendToStreamingBlock, clearStreamingBlocks,
+  initStreamingState, getCurrentStreamingBlocks, replaceStreamingDisplayMessages, getStreamingDisplayMessages,
+  pushStreamingBlock, appendToStreamingBlock, clearCurrentStreamingBlocks,
   getQueuedMessages, pushQueuedMessage, drainQueuedMessages, clearQueuedMessages, removeQueuedMessage,
 } from "./streaming";
 
@@ -107,7 +108,6 @@ export function remove(id: string): boolean {
   if (existed) {
     dirty.delete(id);
     streaming.clearActiveJob(id);
-    streaming.clearStreamingBlocks(id);
     streaming.resetChunkCounter(id);
     streaming.clearQueuedMessages(id);
     persistence.trashFile(id);
@@ -435,7 +435,17 @@ export type { ConversationDisplayData, DisplayEntry } from "./display";
 export function getDisplayData(id: string): ConversationDisplayData | null {
   const conv = conversations.get(id);
   if (!conv) return null;
-  return buildDisplayData(conv.id, conv.provider, conv.model, conv.effort, conv.fastMode ?? false, conv.messages, conv.lastContextTokens, summarizeTool);
+  const transientMessages = streaming.getStreamingDisplayMessages(id);
+  return buildDisplayData(
+    conv.id,
+    conv.provider,
+    conv.model,
+    conv.effort,
+    conv.fastMode ?? false,
+    transientMessages.length > 0 ? [...conv.messages, ...transientMessages] : conv.messages,
+    conv.lastContextTokens,
+    summarizeTool,
+  );
 }
 
 // ── Unread state (runtime only, not persisted) ──────────────────────

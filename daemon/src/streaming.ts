@@ -9,7 +9,7 @@
  * Conversation data and persistence live in conversations.ts.
  */
 
-import type { Block, ImageAttachment } from "./messages";
+import type { Block, ImageAttachment, StoredMessage } from "./messages";
 import type { QueueTiming } from "./protocol";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -24,8 +24,10 @@ export interface QueuedMessage {
 
 const activeJobs = new Map<string, AbortController>();
 const chunkCounters = new Map<string, number>();
-/** Accumulated display blocks for in-flight streams (for late-joining clients). */
+/** Current in-flight assistant blocks for late-joining clients. */
 const streamingBlocks = new Map<string, Block[]>();
+/** Completed display messages from the active stream that are not yet persisted. */
+const streamingDisplayMessages = new Map<string, StoredMessage[]>();
 /** Original startedAt timestamp per streaming job (for late-joining clients). */
 const streamingStartedAt = new Map<string, number>();
 /** Accumulated output token count per streaming job (for late-joining clients). */
@@ -61,8 +63,10 @@ export function getActiveJob(convId: string): AbortController | undefined {
 
 export function clearActiveJob(convId: string): void {
   activeJobs.delete(convId);
+  streamingBlocks.delete(convId);
   streamingStartedAt.delete(convId);
   streamingTokens.delete(convId);
+  streamingDisplayMessages.delete(convId);
   lastActivityAt.delete(convId);
   pausedStreams.delete(convId);
 }
@@ -147,25 +151,36 @@ export function resetChunkCounter(convId: string): void {
   chunkCounters.delete(convId);
 }
 
-// ── Streaming blocks (accumulated display blocks for late-joiners) ──
+// ── Late-join streaming display state ───────────────────────────────
 
-/** Initialize streaming blocks for a new stream. */
-export function initStreamingBlocks(convId: string): void {
+/** Initialize all transient streaming state for a new stream or retry. */
+export function initStreamingState(convId: string): void {
   streamingBlocks.set(convId, []);
+  streamingDisplayMessages.set(convId, []);
 }
 
-/** Get the accumulated streaming blocks (for late-joining clients). */
-export function getStreamingBlocks(convId: string): Block[] | undefined {
+/** Get the current in-flight assistant blocks for a late-joining client. */
+export function getCurrentStreamingBlocks(convId: string): Block[] | undefined {
   return streamingBlocks.get(convId);
 }
 
-/** Push a new block to the streaming accumulator. */
+/** Replace the completed, not-yet-persisted display messages for a stream. */
+export function replaceStreamingDisplayMessages(convId: string, messages: StoredMessage[]): void {
+  streamingDisplayMessages.set(convId, [...messages]);
+}
+
+/** Get the completed, not-yet-persisted display messages for a stream. */
+export function getStreamingDisplayMessages(convId: string): StoredMessage[] {
+  return [...(streamingDisplayMessages.get(convId) ?? [])];
+}
+
+/** Push a new block to the current in-flight assistant accumulator. */
 export function pushStreamingBlock(convId: string, block: Block): void {
   const blocks = streamingBlocks.get(convId);
   if (blocks) blocks.push(block);
 }
 
-/** Append text to the last streaming block of the given type. */
+/** Append text to the last in-flight block of the given type. */
 export function appendToStreamingBlock(convId: string, type: "text" | "thinking", chunk: string): void {
   const blocks = streamingBlocks.get(convId);
   if (!blocks) return;
@@ -173,8 +188,8 @@ export function appendToStreamingBlock(convId: string, type: "text" | "thinking"
   if (last?.type === type) last.text += chunk;
 }
 
-/** Clear streaming blocks (call when stream finishes). */
-export function clearStreamingBlocks(convId: string): void {
+/** Clear only the current in-flight assistant blocks between rounds or on finish. */
+export function clearCurrentStreamingBlocks(convId: string): void {
   streamingBlocks.delete(convId);
 }
 

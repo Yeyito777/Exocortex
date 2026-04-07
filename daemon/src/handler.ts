@@ -405,7 +405,7 @@ export function createHandler(server: DaemonServer) {
             provider: data.provider,
             model: data.model,
             startedAt: convStore.getStreamingStartedAt(data.convId) ?? Date.now(),
-            blocks: convStore.getStreamingBlocks(data.convId) ?? [],
+            blocks: convStore.getCurrentStreamingBlocks(data.convId) ?? [],
             tokens: convStore.getStreamingTokens(data.convId),
           });
         }

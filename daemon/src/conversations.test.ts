@@ -1,9 +1,10 @@
 /**
- * Tests for conversations.ts focused on system instructions behavior.
+ * Tests for conversations.ts behavior.
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { create, get, getSummary, remove, setSystemInstructions } from "./conversations";
+import { create, get, getDisplayData, getSummary, remove, setSystemInstructions } from "./conversations";
+import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
 
@@ -15,6 +16,7 @@ function mkId(suffix: string): string {
 
 beforeEach(() => {
   for (const id of IDS.splice(0)) {
+    clearActiveJob(id);
     remove(id);
   }
 });
@@ -71,5 +73,29 @@ describe("getSummary", () => {
 
     const summary = getSummary(id)!;
     expect(summary.messageCount).toBe(2);
+  });
+});
+
+describe("getDisplayData", () => {
+  test("includes transient streaming messages for active conversations", () => {
+    const id = mkId("display-transient");
+    create(id, "anthropic", "sonnet");
+
+    const conv = get(id)!;
+    conv.messages.push({ role: "user", content: "initial", metadata: null });
+
+    setActiveJob(id, new AbortController(), Date.now());
+    replaceStreamingDisplayMessages(id, [
+      { role: "assistant", content: "First tool round done", metadata: null },
+      { role: "user", content: "queued next turn", metadata: null },
+    ]);
+
+    const data = getDisplayData(id)!;
+    expect(data.entries).toHaveLength(3);
+    expect(data.entries[0]).toEqual({ type: "user", text: "initial" });
+    expect(data.entries[1].type).toBe("ai");
+    if (data.entries[1].type !== "ai") throw new Error("expected ai entry");
+    expect(data.entries[1].blocks).toEqual([{ type: "text", text: "First tool round done" }]);
+    expect(data.entries[2]).toEqual({ type: "user", text: "queued next turn" });
   });
 });

@@ -74,6 +74,21 @@ function buildUserContent(text: string, images?: ImageAttachment[]): string | Ap
   ];
 }
 
+/** Build a stored user message from text + optional images. */
+function buildStoredUserMessage(text: string, images?: ImageAttachment[]): StoredMessage {
+  return { role: "user", content: buildUserContent(text, images), metadata: null };
+}
+
+/** Convert API messages to stored-message shape for transient display state. */
+function toStoredMessages(messages: import("./messages").ApiMessage[]): StoredMessage[] {
+  return messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+    metadata: null,
+    providerData: m.providerData,
+  }));
+}
+
 /**
  * Whether a partially streamed thinking block is safe to persist on abort/error.
  *
@@ -116,7 +131,7 @@ export async function orchestrateSendMessage(
     return;
   }
 
-  conv.messages.push({ role: "user", content: buildUserContent(text, images), metadata: null });
+  conv.messages.push(buildStoredUserMessage(text, images));
   conv.updatedAt = Date.now();
   convStore.bumpToTop(convId);
 
@@ -131,7 +146,7 @@ export async function orchestrateSendMessage(
 
   const ac = new AbortController();
   convStore.setActiveJob(convId, ac, startedAt);
-  convStore.initStreamingBlocks(convId);
+  convStore.initStreamingState(convId);
 
   // Broadcast sidebar update (streaming indicator)
   server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
@@ -186,6 +201,18 @@ export async function orchestrateSendMessage(
   const partialContent: import("./messages").ApiContentBlock[] = [];
   /** Blocks that survived persistence on abort/error — sent to TUI so it can trim display. */
   let abortPersistedBlocks: import("./messages").Block[] | undefined;
+
+  function completedDisplayMessages(): StoredMessage[] {
+    return toStoredMessages(agentState.completedMessages);
+  }
+
+  function syncStreamingDisplayMessages(messages: StoredMessage[]): void {
+    convStore.replaceStreamingDisplayMessages(convId, interleaveRetryMarkers(messages, retryMarkers));
+  }
+
+  function syncCompletedStreamingDisplayMessages(): void {
+    syncStreamingDisplayMessages(completedDisplayMessages());
+  }
 
   const callbacks: AgentCallbacks = {
     onBlockStart(blockType) {
@@ -274,25 +301,24 @@ export async function orchestrateSendMessage(
     },
     onRetry(attempt, maxAttempts, errorMessage, delaySec) {
       convStore.touchActivity(convId);
-      // Transient stream error → clear partial state so the retry starts clean
+      // Transient stream error → clear partial state so the retry starts clean.
+      // Completed rounds stay visible via streamingDisplayMessages.
       partialContent.length = 0;
-      // Reset streaming blocks to completed rounds only — preserves them for
-      // late-joining clients while clearing partial blocks from the failed stream.
-      convStore.initStreamingBlocks(convId);
-      for (const block of agentState.completedBlocks) {
-        convStore.pushStreamingBlock(convId, block);
-      }
+      convStore.initStreamingState(convId);
       // Track for correct interleaving on the success/error path.
       // Don't push to conv.messages now — newMessages haven't been pushed yet,
       // so a system message here would end up before all AI blocks.
       const sysText = `⟳ ${errorMessage} — retrying in ${delaySec}s (${attempt}/${maxAttempts})…`;
       retryMarkers.push({ afterIndex: agentState.completedMessages.length, text: sysText });
+      syncCompletedStreamingDisplayMessages();
       server.sendToSubscribers(convId, { type: "stream_retry", convId, attempt, maxAttempts, errorMessage, delaySec });
     },
     onRoundComplete() {
       // Clear partial content — completed rounds are tracked via agentState.completedMessages.
       // Without this, partialContent accumulates across rounds and abort would double-persist.
       partialContent.length = 0;
+      convStore.clearCurrentStreamingBlocks(convId);
+      syncCompletedStreamingDisplayMessages();
     },
     drainNextTurnMessages() {
       const drained = convStore.drainQueuedMessages(convId, "next-turn");
@@ -300,14 +326,18 @@ export async function orchestrateSendMessage(
 
       hadNextTurnInjections = true;
       const apiMsgs: import("./messages").ApiMessage[] = [];
+      const injectedStored: StoredMessage[] = [];
       for (const qm of drained) {
         // Broadcast to TUI subscribers so they see the queued message appear.
         // Don't push to conv.messages — the agent loop includes injected
         // messages in newMessages, which get pushed on the success/abort path.
         server.sendToSubscribers(convId, { type: "user_message", convId, text: qm.text, images: qm.images });
-        apiMsgs.push({ role: "user", content: buildUserContent(qm.text, qm.images) });
+        const storedUser = buildStoredUserMessage(qm.text, qm.images);
+        apiMsgs.push({ role: "user", content: storedUser.content });
+        injectedStored.push(storedUser);
         log("info", `orchestrator: injected next-turn message: "${qm.text.slice(0, 50)}"`);
       }
+      syncStreamingDisplayMessages([...toStoredMessages(agentState.completedMessages), ...injectedStored]);
       return apiMsgs;
     },
     rebuildMessages(): import("./messages").ApiMessage[] | null {
@@ -508,7 +538,7 @@ export async function orchestrateSendMessage(
     }
   } finally {
     convStore.clearActiveJob(convId);
-    convStore.clearStreamingBlocks(convId);
+    convStore.clearCurrentStreamingBlocks(convId);
     convStore.resetChunkCounter(convId);
     convStore.markDirty(convId);
     convStore.flush(convId);
@@ -516,11 +546,12 @@ export async function orchestrateSendMessage(
     // Broadcast updated summary (streaming=false, possibly unread=true)
     server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
 
-    // When mid-stream interleaving happened (retries or next-turn injections),
-    // the TUI's live display has messages in approximate order. Now that
-    // conv.messages has the correct interleaved structure, send history_updated
-    // so the TUI rebuilds with proper ordering from canonical data.
-    if (retryMarkers.length > 0 || hadNextTurnInjections) {
+    // When the active stream built up any transient display-only history
+    // (completed rounds for late joiners, retries, or next-turn injections),
+    // the TUI may be showing an approximate live view. Now that conv.messages
+    // has the canonical interleaved structure, send history_updated so every
+    // client rebuilds from the persisted ordering.
+    if (agentState.completedMessages.length > 0 || retryMarkers.length > 0 || hadNextTurnInjections) {
       const displayData = convStore.getDisplayData(convId);
       if (displayData) {
         server.sendToSubscribers(convId, {
