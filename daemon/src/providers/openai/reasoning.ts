@@ -31,15 +31,33 @@ export function mergeReasoningSummaries(existing: string[], completed: string[])
   return merged;
 }
 
+export function extractReasoningRawContent(item: Record<string, unknown>): string[] {
+  if (!Array.isArray(item.content)) return [];
+  return item.content
+    .filter((part): part is { type?: string; text?: string } => !!part && typeof part === "object")
+    .filter((part) => part.type === "reasoning_text" || part.type === "text")
+    .map((part) => part.text ?? "")
+    .filter((text) => text.length > 0);
+}
+
+export function preferredReasoningTexts(reasoning: OpenAIReasoningItem | undefined): string[] {
+  if (!reasoning) return [];
+  if (reasoning.rawContent?.some((text) => text.length > 0)) return reasoning.rawContent;
+  return reasoning.summaries;
+}
+
+export function hasRenderableReasoning(reasoning: OpenAIReasoningItem | undefined): boolean {
+  return preferredReasoningTexts(reasoning).some((text) => text.length > 0);
+}
+
 export function finalizeReasoningItem(
   reasoning: OpenAIReasoningItem | undefined,
   blocks: Array<{ type: "thinking" | "text"; text: string; signature: string } | { type: "text"; text: string }>,
   fullThinking: { value: string },
 ): void {
-  if (!reasoning) return;
-  for (const summary of reasoning.summaries) {
-    if (!summary) continue;
-    blocks.push({ type: "thinking", text: summary, signature: "" });
-    fullThinking.value += summary;
+  for (const text of preferredReasoningTexts(reasoning)) {
+    if (!text) continue;
+    blocks.push({ type: "thinking", text, signature: "" });
+    fullThinking.value += text;
   }
 }

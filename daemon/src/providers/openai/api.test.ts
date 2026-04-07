@@ -54,6 +54,14 @@ describe("OpenAI replay input", () => {
     expect(body.service_tier).toBe("priority");
   });
 
+  test("reasoning summary defaults to detailed", () => {
+    const body = buildRequestBodyForTest([
+      { role: "user", content: "hello" },
+    ], "gpt-5.4", 1234, {});
+
+    expect((body.reasoning as { summary?: string }).summary).toBe("detailed");
+  });
+
   test("aborting an in-flight stream does not emit retry callbacks", async () => {
     const ac = new AbortController();
     let fetchSignal: AbortSignal | undefined;
@@ -289,4 +297,97 @@ describe("OpenAI reasoning summaries", () => {
       { type: "thinking", text: "second", signature: "" },
     ]);
   });
+});
+
+  test("preserves output item ordering between reasoning and text blocks", () => {
+    const result = readOpenAIEventsForTest([
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "reasoning", id: "rs_1" },
+      },
+      {
+        type: "response.reasoning_summary_part.added",
+        output_index: 0,
+        summary_index: 0,
+      },
+      {
+        type: "response.reasoning_summary_text.delta",
+        output_index: 0,
+        summary_index: 0,
+        delta: "first think",
+      },
+      {
+        type: "response.output_item.added",
+        output_index: 1,
+        item: { type: "message", id: "msg_1" },
+      },
+      {
+        type: "response.output_text.delta",
+        item_id: "msg_1",
+        delta: "then speak",
+      },
+      {
+        type: "response.completed",
+        response: {
+          output: [
+            {
+              type: "reasoning",
+              id: "rs_1",
+              summary: [{ type: "summary_text", text: "first think" }],
+            },
+            {
+              type: "message",
+              id: "msg_1",
+              content: [{ type: "output_text", text: "then speak" }],
+            },
+          ],
+        },
+      },
+    ]);
+
+    expect(result.blocks).toEqual([
+      { type: "thinking", text: "first think", signature: "" },
+      { type: "text", text: "then speak" },
+    ]);
+  });
+
+
+describe("OpenAI raw reasoning", () => {
+  test("uses raw reasoning content when available", () => {
+    const result = readOpenAIEventsForTest([
+      { type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_1" } },
+      { type: "response.reasoning_text.delta", output_index: 0, content_index: 0, delta: "raw detail" },
+      {
+        type: "response.completed",
+        response: {
+          output: [
+            {
+              type: "reasoning",
+              id: "rs_1",
+              summary: [{ type: "summary_text", text: "summary detail" }],
+              content: [{ type: "reasoning_text", text: "raw detail" }],
+            },
+          ],
+        },
+      },
+    ]);
+
+    expect(result.blocks).toEqual([
+      { type: "thinking", text: "raw detail", signature: "" },
+    ]);
+    expect(result.assistantProviderData).toEqual({
+      openai: {
+        reasoningItems: [
+          {
+            id: "rs_1",
+            encryptedContent: null,
+            summaries: ["summary detail"],
+            rawContent: ["raw detail"],
+          },
+        ],
+      },
+    });
+  });
+
 });

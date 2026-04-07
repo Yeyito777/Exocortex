@@ -9,6 +9,8 @@ export type OpenAIInputItem =
   | { type: "function_call_output"; call_id: string; output: string }
   | { type: "reasoning"; id: string; encrypted_content?: string | null; summary: Array<{ type: "summary_text"; text: string }> };
 
+const OPENAI_REASONING_SUMMARY = "detailed" as const;
+
 interface OpenAIRequestShape {
   model: ModelId;
   instructions: string;
@@ -17,7 +19,7 @@ interface OpenAIRequestShape {
   include: string[];
   reasoning: {
     effort: string;
-    summary: string;
+    summary?: string;
   };
   service_tier?: string;
   tools?: Array<{
@@ -204,7 +206,10 @@ function buildRequestShape(model: ModelId, options: StreamOptions): OpenAIReques
     include: ["reasoning.encrypted_content"],
     reasoning: {
       effort: mapEffort(options.effort),
-      summary: "concise",
+      // Always request the fullest summary OpenAI exposes. If raw reasoning
+      // is present we will prefer it later, otherwise these detailed summaries
+      // are what the TUI shows.
+      summary: OPENAI_REASONING_SUMMARY,
     },
     ...(serviceTier ? { service_tier: serviceTier } : {}),
     ...(tools ? { tools } : {}),
