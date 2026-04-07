@@ -46,6 +46,20 @@ export function createHistoryCursor(): HistoryCursor {
   return { row: 0, col: 0 };
 }
 
+type RenderedMessageBound = RenderState["historyMessageBounds"][number];
+
+function getUserMessageBounds(state: RenderState): RenderedMessageBound[] {
+  return state.historyMessageBounds.filter((bound) => bound.role === "user");
+}
+
+function jumpHistoryCursorToRow(state: RenderState, row: number): void {
+  state.historyCursor = { row, col: clampCol(0, state.historyLines, row) };
+}
+
+function isRowWithinBound(row: number, bound: RenderedMessageBound): boolean {
+  return row >= bound.start && row < bound.end;
+}
+
 // ── Dispatch ───────────────────────────────────────────────────────
 
 /**
@@ -76,36 +90,33 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
     case "history_gg":      state.historyCursor = bufferStart(lines); break;
     case "history_G":       state.historyCursor = bufferEnd(lines); break;
     case "history_prev_message": {
-      const bounds = state.historyMessageBounds;
+      const bounds = getUserMessageBounds(state);
       if (bounds.length === 0) break;
-      // Jump to the start (first content line) of the last message whose
-      // content start is strictly before the cursor. This mirrors }:
-      // pressing { inside a message goes to its start, pressing { at
-      // the start goes to the previous message's start.
+      // Jump only among user messages.
+      // Pressing { inside a user message goes to its start; pressing {
+      // at that start goes to the previous user message's start.
       let target = -1;
       for (let i = bounds.length - 1; i >= 0; i--) {
         if (bounds[i].contentStart < cur.row) { target = i; break; }
       }
-      if (target >= 0) {
-        const row = bounds[target].contentStart;
-        state.historyCursor = { row, col: clampCol(0, lines, row) };
-      }
+      if (target >= 0) jumpHistoryCursorToRow(state, bounds[target].contentStart);
       break;
     }
     case "history_next_message": {
-      const bounds = state.historyMessageBounds;
+      const bounds = getUserMessageBounds(state);
       if (bounds.length === 0) break;
-      // Jump to the end (last content line) of the first message whose
-      // content end is strictly past the cursor. This mirrors {: pressing
-      // } inside a message goes to its end, pressing } at the end goes
-      // to the next message's end.
+      // Jump only among user-message starts.
+      // Pressing } moves to the next user-message start; if the cursor is
+      // anywhere inside the last user message, jump to the conversation bottom.
       let target = -1;
       for (let i = 0; i < bounds.length; i++) {
-        if (bounds[i].contentEnd - 1 > cur.row) { target = i; break; }
+        if (bounds[i].contentStart > cur.row) { target = i; break; }
       }
       if (target >= 0) {
-        const row = bounds[target].contentEnd - 1;
-        state.historyCursor = { row, col: clampCol(0, lines, row) };
+        jumpHistoryCursorToRow(state, bounds[target].contentStart);
+      } else {
+        const lastBound = bounds[bounds.length - 1];
+        if (isRowWithinBound(cur.row, lastBound)) state.historyCursor = bufferEnd(lines);
       }
       break;
     }

@@ -91,6 +91,44 @@ describe("OpenAI replay input", () => {
     expect(onRetry).not.toHaveBeenCalled();
   });
 
+  test("sends conversation headers alongside prompt_cache_key", async () => {
+    let fetchInit: RequestInit | undefined;
+
+    globalThis.fetch = mock((_input: RequestInfo | URL, init?: RequestInit) => {
+      fetchInit = init;
+      return Promise.resolve(new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode([
+            'data: {"type":"response.created","response":{"id":"resp_1"}}',
+            'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1},"output":[]}}',
+            "data: [DONE]",
+            "",
+          ].join("\n\n")));
+          controller.close();
+        },
+      }), {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }));
+    }) as unknown as typeof fetch;
+
+    await streamMessageWithSession(
+      { accessToken: "test-token", accountId: "acct_123" },
+      [{ role: "user", content: "hello" }],
+      "gpt-5.4",
+      {
+        onText: () => {},
+        onThinking: () => {},
+      },
+      { promptCacheKey: "conv-1" },
+    );
+
+    const headers = new Headers(fetchInit?.headers);
+    expect(headers.get("session_id")).toBe("conv-1");
+    expect(headers.get("x-client-request-id")).toBe("conv-1");
+    expect(headers.get("ChatGPT-Account-ID")).toBe("acct_123");
+  });
+
   test("does not send previous_response_id to the codex backend", () => {
     const messages: ApiMessage[] = [
       { role: "user", content: "first prompt" },

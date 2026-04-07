@@ -13,6 +13,35 @@ export { AuthError, mergeReasoningSummaries as mergeReasoningSummariesForTest, r
 const STREAM_STALL_TIMEOUT = 120_000;
 const MAX_RETRIES = 8;
 
+type OpenAISession = { accessToken: string; accountId: string | null };
+
+function buildOpenAIRequestHeaders(
+  session: OpenAISession,
+  options: StreamOptions,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${session.accessToken}`,
+    Accept: "text/event-stream",
+    "Content-Type": "application/json",
+    originator: OPENAI_ORIGINATOR,
+    "User-Agent": "exocortexd/openai",
+  };
+
+  // Match the official Codex client: when a stable prompt cache key is present,
+  // also send the same conversation identity in headers. This keeps the request
+  // shape aligned with the backend's expected conversation/cache routing signals.
+  if (options.promptCacheKey) {
+    headers.session_id = options.promptCacheKey;
+    headers["x-client-request-id"] = options.promptCacheKey;
+  }
+
+  if (session.accountId) {
+    headers["ChatGPT-Account-ID"] = session.accountId;
+  }
+
+  return headers;
+}
+
 function retryBackoff(
   attempt: number,
   errMsg: string,
@@ -63,7 +92,7 @@ export function buildRequestBodyForTest(
  * behavior without depending on auth state.
  */
 export async function streamMessageWithSession(
-  session: { accessToken: string; accountId: string | null },
+  session: OpenAISession,
   messages: ApiMessage[],
   model: ModelId,
   callbacks: StreamCallbacks,
@@ -78,14 +107,7 @@ export async function streamMessageWithSession(
     try {
       res = await fetch(OPENAI_CODEX_RESPONSES_URL, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${session.accessToken}`,
-          Accept: "text/event-stream",
-          "Content-Type": "application/json",
-          originator: OPENAI_ORIGINATOR,
-          "User-Agent": "exocortexd/openai",
-          ...(session.accountId ? { "ChatGPT-Account-ID": session.accountId } : {}),
-        },
+        headers: buildOpenAIRequestHeaders(session, options),
         body: JSON.stringify(requestBody),
         signal,
       });

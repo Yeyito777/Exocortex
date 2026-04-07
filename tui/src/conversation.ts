@@ -5,7 +5,7 @@
  * The only file that knows how to render conversations.
  */
 
-import type { Block, ToolDisplayInfo, ExternalToolStyle, ImageAttachment } from "./messages";
+import type { Block, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, Message } from "./messages";
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { resolveToolDisplay } from "./toolstyles";
@@ -276,6 +276,8 @@ function renderUserMessage(text: string, cols: number, images?: ImageAttachment[
 
 /** Row range for a single message in the rendered history lines. */
 export interface MessageBound {
+  /** Message role backing this rendered range. */
+  role: Message["role"];
   /** First line index (inclusive). */
   start: number;
   /** Last line index (exclusive). */
@@ -309,6 +311,15 @@ export function buildMessageLines(
     wrapContinuation.push(false);
   };
 
+  const pushMessageBound = (
+    role: Message["role"],
+    start: number,
+    contentStart: number,
+    contentEnd: number,
+  ) => {
+    messageBounds.push({ role, start, end: lines.length, contentStart, contentEnd });
+  };
+
   let firstUser = true;
   for (const msg of state.messages) {
     const start = lines.length;
@@ -319,7 +330,7 @@ export function buildMessageLines(
       const contentEnd = lines.length;
       pushLine("");                  // bottom margin
       firstUser = false;
-      messageBounds.push({ start, end: lines.length, contentStart, contentEnd });
+      pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "assistant") {
       // AI messages: content blocks, then metadata
       const contentStart = lines.length;
@@ -328,10 +339,10 @@ export function buildMessageLines(
       }
       const contentEnd = lines.length;
       for (const ml of renderMetadata(msg.metadata)) pushLine(ml);
-      messageBounds.push({ start, end: lines.length, contentStart, contentEnd });
+      pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "system_instructions") {
       if (!msg.text.trim()) {
-        messageBounds.push({ start, end: lines.length, contentStart: start, contentEnd: lines.length });
+        pushMessageBound(msg.role, start, start, lines.length);
         continue;
       }
       const boxWidth = availableWidth;
@@ -352,7 +363,7 @@ export function buildMessageLines(
       const contentEnd = lines.length;
 
       pushLine(`${theme.accent}${bottomLine}${theme.reset}`);
-      messageBounds.push({ start, end: lines.length, contentStart, contentEnd });
+      pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else {
       const color = msg.color || theme.dim;
       const sysWidth = availableWidth - 2; // 2-char indent
@@ -360,7 +371,7 @@ export function buildMessageLines(
       for (const sl of wrapped) {
         pushLine(`  ${color}${sl}${theme.reset}`);
       }
-      messageBounds.push({ start, end: lines.length, contentStart: start, contentEnd: lines.length });
+      pushMessageBound(msg.role, start, start, lines.length);
     }
   }
 
@@ -372,7 +383,7 @@ export function buildMessageLines(
     }
     const contentEnd = lines.length;
     for (const ml of renderMetadata(state.pendingAI.metadata)) pushLine(ml);
-    messageBounds.push({ start, end: lines.length, contentStart: start, contentEnd });
+    pushMessageBound(state.pendingAI.role, start, start, contentEnd);
   }
 
   // Queued messages — dimmed user bubbles with timing label (after pendingAI)
