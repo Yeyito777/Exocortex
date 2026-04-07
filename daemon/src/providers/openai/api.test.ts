@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { createHash } from "crypto";
 import type { ApiMessage } from "../../messages";
 import { buildOpenAIInputForTest, buildRequestBodyForTest, mergeReasoningSummariesForTest, readOpenAIEventsForTest, streamMessageWithSession } from "./api";
 
@@ -8,20 +7,6 @@ const originalFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = originalFetch;
 });
-
-function requestShapeHash(system = "You are a helpful assistant.") {
-  return createHash("sha256").update(JSON.stringify({
-    model: "gpt-5.4",
-    instructions: system,
-    tool_choice: "auto",
-    parallel_tool_calls: true,
-    include: ["reasoning.encrypted_content"],
-    reasoning: {
-      effort: "high",
-      summary: "concise",
-    },
-  })).digest("hex");
-}
 
 describe("OpenAI replay input", () => {
   test("does not reuse response ids as assistant item ids", () => {
@@ -106,7 +91,7 @@ describe("OpenAI replay input", () => {
     expect(onRetry).not.toHaveBeenCalled();
   });
 
-  test("reuses previous_response_id and sends only appended input when request shape matches", () => {
+  test("does not send previous_response_id to the codex backend", () => {
     const messages: ApiMessage[] = [
       { role: "user", content: "first prompt" },
       {
@@ -115,7 +100,6 @@ describe("OpenAI replay input", () => {
         providerData: {
           openai: {
             responseId: "resp_abc123",
-            requestShapeHash: requestShapeHash(),
             reasoningItems: [],
           },
         },
@@ -125,9 +109,17 @@ describe("OpenAI replay input", () => {
 
     const body = buildRequestBodyForTest(messages, "gpt-5.4", 1234, { promptCacheKey: "conv-1" });
 
-    expect(body.previous_response_id).toBe("resp_abc123");
+    expect(body.previous_response_id).toBeUndefined();
     expect(body.prompt_cache_key).toBe("conv-1");
     expect(body.input).toEqual([
+      {
+        role: "user",
+        content: [{ type: "input_text", text: "first prompt" }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "output_text", text: "first answer" }],
+      },
       {
         role: "user",
         content: [{ type: "input_text", text: "follow-up" }],
@@ -135,7 +127,7 @@ describe("OpenAI replay input", () => {
     ]);
   });
 
-  test("falls back to full replay when request shape changes", () => {
+  test("replays the full conversation even when a prior response id is available", () => {
     const messages: ApiMessage[] = [
       { role: "user", content: "first prompt" },
       {
@@ -144,7 +136,6 @@ describe("OpenAI replay input", () => {
         providerData: {
           openai: {
             responseId: "resp_abc123",
-            requestShapeHash: requestShapeHash(),
             reasoningItems: [],
           },
         },
@@ -152,7 +143,7 @@ describe("OpenAI replay input", () => {
       { role: "user", content: "follow-up" },
     ];
 
-    const body = buildRequestBodyForTest(messages, "gpt-5.4", 1234, { system: "Different instructions" });
+    const body = buildRequestBodyForTest(messages, "gpt-5.4", 1234, {});
 
     expect(body.previous_response_id).toBeUndefined();
     expect(body.input).toEqual(buildOpenAIInputForTest(messages));

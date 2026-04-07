@@ -5,7 +5,6 @@ import { OPENAI_CODEX_RESPONSES_URL, OPENAI_ORIGINATOR } from "./constants";
 import { buildOpenAIInput, buildRequestBody } from "./request";
 import { mergeReasoningSummaries } from "./reasoning";
 import { readOpenAIEventsForTest, readOpenAIStream } from "./stream";
-import type { OpenAIAssistantProviderData } from "./types";
 import type { StreamCallbacks, StreamOptions, StreamResult } from "../types";
 
 export { AuthError, mergeReasoningSummaries as mergeReasoningSummariesForTest, readOpenAIEventsForTest };
@@ -53,7 +52,7 @@ export function buildRequestBodyForTest(
   _maxTokens: number,
   options: StreamOptions,
 ): Record<string, unknown> {
-  return buildRequestBody(messages, model, options).body;
+  return buildRequestBody(messages, model, options);
 }
 
 /**
@@ -71,8 +70,7 @@ export async function streamMessageWithSession(
 ): Promise<StreamResult> {
   const { signal } = options;
   let retryAttempt = 0;
-  const requestPlan = buildRequestBody(messages, model, options);
-  const requestBody = requestPlan.body;
+  const requestBody = buildRequestBody(messages, model, options);
 
   while (true) {
     let res: Response;
@@ -119,20 +117,7 @@ export async function streamMessageWithSession(
 
     callbacks.onHeaders?.(res.headers);
     try {
-      const result = await readOpenAIStream(res, callbacks, STREAM_STALL_TIMEOUT);
-      const providerData = result.assistantProviderData as OpenAIAssistantProviderData | undefined;
-      const openai = providerData?.openai;
-      if (!openai) return result;
-      return {
-        ...result,
-        assistantProviderData: {
-          ...providerData,
-          openai: {
-            ...openai,
-            requestShapeHash: requestPlan.requestShapeHash,
-          },
-        },
-      };
+      return await readOpenAIStream(res, callbacks, STREAM_STALL_TIMEOUT);
     } catch (err) {
       if (signal?.aborted || isAbortLikeError(err)) throw err;
       if (retryAttempt < MAX_RETRIES) {

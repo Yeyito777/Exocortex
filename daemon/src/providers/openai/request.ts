@@ -1,20 +1,6 @@
-import { createHash } from "crypto";
 import type { ApiMessage, ApiContentBlock, ModelId, EffortLevel } from "../../messages";
 import type { StreamOptions } from "../types";
-
-export interface OpenAIReasoningItem {
-  id: string;
-  encryptedContent: string | null;
-  summaries: string[];
-}
-
-export interface OpenAIAssistantProviderData {
-  openai: {
-    responseId?: string;
-    reasoningItems?: OpenAIReasoningItem[];
-    requestShapeHash?: string;
-  };
-}
+import type { OpenAIAssistantProviderData, OpenAIReasoningItem } from "./types";
 
 export type OpenAIInputItem =
   | { role: "user"; content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string }> }
@@ -41,16 +27,6 @@ interface OpenAIRequestShape {
     parameters: Record<string, unknown>;
     strict: boolean;
   }>;
-}
-
-export interface OpenAIRequestPlan {
-  body: Record<string, unknown>;
-  requestShapeHash: string;
-}
-
-interface OpenAIRequestReuse {
-  previousResponseId: string;
-  input: OpenAIInputItem[];
 }
 
 function mapEffort(effort: EffortLevel | undefined): string {
@@ -235,77 +211,21 @@ function buildRequestShape(model: ModelId, options: StreamOptions): OpenAIReques
   };
 }
 
-function hashRequestShape(shape: OpenAIRequestShape): string {
-  return createHash("sha256").update(JSON.stringify(shape)).digest("hex");
-}
-
-export function buildRequestPlan(
+export function buildRequestBody(
   messages: ApiMessage[],
   model: ModelId,
   options: StreamOptions,
-): OpenAIRequestPlan {
+): Record<string, unknown> {
   const input = buildOpenAIInput(messages);
   const shape = buildRequestShape(model, options);
-  const body: Record<string, unknown> = {
+  // The Codex-backed Responses endpoint has been more reliable when we replay
+  // the full serialized conversation instead of attempting stateful reuse via
+  // previous_response_id.
+  return {
     ...shape,
     input,
     stream: true,
     store: false,
     ...(options.promptCacheKey ? { prompt_cache_key: options.promptCacheKey } : {}),
-  };
-  return {
-    body,
-    requestShapeHash: hashRequestShape(shape),
-  };
-}
-
-function getReusableResponse(messages: ApiMessage[], requestShapeHash: string): OpenAIRequestReuse | null {
-  let assistantIndex = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "assistant") {
-      assistantIndex = i;
-      break;
-    }
-  }
-  if (assistantIndex === -1) return null;
-
-  const providerData = (messages[assistantIndex].providerData as OpenAIAssistantProviderData | undefined)?.openai;
-  if (!providerData?.responseId) return null;
-  if (providerData.requestShapeHash !== requestShapeHash) return null;
-
-  const priorPrefix = buildOpenAIInput(messages.slice(0, assistantIndex + 1));
-  const fullInput = buildOpenAIInput(messages);
-  if (fullInput.length < priorPrefix.length) return null;
-
-  for (let i = 0; i < priorPrefix.length; i++) {
-    if (JSON.stringify(fullInput[i]) !== JSON.stringify(priorPrefix[i])) {
-      return null;
-    }
-  }
-
-  return {
-    previousResponseId: providerData.responseId,
-    input: fullInput.slice(priorPrefix.length),
-  };
-}
-
-export function buildRequestBody(
-  messages: ApiMessage[],
-  model: ModelId,
-  options: StreamOptions,
-): OpenAIRequestPlan {
-  const plan = buildRequestPlan(messages, model, options);
-  // Reuse prior OpenAI response state only when the current request has the
-  // same non-input shape and the serialized input is an append-only extension
-  // of the prior assistant turn.
-  const reuse = getReusableResponse(messages, plan.requestShapeHash);
-  if (!reuse) return plan;
-  return {
-    ...plan,
-    body: {
-      ...plan.body,
-      previous_response_id: reuse.previousResponseId,
-      input: reuse.input,
-    },
   };
 }
