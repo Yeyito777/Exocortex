@@ -1,11 +1,16 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, normalizeEffortForModel } from "./messages";
+import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
 
 describe("tui defaults", () => {
-  test("starts on the shared default provider and model", () => {
+  beforeEach(() => {
+    clearPreferredProvider();
+  });
+  test("starts without a chosen provider until the user picks or logs into one", () => {
     const state = createInitialState();
 
+    expect(state.hasChosenProvider).toBe(false);
     expect(state.provider).toBe(DEFAULT_PROVIDER_ID);
     expect(state.model).toBe(DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
   });

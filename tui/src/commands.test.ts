@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { tryCommand } from "./commands";
+import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
 import type { ProviderInfo } from "./messages";
 
@@ -42,6 +43,10 @@ const providers: ProviderInfo[] = [
   },
 ];
 
+beforeEach(() => {
+  clearPreferredProvider();
+});
+
 describe("/fast command", () => {
   test("enables fast mode for supported providers", () => {
     const state = createInitialState();
@@ -83,6 +88,31 @@ describe("/fast command", () => {
 
     expect(result).toEqual({ type: "handled" });
     expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Fast mode is on.");
+  });
+});
+
+describe("/login", () => {
+  test("selects a provider and returns a provider-scoped login command", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    const result = tryCommand("/login anthropic", state);
+
+    expect(result).toEqual({ type: "login", provider: "anthropic" });
+    expect(state.hasChosenProvider).toBe(true);
+    expect(state.provider).toBe("anthropic");
+    expect(state.model).toBe("claude-opus-4-6");
+  });
+
+  test("requires an explicit provider when none has been chosen yet", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    const result = tryCommand("/login", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toContain("/login openai");
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toContain("/login anthropic");
   });
 });
 

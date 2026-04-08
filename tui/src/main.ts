@@ -18,7 +18,7 @@ import { expandMacros } from "./macros";
 import { render } from "./render";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
 import { createInitialState, isStreaming, clearPendingAI } from "./state";
-import { createPendingAI, type ImageAttachment } from "./messages";
+import { createPendingAI, type ImageAttachment, type ProviderId } from "./messages";
 import { handleEvent } from "./events";
 import { confirmQueueMessage, cancelQueuePrompt, clearLocalQueue, removeLocalQueueEntry } from "./queue";
 import { confirmEditMessage, cancelEditMessage } from "./editmessage";
@@ -80,6 +80,31 @@ function onDaemonEvent(event: Event): void {
 
 // ── Input handling ──────────────────────────────────────────────────
 
+function loginPromptProviders(): ProviderId[] {
+  const ids = state.providerRegistry.map((provider) => provider.id);
+  if (ids.includes("openai") && ids.includes("anthropic")) {
+    return ["openai", "anthropic"];
+  }
+  return ids.length > 0 ? ids : ["openai", "anthropic"];
+}
+
+function showLoginRequiredPrompt(messageText?: string, images?: ImageAttachment[]): void {
+  if (messageText || images?.length) {
+    state.messages.push({ role: "user", text: messageText ?? "", images, metadata: null });
+  }
+
+  const options = loginPromptProviders()
+    .map((provider) => `  /login ${provider}`)
+    .join("\n");
+  const msg = [
+    state.hasChosenProvider ? `You're not authenticated for ${state.provider}.` : "You're not authenticated.",
+    "Sign in with:",
+    options,
+  ].join("\n");
+
+  state.messages.push({ role: "system", text: msg, metadata: null });
+}
+
 function handleSubmit(): void {
   const text = state.inputBuffer.trim();
   const hasImages = state.pendingImages.length > 0;
@@ -132,7 +157,7 @@ function handleSubmit(): void {
           if (state.convId) daemon.setSystemInstructions(state.convId, cmdResult.text);
           break;
         case "login":
-          daemon.login(state.provider);
+          daemon.login(cmdResult.provider ?? state.provider);
           break;
         case "logout":
           daemon.logout(state.provider);
@@ -159,6 +184,16 @@ function handleSubmit(): void {
   }
 
   const images = hasImages ? [...state.pendingImages] : undefined;
+
+  if (!state.authByProvider[state.provider]) {
+    clearPrompt(state);
+    state.pendingImages = [];
+    state.scrollOffset = 0;
+    showLoginRequiredPrompt(messageText, images);
+    scheduleRender();
+    return;
+  }
+
   clearPrompt(state);
   state.pendingImages = [];
   state.scrollOffset = 0;
@@ -167,6 +202,12 @@ function handleSubmit(): void {
 
 /** Send a message immediately (no streaming in progress). */
 function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
+  if (!state.authByProvider[state.provider]) {
+    showLoginRequiredPrompt(messageText, images);
+    scheduleRender();
+    return;
+  }
+
   const startedAt = Date.now();
   state.messages.push({ role: "user", text: messageText, images, metadata: null });
   state.pendingAI = createPendingAI(startedAt, state.model);

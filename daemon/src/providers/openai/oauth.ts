@@ -86,14 +86,23 @@ async function exchangeCode(code: string, verifier: string, redirectUri: string)
 
   const res = await fetch(OPENAI_TOKEN_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+      originator: OPENAI_ORIGINATOR,
+      "User-Agent": "exocortexd/openai",
+    },
     body: body.toString(),
   });
+  const text = await res.text();
   if (!res.ok) {
-    const text = await res.text();
     throw new Error(`Token exchange failed (${res.status}): ${text}`);
   }
-  return res.json() as Promise<OpenAITokenResponse>;
+  try {
+    return JSON.parse(text) as OpenAITokenResponse;
+  } catch {
+    throw new Error(`Token exchange returned non-JSON response: ${text.slice(0, 500)}`);
+  }
 }
 
 export async function runOpenAIBrowserOAuth(callbacks?: LoginCallbacks): Promise<OpenAITokenResponse> {

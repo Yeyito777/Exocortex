@@ -432,6 +432,7 @@ export interface ToolsAvailableEvent {
   type: "tools_available";
   providers: ProviderInfo[];
   tools: ToolDisplayInfo[];
+  authByProvider: Record<ProviderId, boolean>;
   externalToolStyles?: ExternalToolStyle[];
 }
 

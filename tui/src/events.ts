@@ -7,8 +7,9 @@
 
 import type { RenderState } from "./state";
 import { isStreaming, clearPendingAI } from "./state";
-import { DEFAULT_PROVIDER_ID, ensureCurrentBlock, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI } from "./messages";
+import { DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER, ensureCurrentBlock, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI } from "./messages";
 import type { AIMessage, SystemMessage, ImageAttachment } from "./messages";
+import { savePreferredProvider } from "./preferences";
 import { updateConversationList, updateConversation, syncSelectedIndex } from "./sidebar";
 import { theme } from "./theme";
 import { clearLocalQueue, removeLocalQueueEntry } from "./queue";
@@ -57,6 +58,12 @@ function fallbackProvider(state: RenderState): RenderState["provider"] {
   return state.providerRegistry[0]?.id ?? state.provider ?? DEFAULT_PROVIDER_ID;
 }
 
+function selectProvider(state: RenderState, provider: RenderState["provider"], persist = true): void {
+  state.provider = provider;
+  state.hasChosenProvider = true;
+  if (persist) savePreferredProvider(provider);
+}
+
 function syncModelEffortSelection(state: RenderState): void {
   const provider = state.providerRegistry.find((candidate) => candidate.id === state.provider);
   const model = provider?.models.find((candidate) => candidate.id === state.model) ?? null;
@@ -98,7 +105,7 @@ export function handleEvent(
   switch (event.type) {
     case "conversation_created": {
       state.convId = event.convId;
-      state.provider = event.provider ?? fallbackProvider(state);
+      selectProvider(state, event.provider ?? fallbackProvider(state));
       state.model = event.model ?? state.model;
       state.effort = event.effort ?? state.effort;
       state.fastMode = event.fastMode ?? state.fastMode;
@@ -123,7 +130,7 @@ export function handleEvent(
       // Late-joining client: create pendingAI so future chunks are captured.
       // Original client already has pendingAI from handleSubmit.
       if (!state.pendingAI) {
-        state.provider = event.provider ?? fallbackProvider(state);
+        selectProvider(state, event.provider ?? fallbackProvider(state));
         state.pendingAI = createPendingAI(event.startedAt, event.model);
       }
       // Populate with accumulated blocks from daemon (late-join catch-up)
@@ -259,7 +266,7 @@ export function handleEvent(
       updateConversation(state.sidebar, event.summary);
       // Sync provider/model/effort if this is the active conversation
       if (event.summary.id === state.convId) {
-        state.provider = event.summary.provider ?? fallbackProvider(state);
+        selectProvider(state, event.summary.provider ?? fallbackProvider(state));
         state.model = event.summary.model ?? state.model;
         state.effort = event.summary.effort ?? state.effort;
         state.fastMode = event.summary.fastMode ?? state.fastMode;
@@ -316,7 +323,7 @@ export function handleEvent(
       state.messages = [];
       clearPendingAI(state);
       state.convId = event.convId;
-      state.provider = event.provider ?? fallbackProvider(state);
+      selectProvider(state, event.provider ?? fallbackProvider(state));
       state.model = event.model ?? state.model;
       state.effort = event.effort ?? state.effort;
       state.fastMode = event.fastMode ?? state.fastMode;
@@ -391,11 +398,23 @@ export function handleEvent(
         state.providerRegistry = event.providers;
       }
       state.toolRegistry = Array.isArray(event.tools) ? event.tools : [];
+      if (event.authByProvider) {
+        state.authByProvider = event.authByProvider;
+      }
       state.externalToolStyles = event.externalToolStyles ?? [];
       const registry = state.providerRegistry ?? [];
-      const provider = registry.find((p) => p.id === state.provider) ?? registry[0];
-      if (provider) {
-        state.provider = provider.id;
+
+      let provider = registry.find((p) => p.id === state.provider) ?? null;
+      if (!state.hasChosenProvider) {
+        const authenticated = registry.filter((candidate) => state.authByProvider[candidate.id]);
+        if (authenticated.length === 1) {
+          provider = authenticated[0];
+          selectProvider(state, provider.id);
+          state.model = provider.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER[provider.id];
+        }
+      }
+
+      if (provider && state.hasChosenProvider) {
         const allowsCustomModels = provider.allowsCustomModels;
         if (!provider.models.some((m) => m.id === state.model) && !allowsCustomModels) {
           state.model = provider.defaultModel;

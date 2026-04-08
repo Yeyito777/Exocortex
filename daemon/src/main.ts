@@ -25,7 +25,7 @@ import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getProviders, refreshProviders } from "./providers/registry";
-import { socketPath, pidPath, runtimeDir, worktreeName, isWindows } from "@exocortex/shared/paths";
+import { socketPath, pidPath, runtimeDir, worktreeName, isWindows, isWorktreeAuthIsolated } from "@exocortex/shared/paths";
 
 // ── Paths ───────────────────────────────────────────────────────────
 
@@ -109,29 +109,33 @@ async function startDaemon(): Promise<void> {
   // Load persisted conversations
   convStore.loadFromDisk();
 
-  // Initialize external tools (scan + watch for changes)
-  if (!isWindows) {
-    initExternalTools(() => {
-      // Broadcast updated tool styles to all connected clients
-      const externalStyles = getExternalToolStyles();
-      server.broadcast({
-        type: "tools_available",
-        providers: getProviders(),
-        tools: getToolDisplayInfo(),
-        ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
-      });
-    });
-  }
+  const getAuthByProvider = (): Record<import("./messages").ProviderId, boolean> => ({
+    openai: hasConfiguredCredentials("openai"),
+    anthropic: hasConfiguredCredentials("anthropic"),
+  });
 
-  void refreshProviders(true).then((changed) => {
-    if (!changed) return;
+  const broadcastToolsAvailable = () => {
     const externalStyles = isWindows ? [] : getExternalToolStyles();
     server.broadcast({
       type: "tools_available",
       providers: getProviders(),
       tools: getToolDisplayInfo(),
+      authByProvider: getAuthByProvider(),
       ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
     });
+  };
+
+  // Initialize external tools (scan + watch for changes)
+  if (!isWindows) {
+    initExternalTools(() => {
+      // Broadcast updated tool styles to all connected clients
+      broadcastToolsAvailable();
+    });
+  }
+
+  void refreshProviders(true).then((changed) => {
+    if (!changed) return;
+    broadcastToolsAvailable();
   }).catch((err) => {
     log("warn", `exocortexd: initial provider refresh failed: ${err instanceof Error ? err.message : err}`);
   });
@@ -148,12 +152,13 @@ async function startDaemon(): Promise<void> {
     .join(" ");
 
   const wt = worktreeName();
+  const isolatedAuth = isWorktreeAuthIsolated();
   const cronJobs = isWindows ? [] : getJobs();
   const extToolCount = isWindows ? 0 : getExternalToolCount();
   const supervisedCount = isWindows ? 0 : getSupervisedDaemonCount();
   console.log(`\n  exocortexd running (pid ${process.pid})${wt ? ` [worktree: ${wt}]` : ""}`);
   console.log(`  socket: ${SOCKET_PATH}`);
-  console.log(`  auth:   ${authSummary || "none configured"}`);
+  console.log(`  auth:   ${authSummary || "none configured"}${isolatedAuth ? " (isolated worktree auth)" : ""}`);
   console.log(`  cron:   ${cronJobs.length} job(s) in ${getCronDir()}`);
   console.log(`  tools:  ${extToolCount} external tool(s)${supervisedCount > 0 ? `, ${supervisedCount} supervised daemon(s)` : ""}`);
   console.log(`\n  Waiting for connections...\n`);

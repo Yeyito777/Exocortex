@@ -24,6 +24,11 @@ import { clearAuth, ensureAuthenticated, hasConfiguredCredentials } from "./auth
 // ── Handler ─────────────────────────────────────────────────────────
 
 export function createHandler(server: DaemonServer) {
+  const getAuthByProvider = (): Record<import("./messages").ProviderId, boolean> => ({
+    openai: hasConfiguredCredentials("openai"),
+    anthropic: hasConfiguredCredentials("anthropic"),
+  });
+
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     server.broadcast({ type: "usage_update", provider, usage });
   };
@@ -33,6 +38,7 @@ export function createHandler(server: DaemonServer) {
       type: "tools_available",
       providers: getProviders(),
       tools: getToolDisplayInfo(),
+      authByProvider: getAuthByProvider(),
       ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
     });
   };
@@ -47,6 +53,7 @@ export function createHandler(server: DaemonServer) {
           type: "tools_available",
           providers: getProviders(),
           tools: getToolDisplayInfo(),
+          authByProvider: getAuthByProvider(),
           ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
         });
         for (const provider of getProviders()) {
@@ -467,6 +474,7 @@ export function createHandler(server: DaemonServer) {
           const label = email ?? provider;
           server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: statusMessages[status](label) });
           log("info", `handler: login ${status} (${label})`);
+          broadcastToolsAvailable();
           refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
           void refreshProviders(true).then((changed) => {
             if (changed) broadcastToolsAvailable();
@@ -486,6 +494,7 @@ export function createHandler(server: DaemonServer) {
         clearAuth(provider);
         clearUsage(provider);
         broadcastUsage(provider, null);
+        broadcastToolsAvailable();
         server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: `Logged out from ${provider}` });
         log("info", `handler: logout (${provider})`);
         break;

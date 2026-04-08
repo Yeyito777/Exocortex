@@ -52,7 +52,11 @@ function renderWindowLine(label: string, window: UsageWindow | null, now: number
 }
 
 export function usageBlock(state: RenderState): StatusBlock | null {
+  if (!state.authByProvider[state.provider]) return null;
+
   const usage = state.usageByProvider[state.provider];
+  if (!usage?.fiveHour && !usage?.sevenDay) return null;
+
   const now = Date.now();
 
   const fiveHour = renderWindowLine("5-Hour", usage?.fiveHour ?? null, now);

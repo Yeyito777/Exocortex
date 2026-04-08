@@ -8,6 +8,7 @@
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment } from "./messages";
 import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
+import { loadPreferredProvider } from "./preferences";
 import type { MessageBound } from "./conversation";
 import type { PanelFocus } from "./focus";
 import type { ChatFocus } from "./chat";
@@ -75,6 +76,7 @@ export interface RenderState {
   /** The AI message currently being streamed (not yet finalized). */
   pendingAI: AIMessage | null;
   provider: ProviderId;
+  hasChosenProvider: boolean;
   model: ModelId;
   effort: EffortLevel;
   fastMode: boolean;
@@ -84,6 +86,8 @@ export interface RenderState {
   cols: number;
   rows: number;
   scrollOffset: number;
+  /** Whether each provider currently has configured credentials. */
+  authByProvider: Record<ProviderId, boolean>;
   /** Rate-limit usage data keyed by provider. Null until first update per provider. */
   usageByProvider: Record<ProviderId, UsageData | null>;
   /** Input tokens from the latest API round. Null until first context_update. */
@@ -176,11 +180,15 @@ export function focusSidebar(state: RenderState): void {
 }
 
 export function createInitialState(): RenderState {
+  const preferredProvider = loadPreferredProvider();
+  const provider = preferredProvider ?? DEFAULT_PROVIDER_ID;
+
   const s: RenderState = {
     messages: [],
     pendingAI: null,
-    provider: DEFAULT_PROVIDER_ID,
-    model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID],
+    provider,
+    hasChosenProvider: preferredProvider !== null,
+    model: DEFAULT_MODEL_BY_PROVIDER[provider],
     effort: DEFAULT_EFFORT,
     fastMode: false,
     convId: null,
@@ -189,6 +197,10 @@ export function createInitialState(): RenderState {
     cols: process.stdout.columns || 80,
     rows: process.stdout.rows || 24,
     scrollOffset: 0,
+    authByProvider: {
+      anthropic: false,
+      openai: false,
+    },
     usageByProvider: {
       anthropic: null,
       openai: null,

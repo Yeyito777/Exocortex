@@ -26,6 +26,7 @@ import { convDisplayName } from "./messages";
 import { copyToClipboard } from "./vim/clipboard";
 import { getMarkPrefix, getMarkFromTitle } from "./marks";
 import { theme, themes, THEME_NAMES, setTheme } from "./theme";
+import { savePreferredProvider } from "./preferences";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -44,7 +45,7 @@ export type CommandResult =
   | { type: "fast_mode_changed"; enabled: boolean }
   | { type: "rename_conversation"; title: string }
   | { type: "generate_title" }
-  | { type: "login" }
+  | { type: "login"; provider?: ProviderId }
   | { type: "logout" }
   | { type: "theme_changed" }
   | { type: "get_system_prompt" }
@@ -296,6 +297,8 @@ const commands: SlashCommand[] = [
       }
 
       state.provider = provider;
+      state.hasChosenProvider = true;
+      savePreferredProvider(provider);
       state.model = model;
       const previousEffort = state.effort;
       const previousFastMode = state.fastMode;
@@ -477,10 +480,46 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/login",
-    description: "Authenticate with the current provider",
-    handler: (_text, state) => {
+    description: "Authenticate with a provider",
+    args: [...DEFAULT_PROVIDER_ORDER].map((provider) => ({
+      name: provider,
+      desc: provider === "openai" ? "Sign in with OpenAI" : "Sign in with Anthropic",
+    })),
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      const providers = availableProviders(state);
+
+      if (parts.length > 2) {
+        state.messages.push({ role: "system", text: `Usage: /login [${providers.join("|")}]`, metadata: null });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      const provider = parts[1] as ProviderId | undefined;
+      if (provider && !providers.includes(provider)) {
+        state.messages.push({ role: "system", text: `Unknown provider: ${provider}. Available: ${providers.join(", ")}`, metadata: null });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      if (!provider && !state.hasChosenProvider) {
+        state.messages.push({ role: "system", text: `Choose a provider first: ${providers.map((p) => `/login ${p}`).join(" or ")}`, metadata: null });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      if (provider && !state.convId) {
+        state.provider = provider;
+        state.hasChosenProvider = true;
+        savePreferredProvider(provider);
+        const nextModel = defaultModelForProvider(state, provider) ?? state.model;
+        state.model = nextModel;
+        normalizeStateEffort(state, provider, nextModel);
+        if (!providerSupportsFastMode(state, provider)) state.fastMode = false;
+      }
+
       clearPrompt(state);
-      return { type: "login" };
+      return { type: "login", provider };
     },
   },
   {
@@ -526,6 +565,7 @@ const STATIC_COMMAND_ARGS: Record<string, CompletionItem[]> = Object.fromEntries
 export function getCommandArgs(state: RenderState): Record<string, CompletionItem[]> {
   const registry: Record<string, CompletionItem[]> = { ...STATIC_COMMAND_ARGS };
   registry["/model"] = providerCompletionItems(state);
+  registry["/login"] = providerCompletionItems(state);
   for (const provider of availableProviders(state)) {
     registry[`/model ${provider}`] = providerModelItems(state, provider);
   }

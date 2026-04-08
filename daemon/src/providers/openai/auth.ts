@@ -1,10 +1,8 @@
 import { clearProviderAuth, isTokenExpired, loadProviderAuth, saveProviderAuth, type StoredTokens } from "../../store";
-import { OPENAI_AUTH_CLIENT_ID, OPENAI_TOKEN_URL } from "./constants";
+import { OPENAI_AUTH_CLIENT_ID, OPENAI_ORIGINATOR, OPENAI_TOKEN_URL } from "./constants";
 import { runOpenAIBrowserOAuth } from "./oauth";
 import {
   buildStoredAuth,
-  hasLocalCodexAuthFile,
-  importCodexSession,
   type OpenAITokenResponse,
   type StoredOpenAIAuth,
   verifyAuth as verifyStoredSession,
@@ -41,19 +39,29 @@ async function refreshStoredAuth(
 
     const res = await fetch(OPENAI_TOKEN_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+        originator: OPENAI_ORIGINATOR,
+        "User-Agent": "exocortexd/openai",
+      },
       body: body.toString(),
     });
 
+    const text = await res.text();
     if (!res.ok) {
-      const text = await res.text();
       if (res.status === 400 && text.includes("invalid_grant")) {
         throw new AuthError(`Session expired — use login to re-authenticate. (${text})`);
       }
       throw new Error(`Token refresh failed (${res.status}): ${text}`);
     }
 
-    const token = await res.json() as OpenAITokenResponse;
+    let token: OpenAITokenResponse;
+    try {
+      token = JSON.parse(text) as OpenAITokenResponse;
+    } catch {
+      throw new Error(`Token refresh returned non-JSON response: ${text.slice(0, 500)}`);
+    }
     return buildStoredAuth(token, opts?.source ?? "oauth", {
       accountId: opts?.accountId,
       authMode: opts?.authMode,
@@ -89,42 +97,16 @@ export async function ensureAuthenticated(callbacks?: LoginCallbacks): Promise<E
       saveStoredAuth(refreshed);
       return { status: "refreshed", email: refreshed.profile?.email ?? null };
     } catch {
-      // fall through to local import / browser login
-    }
-  }
-
-  if (hasLocalCodexAuthFile()) {
-    say("Importing local Codex/OpenAI session...");
-    const imported = await importCodexSession(refreshStoredAuth);
-    if (imported) {
-      saveStoredAuth(imported);
-      return { status: "logged_in", email: imported.profile?.email ?? null };
+      // fall through to browser login
     }
   }
 
   const result = await login(callbacks);
-  saveStoredAuth({
-    tokens: result.tokens,
-    profile: result.profile,
-    updatedAt: new Date().toISOString(),
-    source: "oauth",
-    authMode: "oauth",
-    accountId: result.profile?.accountUuid ?? null,
-    idToken: null,
-  });
   return { status: "logged_in", email: result.profile?.email ?? null };
 }
 
 export async function login(callbacks?: LoginCallbacks | ((msg: string) => void)): Promise<LoginResult> {
   const cbs = typeof callbacks === "function" ? { onProgress: callbacks } : callbacks ?? {};
-  if (hasLocalCodexAuthFile()) {
-    cbs.onProgress?.("Using local Codex/OpenAI session...");
-    const imported = await importCodexSession(refreshStoredAuth);
-    if (imported) {
-      saveStoredAuth(imported);
-      return { tokens: imported.tokens, profile: imported.profile };
-    }
-  }
 
   const token = await runOpenAIBrowserOAuth(cbs);
   const auth = await buildStoredAuth(token, "oauth");
@@ -137,7 +119,7 @@ export async function login(callbacks?: LoginCallbacks | ((msg: string) => void)
 
 export function hasConfiguredCredentials(): boolean {
   const stored = loadStoredAuth();
-  return !!stored?.tokens?.accessToken || !!stored?.tokens?.refreshToken || hasLocalCodexAuthFile();
+  return !!stored?.tokens?.accessToken || !!stored?.tokens?.refreshToken;
 }
 
 export function verifyAuth(accessToken: string, accountId?: string | null): Promise<boolean> {
@@ -168,12 +150,6 @@ export async function getVerifiedSession(): Promise<VerifiedOpenAISession> {
     });
     saveStoredAuth(refreshed);
     return { accessToken: refreshed.tokens.accessToken, accountId: refreshed.accountId };
-  }
-
-  const imported = await importCodexSession(refreshStoredAuth);
-  if (imported) {
-    saveStoredAuth(imported);
-    return { accessToken: imported.tokens.accessToken, accountId: imported.accountId };
   }
 
   throw new AuthError("OpenAI is not authenticated. Run `bun run src/main.ts login openai`.");

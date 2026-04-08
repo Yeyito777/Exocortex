@@ -6,6 +6,7 @@ external-tools/*
 !external-tools/TOOL_STANDARD.md
 !external-tools/PORT_PROMPT.md
 config/secrets
+config/secrets.local
 config/data
 config/runtime
 config/storage

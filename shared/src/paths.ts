@@ -19,10 +19,12 @@
  * When running from a linked git worktree, runtime paths (socket, PID, logs)
  * and data paths (conversations) are namespaced by worktree name.
  * This lets multiple daemons coexist — one per worktree — without
- * conflicting. Secrets are always shared (same user, same API key).
+ * conflicting. Secrets are shared by default, but a worktree can opt into
+ * local auth isolation by committing a `.exocortex-local-auth` marker file.
  */
 
 import { execSync } from "child_process";
+import { existsSync } from "fs";
 import { join, basename, resolve, dirname } from "path";
 
 // ── Repo root ───────────────────────────────────────────────────────
@@ -50,6 +52,8 @@ const DEFAULT_CONFIG_DIR = join(REPO_ROOT, "config");
 const CONFIG_DIR = process.env.EXOCORTEX_CONFIG_DIR?.trim()
   ? resolve(process.env.EXOCORTEX_CONFIG_DIR)
   : DEFAULT_CONFIG_DIR;
+const LOCAL_AUTH_MARKER = join(REPO_ROOT, ".exocortex-local-auth");
+const LOCAL_SECRETS_DIRNAME = "secrets.local";
 
 function isTestProcess(): boolean {
   return process.env.NODE_ENV === "test" || process.env.EXOCORTEX_TEST === "1";
@@ -70,6 +74,7 @@ if (
 // ── Worktree detection ──────────────────────────────────────────────
 
 let _worktreeName: string | null | undefined; // undefined = not yet detected
+let _isolatedWorktreeAuth: boolean | undefined;
 
 /**
  * Detect if we're in a linked git worktree.
@@ -108,6 +113,12 @@ function detectWorktree(): string | null {
   return _worktreeName;
 }
 
+function detectIsolatedWorktreeAuth(): boolean {
+  if (_isolatedWorktreeAuth !== undefined) return _isolatedWorktreeAuth;
+  _isolatedWorktreeAuth = detectWorktree() !== null && existsSync(LOCAL_AUTH_MARKER);
+  return _isolatedWorktreeAuth;
+}
+
 // ── Platform ───────────────────────────────────────────────────────
 
 /** True when running on Windows. */
@@ -130,9 +141,14 @@ export function externalToolsDir(): string {
   return join(REPO_ROOT, "external-tools");
 }
 
-/** Secrets directory — API keys, OAuth tokens. Shared across worktrees. */
+/**
+ * Secrets directory — API keys, OAuth tokens.
+ * Shared across worktrees by default; isolated worktrees use config/secrets.local.
+ */
 export function secretsDir(): string {
-  return join(CONFIG_DIR, "secrets");
+  return detectIsolatedWorktreeAuth()
+    ? join(CONFIG_DIR, LOCAL_SECRETS_DIRNAME)
+    : join(CONFIG_DIR, "secrets");
 }
 
 /** Data directory — conversations, trash. Namespaced by worktree. */
@@ -188,4 +204,9 @@ export function trashDir(): string {
 /** The worktree name if in a linked worktree, null otherwise. */
 export function worktreeName(): string | null {
   return detectWorktree();
+}
+
+/** True when a linked worktree opted into a local auth store via `.exocortex-local-auth`. */
+export function isWorktreeAuthIsolated(): boolean {
+  return detectIsolatedWorktreeAuth();
 }
