@@ -13,12 +13,12 @@
 import { streamMessage } from "./api";
 import { log } from "./log";
 import type { ProviderId, ModelId } from "./messages";
-import { getDefaultModel } from "./providers/registry";
+import { getDefaultModel, getDefaultProvider } from "./providers/registry";
 
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface CompleteOptions {
-  /** Provider to use. Defaults to "anthropic". */
+  /** Provider to use. Defaults to the app's default provider. */
   provider?: ProviderId;
   /** Model to use. Defaults to the provider's default model. */
   model?: ModelId;
@@ -54,7 +54,7 @@ export async function complete(
   options: CompleteOptions = {},
 ): Promise<CompleteResult> {
   const {
-    provider = "anthropic",
+    provider = getDefaultProvider().id,
     maxTokens = 4096,
     signal,
   } = options;

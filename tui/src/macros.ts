@@ -105,10 +105,10 @@ const MACROS: MacroDef[] = [
   { name: "/quality", desc: "Code quality assessment", expansion: "Give the changes a code quality assesment. Is there anything that should be split off into other files, de-duplicated, or made more clear? If so, do it." },
   {
     name: "/worktree", desc: "Work in a git worktree",
-    expansion: "Work in a git worktree for this task. Find the repo root first (the directory containing `.git/`; don't assume CWD is it). Create the worktree with `git worktree add .worktrees/<name> -b <name> HEAD` from there. When I say I'm satisfied, merge back to main and clean up: run `git worktree remove .worktrees/<name>`, delete the branch with `git branch -d <name>`, and remove the leftover config dirs `~/.config/exocortex/runtime/<name>/` and `~/.config/exocortex/data/instances/<name>/`.",
+    expansion: `Work in a git worktree for this task. Find the repo root first (the directory containing .git/; don't assume CWD is it). From there, create the worktree with \`./scripts/create-worktree <name>\`. Work inside that worktree. When I say I'm satisfied, merge back to main and clean up with \`./scripts/clean-worktree <name-or-path>\`.`,
     args: [
-      { name: "ready", desc: "Merge main in, resolve conflicts, assess", expansion: "Merge main into the worktree branch (use local main, not origin — it's always up to date), resolve any merge conflicts, and give the result a code assessment. Stop and report so I can review before merging." },
-      { name: "merge", desc: "Merge worktree back into main", expansion: "The work in the worktree is good. Merge back into main and clean up. Remove the worktree, branch, and any files it might've created in ~/.config/exocortex/data/instances/ and ~/.config/exocortex/runtime/ as a result of being a worktree after confirming a sucessfull merge" },
+      { name: "ready", desc: "Merge main in, resolve conflicts, assess", expansion: "Merge local main into the worktree branch (use local main, not origin — it's always up to date), resolve any merge conflicts, and give the result a code assessment. Stop and report so I can review before merging." },
+      { name: "merge", desc: "Merge worktree back into main", expansion: "The work in the worktree is good. Merge it back into main. After confirming the merge succeeded, run `./scripts/clean-worktree <name-or-path>` from the repo root to remove the worktree, delete its branch, and clean up any worktree config leftovers." },
     ],
   },
   {

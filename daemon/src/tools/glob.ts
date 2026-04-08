@@ -13,7 +13,7 @@
  * Returns matching file paths sorted by modification time (most recent first).
  */
 
-import type { Tool, ToolResult, ToolSummary } from "./types";
+import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
 import { cap, getString, getBoolean, summarizeParams } from "./util";
 import { log } from "../log";
 
@@ -52,7 +52,7 @@ async function getGitFiles(cwd: string, signal?: AbortSignal): Promise<string[] 
 
 // ── Execution ─────────────────────────────────────────────────────
 
-async function executeGlob(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
+async function executeGlob(input: Record<string, unknown>, _context?: ToolExecutionContext, signal?: AbortSignal): Promise<ToolResult> {
   const pattern = getString(input, "pattern");
   if (!pattern) return { output: "Error: missing 'pattern' parameter", isError: true };
 

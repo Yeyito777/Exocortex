@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# clean-worktree — remove an Exocortex worktree, delete its branch, and clean config leftovers.
+#
+# Usage:
+#   clean-worktree <worktree-name|path>
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=./worktree-common.sh
+source "$SCRIPT_DIR/worktree-common.sh"
+
+INPUT="${1:-}"
+WORKTREE_DIR="$(resolve_worktree_dir "$INPUT")"
+WT_NAME="$(basename "$WORKTREE_DIR")"
+BRANCH=""
+
+if [[ -d "$WORKTREE_DIR" ]]; then
+  BRANCH="$(git -C "$WORKTREE_DIR" branch --show-current 2>/dev/null || true)"
+fi
+
+if git -C "$EXOCORTEX_ROOT" worktree list --porcelain | grep -Fqx "worktree $WORKTREE_DIR"; then
+  git -C "$EXOCORTEX_ROOT" worktree remove "$WORKTREE_DIR"
+fi
+
+if [[ -n "$BRANCH" ]] && git -C "$EXOCORTEX_ROOT" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+  git -C "$EXOCORTEX_ROOT" branch -d "$BRANCH"
+fi
+
+cleanup_worktree_config "$WORKTREE_DIR"
+
+cat <<EOF
+
+  ✓ Cleaned worktree
+  name:   $WT_NAME
+  path:   $WORKTREE_DIR
+  branch: ${BRANCH:-$WT_NAME}
+
+EOF

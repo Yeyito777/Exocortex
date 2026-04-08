@@ -4,7 +4,7 @@
  * Adding a new tool: import it, add to TOOLS array. Done.
  */
 
-import type { Tool, ToolResult, ToolSummary } from "./types";
+import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
 import type { ToolDisplayInfo } from "@exocortex/shared/messages";
 import type { ApiToolCall } from "../api";
 import type { ToolExecResult } from "../agent";
@@ -132,6 +132,7 @@ async function execTool(
 
 export function buildExecutor(
   contextEnv?: ContextToolEnv,
+  toolContext?: ToolExecutionContext,
 ): (calls: ApiToolCall[], signal?: AbortSignal) => Promise<ToolExecResult[]> {
   return (calls, signal?) => Promise.all(calls.map(async (call): Promise<ToolExecResult> => {
     // Context tool — needs conversation access, bypass normal execute()
@@ -149,6 +150,6 @@ export function buildExecutor(
     if (!tool) {
       return { toolCallId: call.id, toolName: call.name, output: `Unknown tool: ${call.name}`, isError: true };
     }
-    return execTool(call, tool.execute(call.input, signal), signal);
+    return execTool(call, tool.execute(call.input, toolContext, signal), signal);
   }));
 }

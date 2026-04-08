@@ -5,7 +5,7 @@
  * file type filters, context lines, and three output modes.
  */
 
-import type { Tool, ToolResult, ToolSummary } from "./types";
+import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
 import { cap, getString, getNumber, getBoolean, summarizeParams } from "./util";
 import { log } from "../log";
 
@@ -15,7 +15,7 @@ const EXCLUDED_DIRS = [".git", ".svn", ".hg", ".bzr"];
 
 // ── Execution ──────────────────────────────────────────────────────
 
-async function executeGrep(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
+async function executeGrep(input: Record<string, unknown>, _context?: ToolExecutionContext, signal?: AbortSignal): Promise<ToolResult> {
   const pattern = getString(input, "pattern");
   if (!pattern) return { output: "Error: missing 'pattern' parameter", isError: true };
 

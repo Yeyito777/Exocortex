@@ -15,7 +15,7 @@ import { spawn } from "child_process";
 import { writeFileSync, createWriteStream, type WriteStream } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import type { Tool, ToolResult, ToolSummary } from "./types";
+import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
 import { MAX_OUTPUT_CHARS, getString, getNumber, safeSlice, summarizeParams } from "./util";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { isWindows } from "@exocortex/shared/paths";
@@ -106,7 +106,7 @@ function killProcessGroup(pid: number): void {
 // ── Execution ──────────────────────────────────────────────────────
 
 /** Conforms to Tool.execute — no backgrounding (used if called via the generic path). */
-async function executeBash(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
+async function executeBash(input: Record<string, unknown>, _context?: ToolExecutionContext, signal?: AbortSignal): Promise<ToolResult> {
   return executeBashImpl(input, signal);
 }
 

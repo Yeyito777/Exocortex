@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# create-worktree — create an Exocortex worktree and link shared local resources.
+#
+# Usage:
+#   create-worktree <name>
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=./worktree-common.sh
+source "$SCRIPT_DIR/worktree-common.sh"
+
+NAME="${1:-}"
+[[ -n "$NAME" ]] || worktree_die "Usage: create-worktree <name>"
+[[ "$NAME" != */* ]] || worktree_die "Pass a worktree name, not a path: $NAME"
+
+WORKTREE_DIR="$EXOCORTEX_ROOT/.worktrees/$NAME"
+
+[[ ! -e "$WORKTREE_DIR" ]] || worktree_die "Already exists: $WORKTREE_DIR"
+if git -C "$EXOCORTEX_ROOT" show-ref --verify --quiet "refs/heads/$NAME"; then
+  worktree_die "Branch already exists: $NAME"
+fi
+
+mkdir -p "$EXOCORTEX_ROOT/.worktrees"
+git -C "$EXOCORTEX_ROOT" worktree add "$WORKTREE_DIR" -b "$NAME" HEAD
+
+sync_shared_secrets "$WORKTREE_DIR"
+sync_external_tools "$WORKTREE_DIR"
+
+cat <<EOF
+
+  ✓ Created worktree
+  name:   $NAME
+  path:   $WORKTREE_DIR
+  branch: $NAME
+
+EOF

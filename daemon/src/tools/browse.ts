@@ -2,16 +2,17 @@
  * Browse tool — fetch and read web pages.
  *
  * Fetches a URL, converts HTML to markdown, then passes the content
- * through an inner LLM call (sonnet) to produce a focused summary
+ * through a provider-aware inner LLM call to produce a focused summary
  * with relevant links preserved. Caches raw fetches for 15 minutes.
  * Handles HTML, JSON, and plain text content types.
  */
 
-import type { Tool, ToolResult, ToolSummary } from "./types";
+import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
 import { cap, getString, summarizeParams } from "./util";
 import { htmlToMarkdown } from "./html";
 import { complete } from "../llm";
 import { log } from "../log";
+import { getInnerLlmSummaryOptions } from "./inner-llm";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -55,15 +56,22 @@ const SUMMARIZE_SYSTEM = [
   "- Output markdown.",
 ].join("\n");
 
-async function summarizeContent(url: string, markdown: string, prompt?: string, signal?: AbortSignal): Promise<string> {
+async function summarizeContent(
+  url: string,
+  markdown: string,
+  prompt?: string,
+  context?: ToolExecutionContext,
+  signal?: AbortSignal,
+): Promise<string> {
   const userMessage = prompt
     ? `URL: ${url}\nLooking for: ${prompt}\n\n---\n\n${markdown}`
     : `URL: ${url}\nProvide a general summary.\n\n---\n\n${markdown}`;
 
   try {
-    log("info", `browse: summarizing ${url} (${markdown.length} chars) with sonnet`);
+    const llmOptions = getInnerLlmSummaryOptions(context);
+    log("info", `browse: summarizing ${url} (${markdown.length} chars) with ${llmOptions.provider}/${llmOptions.model}`);
     const result = await complete(SUMMARIZE_SYSTEM, userMessage, {
-      model: "sonnet",
+      ...llmOptions,
       maxTokens: 8192,
       signal,
     });
@@ -82,7 +90,7 @@ async function summarizeContent(url: string, markdown: string, prompt?: string, 
 
 // ── Execution ──────────────────────────────────────────────────────
 
-async function executeBrowse(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
+async function executeBrowse(input: Record<string, unknown>, context?: ToolExecutionContext, signal?: AbortSignal): Promise<ToolResult> {
   const url = getString(input, "url");
   const prompt = getString(input, "prompt");
 
@@ -165,8 +173,8 @@ async function executeBrowse(input: Record<string, unknown>, signal?: AbortSigna
       return { output: "The page returned no content.", isError: false };
     }
 
-    // ── Summarize through sonnet ───────────────────────────────
-    const summary = await summarizeContent(fetchUrl, markdown, prompt, signal);
+    // ── Summarize through the active provider's inner LLM ──────
+    const summary = await summarizeContent(fetchUrl, markdown, prompt, context, signal);
     return { output: cap(summary), isError: false };
   } catch (err) {
     // Abort: return a clean non-error message instead of a scary stack trace

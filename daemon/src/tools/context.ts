@@ -13,13 +13,14 @@
  * by the executor with injected conversation context.
  */
 
-import type { Tool, ToolResult } from "./types";
+import type { Tool, ToolResult, ToolExecutionContext } from "./types";
 import type { Conversation, StoredMessage, ApiContentBlock, ApiMessage } from "../messages";
 import { isToolResultMessage } from "../messages";
 import { complete } from "../llm";
 import { log } from "../log";
 import { safeSlice } from "./util";
 import { getMaxContext } from "../providers/registry";
+import { getInnerLlmSummaryOptions } from "./inner-llm";
 
 // ── Context tool environment ──────────────────────────────────────
 
@@ -35,6 +36,8 @@ export interface ContextToolEnv {
    *  The modifiable range is turnMap[0] through
    *  turnMap[turnMap.length - 1 - protectedTailCount]. */
   protectedTailCount: number;
+  /** Provider metadata for provider-aware inner LLM calls. */
+  toolContext?: ToolExecutionContext;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -505,8 +508,9 @@ Output plain text, not markdown.`;
 
   let summaryText: string;
   try {
+    const llmOptions = getInnerLlmSummaryOptions(env.toolContext);
     const result = await complete(systemPrompt, extractedText, {
-      model: "sonnet",
+      ...llmOptions,
       maxTokens,
       signal,
     });

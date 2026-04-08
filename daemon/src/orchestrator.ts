@@ -16,6 +16,7 @@ import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
 import type { StoredMessage, ApiContentBlock } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
+import type { ToolExecutionContext } from "./tools/types";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -184,6 +185,11 @@ export async function orchestrateSendMessage(
   // conv.messages yet. So protectedTailCount = 1 (just the user msg).
   const protectedTailCount = 1;
 
+  const toolContext: ToolExecutionContext = {
+    provider: conv.provider,
+    conversationId: convId,
+  };
+
   const contextEnv: ContextToolEnv = {
     conv,
     onContextModified: () => { contextModifiedThisRound = true; },
@@ -192,6 +198,7 @@ export async function orchestrateSendMessage(
       return s.detail || s.label;
     },
     protectedTailCount,
+    toolContext,
   };
 
   // Agent state for abort recovery — the agent populates completedMessages
@@ -369,7 +376,7 @@ export async function orchestrateSendMessage(
   // hours (e.g. kernel builds, long test suites) — the watchdog has no
   // business timing them out. When tools finish, resume tracking so the
   // watchdog catches a hung model on the *next* API streaming call.
-  const rawExecutor = buildExecutor(contextEnv);
+  const rawExecutor = buildExecutor(contextEnv, toolContext);
   const executor: typeof rawExecutor = async (calls, signal?) => {
     convStore.pauseActivity(convId);
     try {

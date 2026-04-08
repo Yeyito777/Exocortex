@@ -14,10 +14,10 @@
 
 set -euo pipefail
 
-EXOCORTEX_ROOT="$HOME/Workspace/Exocortex"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=./worktree-common.sh
+source "$SCRIPT_DIR/worktree-common.sh"
 DAEMON_PID=""
-
-die() { printf "\n  ✗ %s\n\n" "$1" >&2; exit 1; }
 
 cleanup() {
   if [[ -n "$DAEMON_PID" ]] && kill -0 "$DAEMON_PID" 2>/dev/null; then
@@ -30,19 +30,11 @@ trap cleanup EXIT
 # ── Resolve worktree ────────────────────────────────────────────────
 
 INPUT="${1:-}"
-[[ -z "$INPUT" ]] && die "Usage: exotest <worktree-name|path>"
+WORKTREE_DIR="$(resolve_worktree_dir "$INPUT")"
 
-if [[ "$INPUT" == /* ]]; then
-  WORKTREE_DIR="$INPUT"
-elif [[ "$INPUT" == .worktrees/* ]]; then
-  WORKTREE_DIR="$EXOCORTEX_ROOT/$INPUT"
-else
-  WORKTREE_DIR="$EXOCORTEX_ROOT/.worktrees/$INPUT"
-fi
-
-[[ -d "$WORKTREE_DIR" ]]        || die "Not found: $WORKTREE_DIR"
-[[ -d "$WORKTREE_DIR/daemon" ]] || die "No daemon/ in $WORKTREE_DIR"
-[[ -d "$WORKTREE_DIR/tui" ]]    || die "No tui/ in $WORKTREE_DIR"
+[[ -d "$WORKTREE_DIR" ]]        || worktree_die "Not found: $WORKTREE_DIR"
+[[ -d "$WORKTREE_DIR/daemon" ]] || worktree_die "No daemon/ in $WORKTREE_DIR"
+[[ -d "$WORKTREE_DIR/tui" ]]    || worktree_die "No tui/ in $WORKTREE_DIR"
 
 WT_NAME=$(basename "$WORKTREE_DIR")
 
@@ -57,18 +49,10 @@ echo ""
 # everything is resolved, and catches stale/partial node_modules.
 (cd "$WORKTREE_DIR" && bun install --silent)
 
-# ── Shared secrets ──────────────────────────────────────────────────
+# ── Shared local resources ──────────────────────────────────────────
 
-# Secrets (API keys, OAuth tokens) live in the main repo and are
-# gitignored, so worktrees don't get them on checkout.  Symlink the
-# main repo's secrets dir so all worktrees share the same credentials.
-MAIN_SECRETS="$EXOCORTEX_ROOT/config/secrets"
-WT_SECRETS="$WORKTREE_DIR/config/secrets"
-
-if [[ -d "$MAIN_SECRETS" && ! -e "$WT_SECRETS" ]]; then
-  mkdir -p "$(dirname "$WT_SECRETS")"
-  ln -s "$MAIN_SECRETS" "$WT_SECRETS"
-fi
+sync_shared_secrets "$WORKTREE_DIR"
+sync_external_tools "$WORKTREE_DIR"
 
 # ── Daemon ──────────────────────────────────────────────────────────
 
@@ -99,10 +83,10 @@ else
   for _ in $(seq 1 50); do
     [[ -S "$SOCKET" ]] && break
     # Bail early if the daemon process died
-    kill -0 "$DAEMON_PID" 2>/dev/null || die "Daemon exited early (check $LOG)"
+    kill -0 "$DAEMON_PID" 2>/dev/null || worktree_die "Daemon exited early (check $LOG)"
     sleep 0.1
   done
-  [[ -S "$SOCKET" ]] || die "Daemon socket didn't appear after 5s (check $LOG)"
+  [[ -S "$SOCKET" ]] || worktree_die "Daemon socket didn't appear after 5s (check $LOG)"
   sleep 0.2  # brief grace period between socket bind and listen
 
   echo "  Daemon ready (pid $DAEMON_PID)"

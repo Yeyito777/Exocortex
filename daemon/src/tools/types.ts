@@ -5,7 +5,16 @@
  * Adding a new tool = one file that exports a Tool object.
  */
 
-// ── Execution result ───────────────────────────────────────────────
+import type { ProviderId } from "../messages";
+
+// ── Execution context / result ─────────────────────────────────────
+
+export interface ToolExecutionContext {
+  /** Provider backing the active conversation, when the tool is run from one. */
+  provider?: ProviderId;
+  /** Conversation id, if any. Reserved for future tool policies/logging. */
+  conversationId?: string;
+}
 
 export interface ImageData {
   mediaType: string;
@@ -49,6 +58,6 @@ export interface Tool {
   /** Produce a human-readable one-liner from tool input. */
   summarize(input: Record<string, unknown>): ToolSummary;
 
-  /** Execute the tool. Signal allows cooperative cancellation on abort. */
-  execute(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult>;
+  /** Execute the tool. Context carries conversation/provider metadata when available. */
+  execute(input: Record<string, unknown>, context?: ToolExecutionContext, signal?: AbortSignal): Promise<ToolResult>;
 }
