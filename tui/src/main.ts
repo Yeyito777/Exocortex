@@ -18,7 +18,8 @@ import { expandMacros } from "./macros";
 import { render } from "./render";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
 import { createInitialState, isStreaming, clearPendingAI, clearSystemMessageBuffer, pushSystemMessage } from "./state";
-import { createPendingAI, type ImageAttachment, type ProviderId } from "./messages";
+import { createPendingAI, type ImageAttachment } from "./messages";
+import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
 import { confirmQueueMessage, cancelQueuePrompt, clearLocalQueue, removeLocalQueueEntry } from "./queue";
 import { confirmEditMessage, cancelEditMessage } from "./editmessage";
@@ -80,20 +81,12 @@ function onDaemonEvent(event: Event): void {
 
 // ── Input handling ──────────────────────────────────────────────────
 
-function loginPromptProviders(): ProviderId[] {
-  const ids = state.providerRegistry.map((provider) => provider.id);
-  if (ids.includes("openai") && ids.includes("anthropic")) {
-    return ["openai", "anthropic"];
-  }
-  return ids.length > 0 ? ids : ["openai", "anthropic"];
-}
-
 function showLoginRequiredPrompt(messageText?: string, images?: ImageAttachment[]): void {
   if (messageText || images?.length) {
     state.messages.push({ role: "user", text: messageText ?? "", images, metadata: null });
   }
 
-  const options = loginPromptProviders()
+  const options = loginPromptProviders(state)
     .map((provider) => `  /login ${provider}`)
     .join("\n");
   const msg = [
@@ -102,7 +95,7 @@ function showLoginRequiredPrompt(messageText?: string, images?: ImageAttachment[
     options,
   ].join("\n");
 
-  state.messages.push({ role: "system", text: msg, metadata: null });
+  pushSystemMessage(state, msg);
 }
 
 function handleSubmit(): void {

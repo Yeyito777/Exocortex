@@ -1,7 +1,8 @@
 import type { EffortLevel, ModelInfo, ReasoningEffortInfo } from "@exocortex/shared/messages";
 import { log } from "../../log";
 import { getVerifiedSession } from "./auth";
-import { OPENAI_CODEX_CLIENT_VERSION, OPENAI_MODELS_URL, OPENAI_ORIGINATOR } from "./constants";
+import { OPENAI_CODEX_CLIENT_VERSION, OPENAI_MODELS_URL } from "./constants";
+import { buildOpenAIJsonHeaders } from "./http";
 
 const FALLBACK_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
   { effort: "low", description: "Fast responses with lighter reasoning" },
@@ -78,10 +79,9 @@ export async function fetchOpenAIModels(): Promise<ModelInfo[]> {
   const url = `${OPENAI_MODELS_URL}?client_version=${encodeURIComponent(OPENAI_CODEX_CLIENT_VERSION)}`;
   const res = await fetch(url, {
     headers: {
-      Authorization: `Bearer ${session.accessToken}`,
-      Accept: "application/json",
-      originator: OPENAI_ORIGINATOR,
-      "User-Agent": "exocortexd/openai",
+      ...buildOpenAIJsonHeaders({
+        Authorization: `Bearer ${session.accessToken}`,
+      }),
       ...(session.accountId ? { "ChatGPT-Account-ID": session.accountId } : {}),
     },
     signal: AbortSignal.timeout(8000),

@@ -26,7 +26,7 @@ import { convDisplayName } from "./messages";
 import { copyToClipboard } from "./vim/clipboard";
 import { getMarkPrefix, getMarkFromTitle } from "./marks";
 import { theme, themes, THEME_NAMES, setTheme } from "./theme";
-import { savePreferredProvider } from "./preferences";
+import { availableProviders, setChosenProvider } from "./providerselection";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -64,11 +64,6 @@ function showNoSystemInstructions(state: RenderState): CommandResult {
   pushSystemMessage(state, "No system instructions set for this conversation.");
   clearPrompt(state);
   return { type: "handled" };
-}
-
-function availableProviders(state: RenderState): ProviderId[] {
-  const ids = state.providerRegistry.map((p) => p.id);
-  return ids.length > 0 ? ids : [...DEFAULT_PROVIDER_ORDER];
 }
 
 function providerInfo(state: RenderState, provider = state.provider) {
@@ -285,9 +280,7 @@ const commands: SlashCommand[] = [
         return { type: "handled" };
       }
 
-      state.provider = provider;
-      state.hasChosenProvider = true;
-      savePreferredProvider(provider);
+      setChosenProvider(state, provider);
       state.model = model;
       const previousEffort = state.effort;
       const previousFastMode = state.fastMode;
@@ -475,28 +468,26 @@ const commands: SlashCommand[] = [
       const providers = availableProviders(state);
 
       if (parts.length > 2) {
-        state.messages.push({ role: "system", text: `Usage: /login [${providers.join("|")}]`, metadata: null });
+        pushSystemMessage(state, `Usage: /login [${providers.join("|")}]`);
         clearPrompt(state);
         return { type: "handled" };
       }
 
       const provider = parts[1] as ProviderId | undefined;
       if (provider && !providers.includes(provider)) {
-        state.messages.push({ role: "system", text: `Unknown provider: ${provider}. Available: ${providers.join(", ")}`, metadata: null });
+        pushSystemMessage(state, `Unknown provider: ${provider}. Available: ${providers.join(", ")}`);
         clearPrompt(state);
         return { type: "handled" };
       }
 
       if (!provider && !state.hasChosenProvider) {
-        state.messages.push({ role: "system", text: `Choose a provider first: ${providers.map((p) => `/login ${p}`).join(" or ")}`, metadata: null });
+        pushSystemMessage(state, `Choose a provider first: ${providers.map((p) => `/login ${p}`).join(" or ")}`);
         clearPrompt(state);
         return { type: "handled" };
       }
 
       if (provider && !state.convId) {
-        state.provider = provider;
-        state.hasChosenProvider = true;
-        savePreferredProvider(provider);
+        setChosenProvider(state, provider);
         const nextModel = defaultModelForProvider(state, provider) ?? state.model;
         state.model = nextModel;
         normalizeStateEffort(state, provider, nextModel);

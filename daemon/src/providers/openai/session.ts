@@ -3,9 +3,9 @@ import type { OAuthProfile, StoredTokens } from "../../store";
 import {
   OPENAI_CODEX_CLIENT_VERSION,
   OPENAI_MODELS_URL,
-  OPENAI_ORIGINATOR,
   OPENAI_USERINFO_URL,
 } from "./constants";
+import { buildOpenAIJsonHeaders, parseOpenAIJson } from "./http";
 
 export interface StoredOpenAIAuth {
   tokens: StoredTokens;
@@ -56,7 +56,7 @@ async function fetchUserInfo(accessToken: string): Promise<{ sub?: string; email
     if (!res.ok) return null;
     const text = await res.text();
     try {
-      return JSON.parse(text) as { sub?: string; email?: string; name?: string };
+      return parseOpenAIJson<{ sub?: string; email?: string; name?: string }>(text, "OpenAI userinfo");
     } catch {
       log("warn", `openai auth: userinfo returned non-JSON response from ${OPENAI_USERINFO_URL}`);
       return null;
@@ -118,12 +118,9 @@ export async function buildStoredAuth(
 }
 
 function requestHeaders(accessToken: string): HeadersInit {
-  return {
+  return buildOpenAIJsonHeaders({
     Authorization: `Bearer ${accessToken}`,
-    Accept: "application/json",
-    originator: OPENAI_ORIGINATOR,
-    "User-Agent": "exocortexd/openai",
-  };
+  });
 }
 
 function requestHeadersWithAccount(accessToken: string, accountId?: string | null): HeadersInit {

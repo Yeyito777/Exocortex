@@ -1,5 +1,6 @@
 import { clearProviderAuth, isTokenExpired, loadProviderAuth, saveProviderAuth, type StoredTokens } from "../../store";
-import { OPENAI_AUTH_CLIENT_ID, OPENAI_ORIGINATOR, OPENAI_TOKEN_URL } from "./constants";
+import { OPENAI_AUTH_CLIENT_ID, OPENAI_TOKEN_URL } from "./constants";
+import { buildOpenAIJsonHeaders, parseOpenAIJson } from "./http";
 import { runOpenAIBrowserOAuth } from "./oauth";
 import {
   buildStoredAuth,
@@ -39,12 +40,9 @@ async function refreshStoredAuth(
 
     const res = await fetch(OPENAI_TOKEN_URL, {
       method: "POST",
-      headers: {
+      headers: buildOpenAIJsonHeaders({
         "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "application/json",
-        originator: OPENAI_ORIGINATOR,
-        "User-Agent": "exocortexd/openai",
-      },
+      }),
       body: body.toString(),
     });
 
@@ -56,12 +54,7 @@ async function refreshStoredAuth(
       throw new Error(`Token refresh failed (${res.status}): ${text}`);
     }
 
-    let token: OpenAITokenResponse;
-    try {
-      token = JSON.parse(text) as OpenAITokenResponse;
-    } catch {
-      throw new Error(`Token refresh returned non-JSON response: ${text.slice(0, 500)}`);
-    }
+    const token = parseOpenAIJson<OpenAITokenResponse>(text, "Token refresh");
     return buildStoredAuth(token, opts?.source ?? "oauth", {
       accountId: opts?.accountId,
       authMode: opts?.authMode,
