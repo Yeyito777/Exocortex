@@ -17,15 +17,85 @@ interface CallbackResult {
   state: string;
 }
 
+async function stopServer(server: ReturnType<typeof createServer>): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    try {
+      server.close((err) => {
+        if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
+          reject(err);
+          return;
+        }
+        resolve();
+      });
+    } catch (err) {
+      if (err && typeof err === "object" && "code" in err && String((err as NodeJS.ErrnoException).code) === "ERR_SERVER_NOT_RUNNING") {
+        resolve();
+        return;
+      }
+      reject(err);
+    }
+  });
+}
+
+async function sendCancelRequest(): Promise<void> {
+  try {
+    await fetch(`http://127.0.0.1:${OPENAI_CALLBACK_PORT}/cancel`, {
+      signal: AbortSignal.timeout(2000),
+    });
+  } catch {
+    // Best effort only — if the listener is not ours or is already gone, bind retry below will decide.
+  }
+}
+
+async function listenWithRecovery(server: ReturnType<typeof createServer>): Promise<void> {
+  let cancelAttempted = false;
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (err: Error) => {
+          server.off("listening", onListening);
+          reject(err);
+        };
+        const onListening = () => {
+          server.off("error", onError);
+          resolve();
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(OPENAI_CALLBACK_PORT, "127.0.0.1");
+      });
+      return;
+    } catch (err) {
+      const code = err && typeof err === "object" && "code" in err ? String((err as NodeJS.ErrnoException).code) : "";
+      if (code !== "EADDRINUSE") {
+        throw new Error(`Failed to start server: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (!cancelAttempted) {
+        cancelAttempted = true;
+        await sendCancelRequest();
+      }
+      await Bun.sleep(200);
+    }
+  }
+  throw new Error(`Failed to start server. Is port ${OPENAI_CALLBACK_PORT} in use?`);
+}
+
 async function startCallbackServer(
   expectedState: string,
-): Promise<{ waitForCallback: () => Promise<CallbackResult>; shutdown: () => void }> {
+): Promise<{ waitForCallback: () => Promise<CallbackResult>; shutdown: () => Promise<void> }> {
   const server = createServer();
   let resolveCallback: ((result: CallbackResult) => void) | null = null;
   let rejectCallback: ((error: Error) => void) | null = null;
 
   server.on("request", (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || "/", `http://127.0.0.1:${OPENAI_CALLBACK_PORT}`);
+    if (url.pathname === "/cancel") {
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Cancelled");
+      rejectCallback?.(new Error("OAuth login cancelled"));
+      void stopServer(server);
+      return;
+    }
     if (url.pathname !== OPENAI_CALLBACK_PATH) {
       res.writeHead(404);
       res.end("Not found");
@@ -53,10 +123,7 @@ async function startCallbackServer(
     resolveCallback?.({ code, state });
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(OPENAI_CALLBACK_PORT, "127.0.0.1", () => resolve());
-  });
+  await listenWithRecovery(server);
 
   const waitForCallback = (): Promise<CallbackResult> => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("OAuth callback timed out")), 300_000);
@@ -72,7 +139,7 @@ async function startCallbackServer(
 
   return {
     waitForCallback,
-    shutdown: () => server.close(),
+    shutdown: () => stopServer(server),
   };
 }
 
@@ -136,6 +203,6 @@ export async function runOpenAIBrowserOAuth(callbacks?: LoginCallbacks): Promise
     say("Exchanging OpenAI authorization code...");
     return await exchangeCode(code, verifier, redirectUri);
   } finally {
-    shutdown();
+    await shutdown();
   }
 }
