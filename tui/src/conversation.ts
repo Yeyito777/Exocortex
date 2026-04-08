@@ -8,7 +8,7 @@
 import type { Block, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, Message } from "./messages";
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
-import { resolveToolDisplay } from "./toolstyles";
+import { resolveToolDisplay, resolveBashExternalMatch, type ResolvedToolDisplay } from "./toolstyles";
 import { formatSize, imageLabel } from "./clipboard";
 import { theme } from "./theme";
 import { markdownWordWrap } from "./markdown";
@@ -148,44 +148,83 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
     case "tool_call": {
       const display = resolveToolDisplay(block.toolName, block.summary, toolRegistry, externalToolStyles);
 
-      // Build logical display lines. Each entry: { text, hasLabel }.
-      // hasLabel tracks structurally whether the line starts with a
-      // bold label — avoids fragile string-content matching later.
-      const logical: { text: string; hasLabel: boolean }[] = [];
+      // Build logical display lines. Each entry carries its own display,
+      // so bash blocks can mix plain bash prelude lines with styled
+      // external-tool lines without dropping the setup commands.
+      const logical: { display: ResolvedToolDisplay; text: string; hasLabel: boolean }[] = [];
+      const pushLogical = (entryDisplay: ResolvedToolDisplay, detail: string, hasLabel: boolean) => {
+        logical.push({
+          display: entryDisplay,
+          text: hasLabel ? (detail ? `${entryDisplay.label} ${detail}` : entryDisplay.label) : detail,
+          hasLabel,
+        });
+      };
 
-      if (display.cmd && display.detail) {
+      const bashExternal = block.toolName === "bash"
+        ? resolveBashExternalMatch(block.summary, externalToolStyles)
+        : null;
+
+      if (bashExternal) {
+        const bashDisplay = resolveToolDisplay("bash", "", toolRegistry, []);
+        const cmd = bashExternal.display.cmd!;
+
+        for (const [lineIndex, rawLine] of bashExternal.lines.entries()) {
+          const trimmed = rawLine.trimStart();
+
+          if (!trimmed) {
+            pushLogical(bashDisplay, "", false);
+            continue;
+          }
+
+          if (lineIndex < bashExternal.matchLineIndex) {
+            pushLogical(bashDisplay, rawLine, true);
+            continue;
+          }
+
+          const isMatchedLine = lineIndex === bashExternal.matchLineIndex;
+          const matchedSegment = isMatchedLine ? rawLine.slice(bashExternal.matchStart) : trimmed;
+          const externalStartsHere = matchedSegment === cmd || matchedSegment.startsWith(cmd + " ");
+
+          if (externalStartsHere) {
+            if (isMatchedLine) {
+              const prefix = rawLine.slice(0, bashExternal.matchStart).trimEnd();
+              if (prefix.trim()) pushLogical(bashDisplay, prefix, true);
+            }
+            const detail = matchedSegment.slice(cmd.length).trimStart();
+            pushLogical(bashExternal.display, detail, true);
+          } else {
+            pushLogical(bashDisplay, rawLine, true);
+          }
+        }
+      } else if (display.cmd && display.detail) {
         // User-styled bash: re-apply label to subsequent lines that
         // invoke the same command prefix.
         const cmd = display.cmd;
         for (const [i, line] of display.detail.split("\n").entries()) {
           if (i === 0) {
-            logical.push({ text: `${display.label} ${line}`, hasLabel: true });
+            pushLogical(display, line, true);
           } else {
             const t = line.trimStart();
             if (t === cmd || t.startsWith(cmd + " ")) {
               const args = t.slice(cmd.length).trimStart();
-              logical.push({ text: `${display.label} ${args}`, hasLabel: true });
+              pushLogical(display, args, true);
             } else {
-              logical.push({ text: line, hasLabel: false });
+              pushLogical(display, line, false);
             }
           }
         }
       } else {
-        // Default: single logical line with the label prepended.
-        const text = display.detail ? `${display.label} ${display.detail}` : display.label;
-        logical.push({ text, hasLabel: true });
+        pushLogical(display, display.detail, true);
       }
 
-      // Wrap and colorize all logical lines uniformly.
       for (const entry of logical) {
         const w = wordWrap(entry.text, contentWidth - 2);
         for (let j = 0; j < w.lines.length; j++) {
-          // Bold label on the first visual line of a label-bearing logical line.
           if (entry.hasLabel && j === 0) {
-            const rest = w.lines[0].slice(display.label.length);
-            lines.push(`  ${display.fg}${theme.bold}${display.label}${theme.reset}${display.fg}${rest}${theme.reset}`);
+            const rest = w.lines[0].slice(entry.display.label.length);
+            lines.push(`  ${entry.display.fg}${theme.bold}${entry.display.label}${theme.reset}${entry.display.fg}${rest}${theme.reset}`);
           } else {
-            lines.push(`  ${display.fg}${w.lines[j]}${theme.reset}`);
+            lines.push(`  ${entry.display.fg}${w.lines[j]}${theme.reset}`);
           }
           cont.push(w.cont[j]);
         }
