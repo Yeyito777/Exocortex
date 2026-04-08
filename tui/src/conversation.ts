@@ -432,7 +432,7 @@ export function buildMessageLines(
   // Live system-message tail during streaming. These notices are buffered in
   // state and rendered after pendingAI so they stay visible at the bottom
   // instead of getting buried above a growing assistant message.
-  for (const msg of state.systemMessageBuffer) {
+  for (const msg of state.systemMessageBuffer ?? []) {
     const start = lines.length;
     for (const sl of renderSystemMessage(msg.text, availableWidth, msg.color)) {
       pushLine(sl);
