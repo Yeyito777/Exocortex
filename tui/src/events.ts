@@ -396,7 +396,7 @@ export function handleEvent(
       // but preserve pendingAI (the active streaming response).
       // Flush buffered system messages — they reference pre-modification state.
       state.messages = [];
-      state.systemMessageBuffer = [];
+      clearSystemMessageBuffer(state);
       state.contextTokens = event.contextTokens;
       pushDisplayEntries(state, event.entries);
       break;
