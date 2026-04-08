@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { join } from "path";
+import { join, resolve } from "path";
 import { configDir, repoRoot } from "@exocortex/shared/paths";
 
 const LIVE_CONFIG_DIR = join(repoRoot(), "config");
 const BUN = process.execPath;
-const DAEMON_DIR = process.cwd();
+const DAEMON_DIR = resolve(import.meta.dir, "..");
 
 function runBunEval(overrides: Record<string, string | undefined>) {
   const env: Record<string, string> = {};
