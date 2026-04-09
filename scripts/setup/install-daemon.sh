@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-REPO_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 BUN_PATH="$(command -v bun)" || { echo "  ✗ bun not found in PATH"; exit 1; }
 
 # UNIT_NAME is passed by the Makefile; abort if missing.

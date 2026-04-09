@@ -2,7 +2,7 @@
 # Shared helpers for Exocortex worktree scripts.
 
 WORKTREE_SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-EXOCORTEX_ROOT="$(dirname "$WORKTREE_SCRIPT_DIR")"
+EXOCORTEX_ROOT="$(dirname "$(dirname "$WORKTREE_SCRIPT_DIR")")"
 
 worktree_die() {
   printf "\n  ✗ %s\n\n" "$1" >&2

@@ -10,7 +10,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-REPO_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 REPO_CONFIG="$REPO_DIR/config"
 XDG_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/exocortex"
 

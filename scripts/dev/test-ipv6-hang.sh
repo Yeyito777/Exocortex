@@ -11,7 +11,7 @@
 #   Phase 3: Tests the pre-flight check script detects the issue
 #
 # Requires: sudo (passwordless recommended), bun, curl, ip6tables
-# Usage: sudo bash scripts/test-ipv6-hang.sh
+# Usage: sudo bash scripts/dev/test-ipv6-hang.sh
 set -euo pipefail
 
 IFACE="enp7s0"
@@ -20,7 +20,7 @@ FAKE_GW="2001:db8::ffff"
 GAI_CONF="/etc/gai.conf"
 GAI_FIX_LINE="precedence ::ffff:0:0/96  100"
 TIMEOUT_SECS=15
-REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -228,7 +228,7 @@ ok "Restored gai.conf"
 header "PHASE 3: Test pre-flight detection script"
 # ═════════════════════════════════════════════════════════════════════
 
-PREFLIGHT="$REPO_DIR/scripts/check-ipv6.sh"
+PREFLIGHT="$REPO_DIR/scripts/setup/check-ipv6.sh"
 PHASE3_PASS=false
 
 if [[ -x "$PREFLIGHT" ]]; then
@@ -265,7 +265,7 @@ if [[ -x "$PREFLIGHT" ]]; then
     fi
 else
     warn "PHASE 3 SKIPPED: $PREFLIGHT not found"
-    warn "Create scripts/check-ipv6.sh and re-run"
+    warn "Create scripts/setup/check-ipv6.sh and re-run"
 fi
 
 # ═════════════════════════════════════════════════════════════════════
