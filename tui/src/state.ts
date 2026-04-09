@@ -5,6 +5,7 @@
  * Message and block types live in messages.ts.
  */
 
+import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment } from "./messages";
 import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
@@ -21,7 +22,7 @@ import { createHistoryCursor } from "./historycursor";
 import type { UndoState } from "./undo";
 import { createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
-import type { QueueTiming } from "./protocol";
+import type { ProviderAuthInfo, QueueTiming } from "./protocol";
 
 // ── Queue types ────────────────────────────────────────────────────
 
@@ -94,6 +95,8 @@ export interface RenderState {
   scrollOffset: number;
   /** Whether each provider currently has configured credentials. */
   authByProvider: Record<ProviderId, boolean>;
+  /** Rich auth metadata for each provider, reported by the daemon. */
+  authInfoByProvider: Record<ProviderId, ProviderAuthInfo>;
   /** Rate-limit usage data keyed by provider. Null until first update per provider. */
   usageByProvider: Record<ProviderId, UsageData | null>;
   /** Input tokens from the latest API round. Null until first context_update. */
@@ -235,6 +238,10 @@ export function createInitialState(): RenderState {
     authByProvider: {
       anthropic: false,
       openai: false,
+    },
+    authInfoByProvider: {
+      anthropic: createEmptyProviderAuthInfo(),
+      openai: createEmptyProviderAuthInfo(),
     },
     usageByProvider: {
       anthropic: null,

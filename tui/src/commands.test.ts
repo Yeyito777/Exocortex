@@ -104,15 +104,53 @@ describe("/login", () => {
     expect(state.model).toBe("claude-opus-4-6");
   });
 
-  test("requires an explicit provider when none has been chosen yet", () => {
+  test("shows simplified login status when called without a provider", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
+    state.authByProvider.openai = true;
+    state.authInfoByProvider.openai = {
+      configured: true,
+      authenticated: true,
+      status: "logged_in",
+      email: "user@example.com",
+      displayName: "Example User",
+      organizationName: null,
+      organizationType: null,
+      organizationRole: null,
+      workspaceRole: null,
+      subscriptionType: "pro",
+      rateLimitTier: null,
+      scopes: ["openid", "profile"],
+      expiresAt: Date.now() + 3_600_000,
+      updatedAt: new Date().toISOString(),
+      source: "oauth",
+    };
+    state.authInfoByProvider.anthropic = {
+      configured: false,
+      authenticated: false,
+      status: "not_logged_in",
+      email: null,
+      displayName: null,
+      organizationName: null,
+      organizationType: null,
+      organizationRole: null,
+      workspaceRole: null,
+      subscriptionType: null,
+      rateLimitTier: null,
+      scopes: [],
+      expiresAt: null,
+      updatedAt: null,
+      source: null,
+    };
 
     const result = tryCommand("/login", state);
 
     expect(result).toEqual({ type: "handled" });
-    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toContain("/login openai");
-    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toContain("/login anthropic");
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("Login status:");
+    expect(text).toContain("✓ OpenAI — user@example.com");
+    expect(text).toContain("✗ Anthropic");
+    expect(text).toContain("Use /login <provider> to authenticate.");
   });
 });
 

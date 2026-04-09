@@ -26,6 +26,7 @@ import { convDisplayName } from "./messages";
 import { copyToClipboard } from "./vim/clipboard";
 import { getMarkPrefix, getMarkFromTitle } from "./marks";
 import { theme, themes, THEME_NAMES, setTheme } from "./theme";
+import { buildLoginInfoMessage } from "./logininfo";
 import { availableProviders, setChosenProvider } from "./providerselection";
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -72,6 +73,12 @@ function providerInfo(state: RenderState, provider = state.provider) {
 
 function providerModels(state: RenderState, provider = state.provider): ModelId[] {
   return providerInfo(state, provider)?.models.map((model) => model.id) ?? [];
+}
+
+function showLoginInfo(state: RenderState): CommandResult {
+  pushSystemMessage(state, buildLoginInfoMessage(state));
+  clearPrompt(state);
+  return { type: "handled" };
 }
 
 function modelInfo(state: RenderState, provider = state.provider, model = state.model): ModelInfo | null {
@@ -458,7 +465,7 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/login",
-    description: "Authenticate with a provider",
+    description: "Show login status or authenticate with a provider",
     args: [...DEFAULT_PROVIDER_ORDER].map((provider) => ({
       name: provider,
       desc: provider === "openai" ? "Sign in with OpenAI" : "Sign in with Anthropic",
@@ -480,10 +487,8 @@ const commands: SlashCommand[] = [
         return { type: "handled" };
       }
 
-      if (!provider && !state.hasChosenProvider) {
-        pushSystemMessage(state, `Choose a provider first: ${providers.map((p) => `/login ${p}`).join(" or ")}`);
-        clearPrompt(state);
-        return { type: "handled" };
+      if (!provider) {
+        return showLoginInfo(state);
       }
 
       if (provider && !state.convId) {

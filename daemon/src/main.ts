@@ -15,7 +15,7 @@ loadEnvFile();
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync } from "fs";
 import { connect as netConnect } from "net";
 import { log } from "./log";
-import { hasConfiguredCredentials } from "./auth";
+import { getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials } from "./auth";
 import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
 import { handleLogin } from "./cli";
@@ -109,11 +109,6 @@ async function startDaemon(): Promise<void> {
   // Load persisted conversations
   convStore.loadFromDisk();
 
-  const getAuthByProvider = (): Record<import("./messages").ProviderId, boolean> => ({
-    openai: hasConfiguredCredentials("openai"),
-    anthropic: hasConfiguredCredentials("anthropic"),
-  });
-
   const broadcastToolsAvailable = () => {
     const externalStyles = isWindows ? [] : getExternalToolStyles();
     server.broadcast({
@@ -121,6 +116,7 @@ async function startDaemon(): Promise<void> {
       providers: getProviders(),
       tools: getToolDisplayInfo(),
       authByProvider: getAuthByProvider(),
+      authInfoByProvider: getAuthInfoByProvider(),
       ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
     });
   };

@@ -381,6 +381,9 @@ export function handleEvent(
       if (event.authByProvider) {
         state.authByProvider = event.authByProvider;
       }
+      if (event.authInfoByProvider) {
+        state.authInfoByProvider = event.authInfoByProvider;
+      }
       state.externalToolStyles = event.externalToolStyles ?? [];
       const registry = state.providerRegistry ?? [];
 
