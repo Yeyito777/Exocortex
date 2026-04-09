@@ -52,6 +52,8 @@ export interface Theme {
   cursorBg: string;       // Inline cursor (history, visual mode)
   historyLineBg: string;  // Selected line background in history
   selectionBg: string;    // Visual mode selection highlight
+  searchBg: string;       // Search-match highlight background
+  searchFg: string;       // Search-match highlight foreground
   appBg?: string;         // App-wide background (empty = terminal default)
   cursorColor?: string;   // Terminal cursor color as hex (e.g. "#48cae4")
 

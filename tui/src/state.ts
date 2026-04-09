@@ -19,6 +19,7 @@ import type { VimState } from "./vim";
 import { createVimState } from "./vim";
 import type { HistoryCursor } from "./historycursor";
 import { createHistoryCursor } from "./historycursor";
+import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
 import { createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
@@ -73,9 +74,22 @@ export interface LayoutCache {
   totalLines: number;      // total rendered message lines
   messageAreaHeight: number; // visible rows for messages
   chatCol: number;         // 1-based column where chat area starts
-  sepAbove: number;        // row number of separator above prompt
+  sepAbove: number;        // first row below the message area (search bar or separator)
   firstInputRow: number;   // row number of first input line
   sepBelow: number;        // row number of separator below prompt
+}
+
+export interface SearchState {
+  barOpen: boolean;
+  barMode: "search" | "command";
+  direction: SearchDirection;
+  query: string;
+  barInput: string;
+  barCursorPos: number;
+  highlightsVisible: boolean;
+  savedScrollOffset: number;
+  savedHistoryCursor: HistoryCursor;
+  originChatFocus: ChatFocus;
 }
 
 export interface RenderState {
@@ -153,6 +167,8 @@ export interface RenderState {
   promptScrollOffset: number;
   /** Queue prompt overlay — non-null when the modal is showing. */
   queuePrompt: QueuePromptState | null;
+  /** Chat-history search state for vim-style / and ? search. */
+  search: SearchState | null;
   /** Messages queued for delivery at a specific timing. */
   queuedMessages: QueuedMessage[];
   /** Edit message modal — non-null when the modal is showing. */
@@ -271,6 +287,7 @@ export function createInitialState(): RenderState {
     autocomplete: null,
     promptScrollOffset: 0,
     queuePrompt: null,
+    search: null,
     queuedMessages: [],
     editMessagePrompt: null,
     pendingImages: [],

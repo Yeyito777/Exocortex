@@ -5,15 +5,17 @@
  * strings. Preserves surrounding text styles (bold, fg color, etc)
  * through resets.
  *
- * Two functions:
+ * Three functions:
  * - renderLineWithCursor: single character block cursor
  * - renderLineWithSelection: highlight a column range
+ * - renderLineWithSearch: highlight one or more search-match ranges
  */
 
 import { theme } from "./theme";
 import { stripAnsi } from "./historycursor";
 
 const CURSOR_FG = "\x1b[38;2;0;0;0m";  // black text on cursor
+const ANSI_OR_HYPERLINK = /^\x1b(?:\[[0-9;]*[A-Za-z]|\]8;[^;]*;[^\x1b]*\x1b\\)/;
 
 /**
  * Render a line with a themed block cursor at the given visible
@@ -40,7 +42,7 @@ export function renderLineWithCursor(line: string, col: number): string {
 
   while (i < line.length) {
     if (line[i] === "\x1b") {
-      const match = line.slice(i).match(/^\x1b(?:\[[0-9;]*[A-Za-z]|\]8;[^;]*;[^\x1b]*\x1b\\)/);
+      const match = line.slice(i).match(ANSI_OR_HYPERLINK);
       if (match) {
         const esc = match[0];
         // Track style state: reset clears all, otherwise accumulate
@@ -106,7 +108,7 @@ export function renderLineWithSelection(
 
   while (i < line.length) {
     if (line[i] === "\x1b") {
-      const match = line.slice(i).match(/^\x1b(?:\[[0-9;]*[A-Za-z]|\]8;[^;]*;[^\x1b]*\x1b\\)/);
+      const match = line.slice(i).match(ANSI_OR_HYPERLINK);
       if (match) {
         const esc = match[0];
         if (esc === theme.reset || esc === "\x1b[0m") {
@@ -142,5 +144,52 @@ export function renderLineWithSelection(
   // Close selection if it extends to end of line
   if (inSelection) parts.push(theme.reset);
 
+  return parts.join("");
+}
+
+/**
+ * Highlight one or more visible-column search ranges.
+ * Search highlight overrides both background and foreground colors, then
+ * restores the original ANSI styling once the match ends.
+ */
+export function renderLineWithSearch(
+  line: string,
+  ranges: { from: number; to: number }[],
+): string {
+  if (!line || ranges.length === 0) return line;
+
+  const parts: string[] = [];
+  let visIdx = 0;
+  let i = 0;
+  let inSearch = false;
+  let allCodesSoFar = "";
+
+  while (i < line.length) {
+    if (line[i] === "\x1b") {
+      const match = line.slice(i).match(ANSI_OR_HYPERLINK);
+      if (match) {
+        const esc = match[0];
+        allCodesSoFar += esc;
+        if (!inSearch) parts.push(esc);
+        i += esc.length;
+        continue;
+      }
+    }
+
+    const nowInSearch = ranges.some((range) => visIdx >= range.from && visIdx < range.to);
+    if (nowInSearch && !inSearch) {
+      parts.push(theme.searchBg, theme.searchFg);
+      inSearch = true;
+    } else if (!nowInSearch && inSearch) {
+      parts.push(`${theme.reset}${allCodesSoFar}`);
+      inSearch = false;
+    }
+
+    parts.push(line[i]);
+    visIdx++;
+    i++;
+  }
+
+  if (inSearch) parts.push(theme.reset);
   return parts.join("");
 }
