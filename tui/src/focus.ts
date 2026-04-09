@@ -25,6 +25,7 @@ import { handleQueuePromptKey } from "./queue";
 import { handleEditMessageKey, openEditMessageModal } from "./editmessage";
 import { readClipboardImage } from "./clipboard";
 import { processVimKey, handleScrollAction, mapSidebarResult } from "./vimhandler";
+import { handleSearchBarKey, jumpToSearchMatch, openCommandBar, openSearchBar } from "./search";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -65,6 +66,13 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
     const er = handleEditMessageKey(key, state);
     if (er.type === "confirm") return { type: "edit_message_confirm" };
     if (er.type === "cancel")  return { type: "edit_message_cancel" };
+    return { type: "handled" };
+  }
+
+  // ── Search bar — intercept all keys while open ────────────────
+  if (state.search?.barOpen) {
+    const sr = handleSearchBarKey(state, key);
+    if (sr.type === "abort") return { type: "abort" };
     return { type: "handled" };
   }
 
@@ -196,6 +204,27 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
       && state.vim.mode === "normal"
       && key.type === "char" && key.char && /^[0-9]$/.test(key.char)) {
     return mapSidebarResult(handleSidebarMark(state.sidebar, parseInt(key.char, 10)));
+  }
+
+  // ── Vim-style chat history search (/ ? n N) ────────────────────
+  if (state.panelFocus === "chat" && state.vim.mode === "normal"
+      && key.type === "char" && key.char) {
+    if (key.char === "/" || key.char === "?") {
+      openSearchBar(state, key.char === "/" ? "forward" : "backward");
+      return { type: "handled" };
+    }
+    if (key.char === ":") {
+      openCommandBar(state);
+      return { type: "handled" };
+    }
+    if (key.char === "n" && state.search?.query) {
+      jumpToSearchMatch(state, state.search.direction);
+      return { type: "handled" };
+    }
+    if (key.char === "N" && state.search?.query) {
+      jumpToSearchMatch(state, state.search.direction === "forward" ? "backward" : "forward");
+      return { type: "handled" };
+    }
   }
 
   // ── Vim processing ─────────────────────────────────────────────
