@@ -30,8 +30,8 @@ import type { ExternalToolStyle } from "@exocortex/shared/messages";
 
 // ── Manifest schema ──────────────────────────────────────────────
 
-interface ManifestDaemon {
-  /** Shell command to run from the tool directory (split on whitespace). */
+export interface ManifestDaemon {
+  /** Shell command to run from the tool directory (executed via `bash -lc`). */
   command: string;
   /**
    * When to restart the daemon after it exits.
@@ -44,7 +44,7 @@ interface ManifestDaemon {
   env?: Record<string, string>;
 }
 
-interface Manifest {
+export interface Manifest {
   name: string;
   bin: string;
   systemHint: string;
@@ -56,7 +56,7 @@ interface Manifest {
   daemon?: ManifestDaemon;
 }
 
-interface LoadedTool {
+export interface LoadedTool {
   manifest: Manifest;
   /** Absolute path to the directory containing the binary. */
   binDir: string;
@@ -93,14 +93,18 @@ const _daemons = new Map<string, ManagedDaemon>();
 const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
 const BACKOFF_RESET_MS = 5 * 60_000;
 
+export function buildDaemonSpawnSpec(command: string): { cmd: string; args: string[] } | null {
+  const trimmed = command.trim();
+  if (!trimmed) return null;
+  return { cmd: "bash", args: ["-lc", trimmed] };
+}
+
 function spawnDaemonProcess(managed: ManagedDaemon): void {
-  const parts = managed.config.command.split(/\s+/).filter(Boolean);
-  if (parts.length === 0) {
+  const spec = buildDaemonSpawnSpec(managed.config.command);
+  if (!spec) {
     log("warn", `external-tools: empty daemon command for '${managed.toolName}'`);
     return;
   }
-
-  const [cmd, ...args] = parts;
 
   // Ensure config/ dir exists for the log file
   const configDir = join(managed.toolDir, "config");
@@ -109,7 +113,7 @@ function spawnDaemonProcess(managed: ManagedDaemon): void {
   const logFd = openSync(logPath, "a");
 
   try {
-    const child = spawn(cmd, args, {
+    const child = spawn(spec.cmd, spec.args, {
       cwd: managed.toolDir,
       stdio: ["ignore", logFd, logFd],
       env: { ...process.env, ...managed.config.env },
@@ -351,27 +355,59 @@ function updatePath(tools: LoadedTool[]): void {
   process.env.PATH = dirs.join(":") + ":" + BASE_PATH;
 }
 
+export function getToolReloadKey(tools: LoadedTool[]): string {
+  return JSON.stringify(tools.map((tool) => ({
+    name: tool.manifest.name,
+    bin: tool.manifest.bin,
+    systemHint: tool.manifest.systemHint,
+    display: tool.manifest.display,
+    daemon: tool.manifest.daemon ?? null,
+    binDir: tool.binDir,
+    toolDir: tool.toolDir,
+  })));
+}
+
+function daemonSignature(daemon: ManifestDaemon | undefined): string {
+  return JSON.stringify(daemon ?? null);
+}
+
+function daemonConfigChanged(oldTool: LoadedTool, newTool: LoadedTool): boolean {
+  return oldTool.toolDir !== newTool.toolDir || daemonSignature(oldTool.manifest.daemon) !== daemonSignature(newTool.manifest.daemon);
+}
+
 // ── Apply scan results ───────────────────────────────────────────
 
 function applyTools(tools: LoadedTool[]): boolean {
   // Check if anything actually changed
-  const oldKey = _tools.map(t => t.manifest.name).join(",");
-  const newKey = tools.map(t => t.manifest.name).join(",");
+  const oldKey = getToolReloadKey(_tools);
+  const newKey = getToolReloadKey(tools);
   if (oldKey === newKey) return false;
 
-  // Compute diff for daemon management
-  const oldNames = new Set(_tools.map(t => t.manifest.name));
-  const newNames = new Set(tools.map(t => t.manifest.name));
+  const oldByName = new Map(_tools.map((tool) => [tool.manifest.name, tool]));
+  const newByName = new Map(tools.map((tool) => [tool.manifest.name, tool]));
 
-  // Stop daemons for removed tools
-  for (const name of oldNames) {
-    if (!newNames.has(name)) stopToolDaemon(name);
+  // Stop daemons for removed tools or tools whose daemon config disappeared.
+  for (const [name, oldTool] of oldByName) {
+    const newTool = newByName.get(name);
+    if (!newTool || (oldTool.manifest.daemon && !newTool.manifest.daemon)) {
+      void stopToolDaemon(name);
+    }
   }
 
-  // Start daemons for newly added tools
-  for (const tool of tools) {
-    if (!oldNames.has(tool.manifest.name) && tool.manifest.daemon) {
-      startToolDaemon(tool);
+  for (const [name, newTool] of newByName) {
+    const oldTool = oldByName.get(name);
+    if (!oldTool) {
+      if (newTool.manifest.daemon) startToolDaemon(newTool);
+      continue;
+    }
+
+    if (!oldTool.manifest.daemon && newTool.manifest.daemon) {
+      startToolDaemon(newTool);
+      continue;
+    }
+
+    if (oldTool.manifest.daemon && newTool.manifest.daemon && daemonConfigChanged(oldTool, newTool)) {
+      void stopToolDaemon(name).then(() => startToolDaemon(newTool));
     }
   }
 
@@ -384,7 +420,7 @@ function applyTools(tools: LoadedTool[]): boolean {
 
 /**
  * Initialize external tools: scan, update PATH, start daemons, start watcher.
- * The onUpdate callback fires when tools are added or removed at runtime.
+ * The onUpdate callback fires when tools are added, removed, or changed at runtime.
  */
 export function initExternalTools(onUpdate?: () => void): void {
   _externalToolsDir = getExternalToolsDir();
@@ -411,12 +447,13 @@ export function initExternalTools(onUpdate?: () => void): void {
   }
 
   // Watch for changes
+  const externalToolsDir = _externalToolsDir;
   try {
-    _watcher = watch(_externalToolsDir, { persistent: false, recursive: true }, (_eventType, _filename) => {
+    _watcher = watch(externalToolsDir, { persistent: false, recursive: true }, (_eventType, _filename) => {
       if (_debounceTimer) clearTimeout(_debounceTimer);
       _debounceTimer = setTimeout(() => {
         _debounceTimer = null;
-        const updated = scanTools(_externalToolsDir!);
+        const updated = scanTools(externalToolsDir);
         if (applyTools(updated)) {
           log("info", `external-tools: reloaded — ${updated.length} tool(s): ${updated.map(t => t.manifest.name).join(", ") || "(none)"}`);
           onUpdate?.();

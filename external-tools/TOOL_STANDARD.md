@@ -56,7 +56,7 @@ The daemon auto-discovers it, spawns the process, and supervises it
 }
 ```
 
-- **command**: Shell command run from the tool's root directory.
+- **command**: Shell command run from the tool's root directory (executed via `bash -lc`).
 - **restart**: `"on-failure"` (default) — restart on non-zero exit.
   `"always"` — restart on any exit. `"never"` — don't restart.
 - **env**: Additional environment variables (merged with process env).

@@ -10,6 +10,7 @@ import {
   parseCronField,
   parseSchedule,
   fieldMatches,
+  dayMatches,
   scheduleMatches,
   parseHeaders,
 } from "./scheduler";
@@ -148,6 +149,32 @@ describe("parseSchedule", () => {
   });
 });
 
+// ── dayMatches ──────────────────────────────────────────────────────
+
+describe("dayMatches", () => {
+  test("wildcard DOM defers to DOW", () => {
+    const dom = parseCronField("*", 1, 31)!;
+    const dow = parseCronField("1-5", 0, 6)!;
+    expect(dayMatches(dom, dow, new Date(2026, 2, 16, 9, 0))).toBe(true); // Monday
+    expect(dayMatches(dom, dow, new Date(2026, 2, 15, 9, 0))).toBe(false); // Sunday
+  });
+
+  test("wildcard DOW defers to DOM", () => {
+    const dom = parseCronField("15", 1, 31)!;
+    const dow = parseCronField("*", 0, 6)!;
+    expect(dayMatches(dom, dow, new Date(2026, 2, 15, 9, 0))).toBe(true);
+    expect(dayMatches(dom, dow, new Date(2026, 2, 16, 9, 0))).toBe(false);
+  });
+
+  test("restricted DOM and DOW use cron OR semantics", () => {
+    const dom = parseCronField("15", 1, 31)!;
+    const dow = parseCronField("1", 0, 6)!;
+    expect(dayMatches(dom, dow, new Date(2026, 2, 15, 9, 0))).toBe(true); // 15th, Sunday
+    expect(dayMatches(dom, dow, new Date(2026, 2, 16, 9, 0))).toBe(true); // Monday, 16th
+    expect(dayMatches(dom, dow, new Date(2026, 2, 17, 9, 0))).toBe(false); // Tuesday, 17th
+  });
+});
+
 // ── scheduleMatches ─────────────────────────────────────────────────
 
 describe("scheduleMatches", () => {
@@ -186,6 +213,13 @@ describe("scheduleMatches", () => {
     expect(scheduleMatches(s, new Date(2026, 2, 15, 10, 0))).toBe(true);
     expect(scheduleMatches(s, new Date(2026, 2, 15, 10, 30))).toBe(true);
     expect(scheduleMatches(s, new Date(2026, 2, 15, 10, 15))).toBe(false);
+  });
+
+  test("restricted DOM and DOW use cron OR semantics", () => {
+    const s = parseSchedule("0 9 15 * 1")!;
+    expect(scheduleMatches(s, new Date(2026, 2, 15, 9, 0))).toBe(true); // 15th
+    expect(scheduleMatches(s, new Date(2026, 2, 16, 9, 0))).toBe(true); // Monday
+    expect(scheduleMatches(s, new Date(2026, 2, 17, 9, 0))).toBe(false);
   });
 
   test("specific month and day", () => {

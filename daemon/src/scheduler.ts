@@ -6,7 +6,10 @@
  * a standalone bash file that can use `exo` or any other tool.
  *
  * Script header format (parsed from comments):
- *   # schedule: <cron expression>      (required — standard 5-field cron)
+ *   # schedule: <cron expression>      (required — standard 5-field cron;
+ *                                      day-of-month and day-of-week use
+ *                                      normal cron OR semantics when both
+ *                                      are restricted)
  *   # description: <text>              (optional — for logging/display)
  *   # timeout: <seconds>               (optional — default 300)
  *
@@ -157,13 +160,28 @@ export function fieldMatches(field: CronField, value: number): boolean {
 }
 
 /** @internal Exported for testing only. */
+export function dayMatches(dayOfMonth: CronField, dayOfWeek: CronField, date: Date): boolean {
+  const domMatch = fieldMatches(dayOfMonth, date.getDate());
+  const dowMatch = fieldMatches(dayOfWeek, date.getDay());
+  const domAny = dayOfMonth.type === "any";
+  const dowAny = dayOfWeek.type === "any";
+
+  // Standard cron semantics: if both DOM and DOW are restricted,
+  // matching either field is sufficient. If either field is "*",
+  // the other field alone controls the match.
+  if (domAny && dowAny) return true;
+  if (domAny) return dowMatch;
+  if (dowAny) return domMatch;
+  return domMatch || dowMatch;
+}
+
+/** @internal Exported for testing only. */
 export function scheduleMatches(schedule: ParsedSchedule, date: Date): boolean {
   return (
     fieldMatches(schedule.minute, date.getMinutes()) &&
     fieldMatches(schedule.hour, date.getHours()) &&
-    fieldMatches(schedule.dayOfMonth, date.getDate()) &&
     fieldMatches(schedule.month, date.getMonth() + 1) &&
-    fieldMatches(schedule.dayOfWeek, date.getDay())
+    dayMatches(schedule.dayOfMonth, schedule.dayOfWeek, date)
   );
 }
 

@@ -5,7 +5,10 @@
   "scripts": {
     "start": "bun run src/main.ts",
     "dev": "bun run --watch src/main.ts",
-    "login": "bun run src/main.ts login"
+    "login": "bun run src/main.ts login",
+    "test": "bun test",
+    "typecheck": "bunx tsc -p tsconfig.json --noEmit",
+    "coverage": "bun test --coverage"
   },
   "dependencies": {
     "@exocortex/shared": "workspace:*"
