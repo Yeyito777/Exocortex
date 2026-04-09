@@ -154,6 +154,46 @@ describe("/login", () => {
   });
 });
 
+describe("/logout", () => {
+  test("returns a provider-scoped logout command when given a provider", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "openai";
+    state.hasChosenProvider = true;
+
+    const result = tryCommand("/logout anthropic", state);
+
+    expect(result).toEqual({ type: "logout", provider: "anthropic" });
+    expect(state.provider).toBe("openai");
+  });
+
+  test("requires an explicit provider even when one is currently selected", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "anthropic";
+    state.hasChosenProvider = true;
+
+    const result = tryCommand("/logout", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("/logout openai");
+    expect(text).toContain("/logout anthropic");
+  });
+
+  test("requires an explicit provider when none has been chosen yet", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    const result = tryCommand("/logout", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("/logout openai");
+    expect(text).toContain("/logout anthropic");
+  });
+});
+
 describe("/instructions", () => {
   test("on a new chat with text, requests conversation creation for instructions", () => {
     const state = createInitialState();
