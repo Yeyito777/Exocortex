@@ -36,6 +36,19 @@ export interface CompletionItem {
   desc: string;
 }
 
+interface ProviderCommandParseSuccess {
+  ok: true;
+  provider?: ProviderId;
+  providers: ProviderId[];
+}
+
+interface ProviderCommandParseFailure {
+  ok: false;
+  result: CommandResult;
+}
+
+type ProviderCommandParseResult = ProviderCommandParseSuccess | ProviderCommandParseFailure;
+
 export type CommandResult =
   | { type: "handled" }
   | { type: "quit" }
@@ -47,7 +60,7 @@ export type CommandResult =
   | { type: "rename_conversation"; title: string }
   | { type: "generate_title" }
   | { type: "login"; provider?: ProviderId }
-  | { type: "logout" }
+  | { type: "logout"; provider?: ProviderId }
   | { type: "theme_changed" }
   | { type: "get_system_prompt" }
   | { type: "set_system_instructions"; text: string };
@@ -79,6 +92,32 @@ function showLoginInfo(state: RenderState): CommandResult {
   pushSystemMessage(state, buildLoginInfoMessage(state));
   clearPrompt(state);
   return { type: "handled" };
+}
+
+function handleProviderCommandError(state: RenderState, message: string): ProviderCommandParseFailure {
+  pushSystemMessage(state, message);
+  clearPrompt(state);
+  return { ok: false, result: { type: "handled" } };
+}
+
+function parseOptionalProviderCommand(
+  text: string,
+  state: RenderState,
+  commandName: "/login" | "/logout",
+): ProviderCommandParseResult {
+  const parts = text.trim().split(/\s+/).filter(Boolean);
+  const providers = availableProviders(state);
+
+  if (parts.length > 2) {
+    return handleProviderCommandError(state, `Usage: ${commandName} [${providers.join("|")}]`);
+  }
+
+  const provider = parts[1] as ProviderId | undefined;
+  if (provider && !providers.includes(provider)) {
+    return handleProviderCommandError(state, `Unknown provider: ${provider}. Available: ${providers.join(", ")}`);
+  }
+
+  return { ok: true, provider, providers };
 }
 
 function modelInfo(state: RenderState, provider = state.provider, model = state.model): ModelInfo | null {
@@ -471,27 +510,15 @@ const commands: SlashCommand[] = [
       desc: provider === "openai" ? "Sign in with OpenAI" : "Sign in with Anthropic",
     })),
     handler: (text, state) => {
-      const parts = text.trim().split(/\s+/).filter(Boolean);
-      const providers = availableProviders(state);
+      const parsed = parseOptionalProviderCommand(text, state, "/login");
+      if (!parsed.ok) return parsed.result;
 
-      if (parts.length > 2) {
-        pushSystemMessage(state, `Usage: /login [${providers.join("|")}]`);
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
-      const provider = parts[1] as ProviderId | undefined;
-      if (provider && !providers.includes(provider)) {
-        pushSystemMessage(state, `Unknown provider: ${provider}. Available: ${providers.join(", ")}`);
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
+      const { provider } = parsed;
       if (!provider) {
         return showLoginInfo(state);
       }
 
-      if (provider && !state.convId) {
+      if (!state.convId) {
         setChosenProvider(state, provider);
         const nextModel = defaultModelForProvider(state, provider) ?? state.model;
         state.model = nextModel;
@@ -505,10 +532,24 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/logout",
-    description: "Log out and clear credentials",
-    handler: (_text, state) => {
+    description: "Log out and clear credentials for a provider",
+    args: [...DEFAULT_PROVIDER_ORDER].map((provider) => ({
+      name: provider,
+      desc: provider === "openai" ? "Log out from OpenAI" : "Log out from Anthropic",
+    })),
+    handler: (text, state) => {
+      const parsed = parseOptionalProviderCommand(text, state, "/logout");
+      if (!parsed.ok) return parsed.result;
+
+      const { provider, providers } = parsed;
+      if (!provider) {
+        pushSystemMessage(state, `Choose a provider first: ${providers.map((p) => `/logout ${p}`).join(" or ")}`);
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
       clearPrompt(state);
-      return { type: "logout" };
+      return { type: "logout", provider };
     },
   },
 ];
@@ -547,6 +588,7 @@ export function getCommandArgs(state: RenderState): Record<string, CompletionIte
   const registry: Record<string, CompletionItem[]> = { ...STATIC_COMMAND_ARGS };
   registry["/model"] = providerCompletionItems(state);
   registry["/login"] = providerCompletionItems(state);
+  registry["/logout"] = providerCompletionItems(state);
   for (const provider of availableProviders(state)) {
     registry[`/model ${provider}`] = providerModelItems(state, provider);
   }

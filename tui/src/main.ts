@@ -182,7 +182,7 @@ function handleSubmit(): void {
           daemon.login(cmdResult.provider ?? state.provider);
           break;
         case "logout":
-          daemon.logout(state.provider);
+          daemon.logout(cmdResult.provider ?? state.provider);
           break;
         case "handled":
           break;
