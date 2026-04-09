@@ -10,7 +10,7 @@
 import type { KeyEvent } from "./input";
 import type { Action } from "./keybinds";
 import type { RenderState } from "./state";
-import { getViewStart } from "./chat";
+import { getViewStart } from "./chatscroll";
 import { copyToClipboard } from "./vim/clipboard";
 import { keyString, resetPending } from "./vim/types";
 import { resolveTextObject, isTextObjectKey } from "./vim/textobjects";

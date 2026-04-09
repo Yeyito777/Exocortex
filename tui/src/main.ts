@@ -12,7 +12,7 @@ import { DaemonClient } from "./client";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent, type InputEvent } from "./input";
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent } from "./mouse";
-import { clearPrompt } from "./promptline";
+import { clearPrompt } from "./promptstate";
 import { tryCommand } from "./commands";
 import { expandMacros } from "./macros";
 import { render } from "./render";

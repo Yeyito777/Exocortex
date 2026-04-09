@@ -13,7 +13,7 @@
 
 import type { RenderState } from "./state";
 import type { ImageAttachment } from "./messages";
-import { getViewStart } from "./chat";
+import { getViewStart } from "./chatscroll";
 import { renderStatusLine } from "./statusline";
 import { renderTopbar } from "./topbar";
 import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";

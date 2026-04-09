@@ -83,18 +83,7 @@ function maxScroll(state: RenderState): number {
   return Math.max(0, state.layout.totalLines - state.layout.messageAreaHeight);
 }
 
-/**
- * First historyLines index visible in the message area.
- *
- * scrollOffset === 0 means "pinned to bottom" (auto-scroll), so we
- * snap to the tail of the buffer.  Any positive offset scrolls up.
- * Always clamped to ≥ 0 so callers never get a negative index.
- */
-export function getViewStart(state: RenderState): number {
-  const { totalLines, messageAreaHeight } = state.layout;
-  if (state.scrollOffset === 0) return Math.max(0, totalLines - messageAreaHeight);
-  return Math.max(0, totalLines - messageAreaHeight - state.scrollOffset);
-}
+export { getViewStart } from "./chatscroll";
 
 export function scrollBy(state: RenderState, lines: number): void {
   state.scrollOffset = Math.max(0, Math.min(state.scrollOffset + lines, maxScroll(state)));

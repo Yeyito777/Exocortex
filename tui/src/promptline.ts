@@ -9,8 +9,8 @@
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
 import { resolveAction } from "./keybinds";
-import { markInsertEntry } from "./undo";
 import { updateAutocomplete, cycleAutocomplete, tryPathComplete } from "./autocomplete";
+import { clearPrompt } from "./promptstate";
 import { getSymbol } from "./symbols";
 
 export type PromptKeyResult =
@@ -163,15 +163,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
   }
 }
 
-/** Clear the prompt buffer and reset cursor. */
-export function clearPrompt(state: RenderState): void {
-  state.inputBuffer = "";
-  state.cursorPos = 0;
-  state.promptScrollOffset = 0;
-  state.vim.mode = "insert";
-  // Mark new insert session so subsequent typing is undoable
-  markInsertEntry(state.undo, "", 0);
-}
+export { clearPrompt } from "./promptstate";
 
 // ── Wrapped-line offset mapping ──────────────────────────────────────
 

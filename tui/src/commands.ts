@@ -10,7 +10,7 @@
 
 import type { RenderState } from "./state";
 import { clearPendingAI, clearSystemMessageBuffer, pushSystemMessage } from "./state";
-import { clearPrompt } from "./promptline";
+import { clearPrompt } from "./promptstate";
 import {
   DEFAULT_EFFORT,
   DEFAULT_PROVIDER_ORDER,
