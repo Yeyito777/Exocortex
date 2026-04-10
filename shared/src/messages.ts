@@ -80,6 +80,7 @@ export const MAX_CONTEXT: Record<string, number> = {
   "gpt-5": 400_000,
   "gpt-5.4": 272_000,
   "gpt-5.4-mini": 272_000,
+  "gpt-5.3-codex-spark": 128_000,
 };
 
 // ── Image attachments ──────────────────────────────────────────────

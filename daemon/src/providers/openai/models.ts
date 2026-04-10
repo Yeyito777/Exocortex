@@ -26,7 +26,16 @@ export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
     supportedEfforts: FALLBACK_OPENAI_EFFORTS,
     defaultEffort: "medium",
   },
+  {
+    id: "gpt-5.3-codex-spark",
+    label: "gpt-5.3-codex-spark",
+    maxContext: 128_000,
+    supportedEfforts: FALLBACK_OPENAI_EFFORTS,
+    defaultEffort: "medium",
+  },
 ];
+
+const MANUAL_OPENAI_MODEL_IDS = new Set(["gpt-5.3-codex-spark"]);
 
 interface OpenAICodexModel {
   slug?: string;
@@ -46,8 +55,11 @@ interface OpenAIModelsResponse {
   models?: OpenAICodexModel[];
 }
 
-function isPreferredLatestModel(model: OpenAICodexModel): boolean {
-  return typeof model.slug === "string" && /^gpt-5\.4(?:-|$)/.test(model.slug);
+function isPreferredOpenAIModel(model: OpenAICodexModel): boolean {
+  return typeof model.slug === "string" && (
+    /^gpt-5\.4(?:-|$)/.test(model.slug)
+    || MANUAL_OPENAI_MODEL_IDS.has(model.slug)
+  );
 }
 
 function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel | undefined): EffortLevel {
@@ -74,6 +86,43 @@ function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
   };
 }
 
+function selectPreferredOpenAIModels(models: OpenAICodexModel[]): ModelInfo[] {
+  return models
+    .filter((model) => model.supported_in_api !== false)
+    .filter((model) => model.visibility !== "hide")
+    .filter(isPreferredOpenAIModel)
+    .sort((a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER))
+    .map(toModelInfo)
+    .filter((model): model is ModelInfo => model !== null);
+}
+
+function mergeMissingFallbackModels(models: ModelInfo[], remoteModels: OpenAICodexModel[]): ModelInfo[] {
+  const merged = [...models];
+  const selectedModelIds = new Set(models.map((model) => model.id));
+  const remoteModelById = new Map(
+    remoteModels
+      .filter((model): model is OpenAICodexModel & { slug: string } => typeof model.slug === "string")
+      .map((model) => [model.slug, model]),
+  );
+
+  for (const fallbackModel of FALLBACK_OPENAI_MODELS) {
+    if (selectedModelIds.has(fallbackModel.id)) continue;
+
+    const remoteModel = remoteModelById.get(fallbackModel.id);
+    if (remoteModel && (remoteModel.supported_in_api === false || remoteModel.visibility === "hide")) {
+      continue;
+    }
+
+    merged.push(fallbackModel);
+  }
+
+  return merged;
+}
+
+export function selectOpenAIModelsForTest(models: OpenAICodexModel[]): ModelInfo[] {
+  return mergeMissingFallbackModels(selectPreferredOpenAIModels(models), models);
+}
+
 export async function fetchOpenAIModels(): Promise<ModelInfo[]> {
   const session = await getVerifiedSession();
   const url = `${OPENAI_MODELS_URL}?client_version=${encodeURIComponent(OPENAI_CODEX_CLIENT_VERSION)}`;
@@ -93,18 +142,12 @@ export async function fetchOpenAIModels(): Promise<ModelInfo[]> {
   }
 
   const data = await res.json() as OpenAIModelsResponse;
-  const models = (data.models ?? [])
-    .filter((model) => model.supported_in_api !== false)
-    .filter((model) => model.visibility !== "hide")
-    .filter(isPreferredLatestModel)
-    .sort((a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER))
-    .map(toModelInfo)
-    .filter((model): model is ModelInfo => model !== null);
+  const preferredModels = selectPreferredOpenAIModels(data.models ?? []);
 
-  if (models.length === 0) {
-    log("warn", "openai models: Codex endpoint returned no GPT-5.4 models, keeping fallback list");
+  if (preferredModels.length === 0) {
+    log("warn", "openai models: Codex endpoint returned no preferred models, keeping fallback list");
     return FALLBACK_OPENAI_MODELS;
   }
 
-  return models;
+  return mergeMissingFallbackModels(preferredModels, data.models ?? []);
 }
