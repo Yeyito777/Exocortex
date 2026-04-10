@@ -2,6 +2,7 @@ import { type EffortLevel, type ModelInfo, type ReasoningEffortInfo } from "@exo
 import { formatModelDisplayName } from "@exocortex/shared/model-display";
 import { log } from "../../log";
 import { getVerifiedSession } from "./auth";
+import { supportsOpenAIImageInputs } from "./capabilities";
 import { OPENAI_CODEX_CLIENT_VERSION, OPENAI_MODELS_URL } from "./constants";
 import { buildOpenAIJsonHeaders } from "./http";
 
@@ -19,6 +20,7 @@ export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
     maxContext: 272_000,
     supportedEfforts: FALLBACK_OPENAI_EFFORTS,
     defaultEffort: "high",
+    supportsImages: supportsOpenAIImageInputs("gpt-5.4"),
   },
   {
     id: "gpt-5.4-mini",
@@ -26,6 +28,7 @@ export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
     maxContext: 272_000,
     supportedEfforts: FALLBACK_OPENAI_EFFORTS,
     defaultEffort: "medium",
+    supportsImages: supportsOpenAIImageInputs("gpt-5.4-mini"),
   },
   {
     id: "gpt-5.3-codex-spark",
@@ -33,6 +36,7 @@ export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
     maxContext: 128_000,
     supportedEfforts: FALLBACK_OPENAI_EFFORTS,
     defaultEffort: "medium",
+    supportsImages: supportsOpenAIImageInputs("gpt-5.3-codex-spark"),
   },
 ];
 
@@ -84,6 +88,7 @@ function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
     maxContext: model.context_window ?? 272_000,
     supportedEfforts: supportedEfforts.length > 0 ? supportedEfforts : FALLBACK_OPENAI_EFFORTS,
     defaultEffort: preferredDefaultEffort(model.slug, model.default_reasoning_level),
+    supportsImages: supportsOpenAIImageInputs(model.slug),
   };
 }
 

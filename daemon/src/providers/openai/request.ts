@@ -1,6 +1,7 @@
 import type { ApiMessage, ApiContentBlock, ModelId, EffortLevel } from "../../messages";
 import type { StreamOptions } from "../types";
 import { buildPromptCacheBodyFields } from "./cache";
+import { supportsOpenAIReasoningSummary } from "./capabilities";
 import type { OpenAIReasoningItem } from "./types";
 
 export type OpenAIInputItem =
@@ -196,6 +197,10 @@ function mapServiceTier(serviceTier: StreamOptions["serviceTier"]): string | und
   }
 }
 
+function shouldRequestReasoningSummary(model: ModelId): boolean {
+  return supportsOpenAIReasoningSummary(model);
+}
+
 function buildRequestShape(model: ModelId, options: StreamOptions): OpenAIRequestShape {
   const tools = buildOpenAITools(options.tools);
   const serviceTier = mapServiceTier(options.serviceTier);
@@ -207,10 +212,11 @@ function buildRequestShape(model: ModelId, options: StreamOptions): OpenAIReques
     include: ["reasoning.encrypted_content"],
     reasoning: {
       effort: mapEffort(options.effort),
-      // Always request the fullest summary OpenAI exposes. If raw reasoning
-      // is present we will prefer it later, otherwise these detailed summaries
-      // are what the TUI shows.
-      summary: OPENAI_REASONING_SUMMARY,
+      // Always request the fullest summary OpenAI exposes when the selected
+      // model accepts that parameter. Codex Spark rejects `reasoning.summary`
+      // with a 400, so omit it there and fall back to whatever reasoning data
+      // the backend emits by default.
+      ...(shouldRequestReasoningSummary(model) ? { summary: OPENAI_REASONING_SUMMARY } : {}),
     },
     ...(serviceTier ? { service_tier: serviceTier } : {}),
     ...(tools ? { tools } : {}),

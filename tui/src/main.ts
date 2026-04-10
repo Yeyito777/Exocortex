@@ -17,7 +17,7 @@ import { tryCommand } from "./commands";
 import { expandMacros } from "./macros";
 import { render } from "./render";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, clearPendingAI, clearSystemMessageBuffer, pushSystemMessage } from "./state";
+import { createInitialState, isStreaming, clearPendingAI, clearSystemMessageBuffer, modelSupportsImages, pushSystemMessage } from "./state";
 import { createPendingAI, type ImageAttachment } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
@@ -141,6 +141,13 @@ function showLoginRequiredPrompt(): void {
   pushSystemMessage(state, msg);
 }
 
+function canSendImages(images?: ImageAttachment[]): boolean {
+  if (!images?.length) return true;
+  if (modelSupportsImages(state)) return true;
+  pushSystemMessage(state, `✗ Image inputs are not supported by ${state.provider}/${state.model}. Remove the attachment or switch to a vision-capable model.`, theme.error);
+  return false;
+}
+
 function handleSubmit(): void {
   const text = state.inputBuffer.trim();
   const hasImages = state.pendingImages.length > 0;
@@ -223,6 +230,10 @@ function handleSubmit(): void {
   }
 
   const images = hasImages ? [...state.pendingImages] : undefined;
+  if (!canSendImages(images)) {
+    scheduleRender();
+    return;
+  }
 
   if (!state.authByProvider[state.provider]) {
     clearPrompt(state);
@@ -242,6 +253,10 @@ function handleSubmit(): void {
 
 /** Send a message immediately (no streaming in progress). */
 function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
+  if (!canSendImages(images)) {
+    scheduleRender();
+    return;
+  }
   if (!state.authByProvider[state.provider]) {
     enqueuePendingAuthMessage(messageText, images);
     showLoginRequiredPrompt();

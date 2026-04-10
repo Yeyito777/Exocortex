@@ -6,8 +6,8 @@
  */
 
 import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment } from "./messages";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "./messages";
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
 import { loadPreferredProvider } from "./preferences";
 import type { MessageBound } from "./conversation";
@@ -208,6 +208,18 @@ export function pushSystemMessage(state: RenderState, text: string, color?: stri
   } else {
     state.messages.push(msg);
   }
+}
+
+export function getProviderInfo(state: RenderState, provider = state.provider): ProviderInfo | null {
+  return state.providerRegistry.find((candidate) => candidate.id === provider) ?? null;
+}
+
+export function getModelInfo(state: RenderState, provider = state.provider, model = state.model): ModelInfo | null {
+  return getProviderInfo(state, provider)?.models.find((candidate) => candidate.id === model) ?? null;
+}
+
+export function modelSupportsImages(state: RenderState, provider = state.provider, model = state.model): boolean {
+  return supportsImageInputsForModel(getModelInfo(state, provider, model));
 }
 
 // ── Focus transition helpers ──────────────────────────────────────

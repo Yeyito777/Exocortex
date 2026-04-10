@@ -3,6 +3,7 @@ import {
   DEFAULT_PROVIDER_ORDER,
   MAX_CONTEXT,
   normalizeEffortForModel,
+  supportsImageInputsForModel,
   type ProviderId,
   type ProviderInfo,
   type ModelId,
@@ -117,6 +118,10 @@ export function allowsCustomModels(providerId: ProviderId): boolean {
 
 export function supportsFastMode(providerId: ProviderId): boolean {
   return getProvider(providerId)?.supportsFastMode ?? false;
+}
+
+export function supportsImageInputs(providerId: ProviderId, model: ModelId): boolean {
+  return supportsImageInputsForModel(getModelInfo(providerId, model));
 }
 
 export async function refreshProviders(force = false): Promise<boolean> {
