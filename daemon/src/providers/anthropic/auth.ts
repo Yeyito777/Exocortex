@@ -1,228 +1,194 @@
 /**
- * OAuth authentication for exocortexd.
- *
- * Handles token refresh, profile fetching, and auth lifecycle for Anthropic.
+ * Claude Code-backed authentication for Anthropic in exocortexd.
  */
 
-import { log } from "../../log";
-import { ANTHROPIC_BASE_URL } from "./constants";
-import {
-  clearProviderAuth,
-  isTokenExpired,
-  loadProviderAuth,
-  saveProviderAuth,
-  type StoredTokens,
-  type OAuthProfile,
-  type StoredAuth,
-} from "../../store";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
+import { clearProviderAuth, loadProviderAuth, saveProviderAuth, type OAuthProfile } from "../../store";
 import { AuthError } from "../errors";
 import type { EnsureAuthResult, LoginCallbacks, LoginResult } from "../types";
 import {
-  ANTHROPIC_OAUTH_CLIENT_ID,
-  ANTHROPIC_OAUTH_SCOPES,
-  ANTHROPIC_TOKEN_URL,
-  runAnthropicBrowserOAuth,
-  type AnthropicTokenResponse,
-} from "./oauth";
+  getClaudeAuthStatus,
+  getClaudeAuthStatusSync,
+  getClaudeVersion,
+  loginWithClaudeCli,
+  logoutWithClaudeCliSync,
+} from "./cli";
+import type { ClaudeAuthStatus, StoredAnthropicAuth } from "./types";
 
 const ANTHROPIC_PROVIDER_ID = "anthropic";
 
-interface ProfileResponse {
-  account: { uuid: string; email: string; display_name: string | null };
-  organization: {
-    uuid: string; name: string; organization_type: string;
-    rate_limit_tier: string; billing_type: string;
+function toProfile(input: {
+  email?: string | null;
+  accountUuid?: string | null;
+  displayName?: string | null;
+  orgId?: string | null;
+  orgName?: string | null;
+  subscriptionType?: string | null;
+  organizationRole?: string | null;
+  workspaceRole?: string | null;
+}): OAuthProfile | null {
+  if (!input.email) return null;
+  return {
+    accountUuid: input.accountUuid ?? input.email,
+    email: input.email,
+    displayName: input.displayName ?? null,
+    organizationUuid: input.orgId ?? null,
+    organizationName: input.orgName ?? null,
+    organizationType: input.subscriptionType ?? null,
+    organizationRole: input.organizationRole ?? null,
+    workspaceRole: input.workspaceRole ?? null,
   };
 }
 
-interface RolesResponse {
-  organization_role: string | null;
-  workspace_role: string | null;
+function profileFromStatus(status: ClaudeAuthStatus): OAuthProfile | null {
+  return toProfile({
+    email: status.email,
+    orgId: status.orgId,
+    orgName: status.orgName,
+    subscriptionType: status.subscriptionType,
+  });
 }
 
-async function fetchProfile(accessToken: string): Promise<ProfileResponse | null> {
-  try {
-    const res = await fetch(`${ANTHROPIC_BASE_URL}/api/oauth/profile`, {
-      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    });
-    return res.ok ? (res.json() as Promise<ProfileResponse>) : null;
-  } catch {
-    return null;
-  }
+function loadStoredAuth(): StoredAnthropicAuth | null {
+  return loadProviderAuth<StoredAnthropicAuth>(ANTHROPIC_PROVIDER_ID);
 }
 
-async function fetchRoles(accessToken: string): Promise<RolesResponse | null> {
-  try {
-    const res = await fetch(`${ANTHROPIC_BASE_URL}/api/oauth/claude_cli/roles`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    return res.ok ? (res.json() as Promise<RolesResponse>) : null;
-  } catch {
-    return null;
-  }
+function saveStoredAuth(auth: StoredAnthropicAuth): void {
+  saveProviderAuth(ANTHROPIC_PROVIDER_ID, auth);
 }
 
-function mapSubscription(orgType: string | null | undefined): string | null {
-  switch (orgType) {
+interface ClaudeLocalConfig {
+  oauthAccount?: {
+    accountUuid?: unknown;
+    emailAddress?: unknown;
+    displayName?: unknown;
+    organizationUuid?: unknown;
+    organizationName?: unknown;
+    billingType?: unknown;
+    organizationRole?: unknown;
+    workspaceRole?: unknown;
+  };
+}
+
+function normalizeLocalSubscriptionType(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  switch (value) {
     case "claude_max": return "max";
     case "claude_pro": return "pro";
-    case "claude_enterprise": return "enterprise";
     case "claude_team": return "team";
+    case "claude_enterprise": return "enterprise";
     default: return null;
   }
 }
 
-function loadStoredAuth(): StoredAuth | null {
-  return loadProviderAuth<StoredAuth>(ANTHROPIC_PROVIDER_ID);
+function localClaudeConfigPath(): string {
+  return join(process.env.HOME || process.cwd(), ".claude.json");
 }
 
-function saveStoredAuth(auth: StoredAuth): void {
-  saveProviderAuth(ANTHROPIC_PROVIDER_ID, auth);
-}
-
-let inflightRefresh: Promise<StoredTokens> | null = null;
-
-export async function refreshTokens(refreshToken: string): Promise<StoredTokens> {
-  if (inflightRefresh) return inflightRefresh;
-  inflightRefresh = doRefresh(refreshToken).finally(() => {
-    inflightRefresh = null;
-  });
-  return inflightRefresh;
-}
-
-async function doRefresh(refreshToken: string): Promise<StoredTokens> {
-  log("info", "auth: refreshing tokens");
-  const res = await fetch(ANTHROPIC_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: ANTHROPIC_OAUTH_CLIENT_ID,
-      scope: ANTHROPIC_OAUTH_SCOPES.join(" "),
-    }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    if (res.status === 400 && text.includes("invalid_grant")) {
-      throw new AuthError(`Session expired — use login to re-authenticate. (${text})`);
-    }
-    throw new Error(`Token refresh failed (${res.status}): ${text}`);
+function loadClaudeLocalProfile(): OAuthProfile | null {
+  const configPath = localClaudeConfigPath();
+  if (!existsSync(configPath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf-8")) as ClaudeLocalConfig;
+    const account = parsed.oauthAccount;
+    if (!account || typeof account !== "object") return null;
+    return toProfile({
+      email: typeof account.emailAddress === "string" ? account.emailAddress : null,
+      accountUuid: typeof account.accountUuid === "string" ? account.accountUuid : null,
+      displayName: typeof account.displayName === "string" ? account.displayName : null,
+      orgId: typeof account.organizationUuid === "string" ? account.organizationUuid : null,
+      orgName: typeof account.organizationName === "string" ? account.organizationName : null,
+      subscriptionType: normalizeLocalSubscriptionType(account.billingType),
+      organizationRole: typeof account.organizationRole === "string" ? account.organizationRole : null,
+      workspaceRole: typeof account.workspaceRole === "string" ? account.workspaceRole : null,
+    });
+  } catch {
+    return null;
   }
+}
 
-  const data = (await res.json()) as AnthropicTokenResponse;
-  const profile = await fetchProfile(data.access_token);
-
+function toStoredAuth(status: ClaudeAuthStatus, version: string | null): StoredAnthropicAuth {
+  const localProfile = loadClaudeLocalProfile();
   return {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token ?? refreshToken,
-    expiresAt: Date.now() + data.expires_in * 1000,
-    scopes: data.scope?.split(" ") ?? [...ANTHROPIC_OAUTH_SCOPES],
-    subscriptionType: mapSubscription(profile?.organization?.organization_type),
-    rateLimitTier: profile?.organization?.rate_limit_tier ?? null,
+    cli: {
+      authenticated: status.loggedIn,
+      version,
+      authMethod: status.authMethod ?? null,
+      subscriptionType: status.subscriptionType ?? localProfile?.organizationType ?? null,
+    },
+    profile: profileFromStatus(status) ?? localProfile,
+    updatedAt: new Date().toISOString(),
   };
 }
 
-export async function verifyAuth(accessToken: string): Promise<boolean> {
+async function probeCliAuth(signal?: AbortSignal): Promise<StoredAnthropicAuth> {
+  const version = await getClaudeVersion(signal);
+  const status = await getClaudeAuthStatus(signal);
+  const stored = toStoredAuth(status, version);
+  saveStoredAuth(stored);
+  return stored;
+}
+
+export async function refreshTokens(_refreshToken: string): Promise<never> {
+  throw new AuthError("Anthropic authentication is managed by Claude Code and does not support token refresh.");
+}
+
+export async function verifyAuth(_accessToken: string): Promise<boolean> {
   try {
-    const res = await fetch(`${ANTHROPIC_BASE_URL}/api/oauth/claude_cli/client_data`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "anthropic-beta": "oauth-2025-04-20",
-        "Content-Type": "application/json",
-      },
-      signal: AbortSignal.timeout(5000),
-    });
-    return res.ok;
+    const stored = await probeCliAuth();
+    return stored.cli.authenticated;
   } catch {
     return false;
   }
 }
 
-export async function getVerifiedAccessToken(): Promise<string> {
-  const auth = loadStoredAuth();
-  if (!auth?.tokens?.accessToken) {
-    throw new AuthError("Anthropic is not authenticated. Run `bun run src/main.ts login anthropic`.");
-  }
-
-  if (isTokenExpired(auth.tokens)) {
-    if (!auth.tokens.refreshToken) {
-      throw new AuthError("Anthropic token expired and no refresh token is available.");
-    }
-    const newTokens = await refreshTokens(auth.tokens.refreshToken);
-    saveStoredAuth({ ...auth, tokens: newTokens, updatedAt: new Date().toISOString() });
-    return newTokens.accessToken;
-  }
-
-  return auth.tokens.accessToken;
-}
-
 export async function ensureAuthenticated(callbacks?: LoginCallbacks): Promise<EnsureAuthResult> {
-  const existing = loadStoredAuth();
+  const say = callbacks?.onProgress ?? (() => {});
 
-  if (existing?.tokens?.accessToken && !isTokenExpired(existing.tokens)) {
-    const valid = await verifyAuth(existing.tokens.accessToken);
-    if (valid) {
-      return { status: "already_authenticated", email: existing.profile?.email ?? null };
-    }
-  }
-
-  if (existing?.tokens?.refreshToken) {
-    try {
-      const newTokens = await refreshTokens(existing.tokens.refreshToken);
-      saveStoredAuth({ ...existing, tokens: newTokens, updatedAt: new Date().toISOString() });
-      return { status: "refreshed", email: existing.profile?.email ?? null };
-    } catch {
-      // refresh failed — fall through to full login
-    }
+  say("Checking Claude Code installation...");
+  const stored = await probeCliAuth();
+  if (stored.cli.authenticated) {
+    return { status: "already_authenticated", email: stored.profile?.email ?? null };
   }
 
   const result = await login(callbacks);
-  saveStoredAuth({ tokens: result.tokens, profile: result.profile, updatedAt: new Date().toISOString() });
   return { status: "logged_in", email: result.profile?.email ?? null };
 }
 
 export function hasConfiguredCredentials(): boolean {
-  const auth = loadStoredAuth();
-  return !!auth?.tokens?.accessToken || !!auth?.tokens?.refreshToken;
+  if (typeof process.env.CLAUDE_CODE_OAUTH_TOKEN === "string" && process.env.CLAUDE_CODE_OAUTH_TOKEN.length > 0) {
+    return true;
+  }
+  const liveStatus = getClaudeAuthStatusSync();
+  if (liveStatus?.loggedIn === true) return true;
+  if (liveStatus?.loggedIn === false) return false;
+  const stored = loadStoredAuth();
+  if (stored?.cli.authenticated === true) return true;
+  return loadClaudeLocalProfile() !== null;
 }
 
 export function clearAuth(): boolean {
+  try {
+    logoutWithClaudeCliSync();
+  } catch {
+    // best-effort; local cache clearing below still lets Exocortex recover
+  }
   return clearProviderAuth(ANTHROPIC_PROVIDER_ID);
-}
-
-function buildLoginResult(
-  tokenData: AnthropicTokenResponse,
-  profile: ProfileResponse | null,
-  roles: RolesResponse | null,
-): LoginResult {
-  return {
-    tokens: {
-      accessToken: tokenData.access_token,
-      refreshToken: tokenData.refresh_token,
-      expiresAt: Date.now() + tokenData.expires_in * 1000,
-      scopes: tokenData.scope?.split(" ") ?? [...ANTHROPIC_OAUTH_SCOPES],
-      subscriptionType: mapSubscription(profile?.organization?.organization_type),
-      rateLimitTier: profile?.organization?.rate_limit_tier ?? null,
-    },
-    profile: profile ? {
-      accountUuid: profile.account.uuid,
-      email: profile.account.email,
-      displayName: profile.account.display_name,
-      organizationUuid: profile.organization?.uuid ?? null,
-      organizationName: profile.organization?.name ?? null,
-      organizationType: profile.organization?.organization_type ?? null,
-      organizationRole: roles?.organization_role ?? null,
-      workspaceRole: roles?.workspace_role ?? null,
-    } : null,
-  };
 }
 
 export async function login(callbacks?: LoginCallbacks | ((msg: string) => void)): Promise<LoginResult> {
   const cbs: LoginCallbacks = typeof callbacks === "function" ? { onProgress: callbacks } : callbacks ?? {};
-  const tokenData = await runAnthropicBrowserOAuth(cbs);
-  const profile = await fetchProfile(tokenData.access_token);
-  const roles = await fetchRoles(tokenData.access_token);
-  return buildLoginResult(tokenData, profile, roles);
+  cbs.onProgress?.("Checking Claude Code installation...");
+  await getClaudeVersion();
+  cbs.onProgress?.("Opening Claude Code login...");
+  await loginWithClaudeCli(cbs);
+  cbs.onProgress?.("Verifying Claude Code session...");
+  const stored = await probeCliAuth();
+  if (!stored.cli.authenticated) {
+    throw new AuthError("Claude Code login completed, but the session is still not authenticated. Run `claude auth login` and try again.");
+  }
+  return {
+    profile: stored.profile,
+  };
 }

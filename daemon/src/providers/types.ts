@@ -1,4 +1,4 @@
-import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData } from "../messages";
+import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData, ToolCallBlock, ToolResultBlock } from "../messages";
 import type { OAuthProfile, StoredTokens } from "../store";
 import type { AssistantProviderData } from "./provider-data";
 
@@ -12,7 +12,9 @@ export interface ApiToolCall {
 
 export type ContentBlock =
   | { type: "thinking"; text: string; signature: string }
-  | { type: "text"; text: string };
+  | { type: "text"; text: string }
+  | { type: "tool_call"; id: string; name: string; input: Record<string, unknown>; summary: string }
+  | { type: "tool_result"; toolUseId: string; toolName: string; output: string; isError: boolean };
 
 export interface StreamResult {
   text: string;
@@ -30,6 +32,8 @@ export interface StreamCallbacks {
   onThinking: (chunk: string) => void;
   onBlockStart?: (type: "text" | "thinking") => void;
   onSignature?: (signature: string) => void;
+  onToolCall?: (block: ToolCallBlock) => void;
+  onToolResult?: (block: ToolResultBlock) => void;
   onHeaders?: (headers: Headers) => void;
   onRetry?: (attempt: number, maxAttempts: number, errorMessage: string, delaySec: number) => void;
 }
@@ -54,7 +58,7 @@ export interface ProviderStreamMessage {
 }
 
 export interface LoginResult {
-  tokens: StoredTokens;
+  tokens?: StoredTokens;
   profile: OAuthProfile | null;
 }
 

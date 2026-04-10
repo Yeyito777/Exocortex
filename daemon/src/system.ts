@@ -1,9 +1,5 @@
 /**
- * System prompt for exocortexd.
- *
- * Builds the system prompt sent to the Anthropic API.
- * Base prompt + per-tool hints from the registry + optional
- * user addendum from the config root (system.md).
+ * System prompt builders for exocortexd.
  */
 
 import { readFileSync } from "fs";
@@ -12,9 +8,7 @@ import { buildToolSystemHints } from "./tools/registry";
 import { getExternalToolHints } from "./external-tools";
 import { configDir } from "@exocortex/shared/paths";
 
-// ── User system prompt addendum ───────────────────────────────────
-
-let _userAddendum: string = "";
+let _userAddendum = "";
 
 function loadUserAddendum(): void {
   try {
@@ -25,34 +19,69 @@ function loadUserAddendum(): void {
 }
 loadUserAddendum();
 
-// ── Build ─────────────────────────────────────────────────────────
-
-export function buildSystemPrompt(conversationInstructions?: string): string {
+function buildEnvironmentHeader(): string {
   const cwd = process.cwd();
   const date = new Date().toLocaleDateString("en-US", {
-    weekday: "long", year: "numeric", month: "long", day: "numeric",
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
   });
 
-  const base = [
-    `You are Exo, the user's assistant.`,
-    ``,
-    `Environment:`,
+  return [
+    "You are Exo, the user's assistant.",
+    "",
+    "Environment:",
     `- Working directory: ${cwd}`,
     `- Date: ${date}`,
     `- Platform: ${process.platform} ${process.arch}`,
   ].join("\n");
+}
 
-  const parts = [base];
+function buildPromptParts(options: {
+  includeToolHints: boolean;
+  includeExternalHints: boolean;
+  conversationInstructions?: string;
+  wrapperNote?: string;
+}): string[] {
+  const parts = [buildEnvironmentHeader()];
 
-  const toolHints = buildToolSystemHints();
-  if (toolHints) parts.push(toolHints);
+  if (options.wrapperNote) parts.push(options.wrapperNote);
 
-  const externalHints = getExternalToolHints();
-  if (externalHints) parts.push("# External tools\n" + externalHints);
+  if (options.includeToolHints) {
+    const toolHints = buildToolSystemHints();
+    if (toolHints) parts.push(toolHints);
+  }
+
+  if (options.includeExternalHints) {
+    const externalHints = getExternalToolHints();
+    if (externalHints) parts.push("# External tools\n" + externalHints);
+  }
 
   if (_userAddendum) parts.push(_userAddendum);
+  if (options.conversationInstructions) parts.push("# Conversation instructions\n" + options.conversationInstructions);
 
-  if (conversationInstructions) parts.push("# Conversation instructions\n" + conversationInstructions);
+  return parts;
+}
 
-  return parts.join("\n\n");
+export function buildSystemPrompt(conversationInstructions?: string): string {
+  return buildPromptParts({
+    includeToolHints: true,
+    includeExternalHints: true,
+    conversationInstructions,
+  }).join("\n\n");
+}
+
+export function buildClaudeCodeSystemPrompt(conversationInstructions?: string): string {
+  return buildPromptParts({
+    includeToolHints: false,
+    includeExternalHints: false,
+    conversationInstructions,
+    wrapperNote: [
+      "# Runtime",
+      "You are operating through Exocortex as a UI wrapper around Claude Code.",
+      "Use Claude Code's native tools and workflows rather than assuming Exocortex-managed tools are available.",
+      "Keep your responses compatible with a terminal-style coding assistant.",
+    ].join("\n"),
+  }).join("\n\n");
 }

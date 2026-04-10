@@ -11,7 +11,7 @@ import { log } from "./log";
 import { refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { orchestrateSendMessage } from "./orchestrator";
 import { complete } from "./llm";
-import { buildSystemPrompt } from "./system";
+import { buildClaudeCodeSystemPrompt, buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles } from "./external-tools";
 import { EFFORT_LEVELS } from "./messages";
@@ -425,7 +425,14 @@ export function createHandler(server: DaemonServer) {
 
       case "get_system_prompt": {
         const instructions = cmd.convId ? convStore.getSystemInstructions(cmd.convId) : null;
-        server.sendTo(client, { type: "system_prompt", reqId: cmd.reqId, systemPrompt: buildSystemPrompt(instructions ?? undefined) });
+        const provider = cmd.convId ? convStore.get(cmd.convId)?.provider : null;
+        server.sendTo(client, {
+          type: "system_prompt",
+          reqId: cmd.reqId,
+          systemPrompt: provider === "anthropic"
+            ? buildClaudeCodeSystemPrompt(instructions ?? undefined)
+            : buildSystemPrompt(instructions ?? undefined),
+        });
         break;
       }
 

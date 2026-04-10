@@ -156,7 +156,9 @@ function handleCompletedReasoningItem(state: OpenAIReadState, item: Record<strin
   state.reasoningOutputIndexesById.set(reasoningItem.id, outputIndex);
 }
 
-function buildOrderedBlocks(state: OpenAIReadState): ContentBlock[] {
+type OpenAIRenderableBlock = Extract<ContentBlock, { type: "thinking" | "text" }>;
+
+function buildOrderedBlocks(state: OpenAIReadState): OpenAIRenderableBlock[] {
   const orderedReasoningEntries = [...state.reasoningStates.entries()]
     .sort((a, b) => a[0] - b[0])
     .filter(([, item]) => hasRenderableReasoning(item));
@@ -168,7 +170,7 @@ function buildOrderedBlocks(state: OpenAIReadState): ContentBlock[] {
     ...orderedTextEntries.map(([outputIndex, text]) => ({ outputIndex, kind: "text" as const, text })),
   ].sort((a, b) => a.outputIndex - b.outputIndex);
 
-  const orderedBlocks: ContentBlock[] = [];
+  const orderedBlocks: OpenAIRenderableBlock[] = [];
   for (const entry of orderedEntries) {
     if (entry.kind === "reasoning") {
       finalizeReasoningItem(entry.item, orderedBlocks, { value: "" });
@@ -187,7 +189,7 @@ function buildOrderedBlocks(state: OpenAIReadState): ContentBlock[] {
  * aligned with the final canonical blocks so refocus / late-join clients don't
  * temporarily lose that tail until message_complete lands.
  */
-function emitCompletedBackfill(before: ContentBlock[], after: ContentBlock[], cb: StreamCallbacks): void {
+function emitCompletedBackfill(before: OpenAIRenderableBlock[], after: OpenAIRenderableBlock[], cb: StreamCallbacks): void {
   if (before.length > after.length) return;
 
   for (let i = 0; i < before.length; i++) {
@@ -444,6 +446,8 @@ export function readOpenAIEventsForTest(
     onThinking: callbacks.onThinking ?? (() => {}),
     onBlockStart: callbacks.onBlockStart,
     onSignature: callbacks.onSignature,
+    onToolCall: callbacks.onToolCall,
+    onToolResult: callbacks.onToolResult,
     onHeaders: callbacks.onHeaders,
     onRetry: callbacks.onRetry,
   };

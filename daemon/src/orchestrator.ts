@@ -10,7 +10,7 @@
 import { log } from "./log";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
-import { buildSystemPrompt } from "./system";
+import { buildClaudeCodeSystemPrompt, buildSystemPrompt } from "./system";
 import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
@@ -388,7 +388,9 @@ export async function orchestrateSendMessage(
 
   try {
     const result = await runAgentLoop(apiMessages, conv.provider, conv.model, callbacks, {
-      system: buildSystemPrompt(systemInstructionsText ?? undefined),
+      system: conv.provider === "anthropic"
+        ? buildClaudeCodeSystemPrompt(systemInstructionsText ?? undefined)
+        : buildSystemPrompt(systemInstructionsText ?? undefined),
       signal: ac.signal,
       tools: getToolDefs(),
       executor,

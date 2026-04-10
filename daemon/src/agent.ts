@@ -182,6 +182,8 @@ export async function runAgentLoop(
       onThinking: callbacks.onThinkingChunk,
       onBlockStart: callbacks.onBlockStart,
       onSignature: callbacks.onSignature,
+      onToolCall: callbacks.onToolCall,
+      onToolResult: callbacks.onToolResult,
       onHeaders: callbacks.onHeaders,
       onRetry: callbacks.onRetry,
     }, {
@@ -209,8 +211,24 @@ export async function runAgentLoop(
       if (block.type === "thinking") {
         allBlocks.push({ type: "thinking", text: block.text });
         if (block.signature) callbacks.onSignature(block.signature);
-      } else {
+      } else if (block.type === "text") {
         allBlocks.push({ type: "text", text: block.text });
+      } else if (block.type === "tool_call") {
+        allBlocks.push({
+          type: "tool_call",
+          toolCallId: block.id,
+          toolName: block.name,
+          input: block.input,
+          summary: block.summary,
+        });
+      } else if (block.type === "tool_result") {
+        allBlocks.push({
+          type: "tool_result",
+          toolCallId: block.toolUseId,
+          toolName: block.toolName,
+          output: block.output,
+          isError: block.isError,
+        });
       }
     }
 
@@ -219,8 +237,12 @@ export async function runAgentLoop(
     for (const block of result.blocks) {
       if (block.type === "thinking") {
         assistantContent.push({ type: "thinking", thinking: block.text, signature: block.signature });
-      } else {
+      } else if (block.type === "text") {
         assistantContent.push({ type: "text", text: block.text });
+      } else if (block.type === "tool_call") {
+        assistantContent.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
+      } else if (block.type === "tool_result") {
+        assistantContent.push({ type: "tool_result", tool_use_id: block.toolUseId, content: block.output, is_error: block.isError });
       }
     }
     for (const tc of result.toolCalls) {

@@ -1,38 +1,89 @@
 /**
- * Anthropic Messages API streaming client.
+ * Claude Agent SDK-backed Anthropic runtime.
  */
 
-import { loadProviderAuth, saveProviderAuth, type StoredAuth } from "../../store";
+import { query, type EffortLevel as ClaudeEffortLevel, type Options as ClaudeQueryOptions, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { createAbortError } from "../../abort";
 import { log } from "../../log";
 import { type ModelId, type ApiMessage } from "../../messages";
 import type { StreamResult, StreamCallbacks, StreamOptions } from "../types";
-import { refreshTokens, getVerifiedAccessToken } from "./auth";
-import { buildAnthropicRequest } from "./request";
-import { readAnthropicStream, RetryableStreamError } from "./stream";
+import { AuthError } from "../errors";
+import { getClaudeAuthStatus, getClaudeBinary, getClaudeVersion } from "./cli";
+import { buildClaudePrompt, buildClaudeSdkUserMessage, extractResumeSessionId, resolveClaudeModel, supportsClaudeEffort } from "./prompt";
+import { createClaudeStreamProcessor, finalizeClaudeStream, pushClaudeEvent } from "./stream";
 
-const STREAM_STALL_TIMEOUT = 120_000;
-const MAX_RETRIES = 10;
-const ANTHROPIC_PROVIDER_ID = "anthropic";
+const CLAUDE_SETTING_SOURCES = ["user", "project", "local"] as const;
 
-async function forceRefreshToken(failedToken: string): Promise<string> {
-  const auth = loadProviderAuth<StoredAuth>(ANTHROPIC_PROVIDER_ID);
-  if (!auth?.tokens?.refreshToken) throw new Error("No refresh token");
-  if (auth.tokens.accessToken !== failedToken) return auth.tokens.accessToken;
-  const newTokens = await refreshTokens(auth.tokens.refreshToken);
-  saveProviderAuth(ANTHROPIC_PROVIDER_ID, { ...auth, tokens: newTokens, updatedAt: new Date().toISOString() });
-  return newTokens.accessToken;
+function toClaudeEffort(effort: StreamOptions["effort"]): ClaudeEffortLevel | undefined {
+  if (effort === "low" || effort === "medium" || effort === "high" || effort === "max") return effort;
+  return undefined;
 }
 
-function retryBackoff(
-  attempt: number,
-  errMsg: string,
-  callbacks: StreamCallbacks,
-): Promise<void> {
-  const delay = Math.min(1000 * Math.pow(2, attempt), 30000) + Math.random() * 1000;
-  const delaySec = Math.round(delay / 1000);
-  log("warn", `api: ${errMsg}, retry ${attempt + 1}/${MAX_RETRIES} in ${delaySec}s`);
-  callbacks.onRetry?.(attempt + 1, MAX_RETRIES, errMsg, delaySec);
-  return new Promise((r) => setTimeout(r, delay));
+function isHelperProfile(options: StreamOptions): boolean {
+  return !options.tools || options.tools.length === 0;
+}
+
+function toSdkPrompt(messages: ApiMessage[], resumeSessionId: string | null, helperProfile: boolean): string | AsyncIterable<SDKUserMessage> {
+  if (helperProfile) {
+    return buildClaudePrompt(messages, resumeSessionId);
+  }
+
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield buildClaudeSdkUserMessage(messages, resumeSessionId);
+    },
+  };
+}
+
+function buildClaudeQueryOptions(messages: ApiMessage[], model: ModelId, options: StreamOptions): ClaudeQueryOptions {
+  const helperProfile = isHelperProfile(options);
+  const resumeSessionId = helperProfile ? null : extractResumeSessionId(messages);
+  const systemPrompt = helperProfile
+    ? options.system
+    : options.system
+      ? { type: "preset" as const, preset: "claude_code" as const, append: options.system }
+      : { type: "preset" as const, preset: "claude_code" as const };
+
+  const effort = supportsClaudeEffort(model) ? toClaudeEffort(options.effort) : undefined;
+
+  const queryOptions: ClaudeQueryOptions = {
+    cwd: process.cwd(),
+    model: resolveClaudeModel(model),
+    pathToClaudeCodeExecutable: getClaudeBinary(),
+    includePartialMessages: true,
+    env: {
+      ...process.env,
+      CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon",
+    },
+    ...(systemPrompt ? { systemPrompt } : {}),
+    ...(effort ? { effort } : {}),
+    ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+  };
+
+  if (helperProfile) {
+    return {
+      ...queryOptions,
+      tools: [],
+      permissionMode: "dontAsk",
+      settingSources: [],
+      maxTurns: 1,
+    };
+  }
+
+  return {
+    ...queryOptions,
+    tools: { type: "preset", preset: "claude_code" },
+    permissionMode: "bypassPermissions",
+    settingSources: [...CLAUDE_SETTING_SOURCES],
+  };
+}
+
+async function ensureClaudeReady(signal?: AbortSignal): Promise<void> {
+  await getClaudeVersion(signal);
+  const status = await getClaudeAuthStatus(signal);
+  if (!status.loggedIn) {
+    throw new AuthError("Anthropic is not authenticated. Run `claude auth login`.");
+  }
 }
 
 export async function streamMessage(
@@ -41,46 +92,60 @@ export async function streamMessage(
   callbacks: StreamCallbacks,
   options: StreamOptions = {},
 ): Promise<StreamResult> {
-  const { system, signal, maxTokens = 32000, tools, effort } = options;
-  let accessToken = await getVerifiedAccessToken();
-  let authRetried = false;
-  let retryAttempt = 0;
+  const { signal } = options;
+  await ensureClaudeReady(signal);
 
-  while (true) {
-    const { url, init } = buildAnthropicRequest(accessToken, messages, model, maxTokens, system, tools, effort);
-    const res = await fetch(url, { ...init, signal });
+  const helperProfile = isHelperProfile(options);
+  const resumeSessionId = helperProfile ? null : extractResumeSessionId(messages);
+  const sdkPrompt = toSdkPrompt(messages, resumeSessionId, helperProfile);
+  const queryOptions = buildClaudeQueryOptions(messages, model, options);
 
-    if (!authRetried && (res.status === 401 || (res.status === 403 && (await res.clone().text()).includes("revoked")))) {
-      log("warn", `api: ${res.status}, refreshing token`);
-      accessToken = await forceRefreshToken(accessToken);
-      authRetried = true;
-      continue;
-    }
+  log("info", `anthropic: starting Claude SDK session (model=${resolveClaudeModel(model)}, resume=${resumeSessionId ? "yes" : "no"}, helper=${helperProfile ? "yes" : "no"})`);
 
-    if (res.status === 429 || res.status === 529 || res.status === 503) {
-      if (retryAttempt < MAX_RETRIES) {
-        await retryBackoff(retryAttempt++, `HTTP ${res.status}`, callbacks);
-        continue;
-      }
-      const text = await res.text();
-      throw new RetryableStreamError(`API error (${res.status}) after ${MAX_RETRIES} retries: ${text.slice(0, 200)}`);
-    }
+  const runtime = query({
+    prompt: sdkPrompt,
+    options: queryOptions,
+  });
 
-    if (!res.ok) {
-      const text = await res.text();
-      log("error", `api: error (${res.status}): ${text.slice(0, 500)}`);
-      throw new Error(`API error (${res.status}): ${text}`);
-    }
-
-    callbacks.onHeaders?.(res.headers);
+  const processor = createClaudeStreamProcessor(callbacks);
+  const onAbort = () => {
     try {
-      return await readAnthropicStream(res, callbacks, STREAM_STALL_TIMEOUT);
-    } catch (err) {
-      if (err instanceof RetryableStreamError && retryAttempt < MAX_RETRIES) {
-        await retryBackoff(retryAttempt++, (err as Error).message, callbacks);
-        continue;
-      }
-      throw err;
+      runtime.close();
+    } catch {
+      // best-effort
+    }
+  };
+
+  if (signal) {
+    if (signal.aborted) {
+      onAbort();
+      throw createAbortError();
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+
+  try {
+    for await (const message of runtime) {
+      if (signal?.aborted) throw createAbortError();
+      pushClaudeEvent(processor, message as unknown as Record<string, unknown>);
+    }
+    if (signal?.aborted) throw createAbortError();
+    return finalizeClaudeStream(processor);
+  } catch (error) {
+    if (signal?.aborted) throw createAbortError();
+    if (error instanceof AuthError && !/claude auth login/i.test(error.message)) {
+      throw new AuthError(`${error.message} Run \`claude auth login\` and try again. If Claude works interactively but Exocortex still gets 401s, generate a scripted token with \`claude setup-token\` and set \`CLAUDE_CODE_OAUTH_TOKEN\` in Exocortex's secrets env.`);
+    }
+    if (error instanceof Error && /auth/i.test(error.message) && !/claude auth login/i.test(error.message)) {
+      throw new AuthError(`${error.message} Run \`claude auth login\` and try again. If Claude works interactively but Exocortex still gets 401s, generate a scripted token with \`claude setup-token\` and set \`CLAUDE_CODE_OAUTH_TOKEN\` in Exocortex's secrets env.`);
+    }
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    try {
+      runtime.close();
+    } catch {
+      // best-effort
     }
   }
 }

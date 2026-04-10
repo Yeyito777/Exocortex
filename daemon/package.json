@@ -11,6 +11,7 @@
     "coverage": "bun test --coverage"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.77",
     "@exocortex/shared": "workspace:*"
   },
   "devDependencies": {
