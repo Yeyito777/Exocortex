@@ -166,7 +166,10 @@ function handleSubmit(): void {
           daemon.createConversation(state.provider, state.model, "", state.effort);
           break;
         case "model_changed":
-          if (state.convId) daemon.setModel(state.convId, cmdResult.model);
+          if (state.convId) daemon.setModel(state.convId, cmdResult.provider, cmdResult.model);
+          break;
+        case "trim_requested":
+          if (state.convId) daemon.trimConversation(state.convId, cmdResult.mode, cmdResult.count);
           break;
         case "effort_changed":
           if (state.convId) daemon.setEffort(state.convId, cmdResult.effort);

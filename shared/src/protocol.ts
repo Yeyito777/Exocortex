@@ -73,6 +73,7 @@ export interface SetModelCommand {
   type: "set_model";
   reqId?: string;
   convId: string;
+  provider?: ProviderId;
   model: ModelId;
 }
 
@@ -88,6 +89,16 @@ export interface SetFastModeCommand {
   reqId?: string;
   convId: string;
   enabled: boolean;
+}
+
+export type TrimMode = "messages" | "thinking" | "toolresults";
+
+export interface TrimConversationCommand {
+  type: "trim_conversation";
+  reqId?: string;
+  convId: string;
+  mode: TrimMode;
+  count: number;
 }
 
 export interface DeleteConversationCommand {
@@ -207,6 +218,7 @@ export type Command =
   | SetModelCommand
   | SetEffortCommand
   | SetFastModeCommand
+  | TrimConversationCommand
   | AbortCommand
   | SubscribeCommand
   | UnsubscribeCommand
