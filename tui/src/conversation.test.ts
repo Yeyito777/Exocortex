@@ -60,4 +60,38 @@ describe("tool call rendering", () => {
     expect(rendered).toContain("  $ env FOO=1 command time");
     expect(rendered).toContain("  Exocortex ls | sed -n '1,3p' --timeout 120000");
   });
+
+  test("styles external tool after a cat heredoc bash prelude", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "bash",
+          input: {},
+          summary: [
+            "cat > /tmp/kittenml-reply.txt <<'EOF'",
+            "Hi!",
+            "EOF",
+            "",
+            "gmail reply -f /tmp/kittenml-reply.txt 19d68e0c3d19ece3 --timeout 120000",
+          ].join("\n"),
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
+      externalToolStyles: [{ cmd: "gmail", label: "Gmail", color: "#4ddbb7" }],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 120).lines.map(stripAnsi);
+
+    expect(rendered).toContain("  $ cat > /tmp/kittenml-reply.txt <<'EOF'");
+    expect(rendered).toContain("  $ Hi!");
+    expect(rendered).toContain("  Gmail reply -f /tmp/kittenml-reply.txt 19d68e0c3d19ece3 --timeout 120000");
+  });
 });

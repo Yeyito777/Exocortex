@@ -45,6 +45,12 @@ interface CommandCandidate {
   candidate: string;
 }
 
+interface HeredocSpec {
+  terminator: string;
+  allowTabs: boolean;
+  start: number;
+}
+
 // ── External tool matching ────────────────────────────────────────
 
 const SETUP_COMMANDS = new Set(["set", "cd", "export", "unset", "source", "."]);
@@ -209,6 +215,52 @@ function unwrapCommandWrappers(tokens: ShellToken[], start: number): number | nu
   }
 }
 
+function parseHeredocSpecs(line: string): HeredocSpec[] {
+  const specs: HeredocSpec[] = [];
+  const regex = /<<(-)?\s*(?:'([^']*)'|"([^"]*)"|\\?([^\s'"`]+))/g;
+
+  for (const match of line.matchAll(regex)) {
+    const terminator = match[2] ?? match[3] ?? match[4];
+    if (!terminator) continue;
+    specs.push({
+      terminator: terminator.startsWith("\\") ? terminator.slice(1) : terminator,
+      allowTabs: match[1] === "-",
+      start: match.index ?? 0,
+    });
+  }
+
+  return specs;
+}
+
+function hasOutputRedirectionBefore(line: string, beforeIndex: number): boolean {
+  for (let i = 0; i < Math.min(beforeIndex, line.length); i++) {
+    if (line[i] !== ">") continue;
+    if (line[i - 1] === "<") continue;
+    return true;
+  }
+  return false;
+}
+
+function isSkippableHeredocPrelude(rawLine: string, command: string, heredocs: HeredocSpec[]): boolean {
+  return heredocs.length > 0 && command === "cat" && hasOutputRedirectionBefore(rawLine, heredocs[0].start);
+}
+
+function isHeredocTerminatorLine(line: string, spec: HeredocSpec): boolean {
+  return spec.allowTabs ? line.replace(/^\t+/, "") === spec.terminator : line === spec.terminator;
+}
+
+function skipHeredocBodies(lines: string[], lineIndex: number, specs: HeredocSpec[]): number | null {
+  let i = lineIndex;
+
+  for (const spec of specs) {
+    i += 1;
+    while (i < lines.length && !isHeredocTerminatorLine(lines[i], spec)) i++;
+    if (i >= lines.length) return null;
+  }
+
+  return i;
+}
+
 function extractCommandCandidate(summary: string): CommandCandidate | null {
   const lines = summary.trimStart().split("\n");
 
@@ -218,15 +270,30 @@ function extractCommandCandidate(summary: string): CommandCandidate | null {
     if (!trimmedLine) continue;
     if (trimmedLine.startsWith("#")) continue;
 
+    const heredocs = parseHeredocSpecs(trimmedLine);
     const tokens = tokenizeShellWords(trimmedLine);
     if (!tokens || tokens.length === 0) return null;
 
     const firstTokenIndex = stripLeadingAssignments(tokens);
     const firstToken = tokens[firstTokenIndex]?.text;
-    if (firstToken && SETUP_COMMANDS.has(firstToken)) continue;
+    if (firstToken && SETUP_COMMANDS.has(firstToken)) {
+      if (heredocs.length > 0) {
+        const lastHeredocLine = skipHeredocBodies(lines, lineIndex, heredocs);
+        if (lastHeredocLine == null) return null;
+        lineIndex = lastHeredocLine;
+      }
+      continue;
+    }
 
     const commandIndex = unwrapCommandWrappers(tokens, 0);
     if (commandIndex == null) return null;
+
+    if (isSkippableHeredocPrelude(trimmedLine, tokens[commandIndex].text, heredocs)) {
+      const lastHeredocLine = skipHeredocBodies(lines, lineIndex, heredocs);
+      if (lastHeredocLine == null) return null;
+      lineIndex = lastHeredocLine;
+      continue;
+    }
 
     const leadingIndent = rawLine.length - trimmedLine.length;
     const matchStart = leadingIndent + tokens[commandIndex].start;
