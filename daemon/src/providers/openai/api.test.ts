@@ -60,12 +60,20 @@ describe("OpenAI replay input", () => {
     expect(body.service_tier).toBe("priority");
   });
 
-  test("reasoning summary defaults to detailed", () => {
+  test("reasoning summary defaults to detailed for models that support it", () => {
     const body = buildRequestBodyForTest([
       { role: "user", content: "hello" },
     ], "gpt-5.4", 1234, {});
 
     expect((body.reasoning as { summary?: string }).summary).toBe("detailed");
+  });
+
+  test("omits reasoning summary for gpt-5.3-codex-spark", () => {
+    const body = buildRequestBodyForTest([
+      { role: "user", content: "hello" },
+    ], "gpt-5.3-codex-spark", 1234, {});
+
+    expect((body.reasoning as { summary?: string }).summary).toBeUndefined();
   });
 
   test("aborting an in-flight stream does not emit retry callbacks", async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { LoadedTool, Manifest } from "./external-tools";
-import { buildDaemonSpawnSpec, getToolReloadKey } from "./external-tools";
+import { buildDaemonSpawnSpec, getToolReloadKey, rewriteExternalToolShellCommand } from "./external-tools";
 
 function makeTool(overrides: {
   manifest?: Partial<Manifest>;
@@ -47,9 +47,79 @@ describe("getToolReloadKey", () => {
     expect(getToolReloadKey(before)).not.toBe(getToolReloadKey(after));
   });
 
+  test("shell config changes invalidate the reload key", () => {
+    const before = [makeTool({ manifest: { shell: { literalArgs: [{ subcommand: "send", kind: "tail" }] } } })];
+    const after = [makeTool({ manifest: { shell: { literalArgs: [{ subcommand: "send", kind: "tail" }, { subcommand: "dm", kind: "flag", flag: "--send" }] } } })];
+    expect(getToolReloadKey(before)).not.toBe(getToolReloadKey(after));
+  });
+
   test("daemon config changes invalidate the reload key", () => {
     const before = [makeTool({ manifest: { daemon: { command: "node daemon.js" } } })];
     const after = [makeTool({ manifest: { daemon: { command: "node daemon.js", restart: "always" } } })];
     expect(getToolReloadKey(before)).not.toBe(getToolReloadKey(after));
+  });
+});
+
+describe("rewriteExternalToolShellCommand", () => {
+  const discord = makeTool({
+    manifest: {
+      name: "discord",
+      bin: "./bin/discord",
+      display: { label: "Discord", color: "#5865F2" },
+      shell: {
+        literalArgs: [
+          { subcommand: "send", kind: "tail" },
+          { subcommand: "reply", kind: "tail" },
+          { subcommand: "edit", kind: "tail" },
+          { subcommand: "dm", kind: "flag", flag: "--send" },
+        ],
+      },
+    },
+    toolDir: "/tmp/tools/discord",
+  });
+
+  test("rewrites the trailing literal argument for configured tail rules", () => {
+    const command = 'discord send general "```ts\nconst x = \\\"$HOME\\\"\n```"';
+    expect(rewriteExternalToolShellCommand(command, [discord]))
+      .toBe("discord send general '```ts\nconst x = \"$HOME\"\n```'");
+  });
+
+  test("rewrites flagged literal arguments for configured commands", () => {
+    const command = 'discord dm 123 --send "$HOME"';
+    expect(rewriteExternalToolShellCommand(command, [discord]))
+      .toBe("discord dm 123 --send '$HOME'");
+  });
+
+  test("rewrites inline flag assignments for configured commands", () => {
+    const command = 'discord dm 123 --send="$HOME"';
+    expect(rewriteExternalToolShellCommand(command, [discord]))
+      .toBe("discord dm 123 --send='$HOME'");
+  });
+
+  test("preserves embedded single quotes in rewritten literals", () => {
+    const command = 'discord reply 123 456 "it' + "'" + 's fine"';
+    expect(rewriteExternalToolShellCommand(command, [discord]))
+      .toBe("discord reply 123 456 'it'\\''s fine'");
+  });
+
+  test("supports leading environment assignments", () => {
+    const command = 'DEBUG=1 discord dm 123 --send "$USER"';
+    expect(rewriteExternalToolShellCommand(command, [discord]))
+      .toBe("DEBUG=1 discord dm 123 --send '$USER'");
+  });
+
+  test("leaves unsupported complex shell commands alone", () => {
+    const command = 'discord dm 123 --send "$HOME" | tee /tmp/out.txt';
+    expect(rewriteExternalToolShellCommand(command, [discord])).toBe(command);
+  });
+
+  test("leaves unconfigured subcommands alone", () => {
+    const command = 'discord react 123 456 👍';
+    expect(rewriteExternalToolShellCommand(command, [discord])).toBe(command);
+  });
+
+  test("leaves flag rules alone when the flag has no value", () => {
+    const command = 'discord dm 123 --send --file note.txt';
+    expect(rewriteExternalToolShellCommand(command, [discord])).toBe(command);
   });
 });

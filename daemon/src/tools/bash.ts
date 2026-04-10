@@ -19,6 +19,7 @@ import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./type
 import { MAX_OUTPUT_CHARS, getString, getNumber, safeSlice, summarizeParams } from "./util";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { isWindows } from "@exocortex/shared/paths";
+import { rewriteExternalToolShellCommand } from "../external-tools";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -155,6 +156,7 @@ async function executeBashImpl(
   const command = getString(input, "command");
   if (!command) return { output: "Error: missing 'command' parameter", isError: true };
 
+  const rewrittenCommand = isWindows ? command : rewriteExternalToolShellCommand(command);
   const timeout = getNumber(input, "timeout") ?? DEFAULT_TIMEOUT_MS;
 
   const startTime = Date.now();
@@ -162,7 +164,7 @@ async function executeBashImpl(
   return new Promise((resolve) => {
     const proc = spawn(
       isWindows ? "powershell" : "bash",
-      isWindows ? ["-NoProfile", "-Command", command] : ["-c", command],
+      isWindows ? ["-NoProfile", "-Command", rewrittenCommand] : ["-c", rewrittenCommand],
       {
         cwd: process.cwd(),
         env: process.env,

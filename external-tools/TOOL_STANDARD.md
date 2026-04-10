@@ -31,6 +31,13 @@ automatically.
   "display": {
     "label": "Tool Name",
     "color": "#hexcolor"
+  },
+  "shell": {
+    "literalArgs": [
+      { "subcommand": "send", "kind": "tail" },
+      { "subcommand": "reply", "kind": "tail" },
+      { "subcommand": "dm", "kind": "flag", "flag": "--send" }
+    ]
   }
 }
 ```
@@ -39,6 +46,47 @@ automatically.
 - **bin**: Relative path to the executable. Its parent directory is added to PATH.
 - **systemHint**: Injected into the system prompt so the model knows the tool exists.
 - **display**: TUI styling for bash sub-command matching (label + hex color).
+- **shell**: Optional bash-harness hints for direct top-level tool invocations.
+
+### Optional: literal argument rules
+
+Use this when certain subcommands take freeform text (message bodies, markdown,
+code blocks, etc.) that should not be interpreted by the shell.
+
+```json
+{
+  "shell": {
+    "literalArgs": [
+      { "subcommand": "send", "kind": "tail" },
+      { "subcommand": "reply", "kind": "tail" },
+      { "subcommand": "dm", "kind": "flag", "flag": "--send" }
+    ]
+  }
+}
+```
+
+Supported rule kinds:
+- `{"subcommand":"send","kind":"tail"}`
+  - Treats the final positional argument to `tool-name send ...` as literal text.
+- `{"subcommand":"dm","kind":"flag","flag":"--send"}`
+  - Treats the value passed to `--send` as literal text.
+
+This lets the AI write commands like:
+
+~~~bash
+discord send general "```ts
+const x = \"$HOME\";
+```"
+discord dm 123 --send "$HOME"
+~~~
+
+without having to manually protect `$`, backticks, quotes, or newlines in the
+configured literal argument.
+
+Scope:
+- Only applies to direct top-level invocations like `discord send ...`
+- Does not apply inside pipes, `&&`, subshells, redirects, etc.
+- Keep flags/options before the literal text they control
 
 ### Optional: daemon supervision
 

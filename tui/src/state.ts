@@ -6,10 +6,11 @@
  */
 
 import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment } from "./messages";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "./messages";
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
 import { loadPreferredProvider } from "./preferences";
+import { theme } from "./theme";
 import type { MessageBound } from "./conversation";
 import type { PanelFocus } from "./focus";
 import type { ChatFocus } from "./chat";
@@ -134,13 +135,19 @@ export interface RenderState {
   /** Whether a just-created conversation should auto-generate its title. */
   pendingGenerateTitleOnCreate: boolean;
   /**
-   * System messages buffered while streaming.
+   * User-invoked notices buffered while streaming.
    *
-   * They render as a live tail after the active AI message so notices stay
-   * visible at the bottom, then flush into committed history when streaming
-   * stops (or get replaced by canonical history via history_updated).
+   * These render as a live tail after the active AI message so slash-command
+   * feedback stays visible at the bottom. Daemon-originated stream notices are
+   * inserted inline instead.
    */
-  systemMessageBuffer: SystemMessage[];
+  streamingTailMessages: SystemMessage[];
+  /**
+   * Index of an assistant message that was committed inline before the daemon
+   * sent streaming_stopped. Used to reconcile persisted abort/error blocks at
+   * the correct history position instead of appending a second assistant turn.
+   */
+  pendingAICommittedIndex: number | null;
   /** Available tools reported by the daemon on connect. */
   toolRegistry: ToolDisplayInfo[];
   /** Available providers and models reported by the daemon on connect. */
@@ -187,27 +194,60 @@ export function isStreaming(state: RenderState): boolean {
 /** Clear pending AI state — always use this instead of setting pendingAI = null directly. */
 export function clearPendingAI(state: RenderState): void {
   state.pendingAI = null;
+  state.pendingAICommittedIndex = null;
 }
 
-/** Clear the live system-message tail used while streaming. */
-export function clearSystemMessageBuffer(state: RenderState): void {
-  state.systemMessageBuffer = [];
+/** Clear the live streaming tail used for user-invoked notices. */
+export function clearStreamingTailMessages(state: RenderState): void {
+  state.streamingTailMessages = [];
+}
+
+/** Semantic system-notice colors accepted by TUI call sites and daemon events. */
+export type SystemNoticeColorName = "muted" | "warning" | "error";
+
+/**
+ * Normalize a system-notice color into a concrete ANSI style.
+ *
+ * Accepts either a semantic color name (e.g. "warning") or an already-resolved
+ * theme escape sequence (e.g. theme.warning). Unknown strings are passed
+ * through unchanged so custom ANSI styles still work.
+ */
+export function resolveSystemMessageColor(color?: SystemNoticeColorName | string): string | undefined {
+  if (color === "error") return theme.error;
+  if (color === "warning") return theme.warning;
+  if (color === "muted") return theme.muted;
+  return color;
 }
 
 /**
- * Add a system notice to the UI.
+ * Add a user-invoked system notice to the UI.
  *
- * While an assistant response is actively streaming, system notices are kept in
- * the live tail so they stay visible at the bottom. Otherwise they are
- * committed directly into the conversation message list.
+ * While an assistant response is actively streaming, these notices are kept in
+ * the live tail so command feedback stays visible at the bottom. Daemon-
+ * originated stream notices should bypass this helper and be inserted inline.
+ *
+ * The color may be either a semantic notice color name ("warning", "error",
+ * "muted") or an already-resolved ANSI style string.
  */
-export function pushSystemMessage(state: RenderState, text: string, color?: string): void {
-  const msg: SystemMessage = { role: "system", text, color, metadata: null };
+export function pushSystemMessage(state: RenderState, text: string, color?: SystemNoticeColorName | string): void {
+  const msg: SystemMessage = { role: "system", text, color: resolveSystemMessageColor(color), metadata: null };
   if (isStreaming(state)) {
-    state.systemMessageBuffer.push(msg);
+    state.streamingTailMessages.push(msg);
   } else {
     state.messages.push(msg);
   }
+}
+
+export function getProviderInfo(state: RenderState, provider = state.provider): ProviderInfo | null {
+  return state.providerRegistry.find((candidate) => candidate.id === provider) ?? null;
+}
+
+export function getModelInfo(state: RenderState, provider = state.provider, model = state.model): ModelInfo | null {
+  return getProviderInfo(state, provider)?.models.find((candidate) => candidate.id === model) ?? null;
+}
+
+export function modelSupportsImages(state: RenderState, provider = state.provider, model = state.model): boolean {
+  return supportsImageInputsForModel(getModelInfo(state, provider, model));
 }
 
 // ── Focus transition helpers ──────────────────────────────────────
@@ -273,7 +313,8 @@ export function createInitialState(): RenderState {
     pendingAuthQueue: [],
     pendingSystemInstructions: null,
     pendingGenerateTitleOnCreate: false,
-    systemMessageBuffer: [],
+    streamingTailMessages: [],
+    pendingAICommittedIndex: null,
     toolRegistry: [],
     providerRegistry: [],
     externalToolStyles: [],

@@ -11,6 +11,7 @@ import { log } from "./log";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
 import { buildClaudeCodeSystemPrompt, buildSystemPrompt } from "./system";
+import { supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
@@ -119,6 +120,21 @@ export async function orchestrateSendMessage(
     if (client) server.sendTo(client, { type: "error", reqId, convId, message: `Conversation ${convId} not found` });
     return;
   }
+  const reportSendError = (message: string): void => {
+    if (client) {
+      server.sendTo(client, { type: "error", reqId, convId, message });
+      return;
+    }
+
+    const text = `✗ ${message}`;
+    conv.messages.push({ role: "system", content: text, metadata: null });
+    conv.updatedAt = Date.now();
+    convStore.bumpToTop(convId);
+    convStore.flush(convId);
+    server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
+    server.sendToSubscribers(convId, { type: "system_message", convId, text, color: "error" });
+  };
+
   if (!hasConfiguredCredentials(conv.provider)) {
     if (client) server.sendTo(client, {
       type: "error",
@@ -130,6 +146,10 @@ export async function orchestrateSendMessage(
   }
   if (convStore.isStreaming(convId)) {
     if (client) server.sendTo(client, { type: "error", reqId, convId, message: "Already streaming" });
+    return;
+  }
+  if (images?.length && !supportsImageInputs(conv.provider, conv.model)) {
+    reportSendError(`Image inputs are not supported by ${conv.provider}/${conv.model}. Remove the attachment or switch to a vision-capable model.`);
     return;
   }
 

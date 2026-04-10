@@ -13,7 +13,7 @@
 
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
-import { focusPrompt, focusHistory, focusSidebar } from "./state";
+import { focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
 import type { Action } from "./keybinds";
 import { resolveAction } from "./keybinds";
 import { handleChatKey } from "./chat";
@@ -26,6 +26,7 @@ import { handleEditMessageKey, openEditMessageModal } from "./editmessage";
 import { readClipboardImage } from "./clipboard";
 import { processVimKey, handleScrollAction, mapSidebarResult } from "./vimhandler";
 import { handleSearchBarKey, jumpToSearchMatch, openCommandBar, openSearchBar } from "./search";
+import { theme } from "./theme";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -165,6 +166,10 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
       state.showToolOutput = !state.showToolOutput;
       return { type: "handled" };
     case "paste_image": {
+      if (!modelSupportsImages(state)) {
+        pushSystemMessage(state, `✗ Image inputs are not supported by ${state.provider}/${state.model}. Switch to a vision-capable model to paste images.`, theme.error);
+        return { type: "handled" };
+      }
       const img = readClipboardImage();
       if (img) {
         state.pendingImages.push(img);

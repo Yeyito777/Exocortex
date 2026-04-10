@@ -429,10 +429,10 @@ export function buildMessageLines(
     pushMessageBound(state.pendingAI.role, start, start, contentEnd);
   }
 
-  // Live system-message tail during streaming. These notices are buffered in
-  // state and rendered after pendingAI so they stay visible at the bottom
-  // instead of getting buried above a growing assistant message.
-  for (const msg of state.systemMessageBuffer ?? []) {
+  // Live user-notice tail during streaming. These are buffered in state and
+  // rendered after pendingAI so slash-command feedback stays visible at the
+  // bottom instead of getting buried above a growing assistant message.
+  for (const msg of state.streamingTailMessages ?? []) {
     const start = lines.length;
     for (const sl of renderSystemMessage(msg.text, availableWidth, msg.color)) {
       pushLine(sl);

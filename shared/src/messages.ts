@@ -29,6 +29,8 @@ export interface ModelInfo {
   maxContext: number;
   supportedEfforts: ReasoningEffortInfo[];
   defaultEffort: EffortLevel;
+  /** Whether the model accepts image inputs. Omitted means "assume yes" for backwards compatibility. */
+  supportsImages?: boolean;
 }
 
 export interface ProviderInfo {
@@ -67,6 +69,12 @@ export function normalizeEffortForModel(
 ): EffortLevel {
   if (effort && supportsEffort(model, effort)) return effort;
   return model?.defaultEffort ?? DEFAULT_EFFORT;
+}
+
+export function supportsImageInputsForModel(
+  model: Pick<ModelInfo, "supportsImages"> | null | undefined,
+): boolean {
+  return model?.supportsImages ?? true;
 }
 
 /** Maximum context window size in tokens, keyed by model id. */

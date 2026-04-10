@@ -7,6 +7,7 @@
  *   - bin:        relative path to executable (e.g. "./gmail" or "./bin/twitter")
  *   - systemHint: text injected into the system prompt
  *   - display:    { label, color } for TUI bash sub-command styling
+ *   - shell:      (optional) bash-harness hints for safe literal argument rewriting
  *   - daemon:     (optional) long-running background process to supervise
  *
  * On startup, all manifests are loaded and:
@@ -27,6 +28,12 @@ import { spawn, type ChildProcess } from "child_process";
 import { log } from "./log";
 import { externalToolsDir as getExternalToolsDir } from "@exocortex/shared/paths";
 import type { ExternalToolStyle } from "@exocortex/shared/messages";
+import {
+  type ManifestShell,
+  isValidShellConfig,
+  getShellConfigHint,
+  rewriteExternalToolShellCommandForTools,
+} from "./external-tools-shell";
 
 // ── Manifest schema ──────────────────────────────────────────────
 
@@ -44,6 +51,8 @@ export interface ManifestDaemon {
   env?: Record<string, string>;
 }
 
+export type { ManifestShellLiteralArg, ManifestShell } from "./external-tools-shell";
+
 export interface Manifest {
   name: string;
   bin: string;
@@ -52,6 +61,8 @@ export interface Manifest {
     label: string;
     color: string;
   };
+  /** Optional shell invocation hints for the bash harness. */
+  shell?: ManifestShell;
   /** Optional long-running daemon that exocortexd will spawn and supervise. */
   daemon?: ManifestDaemon;
 }
@@ -287,6 +298,12 @@ function loadManifest(toolDir: string): LoadedTool | null {
       return null;
     }
 
+    // Validate optional shell field
+    if (data.shell !== undefined && !isValidShellConfig(data.shell)) {
+      log("warn", `external-tools: invalid shell config in ${manifestPath} — ignoring shell hints`);
+      data.shell = undefined;
+    }
+
     // Validate optional daemon field
     if (data.daemon !== undefined) {
       if (typeof data.daemon !== "object" || typeof data.daemon.command !== "string" || !data.daemon.command) {
@@ -361,6 +378,7 @@ export function getToolReloadKey(tools: LoadedTool[]): string {
     bin: tool.manifest.bin,
     systemHint: tool.manifest.systemHint,
     display: tool.manifest.display,
+    shell: tool.manifest.shell ?? null,
     daemon: tool.manifest.daemon ?? null,
     binDir: tool.binDir,
     toolDir: tool.toolDir,
@@ -414,6 +432,12 @@ function applyTools(tools: LoadedTool[]): boolean {
   _tools = tools;
   updatePath(tools);
   return true;
+}
+
+// ── Shell rewriting helpers ──────────────────────────────────────
+
+export function rewriteExternalToolShellCommand(command: string, tools: LoadedTool[] = _tools): string {
+  return rewriteExternalToolShellCommandForTools(command, tools);
 }
 
 // ── Public API ───────────────────────────────────────────────────
@@ -494,9 +518,13 @@ export async function stopExternalToolsAsync(): Promise<void> {
 
 /** Aggregated system hints from all loaded external tools. */
 export function getExternalToolHints(): string {
-  const hints = _tools
-    .filter(t => t.manifest.systemHint)
-    .map(t => t.manifest.systemHint);
+  const hints = _tools.flatMap((tool) => {
+    const entries: string[] = [];
+    if (tool.manifest.systemHint) entries.push(tool.manifest.systemHint);
+    const shellHint = getShellConfigHint(tool.manifest.name, tool.manifest.shell);
+    if (shellHint) entries.push(shellHint);
+    return entries;
+  });
   return hints.length > 0 ? hints.join("\n") : "";
 }
 

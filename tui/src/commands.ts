@@ -9,7 +9,7 @@
  */
 
 import type { RenderState } from "./state";
-import { clearPendingAI, clearSystemMessageBuffer, isStreaming, pushSystemMessage } from "./state";
+import { clearPendingAI, clearStreamingTailMessages, getModelInfo, getProviderInfo, isStreaming, pushSystemMessage } from "./state";
 import type { TrimMode } from "./protocol";
 import { clearPrompt } from "./promptstate";
 import {
@@ -20,7 +20,6 @@ import {
   type ProviderId,
   type ModelId,
   type EffortLevel,
-  type ModelInfo,
   type ReasoningEffortInfo,
 } from "./messages";
 import { convDisplayName } from "./messages";
@@ -82,12 +81,8 @@ function showNoSystemInstructions(state: RenderState): CommandResult {
   return { type: "handled" };
 }
 
-function providerInfo(state: RenderState, provider = state.provider) {
-  return state.providerRegistry.find((candidate) => candidate.id === provider) ?? null;
-}
-
 function providerModels(state: RenderState, provider = state.provider): ModelId[] {
-  return providerInfo(state, provider)?.models.map((model) => model.id) ?? [];
+  return getProviderInfo(state, provider)?.models.map((model) => model.id) ?? [];
 }
 
 function showLoginInfo(state: RenderState): CommandResult {
@@ -122,31 +117,27 @@ function parseOptionalProviderCommand(
   return { ok: true, provider, providers };
 }
 
-function modelInfo(state: RenderState, provider = state.provider, model = state.model): ModelInfo | null {
-  return providerInfo(state, provider)?.models.find((candidate) => candidate.id === model) ?? null;
-}
-
 function defaultModelForProvider(state: RenderState, provider = state.provider): ModelId | null {
-  return providerInfo(state, provider)?.defaultModel ?? null;
+  return getProviderInfo(state, provider)?.defaultModel ?? null;
 }
 
 function providerAllowsCustomModels(state: RenderState, provider = state.provider): boolean {
-  return providerInfo(state, provider)?.allowsCustomModels ?? false;
+  return getProviderInfo(state, provider)?.allowsCustomModels ?? false;
 }
 
 function providerSupportsFastMode(state: RenderState, provider = state.provider): boolean {
-  return providerInfo(state, provider)?.supportsFastMode ?? false;
+  return getProviderInfo(state, provider)?.supportsFastMode ?? false;
 }
 
 function providerCompletionItems(state: RenderState): CompletionItem[] {
   return availableProviders(state).map((provider) => ({
     name: provider,
-    desc: providerInfo(state, provider)?.label ?? `${provider} models`,
+    desc: getProviderInfo(state, provider)?.label ?? `${provider} models`,
   }));
 }
 
 function providerModelItems(state: RenderState, provider = state.provider): CompletionItem[] {
-  const info = providerInfo(state, provider);
+  const info = getProviderInfo(state, provider);
   const models = info?.models ?? [];
   return models.map((model) => ({
     name: model.id,
@@ -155,15 +146,15 @@ function providerModelItems(state: RenderState, provider = state.provider): Comp
 }
 
 function supportedEfforts(state: RenderState, provider = state.provider, model = state.model): ReasoningEffortInfo[] {
-  return modelInfo(state, provider, model)?.supportedEfforts ?? EFFORT_LEVELS.map((effort) => ({ effort, description: effort }));
+  return getModelInfo(state, provider, model)?.supportedEfforts ?? EFFORT_LEVELS.map((effort) => ({ effort, description: effort }));
 }
 
 function defaultEffortFor(state: RenderState, provider = state.provider, model = state.model): EffortLevel {
-  return normalizeEffortForModel(modelInfo(state, provider, model), null);
+  return normalizeEffortForModel(getModelInfo(state, provider, model), null);
 }
 
 function maxContextFor(state: RenderState, provider = state.provider, model = state.model): number | null {
-  return modelInfo(state, provider, model)?.maxContext ?? null;
+  return getModelInfo(state, provider, model)?.maxContext ?? null;
 }
 
 function effortItems(state: RenderState, provider = state.provider, model = state.model): CompletionItem[] {
@@ -175,7 +166,7 @@ function effortItems(state: RenderState, provider = state.provider, model = stat
 }
 
 function normalizeStateEffort(state: RenderState, provider = state.provider, model = state.model): void {
-  state.effort = normalizeEffortForModel(modelInfo(state, provider, model), state.effort);
+  state.effort = normalizeEffortForModel(getModelInfo(state, provider, model), state.effort);
 }
 
 function buildContextWindowWarning(
@@ -324,7 +315,7 @@ const commands: SlashCommand[] = [
     handler: (_text, state) => {
       state.messages = [];
       clearPendingAI(state);
-      clearSystemMessageBuffer(state);
+      clearStreamingTailMessages(state);
       clearPrompt(state);
       state.scrollOffset = 0;
       state.contextTokens = null;

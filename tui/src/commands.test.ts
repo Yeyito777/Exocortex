@@ -3,6 +3,7 @@ import { tryCommand } from "./commands";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
 import type { ProviderInfo } from "./messages";
+import { theme } from "./theme";
 
 const providers: ProviderInfo[] = [
   {
@@ -124,8 +125,9 @@ describe("/model", () => {
     const result = tryCommand("/model openai gpt-5.4", state);
 
     expect(result).toEqual({ type: "model_changed", provider: "openai", model: "gpt-5.4" });
-    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
-    expect(text).toContain("last known context (500,000 tokens) exceeds openai/gpt-5.4's max context (272,000)");
+    const warning = state.messages.at(-1) as { text?: string; color?: string } | undefined;
+    expect(warning?.text ?? "").toContain("last known context (500,000 tokens) exceeds openai/gpt-5.4's max context (272,000)");
+    expect(warning?.color).toBe(theme.warning);
     expect(state.contextTokens).toBeNull();
   });
 
@@ -142,7 +144,7 @@ describe("/model", () => {
     expect(result).toEqual({ type: "handled" });
     expect(state.provider).toBe("openai");
     expect(state.model).toBe("gpt-5.4");
-    expect((state.systemMessageBuffer.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot switch provider/model while this conversation is streaming.");
+    expect((state.streamingTailMessages.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot switch provider/model while this conversation is streaming.");
   });
 });
 
@@ -193,7 +195,7 @@ describe("/trim", () => {
     const result = tryCommand("/trim toolresults 2", state);
 
     expect(result).toEqual({ type: "handled" });
-    expect((state.systemMessageBuffer.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot trim the conversation while it is streaming.");
+    expect((state.streamingTailMessages.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot trim the conversation while it is streaming.");
   });
 
   test("rejects non-positive counts", () => {

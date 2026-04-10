@@ -50,6 +50,7 @@ describe("OpenAI model selection", () => {
       "gpt-5.3-codex-spark",
     ]);
     expect(models[2]?.maxContext).toBe(128_000);
+    expect(models[2]?.supportsImages).toBe(false);
   });
 
   test("does not re-add gpt-5.3-codex-spark when the Codex endpoint explicitly hides it", () => {
@@ -89,6 +90,7 @@ describe("OpenAI model selection", () => {
       maxContext: 123_000,
       supportedEfforts: [{ effort: "high", description: "Deep coding" }],
       defaultEffort: "high",
+      supportsImages: false,
     });
   });
 });
