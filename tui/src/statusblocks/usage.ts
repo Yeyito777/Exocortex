@@ -19,8 +19,7 @@ function renderBar(pct: number | null): string {
   return theme.accent + "\u2588".repeat(filled) + theme.muted + "\u2591".repeat(empty);
 }
 
-function formatTimeUntil(resetMs: number | null, now: number): string {
-  if (resetMs === null) return "?";
+function formatTimeUntil(resetMs: number, now: number): string {
   const diff = Math.floor((resetMs - now) / 1000);
   if (diff <= 0) return "now";
 
@@ -30,6 +29,12 @@ function formatTimeUntil(resetMs: number | null, now: number): string {
 
   if (days > 0) return `${days}d:${hours}h:${pad2(mins)}m`;
   return `${hours}h:${pad2(mins)}m`;
+}
+
+function formatResetLabel(window: UsageWindow | null, now: number): string {
+  if (!window) return "?";
+  if (window.resetsAt !== null) return formatTimeUntil(window.resetsAt, now);
+  return window.utilization <= 0 ? "now" : "?";
 }
 
 function pad2(n: number): string {
@@ -44,7 +49,7 @@ function windowLineWidth(label: string, pctStr: string, resetStr: string): numbe
 function renderWindowLine(label: string, window: UsageWindow | null, now: number): { line: string; width: number } {
   const pct = window ? Math.round(window.utilization) : null;
   const pctStr = pct !== null ? `${pct}%` : "?%";
-  const resetStr = formatTimeUntil(window?.resetsAt ?? null, now);
+  const resetStr = formatResetLabel(window, now);
   const bar = renderBar(pct);
   const line = `${theme.muted}  ${label}: ${theme.text}[${bar}${theme.text}] ${theme.accent}${pctStr}${theme.muted} resets in ${theme.accent}${resetStr}${theme.reset}`;
   const width = windowLineWidth(label, pctStr, resetStr);
