@@ -26,14 +26,23 @@ function buildFallbackProviderInfo(providerId: ProviderId): ProviderInfo {
   };
 }
 
-const FALLBACK_PROVIDERS_BY_ID: Record<ProviderId, ProviderInfo> = {
-  openai: buildFallbackProviderInfo("openai"),
-  anthropic: buildFallbackProviderInfo("anthropic"),
-};
+let fallbackProvidersByIdCache: Record<ProviderId, ProviderInfo> | null = null;
 
-const FALLBACK_PROVIDERS: ProviderInfo[] = DEFAULT_PROVIDER_ORDER.map((providerId) => FALLBACK_PROVIDERS_BY_ID[providerId]);
+function getFallbackProvidersById(): Record<ProviderId, ProviderInfo> {
+  if (fallbackProvidersByIdCache) return fallbackProvidersByIdCache;
+  fallbackProvidersByIdCache = {
+    openai: buildFallbackProviderInfo("openai"),
+    anthropic: buildFallbackProviderInfo("anthropic"),
+  };
+  return fallbackProvidersByIdCache;
+}
 
-let providerCache: ProviderInfo[] = structuredClone(FALLBACK_PROVIDERS);
+function getFallbackProviders(): ProviderInfo[] {
+  const byId = getFallbackProvidersById();
+  return DEFAULT_PROVIDER_ORDER.map((providerId) => byId[providerId]);
+}
+
+let providerCache: ProviderInfo[] | null = null;
 let lastRefreshAt = 0;
 let inflightRefresh: Promise<boolean> | null = null;
 const REFRESH_TTL_MS = 5 * 60 * 1000;
@@ -42,8 +51,15 @@ function cloneProviders(providers: ProviderInfo[]): ProviderInfo[] {
   return structuredClone(providers);
 }
 
+function getProviderCache(): ProviderInfo[] {
+  if (!providerCache) {
+    providerCache = structuredClone(getFallbackProviders());
+  }
+  return providerCache;
+}
+
 function chooseDefaultModel(providerId: ProviderId, models: ModelInfo[]): ModelId {
-  const fallback = FALLBACK_PROVIDERS.find((provider) => provider.id === providerId)?.defaultModel;
+  const fallback = getFallbackProviders().find((provider) => provider.id === providerId)?.defaultModel;
   if (fallback && models.some((model) => model.id === fallback)) {
     return fallback;
   }
@@ -69,7 +85,7 @@ async function refreshProviderInfo(fallback: ProviderInfo): Promise<ProviderInfo
 }
 
 export function getProviders(): ProviderInfo[] {
-  return cloneProviders(providerCache);
+  return cloneProviders(getProviderCache());
 }
 
 export function getProvider(providerId: ProviderId): ProviderInfo | null {
@@ -131,8 +147,10 @@ export async function refreshProviders(force = false): Promise<boolean> {
   if (inflightRefresh) return inflightRefresh;
 
   inflightRefresh = (async () => {
-    const next = await Promise.all(getProviderAdapters().map((provider) => refreshProviderInfo(FALLBACK_PROVIDERS_BY_ID[provider.id])));
-    const changed = JSON.stringify(providerCache) !== JSON.stringify(next);
+    const fallbackProvidersById = getFallbackProvidersById();
+    const currentProviders = getProviderCache();
+    const next = await Promise.all(getProviderAdapters().map((provider) => refreshProviderInfo(fallbackProvidersById[provider.id])));
+    const changed = JSON.stringify(currentProviders) !== JSON.stringify(next);
     providerCache = next;
     lastRefreshAt = Date.now();
     return changed;
