@@ -22,11 +22,12 @@ import { getInputLines, wrappedLineOffsets } from "./promptline";
 import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar, applyLineBg } from "./terminal";
 import { theme } from "./theme";
 import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./historycursor";
-import { renderLineWithCursor, renderLineWithSelection } from "./cursorrender";
+import { renderLineWithCursor, renderLineWithSearch, renderLineWithSelection } from "./cursorrender";
 import { highlightPromptInput } from "./prompthighlight";
 import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
+import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
 
 // ── ANSI positioning (non-color escapes) ────────────────────────────
 
@@ -156,6 +157,7 @@ function renderMessageArea(
   vEndRow: number,
   hlFirst: number,
   hlLast: number,
+  searchQuery: string | null,
 ): void {
   const { out, cl, chatCol, bgLine } = ctx;
 
@@ -168,10 +170,12 @@ function renderMessageArea(
     const lineIdx = viewStart + i;
     if (lineIdx < totalLines) {
       const line = allLines[lineIdx];
+      const plain = stripAnsi(line);
+      const searchRanges = searchQuery ? findSearchMatches(plain, searchQuery) : [];
+      let rendered = line;
 
       if (inVisual && lineIdx >= vStartRow && lineIdx <= vEndRow) {
         // This line is part of the visual selection — text-bound highlight
-        const plain = stripAnsi(line);
         const bounds = contentBounds(plain);
         let startCol: number;
         let endCol: number;
@@ -198,22 +202,22 @@ function renderMessageArea(
           endCol = bounds.end;
         }
 
-        let rendered = renderLineWithSelection(line, startCol, endCol);
-        // Cursor overlay on cursor row
-        if (lineIdx === vCursor.row) {
-          rendered = renderLineWithCursor(rendered, vCursor.col);
-        }
-        out.push(bgLine(rendered));
-      } else if (historyFocused && lineIdx >= hlFirst && lineIdx <= hlLast) {
+        rendered = renderLineWithSelection(rendered, startCol, endCol);
+      }
+
+      if (searchRanges.length > 0) {
+        rendered = renderLineWithSearch(rendered, searchRanges);
+      }
+
+      if ((inVisual && lineIdx === vCursor.row) || (historyFocused && !inVisual && lineIdx === vCursor.row)) {
+        rendered = renderLineWithCursor(rendered, vCursor.col);
+      }
+
+      if (historyFocused && !inVisual && lineIdx >= hlFirst && lineIdx <= hlLast) {
         // Normal mode: highlight the full logical line group
-        if (lineIdx === vCursor.row) {
-          const withCursor = renderLineWithCursor(line, vCursor.col);
-          out.push(applyLineBg(withCursor, theme.historyLineBg));
-        } else {
-          out.push(applyLineBg(line, theme.historyLineBg));
-        }
+        out.push(applyLineBg(rendered, theme.historyLineBg));
       } else {
-        out.push(bgLine(line));
+        out.push(bgLine(rendered));
       }
     }
   }
@@ -277,6 +281,23 @@ function renderAutocompletePopup(
       + theme.sidebarBg + theme.dim + " ▼" + theme.reset,
     );
   }
+}
+
+/** Render the vim-style chat-history search bar. */
+function renderSearchBar(
+  ctx: RenderCtx,
+  state: RenderState,
+  chatW: number,
+  row: number,
+): void {
+  const search = state.search;
+  if (!search?.barOpen) return;
+
+  const { out, cl, chatCol, bgLine } = ctx;
+  const { line } = getSearchBarViewport(search, chatW);
+  out.push(move_to(row, 1) + cl);
+  emitSidebarCol(ctx, row);
+  out.push(move_to(row, chatCol) + bgLine(line));
 }
 
 /**
@@ -344,8 +365,19 @@ function renderCursorPosition(
   cursorLine: number,
   cursorCol: number,
   promptLen: number,
+  searchBarRow: number,
+  chatW: number,
 ): void {
   const { out, chatCol } = ctx;
+
+  if (state.search?.barOpen) {
+    const { cursorCol: searchCursorCol } = getSearchBarViewport(state.search, chatW);
+    out.push(move_to(searchBarRow, chatCol + searchCursorCol));
+    out.push(cursor_bar);
+    out.push(show_cursor);
+    return;
+  }
+
   if (promptFocused) {
     const cursorScreenRow = firstInputRow + cursorLine;
     out.push(move_to(cursorScreenRow, chatCol + promptLen + cursorCol));
@@ -427,23 +459,26 @@ export function render(state: RenderState): void {
 
   const inputRowCount = inputLines.length;
 
-  // ── Bottom layout: sep | [imageIndicator] | input rows | sep | status
+  // ── Bottom layout: [searchBar] | sep | [imageIndicator] | input rows | sep | status
   const statusResult = renderStatusLine(state, chatW);
   const slHeight = statusResult.height;
   const statusLines = statusResult.lines;
   const imageIndicatorRows = state.pendingImages.length > 0 ? 1 : 0;
-  const bottomUsed = 1 + imageIndicatorRows + inputRowCount + 1 + slHeight;
-  const sepAbove = rows - bottomUsed + 1;
-  const firstInputRow = sepAbove + 1 + imageIndicatorRows;
+  const searchBarRows = state.search?.barOpen ? 1 : 0;
+  const bottomUsed = searchBarRows + 1 + imageIndicatorRows + inputRowCount + 1 + slHeight;
+  const bottomStartRow = rows - bottomUsed + 1;
+  const searchBarRow = searchBarRows > 0 ? bottomStartRow : 0;
+  const promptSepRow = bottomStartRow + searchBarRows;
+  const firstInputRow = promptSepRow + 1 + imageIndicatorRows;
   const sepBelow = firstInputRow + inputRowCount;
 
   // Prompt separator
   const promptFocused = state.panelFocus === "chat" && state.chatFocus === "prompt";
   const promptColor = promptFocused ? theme.accent : theme.dim;
 
-  // ── Message area (rows 3 to sepAbove-1) ────────────────────────
+  // ── Message area (rows 3 to bottomStartRow-1) ──────────────────
   const messageAreaStart = 3;
-  const messageAreaHeight = sepAbove - messageAreaStart;
+  const messageAreaHeight = bottomStartRow - messageAreaStart;
   const { lines: allLines, messageBounds, wrapContinuation } = buildMessageLines(state, chatW);
   const totalLines = allLines.length;
 
@@ -464,7 +499,7 @@ export function render(state: RenderState): void {
   state.layout.totalLines = totalLines;
   state.layout.messageAreaHeight = messageAreaHeight;
   state.layout.chatCol = chatCol;
-  state.layout.sepAbove = sepAbove;
+  state.layout.sepAbove = bottomStartRow;
   state.layout.firstInputRow = firstInputRow;
   state.layout.sepBelow = sepBelow;
 
@@ -493,25 +528,32 @@ export function render(state: RenderState): void {
     hlLast = range.last;
   }
 
+  const searchQuery = getActiveSearchQuery(state);
+
   renderMessageArea(
     ctx, allLines, totalLines, viewStart,
     messageAreaStart, messageAreaHeight,
     historyFocused, inVisual, state.vim.mode,
     vAnchor, vCursor, vStartRow, vEndRow,
-    hlFirst, hlLast,
+    hlFirst, hlLast, searchQuery,
   );
 
   // ── Autocomplete popup (overlays message area above input) ────
-  renderAutocompletePopup(ctx, state, chatW, sepAbove);
+  renderAutocompletePopup(ctx, state, chatW, bottomStartRow);
+
+  // ── Search bar ────────────────────────────────────────────────
+  if (searchBarRow > 0) {
+    renderSearchBar(ctx, state, chatW, searchBarRow);
+  }
 
   // ── Separator above input ─────────────────────────────────────
-  out.push(move_to(sepAbove, 1) + cl);
-  emitSidebarCol(ctx, sepAbove);
-  out.push(move_to(sepAbove, chatCol) + bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
+  out.push(move_to(promptSepRow, 1) + cl);
+  emitSidebarCol(ctx, promptSepRow);
+  out.push(move_to(promptSepRow, chatCol) + bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
 
   // ── Image indicator (between separator and prompt) ────────────
   if (imageIndicatorRows > 0) {
-    const indRow = sepAbove + 1;
+    const indRow = promptSepRow + 1;
     out.push(move_to(indRow, 1) + cl);
     emitSidebarCol(ctx, indRow);
     out.push(move_to(indRow, chatCol) + bgLine(renderImageIndicator(state.pendingImages, chatW)));
@@ -539,16 +581,16 @@ export function render(state: RenderState): void {
 
   // ── Queue prompt overlay ───────────────────────────────────────
   if (state.queuePrompt) {
-    out.push(renderQueuePromptOverlay(state.queuePrompt, chatW, chatCol, sepAbove));
+    out.push(renderQueuePromptOverlay(state.queuePrompt, chatW, chatCol, bottomStartRow));
   }
 
   // ── Edit message overlay ──────────────────────────────────────
   if (state.editMessagePrompt) {
-    out.push(renderEditMessageOverlay(state.editMessagePrompt, chatW, chatCol, sepAbove, messageAreaHeight));
+    out.push(renderEditMessageOverlay(state.editMessagePrompt, chatW, chatCol, bottomStartRow, messageAreaHeight));
   }
 
   // ── Cursor ─────────────────────────────────────────────────────
-  renderCursorPosition(ctx, state, promptFocused, firstInputRow, cursorLine, cursorCol, promptLen);
+  renderCursorPosition(ctx, state, promptFocused, firstInputRow, cursorLine, cursorCol, promptLen, searchBarRow, chatW);
 
   process.stdout.write(out.join(""));
 }

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "exports": {
+    "./auth": "./src/auth.ts",
     "./messages": "./src/messages.ts",
     "./protocol": "./src/protocol.ts",
     "./paths": "./src/paths.ts"

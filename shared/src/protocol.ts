@@ -428,11 +428,30 @@ export interface SystemMessageEvent {
   color?: string;
 }
 
+export interface ProviderAuthInfo {
+  configured: boolean;
+  authenticated: boolean;
+  status: "not_logged_in" | "logged_in" | "expired" | "refreshable";
+  email: string | null;
+  displayName: string | null;
+  organizationName: string | null;
+  organizationType: string | null;
+  organizationRole: string | null;
+  workspaceRole: string | null;
+  subscriptionType: string | null;
+  rateLimitTier: string | null;
+  scopes: string[];
+  expiresAt: number | null;
+  updatedAt: string | null;
+  source: string | null;
+}
+
 export interface ToolsAvailableEvent {
   type: "tools_available";
   providers: ProviderInfo[];
   tools: ToolDisplayInfo[];
   authByProvider: Record<ProviderId, boolean>;
+  authInfoByProvider: Record<ProviderId, ProviderAuthInfo>;
   externalToolStyles?: ExternalToolStyle[];
 }
 

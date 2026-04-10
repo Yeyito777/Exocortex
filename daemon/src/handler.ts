@@ -19,16 +19,11 @@ import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnown
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command } from "./protocol";
-import { clearAuth, ensureAuthenticated, hasConfiguredCredentials } from "./auth";
+import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials } from "./auth";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
 export function createHandler(server: DaemonServer) {
-  const getAuthByProvider = (): Record<import("./messages").ProviderId, boolean> => ({
-    openai: hasConfiguredCredentials("openai"),
-    anthropic: hasConfiguredCredentials("anthropic"),
-  });
-
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     server.broadcast({ type: "usage_update", provider, usage });
   };
@@ -39,6 +34,7 @@ export function createHandler(server: DaemonServer) {
       providers: getProviders(),
       tools: getToolDisplayInfo(),
       authByProvider: getAuthByProvider(),
+      authInfoByProvider: getAuthInfoByProvider(),
       ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
     });
   };
@@ -54,6 +50,7 @@ export function createHandler(server: DaemonServer) {
           providers: getProviders(),
           tools: getToolDisplayInfo(),
           authByProvider: getAuthByProvider(),
+          authInfoByProvider: getAuthInfoByProvider(),
           ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
         });
         for (const provider of getProviders()) {

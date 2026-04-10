@@ -52,6 +52,23 @@ describe("bash external tool styling", () => {
     expect(display.cmd).toBe("gmail");
   });
 
+  test("matches after cat heredoc prelude that writes a temp file", () => {
+    const summary = [
+      "cat > /tmp/kittenml-reply.txt <<'EOF'",
+      "Hi!",
+      "EOF",
+      "",
+      "gmail reply -f /tmp/kittenml-reply.txt 19d68e0c3d19ece3 --timeout 120000",
+    ].join("\n");
+    const display = resolveToolDisplay("bash", summary, registry, externalToolStyles);
+    const match = resolveBashExternalMatch(summary, externalToolStyles);
+
+    expect(display.label).toBe("Gmail");
+    expect(display.detail).toBe("reply -f /tmp/kittenml-reply.txt 19d68e0c3d19ece3 --timeout 120000");
+    expect(display.cmd).toBe("gmail");
+    expect(match).toMatchObject({ matchLineIndex: 4, matchStart: 0 });
+  });
+
   test("matches through inline assignments and transparent wrappers", () => {
     const summary = "env FOO=1 command time exo ls | sed -n '1,5p'";
     const display = resolveToolDisplay("bash", summary, registry, externalToolStyles);

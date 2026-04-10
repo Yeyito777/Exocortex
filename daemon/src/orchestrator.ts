@@ -460,7 +460,9 @@ export async function orchestrateSendMessage(
     if (!isAbort) {
       const msg = err instanceof Error ? err.message : String(err);
       log("error", `orchestrator: stream error for ${convId}: ${msg}`);
-      server.sendToSubscribers(convId, { type: "error", convId, message: msg });
+      // Don't also emit a conversation-scoped `error` event here: the catch
+      // path already persists and broadcasts a canonical `system_message`
+      // below, and sending both makes the TUI render the same failure twice.
     } else if (isWatchdog) {
       log("warn", `orchestrator: stream timed out for ${convId} (watchdog)`);
     } else {
