@@ -44,8 +44,8 @@ function customModelProviders(state: RenderState): Set<string> {
 
 interface Span { start: number; end: number }
 
-/** Captures a slash command followed by any number of trailing words. */
-const COMMAND_SPAN_RE = /(^|[ \t\n])(\/[\w-]+(?:[ \t]+[\w-]+)*)/gm;
+/** Captures a slash command followed by any number of trailing whitespace-delimited tokens. */
+const COMMAND_SPAN_RE = /(^|[ \t\n])(\/\S+(?:[ \t]+\S+)*)/gm;
 
 /**
  * Find buffer ranges that contain valid command/macro tokens.
@@ -66,8 +66,8 @@ function findCommandSpans(
     const full = match[2]; // e.g. "/tool install discord"
     const cmdStart = match.index + boundary.length;
 
-    // Parse word positions within the captured group
-    const wordRe = /[\w-]+/g;
+    // Parse whitespace-delimited token positions within the captured group
+    const wordRe = /\S+/g;
     const wordPositions: { word: string; end: number }[] = [];
     let wm;
     while ((wm = wordRe.exec(full)) !== null) {
