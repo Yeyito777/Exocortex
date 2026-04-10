@@ -10,6 +10,10 @@ const EXOCORTEX_MCP_TOOL_NAME_PREFIX = `mcp__${EXOCORTEX_MCP_SERVER_NAME}__`;
 
 type McpExecutor = StreamToolExecutor;
 
+function getRegisteredExocortexTools(): Tool[] {
+  return getRegisteredTools();
+}
+
 function toZodProperty(schema: Record<string, unknown>, required: boolean): z.ZodTypeAny {
   const type = schema.type;
   const description = typeof schema.description === "string" ? schema.description : undefined;
@@ -76,17 +80,23 @@ function buildMcpToolDefinition(definition: Tool, execute: McpExecutor) {
 }
 
 export function createExocortexMcpServer(execute: McpExecutor): McpSdkServerConfigWithInstance {
+  const tools = getRegisteredExocortexTools();
   return createSdkMcpServer({
     name: EXOCORTEX_MCP_SERVER_NAME,
     version: "1.0.0",
-    tools: getRegisteredTools().map((toolDef) => buildMcpToolDefinition(toolDef, execute)),
+    tools: tools.map((toolDef) => buildMcpToolDefinition(toolDef, execute)),
   });
 }
 
 export function getExocortexAllowedToolNames(): string[] {
-  return getRegisteredTools().map((toolDef) => `${EXOCORTEX_MCP_TOOL_NAME_PREFIX}${toolDef.name}`);
+  return getRegisteredExocortexTools().map((toolDef) => `${EXOCORTEX_MCP_TOOL_NAME_PREFIX}${toolDef.name}`);
 }
 
+/**
+ * MCP tool names are fully qualified in Claude's runtime context
+ * (`mcp__exocortex__bash`). We normalize them back to the plain Exocortex
+ * tool names for the UI, persisted conversation blocks, and summaries.
+ */
 export function normalizeClaudeToolName(name: string): string {
   return name.startsWith(EXOCORTEX_MCP_TOOL_NAME_PREFIX) ? name.slice(EXOCORTEX_MCP_TOOL_NAME_PREFIX.length) : name;
 }

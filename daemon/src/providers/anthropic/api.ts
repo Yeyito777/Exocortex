@@ -18,6 +18,10 @@ function toClaudeEffort(effort: StreamOptions["effort"]): ClaudeEffortLevel | un
   return undefined;
 }
 
+/**
+ * Anthropic uses the presence of the Exocortex MCP bridge to distinguish the
+ * full chat runtime from restricted helper calls (titlegen, inner llm(), etc).
+ */
 function isHelperProfile(options: StreamOptions): boolean {
   return !options.mcpToolExecutor;
 }
@@ -67,12 +71,16 @@ function buildClaudeQueryOptions(messages: ApiMessage[], model: ModelId, options
 
   return {
     ...queryOptions,
+    // Remove Claude Code built-ins entirely; Anthropic chats should only see
+    // the Exocortex MCP tool surface we provide below.
     tools: [],
     mcpServers: options.mcpToolExecutor
       ? { exocortex: createExocortexMcpServer(options.mcpToolExecutor) }
       : undefined,
     allowedTools: options.mcpToolExecutor ? getExocortexAllowedToolNames() : undefined,
     permissionMode: "bypassPermissions",
+    // Keep Anthropic chats isolated from CLAUDE.md / Claude settings so the
+    // Exocortex prompt and tool model remain authoritative.
     settingSources: [],
   };
 }
