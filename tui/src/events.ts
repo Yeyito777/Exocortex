@@ -424,7 +424,9 @@ export function handleEvent(
     }
 
     case "auth_status": {
-      pushSystemMessage(state, event.message, theme.muted);
+      if (event.message) {
+        pushSystemMessage(state, event.message, theme.muted);
+      }
       if (event.openUrl) {
         Bun.spawn(["xdg-open", event.openUrl], { stdout: "ignore", stderr: "ignore" }).unref();
       }

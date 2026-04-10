@@ -493,7 +493,8 @@ export interface SystemPromptEvent {
 export interface AuthStatusEvent {
   type: "auth_status";
   reqId?: string;
-  message: string;
+  /** Optional user-visible status text. openUrl-only events should not print a blank line. */
+  message?: string;
   /** When set, the TUI should open this URL in the user's browser. */
   openUrl?: string;
 }
