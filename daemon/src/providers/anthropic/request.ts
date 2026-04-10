@@ -60,6 +60,20 @@ function supportsEffort(model: ModelId): boolean {
   return model === "opus" || model === "claude-opus-4-6";
 }
 
+function sanitizeAssistantContentForAnthropic(content: ApiContentBlock[]): ApiContentBlock[] {
+  return content.filter((block) => block.type !== "thinking" || Boolean(block.signature.trim()));
+}
+
+export function sanitizeMessagesForAnthropic(messages: ApiMessage[]): ApiMessage[] {
+  return messages.flatMap((message) => {
+    if (message.role !== "assistant" || typeof message.content === "string") return [message];
+
+    const content = sanitizeAssistantContentForAnthropic(message.content);
+    if (content.length === 0) return [];
+    return [{ ...message, content }];
+  });
+}
+
 export function buildAnthropicRequest(
   accessToken: string,
   messages: ApiMessage[],
@@ -73,10 +87,11 @@ export function buildAnthropicRequest(
   const thinking = adaptive
     ? { type: "adaptive" }
     : { type: "enabled", budget_tokens: 10000 };
+  const sanitizedMessages = sanitizeMessagesForAnthropic(messages);
 
   const body: Record<string, unknown> = {
     model: MODEL_IDS[model] ?? model,
-    messages: injectMessageBreakpoints(messages),
+    messages: injectMessageBreakpoints(sanitizedMessages),
     max_tokens: maxTokens,
     thinking,
     stream: true,

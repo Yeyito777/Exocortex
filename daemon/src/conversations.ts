@@ -124,11 +124,15 @@ export function undoDelete(): Conversation | null {
   return conv;
 }
 
-export function setModel(id: string, model: ModelId, effort?: EffortLevel): boolean {
+export function setModel(id: string, provider: ProviderId, model: ModelId, effort: EffortLevel, fastMode: boolean): boolean {
   const conv = conversations.get(id);
   if (!conv) return false;
+  conv.provider = provider;
   conv.model = model;
-  if (effort) conv.effort = effort;
+  conv.effort = effort;
+  conv.fastMode = fastMode;
+  conv.lastContextTokens = null;
+  conv.updatedAt = Date.now();
   markDirty(id);
   flush(id);
   return true;

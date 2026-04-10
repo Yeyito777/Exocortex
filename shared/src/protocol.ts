@@ -73,6 +73,7 @@ export interface SetModelCommand {
   type: "set_model";
   reqId?: string;
   convId: string;
+  provider?: ProviderId;
   model: ModelId;
 }
 

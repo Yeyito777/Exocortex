@@ -115,8 +115,8 @@ export class DaemonClient {
     this.send({ type: "abort", convId });
   }
 
-  setModel(convId: string, model: ModelId): void {
-    this.send({ type: "set_model", convId, model });
+  setModel(convId: string, provider: ProviderId, model: ModelId): void {
+    this.send({ type: "set_model", convId, provider, model });
   }
 
   setEffort(convId: string, effort: EffortLevel): void {

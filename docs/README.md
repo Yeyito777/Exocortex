@@ -97,7 +97,7 @@ Commands flow client → daemon. Events flow daemon → client.
 | `i` / `a`        | Insert mode (vim)                   |
 | `v` / `V`        | Visual / visual-line mode           |
 | `/new`           | Start a new conversation            |
-| `/model <m>`     | Switch model (sonnet, haiku, opus)  |
+| `/model <provider> <model>` | Switch provider/model for the current conversation |
 | `/quit`          | Exit                                |
 
 ## Protocol

@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { create, get, getDisplayData, getSummary, remove, setSystemInstructions } from "./conversations";
+import { create, get, getDisplayData, getSummary, remove, setModel, setSystemInstructions } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
@@ -19,6 +19,26 @@ beforeEach(() => {
     clearActiveJob(id);
     remove(id);
   }
+});
+
+describe("setModel", () => {
+  test("switches provider/model atomically, clears stale context, and bumps updatedAt", async () => {
+    const id = mkId("switch-provider");
+    const conv = create(id, "openai", "gpt-5.4", undefined, "low", true);
+    conv.lastContextTokens = 123_456;
+    const before = conv.updatedAt;
+
+    await Bun.sleep(2);
+    expect(setModel(id, "anthropic", "claude-opus-4-6", "high", false)).toBe(true);
+
+    const after = get(id)!;
+    expect(after.provider).toBe("anthropic");
+    expect(after.model).toBe("claude-opus-4-6");
+    expect(after.effort).toBe("high");
+    expect(after.fastMode).toBe(false);
+    expect(after.lastContextTokens).toBeNull();
+    expect(after.updatedAt).toBeGreaterThan(before);
+  });
 });
 
 describe("setSystemInstructions", () => {

@@ -152,21 +152,31 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           break;
         }
-        if (!isKnownModel(conv.provider, cmd.model) && !allowsCustomModels(conv.provider)) {
+        if (convStore.isStreaming(cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot switch provider/model while the conversation is streaming." });
+          break;
+        }
+        const nextProvider = cmd.provider ?? conv.provider;
+        if (!getProvider(nextProvider)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Unknown provider: ${nextProvider}` });
+          break;
+        }
+        if (!isKnownModel(nextProvider, cmd.model) && !allowsCustomModels(nextProvider)) {
           server.sendTo(client, {
             type: "error",
             reqId: cmd.reqId,
             convId: cmd.convId,
-            message: `Unknown model for provider ${conv.provider}: ${cmd.model}`,
+            message: `Unknown model for provider ${nextProvider}: ${cmd.model}`,
           });
           break;
         }
-        const nextEffort = normalizeEffort(conv.provider, cmd.model, conv.effort);
-        const ok = convStore.setModel(cmd.convId, cmd.model, nextEffort);
+        const nextEffort = normalizeEffort(nextProvider, cmd.model, conv.effort);
+        const nextFastMode = supportsFastMode(nextProvider) ? conv.fastMode : false;
+        const ok = convStore.setModel(cmd.convId, nextProvider, cmd.model, nextEffort, nextFastMode);
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
           server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
-          log("info", `handler: model set to ${cmd.model} for ${cmd.convId} (effort=${nextEffort})`);
+          log("info", `handler: conversation ${cmd.convId} switched to ${nextProvider}/${cmd.model} (effort=${nextEffort}, fastMode=${nextFastMode})`);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
         }

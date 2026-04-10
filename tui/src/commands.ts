@@ -9,7 +9,7 @@
  */
 
 import type { RenderState } from "./state";
-import { clearPendingAI, clearSystemMessageBuffer, pushSystemMessage } from "./state";
+import { clearPendingAI, clearSystemMessageBuffer, isStreaming, pushSystemMessage } from "./state";
 import { clearPrompt } from "./promptstate";
 import {
   DEFAULT_EFFORT,
@@ -54,7 +54,7 @@ export type CommandResult =
   | { type: "quit" }
   | { type: "new_conversation" }
   | { type: "create_conversation_for_instructions"; text: string }
-  | { type: "model_changed"; model: ModelId }
+  | { type: "model_changed"; provider: ProviderId; model: ModelId }
   | { type: "effort_changed"; effort: EffortLevel }
   | { type: "fast_mode_changed"; enabled: boolean }
   | { type: "rename_conversation"; title: string }
@@ -160,6 +160,10 @@ function defaultEffortFor(state: RenderState, provider = state.provider, model =
   return normalizeEffortForModel(modelInfo(state, provider, model), null);
 }
 
+function maxContextFor(state: RenderState, provider = state.provider, model = state.model): number | null {
+  return modelInfo(state, provider, model)?.maxContext ?? null;
+}
+
 function effortItems(state: RenderState, provider = state.provider, model = state.model): CompletionItem[] {
   const defaultEffort = defaultEffortFor(state, provider, model);
   return supportedEfforts(state, provider, model).map((candidate) => ({
@@ -170,6 +174,41 @@ function effortItems(state: RenderState, provider = state.provider, model = stat
 
 function normalizeStateEffort(state: RenderState, provider = state.provider, model = state.model): void {
   state.effort = normalizeEffortForModel(modelInfo(state, provider, model), state.effort);
+}
+
+function buildContextWindowWarning(
+  previousContextTokens: number | null,
+  provider: ProviderId,
+  model: ModelId,
+  nextMaxContext: number | null,
+): string | null {
+  if (previousContextTokens == null || nextMaxContext == null || nextMaxContext <= 0 || previousContextTokens <= nextMaxContext) {
+    return null;
+  }
+  return `Warning: last known context (${previousContextTokens.toLocaleString("en-US")} tokens) exceeds ${provider}/${model}'s max context (${nextMaxContext.toLocaleString("en-US")}). The next turn may fail unless you trim the conversation or start a new one.`;
+}
+
+function applyProviderModelSelection(state: RenderState, provider: ProviderId, model: ModelId): {
+  effortChanged: boolean;
+  fastDisabled: boolean;
+  contextWarning: string | null;
+} {
+  const previousEffort = state.effort;
+  const previousFastMode = state.fastMode;
+  const previousContextTokens = state.contextTokens;
+  const nextMaxContext = maxContextFor(state, provider, model);
+
+  setChosenProvider(state, provider);
+  state.model = model;
+  normalizeStateEffort(state, provider, model);
+  if (!providerSupportsFastMode(state, provider)) state.fastMode = false;
+  state.contextTokens = null;
+
+  return {
+    effortChanged: state.effort !== previousEffort,
+    fastDisabled: previousFastMode && !state.fastMode,
+    contextWarning: buildContextWindowWarning(previousContextTokens, provider, model, nextMaxContext),
+  };
 }
 
 function formatProviderModels(state: RenderState, provider: ProviderId): string {
@@ -304,6 +343,12 @@ const commands: SlashCommand[] = [
         return { type: "handled" };
       }
 
+      if (parts.length > 3) {
+        pushSystemMessage(state, "Usage: /model <provider> <model>");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
       const provider = parts[1] as ProviderId;
       if (!providers.includes(provider)) {
         pushSystemMessage(state, `Unknown provider: ${parts[1]}. Available: ${providers.join(", ")}`);
@@ -319,24 +364,25 @@ const commands: SlashCommand[] = [
         return { type: "handled" };
       }
 
-      const model = parts[2] as ModelId;
-      if (state.convId && provider !== state.provider) {
-        pushSystemMessage(state, "Provider is locked for the active conversation. Start a new conversation to switch providers.");
+      if (state.convId && isStreaming(state)) {
+        pushSystemMessage(state, "Cannot switch provider/model while this conversation is streaming.");
         clearPrompt(state);
         return { type: "handled" };
       }
 
-      setChosenProvider(state, provider);
-      state.model = model;
-      const previousEffort = state.effort;
-      const previousFastMode = state.fastMode;
-      normalizeStateEffort(state, provider, model);
-      if (!providerSupportsFastMode(state, provider)) state.fastMode = false;
-      const effortSuffix = state.effort !== previousEffort ? ` (effort ${state.effort})` : "";
-      const fastSuffix = previousFastMode && !state.fastMode ? " (fast off)" : "";
+      const model = parts[2] as ModelId;
+      const selection = applyProviderModelSelection(state, provider, model);
+
+      const effortSuffix = selection.effortChanged ? ` (effort ${state.effort})` : "";
+      const fastSuffix = selection.fastDisabled ? " (fast off)" : "";
       pushSystemMessage(state, `Model set to ${state.provider}/${state.model}${effortSuffix}${fastSuffix}`);
+
+      if (selection.contextWarning) {
+        pushSystemMessage(state, selection.contextWarning, "warning");
+      }
+
       clearPrompt(state);
-      return state.convId ? { type: "model_changed", model } : { type: "handled" };
+      return state.convId ? { type: "model_changed", provider, model } : { type: "handled" };
     },
   },
   {
