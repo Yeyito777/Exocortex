@@ -142,7 +142,7 @@ describe("/model", () => {
     expect(result).toEqual({ type: "handled" });
     expect(state.provider).toBe("openai");
     expect(state.model).toBe("gpt-5.4");
-    expect((state.systemMessageBuffer.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot switch provider/model while this conversation is streaming.");
+    expect((state.streamingTailMessages.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot switch provider/model while this conversation is streaming.");
   });
 });
 
@@ -193,7 +193,7 @@ describe("/trim", () => {
     const result = tryCommand("/trim toolresults 2", state);
 
     expect(result).toEqual({ type: "handled" });
-    expect((state.systemMessageBuffer.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot trim the conversation while it is streaming.");
+    expect((state.streamingTailMessages.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot trim the conversation while it is streaming.");
   });
 
   test("rejects non-positive counts", () => {

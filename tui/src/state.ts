@@ -134,13 +134,19 @@ export interface RenderState {
   /** Whether a just-created conversation should auto-generate its title. */
   pendingGenerateTitleOnCreate: boolean;
   /**
-   * System messages buffered while streaming.
+   * User-invoked notices buffered while streaming.
    *
-   * They render as a live tail after the active AI message so notices stay
-   * visible at the bottom, then flush into committed history when streaming
-   * stops (or get replaced by canonical history via history_updated).
+   * These render as a live tail after the active AI message so slash-command
+   * feedback stays visible at the bottom. Daemon-originated stream notices are
+   * inserted inline instead.
    */
-  systemMessageBuffer: SystemMessage[];
+  streamingTailMessages: SystemMessage[];
+  /**
+   * Index of an assistant message that was committed inline before the daemon
+   * sent streaming_stopped. Used to reconcile persisted abort/error blocks at
+   * the correct history position instead of appending a second assistant turn.
+   */
+  pendingAICommittedIndex: number | null;
   /** Available tools reported by the daemon on connect. */
   toolRegistry: ToolDisplayInfo[];
   /** Available providers and models reported by the daemon on connect. */
@@ -187,24 +193,25 @@ export function isStreaming(state: RenderState): boolean {
 /** Clear pending AI state — always use this instead of setting pendingAI = null directly. */
 export function clearPendingAI(state: RenderState): void {
   state.pendingAI = null;
+  state.pendingAICommittedIndex = null;
 }
 
-/** Clear the live system-message tail used while streaming. */
-export function clearSystemMessageBuffer(state: RenderState): void {
-  state.systemMessageBuffer = [];
+/** Clear the live streaming tail used for user-invoked notices. */
+export function clearStreamingTailMessages(state: RenderState): void {
+  state.streamingTailMessages = [];
 }
 
 /**
- * Add a system notice to the UI.
+ * Add a user-invoked system notice to the UI.
  *
- * While an assistant response is actively streaming, system notices are kept in
- * the live tail so they stay visible at the bottom. Otherwise they are
- * committed directly into the conversation message list.
+ * While an assistant response is actively streaming, these notices are kept in
+ * the live tail so command feedback stays visible at the bottom. Daemon-
+ * originated stream notices should bypass this helper and be inserted inline.
  */
 export function pushSystemMessage(state: RenderState, text: string, color?: string): void {
   const msg: SystemMessage = { role: "system", text, color, metadata: null };
   if (isStreaming(state)) {
-    state.systemMessageBuffer.push(msg);
+    state.streamingTailMessages.push(msg);
   } else {
     state.messages.push(msg);
   }
@@ -285,7 +292,8 @@ export function createInitialState(): RenderState {
     pendingAuthQueue: [],
     pendingSystemInstructions: null,
     pendingGenerateTitleOnCreate: false,
-    systemMessageBuffer: [],
+    streamingTailMessages: [],
+    pendingAICommittedIndex: null,
     toolRegistry: [],
     providerRegistry: [],
     externalToolStyles: [],

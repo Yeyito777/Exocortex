@@ -6,14 +6,14 @@
  */
 
 import type { RenderState } from "./state";
-import { clearPendingAI, clearSystemMessageBuffer, pushSystemMessage } from "./state";
+import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage } from "./state";
 import { DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER, ensureCurrentBlock, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI, replacePendingStreamingTail } from "./messages";
 import type { ImageAttachment } from "./messages";
 import { syncChosenProvider } from "./providerselection";
 import { updateConversationList, updateConversation, syncSelectedIndex } from "./sidebar";
 import { theme } from "./theme";
 import { clearLocalQueue, removeLocalQueueEntry } from "./queue";
-import type { Event, DisplayEntry } from "./protocol";
+import type { Event, DisplayEntry, SystemMessageEvent } from "./protocol";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -62,6 +62,26 @@ function syncModelEffortSelection(state: RenderState): void {
   const provider = state.providerRegistry.find((candidate) => candidate.id === state.provider);
   const model = provider?.models.find((candidate) => candidate.id === state.model) ?? null;
   state.effort = normalizeEffortForModel(model, state.effort);
+}
+
+function pushInlineSystemNotice(state: RenderState, text: string, color: string | undefined, reconcileOnStop = false): void {
+  if (state.pendingAI) {
+    const finalized = splitPendingAI(state.pendingAI);
+    if (finalized) {
+      if (reconcileOnStop) finalized.metadata = state.pendingAI.metadata ? { ...state.pendingAI.metadata } : null;
+      state.messages.push(finalized);
+      if (reconcileOnStop) state.pendingAICommittedIndex = state.messages.length - 1;
+    }
+  }
+  state.messages.push({ role: "system", text, color, metadata: null });
+}
+
+function shouldReconcileInlineSystemNoticeOnStop(event: SystemMessageEvent): boolean {
+  // The daemon currently uses `system_message` both for durable stream
+  // failures (timeouts, interrupts, hard errors) and for ordinary notices.
+  // Only the durable failure class should claim the pending assistant slot
+  // and get its final blocks reconciled when streaming_stopped arrives.
+  return event.color === "error" || event.text.startsWith("✗");
 }
 
 // ── Daemon actions interface ────────────────────────────────────────
@@ -221,21 +241,35 @@ export function handleEvent(
       // On normal completion, message_complete already finalized pendingAI.
       // On abort/error, pendingAI is still live — finalize with persisted blocks.
       if (state.pendingAI) {
-        if (event.persistedBlocks !== undefined) {
-          state.pendingAI.blocks = event.persistedBlocks;
-        }
-        if (state.pendingAI.blocks.length > 0) {
-          state.pendingAI.metadata!.endedAt ??= Date.now();
-          state.messages.push(state.pendingAI);
+        const committedIndex = state.pendingAICommittedIndex;
+        if (committedIndex !== null) {
+          const committed = state.messages[committedIndex];
+          if (committed?.role === "assistant") {
+            if (event.persistedBlocks !== undefined) committed.blocks = event.persistedBlocks;
+            if (state.pendingAI.metadata) {
+              committed.metadata = {
+                ...state.pendingAI.metadata,
+                endedAt: state.pendingAI.metadata.endedAt ?? Date.now(),
+              };
+            }
+          }
+        } else {
+          if (event.persistedBlocks !== undefined) {
+            state.pendingAI.blocks = event.persistedBlocks;
+          }
+          if (state.pendingAI.blocks.length > 0) {
+            state.pendingAI.metadata!.endedAt ??= Date.now();
+            state.messages.push(state.pendingAI);
+          }
         }
       }
       clearPendingAI(state);
 
-      // Flush system messages that arrived during streaming (after the AI message)
-      for (const msg of state.systemMessageBuffer) {
+      // Flush user-invoked notices that were intentionally kept in the live tail.
+      for (const msg of state.streamingTailMessages) {
         state.messages.push(msg);
       }
-      clearSystemMessageBuffer(state);
+      clearStreamingTailMessages(state);
       break;
     }
 
@@ -320,7 +354,7 @@ export function handleEvent(
       }
       state.messages = [];
       clearPendingAI(state);
-      clearSystemMessageBuffer(state);
+      clearStreamingTailMessages(state);
       state.convId = event.convId;
       syncChosenProvider(state, event.provider ?? fallbackProvider(state));
       state.model = event.model ?? state.model;
@@ -347,14 +381,18 @@ export function handleEvent(
 
     case "stream_retry": {
       // Transient stream error mid-stream. Split pendingAI so completed rounds
-      // stay committed, but keep the retry notice in the live system-message
-      // tail so it remains visible at the bottom while the new attempt streams.
+      // stay committed, then insert the retry notice inline before the next
+      // attempt continues streaming.
       if (state.pendingAI) {
         truncateToCompletedRounds(state.pendingAI);
         const finalized = splitPendingAI(state.pendingAI);
         if (finalized) state.messages.push(finalized);
       }
-      pushSystemMessage(state, `⟳ ${event.errorMessage} — retrying in ${event.delaySec}s (${event.attempt}/${event.maxAttempts})…`, theme.warning);
+      pushInlineSystemNotice(
+        state,
+        `⟳ ${event.errorMessage} — retrying in ${event.delaySec}s (${event.attempt}/${event.maxAttempts})…`,
+        theme.warning,
+      );
       break;
     }
 
@@ -378,7 +416,8 @@ export function handleEvent(
     }
 
     case "system_message": {
-      pushSystemMessage(state, event.text, themeColor(event.color));
+      const color = themeColor(event.color);
+      pushInlineSystemNotice(state, event.text, color, shouldReconcileInlineSystemNoticeOnStop(event));
       break;
     }
 
@@ -421,7 +460,7 @@ export function handleEvent(
       // but preserve pendingAI (the active streaming response).
       // Flush buffered system messages — they reference pre-modification state.
       state.messages = [];
-      clearSystemMessageBuffer(state);
+      clearStreamingTailMessages(state);
       state.contextTokens = event.contextTokens;
       pushDisplayEntries(state, event.entries);
       break;

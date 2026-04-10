@@ -9,7 +9,7 @@
  */
 
 import type { RenderState } from "./state";
-import { clearPendingAI, clearSystemMessageBuffer, getModelInfo, getProviderInfo, isStreaming, pushSystemMessage } from "./state";
+import { clearPendingAI, clearStreamingTailMessages, getModelInfo, getProviderInfo, isStreaming, pushSystemMessage } from "./state";
 import type { TrimMode } from "./protocol";
 import { clearPrompt } from "./promptstate";
 import {
@@ -315,7 +315,7 @@ const commands: SlashCommand[] = [
     handler: (_text, state) => {
       state.messages = [];
       clearPendingAI(state);
-      clearSystemMessageBuffer(state);
+      clearStreamingTailMessages(state);
       clearPrompt(state);
       state.scrollOffset = 0;
       state.contextTokens = null;
