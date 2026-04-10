@@ -6,7 +6,7 @@
  */
 
 import type { RenderState } from "./state";
-import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage } from "./state";
+import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, resolveSystemMessageColor } from "./state";
 import { DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER, ensureCurrentBlock, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI, replacePendingStreamingTail } from "./messages";
 import type { ImageAttachment } from "./messages";
 import { syncChosenProvider } from "./providerselection";
@@ -14,15 +14,6 @@ import { updateConversationList, updateConversation, syncSelectedIndex } from ".
 import { theme } from "./theme";
 import { clearLocalQueue, removeLocalQueueEntry } from "./queue";
 import type { Event, DisplayEntry, SystemMessageEvent } from "./protocol";
-
-// ── Helpers ─────────────────────────────────────────────────────────
-
-/** Map a semantic color name to the corresponding theme value. */
-function themeColor(name: string | undefined): string {
-  if (name === "error") return theme.error;
-  if (name === "warning") return theme.warning;
-  return theme.muted;
-}
 
 // ── Display entry → TUI message conversion ─────────────────────────
 
@@ -45,7 +36,7 @@ function pushDisplayEntries(state: RenderState, entries: DisplayEntry[]): void {
         });
         break;
       case "system":
-        state.messages.push({ role: "system", text: entry.text, color: themeColor(entry.color), metadata: null });
+        state.messages.push({ role: "system", text: entry.text, color: resolveSystemMessageColor(entry.color), metadata: null });
         break;
       case "system_instructions":
         state.messages.push({ role: "system_instructions", text: entry.text, metadata: null });
@@ -64,7 +55,12 @@ function syncModelEffortSelection(state: RenderState): void {
   state.effort = normalizeEffortForModel(model, state.effort);
 }
 
-function pushInlineSystemNotice(state: RenderState, text: string, color: string | undefined, reconcileOnStop = false): void {
+function pushInlineSystemNotice(
+  state: RenderState,
+  text: string,
+  color: string | undefined,
+  reconcileOnStop = false,
+): void {
   if (state.pendingAI) {
     const finalized = splitPendingAI(state.pendingAI);
     if (finalized) {
@@ -73,7 +69,7 @@ function pushInlineSystemNotice(state: RenderState, text: string, color: string 
       if (reconcileOnStop) state.pendingAICommittedIndex = state.messages.length - 1;
     }
   }
-  state.messages.push({ role: "system", text, color, metadata: null });
+  state.messages.push({ role: "system", text, color: resolveSystemMessageColor(color), metadata: null });
 }
 
 function shouldReconcileInlineSystemNoticeOnStop(event: SystemMessageEvent): boolean {
@@ -416,8 +412,7 @@ export function handleEvent(
     }
 
     case "system_message": {
-      const color = themeColor(event.color);
-      pushInlineSystemNotice(state, event.text, color, shouldReconcileInlineSystemNoticeOnStop(event));
+      pushInlineSystemNotice(state, event.text, event.color, shouldReconcileInlineSystemNoticeOnStop(event));
       break;
     }
 

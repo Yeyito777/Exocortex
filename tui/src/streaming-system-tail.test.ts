@@ -4,6 +4,7 @@ import { buildMessageLines } from "./conversation";
 import { handleEvent } from "./events";
 import { createPendingAI, type ProviderInfo } from "./messages";
 import { createInitialState } from "./state";
+import { theme } from "./theme";
 
 const providers: ProviderInfo[] = [
   {
@@ -43,7 +44,7 @@ describe("streaming system-message tail", () => {
 
     expect(state.messages).toHaveLength(2);
     expect(state.messages[0]).toMatchObject({ role: "assistant" });
-    expect(state.messages[1]).toMatchObject({ role: "system", text: "tail notice" });
+    expect(state.messages[1]).toMatchObject({ role: "system", text: "tail notice", color: theme.warning });
     expect(state.streamingTailMessages).toHaveLength(0);
 
     const lines = render().join("\n");
