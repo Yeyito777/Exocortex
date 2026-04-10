@@ -4,6 +4,7 @@ import { buildOpenAIJsonHeaders, parseOpenAIJson } from "./http";
 import { runOpenAIBrowserOAuth } from "./oauth";
 import {
   buildStoredAuth,
+  enrichStoredAuth,
   type OpenAITokenResponse,
   type StoredOpenAIAuth,
   verifyAuth as verifyStoredSession,
@@ -17,6 +18,18 @@ function loadStoredAuth(): StoredOpenAIAuth | null {
 
 function saveStoredAuth(auth: StoredOpenAIAuth): void {
   saveProviderAuth("openai", auth);
+}
+
+function persistIfChanged(current: StoredOpenAIAuth, next: StoredOpenAIAuth): void {
+  if (JSON.stringify(current) !== JSON.stringify(next)) {
+    saveStoredAuth(next);
+  }
+}
+
+async function enrichAndPersistAuth(auth: StoredOpenAIAuth): Promise<StoredOpenAIAuth> {
+  const enriched = await enrichStoredAuth(auth);
+  persistIfChanged(auth, enriched);
+  return enriched;
 }
 
 let inflightRefresh: Promise<StoredOpenAIAuth> | null = null;
@@ -74,7 +87,8 @@ export async function ensureAuthenticated(callbacks?: LoginCallbacks): Promise<E
   if (stored?.tokens?.accessToken && !isTokenExpired(stored.tokens)) {
     say("Checking stored OpenAI session...");
     if (await verifyStoredSession(stored.tokens.accessToken, stored.accountId)) {
-      return { status: "already_authenticated", email: stored.profile?.email ?? null };
+      const enriched = await enrichAndPersistAuth(stored);
+      return { status: "already_authenticated", email: enriched.profile?.email ?? null };
     }
   }
 
@@ -128,10 +142,16 @@ export interface VerifiedOpenAISession {
   accountId: string | null;
 }
 
-export async function getVerifiedSession(): Promise<VerifiedOpenAISession> {
+export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}): Promise<VerifiedOpenAISession> {
   const stored = loadStoredAuth();
-  if (stored?.tokens?.accessToken && !isTokenExpired(stored.tokens) && await verifyStoredSession(stored.tokens.accessToken, stored.accountId)) {
-    return { accessToken: stored.tokens.accessToken, accountId: stored.accountId };
+  if (
+    stored?.tokens?.accessToken
+    && !opts.forceRefresh
+    && !isTokenExpired(stored.tokens)
+    && await verifyStoredSession(stored.tokens.accessToken, stored.accountId)
+  ) {
+    const enriched = await enrichAndPersistAuth(stored);
+    return { accessToken: enriched.tokens.accessToken, accountId: enriched.accountId };
   }
 
   if (stored?.tokens?.refreshToken) {
@@ -143,6 +163,11 @@ export async function getVerifiedSession(): Promise<VerifiedOpenAISession> {
     });
     saveStoredAuth(refreshed);
     return { accessToken: refreshed.tokens.accessToken, accountId: refreshed.accountId };
+  }
+
+  if (stored?.tokens?.accessToken && await verifyStoredSession(stored.tokens.accessToken, stored.accountId)) {
+    const enriched = await enrichAndPersistAuth(stored);
+    return { accessToken: enriched.tokens.accessToken, accountId: enriched.accountId };
   }
 
   throw new AuthError("OpenAI is not authenticated. Run `bun run src/main.ts login openai`.");
