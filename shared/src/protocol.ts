@@ -289,6 +289,13 @@ export interface ThinkingChunkEvent {
   text: string;
 }
 
+/** Replace the live text/thinking tail with the daemon's canonical current-round blocks. */
+export interface StreamingSyncEvent {
+  type: "streaming_sync";
+  convId: string;
+  blocks: Block[];
+}
+
 export interface ToolCallEvent {
   type: "tool_call";
   convId: string;
@@ -507,6 +514,7 @@ export type Event =
   | BlockStartEvent
   | TextChunkEvent
   | ThinkingChunkEvent
+  | StreamingSyncEvent
   | ToolCallEvent
   | ToolResultEvent
   | TokensUpdateEvent

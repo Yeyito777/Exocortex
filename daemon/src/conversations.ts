@@ -21,7 +21,7 @@ export {
   setStreamingTokens, getStreamingTokens,
   touchActivity, pauseActivity, resumeActivity,
   resetChunkCounter,
-  initStreamingState, getCurrentStreamingBlocks, replaceStreamingDisplayMessages, getStreamingDisplayMessages,
+  initStreamingState, getCurrentStreamingBlocks, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, getStreamingDisplayMessages,
   pushStreamingBlock, appendToStreamingBlock, clearCurrentStreamingBlocks,
   getQueuedMessages, pushQueuedMessage, drainQueuedMessages, clearQueuedMessages, removeQueuedMessage,
 } from "./streaming";

@@ -180,12 +180,21 @@ export function pushStreamingBlock(convId: string, block: Block): void {
   if (blocks) blocks.push(block);
 }
 
-/** Append text to the last in-flight block of the given type. */
+/** Replace the current in-flight assistant accumulator for exact provider syncs. */
+export function replaceCurrentStreamingBlocks(convId: string, blocks: Block[]): void {
+  streamingBlocks.set(convId, [...blocks]);
+}
+
+/** Append text to the live tail, creating a new block if streaming resumed after another type. */
 export function appendToStreamingBlock(convId: string, type: "text" | "thinking", chunk: string): void {
   const blocks = streamingBlocks.get(convId);
   if (!blocks) return;
   const last = blocks[blocks.length - 1];
-  if (last?.type === type) last.text += chunk;
+  if (last?.type === type) {
+    last.text += chunk;
+    return;
+  }
+  blocks.push({ type, text: chunk });
 }
 
 /** Clear only the current in-flight assistant blocks between rounds or on finish. */

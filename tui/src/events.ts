@@ -7,8 +7,8 @@
 
 import type { RenderState } from "./state";
 import { clearPendingAI, clearSystemMessageBuffer, pushSystemMessage } from "./state";
-import { DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER, ensureCurrentBlock, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI } from "./messages";
-import type { AIMessage, ImageAttachment } from "./messages";
+import { DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER, ensureCurrentBlock, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI, replacePendingStreamingTail } from "./messages";
+import type { ImageAttachment } from "./messages";
 import { setChosenProvider } from "./providerselection";
 import { updateConversationList, updateConversation, syncSelectedIndex } from "./sidebar";
 import { theme } from "./theme";
@@ -80,7 +80,7 @@ export interface DaemonActions {
 // need its own guard.
 
 const CONV_SCOPED: ReadonlySet<string> = new Set([
-  "streaming_started", "block_start", "text_chunk", "thinking_chunk",
+  "streaming_started", "block_start", "text_chunk", "thinking_chunk", "streaming_sync",
   "tool_call", "tool_result", "tokens_update", "context_update",
   "message_complete", "streaming_stopped", "user_message", "system_message",
   "stream_retry", "history_updated",
@@ -158,6 +158,11 @@ export function handleEvent(
         const block = ensureCurrentBlock(state.pendingAI, "thinking");
         if (block.type === "thinking") block.text += event.text;
       }
+      break;
+    }
+
+    case "streaming_sync": {
+      if (state.pendingAI) replacePendingStreamingTail(state.pendingAI, event.blocks);
       break;
     }
 
