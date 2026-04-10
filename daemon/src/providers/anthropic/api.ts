@@ -13,8 +13,6 @@ import { createExocortexMcpServer, getExocortexAllowedToolNames } from "./mcp-to
 import { buildClaudePrompt, buildClaudeSdkUserMessage, extractResumeSessionId, resolveClaudeModel, supportsClaudeEffort } from "./prompt";
 import { createClaudeStreamProcessor, finalizeClaudeStream, pushClaudeEvent } from "./stream";
 
-const CLAUDE_SETTING_SOURCES = ["user", "project", "local"] as const;
-
 function toClaudeEffort(effort: StreamOptions["effort"]): ClaudeEffortLevel | undefined {
   if (effort === "low" || effort === "medium" || effort === "high" || effort === "max") return effort;
   return undefined;
@@ -39,11 +37,7 @@ function toSdkPrompt(messages: ApiMessage[], resumeSessionId: string | null, hel
 function buildClaudeQueryOptions(messages: ApiMessage[], model: ModelId, options: StreamOptions): ClaudeQueryOptions {
   const helperProfile = isHelperProfile(options);
   const resumeSessionId = helperProfile ? null : extractResumeSessionId(messages);
-  const systemPrompt = helperProfile
-    ? options.system
-    : options.system
-      ? { type: "preset" as const, preset: "claude_code" as const, append: options.system }
-      : { type: "preset" as const, preset: "claude_code" as const };
+  const systemPrompt = options.system;
 
   const effort = supportsClaudeEffort(model) ? toClaudeEffort(options.effort) : undefined;
 
@@ -79,7 +73,7 @@ function buildClaudeQueryOptions(messages: ApiMessage[], model: ModelId, options
       : undefined,
     allowedTools: options.mcpToolExecutor ? getExocortexAllowedToolNames() : undefined,
     permissionMode: "bypassPermissions",
-    settingSources: [...CLAUDE_SETTING_SOURCES],
+    settingSources: [],
   };
 }
 

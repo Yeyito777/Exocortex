@@ -72,16 +72,17 @@ export function buildSystemPrompt(conversationInstructions?: string): string {
   }).join("\n\n");
 }
 
-export function buildClaudeCodeSystemPrompt(conversationInstructions?: string): string {
+export function buildAnthropicSystemPrompt(conversationInstructions?: string): string {
   return buildPromptParts({
     includeToolHints: true,
     includeExternalHints: false,
     conversationInstructions,
     wrapperNote: [
       "# Runtime",
-      "You are operating through Exocortex as a UI wrapper around Claude Code.",
-      "Use the Exocortex tools that are exposed in this runtime rather than assuming Claude Code's default built-in tools are available.",
-      "Prefer the Exocortex tool names and capabilities as described in your tool list.",
+      "You are Exo, operating through Exocortex with Anthropic as the model backend.",
+      "Use only the Exocortex tools available in this runtime.",
+      "Do not assume Claude Code's built-in tools like Bash, Read, Edit, WebSearch, WebFetch, or ToolSearch exist unless they are explicitly present in your tool list.",
+      "Follow the Exocortex tool semantics and names described in your tool list and system instructions.",
       "Keep your responses compatible with a terminal-style coding assistant.",
     ].join("\n"),
   }).join("\n\n");

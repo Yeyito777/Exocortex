@@ -11,7 +11,7 @@ import { log } from "./log";
 import { refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { orchestrateSendMessage } from "./orchestrator";
 import { complete } from "./llm";
-import { buildClaudeCodeSystemPrompt, buildSystemPrompt } from "./system";
+import { buildAnthropicSystemPrompt, buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles } from "./external-tools";
 import { EFFORT_LEVELS } from "./messages";
@@ -472,7 +472,7 @@ export function createHandler(server: DaemonServer) {
           type: "system_prompt",
           reqId: cmd.reqId,
           systemPrompt: provider === "anthropic"
-            ? buildClaudeCodeSystemPrompt(instructions ?? undefined)
+            ? buildAnthropicSystemPrompt(instructions ?? undefined)
             : buildSystemPrompt(instructions ?? undefined),
         });
         break;
