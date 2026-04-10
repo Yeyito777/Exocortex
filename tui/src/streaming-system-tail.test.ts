@@ -15,7 +15,7 @@ const providers: ProviderInfo[] = [
     models: [
       {
         id: "gpt-5.4",
-        label: "gpt-5.4",
+        label: "Gpt-5.4",
         maxContext: 272_000,
         supportedEfforts: [{ effort: "medium", description: "Balanced" }],
         defaultEffort: "medium",

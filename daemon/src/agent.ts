@@ -12,7 +12,7 @@
 import { streamMessage, type ApiToolCall } from "./api";
 import { log } from "./log";
 import type { ProviderId, ModelId, EffortLevel, Block, ToolCallBlock, ToolResultBlock, ApiMessage, ApiContentBlock } from "./messages";
-import type { ServiceTier } from "./providers/types";
+import type { ContentBlock as ProviderContentBlock, ServiceTier } from "./providers/types";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
 import { CONTEXT_TARGET } from "./constants";
 import { getMaxContext } from "./providers/registry";
@@ -26,6 +26,8 @@ export interface AgentCallbacks {
   onTextChunk(text: string): void;
   /** A thinking chunk has arrived (append to current thinking block). */
   onThinkingChunk(text: string): void;
+  /** Replace the current round's live text/thinking blocks with canonical provider state. */
+  onBlocksUpdate?(blocks: ProviderContentBlock[]): void;
   /** A thinking block's signature has been received. */
   onSignature(signature: string): void;
   /** The API returned a tool call (after the response completes). */
@@ -181,6 +183,7 @@ export async function runAgentLoop(
       onText: callbacks.onTextChunk,
       onThinking: callbacks.onThinkingChunk,
       onBlockStart: callbacks.onBlockStart,
+      onBlocksUpdate: callbacks.onBlocksUpdate,
       onSignature: callbacks.onSignature,
       onToolCall: callbacks.onToolCall,
       onToolResult: callbacks.onToolResult,

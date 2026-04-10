@@ -8,6 +8,7 @@
 // ── Shared domain types (single source of truth) ────────────────────
 
 export * from "@exocortex/shared/messages";
+export * from "@exocortex/shared/model-display";
 
 // ── TUI helpers ─────────────────────────────────────────────────────
 
@@ -90,4 +91,15 @@ export function ensureCurrentBlock(msg: AIMessage, type: "text" | "thinking"): B
   const block: Block = { type, text: "" };
   blocks.push(block);
   return block;
+}
+
+/** Replace the live text/thinking tail of a pending AI message with canonical blocks. */
+export function replacePendingStreamingTail(msg: AIMessage, blocks: Block[]): void {
+  let cut = msg.blocks.length;
+  while (cut > 0) {
+    const type = msg.blocks[cut - 1].type;
+    if (type === "text" || type === "thinking") cut--;
+    else break;
+  }
+  msg.blocks.splice(cut, msg.blocks.length - cut, ...blocks);
 }

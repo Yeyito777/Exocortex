@@ -17,13 +17,12 @@ interface OpenAIReadState {
   stopReason: string;
   toolCalls: ApiToolCall[];
   textStarted: Set<string>;
-  textStates: Map<number, string>;
+  textStates: Map<number, string[]>;
   textOutputIndexesById: Map<string, number>;
   toolStates: Map<number, OpenAIStreamToolState>;
   reasoningStates: Map<number, OpenAIReasoningItem>;
   reasoningOutputIndexesById: Map<string, number>;
   currentReasoningIndexes: Map<number, number>;
-  startedReasoningSummaries: Set<string>;
   currentReasoningOutputIndex: number | null;
   currentRawReasoningIndexes: Map<number, number>;
 }
@@ -33,13 +32,12 @@ function createReadState(): OpenAIReadState {
     stopReason: "",
     toolCalls: [],
     textStarted: new Set<string>(),
-    textStates: new Map<number, string>(),
+    textStates: new Map<number, string[]>(),
     textOutputIndexesById: new Map<string, number>(),
     toolStates: new Map<number, OpenAIStreamToolState>(),
     reasoningStates: new Map<number, OpenAIReasoningItem>(),
     reasoningOutputIndexesById: new Map<string, number>(),
     currentReasoningIndexes: new Map<number, number>(),
-    startedReasoningSummaries: new Set<string>(),
     currentReasoningOutputIndex: null,
     currentRawReasoningIndexes: new Map<number, number>(),
   };
@@ -59,26 +57,47 @@ function resolveTextOutputIndex(state: OpenAIReadState, event: Record<string, un
   return null;
 }
 
+function ensureTextContentSlot(textParts: string[], contentIndex: number): void {
+  while (textParts.length <= contentIndex) textParts.push("");
+}
+
+function setTextContent(state: OpenAIReadState, outputIndex: number, contentIndex: number, text: string): void {
+  const textParts = [...(state.textStates.get(outputIndex) ?? [])];
+  ensureTextContentSlot(textParts, contentIndex);
+  textParts[contentIndex] = text;
+  state.textStates.set(outputIndex, textParts);
+}
+
+function appendTextContent(state: OpenAIReadState, outputIndex: number, contentIndex: number, delta: string): void {
+  const textParts = [...(state.textStates.get(outputIndex) ?? [])];
+  ensureTextContentSlot(textParts, contentIndex);
+  textParts[contentIndex] += delta;
+  state.textStates.set(outputIndex, textParts);
+}
+
+function joinedTextContent(textParts: string[] | undefined): string {
+  return (textParts ?? []).join("");
+}
+
 function handleCompletedMessageItem(state: OpenAIReadState, item: Record<string, unknown>): void {
   const content = Array.isArray(item.content) ? item.content : [];
-  const text = content
-    .filter((part): part is { type?: string; text?: string } => !!part && typeof part === "object")
-    .filter((part) => part.type === "output_text")
-    .map((part) => part.text ?? "")
-    .join("");
-  if (!text) return;
-
   const itemId = typeof item.id === "string" ? item.id : undefined;
   const outputIndex = itemId != null
     ? (state.textOutputIndexesById.get(itemId) ?? nextOutputStateIndex(state))
     : nextOutputStateIndex(state);
 
-  state.textStates.set(outputIndex, text);
-  if (itemId) state.textOutputIndexesById.set(itemId, outputIndex);
-}
+  const textParts = [...(state.textStates.get(outputIndex) ?? [])];
+  for (const [contentIndex, rawPart] of content.entries()) {
+    if (!rawPart || typeof rawPart !== "object") continue;
+    const part = rawPart as { type?: string; text?: string };
+    if (part.type !== "output_text") continue;
+    ensureTextContentSlot(textParts, contentIndex);
+    textParts[contentIndex] = part.text ?? "";
+  }
 
-function reasoningSummaryKey(outputIndex: number, summaryIndex: number): string {
-  return `${outputIndex}:${summaryIndex}`;
+  if (joinedTextContent(textParts).length === 0) return;
+  state.textStates.set(outputIndex, textParts);
+  if (itemId) state.textOutputIndexesById.set(itemId, outputIndex);
 }
 
 function ensureReasoningSummarySlot(reasoning: OpenAIReasoningItem, summaryIndex: number): void {
@@ -102,20 +121,14 @@ function resolveReasoningOutputIndex(state: OpenAIReadState, event: Record<strin
   return state.currentReasoningOutputIndex;
 }
 
-function startReasoningSummary(
+function ensureReasoningSummaryState(
   state: OpenAIReadState,
   outputIndex: number,
   summaryIndex: number,
-  cb: StreamCallbacks,
 ): OpenAIReasoningItem | undefined {
   const reasoning = state.reasoningStates.get(outputIndex);
   if (!reasoning) return undefined;
   ensureReasoningSummarySlot(reasoning, summaryIndex);
-  const key = reasoningSummaryKey(outputIndex, summaryIndex);
-  if (!state.startedReasoningSummaries.has(key)) {
-    state.startedReasoningSummaries.add(key);
-    cb.onBlockStart?.("thinking");
-  }
   return reasoning;
 }
 
@@ -164,10 +177,11 @@ function buildOrderedBlocks(state: OpenAIReadState): OpenAIRenderableBlock[] {
     .filter(([, item]) => hasRenderableReasoning(item));
   const orderedTextEntries = [...state.textStates.entries()]
     .sort((a, b) => a[0] - b[0])
-    .filter(([, text]) => text.length > 0);
+    .map(([outputIndex, textParts]) => ({ outputIndex, text: joinedTextContent(textParts) }))
+    .filter((entry) => entry.text.length > 0);
   const orderedEntries = [
     ...orderedReasoningEntries.map(([outputIndex, item]) => ({ outputIndex, kind: "reasoning" as const, item })),
-    ...orderedTextEntries.map(([outputIndex, text]) => ({ outputIndex, kind: "text" as const, text })),
+    ...orderedTextEntries.map(({ outputIndex, text }) => ({ outputIndex, kind: "text" as const, text })),
   ].sort((a, b) => a.outputIndex - b.outputIndex);
 
   const orderedBlocks: OpenAIRenderableBlock[] = [];
@@ -182,26 +196,35 @@ function buildOrderedBlocks(state: OpenAIReadState): OpenAIRenderableBlock[] {
 }
 
 /**
- * Emit any append-only content that only became visible in the completed payload.
+ * Emit a diff only when it can be represented as ordinary tail streaming.
  *
- * OpenAI sometimes withholds the tail of a reasoning summary or assistant text
- * until response.completed. The daemon's transient streaming snapshot must stay
- * aligned with the final canonical blocks so refocus / late-join clients don't
- * temporarily lose that tail until message_complete lands.
+ * The chunk protocol can append to the current last block and start new blocks,
+ * but it cannot patch an earlier block once later blocks already exist. When an
+ * OpenAI event revises an earlier block, fall back to a full canonical sync.
  */
-function emitCompletedBackfill(before: OpenAIRenderableBlock[], after: OpenAIRenderableBlock[], cb: StreamCallbacks): void {
-  if (before.length > after.length) return;
+function emitTailDiff(before: OpenAIRenderableBlock[], after: OpenAIRenderableBlock[], cb: StreamCallbacks): boolean {
+  if (before.length > after.length) return false;
 
   for (let i = 0; i < before.length; i++) {
-    if (before[i].type !== after[i].type) return;
-    if (!after[i].text.startsWith(before[i].text)) return;
+    const prev = before[i];
+    const next = after[i];
+    if (prev.type !== next.type) return false;
+    const isLastSharedBlock = i === before.length - 1;
+    if (!isLastSharedBlock) {
+      if (prev.text !== next.text) return false;
+      continue;
+    }
+    if (!next.text.startsWith(prev.text)) return false;
   }
 
-  for (let i = 0; i < before.length; i++) {
-    const suffix = after[i].text.slice(before[i].text.length);
-    if (!suffix) continue;
-    if (after[i].type === "text") cb.onText(suffix);
-    else cb.onThinking(suffix);
+  if (before.length > 0) {
+    const prev = before[before.length - 1];
+    const next = after[before.length - 1];
+    const suffix = next.text.slice(prev.text.length);
+    if (suffix) {
+      if (next.type === "text") cb.onText(suffix);
+      else cb.onThinking(suffix);
+    }
   }
 
   for (let i = before.length; i < after.length; i++) {
@@ -209,6 +232,37 @@ function emitCompletedBackfill(before: OpenAIRenderableBlock[], after: OpenAIRen
     if (after[i].type === "text") cb.onText(after[i].text);
     else cb.onThinking(after[i].text);
   }
+  return true;
+}
+
+function emitOrSyncBlocks(before: OpenAIRenderableBlock[], after: OpenAIRenderableBlock[], cb: StreamCallbacks): void {
+  if (!emitTailDiff(before, after, cb)) cb.onBlocksUpdate?.(after);
+}
+
+function updateBlocks(state: OpenAIReadState, cb: StreamCallbacks, mutate: () => void): void {
+  const before = buildOrderedBlocks(state);
+  mutate();
+  emitOrSyncBlocks(before, buildOrderedBlocks(state), cb);
+}
+
+function resolveTextContentIndex(event: Record<string, unknown>): number {
+  return typeof event.content_index === "number" ? event.content_index : 0;
+}
+
+function resolveReasoningContentIndex(state: OpenAIReadState, event: Record<string, unknown>, outputIndex: number): number {
+  const contentIndex = typeof event.content_index === "number"
+    ? event.content_index
+    : (state.currentRawReasoningIndexes.get(outputIndex) ?? 0);
+  state.currentRawReasoningIndexes.set(outputIndex, contentIndex);
+  return contentIndex;
+}
+
+function resolveReasoningSummaryIndex(state: OpenAIReadState, event: Record<string, unknown>, outputIndex: number): number {
+  const summaryIndex = typeof event.summary_index === "number"
+    ? event.summary_index
+    : (state.currentReasoningIndexes.get(outputIndex) ?? 0);
+  state.currentReasoningIndexes.set(outputIndex, summaryIndex);
+  return summaryIndex;
 }
 
 function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown>, cb: StreamCallbacks): void {
@@ -229,7 +283,7 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
         });
       } else if (item.type === "message") {
         if (typeof item.id === "string") state.textOutputIndexesById.set(item.id, outputIndex);
-        if (!state.textStates.has(outputIndex)) state.textStates.set(outputIndex, "");
+        if (!state.textStates.has(outputIndex)) state.textStates.set(outputIndex, []);
       } else if (item.type === "reasoning") {
         const reasoningItem: OpenAIReasoningItem = {
           id: String(item.id ?? outputIndex),
@@ -244,17 +298,29 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
     }
 
     case "response.output_text.delta": {
-      const itemId = String(event.item_id ?? "assistant");
       const outputIndex = resolveTextOutputIndex(state, event);
-      if (!state.textStarted.has(itemId)) {
-        state.textStarted.add(itemId);
-        cb.onBlockStart?.("text");
-      }
       const delta = String(event.delta ?? "");
-      if (outputIndex != null) {
-        state.textStates.set(outputIndex, (state.textStates.get(outputIndex) ?? "") + delta);
+      if (outputIndex == null) {
+        const itemId = String(event.item_id ?? "assistant");
+        if (!state.textStarted.has(itemId)) {
+          state.textStarted.add(itemId);
+          cb.onBlockStart?.("text");
+        }
+        cb.onText(delta);
+        break;
       }
-      cb.onText(delta);
+      updateBlocks(state, cb, () => {
+        appendTextContent(state, outputIndex, resolveTextContentIndex(event), delta);
+      });
+      break;
+    }
+
+    case "response.output_text.done": {
+      const outputIndex = resolveTextOutputIndex(state, event);
+      if (outputIndex == null) break;
+      updateBlocks(state, cb, () => {
+        setTextContent(state, outputIndex, resolveTextContentIndex(event), String(event.text ?? ""));
+      });
       break;
     }
 
@@ -269,9 +335,7 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
       const outputIndex = resolveReasoningOutputIndex(state, event);
       if (outputIndex == null) break;
       state.currentReasoningOutputIndex = outputIndex;
-      const summaryIndex = Number(event.summary_index ?? 0);
-      state.currentReasoningIndexes.set(outputIndex, summaryIndex);
-      startReasoningSummary(state, outputIndex, summaryIndex, cb);
+      ensureReasoningSummaryState(state, outputIndex, resolveReasoningSummaryIndex(state, event, outputIndex));
       break;
     }
 
@@ -279,20 +343,27 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
       const outputIndex = resolveReasoningOutputIndex(state, event);
       if (outputIndex == null) break;
       state.currentReasoningOutputIndex = outputIndex;
-      const contentIndex = typeof event.content_index === "number"
-        ? event.content_index
-        : (state.currentRawReasoningIndexes.get(outputIndex) ?? 0);
-      state.currentRawReasoningIndexes.set(outputIndex, contentIndex);
+      const contentIndex = resolveReasoningContentIndex(state, event, outputIndex);
       const reasoning = state.reasoningStates.get(outputIndex);
       if (!reasoning) break;
-      ensureRawReasoningSlot(reasoning, contentIndex);
-      const delta = String(event.delta ?? "");
-      if (!state.startedReasoningSummaries.has(`raw:${outputIndex}:${contentIndex}`)) {
-        state.startedReasoningSummaries.add(`raw:${outputIndex}:${contentIndex}`);
-        cb.onBlockStart?.("thinking");
-      }
-      reasoning.rawContent![contentIndex] += delta;
-      cb.onThinking(delta);
+      updateBlocks(state, cb, () => {
+        ensureRawReasoningSlot(reasoning, contentIndex);
+        reasoning.rawContent![contentIndex] += String(event.delta ?? "");
+      });
+      break;
+    }
+
+    case "response.reasoning_text.done": {
+      const outputIndex = resolveReasoningOutputIndex(state, event);
+      if (outputIndex == null) break;
+      state.currentReasoningOutputIndex = outputIndex;
+      const contentIndex = resolveReasoningContentIndex(state, event, outputIndex);
+      const reasoning = state.reasoningStates.get(outputIndex);
+      if (!reasoning) break;
+      updateBlocks(state, cb, () => {
+        ensureRawReasoningSlot(reasoning, contentIndex);
+        reasoning.rawContent![contentIndex] = String(event.text ?? "");
+      });
       break;
     }
 
@@ -300,15 +371,25 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
       const outputIndex = resolveReasoningOutputIndex(state, event);
       if (outputIndex == null) break;
       state.currentReasoningOutputIndex = outputIndex;
-      const summaryIndex = typeof event.summary_index === "number"
-        ? event.summary_index
-        : (state.currentReasoningIndexes.get(outputIndex) ?? 0);
-      state.currentReasoningIndexes.set(outputIndex, summaryIndex);
-      const reasoning = startReasoningSummary(state, outputIndex, summaryIndex, cb);
+      const summaryIndex = resolveReasoningSummaryIndex(state, event, outputIndex);
+      const reasoning = ensureReasoningSummaryState(state, outputIndex, summaryIndex);
       if (!reasoning) break;
-      const delta = String(event.delta ?? "");
-      reasoning.summaries[summaryIndex] += delta;
-      cb.onThinking(delta);
+      updateBlocks(state, cb, () => {
+        reasoning.summaries[summaryIndex] += String(event.delta ?? "");
+      });
+      break;
+    }
+
+    case "response.reasoning_summary_text.done": {
+      const outputIndex = resolveReasoningOutputIndex(state, event);
+      if (outputIndex == null) break;
+      state.currentReasoningOutputIndex = outputIndex;
+      const summaryIndex = resolveReasoningSummaryIndex(state, event, outputIndex);
+      const reasoning = ensureReasoningSummaryState(state, outputIndex, summaryIndex);
+      if (!reasoning) break;
+      updateBlocks(state, cb, () => {
+        reasoning.summaries[summaryIndex] = String(event.text ?? "");
+      });
       break;
     }
 
@@ -334,20 +415,16 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
         });
         state.toolStates.delete(outputIndex);
       } else if (item.type === "reasoning") {
-        const reasoning = state.reasoningStates.get(outputIndex);
-        if (reasoning) {
-          if (typeof item.id === "string") {
-            reasoning.id = item.id;
-            state.reasoningOutputIndexesById.set(item.id, outputIndex);
+        updateBlocks(state, cb, () => {
+          handleCompletedReasoningItem(state, item);
+          if (state.currentReasoningOutputIndex === outputIndex) {
+            state.currentReasoningOutputIndex = null;
           }
-          if (typeof item.encrypted_content === "string") {
-            reasoning.encryptedContent = item.encrypted_content;
-          }
-          state.reasoningStates.set(outputIndex, reasoning);
-        }
-        if (state.currentReasoningOutputIndex === outputIndex) {
-          state.currentReasoningOutputIndex = null;
-        }
+        });
+      } else if (item.type === "message") {
+        updateBlocks(state, cb, () => {
+          handleCompletedMessageItem(state, item);
+        });
       }
       break;
     }
@@ -362,29 +439,29 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
         incomplete_details?: { reason?: string };
         output?: Array<Record<string, unknown>>;
       } | undefined;
-      const blocksBeforeCompletion = buildOrderedBlocks(state);
-      state.inputTokens = response?.usage?.input_tokens;
-      state.outputTokens = response?.usage?.output_tokens;
-      for (const item of response?.output ?? []) {
-        if (item.type === "reasoning") {
-          handleCompletedReasoningItem(state, item);
-        } else if (item.type === "function_call") {
-          if (!state.toolCalls.some((call) => call.id === String(item.call_id ?? ""))) {
-            let input: Record<string, unknown> = {};
-            try {
-              input = JSON.parse(String(item.arguments ?? "{}")) as Record<string, unknown>;
-            } catch {}
-            state.toolCalls.push({
-              id: String(item.call_id ?? ""),
-              name: String(item.name ?? ""),
-              input,
-            });
+      updateBlocks(state, cb, () => {
+        state.inputTokens = response?.usage?.input_tokens;
+        state.outputTokens = response?.usage?.output_tokens;
+        for (const item of response?.output ?? []) {
+          if (item.type === "reasoning") {
+            handleCompletedReasoningItem(state, item);
+          } else if (item.type === "function_call") {
+            if (!state.toolCalls.some((call) => call.id === String(item.call_id ?? ""))) {
+              let input: Record<string, unknown> = {};
+              try {
+                input = JSON.parse(String(item.arguments ?? "{}")) as Record<string, unknown>;
+              } catch {}
+              state.toolCalls.push({
+                id: String(item.call_id ?? ""),
+                name: String(item.name ?? ""),
+                input,
+              });
+            }
+          } else if (item.type === "message") {
+            handleCompletedMessageItem(state, item);
           }
-        } else if (item.type === "message") {
-          handleCompletedMessageItem(state, item);
         }
-      }
-      emitCompletedBackfill(blocksBeforeCompletion, buildOrderedBlocks(state), cb);
+      });
       state.stopReason = event.type === "response.completed"
         ? (state.toolCalls.length > 0 ? "tool_use" : "stop")
         : String(response?.incomplete_details?.reason ?? "incomplete");
@@ -410,10 +487,11 @@ function finalizeReadState(state: OpenAIReadState): StreamResult {
   const orderedReasoningItems = orderedReasoningEntries.map(([, item]) => item);
   const orderedTextEntries = [...state.textStates.entries()]
     .sort((a, b) => a[0] - b[0])
-    .filter(([, text]) => text.length > 0);
+    .map(([outputIndex, textParts]) => ({ outputIndex, text: joinedTextContent(textParts) }))
+    .filter((entry) => entry.text.length > 0);
   const orderedBlocks = buildOrderedBlocks(state);
 
-  const fullText = orderedTextEntries.map(([, text]) => text).join("");
+  const fullText = orderedTextEntries.map(({ text }) => text).join("");
   const fullThinking = orderedBlocks
     .filter((block): block is Extract<ContentBlock, { type: "thinking" }> => block.type === "thinking")
     .map((block) => block.text)
@@ -445,6 +523,7 @@ export function readOpenAIEventsForTest(
     onText: callbacks.onText ?? (() => {}),
     onThinking: callbacks.onThinking ?? (() => {}),
     onBlockStart: callbacks.onBlockStart,
+    onBlocksUpdate: callbacks.onBlocksUpdate,
     onSignature: callbacks.onSignature,
     onToolCall: callbacks.onToolCall,
     onToolResult: callbacks.onToolResult,

@@ -25,6 +25,7 @@ import { confirmQueueMessage, cancelQueuePrompt, clearLocalQueue, removeLocalQue
 import { confirmEditMessage, cancelEditMessage } from "./editmessage";
 import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
+import { msUntilNextElapsedSecond } from "./time";
 import type { Event } from "./protocol";
 
 // ── State ───────────────────────────────────────────────────────────
@@ -38,7 +39,19 @@ let terminalSetUp = false;
 
 // ── Render scheduling ───────────────────────────────────────────────
 
-/** Schedule a render on the next frame. Resets the 1s stream tick. */
+function clearRenderTimer(): void {
+  if (!renderTimer) return;
+  clearTimeout(renderTimer);
+  renderTimer = null;
+}
+
+function clearStreamTick(): void {
+  if (!streamTickTimer) return;
+  clearTimeout(streamTickTimer);
+  streamTickTimer = null;
+}
+
+/** Schedule a render on the next frame. Resets the live stream timer. */
 function scheduleRender(): void {
   if (renderTimer) return;
   renderTimer = setTimeout(() => {
@@ -48,11 +61,12 @@ function scheduleRender(): void {
   }, 16);
 }
 
-/** During streaming, ensure we re-render at least once per second. */
+/** During streaming, re-render on the next exact elapsed-second boundary. */
 function resetStreamTick(): void {
-  if (streamTickTimer) clearTimeout(streamTickTimer);
-  if (isStreaming(state)) {
-    streamTickTimer = setTimeout(scheduleRender, 1000);
+  clearStreamTick();
+  const startedAt = state.pendingAI?.metadata?.startedAt;
+  if (isStreaming(state) && typeof startedAt === "number") {
+    streamTickTimer = setTimeout(scheduleRender, msUntilNextElapsedSecond(startedAt));
   }
 }
 
@@ -69,7 +83,7 @@ function onDaemonEvent(event: Event): void {
 
   // Clear stream tick on streaming_stopped
   if (event.type === "streaming_stopped") {
-    if (streamTickTimer) { clearTimeout(streamTickTimer); streamTickTimer = null; }
+    clearStreamTick();
     // Queue shadows are NOT cleared here — the daemon drains one queued
     // message at a time and re-queues the rest. Each consumed message
     // triggers a user_message event, whose handler in events.ts removes
@@ -152,7 +166,10 @@ function handleSubmit(): void {
           daemon.createConversation(state.provider, state.model, "", state.effort);
           break;
         case "model_changed":
-          if (state.convId) daemon.setModel(state.convId, cmdResult.model);
+          if (state.convId) daemon.setModel(state.convId, cmdResult.provider, cmdResult.model);
+          break;
+        case "trim_requested":
+          if (state.convId) daemon.trimConversation(state.convId, cmdResult.mode, cmdResult.count);
           break;
         case "effort_changed":
           if (state.convId) daemon.setEffort(state.convId, cmdResult.effort);
@@ -460,7 +477,8 @@ async function main(): Promise<void> {
 }
 
 function cleanup(): void {
-  if (streamTickTimer) clearTimeout(streamTickTimer);
+  clearRenderTimer();
+  clearStreamTick();
   daemon?.disconnect();
   restoreTerminal();
   process.exit(0);

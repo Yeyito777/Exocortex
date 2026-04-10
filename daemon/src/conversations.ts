@@ -7,7 +7,9 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, StoredMessage } from "./messages";
-import { DEFAULT_EFFORT, createConversation, sortConversations, isToolResultMessage, countConversationMessages, topUnpinnedOrder, bottomPinnedOrder } from "./messages";
+import { DEFAULT_EFFORT, createConversation, sortConversations, countConversationMessages, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder } from "./messages";
+import type { TrimMode } from "./protocol";
+import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
 import { buildDisplayData, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
@@ -21,7 +23,7 @@ export {
   setStreamingTokens, getStreamingTokens,
   touchActivity, pauseActivity, resumeActivity,
   resetChunkCounter,
-  initStreamingState, getCurrentStreamingBlocks, replaceStreamingDisplayMessages, getStreamingDisplayMessages,
+  initStreamingState, getCurrentStreamingBlocks, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, getStreamingDisplayMessages,
   pushStreamingBlock, appendToStreamingBlock, clearCurrentStreamingBlocks,
   getQueuedMessages, pushQueuedMessage, drainQueuedMessages, clearQueuedMessages, removeQueuedMessage,
 } from "./streaming";
@@ -31,6 +33,22 @@ export {
 const conversations = new Map<string, Conversation>();
 const dirty = new Set<string>();
 const unread = new Set<string>();
+
+function applyConversationMutation(id: string, conv: Conversation): void {
+  conv.lastContextTokens = null;
+  conv.updatedAt = Date.now();
+  markDirty(id);
+  flush(id);
+}
+
+export function trimConversation(id: string, mode: TrimMode, count: number): TrimConversationResult | null {
+  const conv = conversations.get(id);
+  if (!conv) return null;
+
+  const result = trimConversationInPlace(conv, mode, count);
+  if (result.changed) applyConversationMutation(id, conv);
+  return result;
+}
 
 // ── IDs ─────────────────────────────────────────────────────────────
 
@@ -124,11 +142,15 @@ export function undoDelete(): Conversation | null {
   return conv;
 }
 
-export function setModel(id: string, model: ModelId, effort?: EffortLevel): boolean {
+export function setModel(id: string, provider: ProviderId, model: ModelId, effort: EffortLevel, fastMode: boolean): boolean {
   const conv = conversations.get(id);
   if (!conv) return false;
+  conv.provider = provider;
   conv.model = model;
-  if (effort) conv.effort = effort;
+  conv.effort = effort;
+  conv.fastMode = fastMode;
+  conv.lastContextTokens = null;
+  conv.updatedAt = Date.now();
   markDirty(id);
   flush(id);
   return true;

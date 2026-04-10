@@ -20,3 +20,8 @@ export function setChosenProvider(state: RenderState, provider: ProviderId, pers
   state.hasChosenProvider = true;
   if (persist) savePreferredProvider(provider);
 }
+
+/** Sync the active provider from daemon state without overwriting the user's saved default. */
+export function syncChosenProvider(state: RenderState, provider: ProviderId): void {
+  setChosenProvider(state, provider, false);
+}

@@ -1,4 +1,5 @@
-import type { EffortLevel, ModelInfo, ReasoningEffortInfo } from "@exocortex/shared/messages";
+import { type EffortLevel, type ModelInfo, type ReasoningEffortInfo } from "@exocortex/shared/messages";
+import { formatModelDisplayName } from "@exocortex/shared/model-display";
 import { loadProviderAuth } from "../../store";
 import type { StoredAnthropicAuth } from "./types";
 
@@ -21,9 +22,9 @@ function anthropicEffortMetadata(modelId: string): { supportedEfforts: Reasoning
 }
 
 export const FALLBACK_ANTHROPIC_MODELS: ModelInfo[] = [
-  { id: "claude-opus-4-6", label: "Claude Opus 4.6", maxContext: 1_000_000, ...anthropicEffortMetadata("claude-opus-4-6") },
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", maxContext: 1_000_000, ...anthropicEffortMetadata("claude-sonnet-4-6") },
-  { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", maxContext: 1_000_000, ...anthropicEffortMetadata("claude-haiku-4-5-20251001") },
+  { id: "claude-opus-4-6", label: formatModelDisplayName("claude-opus-4-6"), maxContext: 1_000_000, ...anthropicEffortMetadata("claude-opus-4-6") },
+  { id: "claude-sonnet-4-6", label: formatModelDisplayName("claude-sonnet-4-6"), maxContext: 1_000_000, ...anthropicEffortMetadata("claude-sonnet-4-6") },
+  { id: "claude-haiku-4-5-20251001", label: formatModelDisplayName("claude-haiku-4-5-20251001"), maxContext: 1_000_000, ...anthropicEffortMetadata("claude-haiku-4-5-20251001") },
 ];
 
 function storedSubscriptionType(): string | null {

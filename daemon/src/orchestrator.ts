@@ -15,6 +15,7 @@ import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
 import type { StoredMessage, ApiContentBlock } from "./messages";
+import type { ContentBlock as ProviderContentBlock } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ToolExecutionContext } from "./tools/types";
 
@@ -221,6 +222,37 @@ export async function orchestrateSendMessage(
     syncStreamingDisplayMessages(completedDisplayMessages());
   }
 
+  function ensurePartialContentTail(type: "text" | "thinking"): ApiContentBlock {
+    const last = partialContent[partialContent.length - 1];
+    if (type === "text") {
+      if (last?.type === "text") return last;
+      const block: ApiContentBlock = { type: "text", text: "" };
+      partialContent.push(block);
+      return block;
+    }
+    if (last?.type === "thinking") return last;
+    const block: ApiContentBlock = { type: "thinking", thinking: "", signature: "" };
+    partialContent.push(block);
+    return block;
+  }
+
+  function replacePartialContentFromBlocks(blocks: ProviderContentBlock[]): void {
+    partialContent.length = 0;
+    for (const block of blocks) {
+      if (block.type === "thinking") {
+        partialContent.push({ type: "thinking", thinking: block.text, signature: block.signature });
+      } else if (block.type === "text") {
+        partialContent.push({ type: "text", text: block.text });
+      }
+    }
+  }
+
+  function toStreamingSyncBlocks(blocks: ProviderContentBlock[]): Array<{ type: "text" | "thinking"; text: string }> {
+    return blocks
+      .filter((block): block is Extract<ProviderContentBlock, { type: "text" | "thinking" }> => block.type === "text" || block.type === "thinking")
+      .map((block) => ({ type: block.type, text: block.text }));
+  }
+
   const callbacks: AgentCallbacks = {
     onBlockStart(blockType) {
       convStore.touchActivity(convId);
@@ -238,8 +270,8 @@ export async function orchestrateSendMessage(
     },
     onTextChunk(chunk) {
       server.sendToSubscribers(convId, { type: "text_chunk", convId, text: chunk });
-      const last = partialContent[partialContent.length - 1];
-      if (last?.type === "text") last.text += chunk;
+      const block = ensurePartialContentTail("text");
+      if (block.type === "text") block.text += chunk;
       convStore.appendToStreamingBlock(convId, "text", chunk);
       // touchActivity piggybacks on the chunk counter — fires every CHUNK_SAVE_INTERVAL
       // chunks rather than on every single SSE event, keeping overhead negligible.
@@ -247,10 +279,17 @@ export async function orchestrateSendMessage(
     },
     onThinkingChunk(chunk) {
       server.sendToSubscribers(convId, { type: "thinking_chunk", convId, text: chunk });
-      const last = partialContent[partialContent.length - 1];
-      if (last?.type === "thinking") last.thinking += chunk;
+      const block = ensurePartialContentTail("thinking");
+      if (block.type === "thinking") block.thinking += chunk;
       convStore.appendToStreamingBlock(convId, "thinking", chunk);
       if (convStore.onChunk(convId)) convStore.touchActivity(convId);
+    },
+    onBlocksUpdate(blocks) {
+      const syncedBlocks = toStreamingSyncBlocks(blocks);
+      convStore.touchActivity(convId);
+      replacePartialContentFromBlocks(blocks);
+      convStore.replaceCurrentStreamingBlocks(convId, syncedBlocks);
+      server.sendToSubscribers(convId, { type: "streaming_sync", convId, blocks: syncedBlocks });
     },
     onSignature(signature) {
       for (let i = partialContent.length - 1; i >= 0; i--) {

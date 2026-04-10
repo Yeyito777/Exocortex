@@ -5,7 +5,7 @@
  * This is the only file that knows how to render metadata.
  */
 
-import type { MessageMetadata } from "./messages";
+import { formatModelDisplayName, type MessageMetadata } from "./messages";
 import { theme } from "./theme";
 
 // ── Formatting ──────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ export function renderMetadata(metadata: MessageMetadata | null): string[] {
   const parts: string[] = [];
 
   // Model
-  parts.push(metadata.model.charAt(0).toUpperCase() + metadata.model.slice(1));
+  parts.push(formatModelDisplayName(metadata.model));
 
   // Tokens
   parts.push(`${metadata.tokens.toLocaleString("en-US")} tokens`);

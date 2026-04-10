@@ -5,6 +5,7 @@
   "exports": {
     "./auth": "./src/auth.ts",
     "./messages": "./src/messages.ts",
+    "./model-display": "./src/model-display.ts",
     "./protocol": "./src/protocol.ts",
     "./paths": "./src/paths.ts"
   },

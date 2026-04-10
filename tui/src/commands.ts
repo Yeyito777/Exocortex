@@ -9,7 +9,8 @@
  */
 
 import type { RenderState } from "./state";
-import { clearPendingAI, clearSystemMessageBuffer, pushSystemMessage } from "./state";
+import { clearPendingAI, clearSystemMessageBuffer, isStreaming, pushSystemMessage } from "./state";
+import type { TrimMode } from "./protocol";
 import { clearPrompt } from "./promptstate";
 import {
   DEFAULT_EFFORT,
@@ -54,7 +55,8 @@ export type CommandResult =
   | { type: "quit" }
   | { type: "new_conversation" }
   | { type: "create_conversation_for_instructions"; text: string }
-  | { type: "model_changed"; model: ModelId }
+  | { type: "model_changed"; provider: ProviderId; model: ModelId }
+  | { type: "trim_requested"; mode: TrimMode; count: number }
   | { type: "effort_changed"; effort: EffortLevel }
   | { type: "fast_mode_changed"; enabled: boolean }
   | { type: "rename_conversation"; title: string }
@@ -160,6 +162,10 @@ function defaultEffortFor(state: RenderState, provider = state.provider, model =
   return normalizeEffortForModel(modelInfo(state, provider, model), null);
 }
 
+function maxContextFor(state: RenderState, provider = state.provider, model = state.model): number | null {
+  return modelInfo(state, provider, model)?.maxContext ?? null;
+}
+
 function effortItems(state: RenderState, provider = state.provider, model = state.model): CompletionItem[] {
   const defaultEffort = defaultEffortFor(state, provider, model);
   return supportedEfforts(state, provider, model).map((candidate) => ({
@@ -170,6 +176,70 @@ function effortItems(state: RenderState, provider = state.provider, model = stat
 
 function normalizeStateEffort(state: RenderState, provider = state.provider, model = state.model): void {
   state.effort = normalizeEffortForModel(modelInfo(state, provider, model), state.effort);
+}
+
+function buildContextWindowWarning(
+  previousContextTokens: number | null,
+  provider: ProviderId,
+  model: ModelId,
+  nextMaxContext: number | null,
+): string | null {
+  if (previousContextTokens == null || nextMaxContext == null || nextMaxContext <= 0 || previousContextTokens <= nextMaxContext) {
+    return null;
+  }
+  return `Warning: last known context (${previousContextTokens.toLocaleString("en-US")} tokens) exceeds ${provider}/${model}'s max context (${nextMaxContext.toLocaleString("en-US")}). The next turn may fail unless you trim the conversation (for example: /trim thinking 20, /trim toolresults 20, or /trim messages 5) or start a new one.`;
+}
+
+function applyProviderModelSelection(state: RenderState, provider: ProviderId, model: ModelId): {
+  effortChanged: boolean;
+  fastDisabled: boolean;
+  contextWarning: string | null;
+} {
+  const previousEffort = state.effort;
+  const previousFastMode = state.fastMode;
+  const previousContextTokens = state.contextTokens;
+  const nextMaxContext = maxContextFor(state, provider, model);
+
+  setChosenProvider(state, provider);
+  state.model = model;
+  normalizeStateEffort(state, provider, model);
+  if (!providerSupportsFastMode(state, provider)) state.fastMode = false;
+  state.contextTokens = null;
+
+  return {
+    effortChanged: state.effort !== previousEffort,
+    fastDisabled: previousFastMode && !state.fastMode,
+    contextWarning: buildContextWindowWarning(previousContextTokens, provider, model, nextMaxContext),
+  };
+}
+
+const TRIM_MODE_ITEMS: CompletionItem[] = [
+  { name: "messages", desc: "Trim oldest history entries first" },
+  { name: "thinking", desc: "Strip oldest assistant thinking blocks first" },
+  { name: "toolresults", desc: "Strip oldest tool result payloads first" },
+];
+
+function parsePositiveInt(raw: string | undefined): number | null {
+  if (!raw || !/^\d+$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function trimHelpText(state: RenderState): string {
+  const current = state.contextTokens != null ? state.contextTokens.toLocaleString("en-US") : "unknown";
+  const maxContext = maxContextFor(state);
+  const maxLabel = maxContext != null ? maxContext.toLocaleString("en-US") : "unknown";
+  return [
+    `Current context: ${current} / ${maxLabel} tokens`,
+    "Usage:",
+    "  /trim messages <n>",
+    "  /trim thinking <n>",
+    "  /trim toolresults <n>",
+    "",
+    "messages   Removes the oldest history entries first.",
+    "thinking   Removes thinking blocks from the oldest assistant turns first.",
+    "toolresults Replaces the oldest tool result payloads with placeholders first.",
+  ].join("\n");
 }
 
 function formatProviderModels(state: RenderState, provider: ProviderId): string {
@@ -304,6 +374,12 @@ const commands: SlashCommand[] = [
         return { type: "handled" };
       }
 
+      if (parts.length > 3) {
+        pushSystemMessage(state, "Usage: /model <provider> <model>");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
       const provider = parts[1] as ProviderId;
       if (!providers.includes(provider)) {
         pushSystemMessage(state, `Unknown provider: ${parts[1]}. Available: ${providers.join(", ")}`);
@@ -319,24 +395,77 @@ const commands: SlashCommand[] = [
         return { type: "handled" };
       }
 
-      const model = parts[2] as ModelId;
-      if (state.convId && provider !== state.provider) {
-        pushSystemMessage(state, "Provider is locked for the active conversation. Start a new conversation to switch providers.");
+      if (state.convId && isStreaming(state)) {
+        pushSystemMessage(state, "Cannot switch provider/model while this conversation is streaming.");
         clearPrompt(state);
         return { type: "handled" };
       }
 
-      setChosenProvider(state, provider);
-      state.model = model;
-      const previousEffort = state.effort;
-      const previousFastMode = state.fastMode;
-      normalizeStateEffort(state, provider, model);
-      if (!providerSupportsFastMode(state, provider)) state.fastMode = false;
-      const effortSuffix = state.effort !== previousEffort ? ` (effort ${state.effort})` : "";
-      const fastSuffix = previousFastMode && !state.fastMode ? " (fast off)" : "";
+      const model = parts[2] as ModelId;
+      const selection = applyProviderModelSelection(state, provider, model);
+
+      const effortSuffix = selection.effortChanged ? ` (effort ${state.effort})` : "";
+      const fastSuffix = selection.fastDisabled ? " (fast off)" : "";
       pushSystemMessage(state, `Model set to ${state.provider}/${state.model}${effortSuffix}${fastSuffix}`);
+
+      if (selection.contextWarning) {
+        pushSystemMessage(state, selection.contextWarning, "warning");
+      }
+
       clearPrompt(state);
-      return state.convId ? { type: "model_changed", model } : { type: "handled" };
+      return state.convId ? { type: "model_changed", provider, model } : { type: "handled" };
+    },
+  },
+  {
+    name: "/trim",
+    description: "Trim old context from the current conversation",
+    args: TRIM_MODE_ITEMS,
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length === 1) {
+        pushSystemMessage(state, trimHelpText(state));
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      const rawMode = parts[1]?.toLowerCase();
+      const mode = rawMode === "messages" || rawMode === "thinking" || rawMode === "toolresults"
+        ? rawMode
+        : null;
+
+      if (!mode) {
+        pushSystemMessage(state, `${trimHelpText(state)}\n\nUnknown trim mode: ${parts[1] ?? ""}`);
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      if (parts.length !== 3) {
+        pushSystemMessage(state, trimHelpText(state));
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      if (!state.convId) {
+        pushSystemMessage(state, "No active conversation to trim.");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      if (isStreaming(state)) {
+        pushSystemMessage(state, "Cannot trim the conversation while it is streaming.");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      const count = parsePositiveInt(parts[2]);
+      if (count == null) {
+        pushSystemMessage(state, `Trim count must be a positive integer.\n\n${trimHelpText(state)}`);
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      clearPrompt(state);
+      return { type: "trim_requested", mode, count };
     },
   },
   {
@@ -587,6 +716,7 @@ const STATIC_COMMAND_ARGS: Record<string, CompletionItem[]> = Object.fromEntries
 export function getCommandArgs(state: RenderState): Record<string, CompletionItem[]> {
   const registry: Record<string, CompletionItem[]> = { ...STATIC_COMMAND_ARGS };
   registry["/model"] = providerCompletionItems(state);
+  registry["/trim"] = TRIM_MODE_ITEMS;
   registry["/login"] = providerCompletionItems(state);
   registry["/logout"] = providerCompletionItems(state);
   for (const provider of availableProviders(state)) {
