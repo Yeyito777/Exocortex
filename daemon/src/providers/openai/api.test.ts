@@ -323,6 +323,97 @@ describe("OpenAI reasoning summaries", () => {
     ]);
   });
 
+  test("uses output_text.done to backfill finalized text before response.completed", () => {
+    const blockStarts: Array<"text" | "thinking"> = [];
+    const textChunks: string[] = [];
+    const result = readOpenAIEventsForTest([
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "message", id: "msg_1" },
+      },
+      {
+        type: "response.output_text.delta",
+        item_id: "msg_1",
+        output_index: 0,
+        content_index: 0,
+        delta: "hello",
+      },
+      {
+        type: "response.output_text.done",
+        item_id: "msg_1",
+        output_index: 0,
+        content_index: 0,
+        text: "hello world",
+      },
+    ], {
+      onBlockStart(type) { blockStarts.push(type); },
+      onText(chunk) { textChunks.push(chunk); },
+    });
+
+    expect(blockStarts).toEqual(["text"]);
+    expect(textChunks).toEqual(["hello", " world"]);
+    expect(result.blocks).toEqual([
+      { type: "text", text: "hello world" },
+    ]);
+  });
+
+  test("syncs canonical blocks when a later event patches an earlier text block", () => {
+    const syncedBlocks: Array<Array<{ type: string; text: string }>> = [];
+    const result = readOpenAIEventsForTest([
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "message", id: "msg_1" },
+      },
+      {
+        type: "response.output_text.delta",
+        item_id: "msg_1",
+        output_index: 0,
+        content_index: 0,
+        delta: "First paragraph.\n\n",
+      },
+      {
+        type: "response.output_item.added",
+        output_index: 1,
+        item: { type: "reasoning", id: "rs_1" },
+      },
+      {
+        type: "response.reasoning_summary_part.added",
+        output_index: 1,
+        summary_index: 0,
+      },
+      {
+        type: "response.reasoning_summary_text.delta",
+        output_index: 1,
+        summary_index: 0,
+        delta: "Thinking...",
+      },
+      {
+        type: "response.output_text.delta",
+        item_id: "msg_1",
+        output_index: 0,
+        content_index: 0,
+        delta: "Second paragraph.",
+      },
+    ], {
+      onBlocksUpdate(blocks) {
+        syncedBlocks.push(blocks.map((block) => ({ type: block.type, text: block.text })));
+      },
+    });
+
+    expect(syncedBlocks).toEqual([
+      [
+        { type: "text", text: "First paragraph.\n\nSecond paragraph." },
+        { type: "thinking", text: "Thinking..." },
+      ],
+    ]);
+    expect(result.blocks).toEqual([
+      { type: "text", text: "First paragraph.\n\nSecond paragraph." },
+      { type: "thinking", text: "Thinking...", signature: "" },
+    ]);
+  });
+
   test("does not emit a synthetic suffix when the completed payload rewrites existing reasoning text", () => {
     const blockStarts: Array<"text" | "thinking"> = [];
     const thinkingChunks: string[] = [];

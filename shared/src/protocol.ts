@@ -301,6 +301,13 @@ export interface ThinkingChunkEvent {
   text: string;
 }
 
+/** Replace the live text/thinking tail with the daemon's canonical current-round blocks. */
+export interface StreamingSyncEvent {
+  type: "streaming_sync";
+  convId: string;
+  blocks: Block[];
+}
+
 export interface ToolCallEvent {
   type: "tool_call";
   convId: string;
@@ -498,7 +505,8 @@ export interface SystemPromptEvent {
 export interface AuthStatusEvent {
   type: "auth_status";
   reqId?: string;
-  message: string;
+  /** Optional user-visible status text. openUrl-only events should not print a blank line. */
+  message?: string;
   /** When set, the TUI should open this URL in the user's browser. */
   openUrl?: string;
 }
@@ -519,6 +527,7 @@ export type Event =
   | BlockStartEvent
   | TextChunkEvent
   | ThinkingChunkEvent
+  | StreamingSyncEvent
   | ToolCallEvent
   | ToolResultEvent
   | TokensUpdateEvent

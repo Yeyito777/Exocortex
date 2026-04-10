@@ -510,7 +510,7 @@ export function createHandler(server: DaemonServer) {
             server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: msg });
           },
           onOpenUrl: (url) => {
-            server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: "Opening browser for authentication…", openUrl: url });
+            server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, openUrl: url });
           },
         }).then(({ status, email }) => {
           const label = email ?? provider;

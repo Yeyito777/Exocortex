@@ -29,6 +29,8 @@ export interface StreamCallbacks {
   onText: (chunk: string) => void;
   onThinking: (chunk: string) => void;
   onBlockStart?: (type: "text" | "thinking") => void;
+  /** Replace the current round's live text/thinking blocks with the canonical provider state. */
+  onBlocksUpdate?: (blocks: ContentBlock[]) => void;
   onSignature?: (signature: string) => void;
   onHeaders?: (headers: Headers) => void;
   onRetry?: (attempt: number, maxAttempts: number, errorMessage: string, delaySec: number) => void;
