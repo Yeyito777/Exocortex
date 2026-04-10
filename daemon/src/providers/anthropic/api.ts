@@ -19,7 +19,7 @@ function toClaudeEffort(effort: StreamOptions["effort"]): ClaudeEffortLevel | un
 }
 
 function isHelperProfile(options: StreamOptions): boolean {
-  return !options.tools || options.tools.length === 0;
+  return !options.mcpToolExecutor;
 }
 
 function toSdkPrompt(messages: ApiMessage[], resumeSessionId: string | null, helperProfile: boolean): string | AsyncIterable<SDKUserMessage> {

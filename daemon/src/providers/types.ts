@@ -40,6 +40,14 @@ export interface StreamCallbacks {
   onRetry?: (attempt: number, maxAttempts: number, errorMessage: string, delaySec: number) => void;
 }
 
+export interface StreamToolExecutionResult {
+  output: string;
+  isError: boolean;
+  image?: { mediaType: string; base64: string };
+}
+
+export type StreamToolExecutor = (call: ApiToolCall, signal?: AbortSignal) => Promise<StreamToolExecutionResult>;
+
 export interface StreamOptions {
   system?: string;
   signal?: AbortSignal;
@@ -48,11 +56,8 @@ export interface StreamOptions {
   effort?: EffortLevel;
   serviceTier?: ServiceTier;
   promptCacheKey?: string;
-  mcpToolExecutor?: (call: ApiToolCall, signal?: AbortSignal) => Promise<{
-    output: string;
-    isError: boolean;
-    image?: { mediaType: string; base64: string };
-  }>;
+  /** Optional provider-native tool bridge. Anthropic uses this to expose Exocortex tools via MCP. */
+  mcpToolExecutor?: StreamToolExecutor;
 }
 
 export interface ProviderStreamMessage {

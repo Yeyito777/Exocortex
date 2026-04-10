@@ -1,12 +1,14 @@
+import { randomUUID } from "crypto";
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { getRegisteredTools } from "../../tools/registry";
 import type { Tool } from "../../tools/types";
-import type { ApiToolCall } from "../types";
+import type { StreamToolExecutionResult, StreamToolExecutor } from "../types";
 
 const EXOCORTEX_MCP_SERVER_NAME = "exocortex";
+const EXOCORTEX_MCP_TOOL_NAME_PREFIX = `mcp__${EXOCORTEX_MCP_SERVER_NAME}__`;
 
-type McpExecutor = NonNullable<import("../types").StreamOptions["mcpToolExecutor"]>;
+type McpExecutor = StreamToolExecutor;
 
 function toZodProperty(schema: Record<string, unknown>, required: boolean): z.ZodTypeAny {
   const type = schema.type;
@@ -45,7 +47,7 @@ function toZodShape(inputSchema: Record<string, unknown>): Record<string, z.ZodT
   );
 }
 
-function toMcpCallToolResult(result: Awaited<ReturnType<McpExecutor>>): {
+function toMcpCallToolResult(result: StreamToolExecutionResult): {
   content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
   isError: boolean;
 } {
@@ -66,7 +68,7 @@ function buildMcpToolDefinition(definition: Tool, execute: McpExecutor) {
     definition.description,
     toZodShape(definition.inputSchema),
     async (args) => toMcpCallToolResult(await execute({
-      id: `mcp_${definition.name}_${Date.now()}`,
+      id: randomUUID(),
       name: definition.name,
       input: args as Record<string, unknown>,
     })),
@@ -82,10 +84,9 @@ export function createExocortexMcpServer(execute: McpExecutor): McpSdkServerConf
 }
 
 export function getExocortexAllowedToolNames(): string[] {
-  return getRegisteredTools().map((toolDef) => `mcp__${EXOCORTEX_MCP_SERVER_NAME}__${toolDef.name}`);
+  return getRegisteredTools().map((toolDef) => `${EXOCORTEX_MCP_TOOL_NAME_PREFIX}${toolDef.name}`);
 }
 
 export function normalizeClaudeToolName(name: string): string {
-  const prefix = `mcp__${EXOCORTEX_MCP_SERVER_NAME}__`;
-  return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+  return name.startsWith(EXOCORTEX_MCP_TOOL_NAME_PREFIX) ? name.slice(EXOCORTEX_MCP_TOOL_NAME_PREFIX.length) : name;
 }
