@@ -6,7 +6,7 @@
  */
 
 import type { RenderState } from "./state";
-import { convDisplayName } from "./messages";
+import { convDisplayName, formatModelDisplayName } from "./messages";
 import { theme } from "./theme";
 
 /** Max visible length for a conversation preview used as label. */
@@ -34,7 +34,7 @@ export function renderTopbar(state: RenderState, width?: number): string {
     const providerId = typeof state.provider === "string" && state.provider.length > 0 ? state.provider : "unknown";
     const providerLabel = state.providerRegistry.find((provider) => provider.id === providerId)?.label
       ?? (providerId === "openai" ? "OpenAI" : providerId.charAt(0).toUpperCase() + providerId.slice(1));
-    rightLabel = `${providerLabel}/${state.model} — ${state.effort}${state.fastMode ? " — fast" : ""}`;
+    rightLabel = `${providerLabel}/${formatModelDisplayName(state.model)} — ${state.effort}${state.fastMode ? " — fast" : ""}`;
   }
 
   const inner = `${title}${separator}${label}`;

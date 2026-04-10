@@ -1,4 +1,5 @@
-import type { EffortLevel, ModelInfo, ReasoningEffortInfo } from "@exocortex/shared/messages";
+import { type EffortLevel, type ModelInfo, type ReasoningEffortInfo } from "@exocortex/shared/messages";
+import { formatModelDisplayName } from "@exocortex/shared/model-display";
 import { log } from "../../log";
 import { getVerifiedAccessToken } from "./auth";
 import { ANTHROPIC_BASE_URL } from "./constants";
@@ -22,9 +23,9 @@ function anthropicEffortMetadata(modelId: string): { supportedEfforts: Reasoning
 }
 
 export const FALLBACK_ANTHROPIC_MODELS: ModelInfo[] = [
-  { id: "claude-opus-4-6", label: "claude-opus-4-6", maxContext: 1_000_000, ...anthropicEffortMetadata("claude-opus-4-6") },
-  { id: "claude-sonnet-4-6", label: "claude-sonnet-4-6", maxContext: 1_000_000, ...anthropicEffortMetadata("claude-sonnet-4-6") },
-  { id: "claude-haiku-4-5-20251001", label: "claude-haiku-4-5-20251001", maxContext: 1_000_000, ...anthropicEffortMetadata("claude-haiku-4-5-20251001") },
+  { id: "claude-opus-4-6", label: formatModelDisplayName("claude-opus-4-6"), maxContext: 1_000_000, ...anthropicEffortMetadata("claude-opus-4-6") },
+  { id: "claude-sonnet-4-6", label: formatModelDisplayName("claude-sonnet-4-6"), maxContext: 1_000_000, ...anthropicEffortMetadata("claude-sonnet-4-6") },
+  { id: "claude-haiku-4-5-20251001", label: formatModelDisplayName("claude-haiku-4-5-20251001"), maxContext: 1_000_000, ...anthropicEffortMetadata("claude-haiku-4-5-20251001") },
 ];
 
 interface AnthropicModelResponse {
@@ -55,7 +56,7 @@ export async function fetchAnthropicModels(): Promise<ModelInfo[]> {
     .filter((model) => typeof model.id === "string" && model.id.startsWith("claude-"))
     .map((model) => ({
       id: model.id,
-      label: model.display_name?.trim() || model.id,
+      label: formatModelDisplayName(model.id),
       maxContext: model.max_input_tokens ?? 1_000_000,
       ...anthropicEffortMetadata(model.id),
     }));

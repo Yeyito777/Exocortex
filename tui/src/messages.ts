@@ -8,6 +8,7 @@
 // ── Shared domain types (single source of truth) ────────────────────
 
 export * from "@exocortex/shared/messages";
+export * from "@exocortex/shared/model-display";
 
 // ── TUI helpers ─────────────────────────────────────────────────────
 

@@ -14,7 +14,7 @@ const providers: ProviderInfo[] = [
     models: [
       {
         id: "claude-opus-4-6",
-        label: "Claude Opus 4.6",
+        label: "Opus-4.6",
         maxContext: 1_000_000,
         supportedEfforts: [{ effort: "high", description: "default" }],
         defaultEffort: "high",
@@ -30,7 +30,7 @@ const providers: ProviderInfo[] = [
     models: [
       {
         id: "gpt-5.4",
-        label: "gpt-5.4",
+        label: "Gpt-5.4",
         maxContext: 272_000,
         supportedEfforts: [
           { effort: "low", description: "Fast" },

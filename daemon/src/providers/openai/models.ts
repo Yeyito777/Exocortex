@@ -1,4 +1,5 @@
-import type { EffortLevel, ModelInfo, ReasoningEffortInfo } from "@exocortex/shared/messages";
+import { type EffortLevel, type ModelInfo, type ReasoningEffortInfo } from "@exocortex/shared/messages";
+import { formatModelDisplayName } from "@exocortex/shared/model-display";
 import { log } from "../../log";
 import { getVerifiedSession } from "./auth";
 import { OPENAI_CODEX_CLIENT_VERSION, OPENAI_MODELS_URL } from "./constants";
@@ -14,21 +15,21 @@ const FALLBACK_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
 export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
   {
     id: "gpt-5.4",
-    label: "gpt-5.4",
+    label: formatModelDisplayName("gpt-5.4"),
     maxContext: 272_000,
     supportedEfforts: FALLBACK_OPENAI_EFFORTS,
     defaultEffort: "high",
   },
   {
     id: "gpt-5.4-mini",
-    label: "GPT-5.4-Mini",
+    label: formatModelDisplayName("gpt-5.4-mini"),
     maxContext: 272_000,
     supportedEfforts: FALLBACK_OPENAI_EFFORTS,
     defaultEffort: "medium",
   },
   {
     id: "gpt-5.3-codex-spark",
-    label: "gpt-5.3-codex-spark",
+    label: formatModelDisplayName("gpt-5.3-codex-spark"),
     maxContext: 128_000,
     supportedEfforts: FALLBACK_OPENAI_EFFORTS,
     defaultEffort: "medium",
@@ -79,7 +80,7 @@ function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
     }));
   return {
     id: model.slug,
-    label: model.display_name?.trim() || model.slug,
+    label: formatModelDisplayName(model.slug),
     maxContext: model.context_window ?? 272_000,
     supportedEfforts: supportedEfforts.length > 0 ? supportedEfforts : FALLBACK_OPENAI_EFFORTS,
     defaultEffort: preferredDefaultEffort(model.slug, model.default_reasoning_level),

@@ -85,7 +85,7 @@ describe("OpenAI model selection", () => {
 
     expect(models[0]).toEqual({
       id: "gpt-5.3-codex-spark",
-      label: "GPT-5.3-Codex-Spark",
+      label: "Gpt-5.3-codex-spark",
       maxContext: 123_000,
       supportedEfforts: [{ effort: "high", description: "Deep coding" }],
       defaultEffort: "high",
