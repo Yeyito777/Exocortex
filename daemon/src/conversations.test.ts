@@ -108,7 +108,7 @@ describe("trimConversation", () => {
   });
 
   test("strips oldest tool result payloads first", () => {
-    const id = mkId("trim-toolresult");
+    const id = mkId("trim-toolresults");
     create(id, "anthropic", "claude-opus-4-6");
     const conv = get(id)!;
     conv.messages.push({
@@ -122,7 +122,7 @@ describe("trimConversation", () => {
       metadata: null,
     });
 
-    const result = trimConversation(id, "toolresult", 1);
+    const result = trimConversation(id, "toolresults", 1);
 
     expect(result).not.toBeNull();
     expect(result?.changed).toBe(true);

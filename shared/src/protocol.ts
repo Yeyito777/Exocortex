@@ -91,7 +91,7 @@ export interface SetFastModeCommand {
   enabled: boolean;
 }
 
-export type TrimMode = "messages" | "thinking" | "toolresult";
+export type TrimMode = "messages" | "thinking" | "toolresults";
 
 export interface TrimConversationCommand {
   type: "trim_conversation";

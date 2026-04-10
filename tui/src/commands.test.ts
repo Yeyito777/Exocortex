@@ -161,7 +161,7 @@ describe("/trim", () => {
     expect(text).toContain("Current context: 42,000 / 272,000 tokens");
     expect(text).toContain("/trim messages <n>");
     expect(text).toContain("/trim thinking <n>");
-    expect(text).toContain("/trim toolresult <n>");
+    expect(text).toContain("/trim toolresults <n>");
   });
 
   test("returns a trim request for valid input", () => {
@@ -190,7 +190,7 @@ describe("/trim", () => {
     state.convId = "conv-openai";
     state.pendingAI = { role: "assistant", blocks: [], metadata: null };
 
-    const result = tryCommand("/trim toolresult 2", state);
+    const result = tryCommand("/trim toolresults 2", state);
 
     expect(result).toEqual({ type: "handled" });
     expect((state.systemMessageBuffer.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot trim the conversation while it is streaming.");

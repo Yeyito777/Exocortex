@@ -187,7 +187,7 @@ function buildContextWindowWarning(
   if (previousContextTokens == null || nextMaxContext == null || nextMaxContext <= 0 || previousContextTokens <= nextMaxContext) {
     return null;
   }
-  return `Warning: last known context (${previousContextTokens.toLocaleString("en-US")} tokens) exceeds ${provider}/${model}'s max context (${nextMaxContext.toLocaleString("en-US")}). The next turn may fail unless you trim the conversation (for example: /trim thinking 20, /trim toolresult 20, or /trim messages 5) or start a new one.`;
+  return `Warning: last known context (${previousContextTokens.toLocaleString("en-US")} tokens) exceeds ${provider}/${model}'s max context (${nextMaxContext.toLocaleString("en-US")}). The next turn may fail unless you trim the conversation (for example: /trim thinking 20, /trim toolresults 20, or /trim messages 5) or start a new one.`;
 }
 
 function applyProviderModelSelection(state: RenderState, provider: ProviderId, model: ModelId): {
@@ -216,7 +216,7 @@ function applyProviderModelSelection(state: RenderState, provider: ProviderId, m
 const TRIM_MODE_ITEMS: CompletionItem[] = [
   { name: "messages", desc: "Trim oldest history entries first" },
   { name: "thinking", desc: "Strip oldest assistant thinking blocks first" },
-  { name: "toolresult", desc: "Strip oldest tool result payloads first" },
+  { name: "toolresults", desc: "Strip oldest tool result payloads first" },
 ];
 
 function parsePositiveInt(raw: string | undefined): number | null {
@@ -234,11 +234,11 @@ function trimHelpText(state: RenderState): string {
     "Usage:",
     "  /trim messages <n>",
     "  /trim thinking <n>",
-    "  /trim toolresult <n>",
+    "  /trim toolresults <n>",
     "",
     "messages   Removes the oldest history entries first.",
     "thinking   Removes thinking blocks from the oldest assistant turns first.",
-    "toolresult Replaces the oldest tool result payloads with placeholders first.",
+    "toolresults Replaces the oldest tool result payloads with placeholders first.",
   ].join("\n");
 }
 
@@ -429,7 +429,7 @@ const commands: SlashCommand[] = [
       }
 
       const rawMode = parts[1]?.toLowerCase();
-      const mode = rawMode === "messages" || rawMode === "thinking" || rawMode === "toolresult"
+      const mode = rawMode === "messages" || rawMode === "thinking" || rawMode === "toolresults"
         ? rawMode
         : null;
 

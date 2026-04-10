@@ -205,7 +205,7 @@ export function trimConversationInPlace(conv: Conversation, mode: TrimMode, coun
       return trimMessagesFromStart(conv, count);
     case "thinking":
       return trimThinkingFromStart(conv, count);
-    case "toolresult":
+    case "toolresults":
       return trimToolResultsFromStart(conv, count);
     default:
       return { changed: false, message: `Unknown trim mode: ${mode}` };
