@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { create, get, getDisplayData, getSummary, remove, setModel, setSystemInstructions } from "./conversations";
+import { create, get, getDisplayData, getSummary, remove, setModel, setSystemInstructions, trimConversation } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
@@ -38,6 +38,97 @@ describe("setModel", () => {
     expect(after.fastMode).toBe(false);
     expect(after.lastContextTokens).toBeNull();
     expect(after.updatedAt).toBeGreaterThan(before);
+  });
+});
+
+describe("trimConversation", () => {
+  test("trims oldest history entries and clears stale context", () => {
+    const id = mkId("trim-messages");
+    const conv = create(id, "openai", "gpt-5.4");
+    conv.lastContextTokens = 9_999;
+    expect(setSystemInstructions(id, "Be terse.")).toBe(true);
+    conv.messages.push({ role: "user", content: "first", metadata: null });
+    conv.messages.push({ role: "assistant", content: "reply one", metadata: null });
+    conv.messages.push({ role: "user", content: "second", metadata: null });
+
+    const result = trimConversation(id, "messages", 2);
+
+    expect(result).not.toBeNull();
+    expect(result?.changed).toBe(true);
+    expect(result?.message).toContain("Trimmed 2 oldest history entries");
+    expect(get(id)?.messages).toEqual([
+      { role: "system_instructions", content: "Be terse.", metadata: null },
+      { role: "user", content: "second", metadata: null },
+    ]);
+    expect(get(id)?.lastContextTokens).toBeNull();
+  });
+
+  test("expands message trimming to preserve assistant tool_use and user tool_result pairs", () => {
+    const id = mkId("trim-messages-tool-pair");
+    create(id, "anthropic", "claude-opus-4-6");
+    const conv = get(id)!;
+    conv.messages.push({ role: "user", content: "before tool", metadata: null });
+    conv.messages.push({
+      role: "assistant",
+      content: [{ type: "tool_use", id: "tool-1", name: "bash", input: { command: "echo hi" } }],
+      metadata: null,
+    });
+    conv.messages.push({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "tool-1", content: "hi" }],
+      metadata: null,
+    });
+    conv.messages.push({ role: "assistant", content: "after tool", metadata: null });
+
+    const result = trimConversation(id, "messages", 2);
+
+    expect(result).not.toBeNull();
+    expect(result?.changed).toBe(true);
+    expect(result?.message).toContain("expanded from 2 to 3 to preserve a tool_use/tool_result pair");
+    expect(get(id)?.messages).toEqual([
+      { role: "assistant", content: "after tool", metadata: null },
+    ]);
+  });
+
+  test("strips thinking from the oldest assistant turns first", () => {
+    const id = mkId("trim-thinking");
+    create(id, "openai", "gpt-5.4");
+    const conv = get(id)!;
+    conv.messages.push({ role: "assistant", content: [{ type: "thinking", thinking: "secret", signature: "sig" }, { type: "text", text: "visible" }], metadata: null });
+    conv.messages.push({ role: "assistant", content: [{ type: "thinking", thinking: "later", signature: "sig2" }, { type: "text", text: "second" }], metadata: null });
+
+    const result = trimConversation(id, "thinking", 1);
+
+    expect(result).not.toBeNull();
+    expect(result?.changed).toBe(true);
+    expect(result?.message).toContain("Trimmed thinking from 1 assistant turn");
+    expect(get(id)?.messages[0]?.content).toEqual([{ type: "text", text: "visible" }]);
+    expect(Array.isArray(get(id)?.messages[1]?.content)).toBe(true);
+    expect((get(id)?.messages[1]?.content as Array<{ type: string }>).some((block) => block.type === "thinking")).toBe(true);
+  });
+
+  test("strips oldest tool result payloads first", () => {
+    const id = mkId("trim-toolresult");
+    create(id, "anthropic", "claude-opus-4-6");
+    const conv = get(id)!;
+    conv.messages.push({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "tool-1", content: "very long output that should definitely be longer than the trim placeholder" }],
+      metadata: null,
+    });
+    conv.messages.push({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "tool-2", content: "second output" }],
+      metadata: null,
+    });
+
+    const result = trimConversation(id, "toolresult", 1);
+
+    expect(result).not.toBeNull();
+    expect(result?.changed).toBe(true);
+    expect(result?.message).toContain("Trimmed 1 tool result");
+    expect(get(id)?.messages[0]?.content).toEqual([{ type: "tool_result", tool_use_id: "tool-1", content: "[Output removed by /trim]" }]);
+    expect(get(id)?.messages[1]?.content).toEqual([{ type: "tool_result", tool_use_id: "tool-2", content: "second output" }]);
   });
 });
 

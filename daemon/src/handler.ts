@@ -183,6 +183,41 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      case "trim_conversation": {
+        const conv = convStore.get(cmd.convId);
+        if (!conv) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        if (convStore.isStreaming(cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot trim the conversation while it is streaming." });
+          break;
+        }
+        const result = convStore.trimConversation(cmd.convId, cmd.mode, cmd.count);
+        if (!result) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        if (result.changed) {
+          const displayData = convStore.getDisplayData(cmd.convId);
+          if (displayData) {
+            server.sendToSubscribers(cmd.convId, {
+              type: "history_updated",
+              convId: cmd.convId,
+              entries: displayData.entries,
+              contextTokens: displayData.contextTokens,
+            });
+          }
+          server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
+          server.sendToSubscribers(cmd.convId, { type: "system_message", convId: cmd.convId, text: result.message });
+          log("info", `handler: trimmed ${cmd.mode} (${cmd.count}) for ${cmd.convId}`);
+        } else {
+          server.sendTo(client, { type: "system_message", convId: cmd.convId, text: result.message });
+        }
+        break;
+      }
+
       case "set_effort": {
         if (!EFFORT_LEVELS.includes(cmd.effort)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Invalid effort level: ${cmd.effort}. Valid: ${EFFORT_LEVELS.join(", ")}` });

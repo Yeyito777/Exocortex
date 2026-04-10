@@ -98,6 +98,7 @@ Commands flow client → daemon. Events flow daemon → client.
 | `v` / `V`        | Visual / visual-line mode           |
 | `/new`           | Start a new conversation            |
 | `/model <provider> <model>` | Switch provider/model for the current conversation |
+| `/trim <mode> <n>` | Trim old context from the current conversation |
 | `/quit`          | Exit                                |
 
 ## Protocol
@@ -111,7 +112,7 @@ See `shared/src/protocol.ts` — the single source of truth for the IPC contract
 - `load_conversation` → `conversation_loaded`
 - `subscribe` / `unsubscribe` → `ack`
 - `abort` → `ack`
-- `set_model`, `delete_conversation`, `mark_conversation`, `pin_conversation`, `move_conversation`
+- `set_model`, `trim_conversation`, `delete_conversation`, `mark_conversation`, `pin_conversation`, `move_conversation`
 
 **Events** (daemon → client):
 - `streaming_started` / `streaming_stopped` — broadcast to all clients

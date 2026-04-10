@@ -10,6 +10,7 @@
 
 import type { RenderState } from "./state";
 import { clearPendingAI, clearSystemMessageBuffer, isStreaming, pushSystemMessage } from "./state";
+import type { TrimMode } from "./protocol";
 import { clearPrompt } from "./promptstate";
 import {
   DEFAULT_EFFORT,
@@ -55,6 +56,7 @@ export type CommandResult =
   | { type: "new_conversation" }
   | { type: "create_conversation_for_instructions"; text: string }
   | { type: "model_changed"; provider: ProviderId; model: ModelId }
+  | { type: "trim_requested"; mode: TrimMode; count: number }
   | { type: "effort_changed"; effort: EffortLevel }
   | { type: "fast_mode_changed"; enabled: boolean }
   | { type: "rename_conversation"; title: string }
@@ -185,7 +187,7 @@ function buildContextWindowWarning(
   if (previousContextTokens == null || nextMaxContext == null || nextMaxContext <= 0 || previousContextTokens <= nextMaxContext) {
     return null;
   }
-  return `Warning: last known context (${previousContextTokens.toLocaleString("en-US")} tokens) exceeds ${provider}/${model}'s max context (${nextMaxContext.toLocaleString("en-US")}). The next turn may fail unless you trim the conversation or start a new one.`;
+  return `Warning: last known context (${previousContextTokens.toLocaleString("en-US")} tokens) exceeds ${provider}/${model}'s max context (${nextMaxContext.toLocaleString("en-US")}). The next turn may fail unless you trim the conversation (for example: /trim thinking 20, /trim toolresult 20, or /trim messages 5) or start a new one.`;
 }
 
 function applyProviderModelSelection(state: RenderState, provider: ProviderId, model: ModelId): {
@@ -209,6 +211,35 @@ function applyProviderModelSelection(state: RenderState, provider: ProviderId, m
     fastDisabled: previousFastMode && !state.fastMode,
     contextWarning: buildContextWindowWarning(previousContextTokens, provider, model, nextMaxContext),
   };
+}
+
+const TRIM_MODE_ITEMS: CompletionItem[] = [
+  { name: "messages", desc: "Trim oldest history entries first" },
+  { name: "thinking", desc: "Strip oldest assistant thinking blocks first" },
+  { name: "toolresult", desc: "Strip oldest tool result payloads first" },
+];
+
+function parsePositiveInt(raw: string | undefined): number | null {
+  if (!raw || !/^\d+$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function trimHelpText(state: RenderState): string {
+  const current = state.contextTokens != null ? state.contextTokens.toLocaleString("en-US") : "unknown";
+  const maxContext = maxContextFor(state);
+  const maxLabel = maxContext != null ? maxContext.toLocaleString("en-US") : "unknown";
+  return [
+    `Current context: ${current} / ${maxLabel} tokens`,
+    "Usage:",
+    "  /trim messages <n>",
+    "  /trim thinking <n>",
+    "  /trim toolresult <n>",
+    "",
+    "messages   Removes the oldest history entries first.",
+    "thinking   Removes thinking blocks from the oldest assistant turns first.",
+    "toolresult Replaces the oldest tool result payloads with placeholders first.",
+  ].join("\n");
 }
 
 function formatProviderModels(state: RenderState, provider: ProviderId): string {
@@ -383,6 +414,58 @@ const commands: SlashCommand[] = [
 
       clearPrompt(state);
       return state.convId ? { type: "model_changed", provider, model } : { type: "handled" };
+    },
+  },
+  {
+    name: "/trim",
+    description: "Trim old context from the current conversation",
+    args: TRIM_MODE_ITEMS,
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length === 1) {
+        pushSystemMessage(state, trimHelpText(state));
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      const rawMode = parts[1]?.toLowerCase();
+      const mode = rawMode === "messages" || rawMode === "thinking" || rawMode === "toolresult"
+        ? rawMode
+        : null;
+
+      if (!mode) {
+        pushSystemMessage(state, `${trimHelpText(state)}\n\nUnknown trim mode: ${parts[1] ?? ""}`);
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      if (parts.length !== 3) {
+        pushSystemMessage(state, trimHelpText(state));
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      if (!state.convId) {
+        pushSystemMessage(state, "No active conversation to trim.");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      if (isStreaming(state)) {
+        pushSystemMessage(state, "Cannot trim the conversation while it is streaming.");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      const count = parsePositiveInt(parts[2]);
+      if (count == null) {
+        pushSystemMessage(state, `Trim count must be a positive integer.\n\n${trimHelpText(state)}`);
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      clearPrompt(state);
+      return { type: "trim_requested", mode, count };
     },
   },
   {
@@ -633,6 +716,7 @@ const STATIC_COMMAND_ARGS: Record<string, CompletionItem[]> = Object.fromEntries
 export function getCommandArgs(state: RenderState): Record<string, CompletionItem[]> {
   const registry: Record<string, CompletionItem[]> = { ...STATIC_COMMAND_ARGS };
   registry["/model"] = providerCompletionItems(state);
+  registry["/trim"] = TRIM_MODE_ITEMS;
   registry["/login"] = providerCompletionItems(state);
   registry["/logout"] = providerCompletionItems(state);
   for (const provider of availableProviders(state)) {

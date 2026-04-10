@@ -6,7 +6,7 @@
 
 import { connect, type Socket } from "net";
 import { existsSync } from "fs";
-import type { Command, Event, QueueTiming } from "./protocol";
+import type { Command, Event, QueueTiming, TrimMode } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 
@@ -125,6 +125,10 @@ export class DaemonClient {
 
   setFastMode(convId: string, enabled: boolean): void {
     this.send({ type: "set_fast_mode", convId, enabled });
+  }
+
+  trimConversation(convId: string, mode: TrimMode, count: number): void {
+    this.send({ type: "trim_conversation", convId, mode, count });
   }
 
   deleteConversation(convId: string): void {

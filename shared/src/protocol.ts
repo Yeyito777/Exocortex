@@ -91,6 +91,16 @@ export interface SetFastModeCommand {
   enabled: boolean;
 }
 
+export type TrimMode = "messages" | "thinking" | "toolresult";
+
+export interface TrimConversationCommand {
+  type: "trim_conversation";
+  reqId?: string;
+  convId: string;
+  mode: TrimMode;
+  count: number;
+}
+
 export interface DeleteConversationCommand {
   type: "delete_conversation";
   reqId?: string;
@@ -208,6 +218,7 @@ export type Command =
   | SetModelCommand
   | SetEffortCommand
   | SetFastModeCommand
+  | TrimConversationCommand
   | AbortCommand
   | SubscribeCommand
   | UnsubscribeCommand

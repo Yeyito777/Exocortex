@@ -146,6 +146,69 @@ describe("/model", () => {
   });
 });
 
+describe("/trim", () => {
+  test("shows help when called without arguments", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "openai";
+    state.model = "gpt-5.4";
+    state.contextTokens = 42_000;
+
+    const result = tryCommand("/trim", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("Current context: 42,000 / 272,000 tokens");
+    expect(text).toContain("/trim messages <n>");
+    expect(text).toContain("/trim thinking <n>");
+    expect(text).toContain("/trim toolresult <n>");
+  });
+
+  test("returns a trim request for valid input", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.convId = "conv-openai";
+
+    const result = tryCommand("/trim thinking 5", state);
+
+    expect(result).toEqual({ type: "trim_requested", mode: "thinking", count: 5 });
+  });
+
+  test("requires an active conversation", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    const result = tryCommand("/trim messages 3", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("No active conversation to trim.");
+  });
+
+  test("rejects trimming while streaming", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.convId = "conv-openai";
+    state.pendingAI = { role: "assistant", blocks: [], metadata: null };
+
+    const result = tryCommand("/trim toolresult 2", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.systemMessageBuffer.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot trim the conversation while it is streaming.");
+  });
+
+  test("rejects non-positive counts", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.convId = "conv-openai";
+
+    const result = tryCommand("/trim messages 0", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("Trim count must be a positive integer.");
+  });
+});
+
 describe("/login", () => {
   test("selects a provider and returns a provider-scoped login command", () => {
     const state = createInitialState();
