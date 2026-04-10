@@ -10,6 +10,7 @@ import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDis
 import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
 import { loadPreferredProvider } from "./preferences";
+import { theme } from "./theme";
 import type { MessageBound } from "./conversation";
 import type { PanelFocus } from "./focus";
 import type { ChatFocus } from "./chat";
@@ -201,15 +202,35 @@ export function clearStreamingTailMessages(state: RenderState): void {
   state.streamingTailMessages = [];
 }
 
+/** Semantic system-notice colors accepted by TUI call sites and daemon events. */
+export type SystemNoticeColorName = "muted" | "warning" | "error";
+
+/**
+ * Normalize a system-notice color into a concrete ANSI style.
+ *
+ * Accepts either a semantic color name (e.g. "warning") or an already-resolved
+ * theme escape sequence (e.g. theme.warning). Unknown strings are passed
+ * through unchanged so custom ANSI styles still work.
+ */
+export function resolveSystemMessageColor(color?: SystemNoticeColorName | string): string | undefined {
+  if (color === "error") return theme.error;
+  if (color === "warning") return theme.warning;
+  if (color === "muted") return theme.muted;
+  return color;
+}
+
 /**
  * Add a user-invoked system notice to the UI.
  *
  * While an assistant response is actively streaming, these notices are kept in
  * the live tail so command feedback stays visible at the bottom. Daemon-
  * originated stream notices should bypass this helper and be inserted inline.
+ *
+ * The color may be either a semantic notice color name ("warning", "error",
+ * "muted") or an already-resolved ANSI style string.
  */
-export function pushSystemMessage(state: RenderState, text: string, color?: string): void {
-  const msg: SystemMessage = { role: "system", text, color, metadata: null };
+export function pushSystemMessage(state: RenderState, text: string, color?: SystemNoticeColorName | string): void {
+  const msg: SystemMessage = { role: "system", text, color: resolveSystemMessageColor(color), metadata: null };
   if (isStreaming(state)) {
     state.streamingTailMessages.push(msg);
   } else {
