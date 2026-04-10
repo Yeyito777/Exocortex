@@ -14,6 +14,9 @@ export { AuthError, mergeReasoningSummaries as mergeReasoningSummariesForTest, r
 const STREAM_STALL_TIMEOUT = 120_000;
 const MAX_RETRIES = 8;
 
+function isOpenAIAuthFailure(err: unknown): boolean {
+  return err instanceof AuthError || (err instanceof Error && err.name === "AuthError");
+}
 
 function retryBackoff(
   attempt: number,
@@ -132,5 +135,17 @@ export async function streamMessage(
   options: StreamOptions = {},
 ): Promise<StreamResult> {
   const session = await getVerifiedSession();
-  return streamMessageWithSession(session, messages, model, callbacks, options);
+  try {
+    return await streamMessageWithSession(session, messages, model, callbacks, options);
+  } catch (err) {
+    if (!isOpenAIAuthFailure(err)) throw err;
+
+    const refreshed = await getVerifiedSession({ forceRefresh: true }).catch(() => null);
+    if (!refreshed) throw err;
+    if (refreshed.accessToken === session.accessToken && refreshed.accountId === session.accountId) {
+      throw err;
+    }
+
+    return streamMessageWithSession(refreshed, messages, model, callbacks, options);
+  }
 }

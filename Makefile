@@ -40,7 +40,7 @@ check-bun:
 # ── Dependencies ─────────────────────────────────────────────────────
 
 deps:
-	@bash $(REPO_DIR)/scripts/check-ipv6.sh
+	@bash $(REPO_DIR)/scripts/setup/check-ipv6.sh
 	@printf '  Installing dependencies...\n'
 	@bun install --frozen-lockfile
 	@printf '  ✓ Dependencies installed\n'
@@ -61,7 +61,7 @@ remove-links:
 # ── Systemd service ─────────────────────────────────────────────────
 
 service:
-	@UNIT_NAME=$(UNIT_NAME) bash $(REPO_DIR)/scripts/install-daemon.sh
+	@UNIT_NAME=$(UNIT_NAME) bash $(REPO_DIR)/scripts/setup/install-daemon.sh
 
 remove-service:
 	@if systemctl --user is-active --quiet $(UNIT_NAME) 2>/dev/null; then \

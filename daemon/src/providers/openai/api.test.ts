@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { ApiMessage } from "../../messages";
-import { buildOpenAIInputForTest, buildRequestBodyForTest, mergeReasoningSummariesForTest, readOpenAIEventsForTest, streamMessageWithSession } from "./api";
+import {
+  buildOpenAIInputForTest,
+  buildRequestBodyForTest,
+  mergeReasoningSummariesForTest,
+  readOpenAIEventsForTest,
+  streamMessageWithSession,
+} from "./api";
 
 const originalFetch = globalThis.fetch;
 

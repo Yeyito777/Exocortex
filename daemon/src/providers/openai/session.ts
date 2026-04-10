@@ -1,10 +1,7 @@
 import { log } from "../../log";
 import type { OAuthProfile, StoredTokens } from "../../store";
-import {
-  OPENAI_CODEX_CLIENT_VERSION,
-  OPENAI_MODELS_URL,
-  OPENAI_USERINFO_URL,
-} from "./constants";
+import { OPENAI_CODEX_CLIENT_VERSION, OPENAI_MODELS_URL, OPENAI_USERINFO_URL } from "./constants";
+import { fetchAccountContext, type OpenAIAccountContext } from "./account-context";
 import { buildOpenAIJsonHeaders, parseOpenAIJson } from "./http";
 
 export interface StoredOpenAIAuth {
@@ -75,6 +72,33 @@ function buildScopes(token: OpenAITokenResponse, accessClaims: DecodedClaims | n
   return scope.split(" ").map((part) => part.trim()).filter(Boolean);
 }
 
+function mergeAccountContext(
+  auth: StoredOpenAIAuth,
+  accountContext: OpenAIAccountContext | null,
+): StoredOpenAIAuth {
+  if (!accountContext) return auth;
+
+  return {
+    ...auth,
+    tokens: {
+      ...auth.tokens,
+      subscriptionType: accountContext.subscriptionType ?? auth.tokens.subscriptionType,
+    },
+    profile: {
+      accountUuid: accountContext.accountId,
+      email: auth.profile?.email ?? "",
+      displayName: auth.profile?.displayName ?? null,
+      organizationUuid: null,
+      organizationName: accountContext.organizationName,
+      organizationType: accountContext.organizationType,
+      organizationRole: accountContext.organizationRole,
+      workspaceRole: accountContext.workspaceRole,
+    },
+    updatedAt: new Date().toISOString(),
+    accountId: accountContext.accountId,
+  };
+}
+
 export async function buildStoredAuth(
   token: OpenAITokenResponse,
   source: StoredOpenAIAuth["source"],
@@ -89,8 +113,9 @@ export async function buildStoredAuth(
   const idToken = token.id_token ?? opts?.fallbackIdToken ?? null;
   const idClaims = decodeJwt(idToken);
   const userInfo = await fetchUserInfo(token.access_token);
+  const accountContext = await fetchAccountContext(token.access_token);
 
-  return {
+  return mergeAccountContext({
     tokens: {
       accessToken: token.access_token,
       refreshToken: token.refresh_token ?? opts?.fallbackRefreshToken ?? null,
@@ -114,7 +139,12 @@ export async function buildStoredAuth(
     authMode: opts?.authMode ?? null,
     accountId: opts?.accountId ?? null,
     idToken,
-  };
+  }, accountContext);
+}
+
+export async function enrichStoredAuth(auth: StoredOpenAIAuth): Promise<StoredOpenAIAuth> {
+  if (auth.accountId) return auth;
+  return mergeAccountContext(auth, await fetchAccountContext(auth.tokens.accessToken));
 }
 
 function requestHeaders(accessToken: string): HeadersInit {
@@ -142,4 +172,3 @@ export async function verifyAuth(accessToken: string, accountId?: string | null)
     return false;
   }
 }
-

@@ -9,8 +9,8 @@ Exocortex uses the Anthropic API message format where:
   - each message has { role, content, metadata }
 
 Usage:
-  python3 port-mnemo.py [--all-pinned] [--dry-run] [title1] [title2] ...
-  python3 port-mnemo.py --id <conversation-id>  (port by ID)
+  python3 scripts/migrate/port-mnemo.py [--all-pinned] [--dry-run] [title1] [title2] ...
+  python3 scripts/migrate/port-mnemo.py --id <conversation-id>  (port by ID)
 """
 
 import json
