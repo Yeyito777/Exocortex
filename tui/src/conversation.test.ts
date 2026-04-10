@@ -94,4 +94,39 @@ describe("tool call rendering", () => {
     expect(rendered).toContain("  $ Hi!");
     expect(rendered).toContain("  Gmail reply -f /tmp/kittenml-reply.txt 19d68e0c3d19ece3 --timeout 120000");
   });
+
+  test("styles whatsapp command with a multiline quoted message body", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "bash",
+          input: {},
+          summary: [
+            'whatsapp send Mom "Hola ma, update rápido 🙏',
+            '',
+            'Ya nos sirvió mucho lo que mandaste por email:',
+            '- ✅ la referencia bancaria de Banco General',
+            'Gracias 💙"',
+          ].join("\n"),
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
+      externalToolStyles: [{ cmd: "whatsapp", label: "WhatsApp", color: "#25d366" }],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 120).lines.map(stripAnsi);
+
+    expect(rendered).toContain('  WhatsApp send Mom "Hola ma, update rápido 🙏');
+    expect(rendered).toContain('  Ya nos sirvió mucho lo que mandaste por email:');
+    expect(rendered).toContain('  - ✅ la referencia bancaria de Banco General');
+    expect(rendered).toContain('  Gracias 💙"');
+  });
 });

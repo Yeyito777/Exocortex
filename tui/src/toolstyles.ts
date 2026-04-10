@@ -87,7 +87,11 @@ function tokenizeShellWords(line: string): ShellToken[] | null {
           text += line[i];
           i++;
         }
-        if (i >= line.length) return null;
+        // Be tolerant of quoted arguments that continue onto the next
+        // summary line. We only need token starts to identify the
+        // executable, so treat an unterminated quote as "continues past
+        // this line" rather than bailing out of external-tool matching.
+        if (i >= line.length) break;
         i++;
         continue;
       }
@@ -99,7 +103,10 @@ function tokenizeShellWords(line: string): ShellToken[] | null {
           text += line[i];
           i++;
         }
-        if (i >= line.length) return null;
+        // Same tolerance as for single quotes: multi-line quoted shell
+        // arguments are valid, and the command token almost always
+        // appears before the quote opens.
+        if (i >= line.length) break;
         i++;
         continue;
       }

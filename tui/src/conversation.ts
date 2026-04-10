@@ -159,6 +159,28 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
           hasLabel,
         });
       };
+      const pushCommandDetail = (entryDisplay: ResolvedToolDisplay) => {
+        if (!entryDisplay.cmd || !entryDisplay.detail) {
+          pushLogical(entryDisplay, entryDisplay.detail, true);
+          return;
+        }
+
+        const cmd = entryDisplay.cmd;
+        for (const [i, line] of entryDisplay.detail.split("\n").entries()) {
+          if (i === 0) {
+            pushLogical(entryDisplay, line, true);
+            continue;
+          }
+
+          const t = line.trimStart();
+          if (t === cmd || t.startsWith(cmd + " ")) {
+            const args = t.slice(cmd.length).trimStart();
+            pushLogical(entryDisplay, args, true);
+          } else {
+            pushLogical(entryDisplay, line, false);
+          }
+        }
+      };
 
       const bashExternal = block.toolName === "bash"
         ? resolveBashExternalMatch(block.summary, externalToolStyles)
@@ -166,55 +188,24 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
 
       if (bashExternal) {
         const bashDisplay = resolveToolDisplay("bash", "", toolRegistry, []);
-        const cmd = bashExternal.display.cmd!;
 
         for (const [lineIndex, rawLine] of bashExternal.lines.entries()) {
-          const trimmed = rawLine.trimStart();
-
-          if (!trimmed) {
-            pushLogical(bashDisplay, "", false);
-            continue;
-          }
-
           if (lineIndex < bashExternal.matchLineIndex) {
-            pushLogical(bashDisplay, rawLine, true);
+            const trimmed = rawLine.trimStart();
+            if (!trimmed) pushLogical(bashDisplay, "", false);
+            else pushLogical(bashDisplay, rawLine, true);
             continue;
           }
 
-          const isMatchedLine = lineIndex === bashExternal.matchLineIndex;
-          const matchedSegment = isMatchedLine ? rawLine.slice(bashExternal.matchStart) : trimmed;
-          const externalStartsHere = matchedSegment === cmd || matchedSegment.startsWith(cmd + " ");
-
-          if (externalStartsHere) {
-            if (isMatchedLine) {
-              const prefix = rawLine.slice(0, bashExternal.matchStart).trimEnd();
-              if (prefix.trim()) pushLogical(bashDisplay, prefix, true);
-            }
-            const detail = matchedSegment.slice(cmd.length).trimStart();
-            pushLogical(bashExternal.display, detail, true);
-          } else {
-            pushLogical(bashDisplay, rawLine, true);
+          if (lineIndex === bashExternal.matchLineIndex) {
+            const prefix = rawLine.slice(0, bashExternal.matchStart).trimEnd();
+            if (prefix.trim()) pushLogical(bashDisplay, prefix, true);
+            pushCommandDetail(bashExternal.display);
           }
-        }
-      } else if (display.cmd && display.detail) {
-        // User-styled bash: re-apply label to subsequent lines that
-        // invoke the same command prefix.
-        const cmd = display.cmd;
-        for (const [i, line] of display.detail.split("\n").entries()) {
-          if (i === 0) {
-            pushLogical(display, line, true);
-          } else {
-            const t = line.trimStart();
-            if (t === cmd || t.startsWith(cmd + " ")) {
-              const args = t.slice(cmd.length).trimStart();
-              pushLogical(display, args, true);
-            } else {
-              pushLogical(display, line, false);
-            }
-          }
+          break;
         }
       } else {
-        pushLogical(display, display.detail, true);
+        pushCommandDetail(display);
       }
 
       for (const entry of logical) {
