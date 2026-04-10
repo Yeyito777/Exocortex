@@ -197,6 +197,16 @@ export async function runAgentLoop(
       effort: options.effort,
       serviceTier: options.serviceTier,
       promptCacheKey: options.promptCacheKey,
+      mcpToolExecutor: options.executor
+        ? async (call, signal) => {
+          const [result] = await options.executor!([call], signal);
+          return {
+            output: result.output,
+            isError: result.isError,
+            ...(result.image ? { image: result.image } : {}),
+          };
+        }
+        : undefined,
     });
 
     if (result.outputTokens) {

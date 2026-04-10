@@ -48,6 +48,11 @@ export interface StreamOptions {
   effort?: EffortLevel;
   serviceTier?: ServiceTier;
   promptCacheKey?: string;
+  mcpToolExecutor?: (call: ApiToolCall, signal?: AbortSignal) => Promise<{
+    output: string;
+    isError: boolean;
+    image?: { mediaType: string; base64: string };
+  }>;
 }
 
 export interface ProviderStreamMessage {

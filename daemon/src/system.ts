@@ -74,13 +74,14 @@ export function buildSystemPrompt(conversationInstructions?: string): string {
 
 export function buildClaudeCodeSystemPrompt(conversationInstructions?: string): string {
   return buildPromptParts({
-    includeToolHints: false,
+    includeToolHints: true,
     includeExternalHints: false,
     conversationInstructions,
     wrapperNote: [
       "# Runtime",
       "You are operating through Exocortex as a UI wrapper around Claude Code.",
-      "Use Claude Code's native tools and workflows rather than assuming Exocortex-managed tools are available.",
+      "Use the Exocortex tools that are exposed in this runtime rather than assuming Claude Code's default built-in tools are available.",
+      "Prefer the Exocortex tool names and capabilities as described in your tool list.",
       "Keep your responses compatible with a terminal-style coding assistant.",
     ].join("\n"),
   }).join("\n\n");

@@ -9,6 +9,7 @@ import { type ModelId, type ApiMessage } from "../../messages";
 import type { StreamResult, StreamCallbacks, StreamOptions } from "../types";
 import { AuthError } from "../errors";
 import { getClaudeAuthStatus, getClaudeBinary, getClaudeVersion } from "./cli";
+import { createExocortexMcpServer, getExocortexAllowedToolNames } from "./mcp-tools";
 import { buildClaudePrompt, buildClaudeSdkUserMessage, extractResumeSessionId, resolveClaudeModel, supportsClaudeEffort } from "./prompt";
 import { createClaudeStreamProcessor, finalizeClaudeStream, pushClaudeEvent } from "./stream";
 
@@ -72,7 +73,11 @@ function buildClaudeQueryOptions(messages: ApiMessage[], model: ModelId, options
 
   return {
     ...queryOptions,
-    tools: { type: "preset", preset: "claude_code" },
+    tools: [],
+    mcpServers: options.mcpToolExecutor
+      ? { exocortex: createExocortexMcpServer(options.mcpToolExecutor) }
+      : undefined,
+    allowedTools: options.mcpToolExecutor ? getExocortexAllowedToolNames() : undefined,
     permissionMode: "bypassPermissions",
     settingSources: [...CLAUDE_SETTING_SOURCES],
   };

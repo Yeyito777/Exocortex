@@ -1,5 +1,6 @@
 import { AuthError } from "../errors";
 import type { ContentBlock, StreamCallbacks, StreamResult } from "../types";
+import { normalizeClaudeToolName } from "./mcp-tools";
 
 interface TextBlockState {
   type: "text" | "thinking";
@@ -119,20 +120,21 @@ function emitToolCall(
   cb: StreamCallbacks,
 ): void {
   if (state.emittedToolCalls.has(id)) return;
+  const normalizedName = normalizeClaudeToolName(name);
   state.emittedToolCalls.add(id);
-  state.toolNamesById.set(id, name);
+  state.toolNamesById.set(id, normalizedName);
   const block = {
     type: "tool_call" as const,
     id,
-    name,
+    name: normalizedName,
     input,
-    summary: summarizeToolCall(name, input),
+    summary: summarizeToolCall(normalizedName, input),
   };
   state.orderedBlocks.push(block);
   cb.onToolCall?.({
     type: "tool_call",
     toolCallId: id,
-    toolName: name,
+    toolName: normalizedName,
     input,
     summary: block.summary,
   });
@@ -146,20 +148,21 @@ function emitToolResult(
   isError: boolean,
   cb: StreamCallbacks,
 ): void {
+  const normalizedName = normalizeClaudeToolName(toolName);
   const dedupeKey = `${toolUseId}:${output}:${isError ? "1" : "0"}`;
   if (state.emittedToolResults.has(dedupeKey)) return;
   state.emittedToolResults.add(dedupeKey);
   state.orderedBlocks.push({
     type: "tool_result",
     toolUseId,
-    toolName,
+    toolName: normalizedName,
     output,
     isError,
   });
   cb.onToolResult?.({
     type: "tool_result",
     toolCallId: toolUseId,
-    toolName,
+    toolName: normalizedName,
     output,
     isError,
   });

@@ -35,6 +35,10 @@ const TOOLS: Tool[] = [
 
 const toolMap = new Map<string, Tool>(TOOLS.map(t => [t.name, t]));
 
+export function getRegisteredTools(): Tool[] {
+  return [...TOOLS];
+}
+
 // ── API tool definitions (sent to Anthropic) ───────────────────────
 
 export function getToolDefs(): { name: string; description: string; input_schema: Record<string, unknown> }[] {
