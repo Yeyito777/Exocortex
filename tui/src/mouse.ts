@@ -12,7 +12,7 @@ import type { RenderState } from "./state";
 import { focusPrompt, focusSidebar } from "./state";
 import type { KeyResult } from "./focus";
 import { scrollBy, getViewStart } from "./chat";
-import { sidebarHitTest, scrollSidebar, SIDEBAR_WIDTH } from "./sidebar";
+import { focusConversationAt, sidebarHitTest, scrollSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { mouse_cursor_pointer, mouse_cursor_text, mouse_cursor_hand } from "./terminal";
 import { clampCol, ensureCursorVisible } from "./historycursor";
 
@@ -148,8 +148,7 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       // Click on a conversation in the sidebar — focus already set above
       const convIdx = sidebarHitTest(row, sidebar);
       if (convIdx !== null && convIdx < sidebar.conversations.length) {
-        sidebar.selectedIndex = convIdx;
-        sidebar.selectedId = sidebar.conversations[convIdx].id;
+        focusConversationAt(sidebar, convIdx);
         return { type: "load_conversation", convId: sidebar.conversations[convIdx].id };
       }
       return { type: "handled" };

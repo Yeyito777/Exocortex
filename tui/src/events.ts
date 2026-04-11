@@ -10,7 +10,13 @@ import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, resolveS
 import { DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER, ensureCurrentBlock, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI, replacePendingStreamingTail } from "./messages";
 import type { ImageAttachment } from "./messages";
 import { syncChosenProvider } from "./providerselection";
-import { updateConversationList, updateConversation, syncSelectedIndex } from "./sidebar";
+import {
+  focusConversationById,
+  rememberEnteredConversation,
+  updateConversationList,
+  updateConversation,
+  syncSelectedIndex,
+} from "./sidebar";
 import { theme } from "./theme";
 import { clearLocalQueue, removeLocalQueueEntry } from "./queue";
 import type { Event, DisplayEntry, SystemMessageEvent } from "./protocol";
@@ -114,6 +120,7 @@ export function handleEvent(
 
   switch (event.type) {
     case "conversation_created": {
+      rememberEnteredConversation(state.sidebar, state.convId, event.convId);
       state.convId = event.convId;
       syncChosenProvider(state, event.provider ?? fallbackProvider(state));
       state.model = event.model ?? state.model;
@@ -305,7 +312,7 @@ export function handleEvent(
     case "conversation_restored": {
       updateConversation(state.sidebar, event.summary);
       // Select the restored conversation in the sidebar
-      state.sidebar.selectedId = event.summary.id;
+      focusConversationById(state.sidebar, event.summary.id);
       syncSelectedIndex(state.sidebar);
       break;
     }
@@ -351,7 +358,9 @@ export function handleEvent(
       state.messages = [];
       clearPendingAI(state);
       clearStreamingTailMessages(state);
+      rememberEnteredConversation(state.sidebar, state.convId, event.convId);
       state.convId = event.convId;
+      focusConversationById(state.sidebar, event.convId);
       syncChosenProvider(state, event.provider ?? fallbackProvider(state));
       state.model = event.model ?? state.model;
       state.effort = event.effort ?? state.effort;
