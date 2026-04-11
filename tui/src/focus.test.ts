@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { handleFocusedKey } from "./focus";
+import { buildMessageLines } from "./conversation";
+import { getViewStartFor } from "./chatscroll";
 import { createInitialState } from "./state";
 import type { ProviderInfo } from "./messages";
 
@@ -46,5 +48,84 @@ describe("image paste guard", () => {
       role: "system",
       text: expect.stringContaining("Image inputs are not supported by openai/gpt-5.3-codex-spark"),
     });
+  });
+});
+
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function buildToolToggleState(showToolOutput: boolean) {
+  const state = createInitialState();
+  state.cols = 80;
+  state.layout.messageAreaHeight = 8;
+  state.showToolOutput = showToolOutput;
+  state.messages = [{
+    role: "assistant",
+    blocks: [
+      { type: "text", text: "before" },
+      { type: "tool_call", toolCallId: "1", toolName: "bash", input: {}, summary: "echo hi" },
+      {
+        type: "tool_result",
+        toolCallId: "1",
+        output: Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n"),
+        isError: false,
+      },
+      {
+        type: "text",
+        text: Array.from({ length: 40 }, (_, i) => `after ${i + 1}`).join("\n"),
+      },
+    ],
+    metadata: null,
+  }] as any;
+  state.toolRegistry = [{ name: "bash", label: "$", color: "#d19a66" }];
+  return state;
+}
+
+function topVisibleLine(state: ReturnType<typeof createInitialState>): string {
+  const rendered = buildMessageLines(state, state.cols).lines.map(stripAnsi);
+  const viewStart = getViewStartFor(rendered.length, state.layout.messageAreaHeight, state.scrollOffset);
+  return rendered[viewStart] ?? "";
+}
+
+describe("tool output toggle scroll preservation", () => {
+  test("Ctrl+O preserves the top visible line when expanding hidden tool output", () => {
+    const state = buildToolToggleState(false);
+    state.scrollOffset = 5;
+    state.historyCursor = { row: 29, col: 0 };
+    state.historyVisualAnchor = { row: 29, col: 0 };
+
+    expect(topVisibleLine(state)).toBe("  after 28");
+
+    const result = handleFocusedKey({ type: "ctrl-o" }, state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(state.showToolOutput).toBe(true);
+    expect(topVisibleLine(state)).toBe("  after 28");
+
+    const rendered = buildMessageLines(state, state.cols).lines.map(stripAnsi);
+    expect(rendered[state.historyCursor.row]).toBe("  after 28");
+    expect(rendered[state.historyVisualAnchor.row]).toBe("  after 28");
+    expect(state.layout.totalLines).toBe(rendered.length);
+  });
+
+  test("Ctrl+O preserves the top visible line when collapsing visible tool output", () => {
+    const state = buildToolToggleState(true);
+    state.scrollOffset = 5;
+    state.historyCursor = { row: 49, col: 0 };
+    state.historyVisualAnchor = { row: 49, col: 0 };
+
+    expect(topVisibleLine(state)).toBe("  after 28");
+
+    const result = handleFocusedKey({ type: "ctrl-o" }, state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(state.showToolOutput).toBe(false);
+    expect(topVisibleLine(state)).toBe("  after 28");
+
+    const rendered = buildMessageLines(state, state.cols).lines.map(stripAnsi);
+    expect(rendered[state.historyCursor.row]).toBe("  after 28");
+    expect(rendered[state.historyVisualAnchor.row]).toBe("  after 28");
+    expect(state.layout.totalLines).toBe(rendered.length);
   });
 });

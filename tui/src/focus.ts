@@ -17,6 +17,7 @@ import { focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSyste
 import type { Action } from "./keybinds";
 import { resolveAction } from "./keybinds";
 import { handleChatKey } from "./chat";
+import { toggleToolOutputPreservingViewport } from "./chatscroll";
 import { handleSidebarKey, handleSidebarMark, moveSelection, syncSelectedIndex } from "./sidebar";
 import { pushUndo } from "./undo";
 import { placeAtVisibleBottom } from "./historycursor";
@@ -163,7 +164,7 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
       handleScrollAction(action, state);
       return { type: "handled" };
     case "toggle_tool_output":
-      state.showToolOutput = !state.showToolOutput;
+      toggleToolOutputPreservingViewport(state);
       return { type: "handled" };
     case "paste_image": {
       if (!modelSupportsImages(state)) {

@@ -325,27 +325,70 @@ export interface MessageBound {
   contentEnd: number;
 }
 
+export type RenderLineSegment =
+  | "assistant_block"
+  | "assistant_metadata"
+  | "queued_content"
+  | "queued_label"
+  | "queued_margin_top"
+  | "streaming_tail"
+  | "system_instructions_bottom"
+  | "system_instructions_content"
+  | "system_instructions_top"
+  | "system_message"
+  | "user_content"
+  | "user_margin_bottom"
+  | "user_margin_top";
+
+export interface RenderLineAnchor {
+  /** Stable owner identity for this rendered segment (message/block/queued item). */
+  owner: object;
+  /** Segment within the owner (content, metadata, margins, etc). */
+  segment: RenderLineSegment;
+  /** Line index within the segment. */
+  index: number;
+}
+
+export interface BuildMessageLinesResult {
+  lines: string[];
+  messageBounds: MessageBound[];
+  wrapContinuation: boolean[];
+  /**
+   * Stable per-line anchors used to preserve viewport/cursor position across
+   * re-renders when optional blocks appear/disappear (for example Ctrl+O tool
+   * result expansion).
+   */
+  lineAnchors: RenderLineAnchor[];
+}
+
 // ── Build all display lines ─────────────────────────────────────────
 
 export function buildMessageLines(
   state: RenderState,
   availableWidth: number,
-): { lines: string[]; messageBounds: MessageBound[]; wrapContinuation: boolean[] } {
+): BuildMessageLinesResult {
   const contentWidth = availableWidth - 4;
   const lines: string[] = [];
   const wrapContinuation: boolean[] = [];
   const messageBounds: MessageBound[] = [];
+  const lineAnchors: RenderLineAnchor[] = [];
+
+  const pushAnchoredLine = (line: string, cont: boolean, owner: object, segment: RenderLineSegment, index: number) => {
+    lines.push(line);
+    wrapContinuation.push(cont);
+    lineAnchors.push({ owner, segment, index });
+  };
 
   /** Append block result (lines + continuation flags). */
-  const pushBlock = (br: WrapResult) => {
-    lines.push(...br.lines);
-    wrapContinuation.push(...br.cont);
+  const pushBlock = (owner: object, segment: RenderLineSegment, br: WrapResult) => {
+    for (let i = 0; i < br.lines.length; i++) {
+      pushAnchoredLine(br.lines[i], br.cont[i], owner, segment, i);
+    }
   };
 
   /** Append a non-wrapped line (margin, metadata, etc). */
-  const pushLine = (line: string) => {
-    lines.push(line);
-    wrapContinuation.push(false);
+  const pushLine = (line: string, owner: object, segment: RenderLineSegment, index = 0) => {
+    pushAnchoredLine(line, false, owner, segment, index);
   };
 
   const pushMessageBound = (
@@ -361,21 +404,22 @@ export function buildMessageLines(
   for (const msg of state.messages) {
     const start = lines.length;
     if (msg.role === "user") {
-      if (!firstUser) pushLine("");  // top margin (skip for first)
+      if (!firstUser) pushLine("", msg, "user_margin_top");  // top margin (skip for first)
       const contentStart = lines.length;
-      pushBlock(renderUserMessage(msg.text, availableWidth, msg.images));
+      pushBlock(msg, "user_content", renderUserMessage(msg.text, availableWidth, msg.images));
       const contentEnd = lines.length;
-      pushLine("");                  // bottom margin
+      pushLine("", msg, "user_margin_bottom");               // bottom margin
       firstUser = false;
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "assistant") {
       // AI messages: content blocks, then metadata
       const contentStart = lines.length;
       for (const block of msg.blocks) {
-        pushBlock(renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
+        pushBlock(block, "assistant_block", renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
       }
       const contentEnd = lines.length;
-      for (const ml of renderMetadata(msg.metadata)) pushLine(ml);
+      const metadataLines = renderMetadata(msg.metadata);
+      for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], msg, "assistant_metadata", i);
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "system_instructions") {
       if (!msg.text.trim()) {
@@ -389,21 +433,23 @@ export function buildMessageLines(
       const topLine = `┌${title}${"─".repeat(topFill)}┐`;
       const bottomLine = `└${"─".repeat(Math.max(0, boxWidth - 2))}┘`;
 
-      pushLine(`${theme.accent}${topLine}${theme.reset}`);
+      pushLine(`${theme.accent}${topLine}${theme.reset}`, msg, "system_instructions_top");
       const contentStart = lines.length;
 
       const { lines: wrapped } = wordWrap(msg.text, textWidth > 0 ? textWidth : 1);
-      for (const sl of wrapped) {
+      for (let i = 0; i < wrapped.length; i++) {
+        const sl = wrapped[i];
         const pad = " ".repeat(Math.max(0, textWidth - sl.length));
-        pushLine(`${theme.accent}│${theme.reset} ${theme.dim}${sl}${pad}${theme.reset} ${theme.accent}│${theme.reset}`);
+        pushLine(`${theme.accent}│${theme.reset} ${theme.dim}${sl}${pad}${theme.reset} ${theme.accent}│${theme.reset}`, msg, "system_instructions_content", i);
       }
       const contentEnd = lines.length;
 
-      pushLine(`${theme.accent}${bottomLine}${theme.reset}`);
+      pushLine(`${theme.accent}${bottomLine}${theme.reset}`, msg, "system_instructions_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else {
-      for (const sl of renderSystemMessage(msg.text, availableWidth, msg.color)) {
-        pushLine(sl);
+      const sysLines = renderSystemMessage(msg.text, availableWidth, msg.color);
+      for (let i = 0; i < sysLines.length; i++) {
+        pushLine(sysLines[i], msg, "system_message", i);
       }
       pushMessageBound(msg.role, start, start, lines.length);
     }
@@ -413,10 +459,11 @@ export function buildMessageLines(
   if (state.pendingAI) {
     const start = lines.length;
     for (const block of state.pendingAI.blocks) {
-      pushBlock(renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
+      pushBlock(block, "assistant_block", renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
     }
     const contentEnd = lines.length;
-    for (const ml of renderMetadata(state.pendingAI.metadata)) pushLine(ml);
+    const metadataLines = renderMetadata(state.pendingAI.metadata);
+    for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], state.pendingAI, "assistant_metadata", i);
     pushMessageBound(state.pendingAI.role, start, start, contentEnd);
   }
 
@@ -425,8 +472,9 @@ export function buildMessageLines(
   // bottom instead of getting buried above a growing assistant message.
   for (const msg of state.streamingTailMessages ?? []) {
     const start = lines.length;
-    for (const sl of renderSystemMessage(msg.text, availableWidth, msg.color)) {
-      pushLine(sl);
+    const sysLines = renderSystemMessage(msg.text, availableWidth, msg.color);
+    for (let i = 0; i < sysLines.length; i++) {
+      pushLine(sysLines[i], msg, "streaming_tail", i);
     }
     pushMessageBound(msg.role, start, start, lines.length);
   }
@@ -436,17 +484,17 @@ export function buildMessageLines(
     const queued = state.queuedMessages.filter(qm => qm.convId === state.convId);
     for (const qm of queued) {
       const timingLabel = qm.timing === "next-turn" ? "queued: next turn" : "queued: message end";
-      pushLine("");
+      pushLine("", qm, "queued_margin_top");
       // Render a dimmed user bubble
       const qr = renderUserMessage(qm.text, availableWidth, qm.images);
       for (let i = 0; i < qr.lines.length; i++) {
-        pushLine(`${theme.muted}${qr.lines[i]}${theme.reset}`);
+        pushLine(`${theme.muted}${qr.lines[i]}${theme.reset}`, qm, "queued_content", i);
       }
       // Timing label — right-aligned, muted italic
       const labelPad = " ".repeat(Math.max(0, availableWidth - timingLabel.length - 3));
-      pushLine(`${labelPad}${theme.muted}${theme.italic}${timingLabel}${theme.reset}`);
+      pushLine(`${labelPad}${theme.muted}${theme.italic}${timingLabel}${theme.reset}`, qm, "queued_label");
     }
   }
 
-  return { lines, messageBounds, wrapContinuation };
+  return { lines, messageBounds, wrapContinuation, lineAnchors };
 }
