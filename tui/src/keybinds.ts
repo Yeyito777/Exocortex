@@ -13,6 +13,8 @@ import type { KeyEvent } from "./input";
 
 // ── Actions ─────────────────────────────────────────────────────────
 
+type SidebarTopShortcut = `sidebar_focus_top_${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`;
+
 export type Action =
   // Global
   | "quit"
@@ -62,6 +64,8 @@ export type Action =
   // Sidebar navigation (from any panel)
   | "sidebar_next"
   | "sidebar_prev"
+  | "sidebar_focus_previous"
+  | SidebarTopShortcut
   // Streaming navigation
   | "nav_prev_streaming"
   | "nav_next_streaming"
@@ -110,9 +114,19 @@ const BINDS: Record<string, Action> = {
   // Display toggles
   "ctrl-o":       "toggle_tool_output",
 
-  // Sidebar quick nav (Shift+J/K from any panel)
+  // Sidebar quick nav (Shift+J/K, Ctrl+1-9, and Ctrl+- from non-typing contexts)
   "char:J":     "sidebar_next",
   "char:K":     "sidebar_prev",
+  "f14":        "sidebar_focus_top_1",
+  "f15":        "sidebar_focus_top_2",
+  "f16":        "sidebar_focus_top_3",
+  "f17":        "sidebar_focus_top_4",
+  "f18":        "sidebar_focus_top_5",
+  "f19":        "sidebar_focus_top_6",
+  "f20":        "sidebar_focus_top_7",
+  "f21":        "sidebar_focus_top_8",
+  "f22":        "sidebar_focus_top_9",
+  "f24":        "sidebar_focus_previous",
 
   // Conversation editing
   "ctrl-w":     "edit_message",
@@ -189,4 +203,10 @@ export function resolveAction(key: KeyEvent, context: KeyContext = "prompt"): Ac
 
   // Check type-level bindings
   return BINDS[key.type] ?? null;
+}
+
+export function sidebarTopShortcutIndex(action: Action | null): number | null {
+  if (!action?.startsWith("sidebar_focus_top_")) return null;
+  const index = Number(action.slice("sidebar_focus_top_".length));
+  return Number.isInteger(index) && index >= 1 && index <= 9 ? index : null;
 }

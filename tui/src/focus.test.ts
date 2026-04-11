@@ -2,8 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { handleFocusedKey } from "./focus";
 import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
+import { handleEvent } from "./events";
 import { createInitialState } from "./state";
-import type { ProviderInfo } from "./messages";
+import type { ConversationSummary, ProviderInfo } from "./messages";
 
 const providers: ProviderInfo[] = [
   {
@@ -32,6 +33,25 @@ const providers: ProviderInfo[] = [
     ],
   },
 ];
+
+function conversation(id: string, sortOrder: number): ConversationSummary {
+  return {
+    id,
+    provider: "openai",
+    model: "gpt-5.4",
+    effort: "high",
+    fastMode: false,
+    createdAt: sortOrder,
+    updatedAt: sortOrder,
+    messageCount: 0,
+    title: id,
+    marked: false,
+    pinned: false,
+    streaming: false,
+    unread: false,
+    sortOrder,
+  };
+}
 
 describe("image paste guard", () => {
   test("Ctrl+V reports an error instead of attaching an image for unsupported models", () => {
@@ -127,5 +147,87 @@ describe("tool output toggle scroll preservation", () => {
     expect(rendered[state.historyCursor.row]).toBe("  after 28");
     expect(rendered[state.historyVisualAnchor.row]).toBe("  after 28");
     expect(state.layout.totalLines).toBe(rendered.length);
+  });
+});
+
+describe("sidebar top shortcuts", () => {
+  test("Ctrl+3 focuses and opens the third conversation from the top outside prompt typing", () => {
+    const state = createInitialState();
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [
+      conversation("conv-1", 1),
+      conversation("conv-2", 2),
+      conversation("conv-3", 3),
+      conversation("conv-4", 4),
+    ];
+
+    const result = handleFocusedKey({ type: "f16" }, state);
+
+    expect(result).toEqual({ type: "load_conversation", convId: "conv-3" });
+    expect(state.sidebar.open).toBe(true);
+    expect(state.panelFocus).toBe("sidebar");
+    expect(state.sidebar.selectedIndex).toBe(2);
+    expect(state.sidebar.selectedId).toBe("conv-3");
+    expect(state.sidebar.previousEnteredId).toBeNull();
+  });
+
+  test("Ctrl+- focuses the previously entered conversation, not the last hovered one", () => {
+    const state = createInitialState();
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.convId = "conv-1";
+    state.sidebar.previousEnteredId = "conv-2";
+    state.sidebar.conversations = [
+      conversation("conv-1", 1),
+      conversation("conv-2", 2),
+      conversation("conv-3", 3),
+      conversation("conv-4", 4),
+    ];
+
+    expect(handleFocusedKey({ type: "f16" }, state)).toEqual({ type: "load_conversation", convId: "conv-3" });
+    const result = handleFocusedKey({ type: "f24" }, state);
+
+    expect(result).toEqual({ type: "load_conversation", convId: "conv-2" });
+    expect(state.sidebar.selectedIndex).toBe(1);
+    expect(state.sidebar.selectedId).toBe("conv-2");
+    expect(state.sidebar.previousEnteredId).toBe("conv-2");
+  });
+
+  test("conversation_loaded remembers the previously entered chat", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.sidebar.conversations = [
+      conversation("conv-1", 1),
+      conversation("conv-2", 2),
+    ];
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-2",
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "high",
+      fastMode: false,
+      entries: [],
+      contextTokens: null,
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {} } as never);
+
+    expect(state.convId).toBe("conv-2");
+    expect(state.sidebar.previousEnteredId).toBe("conv-1");
+  });
+
+  test("Ctrl+1 and Ctrl+- still insert symbols while typing in the prompt", () => {
+    const state = createInitialState();
+
+    const first = handleFocusedKey({ type: "f14" }, state);
+    const second = handleFocusedKey({ type: "f24" }, state);
+
+    expect(first).toEqual({ type: "handled" });
+    expect(second).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("←—");
+    expect(state.cursorPos).toBe(2);
+    expect(state.sidebar.open).toBe(false);
+    expect(state.panelFocus).toBe("chat");
   });
 });

@@ -15,10 +15,18 @@ import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
 import { focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
 import type { Action } from "./keybinds";
-import { resolveAction } from "./keybinds";
+import { resolveAction, sidebarTopShortcutIndex } from "./keybinds";
 import { handleChatKey } from "./chat";
 import { toggleToolOutputPreservingViewport } from "./chatscroll";
-import { handleSidebarKey, handleSidebarMark, moveSelection, syncSelectedIndex } from "./sidebar";
+import {
+  focusConversationAt,
+  focusConversationById,
+  focusPreviousEnteredConversation,
+  handleSidebarKey,
+  handleSidebarMark,
+  moveSelection,
+  syncSelectedIndex,
+} from "./sidebar";
 import { pushUndo } from "./undo";
 import { placeAtVisibleBottom } from "./historycursor";
 import { dismissAutocomplete } from "./autocomplete";
@@ -53,6 +61,32 @@ export type KeyResult =
   | { type: "edit_message_cancel" };
 
 // ── Key routing ─────────────────────────────────────────────────────
+
+function isPromptTyping(state: RenderState): boolean {
+  return state.panelFocus === "chat" && state.chatFocus === "prompt"
+    && state.vim.mode === "insert";
+}
+
+function ensureSidebarReady(state: RenderState): void {
+  if (!state.sidebar.open) {
+    state.sidebar.open = true;
+    if (state.convId) focusConversationById(state.sidebar, state.convId);
+    else syncSelectedIndex(state.sidebar);
+  }
+  focusSidebar(state);
+}
+
+function loadSelectedConversation(state: RenderState): KeyResult {
+  const convId = state.sidebar.selectedId;
+  return convId && convId !== state.convId
+    ? { type: "load_conversation", convId }
+    : { type: "handled" };
+}
+
+function focusSidebarShortcutTarget(state: RenderState, focus: () => boolean): KeyResult {
+  ensureSidebarReady(state);
+  return focus() ? loadSelectedConversation(state) : { type: "handled" };
+}
 
 export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
   // ── Queue prompt modal — intercept all keys when showing ──────
@@ -94,6 +128,21 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
   }
 
   const action = resolveAction(key);
+  const topIndex = sidebarTopShortcutIndex(action);
+
+  if (!isPromptTyping(state)) {
+    if (topIndex !== null) {
+      return focusSidebarShortcutTarget(state, () => {
+        const targetIndex = topIndex - 1;
+        if (targetIndex >= state.sidebar.conversations.length) return false;
+        focusConversationAt(state.sidebar, targetIndex);
+        return true;
+      });
+    }
+    if (action === "sidebar_focus_previous") {
+      return focusSidebarShortcutTarget(state, () => focusPreviousEnteredConversation(state.sidebar));
+    }
+  }
 
   // Global actions — work regardless of focus and vim mode
   switch (action) {
@@ -102,12 +151,7 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
     case "sidebar_toggle":
       state.sidebar.open = !state.sidebar.open;
       if (state.sidebar.open) {
-        focusSidebar(state);
-        // Default cursor to the current conversation
-        if (state.convId) {
-          state.sidebar.selectedId = state.convId;
-          syncSelectedIndex(state.sidebar);
-        }
+        ensureSidebarReady(state);
       } else {
         state.panelFocus = "chat";
       }
@@ -138,18 +182,8 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
     case "sidebar_next":
     case "sidebar_prev": {
       // Don't intercept when typing in the prompt — these are regular chars
-      const isPromptTyping = state.panelFocus === "chat" && state.chatFocus === "prompt"
-        && state.vim.mode === "insert";
-      if (isPromptTyping) break;
-      if (!state.sidebar.open) {
-        state.sidebar.open = true;
-        // Default cursor to the current conversation before moving
-        if (state.convId) {
-          state.sidebar.selectedId = state.convId;
-          syncSelectedIndex(state.sidebar);
-        }
-      }
-      focusSidebar(state);
+      if (isPromptTyping(state)) break;
+      ensureSidebarReady(state);
       moveSelection(state.sidebar, action === "sidebar_next" ? 1 : -1);
       return { type: "handled" };
     }
