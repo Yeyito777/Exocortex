@@ -418,13 +418,14 @@ export async function orchestrateSendMessage(
       convStore.markDirty(convId);
       convStore.flush(convId);
       // Notify TUI subscribers — replace historical messages without touching pendingAI
-      const displayData = convStore.getDisplayData(convId);
+      const displayData = convStore.getDisplayData(convId, false);
       if (displayData) {
         server.sendToSubscribers(convId, {
           type: "history_updated",
           convId,
           entries: displayData.entries,
           contextTokens: displayData.contextTokens,
+          toolOutputsIncluded: displayData.toolOutputsIncluded,
         });
       }
       return rebuilt;
@@ -622,13 +623,14 @@ export async function orchestrateSendMessage(
     // has the canonical interleaved structure, send history_updated so every
     // client rebuilds from the persisted ordering.
     if (agentState.completedMessages.length > 0 || retryMarkers.length > 0 || hadNextTurnInjections) {
-      const displayData = convStore.getDisplayData(convId);
+      const displayData = convStore.getDisplayData(convId, false);
       if (displayData) {
         server.sendToSubscribers(convId, {
           type: "history_updated",
           convId,
           entries: displayData.entries,
           contextTokens: displayData.contextTokens,
+          toolOutputsIncluded: displayData.toolOutputsIncluded,
         });
       }
     }

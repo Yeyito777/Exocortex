@@ -6,7 +6,8 @@
  */
 
 import type { RenderState } from "./state";
-import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, resolveSystemMessageColor } from "./state";
+import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, resolveSystemMessageColor, resetToolOutputState, setCurrentConversationToolOutputAvailability, setLoadedConversationToolOutputState } from "./state";
+import { preserveViewportAcrossHistoryMutation, toggleToolOutputPreservingViewport } from "./chatscroll";
 import { DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER, ensureCurrentBlock, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI, replacePendingStreamingTail } from "./messages";
 import type { ImageAttachment } from "./messages";
 import { syncChosenProvider } from "./providerselection";
@@ -49,6 +50,23 @@ function pushDisplayEntries(state: RenderState, entries: DisplayEntry[]): void {
         break;
     }
   }
+}
+
+
+function applyToolOutputs(state: RenderState, outputs: Array<{ toolCallId: string; output: string }>): void {
+  const byId = new Map(outputs.map((item) => [item.toolCallId, item.output]));
+  const applyToBlocks = (blocks: Array<{ type: string; toolCallId?: string; output?: string }>) => {
+    for (const block of blocks) {
+      if (block.type !== "tool_result" || !block.toolCallId) continue;
+      const next = byId.get(block.toolCallId);
+      if (next !== undefined) block.output = next;
+    }
+  };
+
+  for (const msg of state.messages) {
+    if (msg.role === "assistant") applyToBlocks(msg.blocks as Array<{ type: string; toolCallId?: string; output?: string }>);
+  }
+  if (state.pendingAI) applyToBlocks(state.pendingAI.blocks as Array<{ type: string; toolCallId?: string; output?: string }>);
 }
 
 function fallbackProvider(state: RenderState): RenderState["provider"] {
@@ -94,6 +112,7 @@ export interface DaemonActions {
   unsubscribe(convId: string): void;
   sendMessage(convId: string, text: string, startedAt: number, images?: ImageAttachment[]): void;
   setSystemInstructions(convId: string, text: string): void;
+  loadToolOutputs(convId: string): void;
 }
 
 // ── Conversation-scoped events ─────────────────────────────────────
@@ -105,7 +124,7 @@ const CONV_SCOPED: ReadonlySet<string> = new Set([
   "streaming_started", "block_start", "text_chunk", "thinking_chunk", "streaming_sync",
   "tool_call", "tool_result", "tokens_update", "context_update",
   "message_complete", "streaming_stopped", "user_message", "system_message",
-  "stream_retry", "history_updated",
+  "stream_retry", "history_updated", "tool_outputs_loaded",
 ]);
 
 // ── Event handler ───────────────────────────────────────────────────
@@ -330,6 +349,7 @@ export function handleEvent(
         state.messages = [];
         clearPendingAI(state);
         state.contextTokens = null;
+        resetToolOutputState(state);
       }
       clearLocalQueue(state, event.convId);
       break;
@@ -367,6 +387,7 @@ export function handleEvent(
       state.fastMode = event.fastMode ?? state.fastMode;
       state.scrollOffset = 0;
       state.contextTokens = event.contextTokens;
+      setLoadedConversationToolOutputState(state, event.toolOutputsIncluded);
 
       // Entries arrive in display order — just map to TUI message types
       pushDisplayEntries(state, event.entries);
@@ -466,7 +487,25 @@ export function handleEvent(
       state.messages = [];
       clearStreamingTailMessages(state);
       state.contextTokens = event.contextTokens;
+      setCurrentConversationToolOutputAvailability(state, event.toolOutputsIncluded);
       pushDisplayEntries(state, event.entries);
+      if (state.showToolOutput && !state.toolOutputsLoaded && state.convId) {
+        state.toolOutputsLoading = true;
+        daemon.loadToolOutputs(state.convId);
+      }
+      break;
+    }
+
+    case "tool_outputs_loaded": {
+      const apply = () => applyToolOutputs(state, event.outputs);
+      if (state.showToolOutput) preserveViewportAcrossHistoryMutation(state, apply);
+      else apply();
+      state.toolOutputsLoaded = true;
+      state.toolOutputsLoading = false;
+      if (state.showToolOutputAfterLoad && !state.showToolOutput) {
+        state.showToolOutputAfterLoad = false;
+        toggleToolOutputPreservingViewport(state);
+      }
       break;
     }
 

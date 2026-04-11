@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { create, get, getDisplayData, getSummary, remove, setModel, setSystemInstructions, trimConversation } from "./conversations";
+import { create, get, getDisplayData, getSummary, getToolOutputs, remove, setModel, setSystemInstructions, trimConversation } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
@@ -208,5 +208,34 @@ describe("getDisplayData", () => {
     if (data.entries[1].type !== "ai") throw new Error("expected ai entry");
     expect(data.entries[1].blocks).toEqual([{ type: "text", text: "First tool round done" }]);
     expect(data.entries[2]).toEqual({ type: "user", text: "queued next turn" });
+  });
+
+  test("can omit historical tool_result payloads while still exposing patch data", () => {
+    const id = mkId("display-tool-outputs");
+    create(id, "anthropic", "sonnet");
+    const conv = get(id)!;
+    conv.messages.push({
+      role: "assistant",
+      content: [{ type: "tool_use", id: "call-1", name: "read", input: { file_path: "/tmp/x" } }],
+      metadata: null,
+    });
+    conv.messages.push({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "call-1", content: "tool output" }],
+      metadata: null,
+    });
+
+    const compact = getDisplayData(id, false)!;
+    expect(compact.toolOutputsIncluded).toBe(false);
+    expect(compact.entries[0].type).toBe("ai");
+    if (compact.entries[0].type !== "ai") throw new Error("expected ai entry");
+    expect(compact.entries[0].blocks[1]).toEqual({
+      type: "tool_result",
+      toolCallId: "call-1",
+      toolName: "",
+      output: "",
+      isError: false,
+    });
+    expect(getToolOutputs(id)).toEqual([{ toolCallId: "call-1", output: "tool output" }]);
   });
 });

@@ -457,53 +457,60 @@ export function restoreLatest(): Conversation | null {
   }
 }
 
+function parseConversationFile(path: string): ConversationFile {
+  return migrate(JSON.parse(readFileSync(path, "utf-8")));
+}
+
 /** Load a single conversation from disk. Returns null if not found or corrupt. */
 export function load(id: string): Conversation | null {
   assertSafeId(id);
   const path = convPath(id);
   if (!existsSync(path)) return null;
   try {
-    const raw = JSON.parse(readFileSync(path, "utf-8"));
-    const file = migrate(raw);
-    return fromFile(file);
+    return fromFile(parseConversationFile(path));
   } catch (err) {
     log("error", `persistence: failed to load ${id}: ${err}`);
     return null;
   }
 }
 
-/** Load all conversations from disk, returning summaries sorted by sortOrder. */
-export function loadAll(): ConversationSummary[] {
+/** Load all conversations from disk in one pass. */
+export function loadAllConversations(): Conversation[] {
   ensureDir();
-  const summaries: ConversationSummary[] = [];
+  const conversations: Conversation[] = [];
 
   for (const filename of readdirSync(CONV_DIR)) {
     if (!filename.endsWith(".json")) continue;
     const path = join(CONV_DIR, filename);
     try {
-      const raw = JSON.parse(readFileSync(path, "utf-8"));
-      const file = migrate(raw);
-      summaries.push({
-        id: file.id,
-        provider: file.provider,
-        model: file.model,
-        effort: file.effort,
-        fastMode: file.fastMode,
-        createdAt: file.createdAt,
-        updatedAt: file.updatedAt,
-        messageCount: countConversationMessages(file.messages),
-        title: file.title,
-        marked: file.marked,
-        pinned: file.pinned,
-        streaming: false,
-        unread: false,
-        sortOrder: file.sortOrder,
-      });
+      conversations.push(fromFile(parseConversationFile(path)));
     } catch (err) {
-      log("error", `persistence: failed to load summary for ${filename}: ${err}`);
+      log("error", `persistence: failed to load ${filename}: ${err}`);
     }
   }
 
+  sortConversations(conversations);
+  return conversations;
+}
+
+/** Load all conversations from disk, returning summaries sorted by sortOrder. */
+export function loadAll(): ConversationSummary[] {
+  const summaries = loadAllConversations().map((conv) => ({
+    id: conv.id,
+    provider: conv.provider,
+    model: conv.model,
+    effort: conv.effort,
+    fastMode: conv.fastMode,
+    createdAt: conv.createdAt,
+    updatedAt: conv.updatedAt,
+    messageCount: countConversationMessages(conv.messages),
+    title: conv.title,
+    marked: conv.marked,
+    pinned: conv.pinned,
+    streaming: false,
+    unread: false,
+    sortOrder: conv.sortOrder,
+  }));
   sortConversations(summaries);
   return summaries;
 }

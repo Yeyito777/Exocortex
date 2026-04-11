@@ -80,6 +80,7 @@ function buildToolToggleState(showToolOutput: boolean) {
   state.cols = 80;
   state.layout.messageAreaHeight = 8;
   state.showToolOutput = showToolOutput;
+  state.toolOutputsLoaded = true;
   state.messages = [{
     role: "assistant",
     blocks: [
@@ -148,6 +149,49 @@ describe("tool output toggle scroll preservation", () => {
     expect(rendered[state.historyVisualAnchor.row]).toBe("  after 28");
     expect(state.layout.totalLines).toBe(rendered.length);
   });
+
+  test("Ctrl+O requests tool outputs before expanding when historical outputs were omitted", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.toolOutputsLoaded = false;
+    state.toolOutputsLoading = false;
+
+    const result = handleFocusedKey({ type: "ctrl-o" }, state);
+
+    expect(result).toEqual({ type: "load_tool_outputs", convId: "conv-1" });
+    expect(state.showToolOutput).toBe(false);
+    expect(state.toolOutputsLoading).toBe(true);
+    expect(state.showToolOutputAfterLoad).toBe(true);
+  });
+
+  test("tool_outputs_loaded fills outputs and completes the deferred expand", () => {
+    const state = buildToolToggleState(false);
+    state.convId = "conv-1";
+    state.toolOutputsLoaded = false;
+    state.toolOutputsLoading = true;
+    state.showToolOutputAfterLoad = true;
+    const assistant = state.messages[0];
+    if (assistant.role !== "assistant") throw new Error("expected assistant");
+    if (assistant.blocks[2].type !== "tool_result") throw new Error("expected tool result");
+    assistant.blocks[2].output = "";
+    state.scrollOffset = 5;
+    state.historyCursor = { row: 29, col: 0 };
+    state.historyVisualAnchor = { row: 29, col: 0 };
+
+    handleEvent({
+      type: "tool_outputs_loaded",
+      convId: "conv-1",
+      outputs: [{ toolCallId: "1", output: Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n") }],
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.showToolOutput).toBe(true);
+    expect(state.toolOutputsLoaded).toBe(true);
+    expect(state.toolOutputsLoading).toBe(false);
+    expect(state.showToolOutputAfterLoad).toBe(false);
+    expect(topVisibleLine(state)).toBe("  after 28");
+    if (assistant.blocks[2].type !== "tool_result") throw new Error("expected tool result");
+    expect(assistant.blocks[2].output).toContain("line 20");
+  });
 });
 
 describe("sidebar top shortcuts", () => {
@@ -211,7 +255,8 @@ describe("sidebar top shortcuts", () => {
       fastMode: false,
       entries: [],
       contextTokens: null,
-    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {} } as never);
+      toolOutputsIncluded: false,
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} } as never);
 
     expect(state.convId).toBe("conv-2");
     expect(state.sidebar.previousEnteredId).toBe("conv-1");

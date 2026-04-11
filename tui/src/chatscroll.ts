@@ -80,16 +80,16 @@ function remapRenderedRow(oldRow: number, oldAnchors: RenderLineAnchor[], newAnc
 }
 
 /**
- * Toggle tool output while preserving the user's semantic position in history.
+ * Apply a history mutation while preserving the user's semantic position.
  *
- * When tool_result blocks appear/disappear, absolute row numbers are no longer
- * stable. We therefore anchor the viewport/cursor to rendered line identities
- * and remap them into the newly rendered conversation.
+ * The mutation may add/remove/wrap lines (for example toggling tool output or
+ * filling in previously omitted tool_result payloads). We therefore anchor the
+ * viewport/cursor to rendered line identities and remap them afterward.
  */
-export function toggleToolOutputPreservingViewport(state: RenderState): void {
+export function preserveViewportAcrossHistoryMutation(state: RenderState, mutate: () => void): void {
   const { messageAreaHeight } = state.layout;
   if (messageAreaHeight <= 0) {
-    state.showToolOutput = !state.showToolOutput;
+    mutate();
     return;
   }
 
@@ -100,7 +100,7 @@ export function toggleToolOutputPreservingViewport(state: RenderState): void {
   const oldCursorRow = state.historyCursor.row;
   const oldVisualAnchorRow = state.historyVisualAnchor.row;
 
-  state.showToolOutput = !state.showToolOutput;
+  mutate();
 
   const newRender = buildMessageLines(state, chatW);
   const newAnchorIndex = buildAnchorIndex(newRender.lineAnchors);
@@ -119,4 +119,11 @@ export function toggleToolOutputPreservingViewport(state: RenderState): void {
   state.historyWrapContinuation = newRender.wrapContinuation;
   state.historyMessageBounds = newRender.messageBounds;
   state.layout.totalLines = newRender.lines.length;
+}
+
+/** Toggle tool output while preserving the user's semantic position in history. */
+export function toggleToolOutputPreservingViewport(state: RenderState): void {
+  preserveViewportAcrossHistoryMutation(state, () => {
+    state.showToolOutput = !state.showToolOutput;
+  });
 }

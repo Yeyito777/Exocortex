@@ -156,6 +156,12 @@ export interface RenderState {
   externalToolStyles: ExternalToolStyle[];
   /** Whether tool result output is visible. Toggled with Ctrl+O. */
   showToolOutput: boolean;
+  /** Whether the active conversation currently has historical tool outputs loaded. */
+  toolOutputsLoaded: boolean;
+  /** Whether a tool-output fetch is currently in flight for the active conversation. */
+  toolOutputsLoading: boolean;
+  /** Whether Ctrl+O should auto-expand once the in-flight tool-output fetch completes. */
+  showToolOutputAfterLoad: boolean;
   /** Cursor position in chat history (active when chatFocus === "history"). */
   historyCursor: HistoryCursor;
   /** Visual mode anchor in chat history (row, col). Set when entering visual. */
@@ -200,6 +206,35 @@ export function clearPendingAI(state: RenderState): void {
 /** Clear the live streaming tail used for user-invoked notices. */
 export function clearStreamingTailMessages(state: RenderState): void {
   state.streamingTailMessages = [];
+}
+
+/** Fully reset historical tool-output state (used when clearing/switching chats). */
+export function resetToolOutputState(state: RenderState): void {
+  state.showToolOutput = false;
+  state.toolOutputsLoaded = false;
+  state.toolOutputsLoading = false;
+  state.showToolOutputAfterLoad = false;
+}
+
+/**
+ * Apply the daemon's historical tool-output availability for a freshly loaded
+ * conversation. Compact loads always start collapsed; full loads preserve the
+ * ability to expand immediately.
+ */
+export function setLoadedConversationToolOutputState(state: RenderState, included: boolean): void {
+  state.toolOutputsLoaded = included;
+  state.toolOutputsLoading = false;
+  state.showToolOutputAfterLoad = false;
+  if (!included) state.showToolOutput = false;
+}
+
+/**
+ * Apply updated historical tool-output availability for the current
+ * conversation without overriding the user's current expansion preference.
+ */
+export function setCurrentConversationToolOutputAvailability(state: RenderState, included: boolean): void {
+  state.toolOutputsLoaded = included;
+  state.toolOutputsLoading = false;
 }
 
 /** Semantic system-notice colors accepted by TUI call sites and daemon events. */
@@ -319,6 +354,9 @@ export function createInitialState(): RenderState {
     providerRegistry: [],
     externalToolStyles: [],
     showToolOutput: false,
+    toolOutputsLoaded: false,
+    toolOutputsLoading: false,
+    showToolOutputAfterLoad: false,
     historyCursor: createHistoryCursor(),
     historyVisualAnchor: createHistoryCursor(),
     historyLines: [],

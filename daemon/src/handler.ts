@@ -39,6 +39,41 @@ export function createHandler(server: DaemonServer) {
     });
   };
 
+  const getCompactDisplayData = (convId: string) => convStore.getDisplayData(convId, false);
+
+  const sendCompactHistoryUpdated = (convId: string): boolean => {
+    const data = getCompactDisplayData(convId);
+    if (!data) return false;
+    server.sendToSubscribers(convId, {
+      type: "history_updated",
+      convId,
+      entries: data.entries,
+      contextTokens: data.contextTokens,
+      toolOutputsIncluded: data.toolOutputsIncluded,
+    });
+    return true;
+  };
+
+  const sendCompactConversationLoaded = (target: ConnectedClient, convId: string, reqId?: string) => {
+    const data = getCompactDisplayData(convId);
+    if (!data) return null;
+    const queued = convStore.getQueuedMessages(data.convId);
+    server.sendTo(target, {
+      type: "conversation_loaded",
+      reqId,
+      convId: data.convId,
+      provider: data.provider,
+      model: data.model,
+      effort: data.effort,
+      fastMode: data.fastMode,
+      entries: data.entries,
+      contextTokens: data.contextTokens,
+      toolOutputsIncluded: data.toolOutputsIncluded,
+      queuedMessages: queued.length > 0 ? queued : undefined,
+    });
+    return data;
+  };
+
   return async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
     switch (cmd.type) {
 
@@ -200,15 +235,7 @@ export function createHandler(server: DaemonServer) {
         }
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         if (result.changed) {
-          const displayData = convStore.getDisplayData(cmd.convId);
-          if (displayData) {
-            server.sendToSubscribers(cmd.convId, {
-              type: "history_updated",
-              convId: cmd.convId,
-              entries: displayData.entries,
-              contextTokens: displayData.contextTokens,
-            });
-          }
+          sendCompactHistoryUpdated(cmd.convId);
           server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
           server.sendToSubscribers(cmd.convId, { type: "system_message", convId: cmd.convId, text: result.message });
           log("info", `handler: trimmed ${cmd.mode} (${cmd.count}) for ${cmd.convId}`);
@@ -383,15 +410,7 @@ export function createHandler(server: DaemonServer) {
           server.broadcast({ type: "system_instructions_updated", convId: cmd.convId, text: cmd.text });
           server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
           // Rebuild display for subscribers so the TUI shows the instructions entry
-          const data = convStore.getDisplayData(cmd.convId);
-          if (data) {
-            server.sendToSubscribers(cmd.convId, {
-              type: "history_updated",
-              convId: cmd.convId,
-              entries: data.entries,
-              contextTokens: data.contextTokens,
-            });
-          }
+          sendCompactHistoryUpdated(cmd.convId);
           log("info", `handler: system instructions ${cmd.text ? "set" : "cleared"} for ${cmd.convId}`);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
@@ -407,44 +426,28 @@ export function createHandler(server: DaemonServer) {
         }
         log("info", `handler: unwound conversation ${cmd.convId} to before user message ${cmd.userMessageIndex}`);
         // Respond with the truncated state (reuse conversation_loaded)
-        const data = convStore.getDisplayData(cmd.convId);
-        if (data) {
-          server.sendTo(client, {
-            type: "conversation_loaded",
-            reqId: cmd.reqId,
-            convId: data.convId,
-            provider: data.provider,
-            model: data.model,
-            effort: data.effort,
-            fastMode: data.fastMode,
-            entries: data.entries,
-            contextTokens: data.contextTokens,
-          });
-        }
+        sendCompactConversationLoaded(client, cmd.convId, cmd.reqId);
         server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
         break;
       }
 
+      case "load_tool_outputs": {
+        const outputs = convStore.getToolOutputs(cmd.convId);
+        if (!outputs) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        server.sendTo(client, { type: "tool_outputs_loaded", reqId: cmd.reqId, convId: cmd.convId, outputs });
+        break;
+      }
+
       case "load_conversation": {
-        const data = convStore.getDisplayData(cmd.convId);
+        const data = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId);
         if (!data) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           break;
         }
-        const queued = convStore.getQueuedMessages(data.convId);
-        server.sendTo(client, {
-          type: "conversation_loaded",
-          reqId: cmd.reqId,
-          convId: data.convId,
-          provider: data.provider,
-          model: data.model,
-          effort: data.effort,
-          fastMode: data.fastMode,
-          entries: data.entries,
-          contextTokens: data.contextTokens,
-          queuedMessages: queued.length > 0 ? queued : undefined,
-        });
-        server.subscribe(client, data.convId);
+        server.subscribe(client, cmd.convId);
         // If the conversation is actively streaming, tell the late-joining client
         // so it creates pendingAI and picks up future chunks.
         if (convStore.isStreaming(data.convId)) {

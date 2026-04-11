@@ -69,6 +69,12 @@ export interface LoadConversationCommand {
   convId: string;
 }
 
+export interface LoadToolOutputsCommand {
+  type: "load_tool_outputs";
+  reqId?: string;
+  convId: string;
+}
+
 export interface SetModelCommand {
   type: "set_model";
   reqId?: string;
@@ -224,6 +230,7 @@ export type Command =
   | UnsubscribeCommand
   | ListConversationsCommand
   | LoadConversationCommand
+  | LoadToolOutputsCommand
   | DeleteConversationCommand
   | MarkConversationCommand
   | PinConversationCommand
@@ -375,6 +382,11 @@ export interface QueuedMessageInfo {
   images?: ImageAttachment[];
 }
 
+export interface ToolOutputInfo {
+  toolCallId: string;
+  output: string;
+}
+
 export interface ConversationLoadedEvent {
   type: "conversation_loaded";
   reqId?: string;
@@ -387,6 +399,8 @@ export interface ConversationLoadedEvent {
   entries: DisplayEntry[];
   /** Last known input token count for this conversation. */
   contextTokens: number | null;
+  /** Whether tool_result block outputs are present in entries. */
+  toolOutputsIncluded: boolean;
   /** Messages currently queued for delivery (so the TUI can show shadows). */
   queuedMessages?: QueuedMessageInfo[];
 }
@@ -481,6 +495,15 @@ export interface HistoryUpdatedEvent {
   entries: DisplayEntry[];
   /** Updated input token count. */
   contextTokens: number | null;
+  /** Whether tool_result block outputs are present in entries. */
+  toolOutputsIncluded: boolean;
+}
+
+export interface ToolOutputsLoadedEvent {
+  type: "tool_outputs_loaded";
+  reqId?: string;
+  convId: string;
+  outputs: ToolOutputInfo[];
 }
 
 export interface SystemInstructionsUpdatedEvent {
@@ -547,6 +570,7 @@ export type Event =
   | SystemMessageEvent
   | ToolsAvailableEvent
   | HistoryUpdatedEvent
+  | ToolOutputsLoadedEvent
   | SystemInstructionsUpdatedEvent
   | LlmCompleteResultEvent
   | SystemPromptEvent
