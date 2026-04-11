@@ -3,6 +3,17 @@ import { formatMarkdown, stripMarkdown, termWidth, hardBreak, isHorizontalRule }
 import { FENCE_OPEN_RE, isFenceClose, renderCodeBlock } from "./codeblocks";
 import { isTableLine, renderTableBlock } from "./tables";
 
+export interface MarkdownWrapResult {
+  lines: string[];
+  /** true for visual lines that are continuations of the previous logical line. */
+  cont: boolean[];
+}
+
+function pushStandaloneLines(result: string[], cont: boolean[], lines: string[]): void {
+  result.push(...lines);
+  cont.push(...lines.map(() => false));
+}
+
 /**
  * Main markdown-aware word wrapping function.
  *
@@ -20,13 +31,14 @@ import { isTableLine, renderTableBlock } from "./tables";
  * @param bgRestore Controls markdown formatting:
  *   - When provided (non-null), means we're rendering an assistant message — apply formatMarkdown
  *   - When null/undefined, it's a user message — keep text plain
- * @returns Array of wrapped, formatted lines
+ * @returns Wrapped, formatted lines plus continuation flags
  */
-export function markdownWordWrap(text: string, width: number, bgRestore?: string): string[] {
-  if (width < 1) return [text];
+export function markdownWordWrap(text: string, width: number, bgRestore?: string): MarkdownWrapResult {
+  if (width < 1) return { lines: [text], cont: [false] };
 
   const inputLines = text.split("\n");
   const result: string[] = [];
+  const cont: boolean[] = [];
 
   let i = 0;
   while (i < inputLines.length) {
@@ -43,7 +55,8 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
         i++;
       }
       if (i < inputLines.length) i++; // skip closing fence
-      result.push(...renderCodeBlock(codeLines, language, width));
+      const rendered = renderCodeBlock(codeLines, language, width);
+      pushStandaloneLines(result, cont, rendered);
       continue;
     }
 
@@ -53,7 +66,8 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
       while (i < inputLines.length && isTableLine(inputLines[i])) {
         i++;
       }
-      result.push(...renderTableBlock(inputLines.slice(start, i), width, bgRestore));
+      const rendered = renderTableBlock(inputLines.slice(start, i), width, bgRestore);
+      pushStandaloneLines(result, cont, rendered);
       continue;
     }
 
@@ -62,16 +76,17 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
       // Render as a thin box-drawing line
       const hrWidth = Math.min(width, 40); // cap at 40 chars
       result.push(theme.muted + "─".repeat(hrWidth) + theme.reset);
+      cont.push(false);
       i++;
       continue;
     }
 
     // Regular paragraph text — word-wrap and optionally format
-    wrapParagraph(inputLines[i], width, result, bgRestore);
+    wrapParagraph(inputLines[i], width, result, cont, bgRestore);
     i++;
   }
 
-  return result;
+  return { lines: result, cont };
 }
 
 /**
@@ -81,9 +96,16 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
  * for markdown markers (** etc.) being invisible after formatting, and
  * formatMarkdown is applied to each wrapped line.
  */
-function wrapParagraph(paragraph: string, width: number, result: string[], bgRestore?: string): void {
+function wrapParagraph(
+  paragraph: string,
+  width: number,
+  result: string[],
+  cont: boolean[],
+  bgRestore?: string,
+): void {
   if (paragraph === "") {
     result.push("");
+    cont.push(false);
     return;
   }
 
@@ -111,10 +133,14 @@ function wrapParagraph(paragraph: string, width: number, result: string[], bgRes
 
   // Second pass: apply inline markdown formatting if in assistant mode
   if (bgRestore) {
-    for (const l of wrapped) {
-      result.push(formatMarkdown(l, bgRestore).text);
+    for (let i = 0; i < wrapped.length; i++) {
+      result.push(formatMarkdown(wrapped[i], bgRestore).text);
+      cont.push(i > 0);
     }
   } else {
-    result.push(...wrapped);
+    for (let i = 0; i < wrapped.length; i++) {
+      result.push(wrapped[i]);
+      cont.push(i > 0);
+    }
   }
 }

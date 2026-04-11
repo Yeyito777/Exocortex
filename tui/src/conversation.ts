@@ -137,10 +137,10 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
         // Assistant text blocks: full markdown rendering.
         // markdownWordWrap handles code blocks, tables, HRs, inline
         // formatting, and word wrapping — output is fully formatted.
-        const mdLines = markdownWordWrap(text, contentWidth, theme.reset);
-        for (const line of mdLines) {
-          lines.push(`  ${line}`);
-          cont.push(false);
+        const md = markdownWordWrap(text, contentWidth, theme.reset);
+        for (let i = 0; i < md.lines.length; i++) {
+          lines.push(`  ${md.lines[i]}`);
+          cont.push(md.cont[i]);
         }
       }
       break;

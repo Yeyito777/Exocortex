@@ -314,15 +314,55 @@ export function handleHistoryTextObject(
 
 // ── Visual selection extraction ─────────────────────────────────
 
+function normalizeHistorySelection(anchor: HistoryCursor, cursor: HistoryCursor): {
+  start: HistoryCursor;
+  end: HistoryCursor;
+} {
+  const forward = anchor.row < cursor.row
+    || (anchor.row === cursor.row && anchor.col <= cursor.col);
+  return {
+    start: forward ? anchor : cursor,
+    end: forward ? cursor : anchor,
+  };
+}
+
+function extractHistoryCharwiseSelection(
+  lines: string[],
+  wrapCont: boolean[],
+  start: HistoryCursor,
+  end: HistoryCursor,
+): string {
+  if (start.row === end.row) {
+    const plain = stripAnsi(lines[start.row] ?? "");
+    return plain.slice(start.col, end.col + 1);
+  }
+
+  const result: string[] = [];
+  for (let r = start.row; r <= end.row; r++) {
+    const plain = stripAnsi(lines[r] ?? "");
+    const { start: lineStart, end: lineEnd } = contentBounds(plain);
+    const sliceStart = r === start.row ? start.col : lineStart;
+    const sliceEnd = r === end.row ? end.col + 1 : lineEnd + 1;
+    const text = plain.slice(sliceStart, sliceEnd);
+
+    if (r === start.row || !wrapCont[r]) {
+      result.push(text);
+    } else if (text) {
+      result[result.length - 1] += ` ${text}`;
+    }
+  }
+
+  return result.join("\n");
+}
+
 /** Extract the selected text from history in visual/visual-line mode. */
 export function getHistoryVisualSelection(state: RenderState): string {
-  const anchor = state.historyVisualAnchor;
-  const cursor = state.historyCursor;
   const lines = state.historyLines;
   const wrapCont = state.historyWrapContinuation;
+  const { start, end } = normalizeHistorySelection(state.historyVisualAnchor, state.historyCursor);
 
-  let startRow = Math.min(anchor.row, cursor.row);
-  let endRow = Math.max(anchor.row, cursor.row);
+  let startRow = start.row;
+  let endRow = end.row;
 
   if (state.vim.mode === "visual-line") {
     // Expand to logical line groups
@@ -333,28 +373,7 @@ export function getHistoryVisualSelection(state: RenderState): string {
     return joinLogicalLines(lines, wrapCont, startRow, endRow);
   }
 
-  // Character visual — single line
-  if (startRow === endRow) {
-    const plain = stripAnsi(lines[startRow] ?? "");
-    const startCol = Math.min(anchor.col, cursor.col);
-    const endCol = Math.max(anchor.col, cursor.col);
-    return plain.slice(startCol, endCol + 1).trim();
-  }
-
-  // Multi-line character selection
-  const result: string[] = [];
-  const firstPlain = stripAnsi(lines[startRow] ?? "");
-  const lastPlain = stripAnsi(lines[endRow] ?? "");
-  const firstCol = startRow === anchor.row ? anchor.col : cursor.col;
-  const lastCol = endRow === anchor.row ? anchor.col : cursor.col;
-
-  result.push(firstPlain.slice(firstCol).trimEnd());
-  for (let r = startRow + 1; r < endRow; r++) {
-    result.push(stripAnsi(lines[r] ?? "").trim());
-  }
-  result.push(lastPlain.slice(0, lastCol + 1).trimStart());
-
-  return result.join("\n");
+  return extractHistoryCharwiseSelection(lines, wrapCont, start, end);
 }
 
 // ── History cursor action dispatch (yank, visual yank, motions) ───
