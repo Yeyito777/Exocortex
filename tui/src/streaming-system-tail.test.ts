@@ -151,7 +151,8 @@ describe("streaming system-message tail", () => {
       fastMode: false,
       entries: [],
       contextTokens: null,
-    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {} });
+      toolOutputsIncluded: false,
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
 
     expect(state.convId).toBe("conv-2");
     expect(state.streamingTailMessages).toHaveLength(0);

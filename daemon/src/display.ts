@@ -9,7 +9,7 @@
 import type { Block, MessageMetadata, ImageAttachment } from "./messages";
 import type { StoredMessage, ApiContentBlock } from "./messages";
 import type { ProviderId, ModelId, EffortLevel } from "./messages";
-import type { DisplayEntry } from "@exocortex/shared/protocol";
+import type { DisplayEntry, ToolOutputInfo } from "@exocortex/shared/protocol";
 
 export type { DisplayEntry };
 
@@ -29,10 +29,38 @@ export interface ConversationDisplayData {
   fastMode: boolean;
   entries: DisplayEntry[];
   contextTokens: number | null;
+  toolOutputsIncluded: boolean;
+}
+
+export interface BuildDisplayOptions {
+  includeToolOutputs?: boolean;
 }
 
 /** Injected function that produces a display summary for a tool call. */
 export type ToolSummarizerFn = (name: string, input: Record<string, unknown>) => { label: string; detail: string };
+
+function stringifyToolResultContent(raw: string | ContentPart[]): string {
+  return typeof raw === "string"
+    ? raw
+    : Array.isArray(raw)
+      ? raw.filter((p) => p.type === "text").map((p) => p.text ?? "").join("\n")
+      : String(raw ?? "");
+}
+
+export function collectToolOutputs(messages: StoredMessage[]): ToolOutputInfo[] {
+  const outputs: ToolOutputInfo[] = [];
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue;
+    for (const part of msg.content) {
+      if (part.type !== "tool_result") continue;
+      outputs.push({
+        toolCallId: part.tool_use_id,
+        output: stringifyToolResultContent(part.content as string | ContentPart[]),
+      });
+    }
+  }
+  return outputs;
+}
 
 // ── Conversion ─────────────────────────────────────────────────────
 
@@ -45,7 +73,9 @@ export function buildDisplayData(
   messages: StoredMessage[],
   lastContextTokens: number | null,
   summarizer: ToolSummarizerFn,
+  options?: BuildDisplayOptions,
 ): ConversationDisplayData {
+  const includeToolOutputs = options?.includeToolOutputs ?? true;
   const entries: DisplayEntry[] = [];
 
   let currentAI: { blocks: Block[]; metadata: MessageMetadata | null } | null = null;
@@ -77,17 +107,11 @@ export function buildDisplayData(
             summary: s.detail || s.label,
           });
         } else if (c.type === "tool_result") {
-          const raw = c.content as string | ContentPart[];
-          const output = typeof raw === "string"
-            ? raw
-            : Array.isArray(raw)
-              ? raw.filter((p) => p.type === "text").map((p) => p.text ?? "").join("\n")
-              : String(raw ?? "");
           blocks.push({
             type: "tool_result",
             toolCallId: c.tool_use_id,
             toolName: "",
-            output,
+            output: includeToolOutputs ? stringifyToolResultContent(c.content as string | ContentPart[]) : "",
             isError: c.is_error ?? false,
           });
         }
@@ -154,5 +178,14 @@ export function buildDisplayData(
   }
   flushAI();
 
-  return { convId, provider, model, effort, fastMode, entries, contextTokens: lastContextTokens };
+  return {
+    convId,
+    provider,
+    model,
+    effort,
+    fastMode,
+    entries,
+    contextTokens: lastContextTokens,
+    toolOutputsIncluded: includeToolOutputs,
+  };
 }

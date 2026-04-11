@@ -47,6 +47,7 @@ export type KeyResult =
   | { type: "quit" }
   | { type: "abort" }
   | { type: "load_conversation"; convId: string }
+  | { type: "load_tool_outputs"; convId: string }
   | { type: "delete_conversation"; convId: string }
   | { type: "undo_delete" }
   | { type: "mark_conversation"; convId: string; marked: boolean }
@@ -198,8 +199,19 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
       handleScrollAction(action, state);
       return { type: "handled" };
     case "toggle_tool_output":
-      toggleToolOutputPreservingViewport(state);
-      return { type: "handled" };
+      if (state.showToolOutput) {
+        state.showToolOutputAfterLoad = false;
+        toggleToolOutputPreservingViewport(state);
+        return { type: "handled" };
+      }
+      if (state.toolOutputsLoaded) {
+        toggleToolOutputPreservingViewport(state);
+        return { type: "handled" };
+      }
+      if (!state.convId || state.toolOutputsLoading) return { type: "handled" };
+      state.toolOutputsLoading = true;
+      state.showToolOutputAfterLoad = true;
+      return { type: "load_tool_outputs", convId: state.convId };
     case "paste_image": {
       if (!modelSupportsImages(state)) {
         pushSystemMessage(state, `✗ Image inputs are not supported by ${state.provider}/${state.model}. Switch to a vision-capable model to paste images.`, theme.error);

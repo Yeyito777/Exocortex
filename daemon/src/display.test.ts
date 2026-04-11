@@ -376,6 +376,31 @@ describe("tool-result folding", () => {
     }
   });
 
+  test("tool_result output can be omitted for compact history payloads", () => {
+    const msgs: StoredMessage[] = [
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tu-1", name: "bash", input: {} }],
+        metadata: null,
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tu-1", content: "large output" } as ApiContentBlock],
+        metadata: null,
+      },
+    ];
+    const ai = aiEntry(buildDisplayData("conv-1", "anthropic", "sonnet", "high", false, msgs, null, summarizer, {
+      includeToolOutputs: false,
+    }).entries[0]);
+    expect(ai.blocks[1]).toEqual({
+      type: "tool_result",
+      toolCallId: "tu-1",
+      toolName: "",
+      output: "",
+      isError: false,
+    });
+  });
+
   test("tool_result content as array of text parts → joined with newline", () => {
     const msgs: StoredMessage[] = [
       {

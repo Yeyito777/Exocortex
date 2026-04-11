@@ -8,9 +8,9 @@
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, StoredMessage } from "./messages";
 import { DEFAULT_EFFORT, createConversation, sortConversations, countConversationMessages, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder } from "./messages";
-import type { TrimMode } from "./protocol";
+import type { TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
-import { buildDisplayData, type ConversationDisplayData } from "./display";
+import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
 import * as streaming from "./streaming";
@@ -286,18 +286,15 @@ function waitForStreamStop(id: string, timeoutMs = 10_000): Promise<boolean> {
 
 /** Load all conversations from disk into memory on daemon startup. */
 export function loadFromDisk(): void {
-  const summaries = persistence.loadAll();
-  for (const summary of summaries) {
-    if (conversations.has(summary.id)) continue;
-    const conv = persistence.load(summary.id);
-    if (conv) {
-      const normalizedEffort = normalizeEffort(conv.provider, conv.model, conv.effort);
-      if (normalizedEffort !== conv.effort) {
-        conv.effort = normalizedEffort;
-        markDirty(conv.id);
-      }
-      conversations.set(conv.id, conv);
+  const loaded = persistence.loadAllConversations();
+  for (const conv of loaded) {
+    if (conversations.has(conv.id)) continue;
+    const normalizedEffort = normalizeEffort(conv.provider, conv.model, conv.effort);
+    if (normalizedEffort !== conv.effort) {
+      conv.effort = normalizedEffort;
+      markDirty(conv.id);
     }
+    conversations.set(conv.id, conv);
   }
   log("info", `conversations: loaded ${conversations.size} from disk`);
 
@@ -454,7 +451,7 @@ export function getSummary(id: string): ConversationSummary | null {
 
 export type { ConversationDisplayData, DisplayEntry } from "./display";
 
-export function getDisplayData(id: string): ConversationDisplayData | null {
+export function getDisplayData(id: string, includeToolOutputs = true): ConversationDisplayData | null {
   const conv = conversations.get(id);
   if (!conv) return null;
   const transientMessages = streaming.getStreamingDisplayMessages(id);
@@ -467,7 +464,16 @@ export function getDisplayData(id: string): ConversationDisplayData | null {
     transientMessages.length > 0 ? [...conv.messages, ...transientMessages] : conv.messages,
     conv.lastContextTokens,
     summarizeTool,
+    { includeToolOutputs },
   );
+}
+
+export function getToolOutputs(id: string): ToolOutputInfo[] | null {
+  const conv = conversations.get(id);
+  if (!conv) return null;
+  const transientMessages = streaming.getStreamingDisplayMessages(id);
+  const messages = transientMessages.length > 0 ? [...conv.messages, ...transientMessages] : conv.messages;
+  return collectToolOutputs(messages);
 }
 
 // ── Unread state (runtime only, not persisted) ──────────────────────

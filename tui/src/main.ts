@@ -17,7 +17,7 @@ import { tryCommand } from "./commands";
 import { expandMacros } from "./macros";
 import { render } from "./render";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, pushSystemMessage } from "./state";
+import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, pushSystemMessage, resetToolOutputState } from "./state";
 import { createPendingAI, type ImageAttachment } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
@@ -339,6 +339,9 @@ function handleKey(key: KeyEvent): void {
     case "load_conversation":
       daemon.loadConversation(result.convId);
       break;
+    case "load_tool_outputs":
+      daemon.loadToolOutputs(result.convId);
+      break;
     case "new_conversation":
       if (state.convId) {
         daemon.unsubscribe(state.convId);
@@ -349,6 +352,7 @@ function handleKey(key: KeyEvent): void {
       clearPendingAI(state);
       clearStreamingTailMessages(state);
       state.contextTokens = null;
+      resetToolOutputState(state);
       state.pendingSystemInstructions = null;
       state.pendingGenerateTitleOnCreate = false;
       break;
@@ -361,6 +365,7 @@ function handleKey(key: KeyEvent): void {
         state.messages = [];
         clearPendingAI(state);
         state.contextTokens = null;
+        resetToolOutputState(state);
       }
       break;
     case "undo_delete":

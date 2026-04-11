@@ -24,7 +24,7 @@ describe("streaming_sync", () => {
         { type: "text", text: "First paragraph.\n\nSecond paragraph." },
         { type: "thinking", text: "Thinking..." },
       ],
-    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {} });
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
 
     expect(state.pendingAI?.blocks).toEqual([
       { type: "text", text: "round one" },
