@@ -22,6 +22,7 @@ export interface SidebarState {
   open: boolean;
   conversations: ConversationSummary[];
   selectedId: string | null;
+  previousEnteredId: string | null;
   selectedIndex: number;
   scrollOffset: number;
   pendingDeleteId: string | null;
@@ -32,10 +33,49 @@ export function createSidebarState(): SidebarState {
     open: false,
     conversations: [],
     selectedId: null,
+    previousEnteredId: null,
     selectedIndex: 0,
     scrollOffset: 0,
     pendingDeleteId: null,
   };
+}
+
+// ── Selection helpers ───────────────────────────────────────────────
+
+export function focusConversationAt(sidebar: SidebarState, index: number): void {
+  if (sidebar.conversations.length === 0) {
+    sidebar.selectedIndex = 0;
+    sidebar.selectedId = null;
+    return;
+  }
+
+  const nextIndex = Math.max(0, Math.min(index, sidebar.conversations.length - 1));
+  const nextId = sidebar.conversations[nextIndex]?.id ?? null;
+  sidebar.selectedIndex = nextIndex;
+  sidebar.selectedId = nextId;
+}
+
+export function focusConversationById(sidebar: SidebarState, convId: string): boolean {
+  const idx = sidebar.conversations.findIndex(c => c.id === convId);
+  if (idx === -1) return false;
+  focusConversationAt(sidebar, idx);
+  return true;
+}
+
+/** Remember the last conversation the user actually entered/loaded. */
+export function rememberEnteredConversation(
+  sidebar: SidebarState,
+  currentConvId: string | null,
+  nextConvId: string | null,
+): void {
+  if (currentConvId && currentConvId !== nextConvId) {
+    sidebar.previousEnteredId = currentConvId;
+  }
+}
+
+export function focusPreviousEnteredConversation(sidebar: SidebarState): boolean {
+  if (!sidebar.previousEnteredId) return false;
+  return focusConversationById(sidebar, sidebar.previousEnteredId);
 }
 
 // ── Key handling ────────────────────────────────────────────────────
@@ -94,8 +134,7 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
         sidebar.conversations.splice(sidebar.selectedIndex, 1);
         // Focus the next conversation (now at the same index after splice),
         // clamping to the last item when deleting the tail entry.
-        sidebar.selectedIndex = Math.max(0, Math.min(sidebar.selectedIndex, sidebar.conversations.length - 1));
-        sidebar.selectedId = sidebar.conversations[sidebar.selectedIndex]?.id ?? null;
+        focusConversationAt(sidebar, sidebar.selectedIndex);
         return { type: "delete_conversation", convId: selectedConv.id };
       }
 
@@ -168,8 +207,7 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
         }
       }
       // Follow the moved item
-      sidebar.selectedIndex = targetIdx;
-      sidebar.selectedId = conv.id;
+      focusConversationAt(sidebar, targetIdx);
       return { type: "move_conversation", convId: conv.id, direction };
     }
 
@@ -190,11 +228,7 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
 }
 
 export function moveSelection(sidebar: SidebarState, delta: number): void {
-  sidebar.selectedIndex = Math.max(0, Math.min(
-    sidebar.selectedIndex + delta,
-    sidebar.conversations.length - 1,
-  ));
-  sidebar.selectedId = sidebar.conversations[sidebar.selectedIndex]?.id ?? null;
+  focusConversationAt(sidebar, sidebar.selectedIndex + delta);
 }
 
 /** Jump to the next (delta=1) or previous (delta=-1) conversation with a streaming indicator, wrapping around. */
@@ -205,8 +239,7 @@ function moveToStreaming(sidebar: SidebarState, delta: 1 | -1): void {
     const idx = ((sidebar.selectedIndex + delta * step) % len + len) % len;
     const conv = sidebar.conversations[idx];
     if (conv.streaming || conv.unread) {
-      sidebar.selectedIndex = idx;
-      sidebar.selectedId = conv.id;
+      focusConversationAt(sidebar, idx);
       return;
     }
   }
@@ -263,12 +296,11 @@ export function syncSelectedIndex(sidebar: SidebarState): void {
   // so the cursor lands in the active (unpinned) section, not on a pinned item.
   const firstUnpinned = sidebar.conversations.findIndex(c => !c.pinned);
   if (firstUnpinned !== -1) {
-    sidebar.selectedIndex = firstUnpinned;
+    focusConversationAt(sidebar, firstUnpinned);
   } else {
     // All pinned (or empty) — fall back to clamped index
-    sidebar.selectedIndex = Math.max(0, Math.min(sidebar.selectedIndex, sidebar.conversations.length - 1));
+    focusConversationAt(sidebar, sidebar.selectedIndex);
   }
-  sidebar.selectedId = sidebar.conversations[sidebar.selectedIndex]?.id ?? null;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────

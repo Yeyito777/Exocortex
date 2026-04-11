@@ -9,6 +9,7 @@ const registry: ToolDisplayInfo[] = [
 const externalToolStyles: ExternalToolStyle[] = [
   { cmd: "exo", label: "Exocortex", color: "#1d9bf0" },
   { cmd: "gmail", label: "Gmail", color: "#4ddbb7" },
+  { cmd: "whatsapp", label: "WhatsApp", color: "#25d366" },
 ];
 
 describe("bash external tool styling", () => {
@@ -78,6 +79,23 @@ describe("bash external tool styling", () => {
     expect(display.detail).toBe("ls | sed -n '1,5p'");
     expect(display.cmd).toBe("exo");
     expect(match).toMatchObject({ matchLineIndex: 0, matchStart: 23 });
+  });
+
+  test("matches external tool when the first line ends inside a multiline quoted argument", () => {
+    const summary = [
+      'whatsapp send Mom "Hola ma, update rápido 🙏',
+      '',
+      'Ya nos sirvió mucho lo que mandaste por email:',
+      '- ✅ la referencia bancaria de Banco General',
+      'Gracias 💙"',
+    ].join("\n");
+    const display = resolveToolDisplay("bash", summary, registry, externalToolStyles);
+    const match = resolveBashExternalMatch(summary, externalToolStyles);
+
+    expect(display.label).toBe("WhatsApp");
+    expect(display.detail).toBe('send Mom "Hola ma, update rápido 🙏\n\nYa nos sirvió mucho lo que mandaste por email:\n- ✅ la referencia bancaria de Banco General\nGracias 💙"');
+    expect(display.cmd).toBe("whatsapp");
+    expect(match).toMatchObject({ matchLineIndex: 0, matchStart: 0 });
   });
 
   test("falls back to plain bash when another real command comes first", () => {
