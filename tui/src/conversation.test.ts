@@ -61,6 +61,33 @@ describe("tool call rendering", () => {
     expect(rendered).toContain("  Exocortex ls | sed -n '1,3p' --timeout 120000");
   });
 
+  test("preserves same-line setup command before an &&-chained external tool", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "bash",
+          input: {},
+          summary: "cd /home/yeyito/Workspace/Exocortex/external-tools/exo-cli && exo --help --timeout 120000",
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
+      externalToolStyles: [{ cmd: "exo", label: "Exocortex", color: "#1d9bf0" }],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 120).lines.map(stripAnsi);
+
+    expect(rendered).toContain("  $ cd /home/yeyito/Workspace/Exocortex/external-tools/exo-cli &&");
+    expect(rendered).toContain("  Exocortex --help --timeout 120000");
+  });
+
   test("styles external tool after a cat heredoc bash prelude", () => {
     const state = {
       messages: [{

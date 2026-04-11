@@ -40,6 +40,21 @@ describe("bash external tool styling", () => {
     });
   });
 
+  test("matches after same-line setup command chained with &&", () => {
+    const summary = "cd /home/yeyito/Workspace/Exocortex/external-tools/exo-cli && exo --help --timeout 120000";
+    const display = resolveToolDisplay("bash", summary, registry, externalToolStyles);
+    const match = resolveBashExternalMatch(summary, externalToolStyles);
+
+    expect(display.label).toBe("Exocortex");
+    expect(display.detail).toBe("--help --timeout 120000");
+    expect(display.cmd).toBe("exo");
+    expect(match).toMatchObject({
+      lines: [summary],
+      matchLineIndex: 0,
+      matchStart: summary.indexOf("exo --help"),
+    });
+  });
+
   test("matches through leading comments and export lines", () => {
     const display = resolveToolDisplay(
       "bash",
@@ -100,6 +115,15 @@ describe("bash external tool styling", () => {
 
   test("falls back to plain bash when another real command comes first", () => {
     const summary = "git fetch\nexo status --json";
+    const display = resolveToolDisplay("bash", summary, registry, externalToolStyles);
+
+    expect(display.label).toBe("$");
+    expect(display.detail).toBe(summary);
+    expect(display.cmd).toBeUndefined();
+  });
+
+  test("falls back to plain bash when another same-line command comes first", () => {
+    const summary = "git fetch && exo status --json";
     const display = resolveToolDisplay("bash", summary, registry, externalToolStyles);
 
     expect(display.label).toBe("$");
