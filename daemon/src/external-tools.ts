@@ -80,6 +80,7 @@ export interface LoadedTool {
 const BASE_PATH = process.env.PATH ?? "";
 let _tools: LoadedTool[] = [];
 let _watcher: ReturnType<typeof watch> | null = null;
+let _toolWatchers = new Map<string, { target: string; watcher: ReturnType<typeof watch> }>();
 let _debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let _externalToolsDir: string | null = null;
 
@@ -372,6 +373,72 @@ function updatePath(tools: LoadedTool[]): void {
   process.env.PATH = dirs.join(":") + ":" + BASE_PATH;
 }
 
+export function getExternalToolWatchTargets(externalToolsDir: string, tools: LoadedTool[]): string[] {
+  return [externalToolsDir, ...tools.map((tool) => tool.toolDir)];
+}
+
+function closeWatcherQuietly(watcher: ReturnType<typeof watch>, label: string): void {
+  try {
+    watcher.close();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log("warn", `external-tools: failed to close watcher for ${label}: ${msg}`);
+  }
+}
+
+function scheduleToolReload(externalToolsDir: string, onUpdate?: () => void): void {
+  if (_debounceTimer) clearTimeout(_debounceTimer);
+  _debounceTimer = setTimeout(() => {
+    _debounceTimer = null;
+    const updated = scanTools(externalToolsDir);
+    if (applyTools(updated)) {
+      refreshToolWatchers(externalToolsDir, onUpdate);
+      log("info", `external-tools: reloaded — ${updated.length} tool(s): ${updated.map(t => t.manifest.name).join(", ") || "(none)"}`);
+      onUpdate?.();
+    }
+  }, DEBOUNCE_MS);
+}
+
+function openWatcher(target: string, label: string, onEvent: () => void): ReturnType<typeof watch> | null {
+  try {
+    const watcher = watch(target, { persistent: false }, () => {
+      try {
+        onEvent();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log("warn", `external-tools: watcher callback failed for ${label}: ${msg}`);
+      }
+    });
+    watcher.on?.("error", (err: Error) => {
+      log("warn", `external-tools: watcher error for ${label}: ${err.message}`);
+    });
+    return watcher;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log("warn", `external-tools: failed to watch ${label}: ${msg}`);
+    return null;
+  }
+}
+
+function refreshToolWatchers(externalToolsDir: string, onUpdate?: () => void): void {
+  const desired = new Map(_tools.map((tool) => [tool.manifest.name, tool.toolDir]));
+
+  for (const [name, entry] of _toolWatchers) {
+    const nextTarget = desired.get(name);
+    if (nextTarget === undefined || nextTarget !== entry.target) {
+      closeWatcherQuietly(entry.watcher, `tool '${name}'`);
+      _toolWatchers.delete(name);
+    }
+  }
+
+  for (const [name, toolDir] of desired) {
+    const existing = _toolWatchers.get(name);
+    if (existing) continue;
+    const watcher = openWatcher(toolDir, `tool '${name}'`, () => scheduleToolReload(externalToolsDir, onUpdate));
+    if (watcher) _toolWatchers.set(name, { target: toolDir, watcher });
+  }
+}
+
 export function getToolReloadKey(tools: LoadedTool[]): string {
   return JSON.stringify(tools.map((tool) => ({
     name: tool.manifest.name,
@@ -470,24 +537,11 @@ export function initExternalTools(onUpdate?: () => void): void {
     log("info", `external-tools: supervising ${daemonTools.length} daemon(s): ${daemonTools.map(t => t.manifest.name).join(", ")}`);
   }
 
-  // Watch for changes
+  // Watch for changes. Keep watches shallow so tool runtime artifacts
+  // (e.g. browser profile sockets inside config/) can't crash the daemon.
   const externalToolsDir = _externalToolsDir;
-  try {
-    _watcher = watch(externalToolsDir, { persistent: false, recursive: true }, (_eventType, _filename) => {
-      if (_debounceTimer) clearTimeout(_debounceTimer);
-      _debounceTimer = setTimeout(() => {
-        _debounceTimer = null;
-        const updated = scanTools(externalToolsDir);
-        if (applyTools(updated)) {
-          log("info", `external-tools: reloaded — ${updated.length} tool(s): ${updated.map(t => t.manifest.name).join(", ") || "(none)"}`);
-          onUpdate?.();
-        }
-      }, DEBOUNCE_MS);
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log("warn", `external-tools: failed to start watcher: ${msg}`);
-  }
+  _watcher = openWatcher(externalToolsDir, "external-tools root", () => scheduleToolReload(externalToolsDir, onUpdate));
+  refreshToolWatchers(externalToolsDir, onUpdate);
 }
 
 /** Stop the filesystem watcher and all supervised daemons (fire-and-forget). */
@@ -497,9 +551,13 @@ export function stopExternalTools(): void {
     _debounceTimer = null;
   }
   if (_watcher) {
-    _watcher.close();
+    closeWatcherQuietly(_watcher, "external-tools root");
     _watcher = null;
   }
+  for (const [name, entry] of _toolWatchers) {
+    closeWatcherQuietly(entry.watcher, `tool '${name}'`);
+  }
+  _toolWatchers.clear();
   stopAllDaemons();
 }
 
@@ -510,9 +568,13 @@ export async function stopExternalToolsAsync(): Promise<void> {
     _debounceTimer = null;
   }
   if (_watcher) {
-    _watcher.close();
+    closeWatcherQuietly(_watcher, "external-tools root");
     _watcher = null;
   }
+  for (const [name, entry] of _toolWatchers) {
+    closeWatcherQuietly(entry.watcher, `tool '${name}'`);
+  }
+  _toolWatchers.clear();
   await stopAllDaemons();
 }
 
