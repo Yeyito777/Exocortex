@@ -130,7 +130,7 @@ function buildContextPressureWarning(inputTokens: number, contextLimit: number):
   const usage = `${Math.round(inputTokens / 1000)}k/${contextLimit / 1000}k tokens (${pct}%)`;
   const freeAtLeast = `${Math.max(0, Math.round((inputTokens - CONTEXT_TARGET) / 1000))}k`;
   const target = `${CONTEXT_TARGET / 1000}k`;
-  const hint = `[Context: ${usage} — context is getting full. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool now before you run out.]`;
+  const hint = `[Context: ${usage} — context is getting full. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool now before you run out, then continue the task you were working on.]`;
 
   return { usage, hint };
 }
