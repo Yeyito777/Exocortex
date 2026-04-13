@@ -22,7 +22,6 @@ case "${1:-}" in
     systemctl --user status "$SERVICE" --no-pager
     ;;
   *)
-    cd "$PROJECT_DIR/daemon"
-    exec bun run src/main.ts "$@"
+    exec "$PROJECT_DIR/scripts/setup/run-daemon.sh" "$@"
     ;;
 esac

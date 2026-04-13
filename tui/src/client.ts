@@ -37,7 +37,7 @@ export class DaemonClient {
       if (!isWindows && !existsSync(this.socketPath)) {
         reject(new Error(
           "exocortexd socket not found. Is the daemon running?\n" +
-          "Start it with: cd daemon && bun run start"
+          "Start it with: exocortexd restart"
         ));
         return;
       }
@@ -64,7 +64,7 @@ export class DaemonClient {
           if (isWindows && (code === "ENOENT" || code === "ECONNREFUSED")) {
             reject(new Error(
               "exocortexd socket not found. Is the daemon running?\n" +
-              "Start it with: cd daemon && bun run start"
+              "Start it with: exocortexd restart"
             ));
           } else {
             reject(new Error(`Failed to connect: ${err.message}`));

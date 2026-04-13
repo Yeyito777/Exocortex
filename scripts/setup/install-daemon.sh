@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
-BUN_PATH="$(command -v bun)" || { echo "  ✗ bun not found in PATH"; exit 1; }
+command -v bun >/dev/null 2>&1 || { echo "  ✗ bun not found in PATH"; exit 1; }
 
 # UNIT_NAME is passed by the Makefile; abort if missing.
 : "${UNIT_NAME:?UNIT_NAME must be set (e.g. exocortex-daemon.service)}"
@@ -24,7 +24,7 @@ Description=Exocortex daemon (exocortexd)
 Type=simple
 WorkingDirectory=$REPO_DIR/daemon
 Environment=PATH=$HOME/.local/bin:$HOME/.local/bun/bin:$HOME/.local/rust/cargo/bin:/usr/local/bin:/usr/bin
-ExecStart=$BUN_PATH run src/main.ts
+ExecStart=$REPO_DIR/bin/exocortexd
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=10
