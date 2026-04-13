@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import type { LoadedTool, Manifest } from "./external-tools";
-import { buildDaemonSpawnSpec, getToolReloadKey, rewriteExternalToolShellCommand } from "./external-tools";
+import { buildDaemonSpawnSpec, getExternalToolWatchTargets, getToolReloadKey, rewriteExternalToolShellCommand } from "./external-tools";
 
 function makeTool(overrides: {
   manifest?: Partial<Manifest>;
@@ -57,6 +60,25 @@ describe("getToolReloadKey", () => {
     const before = [makeTool({ manifest: { daemon: { command: "node daemon.js" } } })];
     const after = [makeTool({ manifest: { daemon: { command: "node daemon.js", restart: "always" } } })];
     expect(getToolReloadKey(before)).not.toBe(getToolReloadKey(after));
+  });
+});
+
+describe("getExternalToolWatchTargets", () => {
+  test("watches only the root and immediate child directories", () => {
+    const root = mkdtempSync(join(tmpdir(), "exo-tools-"));
+    try {
+      mkdirSync(join(root, "discord-cli", "config", "captcha", "chromium-profile"), { recursive: true });
+      mkdirSync(join(root, "exo-cli"), { recursive: true });
+      writeFileSync(join(root, "README.md"), "not a directory");
+
+      expect(getExternalToolWatchTargets(root)).toEqual([
+        root,
+        join(root, "discord-cli"),
+        join(root, "exo-cli"),
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -45,6 +45,11 @@ interface CommandCandidate {
   candidate: string;
 }
 
+interface CommandSegment {
+  text: string;
+  start: number;
+}
+
 interface HeredocSpec {
   terminator: string;
   allowTabs: boolean;
@@ -268,50 +273,106 @@ function skipHeredocBodies(lines: string[], lineIndex: number, specs: HeredocSpe
   return i;
 }
 
+function splitShellCommandSegments(line: string): CommandSegment[] {
+  const segments: CommandSegment[] = [];
+  let start = 0;
+  let i = 0;
+  let quote: "'" | '"' | null = null;
+
+  while (i < line.length) {
+    const ch = line[i];
+
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      i++;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (ch === "\\" && i + 1 < line.length) {
+        i += 2;
+        continue;
+      }
+      if (ch === '"') quote = null;
+      i++;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      i++;
+      continue;
+    }
+
+    if (ch === "\\" && i + 1 < line.length) {
+      i += 2;
+      continue;
+    }
+
+    const isDoubleOp = (ch === "&" || ch === "|") && line[i + 1] === ch;
+    if (ch === ";" || isDoubleOp) {
+      segments.push({ text: line.slice(start, i), start });
+      i += isDoubleOp ? 2 : 1;
+      start = i;
+      continue;
+    }
+
+    i++;
+  }
+
+  segments.push({ text: line.slice(start), start });
+  return segments;
+}
+
 function extractCommandCandidate(summary: string): CommandCandidate | null {
   const lines = summary.trimStart().split("\n");
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const rawLine = lines[lineIndex];
-    const trimmedLine = rawLine.trimStart();
-    if (!trimmedLine) continue;
-    if (trimmedLine.startsWith("#")) continue;
+    const segments = splitShellCommandSegments(rawLine);
 
-    const heredocs = parseHeredocSpecs(trimmedLine);
-    const tokens = tokenizeShellWords(trimmedLine);
-    if (!tokens || tokens.length === 0) return null;
+    for (const segment of segments) {
+      const trimmedLine = segment.text.trimStart();
+      if (!trimmedLine) continue;
+      if (trimmedLine.startsWith("#")) break;
 
-    const firstTokenIndex = stripLeadingAssignments(tokens);
-    const firstToken = tokens[firstTokenIndex]?.text;
-    if (firstToken && SETUP_COMMANDS.has(firstToken)) {
-      if (heredocs.length > 0) {
+      const heredocs = parseHeredocSpecs(trimmedLine);
+      const tokens = tokenizeShellWords(trimmedLine);
+      if (!tokens || tokens.length === 0) return null;
+
+      const firstTokenIndex = stripLeadingAssignments(tokens);
+      const firstToken = tokens[firstTokenIndex]?.text;
+      if (firstToken && SETUP_COMMANDS.has(firstToken)) {
+        if (heredocs.length > 0) {
+          const lastHeredocLine = skipHeredocBodies(lines, lineIndex, heredocs);
+          if (lastHeredocLine == null) return null;
+          lineIndex = lastHeredocLine;
+          break;
+        }
+        continue;
+      }
+
+      const commandIndex = unwrapCommandWrappers(tokens, 0);
+      if (commandIndex == null) return null;
+
+      if (isSkippableHeredocPrelude(trimmedLine, tokens[commandIndex].text, heredocs)) {
         const lastHeredocLine = skipHeredocBodies(lines, lineIndex, heredocs);
         if (lastHeredocLine == null) return null;
         lineIndex = lastHeredocLine;
+        break;
       }
-      continue;
+
+      const leadingIndent = segment.text.length - trimmedLine.length;
+      const matchStart = segment.start + leadingIndent + tokens[commandIndex].start;
+      const rest = lines.slice(lineIndex);
+      rest[0] = rawLine.slice(matchStart);
+      return {
+        lines,
+        matchLineIndex: lineIndex,
+        matchStart,
+        candidate: rest.join("\n").trimStart(),
+      };
     }
-
-    const commandIndex = unwrapCommandWrappers(tokens, 0);
-    if (commandIndex == null) return null;
-
-    if (isSkippableHeredocPrelude(trimmedLine, tokens[commandIndex].text, heredocs)) {
-      const lastHeredocLine = skipHeredocBodies(lines, lineIndex, heredocs);
-      if (lastHeredocLine == null) return null;
-      lineIndex = lastHeredocLine;
-      continue;
-    }
-
-    const leadingIndent = rawLine.length - trimmedLine.length;
-    const matchStart = leadingIndent + tokens[commandIndex].start;
-    const rest = lines.slice(lineIndex);
-    rest[0] = rawLine.slice(matchStart);
-    return {
-      lines,
-      matchLineIndex: lineIndex,
-      matchStart,
-      candidate: rest.join("\n").trimStart(),
-    };
   }
 
   return null;
