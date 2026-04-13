@@ -78,17 +78,33 @@ describe("/fast command", () => {
     expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Fast mode is only available for anthropic conversations that support it.");
   });
 
-  test("status check reports current fast mode", () => {
+  test("toggles fast mode when called without arguments", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
     state.provider = "openai";
     state.model = "gpt-5.4";
     state.fastMode = true;
+    state.convId = "conv-openai";
 
     const result = tryCommand("/fast", state);
 
+    expect(result).toEqual({ type: "fast_mode_changed", enabled: false });
+    expect(state.fastMode).toBe(false);
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Fast mode disabled.");
+  });
+
+  test("rejects the deprecated toggle argument", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "openai";
+    state.model = "gpt-5.4";
+    state.fastMode = false;
+
+    const result = tryCommand("/fast toggle", state);
+
     expect(result).toEqual({ type: "handled" });
-    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Fast mode is on.");
+    expect(state.fastMode).toBe(false);
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Usage: /fast [on|off]");
   });
 });
 

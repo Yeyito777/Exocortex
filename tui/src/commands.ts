@@ -486,11 +486,10 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/fast",
-    description: "Enable or disable OpenAI fast mode",
+    description: "Toggle or set OpenAI fast mode",
     args: [
       { name: "on", desc: "Enable fast mode for this conversation" },
       { name: "off", desc: "Disable fast mode for this conversation" },
-      { name: "toggle", desc: "Toggle fast mode for this conversation" },
     ],
     handler: (text, state) => {
       const parts = text.trim().split(/\s+/).filter(Boolean);
@@ -498,17 +497,8 @@ const commands: SlashCommand[] = [
       const supportsFast = providerSupportsFastMode(state);
       const providerLabel = state.provider;
 
-      if (!arg) {
-        const availability = supportsFast
-          ? `Fast mode is ${state.fastMode ? "on" : "off"}.`
-          : `Fast mode is unavailable for provider ${providerLabel}.`;
-        pushSystemMessage(state, availability);
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
-      if (!["on", "off", "toggle"].includes(arg)) {
-        pushSystemMessage(state, "Usage: /fast [on|off|toggle]");
+      if (parts.length > 2 || (arg && !["on", "off"].includes(arg))) {
+        pushSystemMessage(state, "Usage: /fast [on|off]");
         clearPrompt(state);
         return { type: "handled" };
       }
@@ -519,7 +509,7 @@ const commands: SlashCommand[] = [
         return { type: "handled" };
       }
 
-      const enabled = arg === "toggle" ? !state.fastMode : arg === "on";
+      const enabled = arg ? arg === "on" : !state.fastMode;
       if (enabled === state.fastMode) {
         pushSystemMessage(state, `Fast mode already ${enabled ? "on" : "off"}.`);
         clearPrompt(state);
