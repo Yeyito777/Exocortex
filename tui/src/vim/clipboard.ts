@@ -8,7 +8,23 @@
 
 type ClipboardBackend = "xclip" | "xsel" | "wl" | null;
 
+const TEXT_TARGETS = ["UTF8_STRING", "text/plain;charset=utf-8", "text/plain", "STRING", "TEXT"];
+
 let backend: ClipboardBackend | undefined;
+
+function decodeText(bytes: Uint8Array): string {
+  return new TextDecoder().decode(bytes);
+}
+
+function pickTextTarget(availableTargets: string): string | null {
+  const available = new Set(
+    availableTargets
+      .split(/\r?\n/)
+      .map((target) => target.trim())
+      .filter(Boolean),
+  );
+  return TEXT_TARGETS.find((target) => available.has(target)) ?? null;
+}
 
 function detectBackend(): ClipboardBackend {
   if (backend !== undefined) return backend;
@@ -16,10 +32,13 @@ function detectBackend(): ClipboardBackend {
   // Check for Wayland first
   if (process.env.WAYLAND_DISPLAY) {
     try {
-      Bun.spawnSync(["which", "wl-copy"]);
-      backend = "wl";
-      return backend;
-    } catch { /* wl-copy not available */ }
+      const copy = Bun.spawnSync(["which", "wl-copy"]);
+      const paste = Bun.spawnSync(["which", "wl-paste"]);
+      if (copy.exitCode === 0 && paste.exitCode === 0) {
+        backend = "wl";
+        return backend;
+      }
+    } catch { /* wl-copy / wl-paste not available */ }
   }
 
   // X11
@@ -66,14 +85,33 @@ export async function pasteFromClipboard(): Promise<string> {
   try {
     let cmd: string[];
     switch (be) {
-      case "xclip":  cmd = ["xclip", "-selection", "clipboard", "-o"]; break;
-      case "xsel":   cmd = ["xsel", "--clipboard", "--output"]; break;
-      case "wl":     cmd = ["wl-paste", "--no-newline"]; break;
+      case "xclip": {
+        const targets = Bun.spawnSync(["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"]);
+        if (targets.exitCode !== 0) return "";
+        const target = pickTextTarget(decodeText(targets.stdout));
+        if (!target) return "";
+        cmd = ["xclip", "-selection", "clipboard", "-t", target, "-o"];
+        break;
+      }
+      case "xsel":
+        cmd = ["xsel", "--clipboard", "--output"];
+        break;
+      case "wl": {
+        const targets = Bun.spawnSync(["wl-paste", "--list-types"]);
+        if (targets.exitCode !== 0) return "";
+        const target = pickTextTarget(decodeText(targets.stdout));
+        if (!target) return "";
+        cmd = ["wl-paste", "--no-newline", "--type", target];
+        break;
+      }
     }
 
-    const proc = Bun.spawn(cmd, { stdout: "pipe" });
-    const output = await new Response(proc.stdout).text();
-    return output;
+    const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
+    const [output, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+    return exitCode === 0 ? output : "";
   } catch {
     return "";
   }
