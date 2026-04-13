@@ -27,6 +27,13 @@ export function createHandler(server: DaemonServer) {
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     server.broadcast({ type: "usage_update", provider, usage });
   };
+  const describeAvailableModels = (provider: import("./messages").ProviderId): string => {
+    const available = getProvider(provider)?.models.map((model) => model.id) ?? [];
+    return available.length > 0 ? available.join(", ") : "none";
+  };
+  const unknownModelMessage = (provider: import("./messages").ProviderId, model: string): string => {
+    return `Unknown model for provider ${provider}: ${model}. Available models: ${describeAvailableModels(provider)}`;
+  };
   const broadcastToolsAvailable = () => {
     const externalStyles = getExternalToolStyles();
     server.broadcast({
@@ -113,9 +120,15 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Unknown provider: ${provider}` });
           break;
         }
-        const model = cmd.model && (isKnownModel(provider, cmd.model) || allowsCustomModels(provider))
-          ? cmd.model
-          : getDefaultModel(provider);
+        if (cmd.model && !isKnownModel(provider, cmd.model) && !allowsCustomModels(provider)) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: unknownModelMessage(provider, cmd.model),
+          });
+          break;
+        }
+        const model = cmd.model ?? getDefaultModel(provider);
         const effort = normalizeEffort(provider, model, cmd.effort);
         const fastMode = cmd.fastMode === true;
         if (fastMode && !supportsFastMode(provider)) {
@@ -201,7 +214,7 @@ export function createHandler(server: DaemonServer) {
             type: "error",
             reqId: cmd.reqId,
             convId: cmd.convId,
-            message: `Unknown model for provider ${nextProvider}: ${cmd.model}`,
+            message: unknownModelMessage(nextProvider, cmd.model),
           });
           break;
         }
@@ -483,7 +496,19 @@ export function createHandler(server: DaemonServer) {
 
       case "llm_complete": {
         const provider = cmd.provider ?? getDefaultProvider().id;
+        if (!getProvider(provider)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Unknown provider: ${provider}` });
+          break;
+        }
         const model = cmd.model ?? getDefaultModel(provider);
+        if (cmd.model && !isKnownModel(provider, cmd.model) && !allowsCustomModels(provider)) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: unknownModelMessage(provider, cmd.model),
+          });
+          break;
+        }
         // Default must exceed the thinking budget (10000) for non-adaptive
         // models, otherwise all tokens go to thinking and text is empty.
         const maxTokens = cmd.maxTokens ?? 16000;
