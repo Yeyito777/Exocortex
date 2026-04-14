@@ -28,6 +28,7 @@ import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
 import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
+import { applyVoicePlaceholder, voicePlaceholderText } from "./voice";
 
 // ── ANSI positioning (non-color escapes) ────────────────────────────
 
@@ -378,6 +379,11 @@ function renderCursorPosition(
     return;
   }
 
+  if (state.voicePrompt) {
+    out.push(hide_cursor);
+    return;
+  }
+
   if (promptFocused) {
     const cursorScreenRow = firstInputRow + cursorLine;
     out.push(move_to(cursorScreenRow, chatCol + promptLen + cursorCol));
@@ -450,12 +456,19 @@ export function render(state: RenderState): void {
   const maxInputWidth = chatW - promptLen;
   const maxInputRows = Math.min(10, Math.floor((rows - 6) / 2));
 
+  const renderedInputBuffer = applyVoicePlaceholder(state.inputBuffer, state.voicePrompt);
+  const renderedCursorPos = state.voicePrompt
+    ? state.voicePrompt.insertionPos + voicePlaceholderText(state.voicePrompt).length
+    : state.cursorPos;
   const { lines: inputLines, isNewLine, cursorLine, cursorCol, scrollOffset: newPromptScroll } =
-    getInputLines(state.inputBuffer, state.cursorPos, maxInputWidth, maxInputRows, state.promptScrollOffset);
+    getInputLines(renderedInputBuffer, renderedCursorPos, maxInputWidth, maxInputRows, state.promptScrollOffset);
   state.promptScrollOffset = newPromptScroll;
 
-  // Syntax-highlight valid commands and macros in the input lines
-  const coloredInputLines = highlightPromptInput(state, inputLines, state.inputBuffer, maxInputWidth, newPromptScroll);
+  // Syntax-highlight valid commands and macros in the input lines, but leave
+  // the inline voice placeholder unstyled so the spinner remains readable.
+  const coloredInputLines = state.voicePrompt
+    ? inputLines
+    : highlightPromptInput(state, inputLines, state.inputBuffer, maxInputWidth, newPromptScroll);
 
   const inputRowCount = inputLines.length;
 

@@ -25,6 +25,7 @@ import type { UndoState } from "./undo";
 import { createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
 import type { ProviderAuthInfo, QueueTiming } from "./protocol";
+import type { VoicePromptState } from "./voice";
 
 // ── Queue types ────────────────────────────────────────────────────
 
@@ -188,6 +189,8 @@ export interface RenderState {
   editMessagePrompt: EditMessageState | null;
   /** Images pasted from clipboard, waiting to be sent with the next message. */
   pendingImages: ImageAttachment[];
+  /** Active hold-to-talk placeholder rendered inline in the prompt, if any. */
+  voicePrompt: VoicePromptState | null;
   /** Current mouse cursor shape — used to avoid redundant cursor shape OSC writes. */
   mouseCursor: "pointer" | "text" | "hand";
 }
@@ -370,6 +373,7 @@ export function createInitialState(): RenderState {
     queuedMessages: [],
     editMessagePrompt: null,
     pendingImages: [],
+    voicePrompt: null,
     mouseCursor: "pointer",
   };
   // App starts in insert mode — mark entry so first Esc commits the session

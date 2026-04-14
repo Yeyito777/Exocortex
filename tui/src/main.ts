@@ -27,6 +27,8 @@ import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
 import { msUntilNextElapsedSecond } from "./time";
 import type { Event } from "./protocol";
+import { pushUndo } from "./undo";
+import { VoiceRecorder, insertVoiceTranscript } from "./voice";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -36,6 +38,20 @@ let daemon: DaemonClient;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
 let terminalSetUp = false;
+
+const VOICE_RECORDING_REPEAT_INITIAL_GRACE_MS = 1000;
+const VOICE_RECORDING_REPEAT_IDLE_TIMEOUT_MS = 250;
+const VOICE_SPINNER_INTERVAL_MS = 80;
+const VOICE_MIN_RECORDING_MS = 1000;
+
+const voiceSession = {
+  animationTimer: null as ReturnType<typeof setInterval> | null,
+  recorder: null as VoiceRecorder | null,
+  recordingStartedAt: 0,
+  lastSpaceRepeatAt: 0,
+  insertionPos: 0,
+  prefixText: "",
+};
 
 // ── Render scheduling ───────────────────────────────────────────────
 
@@ -68,6 +84,182 @@ function resetStreamTick(): void {
   if (isStreaming(state) && typeof startedAt === "number") {
     streamTickTimer = setTimeout(scheduleRender, msUntilNextElapsedSecond(startedAt));
   }
+}
+
+function isVoicePromptFocused(): boolean {
+  return state.panelFocus === "chat"
+    && state.chatFocus === "prompt"
+    && state.vim.mode === "normal"
+    && !state.queuePrompt
+    && !state.editMessagePrompt
+    && !state.search?.barOpen;
+}
+
+function isVoicePassthroughKey(key: KeyEvent): boolean {
+  return key.type === "ctrl-c";
+}
+
+function stopVoiceAnimation(): void {
+  if (!voiceSession.animationTimer) return;
+  clearInterval(voiceSession.animationTimer);
+  voiceSession.animationTimer = null;
+}
+
+function resetVoiceOverlay(): void {
+  state.voicePrompt = null;
+  stopVoiceAnimation();
+  voiceSession.insertionPos = 0;
+  voiceSession.prefixText = "";
+  voiceSession.recordingStartedAt = 0;
+  voiceSession.lastSpaceRepeatAt = 0;
+}
+
+function deriveVoicePrefixText(insertionPos: number): string {
+  if (insertionPos <= 0) return "";
+  const prevChar = state.inputBuffer[insertionPos - 1];
+  return /\s/.test(prevChar) ? "" : " ";
+}
+
+function maybeStopVoiceRecordingFromIdle(): void {
+  if (!voiceSession.recorder || state.voicePrompt?.phase !== "recording") return;
+  const now = Date.now();
+  if (now - voiceSession.recordingStartedAt < VOICE_RECORDING_REPEAT_INITIAL_GRACE_MS) return;
+  if (now - voiceSession.lastSpaceRepeatAt < VOICE_RECORDING_REPEAT_IDLE_TIMEOUT_MS) return;
+  void stopVoiceRecordingAndTranscribe();
+}
+
+function startVoiceAnimation(): void {
+  if (voiceSession.animationTimer) return;
+  voiceSession.animationTimer = setInterval(() => {
+    if (!state.voicePrompt) {
+      stopVoiceAnimation();
+      return;
+    }
+    state.voicePrompt.frameIndex = (state.voicePrompt.frameIndex + 1) % 10;
+    maybeStopVoiceRecordingFromIdle();
+    scheduleRender();
+  }, VOICE_SPINNER_INTERVAL_MS);
+}
+
+async function startVoiceRecording(insertionPos: number): Promise<void> {
+  if (voiceSession.recorder || state.voicePrompt?.phase === "transcribing") return;
+
+  try {
+    voiceSession.recorder = VoiceRecorder.start();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    resetVoiceOverlay();
+    pushSystemMessage(state, `✗ ${message}`, theme.error);
+    scheduleRender();
+    return;
+  }
+
+  voiceSession.insertionPos = insertionPos;
+  voiceSession.prefixText = deriveVoicePrefixText(insertionPos);
+  voiceSession.recordingStartedAt = Date.now();
+  voiceSession.lastSpaceRepeatAt = voiceSession.recordingStartedAt;
+  state.autocomplete = null;
+  state.voicePrompt = {
+    phase: "recording",
+    frameIndex: 0,
+    insertionPos,
+  };
+  startVoiceAnimation();
+  scheduleRender();
+}
+
+async function stopVoiceRecordingAndTranscribe(): Promise<void> {
+  const recorder = voiceSession.recorder;
+  if (!recorder) return;
+  voiceSession.recorder = null;
+
+  const insertionPos = voiceSession.insertionPos;
+  const prefixText = voiceSession.prefixText;
+  const promptHint = state.inputBuffer.slice(0, insertionPos);
+  const recordingDurationMs = Date.now() - voiceSession.recordingStartedAt;
+
+  state.voicePrompt = {
+    phase: "transcribing",
+    frameIndex: 0,
+    insertionPos,
+  };
+  startVoiceAnimation();
+  scheduleRender();
+
+  let clip: { bytes: Buffer; mimeType: string };
+  try {
+    clip = await recorder.stop();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    resetVoiceOverlay();
+    pushSystemMessage(state, `✗ Voice capture failed: ${message}`, theme.error);
+    scheduleRender();
+    return;
+  }
+
+  if (recordingDurationMs < VOICE_MIN_RECORDING_MS) {
+    resetVoiceOverlay();
+    scheduleRender();
+    return;
+  }
+
+  try {
+    daemon.transcribeAudio(
+      clip.bytes.toString("base64"),
+      clip.mimeType,
+      (text) => {
+        const prevBuffer = state.inputBuffer;
+        const prevCursor = state.cursorPos;
+        resetVoiceOverlay();
+        pushUndo(state.undo, prevBuffer, prevCursor);
+        const next = insertVoiceTranscript(prevBuffer, prevCursor, insertionPos, text, prefixText);
+        state.inputBuffer = next.buffer;
+        state.cursorPos = next.cursorPos;
+        state.autocomplete = null;
+        scheduleRender();
+      },
+      () => {
+        resetVoiceOverlay();
+        scheduleRender();
+      },
+      promptHint,
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    resetVoiceOverlay();
+    pushSystemMessage(state, `✗ Voice transcription failed: ${message}`, theme.error);
+    scheduleRender();
+  }
+}
+
+function cleanupVoiceSession(): void {
+  if (voiceSession.recorder) {
+    voiceSession.recorder.abort();
+    voiceSession.recorder = null;
+  }
+  resetVoiceOverlay();
+}
+
+function handleVoiceKey(key: KeyEvent): boolean {
+  if (state.voicePrompt?.phase === "transcribing") {
+    return !isVoicePassthroughKey(key);
+  }
+
+  if (voiceSession.recorder) {
+    if (key.type === "char" && key.char === " ") {
+      voiceSession.lastSpaceRepeatAt = Date.now();
+      return true;
+    }
+    if (isVoicePassthroughKey(key)) return false;
+    void stopVoiceRecordingAndTranscribe();
+    return true;
+  }
+
+  if (!isVoicePromptFocused()) return false;
+  if (key.type !== "char" || key.char !== " ") return false;
+
+  void startVoiceRecording(state.cursorPos);
+  return true;
 }
 
 // ── Event handler (daemon → TUI) ───────────────────────────────────
@@ -295,6 +487,11 @@ function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
 }
 
 function handleKey(key: KeyEvent): void {
+  if (handleVoiceKey(key)) {
+    scheduleRender();
+    return;
+  }
+
   const result = handleFocusedKey(key, state);
 
   switch (result.type) {
@@ -399,6 +596,11 @@ function handleKey(key: KeyEvent): void {
 }
 
 function handleMouse(ev: MouseEvent): void {
+  if (voiceSession.recorder || state.voicePrompt?.phase === "transcribing") {
+    scheduleRender();
+    return;
+  }
+
   // Motion events: only render if something visual changed (focus switch, drag selection)
   if (ev.action === "motion") {
     const prevFocus = state.panelFocus;
@@ -462,6 +664,7 @@ async function main(): Promise<void> {
   daemon.ping();
 
   daemon.onConnectionLost(() => {
+    cleanupVoiceSession();
     clearPendingAI(state);
     pushSystemMessage(state, "✗ Lost connection to daemon.", theme.error);
     scheduleRender();
@@ -504,6 +707,7 @@ async function main(): Promise<void> {
 function cleanup(): void {
   clearRenderTimer();
   clearStreamTick();
+  cleanupVoiceSession();
   daemon?.disconnect();
   restoreTerminal();
   process.exit(0);

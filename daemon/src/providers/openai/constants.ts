@@ -15,3 +15,4 @@ export const OPENAI_ACCOUNTS_URL = `${CHATGPT_BASE_URL}/backend-api/accounts`;
 export const OPENAI_ACCOUNT_CHECK_URL = `${CHATGPT_BASE_URL}/backend-api/accounts/check/v4-2023-04-27`;
 export const OPENAI_MODELS_URL = `${CHATGPT_BASE_URL}/backend-api/codex/models`;
 export const OPENAI_CODEX_RESPONSES_URL = `${CHATGPT_BASE_URL}/backend-api/codex/responses`;
+export const OPENAI_TRANSCRIBE_URL = `${CHATGPT_BASE_URL}/backend-api/transcribe`;

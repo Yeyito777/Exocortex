@@ -16,6 +16,7 @@ import { getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles } from "./external-tools";
 import { EFFORT_LEVELS } from "./messages";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode } from "./providers/registry";
+import { transcribeAudio } from "./providers/openai/transcription";
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command } from "./protocol";
@@ -525,6 +526,23 @@ export function createHandler(server: DaemonServer) {
             const msg = err instanceof Error ? err.message : String(err);
             log("error", `handler: llm_complete failed: ${msg}`);
             server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `llm_complete failed: ${msg}` });
+          });
+        break;
+      }
+
+      case "transcribe_audio": {
+        log("info", `handler: transcribe_audio (${Math.round(cmd.audioBase64.length * 0.75)} bytes base64-decoded)`);
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+
+        const audioBytes = Buffer.from(cmd.audioBase64, "base64");
+        transcribeAudio(audioBytes, cmd.mimeType)
+          .then((text) => {
+            server.sendTo(client, { type: "transcription_result", reqId: cmd.reqId, text });
+          })
+          .catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            log("error", `handler: transcribe_audio failed: ${msg}`);
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Voice transcription failed: ${msg}` });
           });
         break;
       }

@@ -13,6 +13,8 @@ import { socketPath, isWindows } from "@exocortex/shared/paths";
 export type EventHandler = (event: Event) => void;
 export type LlmCompleteCallback = (text: string) => void;
 export type LlmErrorCallback = (message: string) => void;
+export type TranscriptionCallback = (text: string) => void;
+export type TranscriptionErrorCallback = (message: string) => void;
 
 export class DaemonClient {
   private socket: Socket | null = null;
@@ -22,6 +24,7 @@ export class DaemonClient {
   private socketPath: string;
   private onDisconnect: (() => void) | null = null;
   private llmCallbacks = new Map<string, { onSuccess: LlmCompleteCallback; onError?: LlmErrorCallback }>();
+  private transcriptionCallbacks = new Map<string, { onSuccess: TranscriptionCallback; onError?: TranscriptionErrorCallback }>();
   private nextReqId = 0;
 
   constructor(handler: EventHandler, overrideSocketPath?: string) {
@@ -209,6 +212,18 @@ export class DaemonClient {
     this.send({ type: "llm_complete", reqId, system, userText, provider, model, maxTokens });
   }
 
+  transcribeAudio(
+    audioBase64: string,
+    mimeType: string,
+    onSuccess: TranscriptionCallback,
+    onError?: TranscriptionErrorCallback,
+    prompt?: string,
+  ): void {
+    const reqId = `transcribe_${++this.nextReqId}_${Date.now()}`;
+    this.transcriptionCallbacks.set(reqId, { onSuccess, onError });
+    this.send({ type: "transcribe_audio", reqId, audioBase64, mimeType, prompt });
+  }
+
   // ── Internal ────────────────────────────────────────────────────
 
   private onData(data: Buffer | string): void {
@@ -228,11 +243,22 @@ export class DaemonClient {
             this.llmCallbacks.delete(event.reqId);
             cbs.onSuccess(event.text);
           }
-        } else if (event.type === "error" && event.reqId) {
-          const cbs = this.llmCallbacks.get(event.reqId);
+        } else if (event.type === "transcription_result" && event.reqId) {
+          const cbs = this.transcriptionCallbacks.get(event.reqId);
           if (cbs) {
+            this.transcriptionCallbacks.delete(event.reqId);
+            cbs.onSuccess(event.text);
+          }
+        } else if (event.type === "error" && event.reqId) {
+          const llmCbs = this.llmCallbacks.get(event.reqId);
+          if (llmCbs) {
             this.llmCallbacks.delete(event.reqId);
-            cbs.onError?.(event.message);
+            llmCbs.onError?.(event.message);
+          }
+          const transcriptionCbs = this.transcriptionCallbacks.get(event.reqId);
+          if (transcriptionCbs) {
+            this.transcriptionCallbacks.delete(event.reqId);
+            transcriptionCbs.onError?.(event.message);
           }
         }
         this.handler(event);
