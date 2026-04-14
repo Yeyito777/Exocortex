@@ -10,6 +10,7 @@
  */
 
 import type { ToolDisplayInfo, ExternalToolStyle } from "./messages";
+import { splitTopLevelShellSegments } from "./bashsegments";
 import { theme, hexToAnsi } from "./theme";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -43,11 +44,6 @@ interface CommandCandidate {
   matchLineIndex: number;
   matchStart: number;
   candidate: string;
-}
-
-interface CommandSegment {
-  text: string;
-  start: number;
 }
 
 interface HeredocSpec {
@@ -273,63 +269,12 @@ function skipHeredocBodies(lines: string[], lineIndex: number, specs: HeredocSpe
   return i;
 }
 
-function splitShellCommandSegments(line: string): CommandSegment[] {
-  const segments: CommandSegment[] = [];
-  let start = 0;
-  let i = 0;
-  let quote: "'" | '"' | null = null;
-
-  while (i < line.length) {
-    const ch = line[i];
-
-    if (quote === "'") {
-      if (ch === "'") quote = null;
-      i++;
-      continue;
-    }
-
-    if (quote === '"') {
-      if (ch === "\\" && i + 1 < line.length) {
-        i += 2;
-        continue;
-      }
-      if (ch === '"') quote = null;
-      i++;
-      continue;
-    }
-
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      i++;
-      continue;
-    }
-
-    if (ch === "\\" && i + 1 < line.length) {
-      i += 2;
-      continue;
-    }
-
-    const isDoubleOp = (ch === "&" || ch === "|") && line[i + 1] === ch;
-    if (ch === ";" || isDoubleOp) {
-      segments.push({ text: line.slice(start, i), start });
-      i += isDoubleOp ? 2 : 1;
-      start = i;
-      continue;
-    }
-
-    i++;
-  }
-
-  segments.push({ text: line.slice(start), start });
-  return segments;
-}
-
 function extractCommandCandidate(summary: string): CommandCandidate | null {
   const lines = summary.trimStart().split("\n");
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const rawLine = lines[lineIndex];
-    const segments = splitShellCommandSegments(rawLine);
+    const segments = splitTopLevelShellSegments(rawLine);
 
     for (const segment of segments) {
       const trimmedLine = segment.text.trimStart();

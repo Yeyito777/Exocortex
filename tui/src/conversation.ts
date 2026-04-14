@@ -8,7 +8,8 @@
 import type { Block, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, Message } from "./messages";
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
-import { resolveToolDisplay, resolveBashExternalMatch, type ResolvedToolDisplay } from "./toolstyles";
+import { resolveToolDisplay, resolveBashExternalMatch, type ResolvedToolDisplay, type BashExternalMatch } from "./toolstyles";
+import { splitTopLevelShellSegments } from "./bashsegments";
 import { formatSize, imageLabel } from "./clipboard";
 import { theme } from "./theme";
 import { markdownWordWrap } from "./markdown";
@@ -68,6 +69,17 @@ interface BlockCacheEntry {
   result: WrapResult;
 }
 
+interface RenderLogicalLine {
+  display: ResolvedToolDisplay;
+  text: string;
+  hasLabel: boolean;
+}
+
+interface SegmentedBashRenderOptions {
+  requirePrompts: boolean;
+  stripPromptPrefix: boolean;
+}
+
 const blockRenderCache = new WeakMap<Block, BlockCacheEntry>();
 
 /** Length of the block's mutable content field — used for cache invalidation. */
@@ -104,6 +116,126 @@ function renderBlockCached(
   const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput);
   blockRenderCache.set(block, { contentLen, width: contentWidth, showToolOutput, result });
   return result;
+}
+
+function isPromptedBashTranscript(summary: string): boolean {
+  const lines = summary.trimStart().split("\n");
+  let sawPrompt = false;
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    if (!line.trimStart().startsWith("$ ")) return false;
+    sawPrompt = true;
+  }
+
+  return sawPrompt;
+}
+
+function pushLogicalLine(logical: RenderLogicalLine[], display: ResolvedToolDisplay, detail: string, hasLabel: boolean): void {
+  logical.push({
+    display,
+    text: hasLabel ? (detail ? `${display.label} ${detail}` : display.label) : detail,
+    hasLabel,
+  });
+}
+
+function pushCommandDetail(logical: RenderLogicalLine[], display: ResolvedToolDisplay): void {
+  if (!display.cmd || !display.detail) {
+    pushLogicalLine(logical, display, display.detail, true);
+    return;
+  }
+
+  const cmd = display.cmd;
+  for (const [i, line] of display.detail.split("\n").entries()) {
+    if (i === 0) {
+      pushLogicalLine(logical, display, line, true);
+      continue;
+    }
+
+    const t = line.trimStart();
+    if (t === cmd || t.startsWith(cmd + " ")) {
+      const args = t.slice(cmd.length).trimStart();
+      pushLogicalLine(logical, display, args, true);
+    } else {
+      pushLogicalLine(logical, display, line, false);
+    }
+  }
+}
+
+function appendMatchedBashSegment(
+  logical: RenderLogicalLine[],
+  bashDisplay: ResolvedToolDisplay,
+  text: string,
+  match: BashExternalMatch | null,
+): void {
+  if (match && match.matchLineIndex === 0) {
+    const prefix = match.lines[0]?.slice(0, match.matchStart).trimEnd() ?? "";
+    if (prefix.trim()) pushLogicalLine(logical, bashDisplay, prefix, true);
+    pushCommandDetail(logical, match.display);
+    return;
+  }
+
+  pushLogicalLine(logical, bashDisplay, text, true);
+}
+
+function renderSegmentedBashLines(
+  summary: string,
+  toolRegistry: ToolDisplayInfo[],
+  externalToolStyles: ExternalToolStyle[],
+  options: SegmentedBashRenderOptions,
+): RenderLogicalLine[] | null {
+  if (options.requirePrompts && !isPromptedBashTranscript(summary)) return null;
+
+  const rawLines = summary.trimStart().split("\n");
+  const parsedLines = rawLines.map((rawLine) => {
+    const trimmed = rawLine.trimStart();
+    const commandLine = options.stripPromptPrefix && trimmed.startsWith("$ ")
+      ? trimmed.slice(2)
+      : rawLine;
+    const segments = splitTopLevelShellSegments(commandLine);
+    const matches = segments.map((segment) => {
+      const text = segment.text.trim();
+      return text ? resolveBashExternalMatch(text, externalToolStyles) : null;
+    });
+    const nonEmptySegments = segments.filter(segment => segment.text.trim());
+    return { rawLine, commandLine, segments, matches, nonEmptySegments };
+  });
+
+  if (!options.requirePrompts) {
+    const hasMixedLine = parsedLines.some(({ nonEmptySegments, matches }) =>
+      nonEmptySegments.length > 1 && matches.some(Boolean));
+    if (!hasMixedLine) return null;
+  }
+
+  const logical: RenderLogicalLine[] = [];
+  const bashDisplay = resolveToolDisplay("bash", "", toolRegistry, []);
+
+  for (const { rawLine, commandLine, segments, matches, nonEmptySegments } of parsedLines) {
+    if (!rawLine.trim()) {
+      pushLogicalLine(logical, bashDisplay, "", false);
+      continue;
+    }
+
+    const lineText = options.stripPromptPrefix ? commandLine : rawLine;
+    if (!options.requirePrompts && nonEmptySegments.length <= 1) {
+      appendMatchedBashSegment(logical, bashDisplay, lineText, matches.find(Boolean) ?? null);
+      continue;
+    }
+
+    for (const [index, segment] of segments.entries()) {
+      const text = segment.text.trim();
+      if (!text) continue;
+
+      const startIndex = logical.length;
+      appendMatchedBashSegment(logical, bashDisplay, text, matches[index]);
+
+      if (segment.separator && logical.length > startIndex) {
+        logical[logical.length - 1].text += ` ${segment.separator}`;
+      }
+    }
+  }
+
+  return logical;
 }
 
 // ── Block rendering ─────────────────────────────────────────────────
@@ -151,61 +283,44 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
       // Build logical display lines. Each entry carries its own display,
       // so bash blocks can mix plain bash prelude lines with styled
       // external-tool lines without dropping the setup commands.
-      const logical: { display: ResolvedToolDisplay; text: string; hasLabel: boolean }[] = [];
-      const pushLogical = (entryDisplay: ResolvedToolDisplay, detail: string, hasLabel: boolean) => {
-        logical.push({
-          display: entryDisplay,
-          text: hasLabel ? (detail ? `${entryDisplay.label} ${detail}` : entryDisplay.label) : detail,
-          hasLabel,
-        });
-      };
-      const pushCommandDetail = (entryDisplay: ResolvedToolDisplay) => {
-        if (!entryDisplay.cmd || !entryDisplay.detail) {
-          pushLogical(entryDisplay, entryDisplay.detail, true);
-          return;
+      const logical = block.toolName === "bash"
+        ? renderSegmentedBashLines(block.summary, toolRegistry, externalToolStyles, {
+            requirePrompts: true,
+            stripPromptPrefix: true,
+          })
+          ?? renderSegmentedBashLines(block.summary, toolRegistry, externalToolStyles, {
+            requirePrompts: false,
+            stripPromptPrefix: false,
+          })
+          ?? []
+        : [];
+
+      if (logical.length === 0) {
+        const bashExternal = block.toolName === "bash"
+          ? resolveBashExternalMatch(block.summary, externalToolStyles)
+          : null;
+
+        if (bashExternal) {
+          const bashDisplay = resolveToolDisplay("bash", "", toolRegistry, []);
+
+          for (const [lineIndex, rawLine] of bashExternal.lines.entries()) {
+            if (lineIndex < bashExternal.matchLineIndex) {
+              const trimmed = rawLine.trimStart();
+              if (!trimmed) pushLogicalLine(logical, bashDisplay, "", false);
+              else pushLogicalLine(logical, bashDisplay, rawLine, true);
+              continue;
+            }
+
+            if (lineIndex === bashExternal.matchLineIndex) {
+              const prefix = rawLine.slice(0, bashExternal.matchStart).trimEnd();
+              if (prefix.trim()) pushLogicalLine(logical, bashDisplay, prefix, true);
+              pushCommandDetail(logical, bashExternal.display);
+            }
+            break;
+          }
+        } else {
+          pushCommandDetail(logical, display);
         }
-
-        const cmd = entryDisplay.cmd;
-        for (const [i, line] of entryDisplay.detail.split("\n").entries()) {
-          if (i === 0) {
-            pushLogical(entryDisplay, line, true);
-            continue;
-          }
-
-          const t = line.trimStart();
-          if (t === cmd || t.startsWith(cmd + " ")) {
-            const args = t.slice(cmd.length).trimStart();
-            pushLogical(entryDisplay, args, true);
-          } else {
-            pushLogical(entryDisplay, line, false);
-          }
-        }
-      };
-
-      const bashExternal = block.toolName === "bash"
-        ? resolveBashExternalMatch(block.summary, externalToolStyles)
-        : null;
-
-      if (bashExternal) {
-        const bashDisplay = resolveToolDisplay("bash", "", toolRegistry, []);
-
-        for (const [lineIndex, rawLine] of bashExternal.lines.entries()) {
-          if (lineIndex < bashExternal.matchLineIndex) {
-            const trimmed = rawLine.trimStart();
-            if (!trimmed) pushLogical(bashDisplay, "", false);
-            else pushLogical(bashDisplay, rawLine, true);
-            continue;
-          }
-
-          if (lineIndex === bashExternal.matchLineIndex) {
-            const prefix = rawLine.slice(0, bashExternal.matchStart).trimEnd();
-            if (prefix.trim()) pushLogical(bashDisplay, prefix, true);
-            pushCommandDetail(bashExternal.display);
-          }
-          break;
-        }
-      } else {
-        pushCommandDetail(display);
       }
 
       for (const entry of logical) {
