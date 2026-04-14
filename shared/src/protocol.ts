@@ -372,7 +372,7 @@ export interface AIMessagePayload {
 
 export type DisplayEntry =
   | { type: "system_instructions"; text: string }
-  | { type: "user"; text: string; images?: ImageAttachment[] }
+  | { type: "user"; text: string; images?: ImageAttachment[]; metadata?: MessageMetadata | null }
   | { type: "ai"; blocks: Block[]; metadata: MessageMetadata | null }
   | { type: "system"; text: string; color?: string };
 
@@ -442,6 +442,8 @@ export interface UserMessageEvent {
   type: "user_message";
   convId: string;
   text: string;
+  /** Client-originated timestamp when available; daemon-generated for queued sends. */
+  startedAt?: number;
   images?: ImageAttachment[];
 }
 

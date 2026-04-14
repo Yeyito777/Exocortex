@@ -12,7 +12,7 @@ export * from "@exocortex/shared/model-display";
 
 // ── TUI helpers ─────────────────────────────────────────────────────
 
-import type { AIMessage, Block, ModelId, ConversationSummary } from "@exocortex/shared/messages";
+import { createMessageMetadata, type AIMessage, type Block, type ModelId, type ConversationSummary } from "@exocortex/shared/messages";
 
 /** Resolve the display name for a conversation: title or fallback. */
 export function convDisplayName(
@@ -30,7 +30,7 @@ export function createPendingAI(startedAt: number, model: ModelId): AIMessage {
   return {
     role: "assistant",
     blocks: [],
-    metadata: { startedAt, endedAt: null, model, tokens: 0 },
+    metadata: createMessageMetadata(startedAt, model),
   };
 }
 

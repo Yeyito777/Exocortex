@@ -15,7 +15,7 @@ import { supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import type { StoredMessage, ApiContentBlock } from "./messages";
+import { createMessageMetadata, type StoredMessage, type ApiContentBlock, type ModelId } from "./messages";
 import type { ContentBlock as ProviderContentBlock } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ToolExecutionContext } from "./tools/types";
@@ -78,8 +78,17 @@ function buildUserContent(text: string, images?: ImageAttachment[]): string | Ap
 }
 
 /** Build a stored user message from text + optional images. */
-function buildStoredUserMessage(text: string, images?: ImageAttachment[]): StoredMessage {
-  return { role: "user", content: buildUserContent(text, images), metadata: null };
+function buildStoredUserMessage(
+  text: string,
+  model: ModelId,
+  startedAt: number,
+  images?: ImageAttachment[],
+): StoredMessage {
+  return {
+    role: "user",
+    content: buildUserContent(text, images),
+    metadata: createMessageMetadata(startedAt, model, { endedAt: startedAt }),
+  };
 }
 
 /** Convert API messages to stored-message shape for transient display state. */
@@ -153,7 +162,7 @@ export async function orchestrateSendMessage(
     return;
   }
 
-  conv.messages.push(buildStoredUserMessage(text, images));
+  conv.messages.push(buildStoredUserMessage(text, conv.model, startedAt, images));
   conv.updatedAt = Date.now();
   convStore.bumpToTop(convId);
 
@@ -161,9 +170,9 @@ export async function orchestrateSendMessage(
   // When client is set, it already added the message locally — skip it.
   // When client is null (daemon-initiated, e.g. queued message drain), notify everyone.
   if (client) {
-    server.sendToSubscribersExcept(convId, { type: "user_message", convId, text, images }, client);
+    server.sendToSubscribersExcept(convId, { type: "user_message", convId, text, startedAt, images }, client);
   } else {
-    server.sendToSubscribers(convId, { type: "user_message", convId, text, images });
+    server.sendToSubscribers(convId, { type: "user_message", convId, text, startedAt, images });
   }
 
   const ac = new AbortController();
@@ -394,11 +403,18 @@ export async function orchestrateSendMessage(
       const apiMsgs: import("./messages").ApiMessage[] = [];
       const injectedStored: StoredMessage[] = [];
       for (const qm of drained) {
+        const injectedStartedAt = Date.now();
         // Broadcast to TUI subscribers so they see the queued message appear.
         // Don't push to conv.messages — the agent loop includes injected
         // messages in newMessages, which get pushed on the success/abort path.
-        server.sendToSubscribers(convId, { type: "user_message", convId, text: qm.text, images: qm.images });
-        const storedUser = buildStoredUserMessage(qm.text, qm.images);
+        server.sendToSubscribers(convId, {
+          type: "user_message",
+          convId,
+          text: qm.text,
+          startedAt: injectedStartedAt,
+          images: qm.images,
+        });
+        const storedUser = buildStoredUserMessage(qm.text, conv.model, injectedStartedAt, qm.images);
         apiMsgs.push({ role: "user", content: storedUser.content });
         injectedStored.push(storedUser);
         log("info", `orchestrator: injected next-turn message: "${qm.text.slice(0, 50)}"`);

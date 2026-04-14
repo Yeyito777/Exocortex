@@ -148,6 +148,20 @@ export interface MessageMetadata {
   tokens: number;
 }
 
+/** Build standard message metadata with sensible defaults. */
+export function createMessageMetadata(
+  startedAt: number,
+  model: ModelId,
+  options?: { endedAt?: number | null; tokens?: number },
+): MessageMetadata {
+  return {
+    startedAt,
+    endedAt: options?.endedAt ?? null,
+    model,
+    tokens: options?.tokens ?? 0,
+  };
+}
+
 // ── Messages ────────────────────────────────────────────────────────
 
 export interface UserMessage {

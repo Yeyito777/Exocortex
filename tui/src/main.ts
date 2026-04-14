@@ -18,7 +18,7 @@ import { expandMacros } from "./macros";
 import { render } from "./render";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
 import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, pushSystemMessage, resetToolOutputState } from "./state";
-import { createPendingAI, type ImageAttachment } from "./messages";
+import { createMessageMetadata, createPendingAI, type ImageAttachment } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
 import { confirmQueueMessage, cancelQueuePrompt, clearLocalQueue, removeLocalQueueEntry } from "./queue";
@@ -104,7 +104,7 @@ function enqueuePendingAuthMessage(messageText: string, images?: ImageAttachment
     role: "user",
     text: messageText,
     images,
-    metadata: { startedAt: echoStartedAt, endedAt: null, model: state.model, tokens: 0 },
+    metadata: createMessageMetadata(echoStartedAt, state.model),
   });
 }
 
@@ -265,7 +265,12 @@ function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
   }
 
   const startedAt = Date.now();
-  state.messages.push({ role: "user", text: messageText, images, metadata: null });
+  state.messages.push({
+    role: "user",
+    text: messageText,
+    images,
+    metadata: createMessageMetadata(startedAt, state.model, { endedAt: startedAt }),
+  });
   state.pendingAI = createPendingAI(startedAt, state.model);
 
   if (!state.convId) {

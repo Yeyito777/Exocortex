@@ -227,6 +227,58 @@ describe("/trim", () => {
   });
 });
 
+describe("/time", () => {
+  test("shows the timestamp of the most recent chat message", () => {
+    const state = createInitialState();
+    const ts = Date.UTC(2026, 3, 13, 15, 30, 45);
+    state.messages.push(
+      { role: "user", text: "hello", metadata: { startedAt: ts, endedAt: ts, model: "gpt-5.4", tokens: 0 } },
+    );
+
+    const result = tryCommand("/time", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe(new Date(ts).toLocaleString("en-US"));
+  });
+
+  test("supports indexing messages from the end starting at zero", () => {
+    const state = createInitialState();
+    const first = Date.UTC(2026, 3, 13, 15, 0, 0);
+    const second = Date.UTC(2026, 3, 13, 15, 5, 0);
+    state.messages.push(
+      { role: "user", text: "hello", metadata: { startedAt: first, endedAt: first, model: "gpt-5.4", tokens: 0 } },
+      { role: "assistant", blocks: [{ type: "text", text: "hi" }], metadata: { startedAt: second, endedAt: second + 1_000, model: "gpt-5.4", tokens: 12 } },
+    );
+
+    const result = tryCommand("/time 1", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe(new Date(first).toLocaleString("en-US"));
+  });
+
+  test("counts a streaming assistant message as the latest message", () => {
+    const state = createInitialState();
+    const userTs = Date.UTC(2026, 3, 13, 15, 0, 0);
+    const aiTs = Date.UTC(2026, 3, 13, 15, 1, 0);
+    state.messages.push({ role: "user", text: "hello", metadata: { startedAt: userTs, endedAt: userTs, model: "gpt-5.4", tokens: 0 } });
+    state.pendingAI = { role: "assistant", blocks: [], metadata: { startedAt: aiTs, endedAt: null, model: "gpt-5.4", tokens: 0 } };
+
+    const result = tryCommand("/time", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.streamingTailMessages.at(-1) as { text?: string } | undefined)?.text).toBe(new Date(aiTs).toLocaleString("en-US"));
+  });
+
+  test("reports when there are no chat messages", () => {
+    const state = createInitialState();
+
+    const result = tryCommand("/time", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("No chat messages yet.");
+  });
+});
+
 describe("/login", () => {
   test("selects a provider and returns a provider-scoped login command", () => {
     const state = createInitialState();

@@ -9,9 +9,11 @@
  */
 
 import type { RenderState } from "./state";
+import type { AIMessage, UserMessage } from "./messages";
 import { clearPendingAI, clearStreamingTailMessages, getModelInfo, getProviderInfo, isStreaming, pushSystemMessage } from "./state";
 import type { TrimMode } from "./protocol";
 import { clearPrompt } from "./promptstate";
+import { formatTimestamp } from "./time";
 import {
   DEFAULT_EFFORT,
   DEFAULT_PROVIDER_ORDER,
@@ -214,6 +216,19 @@ function parsePositiveInt(raw: string | undefined): number | null {
   if (!raw || !/^\d+$/.test(raw)) return null;
   const value = Number(raw);
   return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function parseNonNegativeInt(raw: string | undefined): number | null {
+  if (!raw || !/^\d+$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/** Chat-history messages only (user/assistant), with pending AI treated as the latest entry. */
+function conversationalMessages(state: RenderState): Array<UserMessage | AIMessage> {
+  const history = state.messages.filter((msg): msg is UserMessage | AIMessage => msg.role === "user" || msg.role === "assistant");
+  if (state.pendingAI) history.push(state.pendingAI);
+  return history;
 }
 
 function trimHelpText(state: RenderState): string {
@@ -541,6 +556,51 @@ const commands: SlashCommand[] = [
 
       copyToClipboard(info);
       pushSystemMessage(state, "Conversation info copied to clipboard.");
+      clearPrompt(state);
+      return { type: "handled" };
+    },
+  },
+  {
+    name: "/time",
+    description: "Show the timestamp of the last chat message",
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length > 2) {
+        pushSystemMessage(state, "Usage: /time [n]");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      const offset = parts.length === 2 ? parseNonNegativeInt(parts[1]) : 0;
+      if (parts.length === 2 && offset === null) {
+        pushSystemMessage(state, "Usage: /time [n]\n\nn must be a non-negative integer starting at 0.");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      const history = conversationalMessages(state);
+      if (history.length === 0) {
+        pushSystemMessage(state, "No chat messages yet.");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      const indexFromEnd = offset ?? 0;
+      if (indexFromEnd >= history.length) {
+        pushSystemMessage(state, `Only ${history.length} chat message${history.length === 1 ? "" : "s"} available.`);
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      const target = history[history.length - 1 - indexFromEnd];
+      const timestamp = target.metadata?.startedAt;
+      if (typeof timestamp !== "number") {
+        pushSystemMessage(state, "No timestamp available for that message.");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+
+      pushSystemMessage(state, formatTimestamp(timestamp));
       clearPrompt(state);
       return { type: "handled" };
     },

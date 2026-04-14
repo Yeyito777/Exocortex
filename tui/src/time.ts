@@ -1,5 +1,5 @@
 /**
- * Timing helpers for UI refresh scheduling.
+ * Time helpers for UI refresh scheduling and timestamp display.
  */
 
 /**
@@ -12,4 +12,9 @@ export function msUntilNextElapsedSecond(startedAt: number, now = Date.now()): n
   const elapsed = Math.max(0, now - startedAt);
   const remainder = elapsed % 1000;
   return remainder === 0 ? 1000 : 1000 - remainder;
+}
+
+/** Format a timestamp for display in system notices and metadata. */
+export function formatTimestamp(timestamp: number, locale = "en-US"): string {
+  return new Date(timestamp).toLocaleString(locale);
 }

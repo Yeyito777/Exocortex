@@ -8,7 +8,7 @@
 import type { RenderState } from "./state";
 import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, resolveSystemMessageColor, resetToolOutputState, setCurrentConversationToolOutputAvailability, setLoadedConversationToolOutputState } from "./state";
 import { preserveViewportAcrossHistoryMutation, toggleToolOutputPreservingViewport } from "./chatscroll";
-import { DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER, ensureCurrentBlock, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI, replacePendingStreamingTail } from "./messages";
+import { DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER, ensureCurrentBlock, createMessageMetadata, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI, replacePendingStreamingTail } from "./messages";
 import type { ImageAttachment } from "./messages";
 import { syncChosenProvider } from "./providerselection";
 import {
@@ -33,7 +33,7 @@ function pushDisplayEntries(state: RenderState, entries: DisplayEntry[]): void {
   for (const entry of entries) {
     switch (entry.type) {
       case "user":
-        state.messages.push({ role: "user", text: entry.text, images: entry.images, metadata: null });
+        state.messages.push({ role: "user", text: entry.text, images: entry.images, metadata: entry.metadata ?? null });
         break;
       case "ai":
         state.messages.push({
@@ -432,7 +432,14 @@ export function handleEvent(
         if (finalized) state.messages.push(finalized);
       }
 
-      state.messages.push({ role: "user", text: event.text, images: event.images, metadata: null });
+      state.messages.push({
+        role: "user",
+        text: event.text,
+        images: event.images,
+        metadata: typeof event.startedAt === "number"
+          ? createMessageMetadata(event.startedAt, state.model, { endedAt: event.startedAt })
+          : null,
+      });
 
       // Remove matching local shadow — the daemon already injected it
       removeLocalQueueEntry(state, event.convId, event.text);

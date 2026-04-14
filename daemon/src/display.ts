@@ -161,12 +161,21 @@ export function buildDisplayData(
                 sizeBytes: Math.ceil(src.data.length * 3 / 4) - (src.data.match(/=+$/) || [""])[0].length,
               };
             });
-          entries.push({ type: "user", text, images: images.length > 0 ? images : undefined });
+          entries.push({
+            type: "user",
+            text,
+            images: images.length > 0 ? images : undefined,
+            ...(msg.metadata ? { metadata: msg.metadata } : {}),
+          });
           continue;
         }
       }
       flushAI();
-      entries.push({ type: "user", text: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content) });
+      entries.push({
+        type: "user",
+        text: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+        ...(msg.metadata ? { metadata: msg.metadata } : {}),
+      });
     } else if (msg.role === "assistant") {
       if (currentAI) {
         currentAI.blocks.push(...extractBlocks(msg.content));

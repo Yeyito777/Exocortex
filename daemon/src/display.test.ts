@@ -108,6 +108,13 @@ describe("user messages", () => {
     expect(entries[0]).toEqual({ type: "user", text: "Hello!" });
   });
 
+  test("forwards user metadata when present", () => {
+    const meta = { startedAt: 1_000, endedAt: 1_000, model: "sonnet", tokens: 0 } as const;
+    const { entries } = build([{ role: "user", content: "Hello!", metadata: meta }]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toEqual({ type: "user", text: "Hello!", metadata: meta });
+  });
+
   test("array content without tool_results or images → JSON.stringify fallback", () => {
     const content: ApiContentBlock[] = [{ type: "text", text: "hi" }];
     const { entries } = build([{ role: "user", content, metadata: null }]);
