@@ -135,6 +135,10 @@ function buildContextPressureWarning(inputTokens: number, contextLimit: number):
   return { usage, hint };
 }
 
+export function shouldInjectContextPressureWarning(toolCalls: ApiToolCall[]): boolean {
+  return !toolCalls.some((toolCall) => toolCall.name === "context");
+}
+
 // ── Agent loop ──────────────────────────────────────────────────────
 
 export async function runAgentLoop(
@@ -277,6 +281,8 @@ export async function runAgentLoop(
 
     log("info", `agent: round ${round}: ${result.toolCalls.length} tool call(s): ${result.toolCalls.map(tc => tc.name).join(", ")}`);
 
+    const shouldWarnForThisRound = shouldInjectContextPressureWarning(result.toolCalls);
+
     // ── Emit tool call blocks ─────────────────────────────────────
     for (const tc of result.toolCalls) {
       const block: ToolCallBlock = {
@@ -341,8 +347,9 @@ export async function runAgentLoop(
 
     // ── Context pressure warning ──────────────────────────────────
     // Inject a text block into the tool_result message whenever the
-    // conversation is at or above 80% of the model's maximum context.
-    if (lastInputTokens > 0) {
+    // conversation is at or above 80% of the model's maximum context,
+    // except on rounds already using the context tool.
+    if (shouldWarnForThisRound && lastInputTokens > 0) {
       const contextLimit = getMaxContext(provider, model);
       if (contextLimit == null || contextLimit <= 0) {
         log("warn", `agent: skipping context pressure warning, unknown max context for ${provider}/${model}`);
