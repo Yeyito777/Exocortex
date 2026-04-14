@@ -77,6 +77,28 @@ function highlightPromptLine(
   return line;
 }
 
+function colorPlainPromptRange(
+  line: string,
+  wrappedLineIdx: number,
+  rangeStart: number,
+  rangeEndExclusive: number,
+  offsets: number[],
+  color: string,
+): string {
+  if (wrappedLineIdx >= offsets.length) return line;
+  const lineStart = offsets[wrappedLineIdx];
+  const lineEndExclusive = lineStart + line.length;
+  const overlapStart = Math.max(rangeStart, lineStart);
+  const overlapEndExclusive = Math.min(rangeEndExclusive, lineEndExclusive);
+  if (overlapStart >= overlapEndExclusive) return line;
+
+  const relStart = overlapStart - lineStart;
+  const relEnd = overlapEndExclusive - lineStart;
+  return line.slice(0, relStart)
+    + color + line.slice(relStart, relEnd) + theme.reset
+    + line.slice(relEnd);
+}
+
 // ── Image indicator ────────────────────────────────────────────────
 
 function renderImageIndicator(images: ImageAttachment[], width: number): string {
@@ -461,10 +483,25 @@ export function render(state: RenderState): void {
     getInputLines(renderedPrompt.buffer, renderedPrompt.cursorPos, maxInputWidth, maxInputRows, state.promptScrollOffset);
   state.promptScrollOffset = newPromptScroll;
 
-  // Syntax-highlight valid commands and macros in the input lines, but leave
-  // the inline voice placeholder unstyled so the spinner remains readable.
+  // Syntax-highlight valid commands and macros in the input lines. When voice
+  // input is active, keep the typed text plain and color only the inline voice
+  // placeholder so the spinner stands out from surrounding prompt text.
   const coloredInputLines = state.voicePrompt
-    ? inputLines
+    ? (() => {
+      const placeholder = renderedPrompt.buffer.slice(
+        state.voicePrompt.insertionPos,
+        renderedPrompt.cursorPos,
+      );
+      const offsets = wrappedLineOffsets(renderedPrompt.buffer, maxInputWidth);
+      return inputLines.map((line, idx) => colorPlainPromptRange(
+        line,
+        newPromptScroll + idx,
+        state.voicePrompt!.insertionPos,
+        state.voicePrompt!.insertionPos + placeholder.length,
+        offsets,
+        theme.accent,
+      ));
+    })()
     : highlightPromptInput(state, inputLines, state.inputBuffer, maxInputWidth, newPromptScroll);
 
   const inputRowCount = inputLines.length;
