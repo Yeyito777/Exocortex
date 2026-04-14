@@ -166,7 +166,7 @@ export async function runAgentLoop(
   // Context pressure warning — injected as a text block in tool result messages.
   // This only appears on tool-use turns because it is appended to the
   // tool_result message seen by the model and rendered inline by the TUI.
-  let contextWarningFired = false;
+  // Re-evaluate it after every qualifying tool round while context remains hot.
 
   // Expose state for abort recovery
   const state = options.state;
@@ -340,9 +340,9 @@ export async function runAgentLoop(
     }
 
     // ── Context pressure warning ──────────────────────────────────
-    // Inject a text block into the tool_result message once the
-    // conversation reaches 80% of the model's maximum context.
-    if (!contextWarningFired && lastInputTokens > 0) {
+    // Inject a text block into the tool_result message whenever the
+    // conversation is at or above 80% of the model's maximum context.
+    if (lastInputTokens > 0) {
       const contextLimit = getMaxContext(provider, model);
       if (contextLimit == null || contextLimit <= 0) {
         log("warn", `agent: skipping context pressure warning, unknown max context for ${provider}/${model}`);
@@ -353,7 +353,6 @@ export async function runAgentLoop(
           allBlocks.push({ type: "text", text: warning.hint });
           callbacks.onBlockStart("text");
           callbacks.onTextChunk(warning.hint);
-          contextWarningFired = true;
           log("info", `agent: injected context pressure warning (threshold=${Math.round(CONTEXT_WARNING_FRACTION * 100)}%, ${warning.usage})`);
         }
       }
