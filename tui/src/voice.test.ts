@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyVoicePlaceholder, chooseLinuxRecorderCommand, insertVoiceTranscript, voicePlaceholderText, type VoicePromptState } from "./voice";
+import { applyVoicePlaceholder, chooseLinuxRecorderCommand, getRenderedVoicePrompt, insertVoiceTranscript, voicePlaceholderText, type VoicePromptState } from "./voice";
 
 describe("voice prompt helpers", () => {
   test("renders the requested spinner frames for recording and transcription", () => {
@@ -13,6 +13,14 @@ describe("voice prompt helpers", () => {
   test("injects the placeholder inline at the insertion point", () => {
     const voice: VoicePromptState = { phase: "recording", frameIndex: 1, insertionPos: 5 };
     expect(applyVoicePlaceholder("hello world", voice)).toBe("hello⠙ Listening… world");
+  });
+
+  test("computes the rendered cursor position for an inline placeholder", () => {
+    const voice: VoicePromptState = { phase: "transcribing", frameIndex: 0, insertionPos: 5 };
+    expect(getRenderedVoicePrompt("hello", 5, voice)).toEqual({
+      buffer: "hello⠋ Transcribing…",
+      cursorPos: "hello⠋ Transcribing…".length,
+    });
   });
 
   test("inserts the final transcript back into the prompt", () => {

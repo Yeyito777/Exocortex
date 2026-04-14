@@ -217,11 +217,10 @@ export class DaemonClient {
     mimeType: string,
     onSuccess: TranscriptionCallback,
     onError?: TranscriptionErrorCallback,
-    prompt?: string,
   ): void {
     const reqId = `transcribe_${++this.nextReqId}_${Date.now()}`;
     this.transcriptionCallbacks.set(reqId, { onSuccess, onError });
-    this.send({ type: "transcribe_audio", reqId, audioBase64, mimeType, prompt });
+    this.send({ type: "transcribe_audio", reqId, audioBase64, mimeType });
   }
 
   // ── Internal ────────────────────────────────────────────────────

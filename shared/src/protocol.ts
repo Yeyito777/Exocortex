@@ -212,8 +212,6 @@ export interface TranscribeAudioCommand {
   audioBase64: string;
   /** MIME type for the uploaded audio. */
   mimeType: string;
-  /** Optional transcript hint derived from the surrounding prompt text. */
-  prompt?: string;
 }
 
 export interface LoginCommand {

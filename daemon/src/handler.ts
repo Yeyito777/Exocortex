@@ -531,10 +531,10 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "transcribe_audio": {
-        log("info", `handler: transcribe_audio (${Math.round(cmd.audioBase64.length * 0.75)} bytes base64-decoded)`);
+        const audioBytes = Buffer.from(cmd.audioBase64, "base64");
+        log("info", `handler: transcribe_audio (${audioBytes.length} bytes)`);
         server.sendTo(client, { type: "ack", reqId: cmd.reqId });
 
-        const audioBytes = Buffer.from(cmd.audioBase64, "base64");
         transcribeAudio(audioBytes, cmd.mimeType)
           .then((text) => {
             server.sendTo(client, { type: "transcription_result", reqId: cmd.reqId, text });

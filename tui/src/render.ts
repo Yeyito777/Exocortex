@@ -28,7 +28,7 @@ import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
 import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
-import { applyVoicePlaceholder, voicePlaceholderText } from "./voice";
+import { getRenderedVoicePrompt } from "./voice";
 
 // ── ANSI positioning (non-color escapes) ────────────────────────────
 
@@ -456,12 +456,9 @@ export function render(state: RenderState): void {
   const maxInputWidth = chatW - promptLen;
   const maxInputRows = Math.min(10, Math.floor((rows - 6) / 2));
 
-  const renderedInputBuffer = applyVoicePlaceholder(state.inputBuffer, state.voicePrompt);
-  const renderedCursorPos = state.voicePrompt
-    ? state.voicePrompt.insertionPos + voicePlaceholderText(state.voicePrompt).length
-    : state.cursorPos;
+  const renderedPrompt = getRenderedVoicePrompt(state.inputBuffer, state.cursorPos, state.voicePrompt);
   const { lines: inputLines, isNewLine, cursorLine, cursorCol, scrollOffset: newPromptScroll } =
-    getInputLines(renderedInputBuffer, renderedCursorPos, maxInputWidth, maxInputRows, state.promptScrollOffset);
+    getInputLines(renderedPrompt.buffer, renderedPrompt.cursorPos, maxInputWidth, maxInputRows, state.promptScrollOffset);
   state.promptScrollOffset = newPromptScroll;
 
   // Syntax-highlight valid commands and macros in the input lines, but leave

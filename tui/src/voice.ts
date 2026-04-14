@@ -39,6 +39,18 @@ export function applyVoicePlaceholder(
   return buffer.slice(0, voice.insertionPos) + placeholder + buffer.slice(voice.insertionPos);
 }
 
+export function getRenderedVoicePrompt(
+  buffer: string,
+  cursorPos: number,
+  voice: VoicePromptState | null,
+): { buffer: string; cursorPos: number } {
+  if (!voice) return { buffer, cursorPos };
+  return {
+    buffer: applyVoicePlaceholder(buffer, voice),
+    cursorPos: voice.insertionPos + voicePlaceholderText(voice).length,
+  };
+}
+
 export function insertVoiceTranscript(
   buffer: string,
   cursorPos: number,
