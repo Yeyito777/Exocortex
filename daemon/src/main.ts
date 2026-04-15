@@ -84,21 +84,46 @@ async function startDaemon(): Promise<void> {
   const server = new DaemonServer(SOCKET_PATH, (client, cmd) => commandHandler?.(client, cmd));
   commandHandler = createHandler(server);
 
+  const formatFatal = (err: unknown): string => err instanceof Error ? (err.stack ?? err.message) : String(err);
+
   // Graceful shutdown
-  const shutdown = async () => {
-    log("info", "exocortexd: shutting down");
-    stopWatchdog();
-    if (!isWindows) {
-      stopScheduler();
-      await stopExternalToolsAsync();
-    }
-    convStore.flushAll();
-    await server.stop();
-    try { unlinkSync(PID_PATH); } catch { /* best-effort cleanup */ }
-    process.exit(0);
+  let shutdownPromise: Promise<never> | null = null;
+  const shutdown = (exitCode = 0, reason = "shutdown"): Promise<never> => {
+    if (shutdownPromise) return shutdownPromise;
+
+    shutdownPromise = (async () => {
+      log("info", `exocortexd: shutting down (${reason})`);
+      stopWatchdog();
+      if (!isWindows) {
+        stopScheduler();
+        await stopExternalToolsAsync();
+      }
+      convStore.flushAll();
+      await server.stop();
+      try { unlinkSync(PID_PATH); } catch { /* best-effort cleanup */ }
+      process.exit(exitCode);
+    })().catch((err) => {
+      log("error", `exocortexd: shutdown failed: ${formatFatal(err)}`);
+      try { unlinkSync(PID_PATH); } catch { /* best-effort cleanup */ }
+      process.exit(exitCode || 1);
+    }) as Promise<never>;
+
+    return shutdownPromise;
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+
+  process.on("SIGINT", () => { void shutdown(0, "SIGINT"); });
+  process.on("SIGTERM", () => { void shutdown(0, "SIGTERM"); });
+  process.on("uncaughtException", (err) => {
+    log("error", `exocortexd: uncaught exception: ${formatFatal(err)}`);
+    console.error(`\n  ✗ Uncaught exception: ${err instanceof Error ? err.message : String(err)}\n`);
+    void shutdown(1, "uncaughtException");
+  });
+  process.on("unhandledRejection", (reason) => {
+    log("error", `exocortexd: unhandled rejection: ${formatFatal(reason)}`);
+    console.error(`\n  ✗ Unhandled rejection: ${reason instanceof Error ? reason.message : String(reason)}\n`);
+    void shutdown(1, "unhandledRejection");
+  });
+
   // Windows doesn't deliver SIGTERM — ensure cleanup runs on exit regardless
   process.on("exit", () => {
     try { unlinkSync(PID_PATH); } catch { /* best-effort */ }

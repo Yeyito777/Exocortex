@@ -1,9 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { spawn } from "child_process";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
+import { join } from "path";
 import type { LoadedTool, Manifest } from "./external-tools";
-import { buildDaemonSpawnSpec, getExternalToolWatchTargets, getToolReloadKey, rewriteExternalToolShellCommand } from "./external-tools";
+import {
+  buildDaemonSpawnSpec,
+  getDaemonStatePaths,
+  getExternalToolWatchTargets,
+  getToolReloadKey,
+  isLikelyManagedDaemonPid,
+  reapStaleManagedDaemonPid,
+  rewriteExternalToolShellCommand,
+} from "./external-tools";
 
 function makeTool(overrides: {
   manifest?: Partial<Manifest>;
@@ -23,6 +32,29 @@ function makeTool(overrides: {
   };
 }
 
+async function waitForPidExit(pid: number, timeoutMs = 4_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await Bun.sleep(50);
+  }
+  throw new Error(`pid ${pid} still alive after ${timeoutMs}ms`);
+}
+
+function spawnDetachedSleep(cwd: string): number {
+  const child = spawn("bash", ["-lc", "exec sleep 30"], {
+    cwd,
+    stdio: "ignore",
+    detached: true,
+  });
+  if (!child.pid) throw new Error("failed to spawn detached sleep");
+  return child.pid;
+}
+
 describe("buildDaemonSpawnSpec", () => {
   test("returns null for blank commands", () => {
     expect(buildDaemonSpawnSpec("")).toBeNull();
@@ -34,6 +66,51 @@ describe("buildDaemonSpawnSpec", () => {
       cmd: "bash",
       args: ["-lc", 'python -m app --name "my bot"'],
     });
+  });
+});
+
+describe("managed daemon state", () => {
+  test("derives service log and pid file paths under config/", () => {
+    expect(getDaemonStatePaths("/tmp/tools/discord")).toEqual({
+      configDir: "/tmp/tools/discord/config",
+      logPath: "/tmp/tools/discord/config/service.log",
+      pidPath: "/tmp/tools/discord/config/service.pid",
+    });
+  });
+
+  test("recognizes detached daemon pids rooted in a tool dir", async () => {
+    if (process.platform === "win32") return;
+
+    const root = mkdtempSync(join(tmpdir(), "exo-daemon-pid-"));
+    const pid = spawnDetachedSleep(root);
+    try {
+      expect(isLikelyManagedDaemonPid(pid, root)).toBe(true);
+      expect(isLikelyManagedDaemonPid(pid, join(root, "other"))).toBe(false);
+    } finally {
+      try { process.kill(-pid, "SIGKILL"); } catch { /* already dead */ }
+      await waitForPidExit(pid);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("reaps stale daemon pids recorded in service.pid", async () => {
+    if (process.platform === "win32") return;
+
+    const root = mkdtempSync(join(tmpdir(), "exo-daemon-reap-"));
+    const { configDir, pidPath } = getDaemonStatePaths(root);
+    mkdirSync(configDir, { recursive: true });
+
+    const pid = spawnDetachedSleep(root);
+    writeFileSync(pidPath, `${pid}\n`);
+
+    try {
+      expect(await reapStaleManagedDaemonPid(root, "discord")).toBe(true);
+      expect(existsSync(pidPath)).toBe(false);
+      await waitForPidExit(pid);
+    } finally {
+      try { process.kill(-pid, "SIGKILL"); } catch { /* already dead */ }
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

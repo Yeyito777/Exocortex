@@ -22,7 +22,7 @@
  * to connected clients.
  */
 
-import { readFileSync, readdirSync, statSync, watch, existsSync, mkdirSync, openSync, closeSync } from "fs";
+import { readFileSync, readdirSync, statSync, watch, existsSync, mkdirSync, openSync, closeSync, writeFileSync, unlinkSync, readlinkSync, realpathSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { spawn, type ChildProcess } from "child_process";
 import { log } from "./log";
@@ -99,6 +99,7 @@ interface ManagedDaemon {
   restartTimer: ReturnType<typeof setTimeout> | null;
   lastStartTime: number;
   stopping: boolean;
+  starting: boolean;
 }
 
 const _daemons = new Map<string, ManagedDaemon>();
@@ -113,6 +114,135 @@ export function buildDaemonSpawnSpec(command: string): { cmd: string; args: stri
   return { cmd: "bash", args: ["-lc", trimmed] };
 }
 
+export function getDaemonStatePaths(toolDir: string): { configDir: string; logPath: string; pidPath: string } {
+  const configDir = join(toolDir, "config");
+  return {
+    configDir,
+    logPath: join(configDir, "service.log"),
+    pidPath: join(configDir, "service.pid"),
+  };
+}
+
+function clearDaemonPidFile(toolDir: string): void {
+  const { pidPath } = getDaemonStatePaths(toolDir);
+  try {
+    unlinkSync(pidPath);
+  } catch {
+    // already gone / best-effort cleanup
+  }
+}
+
+function resolveExistingPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function writeDaemonPidFile(toolDir: string, pid: number): void {
+  const { configDir, pidPath } = getDaemonStatePaths(toolDir);
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(pidPath, `${pid}\n`);
+}
+
+export function isLikelyManagedDaemonPid(pid: number, toolDir: string): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (process.platform === "win32") return false;
+
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+
+  try {
+    const cwd = resolveExistingPath(readlinkSync(`/proc/${pid}/cwd`));
+    if (cwd !== resolveExistingPath(toolDir)) return false;
+
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+    const closeParen = stat.lastIndexOf(")");
+    if (closeParen === -1) return false;
+    const fields = stat.slice(closeParen + 2).trim().split(/\s+/);
+    const pgid = Number.parseInt(fields[2] ?? "", 10); // state, ppid, pgrp
+    return Number.isInteger(pgid) && pgid === pid;
+  } catch {
+    return false;
+  }
+}
+
+function killProcessGroup(pid: number, label: string): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
+    let bailTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      if (pollTimer) clearInterval(pollTimer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      if (bailTimer) clearTimeout(bailTimer);
+      resolve();
+    };
+
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      settle();
+      return;
+    }
+
+    pollTimer = setInterval(() => {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        settle();
+      }
+    }, 100);
+    pollTimer.unref?.();
+
+    forceKillTimer = setTimeout(() => {
+      log("warn", `external-tools: force-killing ${label} (pgid ${pid})`);
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        // already dead
+      }
+    }, 5_000);
+    forceKillTimer.unref?.();
+
+    bailTimer = setTimeout(() => {
+      log("warn", `external-tools: giving up waiting for ${label} (pid ${pid})`);
+      settle();
+    }, 7_000);
+    bailTimer.unref?.();
+  });
+}
+
+export async function reapStaleManagedDaemonPid(toolDir: string, toolName: string): Promise<boolean> {
+  const { pidPath } = getDaemonStatePaths(toolDir);
+  if (!existsSync(pidPath)) return false;
+
+  let pid: number | null = null;
+  try {
+    pid = Number.parseInt(readFileSync(pidPath, "utf-8").trim(), 10);
+  } catch {
+    // Treat unreadable/corrupt files as stale.
+  }
+
+  if (!pid || !isLikelyManagedDaemonPid(pid, toolDir)) {
+    clearDaemonPidFile(toolDir);
+    return false;
+  }
+
+  log("warn", `external-tools: reaping stale daemon '${toolName}' from previous exocortexd run (pgid ${pid})`);
+  await killProcessGroup(pid, `stale daemon '${toolName}'`);
+  clearDaemonPidFile(toolDir);
+  return true;
+}
+
 function spawnDaemonProcess(managed: ManagedDaemon): void {
   const spec = buildDaemonSpawnSpec(managed.config.command);
   if (!spec) {
@@ -120,10 +250,9 @@ function spawnDaemonProcess(managed: ManagedDaemon): void {
     return;
   }
 
-  // Ensure config/ dir exists for the log file
-  const configDir = join(managed.toolDir, "config");
+  // Ensure config/ dir exists for the log/state files
+  const { configDir, logPath } = getDaemonStatePaths(managed.toolDir);
   mkdirSync(configDir, { recursive: true });
-  const logPath = join(configDir, "service.log");
   const logFd = openSync(logPath, "a");
 
   try {
@@ -137,16 +266,22 @@ function spawnDaemonProcess(managed: ManagedDaemon): void {
     managed.child = child;
     managed.lastStartTime = Date.now();
 
+    if (child.pid) {
+      writeDaemonPidFile(managed.toolDir, child.pid);
+    }
+
     log("info", `external-tools: started daemon '${managed.toolName}' (pid ${child.pid})`);
 
     child.on("error", (err) => {
       log("warn", `external-tools: daemon '${managed.toolName}' spawn error: ${err.message}`);
       managed.child = null;
+      clearDaemonPidFile(managed.toolDir);
       scheduleDaemonRestart(managed);
     });
 
     child.on("exit", (code, signal) => {
       managed.child = null;
+      clearDaemonPidFile(managed.toolDir);
 
       if (managed.stopping) return;
 
@@ -166,6 +301,20 @@ function spawnDaemonProcess(managed: ManagedDaemon): void {
   }
 }
 
+function trySpawnDaemonProcess(managed: ManagedDaemon): void {
+  try {
+    spawnDaemonProcess(managed);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    managed.child = null;
+    clearDaemonPidFile(managed.toolDir);
+    log("warn", `external-tools: failed to start daemon '${managed.toolName}': ${msg}`);
+    if (!managed.stopping) {
+      scheduleDaemonRestart(managed);
+    }
+  }
+}
+
 function scheduleDaemonRestart(managed: ManagedDaemon): void {
   if (managed.stopping) return;
 
@@ -180,30 +329,48 @@ function scheduleDaemonRestart(managed: ManagedDaemon): void {
 
   managed.restartTimer = setTimeout(() => {
     managed.restartTimer = null;
-    if (!managed.stopping) spawnDaemonProcess(managed);
+    if (!managed.stopping) trySpawnDaemonProcess(managed);
   }, delay);
   managed.restartTimer.unref?.();
 }
 
-function startToolDaemon(tool: LoadedTool): void {
+async function startToolDaemon(tool: LoadedTool): Promise<void> {
   if (!tool.manifest.daemon) return;
 
-  const existing = _daemons.get(tool.manifest.name);
-  if (existing?.child) return; // already running
+  let managed = _daemons.get(tool.manifest.name);
+  if (managed?.child || managed?.starting) return; // already running / starting
 
-  const managed: ManagedDaemon = {
-    toolName: tool.manifest.name,
-    toolDir: tool.toolDir,
-    config: tool.manifest.daemon,
-    child: null,
-    restartCount: 0,
-    restartTimer: null,
-    lastStartTime: 0,
-    stopping: false,
-  };
+  if (!managed) {
+    managed = {
+      toolName: tool.manifest.name,
+      toolDir: tool.toolDir,
+      config: tool.manifest.daemon,
+      child: null,
+      restartCount: 0,
+      restartTimer: null,
+      lastStartTime: 0,
+      stopping: false,
+      starting: false,
+    };
+    _daemons.set(tool.manifest.name, managed);
+  } else {
+    managed.toolDir = tool.toolDir;
+    managed.config = tool.manifest.daemon;
+    managed.stopping = false;
+  }
 
-  _daemons.set(tool.manifest.name, managed);
-  spawnDaemonProcess(managed);
+  managed.starting = true;
+  try {
+    await reapStaleManagedDaemonPid(managed.toolDir, managed.toolName);
+    if (!managed.stopping) {
+      trySpawnDaemonProcess(managed);
+    }
+  } finally {
+    managed.starting = false;
+    if (managed.stopping && !managed.child) {
+      _daemons.delete(tool.manifest.name);
+    }
+  }
 }
 
 function stopToolDaemon(name: string): Promise<void> {
@@ -218,6 +385,7 @@ function stopToolDaemon(name: string): Promise<void> {
   }
 
   if (!managed.child || !managed.child.pid) {
+    clearDaemonPidFile(managed.toolDir);
     _daemons.delete(name);
     return Promise.resolve();
   }
@@ -230,9 +398,8 @@ function stopToolDaemon(name: string): Promise<void> {
     const settle = () => {
       if (settled) return;
       settled = true;
-      clearTimeout(forceKillTimer);
-      clearTimeout(bailTimer);
       managed.child = null;
+      clearDaemonPidFile(managed.toolDir);
       _daemons.delete(name);
       resolve();
     };
@@ -242,30 +409,9 @@ function stopToolDaemon(name: string): Promise<void> {
       settle();
     });
 
-    // Send SIGTERM to the entire process group (negative PID)
-    try {
-      process.kill(-pid, "SIGTERM");
-    } catch {
-      // Process group already dead
+    void killProcessGroup(pid, `daemon '${name}'`).then(() => {
       settle();
-      return;
-    }
-
-    // Escalate to SIGKILL after 5s
-    const forceKillTimer = setTimeout(() => {
-      log("warn", `external-tools: force-killing daemon '${name}' (pgid ${pid})`);
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch {
-        // already dead
-      }
-    }, 5_000);
-
-    // Bail-out: resolve even if exit event never fires (7s total)
-    const bailTimer = setTimeout(() => {
-      log("warn", `external-tools: giving up waiting for daemon '${name}' (pid ${pid})`);
-      settle();
-    }, 7_000);
+    });
   });
 }
 
@@ -513,12 +659,12 @@ function applyTools(tools: LoadedTool[]): boolean {
   for (const [name, newTool] of newByName) {
     const oldTool = oldByName.get(name);
     if (!oldTool) {
-      if (newTool.manifest.daemon) startToolDaemon(newTool);
+      if (newTool.manifest.daemon) void startToolDaemon(newTool);
       continue;
     }
 
     if (!oldTool.manifest.daemon && newTool.manifest.daemon) {
-      startToolDaemon(newTool);
+      void startToolDaemon(newTool);
       continue;
     }
 
@@ -562,7 +708,7 @@ export function initExternalTools(onUpdate?: () => void): void {
   // Start declared daemons
   const daemonTools = tools.filter(t => t.manifest.daemon);
   for (const tool of daemonTools) {
-    startToolDaemon(tool);
+    void startToolDaemon(tool);
   }
   if (daemonTools.length > 0) {
     log("info", `external-tools: supervising ${daemonTools.length} daemon(s): ${daemonTools.map(t => t.manifest.name).join(", ")}`);
