@@ -27,6 +27,12 @@ import {
   moveSelection,
   syncSelectedIndex,
 } from "./sidebar";
+import {
+  handleSidebarSearchBarKey,
+  jumpToSidebarSearchMatch,
+  openSidebarCommandBar,
+  openSidebarSearchBar,
+} from "./sidebarsearch";
 import { pushUndo } from "./undo";
 import { placeAtVisibleBottom } from "./historycursor";
 import { dismissAutocomplete } from "./autocomplete";
@@ -103,6 +109,13 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
     const er = handleEditMessageKey(key, state);
     if (er.type === "confirm") return { type: "edit_message_confirm" };
     if (er.type === "cancel")  return { type: "edit_message_cancel" };
+    return { type: "handled" };
+  }
+
+  // ── Sidebar search bar — intercept all keys while open ───────
+  if (state.panelFocus === "sidebar" && state.sidebar.search?.barOpen) {
+    const sr = handleSidebarSearchBarKey(state.sidebar, key);
+    if (sr.type === "abort") return { type: "abort" };
     return { type: "handled" };
   }
 
@@ -256,6 +269,30 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
       && state.vim.mode === "normal"
       && key.type === "char" && key.char && /^[0-9]$/.test(key.char)) {
     return mapSidebarResult(handleSidebarMark(state.sidebar, parseInt(key.char, 10)));
+  }
+
+  // ── Vim-style sidebar search (/ ? n N) ─────────────────────────
+  if (state.panelFocus === "sidebar" && state.sidebar.open && state.vim.mode === "normal"
+      && key.type === "char" && key.char) {
+    if (key.char === "/" || key.char === "?") {
+      openSidebarSearchBar(state.sidebar, key.char === "/" ? "forward" : "backward");
+      return { type: "handled" };
+    }
+    if (key.char === ":") {
+      openSidebarCommandBar(state.sidebar);
+      return { type: "handled" };
+    }
+    if (key.char === "n" && state.sidebar.search?.query) {
+      jumpToSidebarSearchMatch(state.sidebar, state.sidebar.search.direction);
+      return { type: "handled" };
+    }
+    if (key.char === "N" && state.sidebar.search?.query) {
+      jumpToSidebarSearchMatch(
+        state.sidebar,
+        state.sidebar.search.direction === "forward" ? "backward" : "forward",
+      );
+      return { type: "handled" };
+    }
   }
 
   // ── Vim-style chat history search (/ ? n N) ────────────────────
