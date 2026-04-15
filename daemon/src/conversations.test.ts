@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { create, get, getDisplayData, getSummary, getToolOutputs, remove, setModel, setSystemInstructions, trimConversation } from "./conversations";
+import { create, get, getDisplayData, getSummary, getToolOutputs, listRunningConversationIds, remove, setModel, setSystemInstructions, trimConversation } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
@@ -184,6 +184,19 @@ describe("getSummary", () => {
 
     const summary = getSummary(id)!;
     expect(summary.messageCount).toBe(2);
+  });
+});
+
+describe("listRunningConversationIds", () => {
+  test("returns only conversations with active streams", () => {
+    const running = mkId("running");
+    const idle = mkId("idle");
+    create(running, "anthropic", "sonnet");
+    create(idle, "anthropic", "sonnet");
+
+    setActiveJob(running, new AbortController(), Date.now());
+
+    expect(listRunningConversationIds()).toEqual([running]);
   });
 });
 

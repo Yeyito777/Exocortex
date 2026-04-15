@@ -364,6 +364,13 @@ export function listSummaries(): ConversationSummary[] {
   return summaries;
 }
 
+/** List conversation IDs that currently have an in-flight stream. */
+export function listRunningConversationIds(): string[] {
+  return listSummaries()
+    .filter((summary) => summary.streaming)
+    .map((summary) => summary.id);
+}
+
 /** Toggle or set the marked flag on a conversation. */
 export function mark(id: string, marked: boolean): boolean {
   const conv = conversations.get(id);

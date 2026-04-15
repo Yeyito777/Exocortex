@@ -1,18 +1,91 @@
 #!/usr/bin/env bash
 # exocortexd — Exocortex daemon.
 # Thin wrapper that resolves the project root and runs the daemon entry point.
-# Service subcommands (restart, stop, status) go straight to systemctl.
+# Service subcommands use systemctl; restart refuses while conversations are running unless forced.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 SERVICE="exocortex-daemon.service"
+RED=$'\033[31m'
+RESET=$'\033[0m'
+
+print_error() {
+  if [[ -t 2 ]]; then
+    printf '  %s✗%s %s\n' "$RED" "$RESET" "$1" >&2
+  else
+    printf '  ✗ %s\n' "$1" >&2
+  fi
+}
+
+restart_service() {
+  systemctl --user restart "$SERVICE"
+  echo "  ✓ Restarted"
+  systemctl --user status "$SERVICE" --no-pager
+}
+
+get_running_conversations() {
+  (
+    cd "$PROJECT_DIR/daemon"
+    bun run src/main.ts running-conversations
+  )
+}
+
+join_ids() {
+  local joined=""
+  local id
+  for id in "$@"; do
+    if [[ -n "$joined" ]]; then
+      joined+=", "
+    fi
+    joined+="$id"
+  done
+  printf '%s' "$joined"
+}
+
+handle_restart() {
+  local force=0
+
+  while (($# > 0)); do
+    case "$1" in
+      -f|--force)
+        force=1
+        ;;
+      *)
+        print_error "Unknown restart option: $1"
+        echo "    Usage: exocortexd restart [--force|-f]" >&2
+        exit 2
+        ;;
+    esac
+    shift
+  done
+
+  if (( force == 0 )) && systemctl --user is-active --quiet "$SERVICE"; then
+    local running_output
+    if ! running_output="$(get_running_conversations)"; then
+      print_error "Failed to check for running conversations; use --force to override"
+      exit 1
+    fi
+
+    local running_ids=()
+    local line
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && running_ids+=("$line")
+    done <<< "$running_output"
+
+    if ((${#running_ids[@]} > 0)); then
+      print_error "there are conversations running! $(join_ids "${running_ids[@]}") --force to override"
+      exit 1
+    fi
+  fi
+
+  restart_service
+}
 
 case "${1:-}" in
   restart)
-    systemctl --user restart "$SERVICE"
-    echo "  ✓ Restarted"
-    systemctl --user status "$SERVICE" --no-pager
+    shift
+    handle_restart "$@"
     ;;
   stop)
     systemctl --user stop "$SERVICE"

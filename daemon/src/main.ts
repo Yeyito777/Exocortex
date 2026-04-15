@@ -20,6 +20,7 @@ import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
 import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
+import { getRunningConversationIds } from "./control";
 import { startScheduler, stopScheduler, getCronDir, getJobs } from "./scheduler";
 import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
@@ -190,15 +191,36 @@ async function startDaemon(): Promise<void> {
 
 const command = process.argv[2];
 
-if (command === "login") {
-  handleLogin(process.argv[3]).catch((err) => {
-    console.error(`\n  ✗ Login failed: ${err.message}\n`);
-    process.exit(1);
-  });
-} else {
-  startDaemon().catch((err) => {
-    log("error", `exocortexd: fatal: ${err.stack ?? err.message}`);
-    console.error(`\n  ✗ Failed to start: ${err.message}\n`);
-    process.exit(1);
-  });
+async function main(): Promise<void> {
+  if (command === "login") {
+    try {
+      await handleLogin(process.argv[3]);
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`\n  ✗ Login failed: ${message}\n`);
+      process.exit(1);
+    }
+  }
+
+  if (command === "running-conversations") {
+    try {
+      const convIds = await getRunningConversationIds();
+      if (convIds.length > 0) process.stdout.write(`${convIds.join("\n")}\n`);
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`\n  ✗ Failed to query running conversations: ${message}\n`);
+      process.exit(1);
+    }
+  }
+
+  await startDaemon();
 }
+
+main().catch((err) => {
+  const message = err instanceof Error ? err.message : String(err);
+  log("error", `exocortexd: fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+  console.error(`\n  ✗ Failed to start: ${message}\n`);
+  process.exit(1);
+});
