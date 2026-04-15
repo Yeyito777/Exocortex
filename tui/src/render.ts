@@ -17,6 +17,7 @@ import { getViewStart } from "./chatscroll";
 import { renderStatusLine } from "./statusline";
 import { renderTopbar } from "./topbar";
 import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
+import { getSidebarSearchBarViewport } from "./sidebarsearch";
 import { buildMessageLines } from "./conversation";
 import { getInputLines, wrappedLineOffsets } from "./promptline";
 import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar, applyLineBg } from "./terminal";
@@ -392,6 +393,17 @@ function renderCursorPosition(
   chatW: number,
 ): void {
   const { out, chatCol } = ctx;
+
+  if (state.panelFocus === "sidebar" && state.sidebar.search?.barOpen) {
+    const { cursorCol: searchCursorCol } = getSidebarSearchBarViewport(
+      state.sidebar.search,
+      SIDEBAR_WIDTH - 1,
+    );
+    out.push(move_to(state.rows, 1 + searchCursorCol));
+    out.push(cursor_bar);
+    out.push(show_cursor);
+    return;
+  }
 
   if (state.search?.barOpen) {
     const { cursorCol: searchCursorCol } = getSearchBarViewport(state.search, chatW);

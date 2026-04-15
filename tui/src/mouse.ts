@@ -63,7 +63,7 @@ function cursorZone(col: number, row: number, state: RenderState): CursorShape {
   // Sidebar area
   if (sidebar.open && col <= SIDEBAR_WIDTH) {
     // Hand for clickable conversation entries, pointer for chrome
-    return sidebarHitTest(row, sidebar) !== null ? "hand" : "pointer";
+    return sidebarHitTest(row, state.rows, sidebar) !== null ? "hand" : "pointer";
   }
 
   // Message area (chat history) → text
@@ -146,7 +146,7 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
   if (button === 0 && action === "press") {
     if (inSidebar) {
       // Click on a conversation in the sidebar — focus already set above
-      const convIdx = sidebarHitTest(row, sidebar);
+      const convIdx = sidebarHitTest(row, state.rows, sidebar);
       if (convIdx !== null && convIdx < sidebar.conversations.length) {
         focusConversationAt(sidebar, convIdx);
         return { type: "load_conversation", convId: sidebar.conversations[convIdx].id };

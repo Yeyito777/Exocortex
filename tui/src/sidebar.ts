@@ -7,10 +7,22 @@
 
 import type { KeyEvent } from "./input";
 import type { ConversationSummary } from "./messages";
-import { sortConversations, convDisplayName, bottomPinnedOrder, topUnpinnedOrder } from "./messages";
+import { sortConversations, bottomPinnedOrder, topUnpinnedOrder } from "./messages";
 import { resolveAction } from "./keybinds";
 import { theme } from "./theme";
-import { getMarkFromTitle, stripMark, toggleMark } from "./marks";
+import { getMarkFromTitle, toggleMark } from "./marks";
+import type { SidebarSearchState } from "./sidebarsearch";
+import {
+  focusConversationAt as focusSidebarConversationAt,
+  focusConversationById as focusSidebarConversationById,
+  focusNearestVisibleConversation,
+  getActiveSidebarSearchQuery,
+  getSearchableConversationTitle,
+  getSelectedVisibleConversation,
+  getSidebarSearchBarViewport,
+  getVisibleConversationIndices,
+  getVisibleConversationIndicesForQuery,
+} from "./sidebarsearch";
 
 // ── Constants ───────────────────────────────────────────────────────
 
@@ -26,6 +38,7 @@ export interface SidebarState {
   selectedIndex: number;
   scrollOffset: number;
   pendingDeleteId: string | null;
+  search: SidebarSearchState | null;
 }
 
 export function createSidebarState(): SidebarState {
@@ -37,29 +50,18 @@ export function createSidebarState(): SidebarState {
     selectedIndex: 0,
     scrollOffset: 0,
     pendingDeleteId: null,
+    search: null,
   };
 }
 
 // ── Selection helpers ───────────────────────────────────────────────
 
 export function focusConversationAt(sidebar: SidebarState, index: number): void {
-  if (sidebar.conversations.length === 0) {
-    sidebar.selectedIndex = 0;
-    sidebar.selectedId = null;
-    return;
-  }
-
-  const nextIndex = Math.max(0, Math.min(index, sidebar.conversations.length - 1));
-  const nextId = sidebar.conversations[nextIndex]?.id ?? null;
-  sidebar.selectedIndex = nextIndex;
-  sidebar.selectedId = nextId;
+  focusSidebarConversationAt(sidebar, index);
 }
 
 export function focusConversationById(sidebar: SidebarState, convId: string): boolean {
-  const idx = sidebar.conversations.findIndex(c => c.id === convId);
-  if (idx === -1) return false;
-  focusConversationAt(sidebar, idx);
-  return true;
+  return focusSidebarConversationById(sidebar, convId);
 }
 
 /** Remember the last conversation the user actually entered/loaded. */
@@ -76,6 +78,13 @@ export function rememberEnteredConversation(
 export function focusPreviousEnteredConversation(sidebar: SidebarState): boolean {
   if (!sidebar.previousEnteredId) return false;
   return focusConversationById(sidebar, sidebar.previousEnteredId);
+}
+
+function truncateSidebarTitle(text: string, maxWidth: number): string {
+  if (maxWidth <= 0) return "";
+  if (text.length <= maxWidth) return text;
+  if (maxWidth === 1) return "…";
+  return text.slice(0, maxWidth - 1) + "…";
 }
 
 // ── Key handling ────────────────────────────────────────────────────
@@ -117,24 +126,26 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       return { type: "handled" };
 
     case "nav_select":
-    case "submit":
-      if (sidebar.conversations.length > 0) {
-        return { type: "select", convId: sidebar.conversations[sidebar.selectedIndex].id };
+    case "submit": {
+      const selectedConv = getSelectedVisibleConversation(sidebar);
+      if (selectedConv) {
+        return { type: "select", convId: selectedConv.id };
       }
       return { type: "handled" };
+    }
 
     case "delete": {
-      if (sidebar.conversations.length === 0) return { type: "handled" };
-      const selectedConv = sidebar.conversations[sidebar.selectedIndex];
+      const selectedConv = getSelectedVisibleConversation(sidebar);
       if (!selectedConv) return { type: "handled" };
 
       if (sidebar.pendingDeleteId === selectedConv.id) {
         // Second d — confirm deletion
         sidebar.pendingDeleteId = null;
-        sidebar.conversations.splice(sidebar.selectedIndex, 1);
-        // Focus the next conversation (now at the same index after splice),
-        // clamping to the last item when deleting the tail entry.
-        focusConversationAt(sidebar, sidebar.selectedIndex);
+        const deletedIndex = sidebar.selectedIndex;
+        sidebar.conversations.splice(deletedIndex, 1);
+        // Follow the next visible conversation in the filtered view when possible,
+        // clamping to the last remaining visible match when deleting the tail.
+        focusNearestVisibleConversation(sidebar, deletedIndex);
         return { type: "delete_conversation", convId: selectedConv.id };
       }
 
@@ -147,15 +158,13 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       return { type: "undo_delete" };
 
     case "clone": {
-      if (sidebar.conversations.length === 0) return { type: "handled" };
-      const conv = sidebar.conversations[sidebar.selectedIndex];
+      const conv = getSelectedVisibleConversation(sidebar);
       if (!conv) return { type: "handled" };
       return { type: "clone_conversation", convId: conv.id };
     }
 
     case "mark": {
-      if (sidebar.conversations.length === 0) return { type: "handled" };
-      const conv = sidebar.conversations[sidebar.selectedIndex];
+      const conv = getSelectedVisibleConversation(sidebar);
       if (!conv) return { type: "handled" };
       const newMarked = !conv.marked;
       conv.marked = newMarked;
@@ -163,8 +172,7 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
     }
 
     case "pin": {
-      if (sidebar.conversations.length === 0) return { type: "handled" };
-      const conv = sidebar.conversations[sidebar.selectedIndex];
+      const conv = getSelectedVisibleConversation(sidebar);
       if (!conv) return { type: "handled" };
       const newPinned = !conv.pinned;
       conv.pinned = newPinned;
@@ -180,8 +188,7 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
 
     case "move_up":
     case "move_down": {
-      if (sidebar.conversations.length === 0) return { type: "handled" };
-      const conv = sidebar.conversations[sidebar.selectedIndex];
+      const conv = getSelectedVisibleConversation(sidebar);
       if (!conv) return { type: "handled" };
       const direction = action === "move_up" ? "up" : "down";
       const targetIdx = direction === "up"
@@ -228,7 +235,17 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
 }
 
 export function moveSelection(sidebar: SidebarState, delta: number): void {
-  focusConversationAt(sidebar, sidebar.selectedIndex + delta);
+  const visible = getVisibleConversationIndices(sidebar);
+  if (visible.length === 0) return;
+
+  const currentVisibleIndex = visible.indexOf(sidebar.selectedIndex);
+  if (currentVisibleIndex === -1) {
+    focusConversationAt(sidebar, delta >= 0 ? visible[0] : visible[visible.length - 1]);
+    return;
+  }
+
+  const nextVisibleIndex = Math.max(0, Math.min(currentVisibleIndex + delta, visible.length - 1));
+  focusConversationAt(sidebar, visible[nextVisibleIndex]);
 }
 
 /** Jump to the next (delta=1) or previous (delta=-1) conversation with a streaming indicator, wrapping around. */
@@ -253,8 +270,7 @@ function moveToStreaming(sidebar: SidebarState, delta: 1 | -1): void {
  * key 0 clears any mark.
  */
 export function handleSidebarMark(sidebar: SidebarState, key: number): SidebarKeyResult {
-  if (sidebar.conversations.length === 0) return { type: "handled" };
-  const conv = sidebar.conversations[sidebar.selectedIndex];
+  const conv = getSelectedVisibleConversation(sidebar);
   if (!conv) return { type: "handled" };
 
   const newTitle = toggleMark(conv.title, key);
@@ -285,13 +301,22 @@ export function updateConversation(sidebar: SidebarState, summary: ConversationS
 
 /** Resolve selectedId → selectedIndex after list changes. */
 export function syncSelectedIndex(sidebar: SidebarState): void {
+  const activeFilterQuery = getActiveSidebarSearchQuery(sidebar);
+  const visible = getVisibleConversationIndicesForQuery(sidebar, activeFilterQuery);
+
   if (sidebar.selectedId) {
     const idx = sidebar.conversations.findIndex(c => c.id === sidebar.selectedId);
-    if (idx !== -1) {
+    if (idx !== -1 && (!activeFilterQuery || visible.includes(idx) || visible.length === 0)) {
       sidebar.selectedIndex = idx;
       return;
     }
   }
+
+  if (activeFilterQuery && visible.length > 0) {
+    focusConversationAt(sidebar, visible[0]);
+    return;
+  }
+
   // selectedId not found — default to the first non-pinned conversation
   // so the cursor lands in the active (unpinned) section, not on a pinned item.
   const firstUnpinned = sidebar.conversations.findIndex(c => !c.pinned);
@@ -324,19 +349,21 @@ interface DisplayRow {
  * Used by both rendering and mouse hit-testing so the layout is
  * defined in one place.
  */
-function buildDisplayRows(convs: ConversationSummary[]): DisplayRow[] {
-  const pinnedCount = convs.filter(c => c.pinned).length;
+function buildDisplayRows(sidebar: SidebarState): DisplayRow[] {
+  const visibleIndices = getVisibleConversationIndices(sidebar);
+  const pinnedIndices = visibleIndices.filter(index => sidebar.conversations[index]?.pinned);
+  const unpinnedIndices = visibleIndices.filter(index => !sidebar.conversations[index]?.pinned);
   const rows: DisplayRow[] = [];
 
-  if (pinnedCount > 0) {
+  if (pinnedIndices.length > 0) {
     rows.push({ type: "label", text: " Pinned" });
-    for (let i = 0; i < pinnedCount; i++) {
-      rows.push({ type: "entry", convIdx: i });
+    for (const convIdx of pinnedIndices) {
+      rows.push({ type: "entry", convIdx });
     }
-    rows.push({ type: "delimiter" });
+    if (unpinnedIndices.length > 0) rows.push({ type: "delimiter" });
   }
-  for (let i = pinnedCount; i < convs.length; i++) {
-    rows.push({ type: "entry", convIdx: i });
+  for (const convIdx of unpinnedIndices) {
+    rows.push({ type: "entry", convIdx });
   }
 
   return rows;
@@ -352,11 +379,13 @@ function buildDisplayRows(convs: ConversationSummary[]): DisplayRow[] {
  * @param screenRow 1-based screen row
  * @param sidebar current sidebar state
  */
-export function sidebarHitTest(screenRow: number, sidebar: SidebarState): number | null {
+export function sidebarHitTest(screenRow: number, totalRows: number, sidebar: SidebarState): number | null {
   // Rows 1-2 are header and separator — not clickable
   if (screenRow <= 2) return null;
+  // Bottom row is reserved for the search/command bar while open.
+  if (sidebar.search?.barOpen && screenRow === totalRows) return null;
 
-  const displayRows = buildDisplayRows(sidebar.conversations);
+  const displayRows = buildDisplayRows(sidebar);
 
   // Screen row 3 = display row at scrollOffset
   const displayIdx = (screenRow - 3) + sidebar.scrollOffset;
@@ -369,7 +398,7 @@ export function sidebarHitTest(screenRow: number, sidebar: SidebarState): number
 
 /** Scroll the sidebar list by a number of entries (positive = down, negative = up). */
 export function scrollSidebar(sidebar: SidebarState, delta: number): void {
-  const maxOffset = Math.max(0, sidebar.conversations.length - 1);
+  const maxOffset = Math.max(0, buildDisplayRows(sidebar).length - 1);
   sidebar.scrollOffset = Math.max(0, Math.min(sidebar.scrollOffset + delta, maxOffset));
 }
 
@@ -389,9 +418,8 @@ export function renderSidebar(
   // Row 1: header
   const header = " Conversations";
   rows.push(
-    theme.sidebarBg + theme.text + theme.bold +
-    pad(header, innerWidth) +
-    theme.reset + borderBg + borderFg + "│" + theme.reset,
+    theme.sidebarBg + theme.text + theme.bold + pad(header, innerWidth)
+    + theme.reset + borderBg + borderFg + "│" + theme.reset,
   );
 
   // Row 2: separator with ┤ junction
@@ -402,7 +430,7 @@ export function renderSidebar(
 
   // Build display rows: section labels + delimiter + conversation entries
   const convs = sidebar.conversations;
-  const displayRows = buildDisplayRows(convs);
+  const displayRows = buildDisplayRows(sidebar);
 
   // Map selectedIndex (into convs[]) to display row index for scroll tracking
   let selectedDisplayIdx = 0;
@@ -413,7 +441,8 @@ export function renderSidebar(
     }
   }
 
-  const listRows = totalRows - 2;
+  const searchBarRows = sidebar.search?.barOpen ? 1 : 0;
+  const listRows = totalRows - 2 - searchBarRows;
   let scrollOffset = sidebar.scrollOffset;
   if (selectedDisplayIdx < scrollOffset) {
     scrollOffset = selectedDisplayIdx;
@@ -481,10 +510,8 @@ export function renderSidebar(
 
     const iconsWidth = starIconWidth + emojiIconWidth;
     const maxTitle = innerWidth - prefix.length - streamIcon.length - iconsWidth;
-    // Strip the emoji prefix from the display name (it's rendered separately)
-    let title = convDisplayName(conv, "(empty)");
-    if (mark) title = stripMark(title);
-    if (title.length > maxTitle) title = title.slice(0, maxTitle - 1) + "…";
+    const searchableTitle = getSearchableConversationTitle(conv);
+    const title = truncateSidebarTitle(searchableTitle || "(empty)", maxTitle);
 
     const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;
     const fg = isPendingDelete ? theme.error : (isSelected || isCurrent) ? theme.text : theme.muted;
@@ -498,6 +525,14 @@ export function renderSidebar(
     rows.push(
       theme.reset + bg + fg +
       prefix + streamIconColored + starIconColored + emojiIconColored + titleText + " ".repeat(padding) +
+      theme.reset + borderBg + borderFg + "│" + theme.reset,
+    );
+  }
+
+  if (sidebar.search?.barOpen) {
+    const { line } = getSidebarSearchBarViewport(sidebar.search, innerWidth);
+    rows.push(
+      line +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   }
