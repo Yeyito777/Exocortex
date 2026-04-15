@@ -235,32 +235,42 @@ export class DaemonClient {
       if (!line) continue;
       try {
         const event = JSON.parse(line) as Event;
-        // Intercept llm_complete responses — resolve the matching callback
+        let handledByCallback = false;
+
+        // Intercept request-scoped responses so they do not also surface as
+        // generic global events.
         if (event.type === "llm_complete_result" && event.reqId) {
           const cbs = this.llmCallbacks.get(event.reqId);
           if (cbs) {
             this.llmCallbacks.delete(event.reqId);
             cbs.onSuccess(event.text);
+            handledByCallback = true;
           }
         } else if (event.type === "transcription_result" && event.reqId) {
           const cbs = this.transcriptionCallbacks.get(event.reqId);
           if (cbs) {
             this.transcriptionCallbacks.delete(event.reqId);
             cbs.onSuccess(event.text);
+            handledByCallback = true;
           }
         } else if (event.type === "error" && event.reqId) {
           const llmCbs = this.llmCallbacks.get(event.reqId);
           if (llmCbs) {
             this.llmCallbacks.delete(event.reqId);
             llmCbs.onError?.(event.message);
+            handledByCallback = true;
           }
           const transcriptionCbs = this.transcriptionCallbacks.get(event.reqId);
           if (transcriptionCbs) {
             this.transcriptionCallbacks.delete(event.reqId);
             transcriptionCbs.onError?.(event.message);
+            handledByCallback = true;
           }
         }
-        this.handler(event);
+
+        if (!handledByCallback) {
+          this.handler(event);
+        }
       } catch (err) {
         // TUI owns stdout for rendering — stderr is safe for diagnostics.
         console.error("[daemon event error]", err);
