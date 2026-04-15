@@ -276,3 +276,88 @@ describe("sidebar top shortcuts", () => {
     expect(state.panelFocus).toBe("chat");
   });
 });
+
+describe("sidebar visible jumps", () => {
+  function setupSidebarJumpState() {
+    const state = createInitialState();
+    state.rows = 8;
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [
+      conversation("conv-1", 1),
+      conversation("conv-2", 2),
+      conversation("conv-3", 3),
+      conversation("conv-4", 4),
+      conversation("conv-5", 5),
+      conversation("conv-6", 6),
+      conversation("conv-7", 7),
+      conversation("conv-8", 8),
+    ];
+    return state;
+  }
+
+  test("Shift+H jumps to the top visible conversation and repeats by scrolling half a page", () => {
+    const state = setupSidebarJumpState();
+    state.sidebar.scrollOffset = 2;
+    state.sidebar.selectedIndex = 4;
+    state.sidebar.selectedId = "conv-5";
+
+    expect(handleFocusedKey({ type: "char", char: "H" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-3");
+    expect(state.sidebar.scrollOffset).toBe(2);
+
+    expect(handleFocusedKey({ type: "char", char: "H" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-1");
+    expect(state.sidebar.scrollOffset).toBe(0);
+  });
+
+  test("Shift+L jumps to the bottom visible conversation and repeats by scrolling half a page", () => {
+    const state = setupSidebarJumpState();
+    state.sidebar.selectedIndex = 1;
+    state.sidebar.selectedId = "conv-2";
+
+    expect(handleFocusedKey({ type: "char", char: "L" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-6");
+    expect(state.sidebar.scrollOffset).toBe(0);
+
+    expect(handleFocusedKey({ type: "char", char: "L" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-8");
+    expect(state.sidebar.scrollOffset).toBe(2);
+  });
+
+  test("Shift+M jumps to the middle visible conversation", () => {
+    const state = setupSidebarJumpState();
+    state.sidebar.scrollOffset = 1;
+    state.sidebar.selectedIndex = 0;
+    state.sidebar.selectedId = "conv-1";
+
+    expect(handleFocusedKey({ type: "char", char: "M" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-4");
+    expect(state.sidebar.scrollOffset).toBe(1);
+  });
+
+  test("visible jumps skip section chrome and land on actual conversations", () => {
+    const state = createInitialState();
+    state.rows = 6;
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [
+      { ...conversation("conv-1", 1), pinned: true },
+      { ...conversation("conv-2", 2), pinned: true },
+      conversation("conv-3", 3),
+      conversation("conv-4", 4),
+    ];
+    state.sidebar.selectedIndex = 2;
+    state.sidebar.selectedId = "conv-3";
+
+    expect(handleFocusedKey({ type: "char", char: "H" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-1");
+
+    expect(handleFocusedKey({ type: "char", char: "L" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-2");
+  });
+});

@@ -93,6 +93,7 @@ Commands flow client → daemon. Events flow daemon → client.
 | `Ctrl+N`         | Toggle history cursor               |
 | `Ctrl+Shift+O`   | New conversation                    |
 | `Ctrl+O`         | Toggle tool output                  |
+| `Shift+H` / `M` / `L` | In sidebar, jump to top / middle / bottom visible conversation |
 | `Escape`         | Normal mode (vim)                   |
 | `i` / `a`        | Insert mode (vim)                   |
 | `v` / `V`        | Visual / visual-line mode           |

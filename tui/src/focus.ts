@@ -24,6 +24,7 @@ import {
   focusPreviousEnteredConversation,
   handleSidebarKey,
   handleSidebarMark,
+  handleSidebarViewportAction,
   moveSelection,
   syncSelectedIndex,
 } from "./sidebar";
@@ -330,6 +331,11 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
 // ── Sidebar panel (non-vim path) ───────────────────────────────────
 
 function handleSidebarFocused(key: KeyEvent, state: RenderState): KeyResult {
+  const action = resolveAction(key, "navigation");
+  if (handleSidebarViewportAction(action, state.sidebar, state.rows)) {
+    return { type: "handled" };
+  }
+
   const result = handleSidebarKey(key, state.sidebar);
 
   if (result.type === "unhandled") {

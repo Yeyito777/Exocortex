@@ -8,6 +8,7 @@
 import type { KeyEvent } from "./input";
 import type { ConversationSummary } from "./messages";
 import { sortConversations, bottomPinnedOrder, topUnpinnedOrder } from "./messages";
+import type { Action } from "./keybinds";
 import { resolveAction } from "./keybinds";
 import { theme } from "./theme";
 import { getMarkFromTitle, toggleMark } from "./marks";
@@ -105,6 +106,25 @@ export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarK
   const action = resolveAction(key, "navigation");
   if (!action) return { type: "handled" };
   return handleSidebarAction(action, sidebar);
+}
+
+/** Handle sidebar actions that depend on the current viewport height. */
+export function handleSidebarViewportAction(action: Action | null, sidebar: SidebarState, totalRows: number): boolean {
+  if (!action) return false;
+
+  switch (action) {
+    case "sidebar_visible_top":
+      jumpSidebarSelectionToVisibleEdge(sidebar, totalRows, "top");
+      return true;
+    case "sidebar_visible_middle":
+      jumpSidebarSelectionToVisibleMiddle(sidebar, totalRows);
+      return true;
+    case "sidebar_visible_bottom":
+      jumpSidebarSelectionToVisibleEdge(sidebar, totalRows, "bottom");
+      return true;
+    default:
+      return false;
+  }
 }
 
 /** Handle a semantic action on the sidebar — used by both key handler and vim. */
@@ -369,6 +389,93 @@ function buildDisplayRows(sidebar: SidebarState): DisplayRow[] {
   return rows;
 }
 
+function sidebarListRows(totalRows: number, sidebar: SidebarState): number {
+  const searchBarRows = sidebar.search?.barOpen ? 1 : 0;
+  return Math.max(0, totalRows - 2 - searchBarRows);
+}
+
+function findDisplayEntry(
+  displayRows: DisplayRow[],
+  start: number,
+  end: number,
+  step: 1 | -1,
+): number | null {
+  for (let row = start; step > 0 ? row <= end : row >= end; row += step) {
+    if (displayRows[row]?.type === "entry") return displayRows[row].convIdx ?? null;
+  }
+  return null;
+}
+
+/** Vim-like H/L for the sidebar — jump to the top/bottom visible conversation. */
+export function jumpSidebarSelectionToVisibleEdge(
+  sidebar: SidebarState,
+  totalRows: number,
+  edge: "top" | "bottom",
+): void {
+  const displayRows = buildDisplayRows(sidebar);
+  const listRows = sidebarListRows(totalRows, sidebar);
+  if (displayRows.length === 0 || listRows <= 0) return;
+
+  const maxScroll = Math.max(0, displayRows.length - listRows);
+  if (sidebar.scrollOffset > maxScroll) sidebar.scrollOffset = maxScroll;
+
+  const viewStart = sidebar.scrollOffset;
+  const viewEnd = Math.min(viewStart + listRows - 1, displayRows.length - 1);
+
+  if (edge === "top") {
+    let target = findDisplayEntry(displayRows, viewStart, viewEnd, 1);
+    if (target == null) return;
+
+    if (sidebar.selectedIndex === target) {
+      const halfPage = Math.floor(listRows / 2);
+      sidebar.scrollOffset = Math.max(0, sidebar.scrollOffset - halfPage);
+      const nextEnd = Math.min(sidebar.scrollOffset + listRows - 1, displayRows.length - 1);
+      target = findDisplayEntry(displayRows, sidebar.scrollOffset, nextEnd, 1);
+      if (target == null) return;
+    }
+
+    focusConversationAt(sidebar, target);
+  } else {
+    let target = findDisplayEntry(displayRows, viewEnd, viewStart, -1);
+    if (target == null) return;
+
+    if (sidebar.selectedIndex === target) {
+      const halfPage = Math.floor(listRows / 2);
+      sidebar.scrollOffset = Math.min(maxScroll, sidebar.scrollOffset + halfPage);
+      const nextEnd = Math.min(sidebar.scrollOffset + listRows - 1, displayRows.length - 1);
+      target = findDisplayEntry(displayRows, nextEnd, sidebar.scrollOffset, -1);
+      if (target == null) return;
+    }
+
+    focusConversationAt(sidebar, target);
+  }
+
+  sidebar.pendingDeleteId = null;
+}
+
+/** Vim-like M for the sidebar — jump to the middle visible conversation. */
+export function jumpSidebarSelectionToVisibleMiddle(sidebar: SidebarState, totalRows: number): void {
+  const displayRows = buildDisplayRows(sidebar);
+  const listRows = sidebarListRows(totalRows, sidebar);
+  if (displayRows.length === 0 || listRows <= 0) return;
+
+  const maxScroll = Math.max(0, displayRows.length - listRows);
+  if (sidebar.scrollOffset > maxScroll) sidebar.scrollOffset = maxScroll;
+
+  const viewStart = sidebar.scrollOffset;
+  const viewEnd = Math.min(viewStart + listRows - 1, displayRows.length - 1);
+  const midRow = Math.floor((viewStart + viewEnd) / 2);
+
+  let target = findDisplayEntry(displayRows, midRow, viewEnd, 1);
+  if (target == null) {
+    target = findDisplayEntry(displayRows, midRow - 1, viewStart, -1);
+  }
+  if (target == null) return;
+
+  focusConversationAt(sidebar, target);
+  sidebar.pendingDeleteId = null;
+}
+
 // ── Mouse support ──────────────────────────────────────────────────
 
 /**
@@ -441,8 +548,7 @@ export function renderSidebar(
     }
   }
 
-  const searchBarRows = sidebar.search?.barOpen ? 1 : 0;
-  const listRows = totalRows - 2 - searchBarRows;
+  const listRows = sidebarListRows(totalRows, sidebar);
   let scrollOffset = sidebar.scrollOffset;
   if (selectedDisplayIdx < scrollOffset) {
     scrollOffset = selectedDisplayIdx;
