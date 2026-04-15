@@ -13,6 +13,7 @@ import type { RenderState, SearchState } from "./state";
 import { focusHistory } from "./state";
 import { ensureCursorVisible, stripAnsi } from "./historycursor";
 import { theme } from "./theme";
+import { findAllCaseInsensitiveMatchStarts, findCaseInsensitiveMatches, findNextSortedMatch } from "./searchutil";
 import { resetPending } from "./vim/types";
 
 export type SearchDirection = "forward" | "backward";
@@ -63,44 +64,13 @@ function posToRowCol(index: SearchIndex, pos: number): { row: number; col: numbe
   return { row, col };
 }
 
-function findAllMatchStarts(text: string, query: string): number[] {
-  if (!query) return [];
-
-  const matches: number[] = [];
-  const lowerText = text.toLowerCase();
-  const lowerQuery = query.toLowerCase();
-  let pos = 0;
-
-  while (pos <= lowerText.length - lowerQuery.length) {
-    const idx = lowerText.indexOf(lowerQuery, pos);
-    if (idx === -1) break;
-    matches.push(idx);
-    pos = idx + 1; // allow overlapping matches
-  }
-
-  return matches;
-}
-
 function findNextMatch(
   buffer: string,
   query: string,
   fromPos: number,
   direction: SearchDirection,
 ): number | null {
-  const matches = findAllMatchStarts(buffer, query);
-  if (matches.length === 0) return null;
-
-  if (direction === "forward") {
-    for (const matchPos of matches) {
-      if (matchPos > fromPos) return matchPos;
-    }
-    return matches[0];
-  }
-
-  for (let i = matches.length - 1; i >= 0; i--) {
-    if (matches[i] < fromPos) return matches[i];
-  }
-  return matches[matches.length - 1];
+  return findNextSortedMatch(findAllCaseInsensitiveMatchStarts(buffer, query), fromPos, direction);
 }
 
 function moveHistoryCursorToMatch(state: RenderState, pos: number, index: SearchIndex): void {
@@ -331,7 +301,7 @@ export function getActiveSearchQuery(state: RenderState): string | null {
 }
 
 export function findSearchMatches(text: string, query: string): { from: number; to: number }[] {
-  return findAllMatchStarts(text, query).map((from) => ({ from, to: from + query.length }));
+  return findCaseInsensitiveMatches(text, query);
 }
 
 export function getSearchBarViewport(search: SearchState, chatWidth: number): {
