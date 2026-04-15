@@ -65,6 +65,9 @@ export type Action =
   | "sidebar_next"
   | "sidebar_prev"
   | "sidebar_focus_previous"
+  | "sidebar_visible_top"
+  | "sidebar_visible_middle"
+  | "sidebar_visible_bottom"
   | SidebarTopShortcut
   // Streaming navigation
   | "nav_prev_streaming"
@@ -170,6 +173,9 @@ const NAV_BINDS: Record<string, Action> = {
   "char:E":     "move_down",
   "char:c":     "clone",
   "char:u":     "undo_delete",
+  "char:H":     "sidebar_visible_top",
+  "char:M":     "sidebar_visible_middle",
+  "char:L":     "sidebar_visible_bottom",
   "char:{":     "nav_prev_streaming",
   "char:}":     "nav_next_streaming",
 };
