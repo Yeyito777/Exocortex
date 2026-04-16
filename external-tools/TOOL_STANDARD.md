@@ -258,8 +258,13 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt  # if Python
 # Set up config/credentials as needed
 tool-name login
 
-# Uninstall
-rm -rf ~/Workspace/Exocortex/external-tools/tool-name
+# Uninstall (soft-delete)
+mkdir -p ~/Workspace/Exocortex/config/data/trash/external-tools
+trash=~/Workspace/Exocortex/config/data/trash/external-tools/tool-name
+if [ -e "$trash" ]; then
+  trash="$trash-$(date +%Y%m%d-%H%M%S)"
+fi
+mv ~/Workspace/Exocortex/external-tools/tool-name "$trash"
 ```
 
 No symlinks, no config files to edit, no system prompt changes.

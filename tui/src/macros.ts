@@ -45,16 +45,14 @@
  *   }
  */
 
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
+import { repoRoot, externalToolsDir, externalToolsTrashDir } from "@exocortex/shared/paths";
 import type { CompletionItem } from "./commands";
 
-// ── Exocortex root (derived from this file's location) ─────────
+// ── Exocortex paths ──────────────────────────────────────────────
 
-const __filename_ = typeof __filename !== "undefined" ? __filename : fileURLToPath(import.meta.url);
-/** Absolute path to the Exocortex repo root (e.g. /home/user/Workspace/Exocortex). */
-const EXO_ROOT = resolve(dirname(__filename_), "..", "..");
-const TOOLS_DIR = `${EXO_ROOT}/external-tools`;
+const EXO_ROOT = repoRoot();
+const TOOLS_DIR = externalToolsDir();
+const TOOLS_TRASH_DIR = externalToolsTrashDir();
 
 // ── Single source of truth ───────────────────────────────────────
 
@@ -72,12 +70,44 @@ interface MacroDef {
   args?: MacroArg[];
 }
 
+interface ExternalToolSpec {
+  cliName: string;
+  repo: string;
+}
+
+const EXTERNAL_TOOL_SPECS: ExternalToolSpec[] = [
+  { cliName: "discord-cli", repo: "git@github.com:Yeyito777/discord-cli.git" },
+  { cliName: "exo-cli", repo: "https://github.com/Yeyito777/exo-cli.git" },
+  { cliName: "gmail-cli", repo: "https://github.com/Yeyito777/gmail-cli.git" },
+  { cliName: "qutebrowser-cli", repo: "https://github.com/Yeyito777/qutebrowser-cli.git" },
+  { cliName: "twitter-cli", repo: "https://github.com/Yeyito777/twitter-cli.git" },
+  { cliName: "whatsapp-cli", repo: "https://github.com/Yeyito777/whatsapp-cli.git" },
+  { cliName: "xenv-cli", repo: "https://github.com/Yeyito777/xenv-cli.git" },
+];
+
+function externalToolShortName(cliName: string): string {
+  return cliName.replace(/-cli$/, "");
+}
+
+const AVAILABLE_EXTERNAL_TOOLS = EXTERNAL_TOOL_SPECS
+  .map(tool => externalToolShortName(tool.cliName))
+  .join(", ");
+
 /** Build a tool-install expansion string with the dynamic paths. */
-function toolInstall(cliName: string, repo: string): MacroArg {
-  const shortName = cliName.replace(/-cli$/, "");
+function toolInstall(spec: ExternalToolSpec): MacroArg {
+  const { cliName, repo } = spec;
   return {
-    name: shortName, desc: cliName,
+    name: externalToolShortName(cliName), desc: cliName,
     expansion: `Install the ${cliName} tool for yourself. Clone ${repo} into ${TOOLS_DIR}/${cliName}, then follow the README/setup instructions to build and install it. If the tool requires authentication or API tokens, walk me through the setup step by step — ask me for any credentials or config values you need.`,
+  };
+}
+
+/** Build a tool-uninstall expansion string with the dynamic paths. */
+function toolUninstall(spec: ExternalToolSpec): MacroArg {
+  const { cliName } = spec;
+  return {
+    name: externalToolShortName(cliName), desc: cliName,
+    expansion: `Uninstall the ${cliName} tool for yourself. Move ${TOOLS_DIR}/${cliName} into ${TOOLS_TRASH_DIR}/ (create the trash directory if needed, and add a timestamp suffix instead of overwriting if a folder with that name is already there). Do not delete it outright. After moving it, check whether the tool's README mentions any extra cleanup steps and walk me through them if needed.`,
   };
 }
 
@@ -115,20 +145,17 @@ const MACROS: MacroDef[] = [
   {
     name: "/tool",
     desc: "Manage external tools",
-    expansion: "Manage external tools. Use '/tool install <name>' to install a tool.",
+    expansion: "Manage external tools. Use '/tool install <name>' to install a tool or '/tool uninstall <name>' to move one to trash.",
     args: [
       {
         name: "install", desc: "Install an external tool",
-        expansion: `Install an external tool for yourself. Available tools: discord, exo, gmail, qutebrowser, twitter, whatsapp, xenv. Clone the repo into ${TOOLS_DIR}/ and follow the README/setup instructions to build and install it. If the tool requires authentication or API tokens, walk me through the setup step by step — ask me for any credentials or config values you need.`,
-        args: [
-          toolInstall("discord-cli", "git@github.com:Yeyito777/discord-cli.git"),
-          toolInstall("exo-cli", "https://github.com/Yeyito777/exo-cli.git"),
-          toolInstall("gmail-cli", "https://github.com/Yeyito777/gmail-cli.git"),
-          toolInstall("qutebrowser-cli", "https://github.com/Yeyito777/qutebrowser-cli.git"),
-          toolInstall("twitter-cli", "https://github.com/Yeyito777/twitter-cli.git"),
-          toolInstall("whatsapp-cli", "https://github.com/Yeyito777/whatsapp-cli.git"),
-          toolInstall("xenv-cli", "https://github.com/Yeyito777/xenv-cli.git"),
-        ],
+        expansion: `Install an external tool for yourself. Available tools: ${AVAILABLE_EXTERNAL_TOOLS}. Clone the repo into ${TOOLS_DIR}/ and follow the README/setup instructions to build and install it. If the tool requires authentication or API tokens, walk me through the setup step by step — ask me for any credentials or config values you need.`,
+        args: EXTERNAL_TOOL_SPECS.map(toolInstall),
+      },
+      {
+        name: "uninstall", desc: "Uninstall an external tool",
+        expansion: `Uninstall an external tool for yourself. Available tools: ${AVAILABLE_EXTERNAL_TOOLS}. Move the tool directory from ${TOOLS_DIR}/ into ${TOOLS_TRASH_DIR}/ (create the trash directory if needed, and add a timestamp suffix instead of overwriting if a folder with that name already exists). Do not delete it outright. After moving it, check whether the tool's README mentions any extra cleanup steps and walk me through them if needed.`,
+        args: EXTERNAL_TOOL_SPECS.map(toolUninstall),
       },
     ],
   },

@@ -11,7 +11,7 @@
  *
  *   config root/        system.md, theme.json (tracked config)
  *   secrets/            env, credentials.json (never tracked)
- *   data/               conversations/, trash/ (bulk data, never tracked)
+ *   data/               conversations/, trash/, trash/external-tools/ (bulk data, never tracked)
  *   runtime/            PID, socket, logs, usage.json (ephemeral)
  *   cron/               scheduled job scripts (persistent, not tracked)
  *   storage/            fix-auth.md (persistent user-local, not tracked)
@@ -180,9 +180,14 @@ export function conversationsDir(): string {
   return join(dataDir(), "conversations");
 }
 
-/** Trash directory for soft-deleted conversations. Isolated per worktree. */
+/** Trash directory for soft-deleted conversations and other recoverable data. Isolated per worktree. */
 export function trashDir(): string {
   return join(dataDir(), "trash");
+}
+
+/** Trash directory for soft-deleted external tools. Isolated per worktree. */
+export function externalToolsTrashDir(): string {
+  return join(trashDir(), "external-tools");
 }
 
 /** The worktree name if in a linked worktree, null otherwise. */
