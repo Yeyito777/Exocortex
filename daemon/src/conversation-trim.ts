@@ -6,7 +6,7 @@
  */
 
 import type { ApiContentBlock, Conversation, StoredMessage } from "./messages";
-import { isToolResultMessage } from "./messages";
+import { buildHistoryTurnMap, isToolResultMessage } from "./messages";
 import type { TrimMode } from "./protocol";
 
 const TRIMMED_TOOL_RESULT_PLACEHOLDER = "[Output removed by /trim]";
@@ -14,14 +14,6 @@ const TRIMMED_TOOL_RESULT_PLACEHOLDER = "[Output removed by /trim]";
 export interface TrimConversationResult {
   changed: boolean;
   message: string;
-}
-
-function buildHistoryTurnMap(messages: StoredMessage[]): number[] {
-  const map: number[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i].role !== "system" && messages[i].role !== "system_instructions") map.push(i);
-  }
-  return map;
 }
 
 function hasToolUse(message: StoredMessage): boolean {

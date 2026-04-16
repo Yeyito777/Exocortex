@@ -11,14 +11,16 @@ import { log } from "./log";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
 import { buildAnthropicSystemPrompt, buildSystemPrompt } from "./system";
-import { supportsImageInputs } from "./providers/registry";
+import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { createMessageMetadata, type StoredMessage, type ApiContentBlock, type ModelId } from "./messages";
+import { createMessageMetadata, isHistoryMessage, type StoredMessage, type ApiContentBlock, type ModelId } from "./messages";
 import type { ContentBlock as ProviderContentBlock } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ToolExecutionContext } from "./tools/types";
+import { complete } from "./llm";
+import { getInnerLlmSummaryOptions } from "./tools/inner-llm";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -186,11 +188,11 @@ export async function orchestrateSendMessage(
   // Extract per-conversation system instructions (if present)
   const systemInstructionsText = convStore.getSystemInstructions(convId);
 
-  // System messages and system_instructions are persisted but never sent to the AI
+  // System messages and per-conversation instructions are persisted but never sent as API history messages.
   const apiMessages = conv.messages
-    .filter((m) => m.role !== "system" && m.role !== "system_instructions")
+    .filter(isHistoryMessage)
     .map((m) => ({
-      role: m.role as "user" | "assistant",
+      role: m.role,
       content: m.content,
       providerData: m.providerData,
     }));
@@ -228,7 +230,16 @@ export async function orchestrateSendMessage(
       return s.detail || s.label;
     },
     protectedTailCount,
-    toolContext,
+    contextLimit: getMaxContext(conv.provider, conv.model),
+    summarizeWithInnerLlm: async (systemPrompt, userText, maxTokens, signal) => {
+      const llmOptions = getInnerLlmSummaryOptions(toolContext);
+      const result = await complete(systemPrompt, userText, {
+        ...llmOptions,
+        maxTokens,
+        signal,
+      });
+      return result.text;
+    },
   };
 
   // Agent state for abort recovery — the agent populates completedMessages
@@ -428,8 +439,8 @@ export async function orchestrateSendMessage(
       log("info", `orchestrator: context modified, rebuilding message array`);
       // Rebuild from conv.messages (now trimmed) — the source of truth for historical state
       const rebuilt = conv.messages
-        .filter(m => m.role !== "system" && m.role !== "system_instructions")
-        .map(m => ({ role: m.role as "user" | "assistant", content: m.content, providerData: m.providerData }));
+        .filter(isHistoryMessage)
+        .map(m => ({ role: m.role, content: m.content, providerData: m.providerData }));
       // Persist immediately
       convStore.markDirty(convId);
       convStore.flush(convId);

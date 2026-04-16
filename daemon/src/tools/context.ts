@@ -13,14 +13,11 @@
  * by the executor with injected conversation context.
  */
 
-import type { Tool, ToolResult, ToolExecutionContext } from "./types";
-import type { Conversation, StoredMessage, ApiContentBlock, ApiMessage } from "../messages";
-import { isToolResultMessage } from "../messages";
-import { complete } from "../llm";
+import type { Tool, ToolResult } from "./types";
+import type { Conversation, StoredMessage, ApiContentBlock } from "../messages";
+import { buildHistoryTurnMap, isToolResultMessage } from "../messages";
 import { log } from "../log";
 import { safeSlice } from "./util";
-import { getMaxContext } from "../providers/registry";
-import { getInnerLlmSummaryOptions } from "./inner-llm";
 
 // ── Context tool environment ──────────────────────────────────────
 
@@ -36,20 +33,13 @@ export interface ContextToolEnv {
    *  The modifiable range is turnMap[0] through
    *  turnMap[turnMap.length - 1 - protectedTailCount]. */
   protectedTailCount: number;
-  /** Provider metadata for provider-aware inner LLM calls. */
-  toolContext?: ToolExecutionContext;
+  /** Max context window for the active model, if known. */
+  contextLimit?: number | null;
+  /** Provider-aware inner LLM runner used by summarize. */
+  summarizeWithInnerLlm: (systemPrompt: string, userText: string, maxTokens: number, signal?: AbortSignal) => Promise<string>;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
-
-/** Build turn index → conv.messages index mapping, skipping system messages. */
-function buildTurnMap(messages: StoredMessage[]): number[] {
-  const map: number[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i].role !== "system") map.push(i);
-  }
-  return map;
-}
 
 /** Character count for a single content block. */
 function blockChars(block: ApiContentBlock): number {
@@ -208,11 +198,11 @@ function validateRange(
 // ── Action: list ──────────────────────────────────────────────────
 
 function actionList(env: ContextToolEnv): ToolResult {
-  const { conv, summarizer, protectedTailCount } = env;
-  const turnMap = buildTurnMap(conv.messages);
+  const { conv, summarizer, protectedTailCount, contextLimit = null } = env;
+  const turnMap = buildHistoryTurnMap(conv.messages);
 
   if (turnMap.length === 0) {
-    return { output: "No turns in the conversation (system messages excluded).", isError: false };
+    return { output: "No turns in the conversation (system messages and conversation instructions excluded).", isError: false };
   }
 
   // Compute char counts per turn
@@ -228,7 +218,6 @@ function actionList(env: ContextToolEnv): ToolResult {
   );
   const totalTokens = lastCtx ?? estTokens.reduce((a, b) => a + b, 0);
 
-  const contextLimit = getMaxContext(conv.provider, conv.model);
   const lines: string[] = [];
 
   const tokenNote = lastCtx ? "" : "  (estimated — no API token count available yet)";
@@ -361,7 +350,7 @@ function actionDelete(
   env: ContextToolEnv,
 ): ToolResult {
   const { conv, onContextModified, protectedTailCount } = env;
-  const turnMap = buildTurnMap(conv.messages);
+  const turnMap = buildHistoryTurnMap(conv.messages);
 
   const { start, end, snapped, error } = validateRange(input, turnMap, conv.messages, protectedTailCount);
   if (error) return { output: error, isError: true };
@@ -405,8 +394,8 @@ async function actionSummarize(
   env: ContextToolEnv,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
-  const { conv, onContextModified, summarizer, protectedTailCount } = env;
-  const turnMap = buildTurnMap(conv.messages);
+  const { conv, onContextModified, summarizer, protectedTailCount, summarizeWithInnerLlm } = env;
+  const turnMap = buildHistoryTurnMap(conv.messages);
 
   const { start, end, snapped, error } = validateRange(input, turnMap, conv.messages, protectedTailCount);
   if (error) return { output: error, isError: true };
@@ -436,18 +425,22 @@ async function actionSummarize(
             .map((b: ApiContentBlock) => (b as { type: "text"; text: string }).text)
             .join("\n");
       textParts.push(`User: ${text}`);
-    } else if (tt === "assistant" && Array.isArray(msg.content)) {
-      const parts: string[] = [];
-      for (const b of msg.content as ApiContentBlock[]) {
-        if (b.type === "thinking") {
-          parts.push(b.thinking);
-        } else if (b.type === "text") {
-          parts.push(b.text);
-        } else if (b.type === "tool_use") {
-          parts.push(`Tool call: ${b.name}(${summarizer(b.name, b.input)})`);
+    } else if (tt === "assistant") {
+      if (typeof msg.content === "string") {
+        textParts.push(`Assistant: ${msg.content}`);
+      } else {
+        const parts: string[] = [];
+        for (const b of msg.content as ApiContentBlock[]) {
+          if (b.type === "thinking") {
+            parts.push(b.thinking);
+          } else if (b.type === "text") {
+            parts.push(b.text);
+          } else if (b.type === "tool_use") {
+            parts.push(`Tool call: ${b.name}(${summarizer(b.name, b.input)})`);
+          }
         }
+        textParts.push(`Assistant: ${parts.join("\n")}`);
       }
-      textParts.push(`Assistant: ${parts.join("\n")}`);
     } else if (tt === "tool_result" && Array.isArray(msg.content)) {
       // Resolve tool names from preceding assistant
       const prevTurnIdx = t - 1;
@@ -508,13 +501,7 @@ Output plain text, not markdown.`;
 
   let summaryText: string;
   try {
-    const llmOptions = getInnerLlmSummaryOptions(env.toolContext);
-    const result = await complete(systemPrompt, extractedText, {
-      ...llmOptions,
-      maxTokens,
-      signal,
-    });
-    summaryText = result.text;
+    summaryText = await summarizeWithInnerLlm(systemPrompt, extractedText, maxTokens, signal);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log("error", `context: summarize LLM call failed: ${msg}`);
@@ -555,7 +542,7 @@ function actionStripThinking(
   env: ContextToolEnv,
 ): ToolResult {
   const { conv, onContextModified, protectedTailCount } = env;
-  const turnMap = buildTurnMap(conv.messages);
+  const turnMap = buildHistoryTurnMap(conv.messages);
 
   const { start, end, error } = validateRange(input, turnMap, conv.messages, protectedTailCount);
   if (error) return { output: error, isError: true };
@@ -629,7 +616,7 @@ function actionStripResults(
   env: ContextToolEnv,
 ): ToolResult {
   const { conv, onContextModified, protectedTailCount } = env;
-  const turnMap = buildTurnMap(conv.messages);
+  const turnMap = buildHistoryTurnMap(conv.messages);
 
   const { start, end, error } = validateRange(input, turnMap, conv.messages, protectedTailCount);
   if (error) return { output: error, isError: true };

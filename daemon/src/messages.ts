@@ -76,6 +76,20 @@ export function isToolResultMessage(msg: StoredMessage): boolean {
   return msg.content.length > 0 && msg.content.some(b => b.type === "tool_result");
 }
 
+/** True for actual user/assistant history turns, excluding daemon metadata entries. */
+export function isHistoryMessage(msg: StoredMessage): msg is StoredMessage & { role: "user" | "assistant" } {
+  return msg.role !== "system" && msg.role !== "system_instructions";
+}
+
+/** Build turn index → messages index mapping for real conversation history. */
+export function buildHistoryTurnMap(messages: StoredMessage[]): number[] {
+  const map: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (isHistoryMessage(messages[i])) map.push(i);
+  }
+  return map;
+}
+
 /** Count messages for summaries/UI, excluding per-conversation instructions metadata. */
 export function countConversationMessages(messages: StoredMessage[]): number {
   return messages.filter((msg) => msg.role !== "system_instructions").length;
