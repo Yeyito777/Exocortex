@@ -15,7 +15,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { createMessageMetadata, isHistoryMessage, type StoredMessage, type ApiContentBlock, type ModelId } from "./messages";
+import { buildHistoryTurnMap, createMessageMetadata, isHistoryMessage, isToolResultMessage, type StoredMessage, type ApiContentBlock, type ModelId } from "./messages";
 import type { ContentBlock as ProviderContentBlock } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ToolExecutionContext } from "./tools/types";
@@ -103,6 +103,32 @@ function toStoredMessages(messages: import("./messages").ApiMessage[]): StoredMe
   }));
 }
 
+function hasReplayableHistory(messages: StoredMessage[]): boolean {
+  return messages.some(isHistoryMessage);
+}
+
+/**
+ * Protect the entire in-progress turn when replaying after a failed stream.
+ *
+ * We walk backward to the most recent real user prompt (ignoring tool_result
+ * containers) and protect every history turn from there to the end, so the
+ * context tool can't trim away the prompt/partial reply that the replay is
+ * currently continuing.
+ */
+function protectedTailCountForReplay(messages: StoredMessage[]): number {
+  const turnMap = buildHistoryTurnMap(messages);
+  if (turnMap.length === 0) return 0;
+
+  for (let turn = turnMap.length - 1; turn >= 0; turn--) {
+    const msg = messages[turnMap[turn]];
+    if (msg.role === "user" && !isToolResultMessage(msg)) {
+      return turnMap.length - turn;
+    }
+  }
+
+  return turnMap.length;
+}
+
 /**
  * Whether a partially streamed thinking block is safe to persist on abort/error.
  *
@@ -114,7 +140,14 @@ function isPersistableThinkingBlock(block: Extract<ApiContentBlock, { type: "thi
   return Boolean(block.thinking && (block.signature || block.thinking.trim().length > 0));
 }
 
-// ── Orchestrate a send_message ─────────────────────────────────────
+// ── Orchestrate assistant turns ────────────────────────────────────
+
+interface AssistantTurnOptions {
+  userMessage?: {
+    text: string;
+    images?: ImageAttachment[];
+  };
+}
 
 export async function orchestrateSendMessage(
   server: DaemonServer,
@@ -126,11 +159,40 @@ export async function orchestrateSendMessage(
   ext: OrchestrationCallbacks,
   images?: ImageAttachment[],
 ): Promise<void> {
+  await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext, {
+    userMessage: { text, images },
+  });
+}
+
+export async function orchestrateReplayConversation(
+  server: DaemonServer,
+  client: ConnectedClient | null,
+  reqId: string | undefined,
+  convId: string,
+  startedAt: number,
+  ext: OrchestrationCallbacks,
+): Promise<void> {
+  await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext);
+}
+
+async function orchestrateAssistantTurn(
+  server: DaemonServer,
+  client: ConnectedClient | null,
+  reqId: string | undefined,
+  convId: string,
+  startedAt: number,
+  ext: OrchestrationCallbacks,
+  options: AssistantTurnOptions = {},
+): Promise<void> {
   const conv = convStore.get(convId);
   if (!conv) {
     if (client) server.sendTo(client, { type: "error", reqId, convId, message: `Conversation ${convId} not found` });
     return;
   }
+
+  const { userMessage } = options;
+  const replaying = !userMessage;
+
   const reportSendError = (message: string): void => {
     if (client) {
       server.sendTo(client, { type: "error", reqId, convId, message });
@@ -159,23 +221,42 @@ export async function orchestrateSendMessage(
     if (client) server.sendTo(client, { type: "error", reqId, convId, message: "Already streaming" });
     return;
   }
-  if (images?.length && !supportsImageInputs(conv.provider, conv.model)) {
+  if (userMessage?.images?.length && !supportsImageInputs(conv.provider, conv.model)) {
     reportSendError(`Image inputs are not supported by ${conv.provider}/${conv.model}. Remove the attachment or switch to a vision-capable model.`);
     return;
   }
+  if (replaying && !hasReplayableHistory(conv.messages)) {
+    reportSendError("No conversation history to replay.");
+    return;
+  }
 
-  conv.messages.push(buildStoredUserMessage(text, conv.model, startedAt, images));
+  if (userMessage) {
+    conv.messages.push(buildStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images));
+
+    // Notify subscribers about the user message.
+    // When client is set, it already added the message locally — skip it.
+    // When client is null (daemon-initiated, e.g. queued message drain), notify everyone.
+    if (client) {
+      server.sendToSubscribersExcept(convId, {
+        type: "user_message",
+        convId,
+        text: userMessage.text,
+        startedAt,
+        images: userMessage.images,
+      }, client);
+    } else {
+      server.sendToSubscribers(convId, {
+        type: "user_message",
+        convId,
+        text: userMessage.text,
+        startedAt,
+        images: userMessage.images,
+      });
+    }
+  }
+
   conv.updatedAt = Date.now();
   convStore.bumpToTop(convId);
-
-  // Notify subscribers about the user message.
-  // When client is set, it already added the message locally — skip it.
-  // When client is null (daemon-initiated, e.g. queued message drain), notify everyone.
-  if (client) {
-    server.sendToSubscribersExcept(convId, { type: "user_message", convId, text, startedAt, images }, client);
-  } else {
-    server.sendToSubscribers(convId, { type: "user_message", convId, text, startedAt, images });
-  }
 
   const ac = new AbortController();
   convStore.setActiveJob(convId, ac, startedAt);
@@ -212,10 +293,10 @@ export async function orchestrateSendMessage(
   // the correct spot in conv.messages on the success/error path.
   const retryMarkers: Array<{ afterIndex: number; text: string }> = [];
 
-  // The current user message is the last entry in conv.messages.
-  // All messages from the current agent loop (newMessages) aren't in
-  // conv.messages yet. So protectedTailCount = 1 (just the user msg).
-  const protectedTailCount = 1;
+  // While sending a fresh message, protect the just-appended user turn.
+  // While replaying after an interrupted stream, protect the full in-progress
+  // tail (last real user prompt plus any partial assistant/tool messages).
+  const protectedTailCount = userMessage ? 1 : protectedTailCountForReplay(conv.messages);
 
   const toolContext: ToolExecutionContext = {
     provider: conv.provider,

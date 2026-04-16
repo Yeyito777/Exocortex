@@ -9,7 +9,7 @@
 
 import { log } from "./log";
 import { refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
-import { orchestrateSendMessage } from "./orchestrator";
+import { orchestrateReplayConversation, orchestrateSendMessage } from "./orchestrator";
 import { complete } from "./llm";
 import { buildAnthropicSystemPrompt, buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
@@ -191,6 +191,23 @@ export function createHandler(server: DaemonServer) {
             },
           },
           cmd.images,
+        );
+        break;
+      }
+
+      case "replay_conversation": {
+        await orchestrateReplayConversation(
+          server, client, cmd.reqId, cmd.convId, cmd.startedAt,
+          {
+            onHeaders: (h) => {
+              const provider = convStore.get(cmd.convId)?.provider ?? getDefaultProvider().id;
+              handleUsageHeaders(provider, h, (usage) => broadcastUsage(provider, usage));
+            },
+            onComplete: () => {
+              const provider = convStore.get(cmd.convId)?.provider ?? getDefaultProvider().id;
+              refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
+            },
+          },
         );
         break;
       }

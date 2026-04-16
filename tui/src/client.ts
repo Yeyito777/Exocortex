@@ -123,6 +123,10 @@ export class DaemonClient {
     this.send({ type: "send_message", convId, text, startedAt, images: images?.length ? images : undefined });
   }
 
+  replayConversation(convId: string, startedAt: number): void {
+    this.send({ type: "replay_conversation", convId, startedAt });
+  }
+
   ping(): void {
     this.send({ type: "ping" });
   }

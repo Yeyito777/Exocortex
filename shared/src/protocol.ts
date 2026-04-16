@@ -40,6 +40,14 @@ export interface SendMessageCommand {
   images?: ImageAttachment[];
 }
 
+export interface ReplayConversationCommand {
+  type: "replay_conversation";
+  reqId?: string;
+  convId: string;
+  /** Client-originated timestamp for the replayed assistant turn. */
+  startedAt: number;
+}
+
 export interface AbortCommand {
   type: "abort";
   reqId?: string;
@@ -230,6 +238,7 @@ export type Command =
   | PingCommand
   | NewConversationCommand
   | SendMessageCommand
+  | ReplayConversationCommand
   | SetModelCommand
   | SetEffortCommand
   | SetFastModeCommand

@@ -108,6 +108,64 @@ describe("/fast command", () => {
   });
 });
 
+describe("/replay", () => {
+  test("returns a replay request for the active conversation", () => {
+    const state = createInitialState();
+    state.convId = "conv-replay";
+    state.messages.push(
+      { role: "user", text: "hello", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.4", tokens: 0 } },
+      { role: "assistant", blocks: [{ type: "text", text: "partial" }], metadata: { startedAt: 2, endedAt: 3, model: "gpt-5.4", tokens: 12 } },
+    );
+
+    const result = tryCommand("/replay", state);
+
+    expect(result).toEqual({ type: "replay_requested" });
+    expect(state.messages).toHaveLength(2);
+  });
+
+  test("requires an active conversation", () => {
+    const state = createInitialState();
+
+    const result = tryCommand("/replay", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("No active conversation to replay.");
+  });
+
+  test("rejects replay while streaming", () => {
+    const state = createInitialState();
+    state.convId = "conv-replay";
+    state.messages.push({ role: "user", text: "hello", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.4", tokens: 0 } });
+    state.pendingAI = { role: "assistant", blocks: [], metadata: null };
+
+    const result = tryCommand("/replay", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.streamingTailMessages.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot replay the conversation while it is streaming.");
+  });
+
+  test("requires existing conversation history", () => {
+    const state = createInitialState();
+    state.convId = "conv-replay";
+
+    const result = tryCommand("/replay", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("No conversation history to replay.");
+  });
+
+  test("shows usage when extra arguments are provided", () => {
+    const state = createInitialState();
+    state.convId = "conv-replay";
+    state.messages.push({ role: "user", text: "hello", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.4", tokens: 0 } });
+
+    const result = tryCommand("/replay now", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Usage: /replay");
+  });
+});
+
 describe("/model", () => {
   test("switches an active conversation across providers and normalizes effort/fast mode", () => {
     const state = createInitialState();

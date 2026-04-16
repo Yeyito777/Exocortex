@@ -185,6 +185,9 @@ function handleSubmit(): void {
           state.pendingGenerateTitleOnCreate = false;
           daemon.createConversation(state.provider, state.model, "", state.effort);
           break;
+        case "replay_requested":
+          if (state.convId) daemon.replayConversation(state.convId, Date.now());
+          break;
         case "model_changed":
           if (state.convId) daemon.setModel(state.convId, cmdResult.provider, cmdResult.model);
           break;

@@ -56,6 +56,7 @@ export type CommandResult =
   | { type: "quit" }
   | { type: "new_conversation" }
   | { type: "create_conversation_for_instructions"; text: string }
+  | { type: "replay_requested" }
   | { type: "model_changed"; provider: ProviderId; model: ModelId }
   | { type: "trim_requested"; mode: TrimMode; count: number }
   | { type: "effort_changed"; effort: EffortLevel }
@@ -336,6 +337,35 @@ const commands: SlashCommand[] = [
       state.contextTokens = null;
       // Return new_conversation so main.ts can unsubscribe + clear convId
       return { type: "new_conversation" };
+    },
+  },
+  {
+    name: "/replay",
+    description: "Replay the current history so the AI can continue",
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length !== 1) {
+        pushSystemMessage(state, "Usage: /replay");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      if (!state.convId) {
+        pushSystemMessage(state, "No active conversation to replay.");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      if (isStreaming(state)) {
+        pushSystemMessage(state, "Cannot replay the conversation while it is streaming.");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      if (conversationalMessages(state).length === 0) {
+        pushSystemMessage(state, "No conversation history to replay.");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      clearPrompt(state);
+      return { type: "replay_requested" };
     },
   },
   {
