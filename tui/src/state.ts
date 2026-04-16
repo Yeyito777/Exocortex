@@ -241,7 +241,7 @@ export function setCurrentConversationToolOutputAvailability(state: RenderState,
 }
 
 /** Semantic system-notice colors accepted by TUI call sites and daemon events. */
-export type SystemNoticeColorName = "muted" | "warning" | "error";
+export type SystemNoticeColorName = "muted" | "warning" | "error" | "success";
 
 /**
  * Normalize a system-notice color into a concrete ANSI style.
@@ -254,6 +254,7 @@ export function resolveSystemMessageColor(color?: SystemNoticeColorName | string
   if (color === "error") return theme.error;
   if (color === "warning") return theme.warning;
   if (color === "muted") return theme.muted;
+  if (color === "success") return theme.success;
   return color;
 }
 
@@ -265,7 +266,7 @@ export function resolveSystemMessageColor(color?: SystemNoticeColorName | string
  * originated stream notices should bypass this helper and be inserted inline.
  *
  * The color may be either a semantic notice color name ("warning", "error",
- * "muted") or an already-resolved ANSI style string.
+ * "muted", "success") or an already-resolved ANSI style string.
  */
 export function pushSystemMessage(state: RenderState, text: string, color?: SystemNoticeColorName | string): void {
   const msg: SystemMessage = { role: "system", text, color: resolveSystemMessageColor(color), metadata: null };

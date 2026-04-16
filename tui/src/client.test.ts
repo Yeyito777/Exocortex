@@ -48,3 +48,54 @@ describe("DaemonClient request-scoped events", () => {
     ]);
   });
 });
+
+describe("DaemonClient reconnect behavior", () => {
+  test("queues commands while disconnected and flushes them on reconnect", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    const writes: string[] = [];
+
+    client.send({ type: "ping" });
+    client.send({ type: "list_conversations" });
+
+    expect(internal.pendingCommands).toEqual([
+      { type: "ping" },
+      { type: "list_conversations" },
+    ]);
+
+    internal.socket = {
+      write(payload: string) {
+        writes.push(payload);
+      },
+    };
+    internal._connected = true;
+    internal.flushPendingCommands();
+
+    expect(writes).toEqual([
+      JSON.stringify({ type: "ping" }) + "\n",
+      JSON.stringify({ type: "list_conversations" }) + "\n",
+    ]);
+    expect(internal.pendingCommands).toEqual([]);
+  });
+
+  test("manual disconnect does not fire the connection-lost callback", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    let disconnects = 0;
+
+    client.onConnectionLost(() => {
+      disconnects += 1;
+    });
+
+    internal.socket = {
+      end() {},
+      destroy() {},
+    };
+    internal._connected = true;
+
+    client.disconnect();
+
+    expect(internal.intentionalDisconnect).toBe(true);
+    expect(disconnects).toBe(0);
+  });
+});

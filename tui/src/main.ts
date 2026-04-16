@@ -33,10 +33,14 @@ import { createVoiceInputController, type VoiceInputController } from "./voicein
 // ── State ───────────────────────────────────────────────────────────
 
 const state = createInitialState();
+const RECONNECT_DELAY_MS = 1000;
+
 let running = true;
 let daemon: DaemonClient;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnecting = false;
 let terminalSetUp = false;
 let voiceInput: VoiceInputController | null = null;
 
@@ -52,6 +56,12 @@ function clearStreamTick(): void {
   if (!streamTickTimer) return;
   clearTimeout(streamTickTimer);
   streamTickTimer = null;
+}
+
+function clearReconnectTimer(): void {
+  if (!reconnectTimer) return;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
 }
 
 /** Schedule a render on the next frame. Resets the live stream timer. */
@@ -436,6 +446,58 @@ function handleMouse(ev: MouseEvent): void {
   scheduleRender();
 }
 
+function scheduleReconnectAttempt(): void {
+  if (!running || reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    reconnecting = false;
+    void reconnectToDaemon();
+  }, RECONNECT_DELAY_MS);
+}
+
+function restoreDaemonSessionAfterReconnect(hadPendingCommands: boolean): void {
+  pushSystemMessage(state, "✓ Reconnected to daemon.", "success");
+
+  // Always refresh daemon-derived top-level state. If commands were queued while
+  // disconnected, let those replayed commands drive any conversation-specific
+  // reloads to avoid issuing duplicate loads.
+  daemon.ping();
+  if (!hadPendingCommands && state.convId) daemon.loadConversation(state.convId);
+}
+
+async function reconnectToDaemon(): Promise<void> {
+  if (!running || reconnecting) return;
+  reconnecting = true;
+  const hadPendingCommands = daemon.hasPendingCommands;
+
+  try {
+    await daemon.connect();
+  } catch {
+    if (!running) {
+      reconnecting = false;
+      return;
+    }
+    scheduleReconnectAttempt();
+    scheduleRender();
+    return;
+  }
+
+  reconnecting = false;
+  clearReconnectTimer();
+  restoreDaemonSessionAfterReconnect(hadPendingCommands);
+  scheduleRender();
+}
+
+function handleDaemonConnectionLost(): void {
+  voiceInput?.cleanup();
+  clearPendingAI(state);
+  clearStreamingTailMessages(state);
+  clearStreamTick();
+  pushSystemMessage(state, "✗ Lost connection to daemon.", theme.error);
+  scheduleRender();
+  void reconnectToDaemon();
+}
+
 // ── Terminal setup ──────────────────────────────────────────────────
 
 function setupTerminal(): void {
@@ -458,6 +520,7 @@ function restoreTerminal(): void {
 
 async function main(): Promise<void> {
   daemon = new DaemonClient(onDaemonEvent);
+  daemon.onConnectionLost(handleDaemonConnectionLost);
   voiceInput = createVoiceInputController(state, daemon, scheduleRender);
   try {
     await daemon.connect();
@@ -468,14 +531,6 @@ async function main(): Promise<void> {
 
   // Request initial usage data from daemon
   daemon.ping();
-
-  daemon.onConnectionLost(() => {
-    voiceInput?.cleanup();
-    clearPendingAI(state);
-    pushSystemMessage(state, "✗ Lost connection to daemon.", theme.error);
-    scheduleRender();
-    setTimeout(() => { running = false; }, 2000);
-  });
 
   setupTerminal();
 
@@ -514,8 +569,10 @@ async function main(): Promise<void> {
 }
 
 function cleanup(): void {
+  running = false;
   clearRenderTimer();
   clearStreamTick();
+  clearReconnectTimer();
   voiceInput?.cleanup();
   daemon?.disconnect();
   restoreTerminal();

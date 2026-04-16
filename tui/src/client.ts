@@ -23,6 +23,10 @@ export class DaemonClient {
   private _connected = false;
   private socketPath: string;
   private onDisconnect: (() => void) | null = null;
+  private intentionalDisconnect = false;
+  // Commands issued while the daemon is unavailable are replayed on the next
+  // successful connect so the TUI can keep accepting input during reconnect.
+  private pendingCommands: Command[] = [];
   private llmCallbacks = new Map<string, { onSuccess: LlmCompleteCallback; onError?: LlmErrorCallback }>();
   private transcriptionCallbacks = new Map<string, { onSuccess: TranscriptionCallback; onError?: TranscriptionErrorCallback }>();
   private nextReqId = 0;
@@ -33,17 +37,18 @@ export class DaemonClient {
   }
 
   get connected(): boolean { return this._connected; }
+  get hasPendingCommands(): boolean { return this.pendingCommands.length > 0; }
 
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       // Named pipes on Windows don't exist as files — skip the filesystem check
       if (!isWindows && !existsSync(this.socketPath)) {
-        reject(new Error(
-          "exocortexd socket not found. Is the daemon running?\n" +
-          "Start it with: exocortexd restart"
-        ));
+        reject(this.socketMissingError());
         return;
       }
+
+      this.intentionalDisconnect = false;
+      this.buffer = "";
 
       const socket = connect(this.socketPath);
       let resolved = false;
@@ -52,23 +57,25 @@ export class DaemonClient {
         this.socket = socket;
         this._connected = true;
         resolved = true;
+        this.flushPendingCommands();
         resolve();
       });
       socket.on("data", (data) => this.onData(data));
       socket.on("close", () => {
-        this._connected = false;
-        this.socket = null;
-        this.onDisconnect?.();
+        const wasCurrentSocket = this.socket === socket;
+        if (wasCurrentSocket) {
+          this._connected = false;
+          this.socket = null;
+          this.buffer = "";
+        }
+        if (resolved && wasCurrentSocket && !this.intentionalDisconnect) this.onDisconnect?.();
       });
       socket.on("error", (err) => {
         this._connected = false;
         if (!resolved) {
           const code = (err as NodeJS.ErrnoException).code;
           if (isWindows && (code === "ENOENT" || code === "ECONNREFUSED")) {
-            reject(new Error(
-              "exocortexd socket not found. Is the daemon running?\n" +
-              "Start it with: exocortexd restart"
-            ));
+            reject(this.socketMissingError());
           } else {
             reject(new Error(`Failed to connect: ${err.message}`));
           }
@@ -82,13 +89,19 @@ export class DaemonClient {
   }
 
   disconnect(): void {
+    this.intentionalDisconnect = true;
     this.socket?.end();
+    this.socket?.destroy();
     this.socket = null;
     this._connected = false;
+    this.buffer = "";
   }
 
   send(command: Command): void {
-    if (!this.socket || !this._connected) throw new Error("Not connected");
+    if (!this.socket || !this._connected) {
+      this.pendingCommands.push(command);
+      return;
+    }
     this.socket.write(JSON.stringify(command) + "\n");
   }
 
@@ -224,6 +237,20 @@ export class DaemonClient {
   }
 
   // ── Internal ────────────────────────────────────────────────────
+
+  private socketMissingError(): Error {
+    return new Error(
+      "exocortexd socket not found. Is the daemon running?\n" +
+      "Start it with: exocortexd restart"
+    );
+  }
+
+  private flushPendingCommands(): void {
+    if (!this.socket || !this._connected || this.pendingCommands.length === 0) return;
+    const pending = this.pendingCommands;
+    this.pendingCommands = [];
+    for (const command of pending) this.send(command);
+  }
 
   private onData(data: Buffer | string): void {
     this.buffer += typeof data === "string" ? data : data.toString("utf-8");
