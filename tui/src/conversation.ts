@@ -59,8 +59,8 @@ export function wordWrap(text: string, width: number): WrapResult {
 // GC'd when messages leave the conversation.
 
 interface BlockCacheEntry {
-  /** Length of source text at render time (detects streaming growth). */
-  contentLen: number;
+  /** Exact mutable source content at render time (detects rewrites, not just growth). */
+  contentKey: string;
   /** Terminal content width used for wrapping. */
   width: number;
   /** Whether tool output was shown (affects tool_result blocks). */
@@ -82,16 +82,16 @@ interface SegmentedBashRenderOptions {
 
 const blockRenderCache = new WeakMap<Block, BlockCacheEntry>();
 
-/** Length of the block's mutable content field — used for cache invalidation. */
-function blockContentKey(block: Block): number {
+/** Exact mutable block content — used for cache invalidation. */
+function blockContentKey(block: Block): string {
   switch (block.type) {
     case "thinking":
     case "text":
-      return block.text.length;
+      return block.text;
     case "tool_call":
-      return block.summary.length;
+      return block.summary;
     case "tool_result":
-      return block.output.length;
+      return block.output;
   }
 }
 
@@ -102,11 +102,11 @@ function renderBlockCached(
   externalToolStyles: ExternalToolStyle[],
   showToolOutput: boolean,
 ): WrapResult {
-  const contentLen = blockContentKey(block);
+  const contentKey = blockContentKey(block);
   const cached = blockRenderCache.get(block);
   if (
     cached &&
-    cached.contentLen === contentLen &&
+    cached.contentKey === contentKey &&
     cached.width === contentWidth &&
     cached.showToolOutput === showToolOutput
   ) {
@@ -114,7 +114,7 @@ function renderBlockCached(
   }
 
   const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput);
-  blockRenderCache.set(block, { contentLen, width: contentWidth, showToolOutput, result });
+  blockRenderCache.set(block, { contentKey, width: contentWidth, showToolOutput, result });
   return result;
 }
 

@@ -269,3 +269,43 @@ describe("tool call rendering", () => {
     expect(rendered).toContain("  Exocortex llm -- --model openai/gpt-5.4 --timeout 600 --timeout 720000");
   });
 });
+
+describe("block render cache invalidation", () => {
+  test("re-renders a text block when its contents change without changing length", () => {
+    const block = { type: "text", text: "abc" };
+    const state = {
+      messages: [],
+      pendingAI: { role: "assistant", blocks: [block], metadata: null },
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    expect(buildMessageLines(state, 80).lines.map(stripAnsi)).toEqual(["  abc"]);
+
+    block.text = "xyz";
+
+    expect(buildMessageLines(state, 80).lines.map(stripAnsi)).toEqual(["  xyz"]);
+  });
+
+  test("re-renders a tool result block when its output changes without changing length", () => {
+    const block = { type: "tool_result", toolCallId: "call-1", toolName: "read", output: "one", isError: false };
+    const state = {
+      messages: [{ role: "assistant", blocks: [block], metadata: null }],
+      pendingAI: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: true,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    expect(buildMessageLines(state, 80).lines.map(stripAnsi)).toEqual(["  ↳ one"]);
+
+    block.output = "two";
+
+    expect(buildMessageLines(state, 80).lines.map(stripAnsi)).toEqual(["  ↳ two"]);
+  });
+});
