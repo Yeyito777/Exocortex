@@ -735,7 +735,7 @@ export const context: Tool = {
     },
     required: ["action"],
   },
-  systemHint: "When approaching the context limit, use the context tool to free space. Start by listing the context, then apply these strategies in order: 1) strip_thinking from older turns (lossless), 2) strip_results where findings are already captured in responses (near-lossless), 3) delete dead ends and meta-conversation, 4) summarize only as a last resort for the oldest turns unlikely to be needed verbatim.",
+  systemHint: "When approaching the context limit, use the context tool to free space. Start by listing the context, then apply these strategies in order: 1) strip_thinking from older turns (lossless), 2) strip_results where findings are already captured in responses (near-lossless), 3) summarize relevant parts that are high-value and should be kept. 4) delete low-value turns only as a last resort.",
   display: {
     label: "Context",
     color: "#2ec4b6",
