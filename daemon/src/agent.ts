@@ -14,7 +14,6 @@ import { log } from "./log";
 import type { ProviderId, ModelId, EffortLevel, Block, ToolCallBlock, ToolResultBlock, ApiMessage, ApiContentBlock } from "./messages";
 import type { ContentBlock as ProviderContentBlock, ServiceTier } from "./providers/types";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
-import { CONTEXT_TARGET } from "./constants";
 import { getMaxContext } from "./providers/registry";
 
 // ── Callbacks ───────────────────────────────────────────────────────
@@ -114,22 +113,29 @@ function defaultSummarizer(name: string, _input: Record<string, unknown>): strin
 }
 
 const CONTEXT_WARNING_FRACTION = 0.8;
+const CONTEXT_TARGET_FRACTION = 0.4;
 
 interface ContextPressureWarning {
   usage: string;
   hint: string;
 }
 
-function buildContextPressureWarning(inputTokens: number, contextLimit: number): ContextPressureWarning | null {
+function formatTokenCountInThousands(tokens: number): string {
+  const thousands = tokens / 1000;
+  return Number.isInteger(thousands) ? `${thousands}k` : `${thousands.toFixed(1)}k`;
+}
+
+export function buildContextPressureWarning(inputTokens: number, contextLimit: number): ContextPressureWarning | null {
   if (contextLimit <= 0) return null;
 
   const warningAt = Math.floor(contextLimit * CONTEXT_WARNING_FRACTION);
   if (inputTokens < warningAt) return null;
 
+  const targetTokens = Math.floor(contextLimit * CONTEXT_TARGET_FRACTION);
   const pct = ((inputTokens / contextLimit) * 100).toFixed(0);
-  const usage = `${Math.round(inputTokens / 1000)}k/${contextLimit / 1000}k tokens (${pct}%)`;
-  const freeAtLeast = `${Math.max(0, Math.round((inputTokens - CONTEXT_TARGET) / 1000))}k`;
-  const target = `${CONTEXT_TARGET / 1000}k`;
+  const usage = `${Math.round(inputTokens / 1000)}k/${formatTokenCountInThousands(contextLimit)} tokens (${pct}%)`;
+  const freeAtLeast = `${Math.max(0, Math.round((inputTokens - targetTokens) / 1000))}k`;
+  const target = formatTokenCountInThousands(targetTokens);
   const hint = `[Context: ${usage} — context is getting full. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool now before you run out, then continue the task you were working on.]`;
 
   return { usage, hint };

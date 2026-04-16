@@ -1,5 +1,25 @@
 import { describe, expect, test } from "bun:test";
-import { shouldInjectContextPressureWarning } from "./agent";
+import { buildContextPressureWarning, shouldInjectContextPressureWarning } from "./agent";
+
+describe("buildContextPressureWarning", () => {
+  test("returns null below the context pressure threshold", () => {
+    expect(buildContextPressureWarning(799_999, 1_000_000)).toBeNull();
+  });
+
+  test("targets 40% of the model context window for cleanup", () => {
+    const warning = buildContextPressureWarning(900_000, 1_000_000);
+    expect(warning).not.toBeNull();
+    expect(warning?.hint).toContain("Free at least ~500k tokens");
+    expect(warning?.hint).toContain("stable 400k");
+  });
+
+  test("formats non-round dynamic targets", () => {
+    const warning = buildContextPressureWarning(220_000, 272_000);
+    expect(warning).not.toBeNull();
+    expect(warning?.hint).toContain("Free at least ~111k tokens");
+    expect(warning?.hint).toContain("stable 108.8k");
+  });
+});
 
 describe("shouldInjectContextPressureWarning", () => {
   test("returns true when the round does not use the context tool", () => {

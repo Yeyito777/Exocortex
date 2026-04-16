@@ -9,9 +9,6 @@ export { MAX_CONTEXT } from "@exocortex/shared/messages";
 
 export const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 
-/** Target context size after cleanup — pressure hints tell the AI to free tokens until it reaches this. */
-export const CONTEXT_TARGET = 200_000;
-
 /**
  * After this many seconds a bash tool call is "backgrounded": the process
  * keeps running but the tool result is returned immediately with the PID
