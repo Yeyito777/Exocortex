@@ -235,6 +235,45 @@ describe("tool call rendering", () => {
     expect(rendered).toContain("  $ ls -lt ~/Documents/UofT/proof-of-funds ~/Documents/UofT 2>/dev/null | sed -n '1,220p'");
   });
 
+  test("keeps split parent bash timeout and await args attached to prompt-prefixed external tools", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "bash",
+          input: {},
+          summary: [
+            "$ set -euo pipefail",
+            "$ vm profiles",
+            "$ printf '\\n' ;",
+            "$ vm status windows",
+            "$  --timeout 120000 --await 30",
+            "$ set -euo pipefail",
+            "$ ps -eo pid,args | grep '[q]emu-system-x86_64' || true --timeout 120000",
+          ].join("\n"),
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
+      externalToolStyles: [{ cmd: "vm", label: "VM", color: "#7c3aed" }],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 240).lines.map(stripAnsi);
+
+    expect(rendered).toContain("  $ set -euo pipefail");
+    expect(rendered).toContain("  VM profiles");
+    expect(rendered).toContain("  $ printf '\\n' ;");
+    expect(rendered).toContain("  VM status windows --timeout 120000 --await 30");
+    expect(rendered).not.toContain("  $  --timeout 120000 --await 30");
+    expect(rendered).toContain("  $ ps -eo pid,args | grep '[q]emu-system-x86_64' || true --timeout 120000");
+  });
+
   test("styles external tools after a piped multiline heredoc/subshell prelude", () => {
     const state = {
       messages: [{

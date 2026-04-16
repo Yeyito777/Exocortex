@@ -178,6 +178,28 @@ function appendMatchedBashSegment(
   pushLogicalLine(logical, bashDisplay, text, true);
 }
 
+function isParentBashOptionContinuation(text: string): boolean {
+  const tokens = text.trimStart().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return false;
+
+  for (let i = 0; i < tokens.length; i += 2) {
+    if (tokens[i] !== "--timeout" && tokens[i] !== "--await") return false;
+    if (i + 1 >= tokens.length || tokens[i + 1].startsWith("--")) return false;
+  }
+
+  return true;
+}
+
+function appendParentBashOptionContinuation(logical: RenderLogicalLine[], text: string): boolean {
+  const previous = logical[logical.length - 1];
+  const trimmed = text.trimStart();
+
+  if (!previous?.display.cmd || !isParentBashOptionContinuation(trimmed)) return false;
+
+  previous.text = previous.text ? `${previous.text} ${trimmed}` : trimmed;
+  return true;
+}
+
 function renderSegmentedBashLines(
   summary: string,
   toolRegistry: ToolDisplayInfo[],
@@ -218,6 +240,8 @@ function renderSegmentedBashLines(
       pushLogicalLine(logical, bashDisplay, "", false);
       continue;
     }
+
+    if (appendParentBashOptionContinuation(logical, lineText)) continue;
 
     if (lineMatch || nonEmptySegments.length <= 1 || !hasSegmentMatch) {
       appendMatchedBashSegment(logical, bashDisplay, lineText, lineMatch);
