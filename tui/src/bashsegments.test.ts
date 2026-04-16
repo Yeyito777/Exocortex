@@ -12,6 +12,15 @@ describe("splitTopLevelShellSegments", () => {
       ]);
   });
 
+  test("splits single pipelines at top level", () => {
+    expect(splitTopLevelShellSegments("cat /tmp/prompt.txt | exo llm -- --model openai/gpt-5.4 | sed -n '1,5p'"))
+      .toEqual([
+        { text: "cat /tmp/prompt.txt ", start: 0, separator: "|" },
+        { text: " exo llm -- --model openai/gpt-5.4 ", start: 21, separator: "|" },
+        { text: " sed -n '1,5p'", start: 57, separator: "" },
+      ]);
+  });
+
   test("does not split separators inside quotes", () => {
     expect(splitTopLevelShellSegments("echo \"a && b\" && printf 'x || y; z'"))
       .toEqual([

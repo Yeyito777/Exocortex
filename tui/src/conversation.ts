@@ -192,33 +192,35 @@ function renderSegmentedBashLines(
     const commandLine = options.stripPromptPrefix && trimmed.startsWith("$ ")
       ? trimmed.slice(2)
       : rawLine;
+    const lineText = options.stripPromptPrefix ? commandLine : rawLine;
+    const lineMatch = resolveBashExternalMatch(lineText, externalToolStyles);
     const segments = splitTopLevelShellSegments(commandLine);
     const matches = segments.map((segment) => {
       const text = segment.text.trim();
       return text ? resolveBashExternalMatch(text, externalToolStyles) : null;
     });
     const nonEmptySegments = segments.filter(segment => segment.text.trim());
-    return { rawLine, commandLine, segments, matches, nonEmptySegments };
+    const hasSegmentMatch = matches.some(Boolean);
+    return { rawLine, commandLine, lineText, lineMatch, segments, matches, nonEmptySegments, hasSegmentMatch };
   });
 
   if (!options.requirePrompts) {
-    const hasMixedLine = parsedLines.some(({ nonEmptySegments, matches }) =>
-      nonEmptySegments.length > 1 && matches.some(Boolean));
+    const hasMixedLine = parsedLines.some(({ nonEmptySegments, hasSegmentMatch }) =>
+      nonEmptySegments.length > 1 && hasSegmentMatch);
     if (!hasMixedLine) return null;
   }
 
   const logical: RenderLogicalLine[] = [];
   const bashDisplay = resolveToolDisplay("bash", "", toolRegistry, []);
 
-  for (const { rawLine, commandLine, segments, matches, nonEmptySegments } of parsedLines) {
+  for (const { rawLine, lineText, lineMatch, segments, matches, nonEmptySegments, hasSegmentMatch } of parsedLines) {
     if (!rawLine.trim()) {
       pushLogicalLine(logical, bashDisplay, "", false);
       continue;
     }
 
-    const lineText = options.stripPromptPrefix ? commandLine : rawLine;
-    if (!options.requirePrompts && nonEmptySegments.length <= 1) {
-      appendMatchedBashSegment(logical, bashDisplay, lineText, matches.find(Boolean) ?? null);
+    if (lineMatch || nonEmptySegments.length <= 1 || !hasSegmentMatch) {
+      appendMatchedBashSegment(logical, bashDisplay, lineText, lineMatch);
       continue;
     }
 

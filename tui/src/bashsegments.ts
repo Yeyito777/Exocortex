@@ -50,7 +50,11 @@ export function splitTopLevelShellSegments(line: string): ShellSegment[] {
 
     const separator = ch === ";"
       ? ";"
-      : ((ch === "&" || ch === "|") && line[i + 1] === ch ? ch + ch : "");
+      : ch === "&"
+        ? (line[i + 1] === "&" ? "&&" : "")
+        : ch === "|"
+          ? (line[i + 1] === "|" ? "||" : line[i + 1] === "&" ? "|&" : "|")
+          : "";
     if (separator) {
       segments.push({ text: line.slice(start, i), start, separator });
       i += separator.length;

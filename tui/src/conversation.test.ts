@@ -234,4 +234,38 @@ describe("tool call rendering", () => {
     expect(rendered).toContain('  Gmail search "newer_than:2d (from:YESENIAB@iadb.org OR from:adobesign@adobesign.com OR IFARHU OR estado de cuenta OR carta de trabajo OR talonario OR signed OR signature requested OR Productos de Prestigio OR Aurelio)" --limit 25');
     expect(rendered).toContain("  $ ls -lt ~/Documents/UofT/proof-of-funds ~/Documents/UofT 2>/dev/null | sed -n '1,220p'");
   });
+
+  test("styles external tools after a piped multiline heredoc/subshell prelude", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "bash",
+          input: {},
+          summary: [
+            "kill 305721 2>/dev/null || true",
+            "( cat <<'EOF'",
+            "You are helping identify which fictional characters best match a user, based on evidence from many prior conversations.",
+            "EOF",
+            "cat /tmp/exo_character_evidence.md ) | exo llm -- --model openai/gpt-5.4 --timeout 600 --timeout 720000",
+          ].join("\n"),
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
+      externalToolStyles: [{ cmd: "exo", label: "Exocortex", color: "#1d9bf0" }],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 240).lines.map(stripAnsi);
+
+    expect(rendered).toContain("  $ kill 305721 2>/dev/null || true");
+    expect(rendered).toContain("  $ cat /tmp/exo_character_evidence.md ) |");
+    expect(rendered).toContain("  Exocortex llm -- --model openai/gpt-5.4 --timeout 600 --timeout 720000");
+  });
 });
