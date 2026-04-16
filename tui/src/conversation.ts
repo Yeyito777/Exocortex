@@ -480,6 +480,12 @@ export interface BuildMessageLinesResult {
   lineAnchors: RenderLineAnchor[];
 }
 
+const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
+
+function isVisuallyBlankLine(line: string): boolean {
+  return line.replace(ANSI_ESCAPE_RE, "").trim().length === 0;
+}
+
 // ── Build all display lines ─────────────────────────────────────────
 
 export function buildMessageLines(
@@ -525,6 +531,17 @@ export function buildMessageLines(
     pushAnchoredLine(line, false, owner, segment, index, 0);
   };
 
+  const trimTrailingBlankAssistantContent = (minLength: number) => {
+    while (lines.length > minLength) {
+      const anchor = lineAnchors[lineAnchors.length - 1];
+      if (!anchor || anchor.segment !== "assistant_block") break;
+      if (!isVisuallyBlankLine(lines[lines.length - 1])) break;
+      lines.pop();
+      wrapContinuation.pop();
+      lineAnchors.pop();
+    }
+  };
+
   const pushMessageBound = (
     role: Message["role"],
     start: number,
@@ -551,8 +568,9 @@ export function buildMessageLines(
       for (const block of msg.blocks) {
         pushBlock(block, "assistant_block", renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
       }
-      const contentEnd = lines.length;
       const metadataLines = renderMetadata(msg.metadata);
+      if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
+      const contentEnd = lines.length;
       for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], msg, "assistant_metadata", i);
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "system_instructions") {
@@ -595,8 +613,9 @@ export function buildMessageLines(
     for (const block of state.pendingAI.blocks) {
       pushBlock(block, "assistant_block", renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
     }
-    const contentEnd = lines.length;
     const metadataLines = renderMetadata(state.pendingAI.metadata);
+    if (metadataLines.length > 0) trimTrailingBlankAssistantContent(start);
+    const contentEnd = lines.length;
     for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], state.pendingAI, "assistant_metadata", i);
     pushMessageBound(state.pendingAI.role, start, start, contentEnd);
   }

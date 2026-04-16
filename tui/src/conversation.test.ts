@@ -270,6 +270,59 @@ describe("tool call rendering", () => {
   });
 });
 
+describe("assistant metadata spacing", () => {
+  test("suppresses trailing blank assistant lines before committed metadata", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "text",
+          text: "Done.\n\n- Commit: 3fb9aa0\n- Message: make context pressure target dynamic at 40% of model max context\n\nPushed to:\n- origin/main\n\n",
+        }],
+        metadata: { startedAt: 0, endedAt: 12_000, model: "gpt-5.4", tokens: 351 },
+      }],
+      pendingAI: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([
+      "  Done.",
+      "  ",
+      "  - Commit: 3fb9aa0",
+      "  - Message: make context pressure target dynamic at 40% of model max context",
+      "  ",
+      "  Pushed to:",
+      "  - origin/main",
+      "  Gpt-5.4 | 351 tokens | 12s",
+    ]);
+  });
+
+  test("suppresses trailing blank assistant lines before live metadata", () => {
+    const state = {
+      messages: [],
+      pendingAI: {
+        role: "assistant",
+        blocks: [{ type: "text", text: "Streaming reply\n\n" }],
+        metadata: { startedAt: 0, endedAt: 5_000, model: "gpt-5.4", tokens: 42 },
+      },
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([
+      "  Streaming reply",
+      "  Gpt-5.4 | 42 tokens | 5s",
+    ]);
+  });
+});
+
 describe("block render cache invalidation", () => {
   test("re-renders a text block when its contents change without changing length", () => {
     const block = { type: "text", text: "abc" };
