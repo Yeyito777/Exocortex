@@ -16,6 +16,7 @@ import { clearPrompt } from "./promptstate";
 import { tryCommand } from "./commands";
 import { expandMacros } from "./macros";
 import { render } from "./render";
+import { preserveViewportAcrossResize } from "./chatscroll";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
 import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, pushSystemMessage, resetToolOutputState } from "./state";
 import { createMessageMetadata, createPendingAI, type ImageAttachment } from "./messages";
@@ -479,8 +480,11 @@ async function main(): Promise<void> {
   setupTerminal();
 
   process.stdout.on("resize", () => {
-    state.cols = process.stdout.columns || 80;
-    state.rows = process.stdout.rows || 24;
+    preserveViewportAcrossResize(
+      state,
+      process.stdout.columns || 80,
+      process.stdout.rows || 24,
+    );
     scheduleRender();
   });
 

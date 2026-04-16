@@ -3,6 +3,7 @@
  */
 
 import { buildMessageLines, type RenderLineAnchor, type RenderLineSegment } from "./conversation";
+import { computeBottomLayout } from "./chatlayout";
 import { SIDEBAR_WIDTH } from "./sidebar";
 import type { RenderState } from "./state";
 
@@ -29,10 +30,11 @@ export function getViewStart(state: RenderState): number {
   return getViewStartFor(state.layout.totalLines, state.layout.messageAreaHeight, state.scrollOffset);
 }
 
-type AnchorIndex = WeakMap<object, Map<RenderLineSegment, Map<number, number>>>;
+type AnchorRowMap = Map<number, number>;
+type AnchorIndex = WeakMap<object, Map<RenderLineSegment, Map<number, AnchorRowMap>>>;
 
 function buildAnchorIndex(anchors: RenderLineAnchor[]): AnchorIndex {
-  const byOwner = new WeakMap<object, Map<RenderLineSegment, Map<number, number>>>();
+  const byOwner = new WeakMap<object, Map<RenderLineSegment, Map<number, AnchorRowMap>>>();
   for (let row = 0; row < anchors.length; row++) {
     const anchor = anchors[row];
     let bySegment = byOwner.get(anchor.owner);
@@ -45,14 +47,34 @@ function buildAnchorIndex(anchors: RenderLineAnchor[]): AnchorIndex {
       byIndex = new Map();
       bySegment.set(anchor.segment, byIndex);
     }
-    byIndex.set(anchor.index, row);
+    let bySubIndex = byIndex.get(anchor.index);
+    if (!bySubIndex) {
+      bySubIndex = new Map();
+      byIndex.set(anchor.index, bySubIndex);
+    }
+    bySubIndex.set(anchor.subIndex, row);
   }
   return byOwner;
 }
 
 function findAnchorRow(index: AnchorIndex, anchor: RenderLineAnchor | undefined): number {
   if (!anchor) return -1;
-  return index.get(anchor.owner)?.get(anchor.segment)?.get(anchor.index) ?? -1;
+  const bySubIndex = index.get(anchor.owner)?.get(anchor.segment)?.get(anchor.index);
+  if (!bySubIndex) return -1;
+
+  const exact = bySubIndex.get(anchor.subIndex);
+  if (exact !== undefined) return exact;
+
+  let closestRow = -1;
+  let closestDist = Number.POSITIVE_INFINITY;
+  for (const [subIndex, row] of bySubIndex) {
+    const dist = Math.abs(subIndex - anchor.subIndex);
+    if (dist < closestDist || (dist === closestDist && subIndex < anchor.subIndex)) {
+      closestDist = dist;
+      closestRow = row;
+    }
+  }
+  return closestRow;
 }
 
 /**
@@ -77,6 +99,45 @@ function remapRenderedRow(oldRow: number, oldAnchors: RenderLineAnchor[], newAnc
     if (mapped !== -1) return mapped;
   }
   return 0;
+}
+
+export function preserveViewportAcrossResize(state: RenderState, nextCols: number, nextRows: number): void {
+  const oldCols = state.cols;
+  state.cols = nextCols;
+  state.rows = nextRows;
+
+  const oldMessageAreaHeight = state.layout.messageAreaHeight;
+  if (oldMessageAreaHeight <= 0 || state.layout.totalLines <= 0) return;
+
+  const sidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
+  const oldChatW = Math.max(1, oldCols - sidebarW);
+  const newChatW = Math.max(1, nextCols - sidebarW);
+  const { messageAreaHeight: newMessageAreaHeight } = computeBottomLayout(state, newChatW, nextRows);
+
+  const oldRender = buildMessageLines(state, oldChatW);
+  const newRender = buildMessageLines(state, newChatW);
+  const newAnchorIndex = buildAnchorIndex(newRender.lineAnchors);
+
+  if (state.scrollOffset > 0) {
+    const oldViewStart = getViewStartFor(oldRender.lines.length, oldMessageAreaHeight, state.scrollOffset);
+    const newViewStart = remapRenderedRow(oldViewStart, oldRender.lineAnchors, newAnchorIndex);
+    state.scrollOffset = getScrollOffsetForViewStart(newRender.lines.length, newMessageAreaHeight, newViewStart);
+  }
+
+  state.historyCursor = {
+    ...state.historyCursor,
+    row: remapRenderedRow(state.historyCursor.row, oldRender.lineAnchors, newAnchorIndex),
+  };
+  state.historyVisualAnchor = {
+    ...state.historyVisualAnchor,
+    row: remapRenderedRow(state.historyVisualAnchor.row, oldRender.lineAnchors, newAnchorIndex),
+  };
+
+  state.historyLines = newRender.lines;
+  state.historyWrapContinuation = newRender.wrapContinuation;
+  state.historyMessageBounds = newRender.messageBounds;
+  state.layout.totalLines = newRender.lines.length;
+  state.layout.messageAreaHeight = newMessageAreaHeight;
 }
 
 /**

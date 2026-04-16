@@ -14,12 +14,12 @@
 import type { RenderState } from "./state";
 import type { ImageAttachment } from "./messages";
 import { getViewStart } from "./chatscroll";
-import { renderStatusLine } from "./statusline";
 import { renderTopbar } from "./topbar";
 import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { getSidebarSearchBarViewport } from "./sidebarsearch";
 import { buildMessageLines } from "./conversation";
-import { getInputLines, wrappedLineOffsets } from "./promptline";
+import { wrappedLineOffsets } from "./promptline";
+import { computeBottomLayout, PROMPT_PREFIX_WIDTH } from "./chatlayout";
 import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar, applyLineBg } from "./terminal";
 import { theme } from "./theme";
 import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./historycursor";
@@ -29,7 +29,6 @@ import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
 import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
-import { getRenderedVoicePrompt } from "./voice";
 
 // ── ANSI positioning (non-color escapes) ────────────────────────────
 
@@ -485,14 +484,23 @@ export function render(state: RenderState): void {
   }
   out.push(bgLine(`${historyColor}${"─".repeat(chatW)}${theme.reset}`));
 
-  // ── Input line wrapping ────────────────────────────────────────
-  const promptLen = 4;   // "N > " or "I > "
-  const maxInputWidth = chatW - promptLen;
-  const maxInputRows = Math.min(10, Math.floor((rows - 6) / 2));
-
-  const renderedPrompt = getRenderedVoicePrompt(state.inputBuffer, state.cursorPos, state.voicePrompt);
-  const { lines: inputLines, isNewLine, cursorLine, cursorCol, scrollOffset: newPromptScroll } =
-    getInputLines(renderedPrompt.buffer, renderedPrompt.cursorPos, maxInputWidth, maxInputRows, state.promptScrollOffset);
+  // ── Input line wrapping + bottom layout ─────────────────────────
+  const bottomLayout = computeBottomLayout(state, chatW, rows);
+  const {
+    renderedPrompt,
+    maxInputWidth,
+    input,
+    inputRowCount,
+    status,
+    imageIndicatorRows,
+    searchBarRow,
+    promptSepRow,
+    firstInputRow,
+    sepBelow,
+    bottomStartRow,
+    messageAreaHeight,
+  } = bottomLayout;
+  const { lines: inputLines, isNewLine, cursorLine, cursorCol, scrollOffset: newPromptScroll } = input;
   state.promptScrollOffset = newPromptScroll;
 
   // Syntax-highlight valid commands and macros in the input lines. When voice
@@ -516,20 +524,8 @@ export function render(state: RenderState): void {
     })()
     : highlightPromptInput(state, inputLines, state.inputBuffer, maxInputWidth, newPromptScroll);
 
-  const inputRowCount = inputLines.length;
-
-  // ── Bottom layout: [searchBar] | sep | [imageIndicator] | input rows | sep | status
-  const statusResult = renderStatusLine(state, chatW);
-  const slHeight = statusResult.height;
-  const statusLines = statusResult.lines;
-  const imageIndicatorRows = state.pendingImages.length > 0 ? 1 : 0;
-  const searchBarRows = state.search?.barOpen ? 1 : 0;
-  const bottomUsed = searchBarRows + 1 + imageIndicatorRows + inputRowCount + 1 + slHeight;
-  const bottomStartRow = rows - bottomUsed + 1;
-  const searchBarRow = searchBarRows > 0 ? bottomStartRow : 0;
-  const promptSepRow = bottomStartRow + searchBarRows;
-  const firstInputRow = promptSepRow + 1 + imageIndicatorRows;
-  const sepBelow = firstInputRow + inputRowCount;
+  const slHeight = status.height;
+  const statusLines = status.lines;
 
   // Prompt separator
   const promptFocused = state.panelFocus === "chat" && state.chatFocus === "prompt";
@@ -537,7 +533,6 @@ export function render(state: RenderState): void {
 
   // ── Message area (rows 3 to bottomStartRow-1) ──────────────────
   const messageAreaStart = 3;
-  const messageAreaHeight = bottomStartRow - messageAreaStart;
   const { lines: allLines, messageBounds, wrapContinuation } = buildMessageLines(state, chatW);
   const totalLines = allLines.length;
 
@@ -649,7 +644,17 @@ export function render(state: RenderState): void {
   }
 
   // ── Cursor ─────────────────────────────────────────────────────
-  renderCursorPosition(ctx, state, promptFocused, firstInputRow, cursorLine, cursorCol, promptLen, searchBarRow, chatW);
+  renderCursorPosition(
+    ctx,
+    state,
+    promptFocused,
+    firstInputRow,
+    cursorLine,
+    cursorCol,
+    PROMPT_PREFIX_WIDTH,
+    searchBarRow,
+    chatW,
+  );
 
   process.stdout.write(out.join(""));
 }

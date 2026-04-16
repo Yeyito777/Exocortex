@@ -460,8 +460,10 @@ export interface RenderLineAnchor {
   owner: object;
   /** Segment within the owner (content, metadata, margins, etc). */
   segment: RenderLineSegment;
-  /** Line index within the segment. */
+  /** Logical line index within the segment (increments on hard newlines / semantic rows). */
   index: number;
+  /** Wrapped visual row within that logical line (0 for the first row). */
+  subIndex: number;
 }
 
 export interface BuildMessageLinesResult {
@@ -488,22 +490,37 @@ export function buildMessageLines(
   const messageBounds: MessageBound[] = [];
   const lineAnchors: RenderLineAnchor[] = [];
 
-  const pushAnchoredLine = (line: string, cont: boolean, owner: object, segment: RenderLineSegment, index: number) => {
+  const pushAnchoredLine = (
+    line: string,
+    cont: boolean,
+    owner: object,
+    segment: RenderLineSegment,
+    index: number,
+    subIndex: number,
+  ) => {
     lines.push(line);
     wrapContinuation.push(cont);
-    lineAnchors.push({ owner, segment, index });
+    lineAnchors.push({ owner, segment, index, subIndex });
   };
 
   /** Append block result (lines + continuation flags). */
   const pushBlock = (owner: object, segment: RenderLineSegment, br: WrapResult) => {
+    let logicalIndex = -1;
+    let subIndex = 0;
     for (let i = 0; i < br.lines.length; i++) {
-      pushAnchoredLine(br.lines[i], br.cont[i], owner, segment, i);
+      if (i === 0 || !br.cont[i]) {
+        logicalIndex++;
+        subIndex = 0;
+      } else {
+        subIndex++;
+      }
+      pushAnchoredLine(br.lines[i], br.cont[i], owner, segment, logicalIndex, subIndex);
     }
   };
 
   /** Append a non-wrapped line (margin, metadata, etc). */
   const pushLine = (line: string, owner: object, segment: RenderLineSegment, index = 0) => {
-    pushAnchoredLine(line, false, owner, segment, index);
+    pushAnchoredLine(line, false, owner, segment, index, 0);
   };
 
   const pushMessageBound = (
