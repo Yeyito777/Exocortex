@@ -20,6 +20,7 @@ import { MAX_OUTPUT_CHARS, getString, getNumber, safeSlice, summarizeParams } fr
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { isWindows } from "@exocortex/shared/paths";
 import { rewriteExternalToolShellCommand } from "../external-tools";
+import { log } from "../log";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -36,14 +37,12 @@ function truncLine(line: string, budget: number): string {
   return safeSlice(line, budget) + `... [truncated, ${line.length} chars total]`;
 }
 
-/**
- * When output is too large for the conversation context, save the full
- * text to a temp file and return a head+tail preview with the file path.
- */
-function spillAndPreview(output: string, byteTruncated: boolean): string {
-  const spillPath = join(tmpdir(), `exocortex-bash-${Date.now()}.txt`);
-  writeFileSync(spillPath, output);
-
+function buildSpillPreview(
+  output: string,
+  byteTruncated: boolean,
+  spillPath?: string,
+  spillError?: string,
+): string {
   const lines = output.split("\n");
   const totalLines = lines.length;
 
@@ -76,9 +75,33 @@ function spillAndPreview(output: string, byteTruncated: boolean): string {
     : "";
 
   const truncNote = byteTruncated ? ", byte-truncated at 1MB" : "";
-  const separator = `\n\n... ${omitted.toLocaleString()} lines omitted (${totalLines.toLocaleString()} total${truncNote}). Full output: ${spillPath}\nUse the read tool with offset/limit to browse.\n\n`;
+  const fileNote = spillPath
+    ? `Full output: ${spillPath}\nUse the read tool with offset/limit to browse.`
+    : `Full output could not be written to a temp file${spillError ? ` (${spillError})` : ""}.`;
+  const separator = `\n\n... ${omitted.toLocaleString()} lines omitted (${totalLines.toLocaleString()} total${truncNote}). ${fileNote}\n\n`;
 
   return tail ? head + separator + tail : head + separator;
+}
+
+/**
+ * When output is too large for the conversation context, save the full
+ * text to a temp file and return a head+tail preview with the file path.
+ * If the temp-file write fails, degrade gracefully instead of crashing.
+ */
+export function spillAndPreviewForTest(
+  output: string,
+  byteTruncated: boolean,
+  writer: (spillPath: string, contents: string) => void = writeFileSync,
+): string {
+  const spillPath = join(tmpdir(), `exocortex-bash-${Date.now()}.txt`);
+  try {
+    writer(spillPath, output);
+    return buildSpillPreview(output, byteTruncated, spillPath);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log("warn", `bash: failed to spill oversized output to temp file: ${message}`);
+    return buildSpillPreview(output, byteTruncated, undefined, message);
+  }
 }
 
 // ── Process group kill ─────────────────────────────────────────────
@@ -183,14 +206,30 @@ async function executeBashImpl(
 
     // When backgrounded, output is redirected to this write stream.
     let bgStream: WriteStream | undefined;
+    let bgStreamFailed = false;
+
+    function markBgStreamFailed(err: unknown): void {
+      const message = err instanceof Error ? err.message : String(err);
+      log("warn", `bash: background output stream failed: ${message}`);
+      bgStreamFailed = true;
+      if (bgStream) {
+        bgStream.destroy();
+        bgStream = undefined;
+      }
+    }
 
     function collect(data: Buffer): void {
-      // After backgrounding, write to temp file instead of in-memory buffer
+      // After backgrounding, write to temp file instead of in-memory buffer.
+      // If the temp file becomes unavailable, drop additional output rather than crashing.
       if (bgStream) {
-        bgStream.write(data);
+        try {
+          bgStream.write(data);
+        } catch (err) {
+          markBgStreamFailed(err);
+        }
         return;
       }
-      if (byteTruncated) return;
+      if (bgStreamFailed || byteTruncated) return;
       totalBytes += data.length;
       if (totalBytes > MAX_OUTPUT_BYTES) {
         byteTruncated = true;
@@ -242,10 +281,15 @@ async function executeBashImpl(
         const spillPath = join(tmpdir(), `exocortex-bash-${proc.pid}-${Date.now()}.tmp`);
         const partial = Buffer.concat(chunks).toString("utf8");
 
-        // Open write stream and flush accumulated output to it
-        bgStream = createWriteStream(spillPath);
-        bgStream.write(partial);
-        // New data events will now append to bgStream via collect()
+        try {
+          // Open write stream and flush accumulated output to it.
+          bgStream = createWriteStream(spillPath);
+          bgStream.on("error", markBgStreamFailed);
+          bgStream.write(partial);
+          // New data events will now append to bgStream via collect()
+        } catch (err) {
+          markBgStreamFailed(err);
+        }
 
         const bgSec = Math.round(backgroundAfterMs / 1000);
         const preview = partial.trimEnd();
@@ -258,10 +302,14 @@ async function executeBashImpl(
           : `bash "kill ${proc.pid}"`;
         output += [
           `⏳ Command backgrounded — still running after ${bgSec}s (PID ${proc.pid}).`,
-          `Output is being written to: ${spillPath}`,
-          `• View output so far → read tool on that file`,
+          ...(bgStreamFailed
+            ? [`Output could not be redirected to a temp file. Additional output may be unavailable.`]
+            : [
+                `Output is being written to: ${spillPath}`,
+                `• View output so far → read tool on that file`,
+                `• Wait for it to finish → ${isWindows ? `bash with command "Get-Content -Path '${spillPath}' -Wait -Tail 50" and await=N` : `bash with command "tail -f ${spillPath}" and await=N`} (where N is how long you're willing to wait in seconds, prevents hangs)`,
+              ]),
           `• Check if still running → ${checkCmd}`,
-          `• Wait for it to finish → ${isWindows ? `bash with command "Get-Content -Path '${spillPath}' -Wait -Tail 50" and await=N` : `bash with command "tail -f ${spillPath}" and await=N`} (where N is how long you're willing to wait in seconds, prevents hangs)`,
           `• Stop it → ${stopCmd}`,
         ].join("\n");
 
@@ -279,14 +327,19 @@ async function executeBashImpl(
     proc.on("close", (code, _sig) => {
       if (bgTimer) clearTimeout(bgTimer);
 
-      // If backgrounded, append exit status to the temp file and close
+      // If backgrounded, append exit status to the temp file and close.
+      // Stream failures are already reported via markBgStreamFailed; don't crash here.
       if (bgStream) {
-        if (code !== 0 && code !== null) {
-          bgStream.write(`\n[process exited with code ${code}]\n`);
-        } else {
-          bgStream.write(`\n[process exited successfully]\n`);
+        try {
+          if (code !== 0 && code !== null) {
+            bgStream.write(`\n[process exited with code ${code}]\n`);
+          } else {
+            bgStream.write(`\n[process exited successfully]\n`);
+          }
+          bgStream.end();
+        } catch (err) {
+          markBgStreamFailed(err);
         }
-        bgStream.end();
         bgStream = undefined;
         return;
       }
@@ -298,7 +351,7 @@ async function executeBashImpl(
 
       // If output exceeds context budget, spill to file and return preview
       if (output.length > MAX_OUTPUT_CHARS) {
-        output = spillAndPreview(output, byteTruncated);
+        output = spillAndPreviewForTest(output, byteTruncated);
       } else if (byteTruncated) {
         output += "\n... (output byte-truncated at 1MB)";
       }
