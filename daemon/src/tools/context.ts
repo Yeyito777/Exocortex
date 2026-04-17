@@ -102,6 +102,20 @@ function hasThinking(msg: StoredMessage): boolean {
   return msg.content.some((b: ApiContentBlock) => b.type === "thinking");
 }
 
+/** Estimate tokens from character count, optionally scaling against a known context total. */
+function estimateTokens(chars: number, totalChars: number, knownTotalTokens: number | null | undefined): number {
+  if (knownTotalTokens && totalChars > 0) {
+    return Math.round((chars / totalChars) * knownTotalTokens);
+  }
+  return Math.round(chars / 4);
+}
+
+/** Mark the conversation as structurally changed so token totals get recomputed. */
+function markContextMutated(env: ContextToolEnv): void {
+  env.conv.lastContextTokens = null;
+  env.onContextModified();
+}
+
 // ── Validation helpers ────────────────────────────────────────────
 
 /** Check if an assistant message contains tool_use blocks. */
@@ -211,11 +225,7 @@ function actionList(env: ContextToolEnv): ToolResult {
   const lastCtx = conv.lastContextTokens ?? null;
 
   // Token estimates
-  const estTokens: number[] = charCounts.map(ch =>
-    lastCtx && totalChars > 0
-      ? Math.round((ch / totalChars) * lastCtx)
-      : Math.round(ch / 4),
-  );
+  const estTokens: number[] = charCounts.map(ch => estimateTokens(ch, totalChars, lastCtx));
   const totalTokens = lastCtx ?? estTokens.reduce((a, b) => a + b, 0);
 
   const lines: string[] = [];
@@ -349,7 +359,7 @@ function actionDelete(
   input: Record<string, unknown>,
   env: ContextToolEnv,
 ): ToolResult {
-  const { conv, onContextModified, protectedTailCount } = env;
+  const { conv, protectedTailCount } = env;
   const turnMap = buildHistoryTurnMap(conv.messages);
 
   const { start, end, snapped, error } = validateRange(input, turnMap, conv.messages, protectedTailCount);
@@ -362,9 +372,7 @@ function actionDelete(
   }
   const totalChars = turnMap.reduce((sum, i) => sum + messageChars(conv.messages[i]), 0);
   const lastCtx = conv.lastContextTokens ?? null;
-  const removedTokens = lastCtx && totalChars > 0
-    ? Math.round((removedChars / totalChars) * lastCtx)
-    : Math.round(removedChars / 4);
+  const removedTokens = estimateTokens(removedChars, totalChars, lastCtx);
 
   // Perform the deletion — splice from highest index to lowest
   const indicesToRemove = new Set<number>();
@@ -375,7 +383,7 @@ function actionDelete(
     conv.messages.splice(idx, 1);
   }
 
-  onContextModified();
+  markContextMutated(env);
 
   const count = end - start + 1;
   const snapNote = snapped
@@ -394,7 +402,7 @@ async function actionSummarize(
   env: ContextToolEnv,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
-  const { conv, onContextModified, summarizer, protectedTailCount, summarizeWithInnerLlm } = env;
+  const { conv, summarizer, protectedTailCount, summarizeWithInnerLlm } = env;
   const turnMap = buildHistoryTurnMap(conv.messages);
 
   const { start, end, snapped, error } = validateRange(input, turnMap, conv.messages, protectedTailCount);
@@ -407,9 +415,7 @@ async function actionSummarize(
   }
   const totalChars = turnMap.reduce((sum, i) => sum + messageChars(conv.messages[i]), 0);
   const lastCtx = conv.lastContextTokens ?? null;
-  const originalTokens = lastCtx && totalChars > 0
-    ? Math.round((originalChars / totalChars) * lastCtx)
-    : Math.round(originalChars / 4);
+  const originalTokens = estimateTokens(originalChars, totalChars, lastCtx);
 
   // Extract content for summarization
   const textParts: string[] = [];
@@ -523,7 +529,7 @@ Output plain text, not markdown.`;
   const removeCount = afterStart - insertIdx;
   conv.messages.splice(insertIdx, removeCount, ...replacement);
 
-  onContextModified();
+  markContextMutated(env);
 
   const summaryTokens = Math.round(summaryText.length / 4);
   const snapNote = snapped
@@ -541,7 +547,7 @@ function actionStripThinking(
   input: Record<string, unknown>,
   env: ContextToolEnv,
 ): ToolResult {
-  const { conv, onContextModified, protectedTailCount } = env;
+  const { conv, protectedTailCount } = env;
   const turnMap = buildHistoryTurnMap(conv.messages);
 
   const { start, end, error } = validateRange(input, turnMap, conv.messages, protectedTailCount);
@@ -589,13 +595,11 @@ function actionStripThinking(
     return { output: "No assistant turns with thinking blocks found in the specified range.", isError: false };
   }
 
-  onContextModified();
+  const prevLastCtx = conv.lastContextTokens ?? null;
+  markContextMutated(env);
 
   const totalChars = turnMap.reduce((sum, i) => sum + messageChars(conv.messages[i]), 0) + removedChars;
-  const lastCtx = conv.lastContextTokens ?? null;
-  const removedTokens = lastCtx && totalChars > 0
-    ? Math.round((removedChars / totalChars) * lastCtx)
-    : Math.round(removedChars / 4);
+  const removedTokens = estimateTokens(removedChars, totalChars, prevLastCtx);
 
   const parts = [
     `Stripped thinking from ${strippedCount} assistant turn${strippedCount !== 1 ? "s" : ""}. Removed ~${fmt(removedChars)} chars (~${fmt(removedTokens)} estimated tokens).`,
@@ -615,7 +619,7 @@ function actionStripResults(
   input: Record<string, unknown>,
   env: ContextToolEnv,
 ): ToolResult {
-  const { conv, onContextModified, protectedTailCount } = env;
+  const { conv, protectedTailCount } = env;
   const turnMap = buildHistoryTurnMap(conv.messages);
 
   const { start, end, error } = validateRange(input, turnMap, conv.messages, protectedTailCount);
@@ -655,13 +659,11 @@ function actionStripResults(
     return { output: "No tool results to strip in the specified range.", isError: false };
   }
 
-  onContextModified();
+  const prevLastCtx = conv.lastContextTokens ?? null;
+  markContextMutated(env);
 
   const totalChars = turnMap.reduce((sum, i) => sum + messageChars(conv.messages[i]), 0) + removedChars;
-  const lastCtx = conv.lastContextTokens ?? null;
-  const removedTokens = lastCtx && totalChars > 0
-    ? Math.round((removedChars / totalChars) * lastCtx)
-    : Math.round(removedChars / 4);
+  const removedTokens = estimateTokens(removedChars, totalChars, prevLastCtx);
 
   return {
     output: `Stripped ${strippedCount} tool result${strippedCount !== 1 ? "s" : ""}. Removed ~${fmt(removedChars)} chars (~${fmt(removedTokens)} estimated tokens).`,
