@@ -181,7 +181,7 @@ const MACROS: MacroDef[] = [
       },
     ],
   },
-  { name: "/update", desc: "Update Exocortex", expansion: `Update Exocortex. Pull the latest changes from git, install dependencies, and restart the daemon:\n\n  cd ${EXO_ROOT} && git pull && bun install --frozen-lockfile && systemctl --user restart exocortex-daemon.service\n\nWarn me before restarting the daemon — it will kill your current session.` },
+  { name: "/update", desc: "Update Exocortex", expansion: "Update Exocortex. Pull the latest changes from github, install anything that needs to be installed and then tell me to run \"exocortexd restart\" in my terminal when ready" },
 ];
 
 // ── Recursive flattening helpers ────────────────────────────────
