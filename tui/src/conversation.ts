@@ -78,6 +78,12 @@ interface RenderLogicalLine {
 interface SegmentedBashRenderOptions {
   requirePrompts: boolean;
   stripPromptPrefix: boolean;
+  allowSimpleExternalLines?: boolean;
+}
+
+interface PendingHeredoc {
+  terminator: string;
+  allowTabs: boolean;
 }
 
 const blockRenderCache = new WeakMap<Block, BlockCacheEntry>();
@@ -200,6 +206,26 @@ function appendParentBashOptionContinuation(logical: RenderLogicalLine[], text: 
   return true;
 }
 
+function parseLineHeredocSpecs(line: string): PendingHeredoc[] {
+  const specs: PendingHeredoc[] = [];
+  const regex = /<<(-)?\s*(?:'([^']*)'|"([^"]*)"|\\?([^\s'"`]+))/g;
+
+  for (const match of line.matchAll(regex)) {
+    const terminator = match[2] ?? match[3] ?? match[4];
+    if (!terminator) continue;
+    specs.push({
+      terminator: terminator.startsWith("\\") ? terminator.slice(1) : terminator,
+      allowTabs: match[1] === "-",
+    });
+  }
+
+  return specs;
+}
+
+function isHeredocTerminatorLine(line: string, spec: PendingHeredoc): boolean {
+  return spec.allowTabs ? line.replace(/^\t+/, "") === spec.terminator : line === spec.terminator;
+}
+
 function renderSegmentedBashLines(
   summary: string,
   toolRegistry: ToolDisplayInfo[],
@@ -209,42 +235,71 @@ function renderSegmentedBashLines(
   if (options.requirePrompts && !isPromptedBashTranscript(summary)) return null;
 
   const rawLines = summary.trimStart().split("\n");
-  const parsedLines = rawLines.map((rawLine) => {
+  const parsedLines: Array<{
+    rawLine: string;
+    lineText: string;
+    lineMatch: BashExternalMatch | null;
+    segments: ReturnType<typeof splitTopLevelShellSegments>;
+    matches: Array<BashExternalMatch | null>;
+    nonEmptySegments: Array<ReturnType<typeof splitTopLevelShellSegments>[number]>;
+    hasSegmentMatch: boolean;
+    inHeredocBody: boolean;
+  }> = [];
+  const pendingHeredocs: PendingHeredoc[] = [];
+
+  for (const rawLine of rawLines) {
     const trimmed = rawLine.trimStart();
     const commandLine = options.stripPromptPrefix && trimmed.startsWith("$ ")
       ? trimmed.slice(2)
       : rawLine;
     const lineText = options.stripPromptPrefix ? commandLine : rawLine;
-    const lineMatch = resolveBashExternalMatch(lineText, externalToolStyles);
-    const segments = splitTopLevelShellSegments(commandLine);
-    const matches = segments.map((segment) => {
-      const text = segment.text.trim();
-      return text ? resolveBashExternalMatch(text, externalToolStyles) : null;
-    });
-    const nonEmptySegments = segments.filter(segment => segment.text.trim());
-    const hasSegmentMatch = matches.some(Boolean);
-    return { rawLine, commandLine, lineText, lineMatch, segments, matches, nonEmptySegments, hasSegmentMatch };
-  });
+    const inHeredocBody = pendingHeredocs.length > 0;
+
+    let lineMatch: BashExternalMatch | null = null;
+    let segments: ReturnType<typeof splitTopLevelShellSegments> = [];
+    let matches: Array<BashExternalMatch | null> = [];
+    let nonEmptySegments: Array<ReturnType<typeof splitTopLevelShellSegments>[number]> = [];
+    let hasSegmentMatch = false;
+
+    if (inHeredocBody) {
+      while (pendingHeredocs.length > 0 && isHeredocTerminatorLine(commandLine, pendingHeredocs[0])) {
+        pendingHeredocs.shift();
+      }
+    } else {
+      lineMatch = resolveBashExternalMatch(lineText, externalToolStyles);
+      segments = splitTopLevelShellSegments(commandLine);
+      matches = segments.map((segment) => {
+        const text = segment.text.trim();
+        return text ? resolveBashExternalMatch(text, externalToolStyles) : null;
+      });
+      nonEmptySegments = segments.filter(segment => segment.text.trim());
+      hasSegmentMatch = matches.some(Boolean);
+      pendingHeredocs.push(...parseLineHeredocSpecs(commandLine.trimStart()));
+    }
+
+    parsedLines.push({ rawLine, lineText, lineMatch, segments, matches, nonEmptySegments, hasSegmentMatch, inHeredocBody });
+  }
 
   if (!options.requirePrompts) {
     const hasMixedLine = parsedLines.some(({ nonEmptySegments, hasSegmentMatch }) =>
       nonEmptySegments.length > 1 && hasSegmentMatch);
-    if (!hasMixedLine) return null;
+    const hasSimpleExternalLine = parsedLines.some(({ lineMatch }) => !!lineMatch);
+    if (!hasMixedLine && !(options.allowSimpleExternalLines && hasSimpleExternalLine)) return null;
   }
 
   const logical: RenderLogicalLine[] = [];
   const bashDisplay = resolveToolDisplay("bash", "", toolRegistry, []);
 
-  for (const { rawLine, lineText, lineMatch, segments, matches, nonEmptySegments, hasSegmentMatch } of parsedLines) {
+  for (const { rawLine, lineText, lineMatch, segments, matches, nonEmptySegments, hasSegmentMatch, inHeredocBody } of parsedLines) {
     if (!rawLine.trim()) {
       pushLogicalLine(logical, bashDisplay, "", false);
       continue;
     }
 
-    if (appendParentBashOptionContinuation(logical, lineText)) continue;
+    if (!inHeredocBody && appendParentBashOptionContinuation(logical, lineText)) continue;
 
-    if (lineMatch || nonEmptySegments.length <= 1 || !hasSegmentMatch) {
-      appendMatchedBashSegment(logical, bashDisplay, lineText, lineMatch);
+    if (inHeredocBody || lineMatch || nonEmptySegments.length <= 1 || !hasSegmentMatch) {
+      appendMatchedBashSegment(logical, bashDisplay, lineText, inHeredocBody ? null : lineMatch);
       continue;
     }
 
@@ -345,7 +400,16 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
             break;
           }
         } else {
-          pushCommandDetail(logical, display);
+          const segmented = block.toolName === "bash"
+            ? renderSegmentedBashLines(block.summary, toolRegistry, externalToolStyles, {
+                requirePrompts: false,
+                stripPromptPrefix: false,
+                allowSimpleExternalLines: true,
+              })
+            : null;
+
+          if (segmented) logical.push(...segmented);
+          else pushCommandDetail(logical, display);
         }
       }
 

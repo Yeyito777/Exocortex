@@ -274,6 +274,87 @@ describe("tool call rendering", () => {
     expect(rendered).toContain("  $ ps -eo pid,args | grep '[q]emu-system-x86_64' || true --timeout 120000");
   });
 
+  test("styles later external-tool lines in unprompted multiline bash transcripts", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "bash",
+          input: {},
+          summary: [
+            "set -euo pipefail",
+            "WID=$(xdotool search --name 'QEMU \\(exo-windows\\)' | head -n1)",
+            "xdotool windowactivate --sync \"$WID\"",
+            "for X in 1040 1060 1080 1100; do",
+            "for Y in 530 545 560; do",
+            "xdotool mousemove --window \"$WID\" --sync $X $Y click 1",
+            "sleep 0.15",
+            "done",
+            "done",
+            "sleep 4",
+            "vm screenshot windows --out /home/yeyito/Workspace/virtual-machines/windows/logs/spice-driver-x11click3.png",
+            "ls -l /home/yeyito/Workspace/virtual-machines/windows/logs/spice-driver-x11click3.png --timeout 240000",
+          ].join("\n"),
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
+      externalToolStyles: [{ cmd: "vm", label: "VM", color: "#7c3aed" }],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 240).lines.map(stripAnsi);
+
+    expect(rendered).toContain("  $ set -euo pipefail");
+    expect(rendered).toContain("  $ WID=$(xdotool search --name 'QEMU \\(exo-windows\\)' | head -n1)");
+    expect(rendered).toContain('  $ xdotool windowactivate --sync "$WID"');
+    expect(rendered).toContain("  VM screenshot windows --out /home/yeyito/Workspace/virtual-machines/windows/logs/spice-driver-x11click3.png");
+    expect(rendered).toContain("  $ ls -l /home/yeyito/Workspace/virtual-machines/windows/logs/spice-driver-x11click3.png --timeout 240000");
+  });
+
+  test("does not style external-tool names that appear inside heredoc bodies during linewise bash rendering", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "bash",
+          input: {},
+          summary: [
+            "cat > /tmp/vm-script.sh <<'EOF'",
+            "vm screenshot windows --out /tmp/not-a-real-call.png",
+            "EOF",
+            "echo before",
+            "vm screenshot windows --out /tmp/real-call.png",
+            "echo done",
+          ].join("\n"),
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
+      externalToolStyles: [{ cmd: "vm", label: "VM", color: "#7c3aed" }],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 240).lines.map(stripAnsi);
+
+    expect(rendered).not.toContain("  VM screenshot windows --out /tmp/not-a-real-call.png");
+    expect(rendered).toContain("  $ cat > /tmp/vm-script.sh <<'EOF'");
+    expect(rendered).toContain("  $ vm screenshot windows --out /tmp/not-a-real-call.png");
+    expect(rendered).toContain("  $ echo before");
+    expect(rendered).toContain("  VM screenshot windows --out /tmp/real-call.png");
+    expect(rendered).toContain("  $ echo done");
+  });
+
   test("styles external tools after a piped multiline heredoc/subshell prelude", () => {
     const state = {
       messages: [{
