@@ -151,6 +151,7 @@ const MACROS: MacroDef[] = [
   { name: "/questions", desc: "Any questions?", expansion: "Before we proceed, any questions?" },
   { name: "/thoughts", desc: "Tell me your thoughts", expansion: "Can you tell me your thoughts on this?" },
   { name: "/long", desc: "Work until complete", expansion: "This is a long running task, work tirelessly until you can verify that everything is complete and correct" },
+  { name: "/xenv", desc: "Test in xenv until complete", expansion: "You're going to test this in a xenv and go into a loop: build → test in xenv → fix anything that's wrong → ... until it's complete" },
   { name: "/opensource", desc: "Open-source and publish this", expansion: "Start git tracking this make a gitignore, MIT license it, make upstream repo with gh tool, make it public, give brief description, and commit and push" },
   { name: "/diagnose", desc: "Pinpoint the cause", expansion: "Can you pinpoint the exact cause and tell me your diagnosis?" },
   { name: "/quality", desc: "Code quality assessment", expansion: "Give the changes a code quality assesment. Is there anything that should be split off into other files, de-duplicated, or made more clear? If so, do it." },

@@ -9,6 +9,12 @@ afterEach(() => {
   rmSync(TEST_TOOL_DIR, { recursive: true, force: true });
 });
 
+describe("macro expansion", () => {
+  test("/xenv expands to the xenv test loop prompt", () => {
+    expect(expandMacros("/xenv")).toBe("You're going to test this in a xenv and go into a loop: build → test in xenv → fix anything that's wrong → ... until it's complete");
+  });
+});
+
 describe("tool macros", () => {
   test("/tool exposes both install and uninstall actions", () => {
     expect(getMacroArgs()["/tool"]?.map(arg => arg.name)).toEqual(["install", "uninstall"]);
