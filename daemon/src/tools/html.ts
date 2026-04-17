@@ -6,7 +6,31 @@
  * into an LLM — not aiming for perfect markdown fidelity.
  */
 
-export function htmlToMarkdown(html: string): string {
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)))
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)))
+    .replace(/&[a-z]+;/gi, "");
+}
+
+function normalizeUrl(url: string, baseUrl?: string): string {
+  const decoded = decodeHtmlEntities(url.trim());
+  if (!decoded) return decoded;
+  if (!baseUrl) return decoded;
+  try {
+    return new URL(decoded, baseUrl).toString();
+  } catch {
+    return decoded;
+  }
+}
+
+export function htmlToMarkdown(html: string, baseUrl?: string): string {
   let text = html;
 
   // Remove script, style, and head sections
@@ -43,11 +67,17 @@ export function htmlToMarkdown(html: string): string {
   });
 
   // Links
-  text = text.replace(/<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, "[$2]($1)");
+  text = text.replace(/<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href, label) => {
+    return `[${label}](${normalizeUrl(href, baseUrl)})`;
+  });
 
   // Images
-  text = text.replace(/<img[^>]+alt="([^"]*)"[^>]+src="([^"]*)"[^>]*>/gi, "![$1]($2)");
-  text = text.replace(/<img[^>]+src="([^"]*)"[^>]*>/gi, "![]($1)");
+  text = text.replace(/<img[^>]+alt="([^"]*)"[^>]+src="([^"]*)"[^>]*>/gi, (_, alt, src) => {
+    return `![${alt}](${normalizeUrl(src, baseUrl)})`;
+  });
+  text = text.replace(/<img[^>]+src="([^"]*)"[^>]*>/gi, (_, src) => {
+    return `![](${normalizeUrl(src, baseUrl)})`;
+  });
 
   // Lists
   text = text.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, "- $1\n");
@@ -64,14 +94,7 @@ export function htmlToMarkdown(html: string): string {
   text = text.replace(/<[^>]+>/g, "");
 
   // Decode common HTML entities
-  text = text.replace(/&amp;/g, "&");
-  text = text.replace(/&lt;/g, "<");
-  text = text.replace(/&gt;/g, ">");
-  text = text.replace(/&quot;/g, '"');
-  text = text.replace(/&#39;/g, "'");
-  text = text.replace(/&nbsp;/g, " ");
-  text = text.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)));
-  text = text.replace(/&[a-z]+;/gi, "");
+  text = decodeHtmlEntities(text);
 
   // ── Post-processing cleanup ──────────────────────────────────
   // Strip lines that are only pipes, whitespace, or orphaned markdown

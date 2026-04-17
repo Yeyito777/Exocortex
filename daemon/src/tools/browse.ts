@@ -2,14 +2,17 @@
  * Browse tool — fetch and read web pages.
  *
  * Fetches a URL, converts HTML to markdown, then passes the content
- * through a provider-aware inner LLM call to produce a focused summary
- * with relevant links preserved. Caches raw fetches for 15 minutes.
+ * through a provider-aware inner LLM call to produce a focused summary.
+ * A deterministic Relevant Links section is appended to every result so
+ * the outer agent can continue exploring without depending entirely on
+ * the inner summarizer's link choices. Caches raw fetches for 15 minutes.
  * Handles HTML, JSON, and plain text content types.
  */
 
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
-import { cap, getString, summarizeParams } from "./util";
+import { MAX_OUTPUT_CHARS, getString, safeSlice, summarizeParams } from "./util";
 import { htmlToMarkdown } from "./html";
+import { buildRelevantLinksSection, extractRelevantLinks, extractRelevantLinksFromJson } from "./browse/index";
 import { complete } from "../llm";
 import { log } from "../log";
 import { getInnerLlmSummaryOptions } from "./inner-llm";
@@ -21,7 +24,7 @@ const MAX_CACHE_ENTRIES = 50;
 
 // ── Cache ──────────────────────────────────────────────────────────
 
-const fetchCache = new Map<string, { content: string; ts: number }>();
+const fetchCache = new Map<string, { content: string; pageUrl: string; jsonData?: unknown; ts: number }>();
 
 function cleanCache(): void {
   const now = Date.now();
@@ -30,7 +33,7 @@ function cleanCache(): void {
   }
 }
 
-function setCacheEntry(url: string, content: string): void {
+function setCacheEntry(url: string, pageUrl: string, content: string, jsonData?: unknown): void {
   // Evict the oldest entry by timestamp when at capacity
   if (fetchCache.size >= MAX_CACHE_ENTRIES) {
     let oldestKey: string | null = null;
@@ -40,7 +43,37 @@ function setCacheEntry(url: string, content: string): void {
     }
     if (oldestKey !== null) fetchCache.delete(oldestKey);
   }
-  fetchCache.set(url, { content, ts: Date.now() });
+  fetchCache.set(url, { content, pageUrl, jsonData, ts: Date.now() });
+}
+
+function capWithSuffix(prefix: string, suffix: string): string {
+  const separator = "\n\n";
+  const combined = prefix.trimEnd() + separator + suffix;
+  if (combined.length <= MAX_OUTPUT_CHARS) return combined;
+
+  const notice = "\n... output truncated (kept Relevant Links section)";
+  const budget = MAX_OUTPUT_CHARS - separator.length - suffix.length - notice.length;
+  if (budget <= 0) return safeSlice(combined, MAX_OUTPUT_CHARS);
+
+  return safeSlice(prefix.trimEnd(), budget) + notice + separator + suffix;
+}
+
+function blockedAccessSummary(pageUrl: string, markdown: string): string | null {
+  try {
+    const page = new URL(pageUrl);
+    if (page.host === "crates.io" && /API data access policy/i.test(markdown)) {
+      return [
+        `Summary of ${pageUrl}:`,
+        "",
+        "This page did not return the crate details. crates.io responded with an access-policy block message instead of the normal crate page.",
+        "",
+        "The visible response says the request appears to violate the crates.io API/data-access policy and directs the reader to the policy page for guidance.",
+      ].join("\n");
+    }
+  } catch {
+    // Ignore invalid URLs here.
+  }
+  return null;
 }
 
 // ── LLM summarization ─────────────────────────────────────────────
@@ -49,7 +82,8 @@ const SUMMARIZE_SYSTEM = [
   "You are a web page summarizer. You receive the markdown content of a web page and a user prompt describing what they're looking for.",
   "Your job:",
   "- Produce a clear, focused summary that addresses the user's prompt.",
-  "- Preserve all relevant URLs as markdown links — the reader needs them to navigate.",
+  "- Mention links inline only when they are important to understanding the page.",
+  "- Do not add a separate links section; the tool will append a deterministic Relevant Links section automatically.",
   "- If the page contains code snippets relevant to the prompt, include them.",
   "- Omit navigation boilerplate, ads, cookie banners, and other noise.",
   "- Keep the summary concise but complete. Don't omit important details.",
@@ -116,10 +150,14 @@ async function executeBrowse(input: Record<string, unknown>, context?: ToolExecu
     cleanCache();
     const cached = fetchCache.get(fetchUrl);
     let markdown: string;
+    let pageUrl: string;
+    let jsonData: unknown = null;
 
     if (cached) {
       log("debug", `browse: cache hit for ${fetchUrl}`);
       markdown = cached.content;
+      pageUrl = cached.pageUrl;
+      jsonData = cached.jsonData ?? null;
     } else {
       log("info", `browse: fetching ${fetchUrl}`);
       const res = await fetch(fetchUrl, {
@@ -134,6 +172,7 @@ async function executeBrowse(input: Record<string, unknown>, context?: ToolExecu
 
       // Check for cross-host redirects
       const finalUrl = res.url;
+      pageUrl = finalUrl || fetchUrl;
       if (finalUrl) {
         try {
           const finalParsed = new URL(finalUrl);
@@ -154,28 +193,40 @@ async function executeBrowse(input: Record<string, unknown>, context?: ToolExecu
       const rawBody = await res.text();
 
       if (contentType.includes("text/html") || contentType.includes("application/xhtml")) {
-        markdown = htmlToMarkdown(rawBody);
+        markdown = htmlToMarkdown(rawBody, pageUrl);
       } else if (contentType.includes("application/json")) {
         try {
-          markdown = "```json\n" + JSON.stringify(JSON.parse(rawBody), null, 2) + "\n```";
+          jsonData = JSON.parse(rawBody);
+          markdown = "```json\n" + JSON.stringify(jsonData, null, 2) + "\n```";
         } catch {
           markdown = rawBody;
+          jsonData = null;
         }
       } else {
         markdown = rawBody;
       }
 
       // Cache the result (respects MAX_CACHE_ENTRIES, evicts oldest by timestamp)
-      setCacheEntry(fetchUrl, markdown);
+      setCacheEntry(fetchUrl, pageUrl, markdown, jsonData ?? undefined);
     }
 
     if (!markdown.trim()) {
       return { output: "The page returned no content.", isError: false };
     }
 
+    const relevantLinks = jsonData != null
+      ? extractRelevantLinksFromJson(jsonData, pageUrl, prompt)
+      : extractRelevantLinks(markdown, pageUrl, prompt);
+    const relevantLinksSection = buildRelevantLinksSection(relevantLinks);
+
+    const blockedSummary = blockedAccessSummary(pageUrl, markdown);
+    if (blockedSummary) {
+      return { output: capWithSuffix(blockedSummary, relevantLinksSection), isError: false };
+    }
+
     // ── Summarize through the active provider's inner LLM ──────
-    const summary = await summarizeContent(fetchUrl, markdown, prompt, context, signal);
-    return { output: cap(summary), isError: false };
+    const summary = await summarizeContent(pageUrl, markdown, prompt, context, signal);
+    return { output: capWithSuffix(summary, relevantLinksSection), isError: false };
   } catch (err) {
     // Abort: return a clean non-error message instead of a scary stack trace
     if (err instanceof DOMException && err.name === "AbortError") {
@@ -208,6 +259,7 @@ export const browse: Tool = {
     },
     required: ["url", "prompt"],
   },
+  systemHint: "Browse automatically appends a deterministic Relevant Links section. Focus the prompt on what to extract or summarize from the page; usually you do not need to ask it to preserve or restate links.",
   display: {
     label: "Browse",
     color: "#50c8c8",  // teal
