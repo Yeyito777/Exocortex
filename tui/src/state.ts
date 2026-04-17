@@ -98,6 +98,8 @@ export interface RenderState {
   messages: Message[];
   /** The AI message currently being streamed (not yet finalized). */
   pendingAI: AIMessage | null;
+  /** True when pendingAI was hydrated from a daemon snapshot rather than live local chunks. */
+  pendingAIHydratedFromSnapshot: boolean;
   provider: ProviderId;
   hasChosenProvider: boolean;
   model: ModelId;
@@ -203,6 +205,7 @@ export function isStreaming(state: RenderState): boolean {
 /** Clear pending AI state — always use this instead of setting pendingAI = null directly. */
 export function clearPendingAI(state: RenderState): void {
   state.pendingAI = null;
+  state.pendingAIHydratedFromSnapshot = false;
   state.pendingAICommittedIndex = null;
 }
 
@@ -319,6 +322,7 @@ export function createInitialState(): RenderState {
   const s: RenderState = {
     messages: [],
     pendingAI: null,
+    pendingAIHydratedFromSnapshot: false,
     provider,
     hasChosenProvider: preferredProvider !== null,
     model: DEFAULT_MODEL_BY_PROVIDER[provider],

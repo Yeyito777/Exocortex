@@ -106,9 +106,10 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     await handle({} as never, { type: "load_conversation", convId });
 
     expect(sent.map((event) => event.type)).toEqual(["conversation_loaded"]);
+    expect(sent[0]).not.toHaveProperty("pendingAI");
   });
 
-  test("still sends streaming_started while the live reply is genuinely in flight", async () => {
+  test("includes the live assistant snapshot in conversation_loaded and still sends streaming_started for catch-up", async () => {
     const convId = mkId("live-window");
     create(convId, "openai", "gpt-5.4");
     const conv = get(convId)!;
@@ -133,5 +134,18 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     await handle({} as never, { type: "load_conversation", convId });
 
     expect(sent.map((event) => event.type)).toEqual(["conversation_loaded", "streaming_started"]);
+    expect(sent[0]).toMatchObject({
+      type: "conversation_loaded",
+      pendingAI: {
+        blocks: [{ type: "text", text: "partial tail" }],
+        metadata: { startedAt: 1, endedAt: null, model: "gpt-5.4", tokens: 0 },
+      },
+    });
+    expect(sent[1]).toMatchObject({
+      type: "streaming_started",
+      startedAt: 1,
+      blocks: [{ type: "text", text: "partial tail" }],
+      tokens: 0,
+    });
   });
 });

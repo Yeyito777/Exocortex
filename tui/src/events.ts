@@ -9,7 +9,7 @@ import type { RenderState } from "./state";
 import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, resolveSystemMessageColor, resetToolOutputState, setCurrentConversationToolOutputAvailability, setLoadedConversationToolOutputState } from "./state";
 import { preserveViewportAcrossHistoryMutation, toggleToolOutputPreservingViewport } from "./chatscroll";
 import { DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER, ensureCurrentBlock, createMessageMetadata, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI, replacePendingStreamingTail } from "./messages";
-import type { ImageAttachment } from "./messages";
+import type { AIMessage, ImageAttachment, Block } from "./messages";
 import { syncChosenProvider } from "./providerselection";
 import {
   focusConversationById,
@@ -52,6 +52,69 @@ function pushDisplayEntries(state: RenderState, entries: DisplayEntry[]): void {
   }
 }
 
+function textsCompatible(a: string, b: string): boolean {
+  return a === b || a.startsWith(b) || b.startsWith(a);
+}
+
+function blocksMatch(a: Block, b: Block): boolean {
+  if (a.type !== b.type) return false;
+  switch (a.type) {
+    case "text":
+    case "thinking":
+      return b.type === a.type && textsCompatible(a.text, b.text);
+    case "tool_call":
+      // Compact conversation loads regenerate summaries and may normalize tool
+      // inputs, so the stable identity here is the tool call id.
+      return b.type === "tool_call" && a.toolCallId === b.toolCallId;
+    case "tool_result":
+      // Compact conversation loads intentionally omit tool_result payloads, so
+      // matching on output would make every reload fail to subtract completed
+      // tool rounds and would duplicate them in pendingAI.
+      return b.type === "tool_result"
+        && a.toolCallId === b.toolCallId
+        && a.isError === b.isError;
+  }
+}
+
+function subtractLoadedAssistantPrefix(localBlocks: Block[], entries: DisplayEntry[]): Block[] {
+  if (localBlocks.length === 0) return [];
+  let loadedAiBlocks: Block[] | null = null;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry.type === "ai") {
+      loadedAiBlocks = entry.blocks;
+      break;
+    }
+  }
+  if (!loadedAiBlocks || loadedAiBlocks.length === 0) return [...localBlocks];
+  if (loadedAiBlocks.length > localBlocks.length) return [...localBlocks];
+  for (let i = 0; i < loadedAiBlocks.length; i++) {
+    if (!blocksMatch(localBlocks[i], loadedAiBlocks[i])) return [...localBlocks];
+  }
+  return localBlocks.slice(loadedAiBlocks.length);
+}
+
+function clonePendingAI(msg: Pick<AIMessage, "blocks" | "metadata">): AIMessage {
+  return {
+    role: "assistant",
+    blocks: [...msg.blocks],
+    metadata: msg.metadata ? { ...msg.metadata } : null,
+  };
+}
+
+function markPendingAILive(state: RenderState): AIMessage | null {
+  if (!state.pendingAI) return null;
+  state.pendingAIHydratedFromSnapshot = false;
+  return state.pendingAI;
+}
+
+function hydratePendingAIFromSnapshot(
+  state: RenderState,
+  snapshot: Pick<AIMessage, "blocks" | "metadata">,
+): void {
+  state.pendingAI = clonePendingAI(snapshot);
+  state.pendingAIHydratedFromSnapshot = true;
+}
 
 function applyToolOutputs(state: RenderState, outputs: Array<{ toolCallId: string; output: string }>): void {
   const byId = new Map(outputs.map((item) => [item.toolCallId, item.output]));
@@ -167,50 +230,71 @@ export function handleEvent(
       // Original client already has pendingAI from handleSubmit.
       if (!state.pendingAI) {
         syncChosenProvider(state, event.provider ?? fallbackProvider(state));
-        state.pendingAI = createPendingAI(event.startedAt, event.model);
+        hydratePendingAIFromSnapshot(state, createPendingAI(event.startedAt, event.model));
+      } else if (!state.pendingAI.metadata) {
+        state.pendingAI.metadata = createMessageMetadata(event.startedAt, event.model);
+      } else {
+        state.pendingAI.metadata.startedAt = event.startedAt;
+        state.pendingAI.metadata.model = event.model;
+        state.pendingAI.metadata.endedAt = null;
       }
-      // Populate with accumulated blocks from daemon (late-join catch-up)
-      if (event.blocks && event.blocks.length > 0 && state.pendingAI.blocks.length === 0) {
-        state.pendingAI.blocks = [...event.blocks];
+      const pending = state.pendingAI;
+      if (!pending) break;
+      // Only replace blocks when we do not already have live local state. A
+      // same-conversation reload can deliver an older snapshot after newer local
+      // chunks were already rendered; clobbering with that stale snapshot makes
+      // already-streamed text disappear until completion.
+      if (event.blocks && (state.pendingAIHydratedFromSnapshot || pending.blocks.length === 0)) {
+        pending.blocks = [...event.blocks];
+        state.pendingAIHydratedFromSnapshot = true;
       }
-      // Restore accumulated token count for late-joining clients
-      if (event.tokens && state.pendingAI.metadata!.tokens === 0) {
-        state.pendingAI.metadata!.tokens = event.tokens;
+      // Restore accumulated token count for late-joining clients.
+      if (typeof event.tokens === "number") {
+        if (state.pendingAIHydratedFromSnapshot || pending.metadata!.tokens === 0 || event.tokens >= pending.metadata!.tokens) {
+          pending.metadata!.tokens = event.tokens;
+        }
       }
       break;
     }
 
     case "block_start": {
-      if (state.pendingAI) {
-        state.pendingAI.blocks.push({ type: event.blockType, text: "" });
+      const pending = markPendingAILive(state);
+      if (pending) {
+        pending.blocks.push({ type: event.blockType, text: "" });
       }
       break;
     }
 
     case "text_chunk": {
-      if (state.pendingAI) {
-        const block = ensureCurrentBlock(state.pendingAI, "text");
+      const pending = markPendingAILive(state);
+      if (pending) {
+        const block = ensureCurrentBlock(pending, "text");
         if (block.type === "text") block.text += event.text;
       }
       break;
     }
 
     case "thinking_chunk": {
-      if (state.pendingAI) {
-        const block = ensureCurrentBlock(state.pendingAI, "thinking");
+      const pending = markPendingAILive(state);
+      if (pending) {
+        const block = ensureCurrentBlock(pending, "thinking");
         if (block.type === "thinking") block.text += event.text;
       }
       break;
     }
 
     case "streaming_sync": {
-      if (state.pendingAI) replacePendingStreamingTail(state.pendingAI, event.blocks);
+      const pending = markPendingAILive(state);
+      if (pending) {
+        replacePendingStreamingTail(pending, event.blocks);
+      }
       break;
     }
 
     case "tool_call": {
-      if (state.pendingAI) {
-        state.pendingAI.blocks.push({
+      const pending = markPendingAILive(state);
+      if (pending) {
+        pending.blocks.push({
           type: "tool_call",
           toolCallId: event.toolCallId,
           toolName: event.toolName,
@@ -222,8 +306,9 @@ export function handleEvent(
     }
 
     case "tool_result": {
-      if (state.pendingAI) {
-        state.pendingAI.blocks.push({
+      const pending = markPendingAILive(state);
+      if (pending) {
+        pending.blocks.push({
           type: "tool_result",
           toolCallId: event.toolCallId,
           toolName: event.toolName,
@@ -367,18 +452,26 @@ export function handleEvent(
     }
 
     case "conversation_loaded": {
+      const previousConvId = state.convId;
+      const preserveLivePendingAI = previousConvId === event.convId && state.pendingAI !== null;
+      const preservedPendingAIBlocks = preserveLivePendingAI
+        ? subtractLoadedAssistantPrefix(state.pendingAI!.blocks, event.entries)
+        : [];
+      const preservedPendingAI = preserveLivePendingAI && preservedPendingAIBlocks.length > 0
+        ? clonePendingAI({ blocks: preservedPendingAIBlocks, metadata: state.pendingAI!.metadata })
+        : null;
       // Unsubscribe from old conversation before switching
-      if (state.convId && state.convId !== event.convId) {
-        daemon.unsubscribe(state.convId);
+      if (previousConvId && previousConvId !== event.convId) {
+        daemon.unsubscribe(previousConvId);
         // Clear stale queue shadows — the daemon owns the real queue
         // and will drain it regardless; we won't receive streaming_stopped
         // after unsubscribing, so clean up now.
-        clearLocalQueue(state, state.convId);
+        clearLocalQueue(state, previousConvId);
       }
       state.messages = [];
       clearPendingAI(state);
       clearStreamingTailMessages(state);
-      rememberEnteredConversation(state.sidebar, state.convId, event.convId);
+      rememberEnteredConversation(state.sidebar, previousConvId, event.convId);
       state.convId = event.convId;
       focusConversationById(state.sidebar, event.convId);
       syncChosenProvider(state, event.provider ?? fallbackProvider(state));
@@ -391,6 +484,13 @@ export function handleEvent(
 
       // Entries arrive in display order — just map to TUI message types
       pushDisplayEntries(state, event.entries);
+
+      if (preservedPendingAI) {
+        state.pendingAI = preservedPendingAI;
+        state.pendingAIHydratedFromSnapshot = false;
+      } else if (event.pendingAI) {
+        hydratePendingAIFromSnapshot(state, event.pendingAI);
+      }
 
       // Rebuild local queue shadows from daemon state
       clearLocalQueue(state, event.convId);

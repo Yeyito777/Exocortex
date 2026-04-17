@@ -414,8 +414,10 @@ export interface ConversationLoadedEvent {
   model: ModelId;
   effort: EffortLevel;
   fastMode: boolean;
-  /** All messages in display order. */
+  /** All messages in display order, excluding the currently in-flight assistant tail. */
   entries: DisplayEntry[];
+  /** Live assistant snapshot for actively streaming conversations. */
+  pendingAI?: AIMessagePayload;
   /** Last known input token count for this conversation. */
   contextTokens: number | null;
   /** Whether tool_result block outputs are present in entries. */

@@ -14,7 +14,7 @@ import { complete } from "./llm";
 import { buildAnthropicSystemPrompt, buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles } from "./external-tools";
-import { EFFORT_LEVELS } from "./messages";
+import { EFFORT_LEVELS, createMessageMetadata } from "./messages";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode } from "./providers/registry";
 import { transcribeAudio } from "./providers/openai/transcription";
 import * as convStore from "./conversations";
@@ -49,6 +49,28 @@ export function createHandler(server: DaemonServer) {
 
   const getCompactDisplayData = (convId: string) => convStore.getDisplayData(convId, false);
 
+  const getLivePendingAiSnapshot = (convId: string) => {
+    const conv = convStore.get(convId);
+    if (!conv || !convStore.isStreaming(convId)) return undefined;
+
+    // Success/abort paths persist the terminal assistant/system messages before
+    // the orchestrator's finally block clears the active job. In that narrow
+    // window `isStreaming()` is still true even though the conversation already
+    // contains the finished reply. Late-joiners should load committed history
+    // only — surfacing a stale live tail would briefly hide the canonical reply.
+    const latestPersistedRole = conv.messages.at(-1)?.role;
+    if (latestPersistedRole !== "user") return undefined;
+
+    return {
+      blocks: convStore.getCurrentStreamingBlocks(convId) ?? [],
+      metadata: createMessageMetadata(
+        convStore.getStreamingStartedAt(convId) ?? Date.now(),
+        conv.model,
+        { tokens: convStore.getStreamingTokens(convId) },
+      ),
+    };
+  };
+
   const sendCompactHistoryUpdated = (convId: string): boolean => {
     const data = getCompactDisplayData(convId);
     if (!data) return false;
@@ -66,6 +88,7 @@ export function createHandler(server: DaemonServer) {
     const data = getCompactDisplayData(convId);
     if (!data) return null;
     const queued = convStore.getQueuedMessages(data.convId);
+    const pendingAI = getLivePendingAiSnapshot(data.convId);
     server.sendTo(target, {
       type: "conversation_loaded",
       reqId,
@@ -75,6 +98,7 @@ export function createHandler(server: DaemonServer) {
       effort: data.effort,
       fastMode: data.fastMode,
       entries: data.entries,
+      ...(pendingAI ? { pendingAI } : {}),
       contextTokens: data.contextTokens,
       toolOutputsIncluded: data.toolOutputsIncluded,
       queuedMessages: queued.length > 0 ? queued : undefined,
@@ -479,26 +503,19 @@ export function createHandler(server: DaemonServer) {
           break;
         }
         server.subscribe(client, cmd.convId);
-        // If the conversation is actively streaming, tell the late-joining client
-        // so it creates pendingAI and picks up future chunks.
-        //
-        // Success/abort paths persist the terminal assistant/system messages before
-        // the orchestrator's finally block clears the active job. In that narrow
-        // window `isStreaming()` is still true even though the conversation already
-        // contains the finished reply. Late-joiners should load that committed
-        // history only — sending a stale `streaming_started` snapshot on top causes
-        // the TUI to render a truncated duplicate tail until `streaming_stopped`
-        // lands.
-        const latestPersistedRole = convStore.get(data.convId)?.messages.at(-1)?.role;
-        if (convStore.isStreaming(data.convId) && latestPersistedRole === "user") {
+        // After subscribing, send a fresh streaming snapshot for late-join catch-up.
+        // This covers any chunks emitted between the initial load snapshot and the
+        // moment the new subscriber was attached.
+        const pendingAI = getLivePendingAiSnapshot(data.convId);
+        if (pendingAI) {
           server.sendTo(client, {
             type: "streaming_started",
             convId: data.convId,
             provider: data.provider,
             model: data.model,
-            startedAt: convStore.getStreamingStartedAt(data.convId) ?? Date.now(),
-            blocks: convStore.getCurrentStreamingBlocks(data.convId) ?? [],
-            tokens: convStore.getStreamingTokens(data.convId),
+            startedAt: pendingAI.metadata?.startedAt ?? Date.now(),
+            blocks: pendingAI.blocks,
+            tokens: pendingAI.metadata?.tokens ?? 0,
           });
         }
         // Clear unread when a client views the conversation
