@@ -9,7 +9,7 @@
 
 import type { RenderState } from "./state";
 import { COMMAND_LIST, getCommandArgs } from "./commands";
-import { MACRO_LIST, MACRO_ARGS } from "./macros";
+import { MACRO_LIST, getMacroArgs } from "./macros";
 import { theme } from "./theme";
 import { wrappedLineOffsets } from "./promptline";
 
@@ -27,7 +27,7 @@ function buildValidArgs(state: RenderState): Record<string, Set<string>> {
       Object.entries(getCommandArgs(state)).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
     ),
     ...Object.fromEntries(
-      Object.entries(MACRO_ARGS).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
+      Object.entries(getMacroArgs()).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
     ),
   };
 }

@@ -15,7 +15,7 @@
 
 import type { RenderState } from "./state";
 import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
-import { MACRO_LIST, MACRO_ARGS } from "./macros";
+import { MACRO_LIST, getMacroArgs } from "./macros";
 import { readdirSync } from "fs";
 import { resolve, dirname, basename } from "path";
 import { homedir } from "os";
@@ -73,7 +73,7 @@ function getCommandMatches(state: RenderState, input: string): CompletionItem[] 
   if (!raw.startsWith("/")) return [];
 
   // Argument completion against both command and macro registries
-  const argMatch = matchArgCompletion(raw, getCommandArgs(state)) ?? matchArgCompletion(raw, MACRO_ARGS);
+  const argMatch = matchArgCompletion(raw, getCommandArgs(state)) ?? matchArgCompletion(raw, getMacroArgs());
   if (argMatch) return argMatch;
 
   const prefix = raw.toLowerCase();
@@ -89,7 +89,7 @@ function getMacroMatches(token: string): CompletionItem[] {
   const raw = token.trimStart();
   if (!raw.startsWith("/")) return [];
 
-  const argMatch = matchArgCompletion(raw, MACRO_ARGS);
+  const argMatch = matchArgCompletion(raw, getMacroArgs());
   if (argMatch) return argMatch;
 
   const prefix = raw.toLowerCase();

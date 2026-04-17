@@ -1,31 +1,52 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, rmSync } from "fs";
 import { externalToolsDir, externalToolsTrashDir } from "@exocortex/shared/paths";
-import { MACRO_ARGS, MACRO_MAP, expandMacros } from "./macros";
+import { getMacroArgs, expandMacros } from "./macros";
+
+const TEST_TOOL_DIR = `${externalToolsDir()}/tool-macros-test-cli`;
+
+afterEach(() => {
+  rmSync(TEST_TOOL_DIR, { recursive: true, force: true });
+});
 
 describe("tool macros", () => {
   test("/tool exposes both install and uninstall actions", () => {
-    expect(MACRO_ARGS["/tool"]?.map(arg => arg.name)).toEqual(["install", "uninstall"]);
+    expect(getMacroArgs()["/tool"]?.map(arg => arg.name)).toEqual(["install", "uninstall"]);
   });
 
-  test("install and uninstall expose the same tool list", () => {
-    expect(MACRO_ARGS["/tool uninstall"]?.map(arg => arg.name)).toEqual(
-      MACRO_ARGS["/tool install"]?.map(arg => arg.name),
-    );
+  test("/tool, /tool install, and /tool uninstall expand to explanatory prompts", () => {
+    expect(expandMacros("/tool")).toBe("Explain to me how the external tools system works in Exocortex.");
+    expect(expandMacros("/tool install")).toBe("Explain to me how the installation process for a tool looks in Exocortex.");
+    expect(expandMacros("/tool uninstall")).toBe("Explain to me how the uninstallation process for a tool looks in Exocortex.");
   });
 
-  test("/tool uninstall expands to a soft-delete flow", () => {
-    const expansion = MACRO_MAP["/tool uninstall discord"];
-
-    expect(expansion).toContain(`${externalToolsDir()}/discord-cli`);
-    expect(expansion).toContain(externalToolsTrashDir());
-    expect(expansion).toContain("timestamp suffix");
-    expect(expansion).toContain("Do not delete it outright.");
+  test("/tool install exposes the static install tool list", () => {
+    expect(getMacroArgs()["/tool install"]?.map(arg => arg.name)).toEqual([
+      "discord",
+      "exo",
+      "gmail",
+      "qutebrowser",
+      "twitter",
+      "whatsapp",
+      "xenv",
+    ]);
   });
 
-  test("expandMacros preserves trailing text after /tool uninstall", () => {
-    const expanded = expandMacros("Please /tool uninstall discord after checking the README");
+  test("/tool uninstall args are discovered from installed tool directories", () => {
+    mkdirSync(TEST_TOOL_DIR, { recursive: true });
 
-    expect(expanded).toContain(`Move ${externalToolsDir()}/discord-cli into ${externalToolsTrashDir()}/`);
+    expect(getMacroArgs()["/tool uninstall"]?.map(arg => arg.name)).toContain("tool-macros-test");
+  });
+
+  test("dynamic /tool uninstall expands to a soft-delete flow", () => {
+    mkdirSync(TEST_TOOL_DIR, { recursive: true });
+
+    const expanded = expandMacros("Please /tool uninstall tool-macros-test after checking the README");
+
+    expect(expanded).toContain(`${externalToolsDir()}/tool-macros-test-cli`);
+    expect(expanded).toContain(externalToolsTrashDir());
+    expect(expanded).toContain("timestamp suffix");
+    expect(expanded).toContain("Do not delete it outright.");
     expect(expanded).toEndWith("after checking the README");
   });
 });

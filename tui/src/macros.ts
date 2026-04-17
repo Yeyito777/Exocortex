@@ -45,6 +45,7 @@
  *   }
  */
 
+import { readdirSync } from "fs";
 import { repoRoot, externalToolsDir, externalToolsTrashDir } from "@exocortex/shared/paths";
 import type { CompletionItem } from "./commands";
 
@@ -75,6 +76,11 @@ interface ExternalToolSpec {
   repo: string;
 }
 
+interface InstalledExternalTool {
+  argName: string;
+  dirName: string;
+}
+
 const EXTERNAL_TOOL_SPECS: ExternalToolSpec[] = [
   { cliName: "discord-cli", repo: "git@github.com:Yeyito777/discord-cli.git" },
   { cliName: "exo-cli", repo: "https://github.com/Yeyito777/exo-cli.git" },
@@ -89,9 +95,20 @@ function externalToolShortName(cliName: string): string {
   return cliName.replace(/-cli$/, "");
 }
 
-const AVAILABLE_EXTERNAL_TOOLS = EXTERNAL_TOOL_SPECS
-  .map(tool => externalToolShortName(tool.cliName))
-  .join(", ");
+/** Read installed external tool directories from disk for dynamic uninstall completions. */
+function installedExternalTools(): InstalledExternalTool[] {
+  try {
+    return readdirSync(TOOLS_DIR, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && !entry.name.startsWith("."))
+      .map(entry => ({
+        argName: externalToolShortName(entry.name),
+        dirName: entry.name,
+      }))
+      .sort((a, b) => a.argName.localeCompare(b.argName));
+  } catch {
+    return [];
+  }
+}
 
 /** Build a tool-install expansion string with the dynamic paths. */
 function toolInstall(spec: ExternalToolSpec): MacroArg {
@@ -103,12 +120,15 @@ function toolInstall(spec: ExternalToolSpec): MacroArg {
 }
 
 /** Build a tool-uninstall expansion string with the dynamic paths. */
-function toolUninstall(spec: ExternalToolSpec): MacroArg {
-  const { cliName } = spec;
+function toolUninstall(dirName: string): MacroArg {
   return {
-    name: externalToolShortName(cliName), desc: cliName,
-    expansion: `Uninstall the ${cliName} tool for yourself. Move ${TOOLS_DIR}/${cliName} into ${TOOLS_TRASH_DIR}/ (create the trash directory if needed, and add a timestamp suffix instead of overwriting if a folder with that name is already there). Do not delete it outright. After moving it, check whether the tool's README mentions any extra cleanup steps and walk me through them if needed.`,
+    name: externalToolShortName(dirName), desc: dirName,
+    expansion: `Uninstall the ${dirName} tool for yourself. Move ${TOOLS_DIR}/${dirName} into ${TOOLS_TRASH_DIR}/ (create the trash directory if needed, and add a timestamp suffix instead of overwriting if a folder with that name is already there). Do not delete it outright. After moving it, check whether the tool's README mentions any extra cleanup steps and walk me through them if needed.`,
   };
+}
+
+function dynamicToolUninstallArgs(): MacroArg[] {
+  return installedExternalTools().map(tool => toolUninstall(tool.dirName));
 }
 
 const MACROS: MacroDef[] = [
@@ -145,17 +165,18 @@ const MACROS: MacroDef[] = [
   {
     name: "/tool",
     desc: "Manage external tools",
-    expansion: "Manage external tools. Use '/tool install <name>' to install a tool or '/tool uninstall <name>' to move one to trash.",
+    expansion: "Explain to me how the external tools system works in Exocortex.",
     args: [
       {
-        name: "install", desc: "Install an external tool",
-        expansion: `Install an external tool for yourself. Available tools: ${AVAILABLE_EXTERNAL_TOOLS}. Clone the repo into ${TOOLS_DIR}/ and follow the README/setup instructions to build and install it. If the tool requires authentication or API tokens, walk me through the setup step by step — ask me for any credentials or config values you need.`,
+        name: "install",
+        desc: "Install an external tool",
+        expansion: "Explain to me how the installation process for a tool looks in Exocortex.",
         args: EXTERNAL_TOOL_SPECS.map(toolInstall),
       },
       {
-        name: "uninstall", desc: "Uninstall an external tool",
-        expansion: `Uninstall an external tool for yourself. Available tools: ${AVAILABLE_EXTERNAL_TOOLS}. Move the tool directory from ${TOOLS_DIR}/ into ${TOOLS_TRASH_DIR}/ (create the trash directory if needed, and add a timestamp suffix instead of overwriting if a folder with that name already exists). Do not delete it outright. After moving it, check whether the tool's README mentions any extra cleanup steps and walk me through them if needed.`,
-        args: EXTERNAL_TOOL_SPECS.map(toolUninstall),
+        name: "uninstall",
+        desc: "Uninstall an external tool",
+        expansion: "Explain to me how the uninstallation process for a tool looks in Exocortex.",
       },
     ],
   },
@@ -164,7 +185,7 @@ const MACROS: MacroDef[] = [
 
 // ── Recursive flattening helpers ────────────────────────────────
 
-/** Flatten a macro tree into [key, expansion] pairs for MACRO_MAP. */
+/** Flatten a macro tree into [key, expansion] pairs for the macro map. */
 function flattenExpansions(prefix: string, node: { expansion: string; args?: MacroArg[] }): [string, string][] {
   const entries: [string, string][] = [[prefix, node.expansion]];
   for (const arg of node.args ?? []) {
@@ -173,7 +194,7 @@ function flattenExpansions(prefix: string, node: { expansion: string; args?: Mac
   return entries;
 }
 
-/** Flatten a macro tree into [key, CompletionItem[]] pairs for MACRO_ARGS. */
+/** Flatten a macro tree into [key, CompletionItem[]] pairs for the arg registry. */
 function flattenArgLists(prefix: string, node: { args?: MacroArg[] }): [string, CompletionItem[]][] {
   if (!node.args || node.args.length === 0) return [];
   const entries: [string, CompletionItem[]][] = [
@@ -185,20 +206,36 @@ function flattenArgLists(prefix: string, node: { args?: MacroArg[] }): [string, 
   return entries;
 }
 
+const STATIC_MACRO_MAP: Record<string, string> = Object.fromEntries(
+  MACROS.flatMap(m => flattenExpansions(m.name, m)),
+);
+
+const STATIC_MACRO_ARGS: Record<string, CompletionItem[]> = Object.fromEntries(
+  MACROS.flatMap(m => flattenArgLists(m.name, m)),
+);
+
 // ── Derived exports ──────────────────────────────────────────────
 
 /** Autocomplete entries for macros (base names only — args appear after selecting the base command). */
 export const MACRO_LIST: CompletionItem[] = MACROS.map(m => ({ name: m.name, desc: m.desc }));
 
 /** Expansion text for each macro, keyed by "/name" or "/name arg1 arg2 ...". */
-export const MACRO_MAP: Record<string, string> = Object.fromEntries(
-  MACROS.flatMap(m => flattenExpansions(m.name, m)),
-);
+export function getMacroMap(): Record<string, string> {
+  return {
+    ...STATIC_MACRO_MAP,
+    ...Object.fromEntries(
+      dynamicToolUninstallArgs().map(arg => [`/tool uninstall ${arg.name}`, arg.expansion]),
+    ),
+  };
+}
 
 /** Sub-argument lists, keyed by "/name" or "/name arg1 ...". Used by autocomplete and prompt highlighting. */
-export const MACRO_ARGS: Record<string, CompletionItem[]> = Object.fromEntries(
-  MACROS.flatMap(m => flattenArgLists(m.name, m)),
-);
+export function getMacroArgs(): Record<string, CompletionItem[]> {
+  return {
+    ...STATIC_MACRO_ARGS,
+    "/tool uninstall": dynamicToolUninstallArgs().map(arg => ({ name: arg.name, desc: arg.desc })),
+  };
+}
 
 // ── Expansion ─────────────────────────────────────────────────────
 
@@ -206,20 +243,22 @@ export const MACRO_ARGS: Record<string, CompletionItem[]> = Object.fromEntries(
  * Expand macro commands in user message text.
  *
  * Captures a slash command followed by any number of trailing words,
- * then tries longest-prefix match in MACRO_MAP. Unrecognised trailing
+ * then tries longest-prefix match in the macro map. Unrecognised trailing
  * words are preserved after the expansion.
  *
  * Only matches at word boundaries (start of line or after whitespace).
  */
 export function expandMacros(text: string): string {
+  const macroMap = getMacroMap();
+
   return text.replace(/(?<=^|\s)(\/[\w-]+(?:[ \t]+[\w-]+)*)/gm, (full) => {
     const words = full.split(/[ \t]+/);
     // Try longest prefix first
     for (let len = words.length; len >= 1; len--) {
       const key = words.slice(0, len).join(" ");
-      if (MACRO_MAP[key]) {
+      if (macroMap[key]) {
         const remainder = words.slice(len).join(" ");
-        return remainder ? MACRO_MAP[key] + " " + remainder : MACRO_MAP[key];
+        return remainder ? macroMap[key] + " " + remainder : macroMap[key];
       }
     }
     return full;
