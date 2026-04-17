@@ -86,6 +86,8 @@ interface PendingHeredoc {
   allowTabs: boolean;
 }
 
+type ShellQuoteState = "'" | '"' | null;
+
 const blockRenderCache = new WeakMap<Block, BlockCacheEntry>();
 
 /** Exact mutable block content — used for cache invalidation. */
@@ -224,6 +226,64 @@ function parseLineHeredocSpecs(line: string): PendingHeredoc[] {
 
 function isHeredocTerminatorLine(line: string, spec: PendingHeredoc): boolean {
   return spec.allowTabs ? line.replace(/^\t+/, "") === spec.terminator : line === spec.terminator;
+}
+
+function advanceShellQuoteState(line: string, initial: ShellQuoteState = null): ShellQuoteState {
+  let quote = initial;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (ch === "\\" && i + 1 < line.length) {
+        i++;
+        continue;
+      }
+      if (ch === '"') quote = null;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+
+    if (ch === "\\" && i + 1 < line.length) {
+      i++;
+      continue;
+    }
+  }
+
+  return quote;
+}
+
+function shouldPreferLinewiseExternalRender(match: BashExternalMatch): boolean {
+  const firstMatchedLine = match.lines[match.matchLineIndex]?.slice(match.matchStart) ?? "";
+  let quote = advanceShellQuoteState(firstMatchedLine);
+  const pendingHeredocs = parseLineHeredocSpecs(firstMatchedLine.trimStart());
+
+  for (let i = match.matchLineIndex + 1; i < match.lines.length; i++) {
+    const line = match.lines[i];
+
+    if (pendingHeredocs.length > 0) {
+      if (isHeredocTerminatorLine(line, pendingHeredocs[0])) pendingHeredocs.shift();
+      continue;
+    }
+
+    if (quote) {
+      quote = advanceShellQuoteState(line, quote);
+      continue;
+    }
+
+    return true;
+  }
+
+  return false;
 }
 
 function renderSegmentedBashLines(
@@ -382,22 +442,34 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
           : null;
 
         if (bashExternal) {
-          const bashDisplay = resolveToolDisplay("bash", "", toolRegistry, []);
+          const segmented = shouldPreferLinewiseExternalRender(bashExternal)
+            ? renderSegmentedBashLines(block.summary, toolRegistry, externalToolStyles, {
+                requirePrompts: false,
+                stripPromptPrefix: false,
+                allowSimpleExternalLines: true,
+              })
+            : null;
 
-          for (const [lineIndex, rawLine] of bashExternal.lines.entries()) {
-            if (lineIndex < bashExternal.matchLineIndex) {
-              const trimmed = rawLine.trimStart();
-              if (!trimmed) pushLogicalLine(logical, bashDisplay, "", false);
-              else pushLogicalLine(logical, bashDisplay, rawLine, true);
-              continue;
-            }
+          if (segmented) {
+            logical.push(...segmented);
+          } else {
+            const bashDisplay = resolveToolDisplay("bash", "", toolRegistry, []);
 
-            if (lineIndex === bashExternal.matchLineIndex) {
-              const prefix = rawLine.slice(0, bashExternal.matchStart).trimEnd();
-              if (prefix.trim()) pushLogicalLine(logical, bashDisplay, prefix, true);
-              pushCommandDetail(logical, bashExternal.display);
+            for (const [lineIndex, rawLine] of bashExternal.lines.entries()) {
+              if (lineIndex < bashExternal.matchLineIndex) {
+                const trimmed = rawLine.trimStart();
+                if (!trimmed) pushLogicalLine(logical, bashDisplay, "", false);
+                else pushLogicalLine(logical, bashDisplay, rawLine, true);
+                continue;
+              }
+
+              if (lineIndex === bashExternal.matchLineIndex) {
+                const prefix = rawLine.slice(0, bashExternal.matchStart).trimEnd();
+                if (prefix.trim()) pushLogicalLine(logical, bashDisplay, prefix, true);
+                pushCommandDetail(logical, bashExternal.display);
+              }
+              break;
             }
-            break;
           }
         } else {
           const segmented = block.toolName === "bash"

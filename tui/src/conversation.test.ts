@@ -355,6 +355,74 @@ describe("tool call rendering", () => {
     expect(rendered).toContain("  $ echo done");
   });
 
+  test("keeps later bash commands separate when the first real command is an external tool", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "bash",
+          input: {},
+          summary: [
+            "set -euo pipefail",
+            "vm keys windows --backend host left ret",
+            "sleep 4",
+            "vm screenshot windows --out /tmp/vm-host-keys-test.png",
+            "ls -l /tmp/vm-host-keys-test.png --timeout 240000",
+          ].join("\n"),
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
+      externalToolStyles: [{ cmd: "vm", label: "VM", color: "#7c3aed" }],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 240).lines.map(stripAnsi);
+
+    expect(rendered).toContain("  $ set -euo pipefail");
+    expect(rendered).toContain("  VM keys windows --backend host left ret");
+    expect(rendered).toContain("  $ sleep 4");
+    expect(rendered).toContain("  VM screenshot windows --out /tmp/vm-host-keys-test.png");
+    expect(rendered).toContain("  $ ls -l /tmp/vm-host-keys-test.png --timeout 240000");
+  });
+
+  test("attaches split parent bash timeout lines after simple external-tool matches", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "bash",
+          input: {},
+          summary: [
+            "set -euo pipefail",
+            "vm status windows",
+            "--timeout 120000",
+          ].join("\n"),
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
+      externalToolStyles: [{ cmd: "vm", label: "VM", color: "#7c3aed" }],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 240).lines.map(stripAnsi);
+
+    expect(rendered).toContain("  $ set -euo pipefail");
+    expect(rendered).toContain("  VM status windows --timeout 120000");
+    expect(rendered).not.toContain("  --timeout 120000");
+  });
+
   test("styles external tools after a piped multiline heredoc/subshell prelude", () => {
     const state = {
       messages: [{
