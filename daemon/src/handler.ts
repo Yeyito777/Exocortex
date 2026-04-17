@@ -481,7 +481,16 @@ export function createHandler(server: DaemonServer) {
         server.subscribe(client, cmd.convId);
         // If the conversation is actively streaming, tell the late-joining client
         // so it creates pendingAI and picks up future chunks.
-        if (convStore.isStreaming(data.convId)) {
+        //
+        // Success/abort paths persist the terminal assistant/system messages before
+        // the orchestrator's finally block clears the active job. In that narrow
+        // window `isStreaming()` is still true even though the conversation already
+        // contains the finished reply. Late-joiners should load that committed
+        // history only — sending a stale `streaming_started` snapshot on top causes
+        // the TUI to render a truncated duplicate tail until `streaming_stopped`
+        // lands.
+        const latestPersistedRole = convStore.get(data.convId)?.messages.at(-1)?.role;
+        if (convStore.isStreaming(data.convId) && latestPersistedRole === "user") {
           server.sendTo(client, {
             type: "streaming_started",
             convId: data.convId,
