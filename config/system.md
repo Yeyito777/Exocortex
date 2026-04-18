@@ -1,3 +1,5 @@
+External tools are in your PATH call them directly through bash. No need to cd anywhere or run binaries directly.
+
 # Cron jobs
 You can create scheduled tasks by writing bash scripts to Exocortex/config/cron/. The daemon picks them up automatically (no restart needed).
 

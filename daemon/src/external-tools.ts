@@ -104,6 +104,19 @@ interface ManagedDaemon {
 
 const _daemons = new Map<string, ManagedDaemon>();
 
+export type ExternalToolDaemonAction = "start" | "stop" | "restart" | "status";
+
+export interface ExternalToolDaemonStatus {
+  toolName: string;
+  action: ExternalToolDaemonAction;
+  configured: boolean;
+  managed: boolean;
+  running: boolean;
+  pid: number | null;
+  restartPolicy: Exclude<ManifestDaemon["restart"], undefined> | null;
+  message: string;
+}
+
 /** Restart backoff schedule (ms). Resets after 5 min of stable uptime. */
 const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
 const BACKOFF_RESET_MS = 5 * 60_000;
@@ -418,6 +431,106 @@ function stopToolDaemon(name: string): Promise<void> {
 function stopAllDaemons(): Promise<void> {
   const promises = [..._daemons.keys()].map((name) => stopToolDaemon(name));
   return Promise.all(promises).then(() => {});
+}
+
+function getToolByName(name: string): LoadedTool | null {
+  return _tools.find((tool) => tool.manifest.name === name) ?? null;
+}
+
+function buildExternalToolDaemonStatus(
+  toolName: string,
+  action: ExternalToolDaemonAction,
+  message: string,
+  tool: LoadedTool | null = getToolByName(toolName),
+): ExternalToolDaemonStatus {
+  const managed = _daemons.get(toolName) ?? null;
+  const configured = Boolean(tool?.manifest.daemon);
+  const pid = managed?.child?.pid ?? null;
+  return {
+    toolName,
+    action,
+    configured,
+    managed: managed !== null,
+    running: pid !== null,
+    pid,
+    restartPolicy: tool?.manifest.daemon?.restart ?? (configured ? "on-failure" : null),
+    message,
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForDaemonStateToSettle(toolName: string, checks = 4, delayMs = 50): Promise<void> {
+  for (let i = 0; i < checks; i++) {
+    await sleep(delayMs);
+    const managed = _daemons.get(toolName);
+    if (!managed?.starting) return;
+  }
+}
+
+export async function manageExternalToolDaemon(toolName: string, action: ExternalToolDaemonAction): Promise<ExternalToolDaemonStatus> {
+  const tool = getToolByName(toolName);
+  if (!tool) {
+    throw new Error(`External tool '${toolName}' is not loaded`);
+  }
+  if (!tool.manifest.daemon) {
+    throw new Error(`External tool '${toolName}' does not declare a supervised daemon`);
+  }
+
+  const before = _daemons.get(toolName) ?? null;
+  const wasRunning = Boolean(before?.child?.pid);
+
+  switch (action) {
+    case "status":
+      return buildExternalToolDaemonStatus(
+        toolName,
+        action,
+        wasRunning
+          ? `Supervised daemon '${toolName}' is running${before?.child?.pid ? ` (pid ${before.child.pid})` : ""}`
+          : `Supervised daemon '${toolName}' is not running`,
+        tool,
+      );
+
+    case "start":
+      await startToolDaemon(tool);
+      await waitForDaemonStateToSettle(toolName);
+      if (wasRunning) {
+        return buildExternalToolDaemonStatus(toolName, action, `Supervised daemon '${toolName}' is already running`, tool);
+      }
+      return buildExternalToolDaemonStatus(
+        toolName,
+        action,
+        _daemons.get(toolName)?.child?.pid
+          ? `Started supervised daemon '${toolName}' (pid ${_daemons.get(toolName)?.child?.pid})`
+          : `Requested start for supervised daemon '${toolName}'`,
+        tool,
+      );
+
+    case "stop":
+      if (!_daemons.has(toolName)) {
+        return buildExternalToolDaemonStatus(toolName, action, `Supervised daemon '${toolName}' is already stopped`, tool);
+      }
+      await stopToolDaemon(toolName);
+      await waitForDaemonStateToSettle(toolName);
+      return buildExternalToolDaemonStatus(toolName, action, `Stopped supervised daemon '${toolName}'`, tool);
+
+    case "restart":
+      if (_daemons.has(toolName)) {
+        await stopToolDaemon(toolName);
+      }
+      await startToolDaemon(tool);
+      await waitForDaemonStateToSettle(toolName);
+      return buildExternalToolDaemonStatus(
+        toolName,
+        action,
+        _daemons.get(toolName)?.child?.pid
+          ? `Restarted supervised daemon '${toolName}' (pid ${_daemons.get(toolName)?.child?.pid})`
+          : `Requested restart for supervised daemon '${toolName}'`,
+        tool,
+      );
+  }
 }
 
 // ── External tools directory ─────────────────────────────────────

@@ -13,7 +13,7 @@ import { orchestrateReplayConversation, orchestrateSendMessage } from "./orchest
 import { complete } from "./llm";
 import { buildAnthropicSystemPrompt, buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
-import { getExternalToolStyles } from "./external-tools";
+import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
 import { EFFORT_LEVELS, createMessageMetadata } from "./messages";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode } from "./providers/registry";
 import { transcribeAudio } from "./providers/openai/transcription";
@@ -198,6 +198,18 @@ export function createHandler(server: DaemonServer) {
           log("info", `handler: abort requested for ${cmd.convId}`);
         }
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        break;
+      }
+
+      case "manage_external_tool_daemon": {
+        try {
+          const status = await manageExternalToolDaemon(cmd.toolName, cmd.action);
+          server.sendTo(client, { type: "external_tool_daemon_result", reqId: cmd.reqId, status });
+          log("info", `handler: external tool daemon ${cmd.action} ${cmd.toolName} -> ${status.message}`);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message });
+        }
         break;
       }
 
