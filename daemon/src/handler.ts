@@ -53,18 +53,27 @@ export function createHandler(server: DaemonServer) {
     const conv = convStore.get(convId);
     if (!conv || !convStore.isStreaming(convId)) return undefined;
 
+    const startedAt = convStore.getStreamingStartedAt(convId);
+
     // Success/abort paths persist the terminal assistant/system messages before
     // the orchestrator's finally block clears the active job. In that narrow
     // window `isStreaming()` is still true even though the conversation already
     // contains the finished reply. Late-joiners should load committed history
     // only — surfacing a stale live tail would briefly hide the canonical reply.
-    const latestPersistedRole = conv.messages.at(-1)?.role;
-    if (latestPersistedRole !== "user") return undefined;
+    //
+    // Replay streams are different: the persisted conversation may already end
+    // in assistant/system messages from the prior interrupted attempt, so the
+    // old `latest role must be user` heuristic incorrectly hid the live replay
+    // tail and dropped its metadata. Instead, suppress only when the current
+    // stream's assistant has already been committed to history.
+    const currentAssistantAlreadyCommitted = typeof startedAt === "number"
+      && conv.messages.some((msg) => msg.role === "assistant" && msg.metadata?.startedAt === startedAt);
+    if (currentAssistantAlreadyCommitted) return undefined;
 
     return {
       blocks: convStore.getCurrentStreamingBlocks(convId) ?? [],
       metadata: createMessageMetadata(
-        convStore.getStreamingStartedAt(convId) ?? Date.now(),
+        startedAt ?? Date.now(),
         conv.model,
         { tokens: convStore.getStreamingTokens(convId) },
       ),
