@@ -84,6 +84,18 @@ function ensureSidebarReady(state: RenderState): void {
   focusSidebar(state);
 }
 
+function vimHasPendingInput(state: RenderState): boolean {
+  return !!(
+    state.vim.pendingOperator
+    || state.vim.pendingOperatorKey
+    || state.vim.pendingTextObjectModifier
+    || state.vim.pendingKeys
+    || state.vim.count !== null
+    || state.vim.pendingFind
+    || state.vim.pendingReplace
+  );
+}
+
 function loadSelectedConversation(state: RenderState): KeyResult {
   const convId = state.sidebar.selectedId;
   return convId && convId !== state.convId
@@ -274,6 +286,7 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
 
   // ── Vim-style sidebar search (/ ? n N) ─────────────────────────
   if (state.panelFocus === "sidebar" && state.sidebar.open && state.vim.mode === "normal"
+      && !vimHasPendingInput(state)
       && key.type === "char" && key.char) {
     if (key.char === "/" || key.char === "?") {
       openSidebarSearchBar(state.sidebar, key.char === "/" ? "forward" : "backward");
@@ -298,6 +311,7 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
 
   // ── Vim-style chat history search (/ ? n N) ────────────────────
   if (state.panelFocus === "chat" && state.vim.mode === "normal"
+      && !vimHasPendingInput(state)
       && key.type === "char" && key.char) {
     if (key.char === "/" || key.char === "?") {
       openSearchBar(state, key.char === "/" ? "forward" : "backward");
