@@ -3,16 +3,15 @@
  *
  * Fetches a URL, converts HTML to markdown, then passes the content
  * through a provider-aware inner LLM call to produce a focused summary.
- * A deterministic Relevant Links section is appended to every result so
- * the outer agent can continue exploring without depending entirely on
- * the inner summarizer's link choices. Caches raw fetches for 15 minutes.
- * Handles HTML, JSON, and plain text content types.
+ * For this experiment, the inner summarizer itself is asked to include a
+ * final markdown Relevant Links section instead of using deterministic link
+ * extraction. Caches raw fetches for 15 minutes. Handles HTML, JSON, and
+ * plain text content types.
  */
 
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
-import { MAX_OUTPUT_CHARS, getString, safeSlice, summarizeParams } from "./util";
+import { cap, getString, summarizeParams } from "./util";
 import { htmlToMarkdown } from "./html";
-import { buildRelevantLinksSection, extractRelevantLinks, extractRelevantLinksFromJson } from "./browse/index";
 import { complete } from "../llm";
 import { log } from "../log";
 import { getInnerLlmSummaryOptions } from "./inner-llm";
@@ -21,10 +20,25 @@ import { getInnerLlmSummaryOptions } from "./inner-llm";
 
 const CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 const MAX_CACHE_ENTRIES = 50;
+const BROWSE_USER_AGENT = "Mozilla/5.0 (compatible; Exocortex/1.0)";
+const BROWSE_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+const BROWSE_MAX_TOKENS = 8192;
+const BLOCKED_CRATES_PATTERN = /API data access policy/i;
+
+interface CachedPage {
+  content: string;
+  pageUrl: string;
+  ts: number;
+}
+
+interface FetchedPage {
+  markdown: string;
+  pageUrl: string;
+}
 
 // ── Cache ──────────────────────────────────────────────────────────
 
-const fetchCache = new Map<string, { content: string; pageUrl: string; jsonData?: unknown; ts: number }>();
+const fetchCache = new Map<string, CachedPage>();
 
 function cleanCache(): void {
   const now = Date.now();
@@ -33,35 +47,40 @@ function cleanCache(): void {
   }
 }
 
-function setCacheEntry(url: string, pageUrl: string, content: string, jsonData?: unknown): void {
-  // Evict the oldest entry by timestamp when at capacity
+function setCacheEntry(url: string, pageUrl: string, content: string): void {
+  // Evict the oldest entry by timestamp when at capacity.
   if (fetchCache.size >= MAX_CACHE_ENTRIES) {
     let oldestKey: string | null = null;
     let oldestTs = Infinity;
-    for (const [k, v] of fetchCache) {
-      if (v.ts < oldestTs) { oldestTs = v.ts; oldestKey = k; }
+    for (const [key, entry] of fetchCache) {
+      if (entry.ts < oldestTs) {
+        oldestTs = entry.ts;
+        oldestKey = key;
+      }
     }
     if (oldestKey !== null) fetchCache.delete(oldestKey);
   }
-  fetchCache.set(url, { content, pageUrl, jsonData, ts: Date.now() });
+
+  fetchCache.set(url, { content, pageUrl, ts: Date.now() });
 }
 
-function capWithSuffix(prefix: string, suffix: string): string {
-  const separator = "\n\n";
-  const combined = prefix.trimEnd() + separator + suffix;
-  if (combined.length <= MAX_OUTPUT_CHARS) return combined;
+function buildSummaryHeader(url: string, prompt?: string): string {
+  return prompt
+    ? `URL: ${url}\nLooking for: ${prompt}\n\n---\n\n`
+    : `URL: ${url}\nProvide a general summary.\n\n---\n\n`;
+}
 
-  const notice = "\n... output truncated (kept Relevant Links section)";
-  const budget = MAX_OUTPUT_CHARS - separator.length - suffix.length - notice.length;
-  if (budget <= 0) return safeSlice(combined, MAX_OUTPUT_CHARS);
-
-  return safeSlice(prefix.trimEnd(), budget) + notice + separator + suffix;
+function fallbackRawContent(url: string, markdown: string, prompt?: string): string {
+  const header = prompt
+    ? `Content from ${url} (looking for: ${prompt}):\n\n`
+    : `Content from ${url}:\n\n`;
+  return header + markdown;
 }
 
 function blockedAccessSummary(pageUrl: string, markdown: string): string | null {
   try {
     const page = new URL(pageUrl);
-    if (page.host === "crates.io" && /API data access policy/i.test(markdown)) {
+    if (page.host === "crates.io" && BLOCKED_CRATES_PATTERN.test(markdown)) {
       return [
         `Summary of ${pageUrl}:`,
         "",
@@ -76,17 +95,93 @@ function blockedAccessSummary(pageUrl: string, markdown: string): string | null 
   return null;
 }
 
+function normalizeBrowseUrl(url: string): string {
+  return url.startsWith("http://") ? `https://${url.slice(7)}` : url;
+}
+
+function ensureSameHostRedirect(originalUrl: URL, finalUrl: string): ToolResult | null {
+  try {
+    const finalParsed = new URL(finalUrl);
+    if (finalParsed.host !== originalUrl.host) {
+      return {
+        output: `URL redirected to a different host: ${finalUrl}\nPlease make a new browse request with the redirect URL.`,
+        isError: false,
+      };
+    }
+  } catch {
+    // Ignore malformed redirect URLs and proceed with the fetched response.
+  }
+  return null;
+}
+
+function responseBodyToMarkdown(rawBody: string, contentType: string, pageUrl: string): string {
+  if (contentType.includes("text/html") || contentType.includes("application/xhtml")) {
+    return htmlToMarkdown(rawBody, pageUrl);
+  }
+
+  if (contentType.includes("application/json")) {
+    try {
+      const parsed = JSON.parse(rawBody);
+      return `\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
+    } catch {
+      return rawBody;
+    }
+  }
+
+  return rawBody;
+}
+
+async function fetchPage(fetchUrl: string, originalUrl: URL, signal?: AbortSignal): Promise<FetchedPage | ToolResult> {
+  log("info", `browse: fetching ${fetchUrl}`);
+  const res = await fetch(fetchUrl, {
+    headers: {
+      "User-Agent": BROWSE_USER_AGENT,
+      Accept: BROWSE_ACCEPT,
+    },
+    redirect: "follow",
+    signal,
+    tls: { rejectUnauthorized: false },
+  } as RequestInit & { tls?: { rejectUnauthorized: boolean } });
+
+  const finalUrl = res.url || fetchUrl;
+  const crossHostRedirect = res.url ? ensureSameHostRedirect(originalUrl, res.url) : null;
+  if (crossHostRedirect) return crossHostRedirect;
+
+  if (!res.ok) {
+    return { output: `Error fetching ${fetchUrl}: HTTP ${res.status} ${res.statusText}`, isError: true };
+  }
+
+  const rawBody = await res.text();
+  return {
+    markdown: responseBodyToMarkdown(rawBody, res.headers.get("content-type") ?? "", finalUrl),
+    pageUrl: finalUrl,
+  };
+}
+
+async function getPageContent(fetchUrl: string, originalUrl: URL, signal?: AbortSignal): Promise<FetchedPage | ToolResult> {
+  cleanCache();
+  const cached = fetchCache.get(fetchUrl);
+  if (cached) {
+    log("debug", `browse: cache hit for ${fetchUrl}`);
+    return { markdown: cached.content, pageUrl: cached.pageUrl };
+  }
+
+  const fetched = await fetchPage(fetchUrl, originalUrl, signal);
+  if ("isError" in fetched) return fetched;
+
+  setCacheEntry(fetchUrl, fetched.pageUrl, fetched.markdown);
+  return fetched;
+}
+
 // ── LLM summarization ─────────────────────────────────────────────
 
 const SUMMARIZE_SYSTEM = [
-  "You are a web page summarizer. You receive the markdown content of a web page and a user prompt describing what they're looking for.",
+  "You are a web page digestor. You receive the markdown content of a web page and a user prompt describing what they're looking for.",
   "Your job:",
-  "- Produce a clear, focused summary that addresses the user's prompt.",
-  "- Mention links inline only when they are important to understanding the page.",
-  "- Do not add a separate links section; the tool will append a deterministic Relevant Links section automatically.",
-  "- If the page contains code snippets relevant to the prompt, include them.",
-  "- Omit navigation boilerplate, ads, cookie banners, and other noise.",
-  "- Keep the summary concise but complete. Don't omit important details.",
+  "- Produce an extensive, and thorough digest of the markdown that addresses the user's prompt.",
+  "- At the very end of your response, include a markdown section exactly titled: ## Relevant Links, then include links you consider relevant. Max 7 links.",
+  "- For each link, use markdown numbered-list format: 1. [Title](URL)",
+  "- Mention links inline if you think they are important to understanding the page; keep the dedicated Relevant Links section for follow-up exploration.",
   "- Output markdown.",
 ].join("\n");
 
@@ -97,28 +192,22 @@ async function summarizeContent(
   context?: ToolExecutionContext,
   signal?: AbortSignal,
 ): Promise<string> {
-  const userMessage = prompt
-    ? `URL: ${url}\nLooking for: ${prompt}\n\n---\n\n${markdown}`
-    : `URL: ${url}\nProvide a general summary.\n\n---\n\n${markdown}`;
+  const userMessage = buildSummaryHeader(url, prompt) + markdown;
 
   try {
     const llmOptions = getInnerLlmSummaryOptions(context);
     log("info", `browse: summarizing ${url} (${markdown.length} chars) with ${llmOptions.provider}/${llmOptions.model}`);
     const result = await complete(SUMMARIZE_SYSTEM, userMessage, {
       ...llmOptions,
-      maxTokens: 8192,
+      maxTokens: BROWSE_MAX_TOKENS,
       signal,
     });
     log("info", `browse: summary done (${result.text.length} chars, in=${result.inputTokens ?? "?"}, out=${result.outputTokens ?? "?"})`);
     return `Summary of ${url}:\n\n${result.text}`;
   } catch (err) {
-    // If the inner LLM call fails, fall back to raw content
     const msg = err instanceof Error ? err.message : String(err);
     log("warn", `browse: summarization failed (${msg}), returning raw content`);
-    const header = prompt
-      ? `Content from ${url} (looking for: ${prompt}):\n\n`
-      : `Content from ${url}:\n\n`;
-    return header + markdown;
+    return fallbackRawContent(url, markdown, prompt);
   }
 }
 
@@ -130,13 +219,8 @@ async function executeBrowse(input: Record<string, unknown>, context?: ToolExecu
 
   if (!url) return { output: "Error: missing 'url' parameter", isError: true };
 
-  // Upgrade HTTP to HTTPS
-  let fetchUrl = url;
-  if (fetchUrl.startsWith("http://")) {
-    fetchUrl = "https://" + fetchUrl.slice(7);
-  }
+  const fetchUrl = normalizeBrowseUrl(url);
 
-  // Validate URL
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(fetchUrl);
@@ -146,93 +230,25 @@ async function executeBrowse(input: Record<string, unknown>, context?: ToolExecu
 
   const startTime = Date.now();
   try {
-    // Check cache
-    cleanCache();
-    const cached = fetchCache.get(fetchUrl);
-    let markdown: string;
-    let pageUrl: string;
-    let jsonData: unknown = null;
-
-    if (cached) {
-      log("debug", `browse: cache hit for ${fetchUrl}`);
-      markdown = cached.content;
-      pageUrl = cached.pageUrl;
-      jsonData = cached.jsonData ?? null;
-    } else {
-      log("info", `browse: fetching ${fetchUrl}`);
-      const res = await fetch(fetchUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; Exocortex/1.0)",
-          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-        redirect: "follow",
-        signal,
-        tls: { rejectUnauthorized: false },
-      } as RequestInit & { tls?: { rejectUnauthorized: boolean } });
-
-      // Check for cross-host redirects
-      const finalUrl = res.url;
-      pageUrl = finalUrl || fetchUrl;
-      if (finalUrl) {
-        try {
-          const finalParsed = new URL(finalUrl);
-          if (finalParsed.host !== parsedUrl.host) {
-            return {
-              output: `URL redirected to a different host: ${finalUrl}\nPlease make a new browse request with the redirect URL.`,
-              isError: false,
-            };
-          }
-        } catch { /* malformed redirect URL — ignore, proceed with response */ }
-      }
-
-      if (!res.ok) {
-        return { output: `Error fetching ${fetchUrl}: HTTP ${res.status} ${res.statusText}`, isError: true };
-      }
-
-      const contentType = res.headers.get("content-type") ?? "";
-      const rawBody = await res.text();
-
-      if (contentType.includes("text/html") || contentType.includes("application/xhtml")) {
-        markdown = htmlToMarkdown(rawBody, pageUrl);
-      } else if (contentType.includes("application/json")) {
-        try {
-          jsonData = JSON.parse(rawBody);
-          markdown = "```json\n" + JSON.stringify(jsonData, null, 2) + "\n```";
-        } catch {
-          markdown = rawBody;
-          jsonData = null;
-        }
-      } else {
-        markdown = rawBody;
-      }
-
-      // Cache the result (respects MAX_CACHE_ENTRIES, evicts oldest by timestamp)
-      setCacheEntry(fetchUrl, pageUrl, markdown, jsonData ?? undefined);
-    }
-
-    if (!markdown.trim()) {
+    const page = await getPageContent(fetchUrl, parsedUrl, signal);
+    if ("isError" in page) return page;
+    if (!page.markdown.trim()) {
       return { output: "The page returned no content.", isError: false };
     }
 
-    const relevantLinks = jsonData != null
-      ? extractRelevantLinksFromJson(jsonData, pageUrl, prompt)
-      : extractRelevantLinks(markdown, pageUrl, prompt);
-    const relevantLinksSection = buildRelevantLinksSection(relevantLinks);
-
-    const blockedSummary = blockedAccessSummary(pageUrl, markdown);
+    const blockedSummary = blockedAccessSummary(page.pageUrl, page.markdown);
     if (blockedSummary) {
-      return { output: capWithSuffix(blockedSummary, relevantLinksSection), isError: false };
+      return { output: cap(blockedSummary), isError: false };
     }
 
-    // ── Summarize through the active provider's inner LLM ──────
-    const summary = await summarizeContent(pageUrl, markdown, prompt, context, signal);
-    return { output: capWithSuffix(summary, relevantLinksSection), isError: false };
+    const summary = await summarizeContent(page.pageUrl, page.markdown, prompt, context, signal);
+    return { output: cap(summary), isError: false };
   } catch (err) {
-    // Abort: return a clean non-error message instead of a scary stack trace
     if (err instanceof DOMException && err.name === "AbortError") {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       return { output: `User interrupted after ${elapsed}s of execution.`, isError: false };
     }
+
     const msg = err instanceof Error ? err.message : String(err);
     log("error", `browse: ${msg}`);
     return { output: `Error browsing ${fetchUrl}: ${msg}`, isError: true };
@@ -259,7 +275,7 @@ export const browse: Tool = {
     },
     required: ["url", "prompt"],
   },
-  systemHint: "Browse automatically appends a deterministic Relevant Links section. Focus the prompt on what to extract or summarize from the page; usually you do not need to ask it to preserve or restate links.",
+  systemHint: "Browse tool uses an inner AI call to parse a markdown rendered version of the requested website before relaying relevant information to you. Adjust the prompt to your needs.",
   display: {
     label: "Browse",
     color: "#50c8c8",  // teal
