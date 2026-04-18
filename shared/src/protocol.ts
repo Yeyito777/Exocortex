@@ -107,6 +107,15 @@ export interface SetFastModeCommand {
 
 export type TrimMode = "messages" | "thinking" | "toolresults";
 
+export type ExternalToolDaemonAction = "start" | "stop" | "restart" | "status";
+
+export interface ManageExternalToolDaemonCommand {
+  type: "manage_external_tool_daemon";
+  reqId?: string;
+  toolName: string;
+  action: ExternalToolDaemonAction;
+}
+
 export interface TrimConversationCommand {
   type: "trim_conversation";
   reqId?: string;
@@ -242,6 +251,7 @@ export type Command =
   | SetModelCommand
   | SetEffortCommand
   | SetFastModeCommand
+  | ManageExternalToolDaemonCommand
   | TrimConversationCommand
   | AbortCommand
   | SubscribeCommand
@@ -414,8 +424,10 @@ export interface ConversationLoadedEvent {
   model: ModelId;
   effort: EffortLevel;
   fastMode: boolean;
-  /** All messages in display order. */
+  /** All messages in display order, excluding the currently in-flight assistant tail. */
   entries: DisplayEntry[];
+  /** Live assistant snapshot for actively streaming conversations. */
+  pendingAI?: AIMessagePayload;
   /** Last known input token count for this conversation. */
   contextTokens: number | null;
   /** Whether tool_result block outputs are present in entries. */
@@ -552,6 +564,23 @@ export interface TranscriptionResultEvent {
   text: string;
 }
 
+export interface ExternalToolDaemonStatus {
+  toolName: string;
+  action: ExternalToolDaemonAction;
+  configured: boolean;
+  managed: boolean;
+  running: boolean;
+  pid: number | null;
+  restartPolicy: "on-failure" | "always" | "never" | null;
+  message: string;
+}
+
+export interface ExternalToolDaemonResultEvent {
+  type: "external_tool_daemon_result";
+  reqId?: string;
+  status: ExternalToolDaemonStatus;
+}
+
 export interface AuthStatusEvent {
   type: "auth_status";
   reqId?: string;
@@ -602,5 +631,6 @@ export type Event =
   | LlmCompleteResultEvent
   | SystemPromptEvent
   | TranscriptionResultEvent
+  | ExternalToolDaemonResultEvent
   | AuthStatusEvent
   | ErrorEvent;

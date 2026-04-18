@@ -131,6 +131,212 @@ describe("streaming system-message tail", () => {
     expect(state.messages[1]).toMatchObject({ role: "system", text: "✗ Timed out (stale stream)" });
   });
 
+  test("hydrates the live assistant snapshot from conversation_loaded", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "medium",
+      fastMode: false,
+      entries: [{ type: "user", text: "hello" }],
+      pendingAI: {
+        blocks: [{ type: "text", text: "partial final reply" }],
+        metadata: { startedAt: 1, endedAt: null, model: "gpt-5.4", tokens: 7 },
+      },
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.messages).toEqual([{ role: "user", text: "hello", metadata: null }]);
+    expect(state.pendingAI).toMatchObject({
+      role: "assistant",
+      blocks: [{ type: "text", text: "partial final reply" }],
+      metadata: { startedAt: 1, endedAt: null, model: "gpt-5.4", tokens: 7 },
+    });
+  });
+
+  test("streaming_started refreshes a previously loaded live snapshot with the latest blocks", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "medium",
+      fastMode: false,
+      entries: [],
+      pendingAI: {
+        blocks: [{ type: "text", text: "older snapshot" }],
+        metadata: { startedAt: 1, endedAt: null, model: "gpt-5.4", tokens: 3 },
+      },
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    handleEvent({
+      type: "streaming_started",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      startedAt: 1,
+      blocks: [{ type: "text", text: "newer snapshot" }],
+      tokens: 5,
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.pendingAI).toMatchObject({
+      blocks: [{ type: "text", text: "newer snapshot" }],
+      metadata: { startedAt: 1, endedAt: null, model: "gpt-5.4", tokens: 5 },
+    });
+  });
+
+  test("same-conversation reload keeps only the newer local live tail instead of duplicating completed rounds", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages.push({ role: "user", text: "hello", metadata: null });
+    state.pendingAI = createPendingAI(1, "gpt-5.4");
+    state.pendingAI.blocks.push(
+      { type: "text", text: "planning" },
+      { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "pwd" }, summary: "pwd" },
+      { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
+      { type: "text", text: "newer live tail" },
+    );
+    state.pendingAI.metadata!.tokens = 10;
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "medium",
+      fastMode: false,
+      entries: [
+        { type: "user", text: "hello" },
+        {
+          type: "ai",
+          blocks: [
+            { type: "text", text: "planning" },
+            { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "pwd", timeout: 10000 }, summary: "$ pwd" },
+            { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
+          ],
+          metadata: null,
+        },
+      ],
+      pendingAI: {
+        blocks: [{ type: "text", text: "older snapshot" }],
+        metadata: { startedAt: 1, endedAt: null, model: "gpt-5.4", tokens: 5 },
+      },
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    handleEvent({
+      type: "streaming_started",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      startedAt: 1,
+      blocks: [{ type: "text", text: "older snapshot" }],
+      tokens: 5,
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    handleEvent({ type: "text_chunk", convId: "conv-1", text: " + more" }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.messages).toMatchObject([
+      { role: "user", text: "hello" },
+      {
+        role: "assistant",
+        blocks: [
+          { type: "text", text: "planning" },
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "pwd", timeout: 10000 }, summary: "$ pwd" },
+          { type: "tool_result", toolCallId: "call-1", output: "", isError: false },
+        ],
+      },
+    ]);
+    expect(state.pendingAI).toMatchObject({
+      blocks: [{ type: "text", text: "newer live tail + more" }],
+      metadata: { startedAt: 1, endedAt: null, model: "gpt-5.4", tokens: 10 },
+    });
+  });
+
+  test("repeated same-conversation reloads stay stable instead of re-duplicating tool rounds", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages.push({ role: "user", text: "hello", metadata: null });
+    state.pendingAI = createPendingAI(1, "gpt-5.4");
+    state.pendingAI.blocks.push(
+      { type: "thinking", text: "Thinking..." },
+      { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "pwd && date", timeout: 10000 }, summary: "$ pwd && date" },
+      { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
+      { type: "text", text: "long story once upon" },
+    );
+
+    const daemonLoad = {
+      type: "conversation_loaded" as const,
+      convId: "conv-1",
+      provider: "openai" as const,
+      model: "gpt-5.4" as const,
+      effort: "medium" as const,
+      fastMode: false,
+      entries: [
+        { type: "user" as const, text: "hello" },
+        {
+          type: "ai" as const,
+          blocks: [
+            { type: "thinking" as const, text: "Thinking..." },
+            { type: "tool_call" as const, toolCallId: "call-1", toolName: "bash", input: { command: "pwd && date" }, summary: "$ pwd && date" },
+            { type: "tool_result" as const, toolCallId: "call-1", toolName: "", output: "", isError: false },
+          ],
+          metadata: null,
+        },
+      ],
+      pendingAI: {
+        blocks: [{ type: "text" as const, text: "long story" }],
+        metadata: { startedAt: 1, endedAt: null, model: "gpt-5.4" as const, tokens: 1 },
+      },
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    };
+    const daemonCatchup = {
+      type: "streaming_started" as const,
+      convId: "conv-1",
+      provider: "openai" as const,
+      model: "gpt-5.4" as const,
+      startedAt: 1,
+      blocks: [{ type: "text" as const, text: "long story" }],
+      tokens: 1,
+    };
+    const daemon = { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} };
+
+    handleEvent(daemonLoad, state, daemon);
+    handleEvent(daemonCatchup, state, daemon);
+    handleEvent({ type: "text_chunk", convId: "conv-1", text: " a time" }, state, daemon);
+
+    handleEvent(daemonLoad, state, daemon);
+    handleEvent(daemonCatchup, state, daemon);
+    handleEvent({ type: "text_chunk", convId: "conv-1", text: " in a land" }, state, daemon);
+
+    expect(state.messages).toMatchObject([
+      { role: "user", text: "hello" },
+      {
+        role: "assistant",
+        blocks: [
+          { type: "thinking", text: "Thinking..." },
+          { type: "tool_call", toolCallId: "call-1" },
+          { type: "tool_result", toolCallId: "call-1", isError: false },
+        ],
+      },
+    ]);
+    expect(state.pendingAI).toMatchObject({
+      blocks: [{ type: "text", text: "long story once upon a time in a land" }],
+    });
+  });
+
   test("clears buffered notices when switching to a different conversation", () => {
     const { state, render } = plainLines();
     state.providerRegistry = structuredClone(providers);
