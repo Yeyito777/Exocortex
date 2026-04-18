@@ -275,19 +275,41 @@ export function isHorizontalRule(line: string): boolean {
   return /^\s*([-*_])([ \t]*\1){2,}\s*$/.test(line);
 }
 
+function countRun(src: string, from: number, ch: string): number {
+  let i = from;
+  while (i < src.length && src[i] === ch) i++;
+  return i - from;
+}
+
 // Find closing `marker` in `src` starting from `from`, skipping over
-// `…` code spans so that markers inside inline code are not matched.
+// inline code spans so that markers inside code are not matched.
 // Requires at least one character of content (i.e. the closing marker
 // must be at a position > from).
 function findClosing(src: string, from: number, marker: string): number {
   let i = from;
   while (i < src.length) {
     if (src[i] === '`') {
-      const end = src.indexOf('`', i + 1);
-      if (end > i) { i = end + 1; continue; }
+      const ticks = countRun(src, i, '`');
+      const end = findCodeSpanClose(src, i + ticks, ticks);
+      if (end >= 0) { i = end + ticks; continue; }
     }
     if (i > from && src.startsWith(marker, i)) return i;
     i++;
+  }
+  return -1;
+}
+
+function findCodeSpanClose(src: string, from: number, ticks: number): number {
+  if (ticks < 1 || from >= src.length) return -1;
+  let i = from;
+  while (i < src.length) {
+    if (src[i] !== '`') {
+      i++;
+      continue;
+    }
+    const closeTicks = countRun(src, i, '`');
+    if (closeTicks === ticks && i > from) return i;
+    i += closeTicks;
   }
   return -1;
 }
@@ -337,14 +359,15 @@ function scan(src: string, bgRestore: string): { text: string; plain: string } {
       }
     }
 
-    // Try inline code: `...` (leaf node — content not recursed)
+    // Try inline code spans with 1+ backticks (leaf node — content not recursed)
     if (src[i] === '`') {
-      const close = src.indexOf('`', i + 1);
-      if (close > i + 1) {
-        const content = src.slice(i + 1, close);
+      const ticks = countRun(src, i, '`');
+      const close = findCodeSpanClose(src, i + ticks, ticks);
+      if (close >= 0) {
+        const content = src.slice(i + ticks, close);
         text += BG_CODE + content + bgRestore;
         plain += content;
-        i = close + 1;
+        i = close + ticks;
         continue;
       }
     }
