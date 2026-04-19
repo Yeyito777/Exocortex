@@ -1,7 +1,14 @@
 import { clearPrompt } from "../promptstate";
 import { pushSystemMessage } from "../state";
 import { theme } from "../theme";
-import { createTokenUsageTotals, formatModelDisplayName, type TokenStatsSnapshot, type TokenUsageTotals } from "../messages";
+import {
+  createTokenUsageTotals,
+  formatModelDisplayName,
+  type TokenStatsSnapshot,
+  type TokenUsageSource,
+  type TokenUsageTotals,
+  type ProviderId,
+} from "../messages";
 import { parsePositiveInt } from "./shared";
 import type { CompletionItem, SlashCommand } from "./types";
 
@@ -31,6 +38,16 @@ interface TokenDateRange {
 const TOKEN_MODELS_ARG: CompletionItem = {
   name: "models",
   desc: "Show token totals broken down by model",
+};
+
+const TOKEN_PROVIDERS_ARG: CompletionItem = {
+  name: "providers",
+  desc: "Show token totals broken down by provider",
+};
+
+const TOKEN_SOURCES_ARG: CompletionItem = {
+  name: "sources",
+  desc: "Show token totals broken down by source",
 };
 
 function formatTokenCount(n: number): string {
@@ -195,23 +212,33 @@ function buildTokenHeatmap(stats: TokenStatsSnapshot, dayCount: number): TokenHe
   };
 }
 
-function buildModelBreakdownMessage(stats: TokenStatsSnapshot, dayCount: number): string {
+function aggregateByRange<T extends string>(
+  stats: TokenStatsSnapshot,
+  dayCount: number,
+  selector: (day: TokenStatsSnapshot["days"][number]) => Record<T, TokenUsageTotals> | Partial<Record<T, TokenUsageTotals>>,
+): { range: TokenDateRange; totals: Map<T, TokenUsageTotals> } {
   const range = getTokenDateRange(dayCount);
   const startKey = localDayKey(range.start);
   const endKey = localDayKey(range.end);
-  const byModel = new Map<string, TokenUsageTotals>();
+  const totals = new Map<T, TokenUsageTotals>();
 
   for (const day of stats.days) {
     if (day.day < startKey || day.day > endKey) continue;
-    for (const [model, modelTotals] of Object.entries(day.byModel)) {
-      const current = byModel.get(model) ?? createTokenUsageTotals();
-      addUsageTotals(current, modelTotals);
-      byModel.set(model, current);
+    for (const [key, usageTotals] of Object.entries(selector(day)) as Array<[T, TokenUsageTotals]>) {
+      const current = totals.get(key) ?? createTokenUsageTotals();
+      addUsageTotals(current, usageTotals);
+      totals.set(key, current);
     }
   }
 
+  return { range, totals };
+}
+
+function buildModelBreakdownMessage(stats: TokenStatsSnapshot, dayCount: number): string {
+  const { range, totals } = aggregateByRange(stats, dayCount, (day) => day.byModel);
+
   const lines = [`Models (${formatShortDate(range.start)} → ${formatShortDate(range.end)}):`];
-  const sortedModels = sortUsageEntries([...byModel.entries()]);
+  const sortedModels = sortUsageEntries([...totals.entries()]);
   if (sortedModels.length === 0) {
     lines.push("No token usage recorded yet.");
   } else {
@@ -228,6 +255,62 @@ function buildModelBreakdownMessage(stats: TokenStatsSnapshot, dayCount: number)
   }
 
   return lines.filter((line, index, arr) => !(line === "" && arr[index - 1] === "")).join("\n");
+}
+
+function formatProviderLabel(provider: ProviderId): string {
+  switch (provider) {
+    case "openai":
+      return "OpenAI";
+    case "anthropic":
+      return "Anthropic";
+  }
+}
+
+function buildProviderBreakdownMessage(stats: TokenStatsSnapshot, dayCount: number): string {
+  const { range, totals } = aggregateByRange<ProviderId>(stats, dayCount, (day) => day.byProvider);
+  const lines = [`Providers (${formatShortDate(range.start)} → ${formatShortDate(range.end)}):`];
+  const sortedProviders = sortUsageEntries([...totals.entries()]);
+
+  if (sortedProviders.length === 0) {
+    lines.push("No token usage recorded yet.");
+  } else {
+    for (const [provider, providerTotals] of sortedProviders) {
+      lines.push(`    ${formatProviderLabel(provider)}: ${accentTokenCount(providerTotals.inputTokens)}/${accentTokenCount(providerTotals.outputTokens)}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function formatTokenSourceLabel(source: TokenUsageSource): string {
+  switch (source) {
+    case "conversation":
+      return "conversation";
+    case "llm_complete":
+      return "llm complete";
+    case "title_generation":
+      return "title generation";
+    case "browse_summary":
+      return "browse summary";
+    case "context_summary":
+      return "context summary";
+  }
+}
+
+function buildSourceBreakdownMessage(stats: TokenStatsSnapshot, dayCount: number): string {
+  const { range, totals } = aggregateByRange<TokenUsageSource>(stats, dayCount, (day) => day.bySource);
+  const lines = [`Sources (${formatShortDate(range.start)} → ${formatShortDate(range.end)}):`];
+  const sortedSources = sortUsageEntries([...totals.entries()]);
+
+  if (sortedSources.length === 0) {
+    lines.push("No token usage recorded yet.");
+  } else {
+    for (const [source, sourceTotals] of sortedSources) {
+      lines.push(`    ${formatTokenSourceLabel(source)}: ${accentTokenCount(sourceTotals.inputTokens)}/${accentTokenCount(sourceTotals.outputTokens)}`);
+    }
+  }
+
+  return lines.join("\n");
 }
 
 function buildTokenStatsMessage(stats: TokenStatsSnapshot, heatmapDayCount: number): string {
@@ -247,25 +330,27 @@ function buildTokenStatsMessage(stats: TokenStatsSnapshot, heatmapDayCount: numb
 
 export const TOKENS_COMMAND: SlashCommand = {
   name: "/tokens",
-  description: "Show token usage totals, heatmaps, or per-model breakdowns",
-  args: [TOKEN_MODELS_ARG],
+  description: "Show token usage totals, heatmaps, or breakdowns",
+  args: [TOKEN_MODELS_ARG, TOKEN_PROVIDERS_ARG, TOKEN_SOURCES_ARG],
   getArgs: () => ({
-    "/tokens": [TOKEN_MODELS_ARG],
+    "/tokens": [TOKEN_MODELS_ARG, TOKEN_PROVIDERS_ARG, TOKEN_SOURCES_ARG],
   }),
   handler: (text, state) => {
     const parts = text.trim().split(/\s+/).filter(Boolean);
-    const isModelsView = parts[1]?.toLowerCase() === "models";
+    const subcommand = parts[1]?.toLowerCase();
+    const validSubcommands = new Set(["models", "providers", "sources"]);
+    const hasSubcommand = !!subcommand && validSubcommands.has(subcommand);
 
-    if ((!isModelsView && parts.length > 2) || (isModelsView && parts.length > 3)) {
-      pushSystemMessage(state, "Usage: /tokens [days]\n       /tokens models [days]");
+    if ((!hasSubcommand && parts.length > 2) || (hasSubcommand && parts.length > 3)) {
+      pushSystemMessage(state, "Usage: /tokens [days]\n       /tokens models [days]\n       /tokens providers [days]\n       /tokens sources [days]");
       clearPrompt(state);
       return { type: "handled" };
     }
 
-    const rawDays = isModelsView ? parts[2] : parts[1];
+    const rawDays = hasSubcommand ? parts[2] : parts[1];
     const days = rawDays ? parsePositiveInt(rawDays) : defaultTokenHeatmapDayCount();
     if (rawDays && days == null) {
-      pushSystemMessage(state, "Usage: /tokens [days]\n       /tokens models [days]\n\ndays must be a positive integer.");
+      pushSystemMessage(state, "Usage: /tokens [days]\n       /tokens models [days]\n       /tokens providers [days]\n       /tokens sources [days]\n\ndays must be a positive integer.");
       clearPrompt(state);
       return { type: "handled" };
     }
@@ -276,12 +361,24 @@ export const TOKENS_COMMAND: SlashCommand = {
       return { type: "handled" };
     }
 
-    pushSystemMessage(
-      state,
-      isModelsView
-        ? buildModelBreakdownMessage(state.tokenStats, days ?? defaultTokenHeatmapDayCount())
-        : buildTokenStatsMessage(state.tokenStats, days ?? defaultTokenHeatmapDayCount()),
-    );
+    const resolvedDays = days ?? defaultTokenHeatmapDayCount();
+    let message: string;
+    switch (subcommand) {
+      case "models":
+        message = buildModelBreakdownMessage(state.tokenStats, resolvedDays);
+        break;
+      case "providers":
+        message = buildProviderBreakdownMessage(state.tokenStats, resolvedDays);
+        break;
+      case "sources":
+        message = buildSourceBreakdownMessage(state.tokenStats, resolvedDays);
+        break;
+      default:
+        message = buildTokenStatsMessage(state.tokenStats, resolvedDays);
+        break;
+    }
+
+    pushSystemMessage(state, message);
     clearPrompt(state);
     return { type: "handled" };
   },

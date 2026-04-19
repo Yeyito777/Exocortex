@@ -440,6 +440,42 @@ describe("/tokens", () => {
     expect(text).not.toContain("Models used:");
   });
 
+  test("shows simplified per-provider token breakdowns when using the providers view", () => {
+    const state = createInitialState();
+    state.tokenStats = structuredClone(tokenStats);
+
+    const result = tryCommand("/tokens providers 2", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("Providers (");
+    expect(text).toContain("OpenAI:");
+    expect(text).toContain("1,900");
+    expect(text).toContain("700");
+    expect(text).toContain("Anthropic:");
+    expect(text).not.toContain("req — all");
+    expect(text).not.toContain("Top provider:");
+    expect(text).not.toContain("Top provider tokens:");
+  });
+
+  test("shows simplified per-source token breakdowns when using the sources view", () => {
+    const state = createInitialState();
+    state.tokenStats = structuredClone(tokenStats);
+
+    const result = tryCommand("/tokens sources 2", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("Sources (");
+    expect(text).toContain("conversation:");
+    expect(text).toContain("1,900");
+    expect(text).toContain("700");
+    expect(text).toContain("title generation:");
+    expect(text).not.toContain("req — all");
+    expect(text).not.toContain("Top source:");
+    expect(text).not.toContain("Top source tokens:");
+  });
+
   test("reports when stats are not available yet", () => {
     const state = createInitialState();
 
