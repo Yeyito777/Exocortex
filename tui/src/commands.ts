@@ -1,42 +1,37 @@
-/**
- * Slash command registry.
- *
- * Defines all user-facing slash commands. Each command has a name,
- * description, and handler. The handler receives the full input text
- * and state, and returns a result indicating what happened.
- *
- * This is the only file that knows what slash commands exist.
- */
-
 import type { RenderState } from "./state";
-import type { AIMessage, UserMessage } from "./messages";
-import { clearPendingAI, clearStreamingTailMessages, getModelInfo, getProviderInfo, isStreaming, pushSystemMessage } from "./state";
-import type { TrimMode } from "./protocol";
+import { clearPendingAI, clearStreamingTailMessages, getProviderInfo, isStreaming, pushSystemMessage } from "./state";
 import { clearPrompt } from "./promptstate";
 import { formatTimestamp } from "./time";
 import {
   DEFAULT_EFFORT,
   DEFAULT_PROVIDER_ORDER,
-  normalizeEffortForModel,
-  EFFORT_LEVELS,
   type ProviderId,
-  type ModelId,
   type EffortLevel,
-  type ReasoningEffortInfo,
 } from "./messages";
 import { convDisplayName } from "./messages";
 import { copyToClipboard } from "./vim/clipboard";
 import { getMarkPrefix, getMarkFromTitle } from "./marks";
 import { theme, themes, THEME_NAMES, setTheme } from "./theme";
-import { buildLoginInfoMessage } from "./logininfo";
 import { availableProviders, setChosenProvider } from "./providerselection";
-
-// ── Types ───────────────────────────────────────────────────────────
-
-export interface CompletionItem {
-  name: string;
-  desc: string;
-}
+import { INSTRUCTIONS_COMMAND } from "./commands/instructions";
+import { MODEL_COMMAND } from "./commands/model";
+import {
+  conversationalMessages,
+  defaultEffortFor,
+  defaultModelForProvider,
+  effortItems,
+  formatEffortChoices,
+  normalizeStateEffort,
+  parseNonNegativeInt,
+  providerCompletionItems,
+  providerModelItems,
+  providerSupportsFastMode,
+  showLoginInfo,
+  supportedEfforts,
+} from "./commands/shared";
+import { TOKENS_COMMAND } from "./commands/tokens";
+import { TRIM_COMMAND, TRIM_MODE_ITEMS } from "./commands/trim";
+import type { CommandResult, CompletionItem, SlashCommand } from "./commands/types";
 
 interface ProviderCommandParseSuccess {
   ok: true;
@@ -50,49 +45,6 @@ interface ProviderCommandParseFailure {
 }
 
 type ProviderCommandParseResult = ProviderCommandParseSuccess | ProviderCommandParseFailure;
-
-export type CommandResult =
-  | { type: "handled" }
-  | { type: "quit" }
-  | { type: "new_conversation" }
-  | { type: "create_conversation_for_instructions"; text: string }
-  | { type: "replay_requested" }
-  | { type: "model_changed"; provider: ProviderId; model: ModelId }
-  | { type: "trim_requested"; mode: TrimMode; count: number }
-  | { type: "effort_changed"; effort: EffortLevel }
-  | { type: "fast_mode_changed"; enabled: boolean }
-  | { type: "rename_conversation"; title: string }
-  | { type: "generate_title" }
-  | { type: "login"; provider?: ProviderId }
-  | { type: "logout"; provider?: ProviderId }
-  | { type: "theme_changed" }
-  | { type: "get_system_prompt" }
-  | { type: "set_system_instructions"; text: string };
-
-export interface SlashCommand {
-  name: string;
-  description: string;
-  args?: CompletionItem[];
-  handler: (text: string, state: RenderState) => CommandResult;
-}
-
-// ── Command definitions ─────────────────────────────────────────────
-
-function showNoSystemInstructions(state: RenderState): CommandResult {
-  pushSystemMessage(state, "No system instructions set for this conversation.");
-  clearPrompt(state);
-  return { type: "handled" };
-}
-
-function providerModels(state: RenderState, provider = state.provider): ModelId[] {
-  return getProviderInfo(state, provider)?.models.map((model) => model.id) ?? [];
-}
-
-function showLoginInfo(state: RenderState): CommandResult {
-  pushSystemMessage(state, buildLoginInfoMessage(state));
-  clearPrompt(state);
-  return { type: "handled" };
-}
 
 function handleProviderCommandError(state: RenderState, message: string): ProviderCommandParseFailure {
   pushSystemMessage(state, message);
@@ -118,153 +70,6 @@ function parseOptionalProviderCommand(
   }
 
   return { ok: true, provider, providers };
-}
-
-function defaultModelForProvider(state: RenderState, provider = state.provider): ModelId | null {
-  return getProviderInfo(state, provider)?.defaultModel ?? null;
-}
-
-function providerAllowsCustomModels(state: RenderState, provider = state.provider): boolean {
-  return getProviderInfo(state, provider)?.allowsCustomModels ?? false;
-}
-
-function providerSupportsFastMode(state: RenderState, provider = state.provider): boolean {
-  return getProviderInfo(state, provider)?.supportsFastMode ?? false;
-}
-
-function providerCompletionItems(state: RenderState): CompletionItem[] {
-  return availableProviders(state).map((provider) => ({
-    name: provider,
-    desc: getProviderInfo(state, provider)?.label ?? `${provider} models`,
-  }));
-}
-
-function providerModelItems(state: RenderState, provider = state.provider): CompletionItem[] {
-  const info = getProviderInfo(state, provider);
-  const models = info?.models ?? [];
-  return models.map((model) => ({
-    name: model.id,
-    desc: model.id === info?.defaultModel ? `${model.label} (default)` : model.label,
-  }));
-}
-
-function supportedEfforts(state: RenderState, provider = state.provider, model = state.model): ReasoningEffortInfo[] {
-  return getModelInfo(state, provider, model)?.supportedEfforts ?? EFFORT_LEVELS.map((effort) => ({ effort, description: effort }));
-}
-
-function defaultEffortFor(state: RenderState, provider = state.provider, model = state.model): EffortLevel {
-  return normalizeEffortForModel(getModelInfo(state, provider, model), null);
-}
-
-function maxContextFor(state: RenderState, provider = state.provider, model = state.model): number | null {
-  return getModelInfo(state, provider, model)?.maxContext ?? null;
-}
-
-function effortItems(state: RenderState, provider = state.provider, model = state.model): CompletionItem[] {
-  const defaultEffort = defaultEffortFor(state, provider, model);
-  return supportedEfforts(state, provider, model).map((candidate) => ({
-    name: candidate.effort,
-    desc: candidate.effort === defaultEffort ? `${candidate.description} (default)` : candidate.description,
-  }));
-}
-
-function normalizeStateEffort(state: RenderState, provider = state.provider, model = state.model): void {
-  state.effort = normalizeEffortForModel(getModelInfo(state, provider, model), state.effort);
-}
-
-function buildContextWindowWarning(
-  previousContextTokens: number | null,
-  provider: ProviderId,
-  model: ModelId,
-  nextMaxContext: number | null,
-): string | null {
-  if (previousContextTokens == null || nextMaxContext == null || nextMaxContext <= 0 || previousContextTokens <= nextMaxContext) {
-    return null;
-  }
-  return `Warning: last known context (${previousContextTokens.toLocaleString("en-US")} tokens) exceeds ${provider}/${model}'s max context (${nextMaxContext.toLocaleString("en-US")}). The next turn may fail unless you trim the conversation (for example: /trim thinking 20, /trim toolresults 20, or /trim messages 5) or start a new one.`;
-}
-
-function applyProviderModelSelection(state: RenderState, provider: ProviderId, model: ModelId): {
-  effortChanged: boolean;
-  fastDisabled: boolean;
-  contextWarning: string | null;
-} {
-  const previousEffort = state.effort;
-  const previousFastMode = state.fastMode;
-  const previousContextTokens = state.contextTokens;
-  const nextMaxContext = maxContextFor(state, provider, model);
-
-  setChosenProvider(state, provider);
-  state.model = model;
-  normalizeStateEffort(state, provider, model);
-  if (!providerSupportsFastMode(state, provider)) state.fastMode = false;
-  state.contextTokens = null;
-
-  return {
-    effortChanged: state.effort !== previousEffort,
-    fastDisabled: previousFastMode && !state.fastMode,
-    contextWarning: buildContextWindowWarning(previousContextTokens, provider, model, nextMaxContext),
-  };
-}
-
-const TRIM_MODE_ITEMS: CompletionItem[] = [
-  { name: "messages", desc: "Trim oldest history entries first" },
-  { name: "thinking", desc: "Strip oldest assistant thinking blocks first" },
-  { name: "toolresults", desc: "Strip oldest tool result payloads first" },
-];
-
-function parsePositiveInt(raw: string | undefined): number | null {
-  if (!raw || !/^\d+$/.test(raw)) return null;
-  const value = Number(raw);
-  return Number.isSafeInteger(value) && value > 0 ? value : null;
-}
-
-function parseNonNegativeInt(raw: string | undefined): number | null {
-  if (!raw || !/^\d+$/.test(raw)) return null;
-  const value = Number(raw);
-  return Number.isSafeInteger(value) && value >= 0 ? value : null;
-}
-
-/** Chat-history messages only (user/assistant), with pending AI treated as the latest entry. */
-function conversationalMessages(state: RenderState): Array<UserMessage | AIMessage> {
-  const history = state.messages.filter((msg): msg is UserMessage | AIMessage => msg.role === "user" || msg.role === "assistant");
-  if (state.pendingAI) history.push(state.pendingAI);
-  return history;
-}
-
-function trimHelpText(state: RenderState): string {
-  const current = state.contextTokens != null ? state.contextTokens.toLocaleString("en-US") : "unknown";
-  const maxContext = maxContextFor(state);
-  const maxLabel = maxContext != null ? maxContext.toLocaleString("en-US") : "unknown";
-  return [
-    `Current context: ${current} / ${maxLabel} tokens`,
-    "Usage:",
-    "  /trim messages <n>",
-    "  /trim thinking <n>",
-    "  /trim toolresults <n>",
-    "",
-    "messages   Removes the oldest history entries first.",
-    "thinking   Removes thinking blocks from the oldest assistant turns first.",
-    "toolresults Replaces the oldest tool result payloads with placeholders first.",
-  ].join("\n");
-}
-
-function formatProviderModels(state: RenderState, provider: ProviderId): string {
-  const models = providerModels(state, provider);
-  if (models.length === 0) return `${provider}: (waiting for daemon)`;
-  return `${provider}: ${models.join(", ")}${providerAllowsCustomModels(state, provider) ? " (custom ids allowed)" : ""}`;
-}
-
-function formatEffortChoices(candidates: ReasoningEffortInfo[], current: EffortLevel, defaultEffort: EffortLevel): string {
-  return candidates
-    .map((candidate) => {
-      const suffix = [
-        candidate.effort === current ? "current" : "",
-        candidate.effort === defaultEffort ? "default" : "",
-      ].filter(Boolean).join(", ");
-      return suffix ? `${candidate.effort} (${suffix})` : candidate.effort;
-    })
-    .join(", ");
 }
 
 /** Build a human-readable info string for the current conversation. */
@@ -335,7 +140,6 @@ const commands: SlashCommand[] = [
       clearPrompt(state);
       state.scrollOffset = 0;
       state.contextTokens = null;
-      // Return new_conversation so main.ts can unsubscribe + clear convId
       return { type: "new_conversation" };
     },
   },
@@ -379,131 +183,19 @@ const commands: SlashCommand[] = [
       }
       const rawTitle = text.slice("/rename".length).trim();
       if (!rawTitle) {
-        // Auto-generate title via the title model.
         clearPrompt(state);
         return { type: "generate_title" };
       }
-      // Preserve any existing emoji mark prefix
       const conv = state.sidebar.conversations.find(c => c.id === state.convId);
       const markPrefix = conv ? getMarkPrefix(conv.title) : null;
       const title = markPrefix ? markPrefix + " " + rawTitle : rawTitle;
-      // Optimistic update: immediately reflect in sidebar
       if (conv) conv.title = title;
       clearPrompt(state);
       return { type: "rename_conversation", title };
     },
   },
-  {
-    name: "/model",
-    description: "Set or show the current provider/model",
-    args: [...DEFAULT_PROVIDER_ORDER].map((provider) => ({
-      name: provider,
-      desc: provider === "openai" ? "OpenAI models" : "Anthropic models",
-    })),
-    handler: (text, state) => {
-      const parts = text.trim().split(/\s+/).filter(Boolean);
-      const providers = availableProviders(state);
-
-      if (parts.length === 1) {
-        pushSystemMessage(state, `Current: ${state.provider}/${state.model}\nAvailable:\n${providers.map((provider) => formatProviderModels(state, provider)).join("\n")}\nUsage: /model <provider> <model>`);
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
-      if (parts.length > 3) {
-        pushSystemMessage(state, "Usage: /model <provider> <model>");
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
-      const provider = parts[1] as ProviderId;
-      if (!providers.includes(provider)) {
-        pushSystemMessage(state, `Unknown provider: ${parts[1]}. Available: ${providers.join(", ")}`);
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
-      if (parts.length === 2) {
-        const currentModel = provider === state.provider ? state.model : defaultModelForProvider(state, provider) ?? "(unknown)";
-        const efforts = effortItems(state, provider, currentModel);
-        pushSystemMessage(state, `Current: ${currentModel}\nAvailable: ${providerModels(state, provider).join(", ") || "(waiting for daemon)"}\nEffort: ${efforts.map((item) => item.name).join(", ") || DEFAULT_EFFORT}${providerAllowsCustomModels(state, provider) ? "\nThis provider also accepts custom model ids." : ""}`);
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
-      if (state.convId && isStreaming(state)) {
-        pushSystemMessage(state, "Cannot switch provider/model while this conversation is streaming.");
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
-      const model = parts[2] as ModelId;
-      const selection = applyProviderModelSelection(state, provider, model);
-
-      const effortSuffix = selection.effortChanged ? ` (effort ${state.effort})` : "";
-      const fastSuffix = selection.fastDisabled ? " (fast off)" : "";
-      pushSystemMessage(state, `Model set to ${state.provider}/${state.model}${effortSuffix}${fastSuffix}`);
-
-      if (selection.contextWarning) {
-        pushSystemMessage(state, selection.contextWarning, "warning");
-      }
-
-      clearPrompt(state);
-      return state.convId ? { type: "model_changed", provider, model } : { type: "handled" };
-    },
-  },
-  {
-    name: "/trim",
-    description: "Trim old context from the current conversation",
-    args: TRIM_MODE_ITEMS,
-    handler: (text, state) => {
-      const parts = text.trim().split(/\s+/).filter(Boolean);
-      if (parts.length === 1) {
-        pushSystemMessage(state, trimHelpText(state));
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
-      const rawMode = parts[1]?.toLowerCase();
-      const mode = rawMode === "messages" || rawMode === "thinking" || rawMode === "toolresults"
-        ? rawMode
-        : null;
-
-      if (!mode) {
-        pushSystemMessage(state, `${trimHelpText(state)}\n\nUnknown trim mode: ${parts[1] ?? ""}`);
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
-      if (parts.length !== 3) {
-        pushSystemMessage(state, trimHelpText(state));
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
-      if (!state.convId) {
-        pushSystemMessage(state, "No active conversation to trim.");
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
-      if (isStreaming(state)) {
-        pushSystemMessage(state, "Cannot trim the conversation while it is streaming.");
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
-      const count = parsePositiveInt(parts[2]);
-      if (count == null) {
-        pushSystemMessage(state, `Trim count must be a positive integer.\n\n${trimHelpText(state)}`);
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-
-      clearPrompt(state);
-      return { type: "trim_requested", mode, count };
-    },
-  },
+  MODEL_COMMAND,
+  TRIM_COMMAND,
   {
     name: "/effort",
     description: "Set or show reasoning effort level",
@@ -590,6 +282,7 @@ const commands: SlashCommand[] = [
       return { type: "handled" };
     },
   },
+  TOKENS_COMMAND,
   {
     name: "/time",
     description: "Show the timestamp of the last chat message",
@@ -638,7 +331,7 @@ const commands: SlashCommand[] = [
   {
     name: "/theme",
     description: "Set or show the current theme",
-    args: THEME_NAMES.map(n => ({ name: n, desc: n === theme.name ? `${n} (active)` : n })),
+    args: THEME_NAMES.map((n) => ({ name: n, desc: n === theme.name ? `${n} (active)` : n })),
     handler: (text, state) => {
       const parts = text.split(/\s+/);
       const arg = parts[1];
@@ -659,41 +352,7 @@ const commands: SlashCommand[] = [
       return { type: "handled" };
     },
   },
-  {
-    name: "/instructions",
-    description: "Set, show, or clear per-conversation system instructions",
-    args: [{ name: "clear", desc: "Clear instructions" }],
-    handler: (text, state) => {
-      const arg = text.slice("/instructions".length);
-      const trimmed = arg.trimStart();
-      if (!trimmed) {
-        if (!state.convId) {
-          return showNoSystemInstructions(state);
-        }
-        // Show current instructions
-        const instrMsg = state.messages.find((m): m is import("./messages").SystemInstructionsMessage => m.role === "system_instructions");
-        if (instrMsg?.text.trim()) {
-          pushSystemMessage(state, `Current instructions:\n${instrMsg.text}`);
-          clearPrompt(state);
-          return { type: "handled" };
-        }
-        return showNoSystemInstructions(state);
-      }
-      if (trimmed === "clear") {
-        if (!state.convId) {
-          return showNoSystemInstructions(state);
-        }
-        clearPrompt(state);
-        return { type: "set_system_instructions", text: "" };
-      }
-      if (!state.convId) {
-        clearPrompt(state);
-        return { type: "create_conversation_for_instructions", text: trimmed };
-      }
-      clearPrompt(state);
-      return { type: "set_system_instructions", text: trimmed };
-    },
-  },
+  INSTRUCTIONS_COMMAND,
   {
     name: "/system",
     description: "Show the current system prompt",
@@ -754,12 +413,6 @@ const commands: SlashCommand[] = [
   },
 ];
 
-// ── Lookup ──────────────────────────────────────────────────────────
-
-/**
- * Try to match and execute a slash command.
- * Returns the command result, or null if the input is not a command.
- */
 export function tryCommand(text: string, state: RenderState): CommandResult | null {
   if (!text.startsWith("/")) return null;
 
@@ -770,14 +423,10 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
   return cmd.handler(text, state);
 }
 
-// ── Derived completion data ────────────────────────────────────────
-
-/** Command names shown in the autocomplete popup. */
 export const COMMAND_LIST: CompletionItem[] = commands
-  .filter(c => c.name !== "/exit")   // /exit is an alias — only show /quit
+  .filter(c => c.name !== "/exit")
   .map(c => ({ name: c.name, desc: c.description }));
 
-/** All command argument lists, keyed by command name. Used by autocomplete and prompt highlighting. */
 const STATIC_COMMAND_ARGS: Record<string, CompletionItem[]> = Object.fromEntries(
   commands
     .filter((command) => command.name !== "/model" && command.args && command.args.length > 0)
@@ -797,3 +446,5 @@ export function getCommandArgs(state: RenderState): Record<string, CompletionIte
   registry["/fast"] = STATIC_COMMAND_ARGS["/fast"] ?? [];
   return registry;
 }
+
+export type { CommandResult, CompletionItem, SlashCommand } from "./commands/types";

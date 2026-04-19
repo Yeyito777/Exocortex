@@ -12,7 +12,7 @@
 
 import { streamMessage } from "./api";
 import { log } from "./log";
-import type { ProviderId, ModelId } from "./messages";
+import type { ProviderId, ModelId, TokenTrackingContext } from "./messages";
 import { getDefaultModel, getDefaultProvider } from "./providers/registry";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -26,6 +26,8 @@ export interface CompleteOptions {
   maxTokens?: number;
   /** Abort signal for cancellation. */
   signal?: AbortSignal;
+  /** Optional token-accounting metadata for this helper request. */
+  tracking?: TokenTrackingContext;
 }
 
 export interface CompleteResult {
@@ -57,6 +59,7 @@ export async function complete(
     provider = getDefaultProvider().id,
     maxTokens = 4096,
     signal,
+    tracking,
   } = options;
   const model = options.model ?? getDefaultModel(provider);
 
@@ -71,6 +74,7 @@ export async function complete(
     system,
     maxTokens,
     signal,
+    tracking,
   });
 
   log("info", `llm: inner completion done (provider=${provider}, in=${result.inputTokens ?? "?"}, out=${result.outputTokens ?? "?"}, text=${result.text.length} chars)`);

@@ -6,7 +6,7 @@
  */
 
 import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo } from "./messages";
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot } from "./messages";
 import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
 import { loadPreferredProvider } from "./preferences";
@@ -117,6 +117,8 @@ export interface RenderState {
   authInfoByProvider: Record<ProviderId, ProviderAuthInfo>;
   /** Rate-limit usage data keyed by provider. Null until first update per provider. */
   usageByProvider: Record<ProviderId, UsageData | null>;
+  /** Persistent token-accounting snapshot from the daemon. */
+  tokenStats: TokenStatsSnapshot | null;
   /** Input tokens from the latest API round. Null until first context_update. */
   contextTokens: number | null;
   /** Which panel has focus — sidebar or chat. */
@@ -346,6 +348,7 @@ export function createInitialState(): RenderState {
       anthropic: null,
       openai: null,
     },
+    tokenStats: null,
     contextTokens: null,
     panelFocus: "chat",
     chatFocus: "prompt",

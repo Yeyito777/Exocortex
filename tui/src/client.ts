@@ -7,7 +7,7 @@
 import { connect, type Socket } from "net";
 import { existsSync } from "fs";
 import type { Command, Event, QueueTiming, TrimMode } from "./protocol";
-import type { ProviderId, ModelId, EffortLevel, ImageAttachment } from "./messages";
+import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 
 export type EventHandler = (event: Event) => void;
@@ -223,10 +223,11 @@ export class DaemonClient {
     system: string, userText: string,
     onSuccess: LlmCompleteCallback, onError?: LlmErrorCallback,
     provider?: ProviderId, model?: ModelId, maxTokens?: number,
+    trackingSource?: TokenUsageSource,
   ): void {
     const reqId = `llm_${++this.nextReqId}_${Date.now()}`;
     this.llmCallbacks.set(reqId, { onSuccess, onError });
-    this.send({ type: "llm_complete", reqId, system, userText, provider, model, maxTokens });
+    this.send({ type: "llm_complete", reqId, system, userText, provider, model, maxTokens, trackingSource });
   }
 
   transcribeAudio(

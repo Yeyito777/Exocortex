@@ -293,3 +293,74 @@ export interface UsageData {
   fiveHour: UsageWindow | null;
   sevenDay: UsageWindow | null;
 }
+
+// ── Token stats ─────────────────────────────────────────────────────
+
+export const TOKEN_USAGE_SOURCES = [
+  "conversation",
+  "llm_complete",
+  "title_generation",
+  "browse_summary",
+  "context_summary",
+] as const;
+
+export type TokenUsageSource = typeof TOKEN_USAGE_SOURCES[number];
+
+export interface TokenTrackingContext {
+  source: TokenUsageSource;
+  conversationId?: string;
+}
+
+export interface TokenUsageTotals {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  requests: number;
+}
+
+export interface TokenStatsBucket extends TokenUsageTotals {
+  byProvider: Partial<Record<ProviderId, TokenUsageTotals>>;
+  byModel: Record<ModelId, TokenUsageTotals>;
+  bySource: Partial<Record<TokenUsageSource, TokenUsageTotals>>;
+}
+
+export interface TokenStatsDay extends TokenStatsBucket {
+  /** Local calendar day in YYYY-MM-DD form. */
+  day: string;
+}
+
+export interface TokenStatsSnapshot {
+  /** Last time the backing stats store changed, or null if empty. */
+  updatedAt: number | null;
+  /** Today bucket in local time. Always present, zeroed when unused. */
+  today: TokenStatsDay;
+  /** Lifetime totals across all recorded days. */
+  lifetime: TokenStatsBucket;
+  /** Active days only, newest first. */
+  days: TokenStatsDay[];
+}
+
+export function createTokenUsageTotals(): TokenUsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    requests: 0,
+  };
+}
+
+export function createTokenStatsBucket(): TokenStatsBucket {
+  return {
+    ...createTokenUsageTotals(),
+    byProvider: {},
+    byModel: {},
+    bySource: {},
+  };
+}
+
+export function createTokenStatsDay(day: string): TokenStatsDay {
+  return {
+    day,
+    ...createTokenStatsBucket(),
+  };
+}

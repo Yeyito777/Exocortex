@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildMessageLines } from "./conversation";
+import { theme } from "./theme";
 
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
@@ -508,6 +509,29 @@ describe("assistant metadata spacing", () => {
       "  Streaming reply",
       "  Gpt-5.4 | 42 tokens | 5s",
     ]);
+  });
+});
+
+describe("system message rendering", () => {
+  test("preserves ANSI-decorated heatmap rows without breaking escape sequences", () => {
+    const state = {
+      messages: [{
+        role: "system",
+        text: `Heatmap\n  Su  ${theme.accent}■${theme.reset}${theme.dim} ${theme.muted}■${theme.reset}${theme.dim}`,
+        color: undefined,
+      }],
+      pendingAI: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 20).lines;
+    expect(rendered).toHaveLength(2);
+    expect(stripAnsi(rendered[0])).toBe("  Heatmap");
+    expect(stripAnsi(rendered[1])).toBe("    Su  ■ ■");
   });
 });
 

@@ -11,7 +11,7 @@
 
 import { streamMessage, type ApiToolCall } from "./api";
 import { log } from "./log";
-import type { ProviderId, ModelId, EffortLevel, Block, ToolCallBlock, ToolResultBlock, ApiMessage, ApiContentBlock } from "./messages";
+import type { ProviderId, ModelId, EffortLevel, Block, ToolCallBlock, ToolResultBlock, ApiMessage, ApiContentBlock, TokenTrackingContext } from "./messages";
 import type { ContentBlock as ProviderContentBlock, ServiceTier } from "./providers/types";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
 import { getMaxContext } from "./providers/registry";
@@ -162,6 +162,8 @@ export async function runAgentLoop(
     effort?: EffortLevel;
     serviceTier?: ServiceTier;
     promptCacheKey?: string;
+    /** Token-accounting metadata for each API round in this loop. */
+    tracking?: TokenTrackingContext;
     /** Mutable state for abort recovery — caller reads on catch. */
     state?: AgentState;
   } = {},
@@ -207,6 +209,7 @@ export async function runAgentLoop(
       effort: options.effort,
       serviceTier: options.serviceTier,
       promptCacheKey: options.promptCacheKey,
+      tracking: options.tracking,
       mcpToolExecutor: options.executor
         ? async (call, signal) => {
           const [result] = await options.executor!([call], signal);

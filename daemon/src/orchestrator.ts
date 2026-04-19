@@ -318,6 +318,7 @@ async function orchestrateAssistantTurn(
         ...llmOptions,
         maxTokens,
         signal,
+        tracking: { source: "context_summary", conversationId: convId },
       });
       return result.text;
     },
@@ -569,6 +570,7 @@ async function orchestrateAssistantTurn(
       effort: conv.effort,
       serviceTier: conv.fastMode ? "fast" : undefined,
       promptCacheKey: convId,
+      tracking: { source: "conversation", conversationId: convId },
       state: agentState,
     });
 

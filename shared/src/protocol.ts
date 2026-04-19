@@ -8,8 +8,8 @@
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo, ExternalToolStyle, ImageAttachment } from "./messages";
-export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo, ExternalToolStyle, ImageAttachment };
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource } from "./messages";
+export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
@@ -213,6 +213,8 @@ export interface LlmCompleteCommand {
   model?: ModelId;
   /** Max output tokens. Defaults to 16000 (must exceed thinking budget for non-adaptive models). */
   maxTokens?: number;
+  /** Optional source label for token accounting. */
+  trackingSource?: TokenUsageSource;
 }
 
 export interface GetSystemPromptCommand {
@@ -386,6 +388,12 @@ export interface UsageUpdateEvent {
   type: "usage_update";
   provider: ProviderId;
   usage: UsageData | null;
+}
+
+export interface TokenStatsEvent {
+  type: "token_stats";
+  reqId?: string;
+  stats: TokenStatsSnapshot;
 }
 
 export interface ConversationsListEvent {
@@ -613,6 +621,7 @@ export type Event =
   | ContextUpdateEvent
   | MessageCompleteEvent
   | UsageUpdateEvent
+  | TokenStatsEvent
   | ConversationsListEvent
   | ConversationLoadedEvent
   | ConversationUpdatedEvent

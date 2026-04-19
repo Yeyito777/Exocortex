@@ -201,6 +201,10 @@ async function summarizeContent(
       ...llmOptions,
       maxTokens: BROWSE_MAX_TOKENS,
       signal,
+      tracking: {
+        source: "browse_summary",
+        ...(context?.conversationId ? { conversationId: context.conversationId } : {}),
+      },
     });
     log("info", `browse: summary done (${result.text.length} chars, in=${result.inputTokens ?? "?"}, out=${result.outputTokens ?? "?"})`);
     return `Summary of ${url}:\n\n${result.text}`;

@@ -1,4 +1,4 @@
-import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData, ToolCallBlock, ToolResultBlock } from "../messages";
+import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData, ToolCallBlock, ToolResultBlock, TokenTrackingContext } from "../messages";
 import type { OAuthProfile, StoredTokens } from "../store";
 import type { AssistantProviderData } from "./provider-data";
 
@@ -56,6 +56,8 @@ export interface StreamOptions {
   effort?: EffortLevel;
   serviceTier?: ServiceTier;
   promptCacheKey?: string;
+  /** Token-accounting metadata for this request. */
+  tracking?: TokenTrackingContext;
   /** Optional provider-native tool bridge. Anthropic uses this to expose Exocortex tools via MCP. */
   mcpToolExecutor?: StreamToolExecutor;
 }

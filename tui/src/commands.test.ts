@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { tryCommand } from "./commands";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
-import type { ProviderInfo } from "./messages";
+import type { ProviderInfo, TokenStatsSnapshot } from "./messages";
 import { theme } from "./theme";
 
 const providers: ProviderInfo[] = [
@@ -43,6 +43,98 @@ const providers: ProviderInfo[] = [
     ],
   },
 ];
+
+function localDayKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+const todayDate = new Date();
+todayDate.setHours(0, 0, 0, 0);
+const yesterdayDate = new Date(todayDate);
+yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+const todayKey = localDayKey(todayDate);
+const yesterdayKey = localDayKey(yesterdayDate);
+
+const tokenStats: TokenStatsSnapshot = {
+  updatedAt: Date.now(),
+  today: {
+    day: todayKey,
+    inputTokens: 1_500,
+    outputTokens: 500,
+    totalTokens: 2_000,
+    requests: 3,
+    byProvider: {
+      openai: { inputTokens: 1_500, outputTokens: 500, totalTokens: 2_000, requests: 3 },
+    },
+    byModel: {
+      "gpt-5.4": { inputTokens: 1_200, outputTokens: 400, totalTokens: 1_600, requests: 2 },
+      "claude-opus-4-6": { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+    },
+    bySource: {
+      conversation: { inputTokens: 1_200, outputTokens: 400, totalTokens: 1_600, requests: 2 },
+      title_generation: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+    },
+  },
+  lifetime: {
+    inputTokens: 2_200,
+    outputTokens: 800,
+    totalTokens: 3_000,
+    requests: 5,
+    byProvider: {
+      openai: { inputTokens: 1_900, outputTokens: 700, totalTokens: 2_600, requests: 4 },
+      anthropic: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+    },
+    byModel: {
+      "gpt-5.4": { inputTokens: 1_600, outputTokens: 600, totalTokens: 2_200, requests: 3 },
+      "claude-opus-4-6": { inputTokens: 600, outputTokens: 200, totalTokens: 800, requests: 2 },
+    },
+    bySource: {
+      conversation: { inputTokens: 1_900, outputTokens: 700, totalTokens: 2_600, requests: 4 },
+      title_generation: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+    },
+  },
+  days: [
+    {
+      day: todayKey,
+      inputTokens: 1_500,
+      outputTokens: 500,
+      totalTokens: 2_000,
+      requests: 3,
+      byProvider: {
+        openai: { inputTokens: 1_500, outputTokens: 500, totalTokens: 2_000, requests: 3 },
+      },
+      byModel: {
+        "gpt-5.4": { inputTokens: 1_200, outputTokens: 400, totalTokens: 1_600, requests: 2 },
+        "claude-opus-4-6": { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+      },
+      bySource: {
+        conversation: { inputTokens: 1_200, outputTokens: 400, totalTokens: 1_600, requests: 2 },
+        title_generation: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+      },
+    },
+    {
+      day: yesterdayKey,
+      inputTokens: 700,
+      outputTokens: 300,
+      totalTokens: 1_000,
+      requests: 2,
+      byProvider: {
+        openai: { inputTokens: 400, outputTokens: 200, totalTokens: 600, requests: 1 },
+        anthropic: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+      },
+      byModel: {
+        "gpt-5.4": { inputTokens: 400, outputTokens: 200, totalTokens: 600, requests: 1 },
+        "claude-opus-4-6": { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+      },
+      bySource: {
+        conversation: { inputTokens: 700, outputTokens: 300, totalTokens: 1_000, requests: 2 },
+      },
+    },
+  ],
+};
 
 beforeEach(() => {
   clearPreferredProvider();
@@ -282,6 +374,58 @@ describe("/trim", () => {
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
     expect(text).toContain("Trim count must be a positive integer.");
+  });
+});
+
+describe("/tokens", () => {
+  test("shows a github-style heatmap and bottom summary stats from cached stats", () => {
+    const state = createInitialState();
+    state.tokenStats = structuredClone(tokenStats);
+
+    const result = tryCommand("/tokens 2", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).not.toContain("Top models today:");
+    expect(text).not.toContain("Top models lifetime:");
+    expect(text).not.toContain("Sources today:");
+    expect(text).toContain("Heatmap (");
+    expect(text).not.toContain("max ");
+    expect(text).toContain("Less");
+    expect(text).toContain("More");
+    expect(text).toContain("■");
+    expect(text).toContain(`Tokens today: \x1b[38;2;`);
+    expect(text).toContain("2,000");
+    expect(text).toContain("Maximum tokens:");
+    expect(text).toContain("Average tokens:");
+    expect(text).toContain("1,500");
+    expect(text).toContain("Lifetime tokens:");
+    expect(text).toContain("3,000");
+  });
+
+  test("averages only across active days in the displayed range", () => {
+    const state = createInitialState();
+    const sparseStats = structuredClone(tokenStats);
+    sparseStats.lifetime = structuredClone(tokenStats.today);
+    sparseStats.days = [structuredClone(tokenStats.today)];
+    state.tokenStats = sparseStats;
+
+    const result = tryCommand("/tokens 3", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("Average tokens:");
+    expect(text).toContain("2,000");
+    expect(text).not.toContain("667");
+  });
+
+  test("reports when stats are not available yet", () => {
+    const state = createInitialState();
+
+    const result = tryCommand("/tokens", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Token stats are still loading. Try again in a moment.");
   });
 });
 

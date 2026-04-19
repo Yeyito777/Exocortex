@@ -392,6 +392,11 @@ export function handleEvent(
       break;
     }
 
+    case "token_stats": {
+      state.tokenStats = event.stats;
+      break;
+    }
+
     case "conversations_list": {
       updateConversationList(state.sidebar, event.conversations);
       break;

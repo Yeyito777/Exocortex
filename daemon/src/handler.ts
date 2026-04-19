@@ -21,12 +21,16 @@ import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command } from "./protocol";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials } from "./auth";
+import { getTokenStatsSnapshot } from "./token-stats";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
 export function createHandler(server: DaemonServer) {
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     server.broadcast({ type: "usage_update", provider, usage });
+  };
+  const broadcastTokenStats = () => {
+    server.broadcast({ type: "token_stats", stats: getTokenStatsSnapshot() });
   };
   const describeAvailableModels = (provider: import("./messages").ProviderId): string => {
     const available = getProvider(provider)?.models.map((model) => model.id) ?? [];
@@ -101,6 +105,7 @@ export function createHandler(server: DaemonServer) {
           const lastUsage = getLastUsage(provider.id);
           server.sendTo(client, { type: "usage_update", provider: provider.id, usage: lastUsage });
         }
+        server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
         server.sendTo(client, { type: "conversations_list", conversations: convStore.listSummaries() });
         for (const provider of getProviders()) {
           if (!hasConfiguredCredentials(provider.id)) continue;
@@ -201,6 +206,7 @@ export function createHandler(server: DaemonServer) {
             onComplete: () => {
               const provider = convStore.get(cmd.convId)?.provider ?? getDefaultProvider().id;
               refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
+              broadcastTokenStats();
             },
           },
           cmd.images,
@@ -219,6 +225,7 @@ export function createHandler(server: DaemonServer) {
             onComplete: () => {
               const provider = convStore.get(cmd.convId)?.provider ?? getDefaultProvider().id;
               refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
+              broadcastTokenStats();
             },
           },
         );
@@ -550,9 +557,15 @@ export function createHandler(server: DaemonServer) {
         // Fire-and-forget — ack immediately, send result when ready
         server.sendTo(client, { type: "ack", reqId: cmd.reqId });
 
-        complete(cmd.system, cmd.userText, { provider, model, maxTokens })
+        complete(cmd.system, cmd.userText, {
+          provider,
+          model,
+          maxTokens,
+          tracking: { source: cmd.trackingSource ?? "llm_complete" },
+        })
           .then((result) => {
             server.sendTo(client, { type: "llm_complete_result", reqId: cmd.reqId, text: result.text });
+            broadcastTokenStats();
           })
           .catch((err) => {
             const msg = err instanceof Error ? err.message : String(err);

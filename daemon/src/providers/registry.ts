@@ -42,6 +42,15 @@ function getFallbackProviders(): ProviderInfo[] {
   return DEFAULT_PROVIDER_ORDER.map((providerId) => byId[providerId]);
 }
 
+const MODEL_ID_ALIASES: Record<ProviderId, Record<string, ModelId>> = {
+  openai: {},
+  anthropic: {
+    sonnet: "claude-sonnet-4-6",
+    haiku: "claude-haiku-4-5-20251001",
+    opus: "claude-opus-4-6",
+  },
+};
+
 let providerCache: ProviderInfo[] | null = null;
 let lastRefreshAt = 0;
 let inflightRefresh: Promise<boolean> | null = null;
@@ -102,6 +111,10 @@ export function getDefaultModel(providerId: ProviderId): ModelId {
 
 export function getModelInfo(providerId: ProviderId, model: ModelId): ModelInfo | null {
   return getProvider(providerId)?.models.find((candidate) => candidate.id === model) ?? null;
+}
+
+export function canonicalizeModel(providerId: ProviderId, model: ModelId): ModelId {
+  return getModelInfo(providerId, model)?.id ?? MODEL_ID_ALIASES[providerId][model] ?? model;
 }
 
 export function getMaxContext(providerId: ProviderId, model: ModelId): number | null {

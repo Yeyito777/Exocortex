@@ -114,5 +114,6 @@ export function generateTitle(
     state.provider,
     titleModelForProvider(state.provider),
     MAX_TOKENS,
+    "title_generation",
   );
 }

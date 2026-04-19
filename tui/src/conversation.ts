@@ -581,7 +581,21 @@ function renderUserMessage(text: string, cols: number, images?: ImageAttachment[
 
 function renderSystemMessage(text: string, availableWidth: number, color?: string): string[] {
   const sysWidth = availableWidth - 2; // 2-char indent
-  const { lines: wrapped } = wordWrap(text, sysWidth > 0 ? sysWidth : 1);
+  const width = sysWidth > 0 ? sysWidth : 1;
+  const wrapped: string[] = [];
+
+  for (const rawLine of text.split("\n")) {
+    if (rawLine.includes("\x1b[")) {
+      // Inline ANSI is used sparingly (for example /tokens heatmaps). Preserve
+      // the authored line rather than letting the plain word wrapper split on
+      // raw escape-sequence length instead of visible width.
+      wrapped.push(rawLine);
+      continue;
+    }
+    const lineWrap = wordWrap(rawLine, width);
+    wrapped.push(...lineWrap.lines);
+  }
+
   const style = color || theme.dim;
   return wrapped.map(sl => `  ${style}${sl}${theme.reset}`);
 }
