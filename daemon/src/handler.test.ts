@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { create, get, remove, replaceStreamingDisplayMessages } from "./conversations";
 import { clearActiveJob, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
 
@@ -20,15 +20,20 @@ function mkId(suffix: string): string {
   return id;
 }
 
+function cleanupIds(): void {
+  for (const id of IDS.splice(0)) {
+    clearActiveJob(id);
+    remove(id);
+  }
+}
+
 describe("handler replay_conversation", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
-    for (const id of IDS.splice(0)) {
-      clearActiveJob(id);
-      remove(id);
-    }
+    cleanupIds();
   });
+  afterEach(cleanupIds);
 
   test("dispatches replay requests to the replay orchestrator", async () => {
     const server = {
@@ -70,11 +75,9 @@ describe("handler load_conversation late-join streaming snapshots", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
-    for (const id of IDS.splice(0)) {
-      clearActiveJob(id);
-      remove(id);
-    }
+    cleanupIds();
   });
+  afterEach(cleanupIds);
 
   test("does not send streaming_started after the final assistant reply is already committed", async () => {
     const convId = mkId("finished-window");
@@ -106,6 +109,17 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     await handle({} as never, { type: "load_conversation", convId });
 
     expect(sent.map((event) => event.type)).toEqual(["conversation_loaded"]);
+    expect(sent[0]).toMatchObject({
+      type: "conversation_loaded",
+      entries: [
+        { type: "user", text: "hi" },
+        {
+          type: "ai",
+          blocks: [{ type: "text", text: "full final reply" }],
+          metadata: { startedAt: 1, endedAt: 2, model: "gpt-5.4", tokens: 7 },
+        },
+      ],
+    });
     expect(sent[0]).not.toHaveProperty("pendingAI");
   });
 
@@ -145,6 +159,71 @@ describe("handler load_conversation late-join streaming snapshots", () => {
       type: "streaming_started",
       startedAt: 1,
       blocks: [{ type: "text", text: "partial tail" }],
+      tokens: 0,
+    });
+  });
+
+  test("late-join snapshots keep completed active-turn rounds in pendingAI even before the next tail starts", async () => {
+    const convId = mkId("round-boundary");
+    create(convId, "openai", "gpt-5.4");
+    const conv = get(convId)!;
+    conv.messages.push({ role: "user", content: "hi", metadata: null });
+
+    setActiveJob(convId, new AbortController(), 100);
+    initStreamingState(convId);
+    replaceStreamingDisplayMessages(convId, [
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "call-1", name: "bash", input: { command: "pwd" } }],
+        metadata: null,
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call-1", content: "/tmp", is_error: false }],
+        metadata: null,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "done with the tool round" }],
+        metadata: null,
+      },
+    ]);
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "load_conversation", convId });
+
+    expect(sent.map((event) => event.type)).toEqual(["conversation_loaded", "streaming_started"]);
+    expect(sent[0]).toMatchObject({
+      type: "conversation_loaded",
+      entries: [{ type: "user", text: "hi" }],
+      pendingAI: {
+        blocks: [
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
+          { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
+          { type: "text", text: "done with the tool round" },
+        ],
+        metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
+      },
+    });
+    expect(sent[1]).toMatchObject({
+      type: "streaming_started",
+      startedAt: 100,
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
+        { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
+        { type: "text", text: "done with the tool round" },
+      ],
       tokens: 0,
     });
   });
@@ -195,21 +274,22 @@ describe("handler load_conversation late-join streaming snapshots", () => {
           metadata: { startedAt: 2, endedAt: 3, model: "gpt-5.4", tokens: 12 },
         },
         { type: "system", text: "✗ Interrupted", color: "error" },
-        {
-          type: "ai",
-          blocks: [{ type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" }],
-          metadata: null,
-        },
       ],
       pendingAI: {
-        blocks: [{ type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false }],
+        blocks: [
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
+          { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
+        ],
         metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
       },
     });
     expect(sent[1]).toMatchObject({
       type: "streaming_started",
       startedAt: 100,
-      blocks: [{ type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false }],
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
+        { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
+      ],
       tokens: 0,
     });
   });
@@ -266,8 +346,20 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     expect(sentA1.map((event) => event.type)).toEqual(["conversation_loaded", "streaming_started"]);
     expect(sentA1[0]).toMatchObject({
       type: "conversation_loaded",
+      entries: [
+        { type: "user", text: "hi" },
+        {
+          type: "ai",
+          blocks: [{ type: "text", text: "partial old reply" }],
+          metadata: { startedAt: 2, endedAt: 3, model: "gpt-5.4", tokens: 12 },
+        },
+        { type: "system", text: "✗ Interrupted", color: "error" },
+      ],
       pendingAI: {
-        blocks: [{ type: "text", text: "hello" }],
+        blocks: [
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
+          { type: "text", text: "hello" },
+        ],
         metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
       },
     });
@@ -278,14 +370,20 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     expect(sentA2[0]).toMatchObject({
       type: "conversation_loaded",
       pendingAI: {
-        blocks: [{ type: "text", text: "hello world" }],
+        blocks: [
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
+          { type: "text", text: "hello world" },
+        ],
         metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
       },
     });
     expect(sentA2[1]).toMatchObject({
       type: "streaming_started",
       startedAt: 100,
-      blocks: [{ type: "text", text: "hello world" }],
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
+        { type: "text", text: "hello world" },
+      ],
       tokens: 0,
     });
   });

@@ -526,7 +526,7 @@ async function orchestrateAssistantTurn(
       convStore.markDirty(convId);
       convStore.flush(convId);
       // Notify TUI subscribers — replace historical messages without touching pendingAI
-      const displayData = convStore.getDisplayData(convId, false);
+      const displayData = convStore.getRenderSnapshot(convId, false);
       if (displayData) {
         server.sendToSubscribers(convId, {
           type: "history_updated",
@@ -731,7 +731,7 @@ async function orchestrateAssistantTurn(
     // has the canonical interleaved structure, send history_updated so every
     // client rebuilds from the persisted ordering.
     if (agentState.completedMessages.length > 0 || retryMarkers.length > 0 || hadNextTurnInjections) {
-      const displayData = convStore.getDisplayData(convId, false);
+      const displayData = convStore.getRenderSnapshot(convId, false);
       if (displayData) {
         server.sendToSubscribers(convId, {
           type: "history_updated",

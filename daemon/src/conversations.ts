@@ -6,8 +6,8 @@
  * In-flight stream tracking lives in streaming.ts.
  */
 
-import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, StoredMessage } from "./messages";
-import { DEFAULT_EFFORT, createConversation, sortConversations, countConversationMessages, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder } from "./messages";
+import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, StoredMessage, Block, MessageMetadata } from "./messages";
+import { DEFAULT_EFFORT, createConversation, createMessageMetadata, sortConversations, countConversationMessages, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder } from "./messages";
 import type { TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
 import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
@@ -458,20 +458,77 @@ export function getSummary(id: string): ConversationSummary | null {
 
 export type { ConversationDisplayData, DisplayEntry } from "./display";
 
-export function getDisplayData(id: string, includeToolOutputs = true): ConversationDisplayData | null {
-  const conv = conversations.get(id);
-  if (!conv) return null;
-  const transientMessages = streaming.getStreamingDisplayMessages(id);
+export interface ConversationRenderSnapshot extends ConversationDisplayData {
+  pendingAI?: {
+    blocks: Block[];
+    metadata: MessageMetadata | null;
+  };
+}
+
+function buildSnapshotDisplayData(
+  conv: Conversation,
+  messages: StoredMessage[],
+  includeToolOutputs: boolean,
+): ConversationDisplayData {
   return buildDisplayData(
     conv.id,
     conv.provider,
     conv.model,
     conv.effort,
     conv.fastMode ?? false,
-    transientMessages.length > 0 ? [...conv.messages, ...transientMessages] : conv.messages,
+    messages,
     conv.lastContextTokens,
     summarizeTool,
     { includeToolOutputs },
+  );
+}
+
+function isCurrentAssistantAlreadyCommitted(conv: Conversation, startedAt: number | undefined): boolean {
+  return typeof startedAt === "number"
+    && conv.messages.some((msg) => msg.role === "assistant" && msg.metadata?.startedAt === startedAt);
+}
+
+export function getRenderSnapshot(id: string, includeToolOutputs = true): ConversationRenderSnapshot | null {
+  const conv = conversations.get(id);
+  if (!conv) return null;
+
+  const persisted = buildSnapshotDisplayData(conv, conv.messages, includeToolOutputs);
+  if (!streaming.isStreaming(id)) return persisted;
+
+  const startedAt = streaming.getStreamingStartedAt(id);
+  if (isCurrentAssistantAlreadyCommitted(conv, startedAt)) return persisted;
+
+  const transientMessages = streaming.getStreamingDisplayMessages(id);
+  const transient = buildSnapshotDisplayData(conv, transientMessages, includeToolOutputs);
+  const transientEntries = [...transient.entries];
+  const trailingAssistant = transientEntries.at(-1);
+  const currentBlocks = streaming.getCurrentStreamingBlocks(id) ?? [];
+  const livePrefix = trailingAssistant?.type === "ai" ? trailingAssistant.blocks : [];
+
+  if (trailingAssistant?.type === "ai") transientEntries.pop();
+
+  return {
+    ...persisted,
+    entries: [...persisted.entries, ...transientEntries],
+    pendingAI: {
+      blocks: [...livePrefix, ...currentBlocks],
+      metadata: createMessageMetadata(
+        startedAt ?? Date.now(),
+        conv.model,
+        { tokens: streaming.getStreamingTokens(id) },
+      ),
+    },
+  };
+}
+
+export function getDisplayData(id: string, includeToolOutputs = true): ConversationDisplayData | null {
+  const conv = conversations.get(id);
+  if (!conv) return null;
+  const transientMessages = streaming.getStreamingDisplayMessages(id);
+  return buildSnapshotDisplayData(
+    conv,
+    transientMessages.length > 0 ? [...conv.messages, ...transientMessages] : conv.messages,
+    includeToolOutputs,
   );
 }
 
