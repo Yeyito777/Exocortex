@@ -46,7 +46,7 @@ automatically.
 - **bin**: Relative path to the executable. Its parent directory is added to PATH.
 - **systemHint**: Injected into the system prompt so the model knows the tool exists.
 - **display**: TUI styling for bash sub-command matching (label + hex color).
-- **shell**: Optional bash-harness hints for direct top-level tool invocations.
+- **shell**: Optional bash-harness hints for literal-safe rewriting of eligible tool invocations in bash command lines.
 
 ### Optional: literal argument rules
 
@@ -84,8 +84,8 @@ without having to manually protect `$`, backticks, quotes, or newlines in the
 configured literal argument.
 
 Scope:
-- Only applies to direct top-level invocations like `discord send ...`
-- Does not apply inside pipes, `&&`, subshells, redirects, etc.
+- Applies to eligible top-level tool invocations, including within simple chains/pipelines like `cmd1 && discord send ...`, `cmd1; discord send ...`, or `discord send ... | tee out.txt`
+- Does not apply inside subshells, redirects, or other unsupported shell syntax within the same segment
 - Keep flags/options before the literal text they control
 
 ### Optional: daemon supervision

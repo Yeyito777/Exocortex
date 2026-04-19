@@ -207,8 +207,26 @@ describe("rewriteExternalToolShellCommand", () => {
       .toBe("DEBUG=1 discord dm 123 --send '$USER'");
   });
 
-  test("leaves unsupported complex shell commands alone", () => {
+  test("rewrites eligible tool invocations inside && chains", () => {
+    const command = 'discord typing 123 && discord reply 123 456 "$2.1/day"';
+    expect(rewriteExternalToolShellCommand(command, [discord]))
+      .toBe("discord typing 123 && discord reply 123 456 '$2.1/day'");
+  });
+
+  test("rewrites eligible tool invocations inside ; chains", () => {
+    const command = 'echo prelude; discord dm 123 --send "$HOME"';
+    expect(rewriteExternalToolShellCommand(command, [discord]))
+      .toBe("echo prelude; discord dm 123 --send '$HOME'");
+  });
+
+  test("rewrites eligible tool invocations inside pipelines", () => {
     const command = 'discord dm 123 --send "$HOME" | tee /tmp/out.txt';
+    expect(rewriteExternalToolShellCommand(command, [discord]))
+      .toBe("discord dm 123 --send '$HOME' | tee /tmp/out.txt");
+  });
+
+  test("leaves unsupported redirects alone within a segment", () => {
+    const command = 'discord dm 123 --send "$HOME" >/tmp/out.txt';
     expect(rewriteExternalToolShellCommand(command, [discord])).toBe(command);
   });
 

@@ -13,7 +13,7 @@ export type ManifestShellLiteralArg =
 
 export interface ManifestShell {
   /**
-   * Precise literal-argument rewrite rules for direct top-level tool invocations.
+   * Precise literal-argument rewrite rules for eligible top-level tool invocations.
    */
   literalArgs?: ManifestShellLiteralArg[];
 }
@@ -31,10 +31,72 @@ interface ShellToolLike {
   };
 }
 
-const UNSUPPORTED_SHELL_CHARS = new Set(["|", "&", ";", "<", ">", "(", ")", "`"]);
+interface ShellSegment {
+  text: string;
+  separator: string;
+}
+
+const UNSUPPORTED_SHELL_CHARS = new Set(["<", ">", "(", ")", "`"]);
 
 function isShellWhitespace(ch: string): boolean {
   return /\s/.test(ch);
+}
+
+function splitTopLevelShellSegments(command: string): ShellSegment[] {
+  const segments: ShellSegment[] = [];
+  let start = 0;
+  let i = 0;
+  let quote: "'" | '"' | null = null;
+
+  while (i < command.length) {
+    const ch = command[i]!;
+
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      i++;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (ch === "\\" && i + 1 < command.length) {
+        i += 2;
+        continue;
+      }
+      if (ch === '"') quote = null;
+      i++;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      i++;
+      continue;
+    }
+
+    if (ch === "\\" && i + 1 < command.length) {
+      i += 2;
+      continue;
+    }
+
+    const separator = ch === ";"
+      ? ";"
+      : ch === "&"
+        ? (command[i + 1] === "&" ? "&&" : "&")
+        : ch === "|"
+          ? (command[i + 1] === "|" ? "||" : command[i + 1] === "&" ? "|&" : "|")
+          : "";
+    if (separator) {
+      segments.push({ text: command.slice(start, i), separator });
+      i += separator.length;
+      start = i;
+      continue;
+    }
+
+    i++;
+  }
+
+  segments.push({ text: command.slice(start), separator: "" });
+  return segments;
 }
 
 function tokenizeSimpleShellCommand(command: string): ShellToken[] | null {
@@ -179,22 +241,22 @@ export function getShellConfigHint(toolName: string, shell?: ManifestShell): str
   return `For ${refs}, freeform text arguments are treated literally by the bash harness, so markdown/code text does not need manual shell escaping.`;
 }
 
-export function rewriteExternalToolShellCommandForTools(command: string, tools: ShellToolLike[]): string {
-  const tokens = tokenizeSimpleShellCommand(command);
-  if (!tokens) return command;
+function rewriteSimpleExternalToolShellSegment(segment: string, tools: ShellToolLike[]): string {
+  const tokens = tokenizeSimpleShellCommand(segment);
+  if (!tokens) return segment;
 
   let commandIndex = 0;
   while (commandIndex < tokens.length && isEnvAssignmentToken(tokens[commandIndex]!.text)) {
     commandIndex++;
   }
 
-  if (tokens.length - commandIndex < 2) return command;
+  if (tokens.length - commandIndex < 2) return segment;
 
   const tool = tools.find((entry) => entry.manifest.name === tokens[commandIndex]!.text);
-  if (!tool) return command;
+  if (!tool) return segment;
 
   const rules = getLiteralArgRules(tool.manifest.shell);
-  if (rules.length === 0) return command;
+  if (rules.length === 0) return segment;
 
   const subcommand = tokens[commandIndex + 1]!.text;
   const subcommandArgsStart = commandIndex + 2;
@@ -206,7 +268,7 @@ export function rewriteExternalToolShellCommandForTools(command: string, tools: 
       if (subcommandArgsStart >= tokens.length) continue;
       const lastToken = tokens[tokens.length - 1]!;
       const quotedTail = quoteBashLiteral(lastToken.text);
-      return command.slice(0, lastToken.start) + quotedTail + command.slice(lastToken.end);
+      return segment.slice(0, lastToken.start) + quotedTail + segment.slice(lastToken.end);
     }
 
     for (let i = subcommandArgsStart; i < tokens.length; i++) {
@@ -214,13 +276,20 @@ export function rewriteExternalToolShellCommandForTools(command: string, tools: 
       if (token.text === rule.flag) {
         const valueToken = tokens[i + 1];
         if (!valueToken || looksLikeOptionToken(valueToken.text)) continue;
-        return command.slice(0, valueToken.start) + quoteBashLiteral(valueToken.text) + command.slice(valueToken.end);
+        return segment.slice(0, valueToken.start) + quoteBashLiteral(valueToken.text) + segment.slice(valueToken.end);
       }
 
-      const rewrittenInlineValue = rewriteFlagValueToken(command, token, rule.flag);
+      const rewrittenInlineValue = rewriteFlagValueToken(segment, token, rule.flag);
       if (rewrittenInlineValue !== null) return rewrittenInlineValue;
     }
   }
 
-  return command;
+  return segment;
+}
+
+export function rewriteExternalToolShellCommandForTools(command: string, tools: ShellToolLike[]): string {
+  const segments = splitTopLevelShellSegments(command);
+  return segments
+    .map((segment) => rewriteSimpleExternalToolShellSegment(segment.text, tools) + segment.separator)
+    .join("");
 }
