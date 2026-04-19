@@ -535,6 +535,36 @@ describe("system message rendering", () => {
   });
 });
 
+describe("terminal control sanitization", () => {
+  test("normalizes carriage-return tool output into safe wrapped lines", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_result",
+          toolCallId: "1",
+          toolName: "bash",
+          output: "% Total % Received % Xferd Time\r0 173.6k 0\r/home/yeyito/.local/share",
+          isError: false,
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: true,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([
+      "  ↳ % Total % Received % Xferd Time",
+      "    0 173.6k 0",
+      "    /home/yeyito/.local/share",
+    ]);
+  });
+});
+
 describe("block render cache invalidation", () => {
   test("re-renders a text block when its contents change without changing length", () => {
     const block = { type: "text", text: "abc" };

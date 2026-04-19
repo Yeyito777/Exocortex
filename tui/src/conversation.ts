@@ -52,6 +52,23 @@ export function wordWrap(text: string, width: number): WrapResult {
   return { lines, cont };
 }
 
+/**
+ * Neutralize terminal control characters in untrusted message/tool text.
+ *
+ * Conversation content is rendered directly into the terminal, so raw CR,
+ * ESC, tabs, and other control bytes can corrupt layout (for example curl's
+ * carriage-return progress lines overwriting the sidebar). Keep newlines, but
+ * turn other controls into safe display text before wrapping/rendering.
+ */
+function sanitizeUntrustedText(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\t/g, "    ")
+    .replace(/\x1b/g, "␛")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, "�");
+}
+
 // ── Block render cache ──────────────────────────────────────────────
 // Markdown rendering (syntax highlighting, table box-drawing, inline
 // formatting, word wrapping) is the most expensive per-frame work.
@@ -387,8 +404,9 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
 
   switch (block.type) {
     case "thinking": {
-      if (!block.text.trim()) break;
-      const w = wordWrap(block.text, contentWidth);
+      const text = sanitizeUntrustedText(block.text);
+      if (!text.trim()) break;
+      const w = wordWrap(text, contentWidth);
       for (let i = 0; i < w.lines.length; i++) {
         lines.push(`  ${theme.dim}${theme.italic}${w.lines[i]}${theme.reset}`);
         cont.push(w.cont[i]);
@@ -396,7 +414,7 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
       break;
     }
     case "text": {
-      const text = block.text.replace(/^\n+/, "");
+      const text = sanitizeUntrustedText(block.text).replace(/^\n+/, "");
       const isHint = text.startsWith("[Context:");
 
       if (isHint) {
@@ -419,17 +437,18 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
       break;
     }
     case "tool_call": {
-      const display = resolveToolDisplay(block.toolName, block.summary, toolRegistry, externalToolStyles);
+      const summary = sanitizeUntrustedText(block.summary);
+      const display = resolveToolDisplay(block.toolName, summary, toolRegistry, externalToolStyles);
 
       // Build logical display lines. Each entry carries its own display,
       // so bash blocks can mix plain bash prelude lines with styled
       // external-tool lines without dropping the setup commands.
       const logical = block.toolName === "bash"
-        ? renderSegmentedBashLines(block.summary, toolRegistry, externalToolStyles, {
+        ? renderSegmentedBashLines(summary, toolRegistry, externalToolStyles, {
             requirePrompts: true,
             stripPromptPrefix: true,
           })
-          ?? renderSegmentedBashLines(block.summary, toolRegistry, externalToolStyles, {
+          ?? renderSegmentedBashLines(summary, toolRegistry, externalToolStyles, {
             requirePrompts: false,
             stripPromptPrefix: false,
           })
@@ -438,12 +457,12 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
 
       if (logical.length === 0) {
         const bashExternal = block.toolName === "bash"
-          ? resolveBashExternalMatch(block.summary, externalToolStyles)
+          ? resolveBashExternalMatch(summary, externalToolStyles)
           : null;
 
         if (bashExternal) {
           const segmented = shouldPreferLinewiseExternalRender(bashExternal)
-            ? renderSegmentedBashLines(block.summary, toolRegistry, externalToolStyles, {
+            ? renderSegmentedBashLines(summary, toolRegistry, externalToolStyles, {
                 requirePrompts: false,
                 stripPromptPrefix: false,
                 allowSimpleExternalLines: true,
@@ -473,7 +492,7 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
           }
         } else {
           const segmented = block.toolName === "bash"
-            ? renderSegmentedBashLines(block.summary, toolRegistry, externalToolStyles, {
+            ? renderSegmentedBashLines(summary, toolRegistry, externalToolStyles, {
                 requirePrompts: false,
                 stripPromptPrefix: false,
                 allowSimpleExternalLines: true,
@@ -505,7 +524,7 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
       const symbol = block.isError ? "✗" : "↳";
       const firstPrefix = `  ${symbol} `;
       const contPrefix = "    ";
-      const trimmed = block.output.replace(/\n+$/, "");
+      const trimmed = sanitizeUntrustedText(block.output).replace(/\n+$/, "");
       const outputLines = trimmed.split("\n");
 
       let first = true;
@@ -528,6 +547,7 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
 // ── User message rendering (right-aligned, themed background) ───────
 
 function renderUserMessage(text: string, cols: number, images?: ImageAttachment[]): WrapResult {
+  text = sanitizeUntrustedText(text);
   const padding = 1;         // horizontal padding inside bubble
   const margin = 2;          // gap from right edge of screen
   const maxBubbleWidth = cols - margin - 1;
@@ -762,7 +782,7 @@ export function buildMessageLines(
       pushLine(`${theme.accent}${topLine}${theme.reset}`, msg, "system_instructions_top");
       const contentStart = lines.length;
 
-      const { lines: wrapped } = wordWrap(msg.text, textWidth > 0 ? textWidth : 1);
+      const { lines: wrapped } = wordWrap(sanitizeUntrustedText(msg.text), textWidth > 0 ? textWidth : 1);
       for (let i = 0; i < wrapped.length; i++) {
         const sl = wrapped[i];
         const pad = " ".repeat(Math.max(0, textWidth - sl.length));
