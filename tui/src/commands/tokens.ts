@@ -8,6 +8,7 @@ import {
   type TokenUsageSource,
   type TokenUsageTotals,
   type ProviderId,
+  type ModelId,
 } from "../messages";
 import { parsePositiveInt } from "./shared";
 import type { CompletionItem, SlashCommand } from "./types";
@@ -50,6 +51,40 @@ const TOKEN_SOURCES_ARG: CompletionItem = {
   desc: "Show token totals broken down by source",
 };
 
+const TOKEN_COST_ARG: CompletionItem = {
+  name: "cost",
+  desc: "Estimate token spend using hardcoded model pricing",
+};
+
+interface ModelPricing {
+  provider: ProviderId;
+  inputUsdPerMillion: number;
+  outputUsdPerMillion: number;
+}
+
+interface CostTotals {
+  inputUsd: number;
+  outputUsd: number;
+  totalUsd: number;
+}
+
+/**
+ * Pricing references checked 2026-04-19:
+ * - OpenAI API pricing + API docs pricing pages
+ * - Claude pricing page
+ *
+ * OpenAI does not publish a numeric GPT-5.3-Codex-Spark token rate. We use the
+ * published standard gpt-5.3-codex API rate as the closest available baseline.
+ */
+const MODEL_PRICING_USD_PER_MILLION: Record<ModelId, ModelPricing> = {
+  "gpt-5.4": { provider: "openai", inputUsdPerMillion: 2.5, outputUsdPerMillion: 15 },
+  "gpt-5.4-mini": { provider: "openai", inputUsdPerMillion: 0.75, outputUsdPerMillion: 4.5 },
+  "gpt-5.3-codex-spark": { provider: "openai", inputUsdPerMillion: 1.75, outputUsdPerMillion: 14 },
+  "claude-opus-4-6": { provider: "anthropic", inputUsdPerMillion: 5, outputUsdPerMillion: 25 },
+  "claude-sonnet-4-6": { provider: "anthropic", inputUsdPerMillion: 3, outputUsdPerMillion: 15 },
+  "claude-haiku-4-5-20251001": { provider: "anthropic", inputUsdPerMillion: 1, outputUsdPerMillion: 5 },
+};
+
 function formatTokenCount(n: number): string {
   return n.toLocaleString("en-US");
 }
@@ -64,6 +99,16 @@ function accentTokenCount(n: number): string {
 
 function accentText(text: string): string {
   return accentSpan(text);
+}
+
+function formatUsd(amount: number): string {
+  if (amount === 0) return "$0.00";
+  const decimals = amount >= 1 ? 2 : amount >= 0.01 ? 4 : 6;
+  return `$${amount.toFixed(decimals)}`;
+}
+
+function accentUsd(amount: number): string {
+  return accentText(formatUsd(amount));
 }
 
 function parseTruecolorAnsi(ansi: string): RgbColor | null {
@@ -234,6 +279,22 @@ function aggregateByRange<T extends string>(
   return { range, totals };
 }
 
+function computeCostTotals(entries: Iterable<[ModelId, TokenUsageTotals]>): CostTotals {
+  let inputUsd = 0;
+  let outputUsd = 0;
+  for (const [model, usageTotals] of entries) {
+    const pricing = MODEL_PRICING_USD_PER_MILLION[model];
+    if (!pricing) continue;
+    inputUsd += usageTotals.inputTokens / 1_000_000 * pricing.inputUsdPerMillion;
+    outputUsd += usageTotals.outputTokens / 1_000_000 * pricing.outputUsdPerMillion;
+  }
+  return {
+    inputUsd,
+    outputUsd,
+    totalUsd: inputUsd + outputUsd,
+  };
+}
+
 function buildModelBreakdownMessage(stats: TokenStatsSnapshot, dayCount: number): string {
   const { range, totals } = aggregateByRange(stats, dayCount, (day) => day.byModel);
 
@@ -243,7 +304,7 @@ function buildModelBreakdownMessage(stats: TokenStatsSnapshot, dayCount: number)
     lines.push("No token usage recorded yet.");
   } else {
     for (const [model, modelTotals] of sortedModels) {
-      lines.push(`  ${formatModelDisplayName(model)}: ${accentTokenCount(modelTotals.inputTokens)}/${accentTokenCount(modelTotals.outputTokens)} • ${accentTokenCount(modelTotals.requests)} req — all`);
+      lines.push(`  ${formatModelDisplayName(model)}: ${accentTokenCount(modelTotals.inputTokens)}/${accentTokenCount(modelTotals.outputTokens)} • ${accentTokenCount(modelTotals.requests)} req`);
     }
 
     const [topModel, topModelTotals] = sortedModels[0];
@@ -306,7 +367,69 @@ function buildSourceBreakdownMessage(stats: TokenStatsSnapshot, dayCount: number
     lines.push("No token usage recorded yet.");
   } else {
     for (const [source, sourceTotals] of sortedSources) {
-      lines.push(`    ${formatTokenSourceLabel(source)}: ${accentTokenCount(sourceTotals.inputTokens)}/${accentTokenCount(sourceTotals.outputTokens)}`);
+      lines.push(`    ${formatTokenSourceLabel(source)}: ${accentTokenCount(sourceTotals.inputTokens)}/${accentTokenCount(sourceTotals.outputTokens)} • ${accentTokenCount(sourceTotals.requests)} req`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function buildCostBreakdownMessage(stats: TokenStatsSnapshot): string {
+  const lifetimeRows = (Object.entries(stats.lifetime.byModel) as Array<[ModelId, TokenUsageTotals]>)
+    .map(([model, usageTotals]) => {
+      const pricing = MODEL_PRICING_USD_PER_MILLION[model];
+      if (!pricing) return null;
+      const inputUsd = usageTotals.inputTokens / 1_000_000 * pricing.inputUsdPerMillion;
+      const outputUsd = usageTotals.outputTokens / 1_000_000 * pricing.outputUsdPerMillion;
+      return {
+        provider: pricing.provider,
+        model,
+        inputUsd,
+        outputUsd,
+        totalUsd: inputUsd + outputUsd,
+      };
+    })
+    .filter((row): row is { provider: ProviderId; model: ModelId; inputUsd: number; outputUsd: number; totalUsd: number } => row !== null);
+
+  const todayCost = computeCostTotals(Object.entries(stats.today.byModel) as Array<[ModelId, TokenUsageTotals]>);
+  const weekCost = computeCostTotals(aggregateByRange(stats, 7, (day) => day.byModel).totals.entries());
+  const lifetimeCost = computeCostTotals(Object.entries(stats.lifetime.byModel) as Array<[ModelId, TokenUsageTotals]>);
+
+  const grouped = new Map<ProviderId, Array<typeof lifetimeRows[number]>>();
+  for (const row of lifetimeRows) {
+    const rows = grouped.get(row.provider) ?? [];
+    rows.push(row);
+    grouped.set(row.provider, rows);
+  }
+
+  const providerOrder: ProviderId[] = ["openai", "anthropic"];
+  const sortedProviders = [...grouped.keys()].sort((a, b) => {
+    const aIndex = providerOrder.indexOf(a);
+    const bIndex = providerOrder.indexOf(b);
+    if (aIndex !== -1 || bIndex !== -1) {
+      return (aIndex === -1 ? Number.MAX_SAFE_INTEGER : aIndex) - (bIndex === -1 ? Number.MAX_SAFE_INTEGER : bIndex);
+    }
+    return a.localeCompare(b);
+  });
+
+  for (const provider of sortedProviders) {
+    grouped.get(provider)?.sort((a, b) => b.totalUsd - a.totalUsd || a.model.localeCompare(b.model));
+  }
+
+  const lines = [
+    `Today: ${accentUsd(todayCost.inputUsd)}/${accentUsd(todayCost.outputUsd)}`,
+    `Week: ${accentUsd(weekCost.inputUsd)}/${accentUsd(weekCost.outputUsd)}`,
+    `Lifetime: ${accentUsd(lifetimeCost.inputUsd)}/${accentUsd(lifetimeCost.outputUsd)}`,
+  ];
+
+  if (sortedProviders.length === 0) {
+    lines.push("", "No token usage recorded yet.");
+  } else {
+    for (const provider of sortedProviders) {
+      lines.push("", `${formatProviderLabel(provider)}:`);
+      for (const row of grouped.get(provider) ?? []) {
+        lines.push(`    ${formatModelDisplayName(row.model)}: ${accentUsd(row.inputUsd)}/${accentUsd(row.outputUsd)}`);
+      }
     }
   }
 
@@ -331,26 +454,28 @@ function buildTokenStatsMessage(stats: TokenStatsSnapshot, heatmapDayCount: numb
 export const TOKENS_COMMAND: SlashCommand = {
   name: "/tokens",
   description: "Show token usage totals, heatmaps, or breakdowns",
-  args: [TOKEN_MODELS_ARG, TOKEN_PROVIDERS_ARG, TOKEN_SOURCES_ARG],
+  args: [TOKEN_MODELS_ARG, TOKEN_PROVIDERS_ARG, TOKEN_SOURCES_ARG, TOKEN_COST_ARG],
   getArgs: () => ({
-    "/tokens": [TOKEN_MODELS_ARG, TOKEN_PROVIDERS_ARG, TOKEN_SOURCES_ARG],
+    "/tokens": [TOKEN_MODELS_ARG, TOKEN_PROVIDERS_ARG, TOKEN_SOURCES_ARG, TOKEN_COST_ARG],
   }),
   handler: (text, state) => {
     const parts = text.trim().split(/\s+/).filter(Boolean);
     const subcommand = parts[1]?.toLowerCase();
-    const validSubcommands = new Set(["models", "providers", "sources"]);
+    const validSubcommands = new Set(["models", "providers", "sources", "cost"]);
     const hasSubcommand = !!subcommand && validSubcommands.has(subcommand);
+    const isCostView = subcommand === "cost";
+    const usage = "Usage: /tokens [days]\n       /tokens models [days]\n       /tokens providers [days]\n       /tokens sources [days]\n       /tokens cost";
 
-    if ((!hasSubcommand && parts.length > 2) || (hasSubcommand && parts.length > 3)) {
-      pushSystemMessage(state, "Usage: /tokens [days]\n       /tokens models [days]\n       /tokens providers [days]\n       /tokens sources [days]");
+    if ((!hasSubcommand && parts.length > 2) || (!isCostView && hasSubcommand && parts.length > 3) || (isCostView && parts.length > 2)) {
+      pushSystemMessage(state, usage);
       clearPrompt(state);
       return { type: "handled" };
     }
 
-    const rawDays = hasSubcommand ? parts[2] : parts[1];
+    const rawDays = isCostView ? undefined : hasSubcommand ? parts[2] : parts[1];
     const days = rawDays ? parsePositiveInt(rawDays) : defaultTokenHeatmapDayCount();
     if (rawDays && days == null) {
-      pushSystemMessage(state, "Usage: /tokens [days]\n       /tokens models [days]\n       /tokens providers [days]\n       /tokens sources [days]\n\ndays must be a positive integer.");
+      pushSystemMessage(state, `${usage}\n\ndays must be a positive integer.`);
       clearPrompt(state);
       return { type: "handled" };
     }
@@ -372,6 +497,9 @@ export const TOKENS_COMMAND: SlashCommand = {
         break;
       case "sources":
         message = buildSourceBreakdownMessage(state.tokenStats, resolvedDays);
+        break;
+      case "cost":
+        message = buildCostBreakdownMessage(state.tokenStats);
         break;
       default:
         message = buildTokenStatsMessage(state.tokenStats, resolvedDays);

@@ -432,7 +432,8 @@ describe("/tokens", () => {
     expect(text).toContain("Gpt-5.4:");
     expect(text).toContain("1,600");
     expect(text).toContain("600");
-    expect(text).toContain("req — all");
+    expect(text).toContain("req");
+    expect(text).not.toContain("— all");
     expect(text).toContain("Opus-4.6:");
     expect(text).toContain("Top model: \x1b[38;2;");
     expect(text).toContain("Top model tokens: \x1b[38;2;");
@@ -470,10 +471,37 @@ describe("/tokens", () => {
     expect(text).toContain("conversation:");
     expect(text).toContain("1,900");
     expect(text).toContain("700");
+    expect(text).toContain("4");
+    expect(text).toContain("req");
     expect(text).toContain("title generation:");
-    expect(text).not.toContain("req — all");
     expect(text).not.toContain("Top source:");
     expect(text).not.toContain("Top source tokens:");
+  });
+
+  test("shows estimated cost summaries and provider-grouped lifetime model costs", () => {
+    const state = createInitialState();
+    state.tokenStats = structuredClone(tokenStats);
+
+    const result = tryCommand("/tokens cost", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("Today:");
+    expect(text).toContain("$0.004500");
+    expect(text).toContain("$0.008500");
+    expect(text).toContain("Week:");
+    expect(text).toContain("$0.007000");
+    expect(text).toContain("$0.0140");
+    expect(text).toContain("Lifetime:");
+    expect(text).not.toContain("Cost (");
+    expect(text).toContain("OpenAI:");
+    expect(text).toContain("    Gpt-5.4: ");
+    expect(text).toContain("$0.004000");
+    expect(text).toContain("$0.009000");
+    expect(text).toContain("Anthropic:");
+    expect(text).toContain("    Opus-4.6: ");
+    expect(text).toContain("$0.003000");
+    expect(text).toContain("$0.005000");
   });
 
   test("reports when stats are not available yet", () => {
