@@ -3,6 +3,7 @@ import type { ApiMessage } from "../../messages";
 import {
   buildOpenAIInputForTest,
   buildRequestBodyForTest,
+  isRetriableOpenAIStatusForTest,
   mergeReasoningSummariesForTest,
   readOpenAIEventsForTest,
   streamMessageWithSession,
@@ -74,6 +75,11 @@ describe("OpenAI replay input", () => {
     ], "gpt-5.3-codex-spark", 1234, {});
 
     expect((body.reasoning as { summary?: string }).summary).toBeUndefined();
+  });
+
+  test("treats HTTP 507 as retriable", () => {
+    expect(isRetriableOpenAIStatusForTest(507)).toBe(true);
+    expect(isRetriableOpenAIStatusForTest(401)).toBe(false);
   });
 
   test("aborting an in-flight stream does not emit retry callbacks", async () => {

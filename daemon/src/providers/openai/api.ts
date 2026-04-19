@@ -9,10 +9,19 @@ import { mergeReasoningSummaries } from "./reasoning";
 import { readOpenAIEventsForTest, readOpenAIStream } from "./stream";
 import type { StreamCallbacks, StreamOptions, StreamResult } from "../types";
 
-export { AuthError, mergeReasoningSummaries as mergeReasoningSummariesForTest, readOpenAIEventsForTest };
+export {
+  AuthError,
+  mergeReasoningSummaries as mergeReasoningSummariesForTest,
+  readOpenAIEventsForTest,
+};
+
+export function isRetriableOpenAIStatusForTest(status: number): boolean {
+  return RETRIABLE_STATUS_CODES.has(status);
+}
 
 const STREAM_STALL_TIMEOUT = 120_000;
 const MAX_RETRIES = 8;
+const RETRIABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504, 507]);
 
 function isOpenAIAuthFailure(err: unknown): boolean {
   return err instanceof AuthError || (err instanceof Error && err.name === "AuthError");
@@ -100,7 +109,7 @@ export async function streamMessageWithSession(
       throw new AuthError("OpenAI authentication failed. Re-run `bun run src/main.ts login openai`.");
     }
 
-    if (res.status === 429 || res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504) {
+    if (RETRIABLE_STATUS_CODES.has(res.status)) {
       if (retryAttempt < MAX_RETRIES) {
         await retryBackoff(retryAttempt++, `HTTP ${res.status}`, callbacks, signal);
         continue;
