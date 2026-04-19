@@ -1,7 +1,6 @@
 import type { RenderState } from "../state";
 import type { AIMessage, UserMessage } from "../messages";
 import {
-  DEFAULT_EFFORT,
   EFFORT_LEVELS,
   normalizeEffortForModel,
   type ProviderId,
@@ -11,18 +10,11 @@ import {
 } from "../messages";
 import { clearPrompt } from "../promptstate";
 import { getModelInfo, getProviderInfo, pushSystemMessage } from "../state";
-import { buildLoginInfoMessage } from "../logininfo";
 import { availableProviders, setChosenProvider } from "../providerselection";
 import type { CommandResult, CompletionItem } from "./types";
 
 export function showNoSystemInstructions(state: RenderState): CommandResult {
   pushSystemMessage(state, "No system instructions set for this conversation.");
-  clearPrompt(state);
-  return { type: "handled" };
-}
-
-export function showLoginInfo(state: RenderState): CommandResult {
-  pushSystemMessage(state, buildLoginInfoMessage(state));
   clearPrompt(state);
   return { type: "handled" };
 }

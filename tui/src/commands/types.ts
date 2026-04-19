@@ -29,5 +29,7 @@ export interface SlashCommand {
   name: string;
   description: string;
   args?: CompletionItem[];
+  /** Optional dynamic/nested argument completions keyed by command prefix. */
+  getArgs?: (state: RenderState) => Record<string, CompletionItem[]>;
   handler: (text: string, state: RenderState) => CommandResult;
 }

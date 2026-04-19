@@ -1,6 +1,6 @@
 import { clearPrompt } from "../promptstate";
 import { isStreaming, pushSystemMessage } from "../state";
-import { DEFAULT_EFFORT, DEFAULT_PROVIDER_ORDER, type ModelId, type ProviderId } from "../messages";
+import { DEFAULT_EFFORT, type ModelId, type ProviderId } from "../messages";
 import {
   applyProviderModelSelection,
   availableProviders,
@@ -8,6 +8,7 @@ import {
   effortItems,
   formatProviderModels,
   providerAllowsCustomModels,
+  providerModelItems,
   providerModels,
 } from "./shared";
 import type { SlashCommand } from "./types";
@@ -15,10 +16,18 @@ import type { SlashCommand } from "./types";
 export const MODEL_COMMAND: SlashCommand = {
   name: "/model",
   description: "Set or show the current provider/model",
-  args: [...DEFAULT_PROVIDER_ORDER].map((provider) => ({
-    name: provider,
-    desc: provider === "openai" ? "OpenAI models" : "Anthropic models",
-  })),
+  getArgs: (state) => {
+    const registry: Record<string, { name: string; desc: string }[]> = {
+      "/model": availableProviders(state).map((provider) => ({
+        name: provider,
+        desc: provider === "openai" ? "OpenAI models" : "Anthropic models",
+      })),
+    };
+    for (const provider of availableProviders(state)) {
+      registry[`/model ${provider}`] = providerModelItems(state, provider);
+    }
+    return registry;
+  },
   handler: (text, state) => {
     const parts = text.trim().split(/\s+/).filter(Boolean);
     const providers = availableProviders(state);
