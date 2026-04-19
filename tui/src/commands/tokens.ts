@@ -1,9 +1,9 @@
 import { clearPrompt } from "../promptstate";
 import { pushSystemMessage } from "../state";
 import { theme } from "../theme";
-import type { TokenStatsSnapshot } from "../messages";
+import { createTokenUsageTotals, formatModelDisplayName, type TokenStatsSnapshot, type TokenUsageTotals } from "../messages";
 import { parsePositiveInt } from "./shared";
-import type { SlashCommand } from "./types";
+import type { CompletionItem, SlashCommand } from "./types";
 
 const TOKEN_HEATMAP_DEFAULT_MONTHS = 6;
 const TOKEN_HEATMAP_DAY_MS = 24 * 60 * 60 * 1000;
@@ -22,12 +22,31 @@ interface TokenHeatmapData {
   averageTokenCount: number;
 }
 
+interface TokenDateRange {
+  start: Date;
+  end: Date;
+  dayCount: number;
+}
+
+const TOKEN_MODELS_ARG: CompletionItem = {
+  name: "models",
+  desc: "Show token totals broken down by model",
+};
+
 function formatTokenCount(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+function accentSpan(text: string): string {
+  return `${theme.accent}${text}${theme.reset}${theme.dim}`;
+}
+
 function accentTokenCount(n: number): string {
-  return `${theme.accent}${formatTokenCount(n)}${theme.reset}`;
+  return accentSpan(formatTokenCount(n));
+}
+
+function accentText(text: string): string {
+  return accentSpan(text);
 }
 
 function parseTruecolorAnsi(ansi: string): RgbColor | null {
@@ -89,11 +108,29 @@ function countInclusiveLocalDays(start: Date, end: Date): number {
   return count;
 }
 
+function getTokenDateRange(dayCount: number, now = new Date()): TokenDateRange {
+  const safeDayCount = Math.max(1, dayCount);
+  const end = localMidnight(now);
+  const start = addLocalDays(end, -(safeDayCount - 1));
+  return { start, end, dayCount: safeDayCount };
+}
+
 export function defaultTokenHeatmapDayCount(now = new Date()): number {
   const end = localMidnight(now);
   const start = localMidnight(new Date(end));
   start.setMonth(start.getMonth() - TOKEN_HEATMAP_DEFAULT_MONTHS);
   return countInclusiveLocalDays(start, end);
+}
+
+function addUsageTotals(target: TokenUsageTotals, source: TokenUsageTotals): void {
+  target.inputTokens += source.inputTokens;
+  target.outputTokens += source.outputTokens;
+  target.totalTokens += source.totalTokens;
+  target.requests += source.requests;
+}
+
+function sortUsageEntries<T extends { totalTokens: number }>(entries: Array<[string, T]>): Array<[string, T]> {
+  return [...entries].sort((a, b) => b[1].totalTokens - a[1].totalTokens || a[0].localeCompare(b[0]));
 }
 
 function buildHeatmapSquare(tokenCount: number, maxTokenCount: number): string {
@@ -114,9 +151,8 @@ function buildHeatmapSquare(tokenCount: number, maxTokenCount: number): string {
 }
 
 function buildTokenHeatmap(stats: TokenStatsSnapshot, dayCount: number): TokenHeatmapData {
-  const count = Math.max(1, dayCount);
-  const end = localMidnight(new Date());
-  const start = addLocalDays(end, -(count - 1));
+  const range = getTokenDateRange(dayCount);
+  const { start, end } = range;
   const gridStart = addLocalDays(start, -start.getDay());
   const totalGridDays = Math.floor((end.getTime() - gridStart.getTime()) / TOKEN_HEATMAP_DAY_MS) + 1;
   const weekCount = Math.ceil(totalGridDays / 7);
@@ -125,7 +161,7 @@ function buildTokenHeatmap(stats: TokenStatsSnapshot, dayCount: number): TokenHe
   let maxTokenCount = 0;
   let totalTokenCount = 0;
   let activeDayCount = 0;
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < range.dayCount; i++) {
     const tokenCount = totalsByDay.get(localDayKey(addLocalDays(start, i))) ?? 0;
     if (tokenCount > 0) {
       totalTokenCount += tokenCount;
@@ -159,6 +195,41 @@ function buildTokenHeatmap(stats: TokenStatsSnapshot, dayCount: number): TokenHe
   };
 }
 
+function buildModelBreakdownMessage(stats: TokenStatsSnapshot, dayCount: number): string {
+  const range = getTokenDateRange(dayCount);
+  const startKey = localDayKey(range.start);
+  const endKey = localDayKey(range.end);
+  const byModel = new Map<string, TokenUsageTotals>();
+
+  for (const day of stats.days) {
+    if (day.day < startKey || day.day > endKey) continue;
+    for (const [model, modelTotals] of Object.entries(day.byModel)) {
+      const current = byModel.get(model) ?? createTokenUsageTotals();
+      addUsageTotals(current, modelTotals);
+      byModel.set(model, current);
+    }
+  }
+
+  const lines = [`Models (${formatShortDate(range.start)} → ${formatShortDate(range.end)}):`];
+  const sortedModels = sortUsageEntries([...byModel.entries()]);
+  if (sortedModels.length === 0) {
+    lines.push("No token usage recorded yet.");
+  } else {
+    for (const [model, modelTotals] of sortedModels) {
+      lines.push(`  ${formatModelDisplayName(model)}: ${accentTokenCount(modelTotals.inputTokens)}/${accentTokenCount(modelTotals.outputTokens)} • ${accentTokenCount(modelTotals.requests)} req — all`);
+    }
+
+    const [topModel, topModelTotals] = sortedModels[0];
+    lines.push(
+      "",
+      `Top model: ${accentText(formatModelDisplayName(topModel))}`,
+      `Top model tokens: ${accentTokenCount(topModelTotals.inputTokens)}/${accentTokenCount(topModelTotals.outputTokens)}`,
+    );
+  }
+
+  return lines.filter((line, index, arr) => !(line === "" && arr[index - 1] === "")).join("\n");
+}
+
 function buildTokenStatsMessage(stats: TokenStatsSnapshot, heatmapDayCount: number): string {
   const today = stats.today;
   const heatmap = buildTokenHeatmap(stats, heatmapDayCount);
@@ -176,18 +247,25 @@ function buildTokenStatsMessage(stats: TokenStatsSnapshot, heatmapDayCount: numb
 
 export const TOKENS_COMMAND: SlashCommand = {
   name: "/tokens",
-  description: "Show token usage totals and a heatmap",
+  description: "Show token usage totals, heatmaps, or per-model breakdowns",
+  args: [TOKEN_MODELS_ARG],
+  getArgs: () => ({
+    "/tokens": [TOKEN_MODELS_ARG],
+  }),
   handler: (text, state) => {
     const parts = text.trim().split(/\s+/).filter(Boolean);
-    if (parts.length > 2) {
-      pushSystemMessage(state, "Usage: /tokens [days]");
+    const isModelsView = parts[1]?.toLowerCase() === "models";
+
+    if ((!isModelsView && parts.length > 2) || (isModelsView && parts.length > 3)) {
+      pushSystemMessage(state, "Usage: /tokens [days]\n       /tokens models [days]");
       clearPrompt(state);
       return { type: "handled" };
     }
 
-    const days = parts.length === 2 ? parsePositiveInt(parts[1]) : defaultTokenHeatmapDayCount();
-    if (parts.length === 2 && days == null) {
-      pushSystemMessage(state, "Usage: /tokens [days]\n\ndays must be a positive integer.");
+    const rawDays = isModelsView ? parts[2] : parts[1];
+    const days = rawDays ? parsePositiveInt(rawDays) : defaultTokenHeatmapDayCount();
+    if (rawDays && days == null) {
+      pushSystemMessage(state, "Usage: /tokens [days]\n       /tokens models [days]\n\ndays must be a positive integer.");
       clearPrompt(state);
       return { type: "handled" };
     }
@@ -198,7 +276,12 @@ export const TOKENS_COMMAND: SlashCommand = {
       return { type: "handled" };
     }
 
-    pushSystemMessage(state, buildTokenStatsMessage(state.tokenStats, days ?? defaultTokenHeatmapDayCount()));
+    pushSystemMessage(
+      state,
+      isModelsView
+        ? buildModelBreakdownMessage(state.tokenStats, days ?? defaultTokenHeatmapDayCount())
+        : buildTokenStatsMessage(state.tokenStats, days ?? defaultTokenHeatmapDayCount()),
+    );
     clearPrompt(state);
     return { type: "handled" };
   },

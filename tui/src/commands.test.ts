@@ -419,6 +419,27 @@ describe("/tokens", () => {
     expect(text).not.toContain("667");
   });
 
+  test("shows per-model token breakdowns when using the models view", () => {
+    const state = createInitialState();
+    state.tokenStats = structuredClone(tokenStats);
+
+    const result = tryCommand("/tokens models 2", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("Models (");
+    expect(text).not.toContain("Heatmap (");
+    expect(text).toContain("Gpt-5.4:");
+    expect(text).toContain("1,600");
+    expect(text).toContain("600");
+    expect(text).toContain("req — all");
+    expect(text).toContain("Opus-4.6:");
+    expect(text).toContain("Top model: \x1b[38;2;");
+    expect(text).toContain("Top model tokens: \x1b[38;2;");
+    expect(text).not.toContain("Total tokens:");
+    expect(text).not.toContain("Models used:");
+  });
+
   test("reports when stats are not available yet", () => {
     const state = createInitialState();
 
