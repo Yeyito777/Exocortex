@@ -5,6 +5,7 @@
 import type { RenderState } from "../state";
 import { MAX_CONTEXT } from "../messages";
 import type { StatusBlock } from "../statusline";
+import { termWidth } from "../textwidth";
 import { theme } from "../theme";
 
 function formatTokenCount(n: number): string {
@@ -22,12 +23,12 @@ export function contextBlock(state: RenderState): StatusBlock | null {
   const maxValue = maxCtx > 0 ? formatTokenCount(maxCtx) : "?";
 
   const width = Math.max(
-    ctxLabel.length + ctxValue.length,
-    maxLabel.length + maxValue.length,
+    termWidth(ctxLabel) + termWidth(ctxValue),
+    termWidth(maxLabel) + termWidth(maxValue),
   );
 
-  const ctxPad = Math.max(0, width - ctxLabel.length - ctxValue.length);
-  const maxPad = Math.max(0, width - maxLabel.length - maxValue.length);
+  const ctxPad = Math.max(0, width - termWidth(ctxLabel) - termWidth(ctxValue));
+  const maxPad = Math.max(0, width - termWidth(maxLabel) - termWidth(maxValue));
 
   return {
     id: "context",

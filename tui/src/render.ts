@@ -29,6 +29,7 @@ import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
 import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
+import { padRightToWidth, termWidth } from "./textwidth";
 
 // ── ANSI positioning (non-color escapes) ────────────────────────────
 
@@ -260,8 +261,8 @@ function renderAutocompletePopup(
 
   const { out, chatCol } = ctx;
   const { matches, selection: sel } = state.autocomplete;
-  const maxName = matches.reduce((m, c) => Math.max(m, c.name.length), 0);
-  const maxDesc = matches.reduce((m, c) => Math.max(m, c.desc.length), 0);
+  const maxName = matches.reduce((m, c) => Math.max(m, termWidth(c.name)), 0);
+  const maxDesc = matches.reduce((m, c) => Math.max(m, termWidth(c.desc)), 0);
   const popupWidth = Math.min(maxName + maxDesc + 6, chatW - 2);
   const nameWidth = maxName + 1;
   const descWidth = popupWidth - nameWidth - 4;
@@ -283,8 +284,8 @@ function renderAutocompletePopup(
     const isSelected = sel === i;
     const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;
     const marker = isSelected ? "▸ " : "  ";
-    const name = matches[i].name.padEnd(nameWidth);
-    const desc = matches[i].desc.slice(0, descWidth).padEnd(descWidth);
+    const name = padRightToWidth(matches[i].name, nameWidth);
+    const desc = padRightToWidth(matches[i].desc, descWidth);
     out.push(
       move_to(row, chatCol) + bg + theme.accent + marker
       + theme.text + name + theme.dim + desc + theme.reset,

@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { handleFocusedKey } from "./focus";
 import type { ConversationSummary } from "./messages";
 import { createInitialState } from "./state";
-import { renderSidebar } from "./sidebar";
+import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
+import { termWidth } from "./textwidth";
 
 function conversation(id: string, title: string, sortOrder: number): ConversationSummary {
   return {
@@ -145,5 +146,22 @@ describe("sidebar conversation search", () => {
     expect(rendered).toContain("Beta retro");
     expect(rendered).not.toContain("Alpha plans");
     expect(rendered).not.toContain("Gamma notes");
+  });
+
+  test("renderSidebar keeps wide conversation titles inside the border", () => {
+    const state = setupSidebarState();
+    state.sidebar.conversations = [
+      conversation("conv-1", "【the🦋chat】", 1),
+      conversation("conv-2", "memes＆media", 2),
+      conversation("conv-3", "catpostinge𓃠", 3),
+    ];
+    state.sidebar.selectedIndex = 0;
+    state.sidebar.selectedId = "conv-1";
+
+    const rows = renderSidebar(state.sidebar, 6, true, "conv-1").map(stripAnsi);
+    for (const row of rows) {
+      expect(termWidth(row)).toBe(SIDEBAR_WIDTH);
+      expect(row.endsWith("│") || row.endsWith("┤")).toBe(true);
+    }
   });
 });

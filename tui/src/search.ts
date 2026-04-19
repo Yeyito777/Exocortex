@@ -14,6 +14,7 @@ import { focusHistory } from "./state";
 import { ensureCursorVisible, stripAnsi } from "./historycursor";
 import { theme } from "./theme";
 import { findAllCaseInsensitiveMatchStarts, findCaseInsensitiveMatches, findNextSortedMatch } from "./searchutil";
+import { getViewportByWidth, padRightToWidth } from "./textwidth";
 import { resetPending } from "./vim/types";
 
 export type SearchDirection = "forward" | "backward";
@@ -314,13 +315,13 @@ export function getSearchBarViewport(search: SearchState, chatWidth: number): {
   const placeholder = search.barMode === "command" ? "command" : "search history";
   const prefix = `${theme.accent}${prompt}${theme.reset} `;
   const maxWidth = Math.max(0, chatWidth - 2);
-  const displayOffset = search.barInput.length > maxWidth
-    ? Math.max(0, search.barCursorPos - maxWidth + 1)
-    : 0;
-  const visibleText = search.barInput.slice(displayOffset, displayOffset + maxWidth);
+  const viewport = getViewportByWidth(search.barInput, search.barCursorPos, maxWidth);
+  const visibleText = viewport.visibleText;
 
   return {
-    line: prefix + (visibleText || `${theme.dim}${placeholder}${theme.reset}`),
-    cursorCol: 2 + Math.max(0, search.barCursorPos - displayOffset),
+    line: prefix + (visibleText
+      ? padRightToWidth(visibleText, maxWidth)
+      : `${theme.dim}${padRightToWidth(placeholder, maxWidth)}${theme.reset}`),
+    cursorCol: 2 + viewport.cursorCol,
   };
 }

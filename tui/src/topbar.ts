@@ -7,6 +7,7 @@
 
 import type { RenderState } from "./state";
 import { convDisplayName, formatModelDisplayName } from "./messages";
+import { termWidth, truncateToWidth } from "./textwidth";
 import { theme } from "./theme";
 
 /** Max visible length for a conversation preview used as label. */
@@ -17,17 +18,15 @@ function convLabel(state: RenderState): string {
   if (!state.convId) return "";
   const conv = state.sidebar.conversations.find(c => c.id === state.convId);
   if (!conv) return "";
-  const name = convDisplayName(conv);
-  if (name.length > PREVIEW_MAX) return name.slice(0, PREVIEW_MAX) + "…";
-  return name;
+  return truncateToWidth(convDisplayName(conv), PREVIEW_MAX);
 }
 
 export function renderTopbar(state: RenderState, width?: number): string {
   const w = width ?? state.cols;
 
-  const title = `${theme.bold} Exocortex${theme.reset}${theme.topbarBg}`;
-  const label = convLabel(state);
-  const separator = label ? " — " : "";
+  const titleStyled = `${theme.bold} Exocortex${theme.reset}${theme.topbarBg}`;
+  const titlePlain = " Exocortex";
+  let label = convLabel(state);
 
   let rightLabel = "";
   if (state.hasChosenProvider || state.convId) {
@@ -37,9 +36,16 @@ export function renderTopbar(state: RenderState, width?: number): string {
     rightLabel = `${providerLabel}/${formatModelDisplayName(state.model)} — ${state.effort}${state.fastMode ? " — fast" : ""}`;
   }
 
-  const inner = `${title}${separator}${label}`;
-  const visibleUsed = " Exocortex".length + separator.length + label.length;
-  const padding = Math.max(0, w - visibleUsed - (rightLabel ? rightLabel.length + 1 : 0));
+  const maxLeftWidth = Math.max(0, w - (rightLabel ? termWidth(rightLabel) + 1 : 0));
+  const maxLabelWidth = Math.max(0, maxLeftWidth - termWidth(titlePlain) - (label ? termWidth(" — ") : 0));
+  label = truncateToWidth(label, maxLabelWidth);
+  const separator = label ? " — " : "";
 
-  return `${theme.topbarBg}${inner}${" ".repeat(padding)}${rightLabel}${rightLabel ? " " : ""}${theme.reset}`;
+  const leftPlain = `${titlePlain}${separator}${label}`;
+  const rightSpace = Math.max(0, w - termWidth(leftPlain));
+  rightLabel = truncateToWidth(rightLabel, Math.max(0, rightSpace - 1));
+  const rightWidth = rightLabel ? termWidth(rightLabel) + 1 : 0;
+  const padding = Math.max(0, w - termWidth(leftPlain) - rightWidth);
+
+  return `${theme.topbarBg}${titleStyled}${separator}${label}${" ".repeat(padding)}${rightLabel}${rightLabel ? " " : ""}${theme.reset}`;
 }

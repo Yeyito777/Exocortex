@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { buildMessageLines } from "./conversation";
 import { stripAnsi } from "./historycursor";
 import { handleFocusedKey } from "./focus";
-import { handleSearchBarKey, jumpToSearchMatch, openSearchBar } from "./search";
+import { getSearchBarViewport, handleSearchBarKey, jumpToSearchMatch, openSearchBar } from "./search";
 import { createInitialState } from "./state";
 import type { RenderState } from "./state";
 
@@ -125,5 +125,17 @@ describe("chat history search", () => {
     expect(jumpToSearchMatch(state, "forward")).toBe(true);
     expect(state.search?.highlightsVisible).toBe(true);
     expect(state.historyCursor).toEqual(rowColOfTerm(state, "beta", 1));
+  });
+
+  test("search bar viewport uses terminal width for wide input", () => {
+    const state = setupSearchState();
+    openSearchBar(state, "forward");
+    state.search!.barInput = "ab🦋cd";
+    state.search!.barCursorPos = state.search!.barInput.length;
+
+    const viewport = getSearchBarViewport(state.search!, 6);
+
+    expect(stripAnsi(viewport.line)).toBe("/ 🦋cd");
+    expect(viewport.cursorCol).toBe(6);
   });
 });

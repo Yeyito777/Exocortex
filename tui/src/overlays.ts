@@ -11,8 +11,8 @@
 import type { QueuePromptState, EditMessageState } from "./state";
 import { EDIT_INDEX_INSTRUCTIONS } from "./state";
 import { theme } from "./theme";
-import { stripAnsi } from "./historycursor";
 import { formatSize, imageLabel } from "./clipboard";
+import { padVisibleRightToWidth, termWidth, truncateToWidth } from "./textwidth";
 
 // ── ANSI positioning ──────────────────────────────────────────────
 
@@ -71,11 +71,10 @@ function renderBoxOverlay(params: BoxOverlayParams): string {
     const row = boxTop + 1 + i;
     if (row >= sepRow) break; // don't overlap input area
     const entry = lines[i];
-    const padRight = Math.max(0, innerWidth - stripAnsi(entry.text).length);
 
     result += move_to(row, boxLeft);
     result += `${theme.sidebarBg}${theme.accent}│${entry.bg}${entry.fg}`;
-    result += `${entry.text}${" ".repeat(padRight)}`;
+    result += padVisibleRightToWidth(entry.text, innerWidth);
     result += `${theme.reset}${theme.sidebarBg}${theme.accent}│${theme.reset}`;
   }
 
@@ -110,8 +109,8 @@ export function renderQueuePromptOverlay(
   sepRow: number,
 ): string {
   // Preview of the message being queued (truncated)
-  const preview = qp.text.replace(/\n/g, " ").slice(0, 40);
-  const previewLabel = preview.length < qp.text.replace(/\n/g, " ").length ? preview + "…" : preview;
+  const previewSource = qp.text.replace(/\n/g, " ");
+  const previewLabel = truncateToWidth(previewSource, 40);
 
   // Image badge lines (e.g. "📎 PNG (93.1 KB)")
   const imageBadges: string[] = [];
@@ -128,7 +127,7 @@ export function renderQueuePromptOverlay(
   const optLine2 = `${qp.selection === "next-turn" ? "▸ " : "  "}next turn`;
   const rawLines = [titleLine, msgLine, ...imageBadges, "", optLine1, optLine2];
   const innerWidth = Math.min(
-    Math.max(...rawLines.map(l => l.length)) + 4,
+    Math.max(...rawLines.map((line) => termWidth(line))) + 4,
     chatW - 4,
   );
 
@@ -185,11 +184,11 @@ export function renderEditMessageOverlay(
   const previews = em.items.map((item) => {
     const prefix = item.userMessageIndex === EDIT_INDEX_INSTRUCTIONS ? "📌 " : "";
     const raw = prefix + item.text.replace(/\n/g, " ");
-    return raw.length > maxPreviewLen ? raw.slice(0, maxPreviewLen) + "…" : raw;
+    return truncateToWidth(raw, maxPreviewLen);
   });
   const maxContentLen = Math.max(
-    titleLine.length,
-    ...previews.map(p => p.length + 2), // +2 for marker "▸ "
+    termWidth(titleLine),
+    ...previews.map((preview) => termWidth(preview) + 2), // +2 for marker "▸ "
   );
   const innerWidth = Math.min(maxContentLen + 4, chatW - 4);
 

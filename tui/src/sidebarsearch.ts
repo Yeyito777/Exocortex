@@ -14,6 +14,7 @@ import {
   findAllCaseInsensitiveMatchStarts,
   findNextSortedMatch,
 } from "./searchutil";
+import { getViewportByWidth, padRightToWidth } from "./textwidth";
 
 export type SidebarSearchDirection = "forward" | "backward";
 export type SidebarSearchBarMode = "search" | "command";
@@ -361,20 +362,16 @@ export function getSidebarSearchBarViewport(
     : (search.direction === "forward" ? "/" : "?");
   const placeholder = search.barMode === "command" ? "command" : "search";
   const maxWidth = Math.max(0, width - 2);
-  const displayOffset = search.barInput.length > maxWidth
-    ? Math.max(0, search.barCursorPos - maxWidth + 1)
-    : 0;
-  const visibleText = search.barInput.slice(displayOffset, displayOffset + maxWidth);
-  const displayText = visibleText || placeholder.slice(0, maxWidth);
-  const padding = Math.max(0, maxWidth - displayText.length);
+  const viewport = getViewportByWidth(search.barInput, search.barCursorPos, maxWidth);
+  const visibleText = viewport.visibleText;
+  const displayText = visibleText ? padRightToWidth(visibleText, maxWidth) : padRightToWidth(placeholder, maxWidth);
   const textStyle = visibleText ? theme.text : theme.dim;
 
   return {
     line: theme.sidebarBg
       + theme.accent + prompt
       + theme.text + " "
-      + textStyle + displayText
-      + " ".repeat(padding),
-    cursorCol: 2 + Math.max(0, search.barCursorPos - displayOffset),
+      + textStyle + displayText,
+    cursorCol: 2 + viewport.cursorCol,
   };
 }

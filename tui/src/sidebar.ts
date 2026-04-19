@@ -12,6 +12,7 @@ import type { Action } from "./keybinds";
 import { resolveAction } from "./keybinds";
 import { theme } from "./theme";
 import { getMarkFromTitle, toggleMark } from "./marks";
+import { padRightToWidth, termWidth, truncateToWidth } from "./textwidth";
 import type { SidebarSearchState } from "./sidebarsearch";
 import {
   focusConversationAt as focusSidebarConversationAt,
@@ -82,10 +83,7 @@ export function focusPreviousEnteredConversation(sidebar: SidebarState): boolean
 }
 
 function truncateSidebarTitle(text: string, maxWidth: number): string {
-  if (maxWidth <= 0) return "";
-  if (text.length <= maxWidth) return text;
-  if (maxWidth === 1) return "…";
-  return text.slice(0, maxWidth - 1) + "…";
+  return truncateToWidth(text, maxWidth);
 }
 
 // ── Key handling ────────────────────────────────────────────────────
@@ -350,10 +348,9 @@ export function syncSelectedIndex(sidebar: SidebarState): void {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/** Pad or truncate a string to exactly `width` visible characters. */
+/** Pad or truncate a string to exactly `width` terminal columns. */
 function pad(text: string, width: number): string {
-  if (text.length >= width) return text.slice(0, width);
-  return text + " ".repeat(width - text.length);
+  return padRightToWidth(text, width);
 }
 
 // ── Display row layout ─────────────────────────────────────────────
@@ -606,31 +603,28 @@ export function renderSidebar(
 
     // Star (★) from the boolean `marked` flag — independent of emoji marks
     const starIcon = conv.marked ? "★ " : "";
-    const starIconWidth = conv.marked ? 2 : 0;
 
     // Emoji mark: extracted from title prefix (e.g. "🕐 my convo" → "🕐")
     const mark = getMarkFromTitle(conv.title);
     const emojiIcon = mark ? mark.emoji + " " : "";
-    // Terminal width: emoji = 2 cols + space = 1 col
-    const emojiIconWidth = mark ? mark.width + 1 : 0;
 
-    const iconsWidth = starIconWidth + emojiIconWidth;
-    const maxTitle = innerWidth - prefix.length - streamIcon.length - iconsWidth;
+    const iconsWidth = termWidth(starIcon) + termWidth(emojiIcon);
+    const prefixWidth = termWidth(prefix) + termWidth(streamIcon) + iconsWidth;
+    const maxTitle = Math.max(0, innerWidth - prefixWidth);
     const searchableTitle = getSearchableConversationTitle(conv);
     const title = truncateSidebarTitle(searchableTitle || "(empty)", maxTitle);
 
     const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;
     const fg = isPendingDelete ? theme.error : (isSelected || isCurrent) ? theme.text : theme.muted;
-    const titleText = isCurrent && !isPendingDelete ? theme.bold + title + theme.boldOff : title;
+    const paddedTitle = padRightToWidth(title, maxTitle);
+    const titleText = isCurrent && !isPendingDelete ? theme.bold + paddedTitle + theme.boldOff : paddedTitle;
     const streamIconColored = streamIcon ? streamIconColor + streamIcon + fg : "";
     const starIconColored = starIcon ? theme.warning + starIcon + fg : "";
     const emojiIconColored = emojiIcon ? theme.warning + emojiIcon + fg : "";
-    const plainLen = prefix.length + streamIcon.length + iconsWidth + title.length;
-    const padding = Math.max(0, innerWidth - plainLen);
 
     rows.push(
       theme.reset + bg + fg +
-      prefix + streamIconColored + starIconColored + emojiIconColored + titleText + " ".repeat(padding) +
+      prefix + streamIconColored + starIconColored + emojiIconColored + titleText +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   }
