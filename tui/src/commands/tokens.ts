@@ -59,6 +59,7 @@ const TOKEN_COST_ARG: CompletionItem = {
 interface ModelPricing {
   provider: ProviderId;
   inputUsdPerMillion: number;
+  cachedInputUsdPerMillion: number;
   outputUsdPerMillion: number;
 }
 
@@ -77,13 +78,16 @@ interface CostTotals {
  * published standard gpt-5.3-codex API rate as the closest available baseline.
  */
 const MODEL_PRICING_USD_PER_MILLION: Record<ModelId, ModelPricing> = {
-  "gpt-5.4": { provider: "openai", inputUsdPerMillion: 2.5, outputUsdPerMillion: 15 },
-  "gpt-5.4-mini": { provider: "openai", inputUsdPerMillion: 0.75, outputUsdPerMillion: 4.5 },
-  "gpt-5.3-codex-spark": { provider: "openai", inputUsdPerMillion: 1.75, outputUsdPerMillion: 14 },
-  "claude-opus-4-6": { provider: "anthropic", inputUsdPerMillion: 5, outputUsdPerMillion: 25 },
-  "claude-sonnet-4-6": { provider: "anthropic", inputUsdPerMillion: 3, outputUsdPerMillion: 15 },
-  "claude-haiku-4-5-20251001": { provider: "anthropic", inputUsdPerMillion: 1, outputUsdPerMillion: 5 },
+  "gpt-5.4": { provider: "openai", inputUsdPerMillion: 2.5, cachedInputUsdPerMillion: 0.25, outputUsdPerMillion: 15 },
+  "gpt-5.4-mini": { provider: "openai", inputUsdPerMillion: 0.75, cachedInputUsdPerMillion: 0.075, outputUsdPerMillion: 4.5 },
+  "gpt-5.3-codex-spark": { provider: "openai", inputUsdPerMillion: 1.75, cachedInputUsdPerMillion: 0.175, outputUsdPerMillion: 14 },
+  "claude-opus-4-6": { provider: "anthropic", inputUsdPerMillion: 5, cachedInputUsdPerMillion: 0.5, outputUsdPerMillion: 25 },
+  "claude-sonnet-4-6": { provider: "anthropic", inputUsdPerMillion: 3, cachedInputUsdPerMillion: 0.3, outputUsdPerMillion: 15 },
+  "claude-haiku-4-5-20251001": { provider: "anthropic", inputUsdPerMillion: 1, cachedInputUsdPerMillion: 0.1, outputUsdPerMillion: 5 },
 };
+
+// Heuristic for /tokens cost until daemon-side cache usage accounting exists.
+const TOKEN_COST_ASSUMED_CACHED_INPUT_RATIO = 0.9;
 
 function formatTokenCount(n: number): string {
   return n.toLocaleString("en-US");
@@ -279,14 +283,29 @@ function aggregateByRange<T extends string>(
   return { range, totals };
 }
 
+function estimateModelCost(usageTotals: TokenUsageTotals, pricing: ModelPricing): CostTotals {
+  const cachedInputTokens = usageTotals.inputTokens * TOKEN_COST_ASSUMED_CACHED_INPUT_RATIO;
+  const uncachedInputTokens = usageTotals.inputTokens - cachedInputTokens;
+  const inputUsd =
+    uncachedInputTokens / 1_000_000 * pricing.inputUsdPerMillion
+    + cachedInputTokens / 1_000_000 * pricing.cachedInputUsdPerMillion;
+  const outputUsd = usageTotals.outputTokens / 1_000_000 * pricing.outputUsdPerMillion;
+  return {
+    inputUsd,
+    outputUsd,
+    totalUsd: inputUsd + outputUsd,
+  };
+}
+
 function computeCostTotals(entries: Iterable<[ModelId, TokenUsageTotals]>): CostTotals {
   let inputUsd = 0;
   let outputUsd = 0;
   for (const [model, usageTotals] of entries) {
     const pricing = MODEL_PRICING_USD_PER_MILLION[model];
     if (!pricing) continue;
-    inputUsd += usageTotals.inputTokens / 1_000_000 * pricing.inputUsdPerMillion;
-    outputUsd += usageTotals.outputTokens / 1_000_000 * pricing.outputUsdPerMillion;
+    const estimate = estimateModelCost(usageTotals, pricing);
+    inputUsd += estimate.inputUsd;
+    outputUsd += estimate.outputUsd;
   }
   return {
     inputUsd,
@@ -379,14 +398,13 @@ function buildCostBreakdownMessage(stats: TokenStatsSnapshot): string {
     .map(([model, usageTotals]) => {
       const pricing = MODEL_PRICING_USD_PER_MILLION[model];
       if (!pricing) return null;
-      const inputUsd = usageTotals.inputTokens / 1_000_000 * pricing.inputUsdPerMillion;
-      const outputUsd = usageTotals.outputTokens / 1_000_000 * pricing.outputUsdPerMillion;
+      const estimate = estimateModelCost(usageTotals, pricing);
       return {
         provider: pricing.provider,
         model,
-        inputUsd,
-        outputUsd,
-        totalUsd: inputUsd + outputUsd,
+        inputUsd: estimate.inputUsd,
+        outputUsd: estimate.outputUsd,
+        totalUsd: estimate.totalUsd,
       };
     })
     .filter((row): row is { provider: ProviderId; model: ModelId; inputUsd: number; outputUsd: number; totalUsd: number } => row !== null);

@@ -487,20 +487,20 @@ describe("/tokens", () => {
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
     expect(text).toContain("Today:");
-    expect(text).toContain("$0.004500");
+    expect(text).toContain("$0.000855");
     expect(text).toContain("$0.008500");
     expect(text).toContain("Week:");
-    expect(text).toContain("$0.007000");
+    expect(text).toContain("$0.001330");
     expect(text).toContain("$0.0140");
     expect(text).toContain("Lifetime:");
     expect(text).not.toContain("Cost (");
     expect(text).toContain("OpenAI:");
     expect(text).toContain("    Gpt-5.4: ");
-    expect(text).toContain("$0.004000");
+    expect(text).toContain("$0.000760");
     expect(text).toContain("$0.009000");
     expect(text).toContain("Anthropic:");
     expect(text).toContain("    Opus-4.6: ");
-    expect(text).toContain("$0.003000");
+    expect(text).toContain("$0.000570");
     expect(text).toContain("$0.005000");
   });
 
