@@ -18,6 +18,22 @@ import type { ImageAttachment } from "./messages";
 import type { RenderState, QueueTiming, QueuedMessage } from "./state";
 import { isStreaming } from "./state";
 
+/**
+ * Open the queue prompt for the current prompt buffer.
+ *
+ * Images are copied into the queue prompt so they travel with the queued
+ * message, but they remain in state.pendingImages until the user actually
+ * confirms queueing/sending. That keeps the promptline image indicator visible
+ * while the modal is open.
+ */
+export function openQueuePrompt(state: RenderState, text: string): void {
+  state.queuePrompt = {
+    text,
+    selection: "message-end",
+    images: state.pendingImages.length > 0 ? [...state.pendingImages] : undefined,
+  };
+}
+
 // ── Key handling ───────────────────────────────────────────────────
 
 export interface QueueKeyResult {
@@ -82,6 +98,7 @@ export function confirmQueueMessage(state: RenderState): ConfirmResult {
   if (!isStreaming(state) && convId) {
     const text = qp.text;
     const images = qp.images;
+    if (images?.length) state.pendingImages = [];
     state.queuePrompt = null;
     state.inputBuffer = "";
     state.cursorPos = 0;
@@ -99,6 +116,7 @@ export function confirmQueueMessage(state: RenderState): ConfirmResult {
   // Queue the message — local shadow for display
   const images = qp.images;
   const queued: QueuedMessage = { convId, text: qp.text, timing, images };
+  if (images?.length) state.pendingImages = [];
   state.queuedMessages.push(queued);
   state.queuePrompt = null;
   state.inputBuffer = "";
@@ -107,13 +125,15 @@ export function confirmQueueMessage(state: RenderState): ConfirmResult {
 }
 
 /**
- * Cancel the queue prompt — restore the text and images to the input buffer.
+ * Cancel the queue prompt — restore the text to the input buffer.
+ *
+ * Images stay in pendingImages while the modal is open, so there's nothing to
+ * restore here.
  */
 export function cancelQueuePrompt(state: RenderState): void {
   const qp = state.queuePrompt!;
   state.inputBuffer = qp.text;
   state.cursorPos = qp.text.length;
-  if (qp.images?.length) state.pendingImages = qp.images;
   state.queuePrompt = null;
 }
 

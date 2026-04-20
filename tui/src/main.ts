@@ -22,7 +22,7 @@ import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMess
 import { createMessageMetadata, createPendingAI, type ImageAttachment } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
-import { confirmQueueMessage, cancelQueuePrompt, clearLocalQueue, removeLocalQueueEntry } from "./queue";
+import { openQueuePrompt, confirmQueueMessage, cancelQueuePrompt, clearLocalQueue, removeLocalQueueEntry } from "./queue";
 import { confirmEditMessage, cancelEditMessage } from "./editmessage";
 import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
@@ -236,11 +236,9 @@ function handleSubmit(): void {
   const messageText = expandMacros(text);
 
   if (isStreaming(state)) {
-    // Preserve images in the queue prompt so they travel with the message
-    const queueImages = hasImages ? [...state.pendingImages] : undefined;
-    if (hasImages) state.pendingImages = [];
-    // Show queue prompt overlay — let user choose when to send
-    state.queuePrompt = { text: messageText, selection: "message-end", images: queueImages };
+    // Copy images into the queue prompt, but keep them pending until the user
+    // actually confirms queueing/sending so the promptline indicator stays visible.
+    openQueuePrompt(state, messageText);
     scheduleRender();
     return;
   }
