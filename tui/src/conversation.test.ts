@@ -236,6 +236,43 @@ describe("tool call rendering", () => {
     expect(rendered).toContain("  $ ls -lt ~/Documents/UofT/proof-of-funds ~/Documents/UofT 2>/dev/null | sed -n '1,220p'");
   });
 
+  test("styles external tools after mixed prompt lines and a quote closed on the next line", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "bash",
+          input: {},
+          summary: [
+            "$ echo '--- MOM ---' &&",
+            "whatsapp messages Mom -n 8 &&",
+            "$ echo '",
+            "$ --- DAD ---' && whatsapp messages \"Aurelio Linero Archibold\" -n 8 --timeout 120000",
+          ].join("\n"),
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
+      externalToolStyles: [{ cmd: "whatsapp", label: "WhatsApp", color: "#25d366" }],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 240).lines.map(stripAnsi);
+
+    expect(rendered).toContain("  $ echo '--- MOM ---' &&");
+    expect(rendered).toContain("  WhatsApp messages Mom -n 8 &&");
+    expect(rendered).toContain("  $ echo '");
+    expect(rendered).toContain("  $ --- DAD ---' &&");
+    expect(rendered).toContain('  WhatsApp messages "Aurelio Linero Archibold" -n 8 --timeout 120000');
+    expect(rendered).not.toContain("  $ $ echo '");
+    expect(rendered).not.toContain("  $ $ --- DAD ---' && whatsapp messages \"Aurelio Linero Archibold\" -n 8 --timeout 120000");
+  });
+
   test("keeps split parent bash timeout and await args attached to prompt-prefixed external tools", () => {
     const state = {
       messages: [{

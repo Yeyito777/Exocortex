@@ -12,11 +12,21 @@ export interface ShellSegment {
   separator: string;
 }
 
-export function splitTopLevelShellSegments(line: string): ShellSegment[] {
+export type ShellQuoteState = "'" | '"' | null;
+
+export interface SplitShellSegmentsResult {
+  segments: ShellSegment[];
+  endingQuote: ShellQuoteState;
+}
+
+export function splitTopLevelShellSegmentsWithState(
+  line: string,
+  initialQuote: ShellQuoteState = null,
+): SplitShellSegmentsResult {
   const segments: ShellSegment[] = [];
   let start = 0;
   let i = 0;
-  let quote: "'" | '"' | null = null;
+  let quote: ShellQuoteState = initialQuote;
 
   while (i < line.length) {
     const ch = line[i];
@@ -66,5 +76,9 @@ export function splitTopLevelShellSegments(line: string): ShellSegment[] {
   }
 
   segments.push({ text: line.slice(start), start, separator: "" });
-  return segments;
+  return { segments, endingQuote: quote };
+}
+
+export function splitTopLevelShellSegments(line: string): ShellSegment[] {
+  return splitTopLevelShellSegmentsWithState(line).segments;
 }

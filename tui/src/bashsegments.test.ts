@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { splitTopLevelShellSegments } from "./bashsegments";
+import { splitTopLevelShellSegments, splitTopLevelShellSegmentsWithState } from "./bashsegments";
 
 describe("splitTopLevelShellSegments", () => {
   test("splits on top-level shell control operators", () => {
@@ -27,5 +27,16 @@ describe("splitTopLevelShellSegments", () => {
         { text: 'echo "a && b" ', start: 0, separator: "&&" },
         { text: " printf 'x || y; z'", start: 16, separator: "" },
       ]);
+  });
+
+  test("can continue from an open quote on the previous line", () => {
+    expect(splitTopLevelShellSegmentsWithState("--- DAD ---' && whatsapp messages Mom -n 8", "'"))
+      .toEqual({
+        segments: [
+          { text: "--- DAD ---' ", start: 0, separator: "&&" },
+          { text: " whatsapp messages Mom -n 8", start: 15, separator: "" },
+        ],
+        endingQuote: null,
+      });
   });
 });

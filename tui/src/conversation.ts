@@ -9,7 +9,7 @@ import type { Block, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, Messag
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { resolveToolDisplay, resolveBashExternalMatch, type ResolvedToolDisplay, type BashExternalMatch } from "./toolstyles";
-import { splitTopLevelShellSegments } from "./bashsegments";
+import { splitTopLevelShellSegments, splitTopLevelShellSegmentsWithState, type ShellQuoteState } from "./bashsegments";
 import { formatSize, imageLabel } from "./clipboard";
 import { theme } from "./theme";
 import { markdownWordWrap } from "./markdown";
@@ -103,8 +103,6 @@ interface PendingHeredoc {
   allowTabs: boolean;
 }
 
-type ShellQuoteState = "'" | '"' | null;
-
 const blockRenderCache = new WeakMap<Block, BlockCacheEntry>();
 
 /** Exact mutable block content — used for cache invalidation. */
@@ -154,6 +152,13 @@ function isPromptedBashTranscript(summary: string): boolean {
   }
 
   return sawPrompt;
+}
+
+function stripPromptPrefixIfPresent(line: string, enabled: boolean): string {
+  if (!enabled) return line;
+
+  const trimmed = line.trimStart();
+  return trimmed.startsWith("$ ") ? trimmed.slice(2) : line;
 }
 
 function pushLogicalLine(logical: RenderLogicalLine[], display: ResolvedToolDisplay, detail: string, hasLabel: boolean): void {
@@ -323,13 +328,11 @@ function renderSegmentedBashLines(
     inHeredocBody: boolean;
   }> = [];
   const pendingHeredocs: PendingHeredoc[] = [];
+  let pendingQuote: ShellQuoteState = null;
 
   for (const rawLine of rawLines) {
-    const trimmed = rawLine.trimStart();
-    const commandLine = options.stripPromptPrefix && trimmed.startsWith("$ ")
-      ? trimmed.slice(2)
-      : rawLine;
-    const lineText = options.stripPromptPrefix ? commandLine : rawLine;
+    const commandLine = stripPromptPrefixIfPresent(rawLine, options.stripPromptPrefix);
+    const lineText = commandLine;
     const inHeredocBody = pendingHeredocs.length > 0;
 
     let lineMatch: BashExternalMatch | null = null;
@@ -344,7 +347,9 @@ function renderSegmentedBashLines(
       }
     } else {
       lineMatch = resolveBashExternalMatch(lineText, externalToolStyles);
-      segments = splitTopLevelShellSegments(commandLine);
+      const split = splitTopLevelShellSegmentsWithState(commandLine, pendingQuote);
+      segments = split.segments;
+      pendingQuote = split.endingQuote;
       matches = segments.map((segment) => {
         const text = segment.text.trim();
         return text ? resolveBashExternalMatch(text, externalToolStyles) : null;
@@ -450,7 +455,7 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
           })
           ?? renderSegmentedBashLines(summary, toolRegistry, externalToolStyles, {
             requirePrompts: false,
-            stripPromptPrefix: false,
+            stripPromptPrefix: true,
           })
           ?? []
         : [];
@@ -464,7 +469,7 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
           const segmented = shouldPreferLinewiseExternalRender(bashExternal)
             ? renderSegmentedBashLines(summary, toolRegistry, externalToolStyles, {
                 requirePrompts: false,
-                stripPromptPrefix: false,
+                stripPromptPrefix: true,
                 allowSimpleExternalLines: true,
               })
             : null;
@@ -494,7 +499,7 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
           const segmented = block.toolName === "bash"
             ? renderSegmentedBashLines(summary, toolRegistry, externalToolStyles, {
                 requirePrompts: false,
-                stripPromptPrefix: false,
+                stripPromptPrefix: true,
                 allowSimpleExternalLines: true,
               })
             : null;
