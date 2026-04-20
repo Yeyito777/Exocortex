@@ -195,7 +195,7 @@ function addUsageTotals(target: TokenUsageTotals, source: TokenUsageTotals): voi
   target.requests += source.requests;
 }
 
-function sortUsageEntries<T extends { totalTokens: number }>(entries: Array<[string, T]>): Array<[string, T]> {
+function sortUsageEntries<K extends string, T extends { totalTokens: number }>(entries: Array<[K, T]>): Array<[K, T]> {
   return [...entries].sort((a, b) => b[1].totalTokens - a[1].totalTokens || a[0].localeCompare(b[0]));
 }
 
