@@ -277,6 +277,58 @@ describe("sidebar top shortcuts", () => {
   });
 });
 
+describe("sidebar marked navigation", () => {
+  test("[ and ] jump to the previous and next marked conversations in the sidebar", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [
+      { ...conversation("conv-1", 1), marked: true },
+      conversation("conv-2", 2),
+      { ...conversation("conv-3", 3), marked: true },
+      conversation("conv-4", 4),
+      { ...conversation("conv-5", 5), marked: true },
+    ];
+    state.sidebar.selectedIndex = 2;
+    state.sidebar.selectedId = "conv-3";
+
+    expect(handleFocusedKey({ type: "char", char: "]" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-5");
+
+    expect(handleFocusedKey({ type: "char", char: "]" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-1");
+
+    expect(handleFocusedKey({ type: "char", char: "[" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-5");
+
+    expect(handleFocusedKey({ type: "char", char: "[" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-3");
+  });
+
+  test("[ and ] do nothing when no other conversations are marked", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [
+      conversation("conv-1", 1),
+      { ...conversation("conv-2", 2), marked: true },
+      conversation("conv-3", 3),
+    ];
+    state.sidebar.selectedIndex = 1;
+    state.sidebar.selectedId = "conv-2";
+
+    expect(handleFocusedKey({ type: "char", char: "]" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-2");
+
+    expect(handleFocusedKey({ type: "char", char: "[" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-2");
+  });
+});
+
 describe("sidebar visible jumps", () => {
   function setupSidebarJumpState() {
     const state = createInitialState();

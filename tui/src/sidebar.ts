@@ -244,6 +244,14 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       moveToStreaming(sidebar, -1);
       return { type: "handled" };
 
+    case "nav_next_marked":
+      moveToMarked(sidebar, 1);
+      return { type: "handled" };
+
+    case "nav_prev_marked":
+      moveToMarked(sidebar, -1);
+      return { type: "handled" };
+
     case "focus_prompt":
       return { type: "unhandled" };
 
@@ -274,6 +282,19 @@ function moveToStreaming(sidebar: SidebarState, delta: 1 | -1): void {
     const idx = ((sidebar.selectedIndex + delta * step) % len + len) % len;
     const conv = sidebar.conversations[idx];
     if (conv.streaming || conv.unread) {
+      focusConversationAt(sidebar, idx);
+      return;
+    }
+  }
+}
+
+/** Jump to the next (delta=1) or previous (delta=-1) boolean-marked conversation, wrapping around. */
+function moveToMarked(sidebar: SidebarState, delta: 1 | -1): void {
+  const len = sidebar.conversations.length;
+  if (len === 0) return;
+  for (let step = 1; step < len; step++) {
+    const idx = ((sidebar.selectedIndex + delta * step) % len + len) % len;
+    if (sidebar.conversations[idx]?.marked) {
       focusConversationAt(sidebar, idx);
       return;
     }
