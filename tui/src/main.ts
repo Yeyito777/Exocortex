@@ -15,7 +15,7 @@ import { handleMouseEvent } from "./mouse";
 import { clearPrompt } from "./promptstate";
 import { tryCommand } from "./commands";
 import { expandMacros } from "./macros";
-import { render } from "./render";
+import { render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
 import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, pushSystemMessage, resetToolOutputState } from "./state";
@@ -86,6 +86,7 @@ function resetStreamTick(): void {
 // ── Event handler (daemon → TUI) ───────────────────────────────────
 
 function onDaemonEvent(event: Event): void {
+  invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
 
   // Auto-generate title for newly created conversations when requested.

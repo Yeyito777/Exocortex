@@ -17,7 +17,7 @@ import { getViewStart } from "./chatscroll";
 import { renderTopbar } from "./topbar";
 import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { getSidebarSearchBarViewport } from "./sidebarsearch";
-import { buildMessageLines } from "./conversation";
+import { buildMessageLines, type BuildMessageLinesResult } from "./conversation";
 import { wrappedLineOffsets } from "./promptline";
 import { computeBottomLayout, PROMPT_PREFIX_WIDTH } from "./chatlayout";
 import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar, applyLineBg } from "./terminal";
@@ -36,6 +36,73 @@ import { padRightToWidth, termWidth } from "./textwidth";
 const ESC = "\x1b[";
 const clear_line = `${ESC}2K`;
 const move_to = (row: number, col: number) => `${ESC}${row};${col}H`;
+
+interface HistoryRenderCacheEntry {
+  width: number;
+  convId: string | null;
+  messagesRef: RenderState["messages"];
+  messageCount: number;
+  queuedMessagesRef: RenderState["queuedMessages"];
+  queuedMessageCount: number;
+  streamingTailRef: RenderState["streamingTailMessages"];
+  streamingTailCount: number;
+  showToolOutput: boolean;
+  toolRegistryRef: RenderState["toolRegistry"];
+  externalToolStylesRef: RenderState["externalToolStyles"];
+  themeName: string;
+  result: BuildMessageLinesResult;
+}
+
+const historyRenderCache = new WeakMap<RenderState, HistoryRenderCacheEntry>();
+
+function canReuseHistoryRender(cached: HistoryRenderCacheEntry, state: RenderState, width: number): boolean {
+  return cached.width === width
+    && cached.convId === state.convId
+    && cached.messagesRef === state.messages
+    && cached.messageCount === state.messages.length
+    && cached.queuedMessagesRef === state.queuedMessages
+    && cached.queuedMessageCount === state.queuedMessages.length
+    && cached.streamingTailRef === state.streamingTailMessages
+    && cached.streamingTailCount === state.streamingTailMessages.length
+    && cached.showToolOutput === state.showToolOutput
+    && cached.toolRegistryRef === state.toolRegistry
+    && cached.externalToolStylesRef === state.externalToolStyles
+    && cached.themeName === theme.name;
+}
+
+function getHistoryRender(state: RenderState, width: number): BuildMessageLinesResult {
+  if (state.pendingAI) {
+    historyRenderCache.delete(state);
+    return buildMessageLines(state, width);
+  }
+
+  const cached = historyRenderCache.get(state);
+  if (cached && canReuseHistoryRender(cached, state, width)) {
+    return cached.result;
+  }
+
+  const result = buildMessageLines(state, width);
+  historyRenderCache.set(state, {
+    width,
+    convId: state.convId,
+    messagesRef: state.messages,
+    messageCount: state.messages.length,
+    queuedMessagesRef: state.queuedMessages,
+    queuedMessageCount: state.queuedMessages.length,
+    streamingTailRef: state.streamingTailMessages,
+    streamingTailCount: state.streamingTailMessages.length,
+    showToolOutput: state.showToolOutput,
+    toolRegistryRef: state.toolRegistry,
+    externalToolStylesRef: state.externalToolStyles,
+    themeName: theme.name,
+    result,
+  });
+  return result;
+}
+
+export function invalidateHistoryRenderCache(state: RenderState): void {
+  historyRenderCache.delete(state);
+}
 
 // ── Main render ─────────────────────────────────────────────────────
 
@@ -534,7 +601,7 @@ export function render(state: RenderState): void {
 
   // ── Message area (rows 3 to bottomStartRow-1) ──────────────────
   const messageAreaStart = 3;
-  const { lines: allLines, messageBounds, wrapContinuation } = buildMessageLines(state, chatW);
+  const { lines: allLines, messageBounds, wrapContinuation } = getHistoryRender(state, chatW);
   const totalLines = allLines.length;
 
   // Cache rendered lines and message bounds for history cursor navigation
