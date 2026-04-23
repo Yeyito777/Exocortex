@@ -15,6 +15,14 @@ const FALLBACK_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
 
 export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
   {
+    id: "gpt-5.5",
+    label: formatModelDisplayName("gpt-5.5"),
+    maxContext: 272_000,
+    supportedEfforts: FALLBACK_OPENAI_EFFORTS,
+    defaultEffort: "high",
+    supportsImages: supportsOpenAIImageInputs("gpt-5.5"),
+  },
+  {
     id: "gpt-5.4",
     label: formatModelDisplayName("gpt-5.4"),
     maxContext: 272_000,
@@ -40,7 +48,21 @@ export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
   },
 ];
 
+const PRIMARY_OPENAI_MODEL_FAMILIES = ["gpt-5.5", "gpt-5.4"] as const;
+const PREFERRED_OPENAI_MODEL_ORDER = [
+  "gpt-5.5",
+  "gpt-5.5-pro",
+  "gpt-5.5-mini",
+  "gpt-5.5-nano",
+  "gpt-5.4",
+  "gpt-5.4-pro",
+  "gpt-5.4-mini",
+  "gpt-5.4-nano",
+  "gpt-5.3-codex-spark",
+] as const;
 const MANUAL_OPENAI_MODEL_IDS = new Set(["gpt-5.3-codex-spark"]);
+
+type PrimaryOpenAIModelFamily = typeof PRIMARY_OPENAI_MODEL_FAMILIES[number];
 
 interface OpenAICodexModel {
   slug?: string;
@@ -60,17 +82,30 @@ interface OpenAIModelsResponse {
   models?: OpenAICodexModel[];
 }
 
-function isPreferredOpenAIModel(model: OpenAICodexModel): boolean {
+function isOpenAIModelInFamily(modelSlug: string, family: PrimaryOpenAIModelFamily): boolean {
+  return new RegExp(`^${family.replace(".", "\\.")}(?:-|$)`).test(modelSlug);
+}
+
+function preferredOpenAIPrimaryFamily(models: OpenAICodexModel[]): PrimaryOpenAIModelFamily {
+  for (const family of PRIMARY_OPENAI_MODEL_FAMILIES) {
+    if (models.some((model) => typeof model.slug === "string" && isOpenAIModelInFamily(model.slug, family))) {
+      return family;
+    }
+  }
+  return PRIMARY_OPENAI_MODEL_FAMILIES[PRIMARY_OPENAI_MODEL_FAMILIES.length - 1];
+}
+
+function isPreferredOpenAIModel(model: OpenAICodexModel, preferredFamily: PrimaryOpenAIModelFamily): boolean {
   return typeof model.slug === "string" && (
-    /^gpt-5\.4(?:-|$)/.test(model.slug)
+    isOpenAIModelInFamily(model.slug, preferredFamily)
     || MANUAL_OPENAI_MODEL_IDS.has(model.slug)
   );
 }
 
 function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel | undefined): EffortLevel {
-  // Product preference: make the primary OpenAI default land on high effort,
+  // Product preference: make the primary OpenAI defaults land on high effort,
   // even if the upstream model metadata reports a lower default.
-  if (modelSlug === "gpt-5.4") return "high";
+  if (modelSlug === "gpt-5.5" || modelSlug === "gpt-5.4") return "high";
   return apiDefaultEffort ?? "medium";
 }
 
@@ -93,13 +128,24 @@ function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
 }
 
 function selectPreferredOpenAIModels(models: OpenAICodexModel[]): ModelInfo[] {
-  return models
+  const visibleModels = models
     .filter((model) => model.supported_in_api !== false)
-    .filter((model) => model.visibility !== "hide")
-    .filter(isPreferredOpenAIModel)
+    .filter((model) => model.visibility !== "hide");
+  const preferredFamily = preferredOpenAIPrimaryFamily(visibleModels);
+
+  return visibleModels
+    .filter((model) => isPreferredOpenAIModel(model, preferredFamily))
     .sort((a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER))
     .map(toModelInfo)
     .filter((model): model is ModelInfo => model !== null);
+}
+
+function sortOpenAIModels(models: ModelInfo[]): ModelInfo[] {
+  const order = new Map<string, number>(PREFERRED_OPENAI_MODEL_ORDER.map((id, index) => [id, index]));
+  return models
+    .map((model, index) => ({ model, index, rank: order.get(model.id) ?? Number.MAX_SAFE_INTEGER }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map(({ model }) => model);
 }
 
 function mergeMissingFallbackModels(models: ModelInfo[], remoteModels: OpenAICodexModel[]): ModelInfo[] {
@@ -122,7 +168,7 @@ function mergeMissingFallbackModels(models: ModelInfo[], remoteModels: OpenAICod
     merged.push(fallbackModel);
   }
 
-  return merged;
+  return sortOpenAIModels(merged);
 }
 
 export function selectOpenAIModelsForTest(models: OpenAICodexModel[]): ModelInfo[] {
@@ -151,7 +197,7 @@ export async function fetchOpenAIModels(): Promise<ModelInfo[]> {
   const preferredModels = selectPreferredOpenAIModels(data.models ?? []);
 
   if (preferredModels.length === 0) {
-    log("warn", "openai models: Codex endpoint returned no preferred models, keeping fallback list");
+    log("warn", "openai models: Codex endpoint returned no preferred GPT-5 family models, keeping fallback list");
     return FALLBACK_OPENAI_MODELS;
   }
 

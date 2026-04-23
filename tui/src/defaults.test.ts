@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, normalizeEffortForModel } from "./messages";
+import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, MAX_CONTEXT, normalizeEffortForModel } from "./messages";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
 
@@ -15,7 +15,11 @@ describe("tui defaults", () => {
     expect(state.model).toBe(DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
   });
 
-  test("gpt-5.4 normalizes to high effort by default", () => {
+  test("gpt-5.5 has a known context window for default-state UI fallbacks", () => {
+    expect(MAX_CONTEXT[DEFAULT_MODEL_BY_PROVIDER.openai]).toBe(272_000);
+  });
+
+  test("gpt-5.5-style defaults normalize to high effort", () => {
     expect(normalizeEffortForModel({
       supportedEfforts: [
         { effort: "low", description: "low" },

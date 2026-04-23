@@ -31,11 +31,25 @@ export const PENDING_TITLE = "pending";
 function titleModelForProvider(provider: RenderState["provider"]): string {
   switch (provider) {
     case "openai":
+      // Title generation was previously a mini-tier utility task; keep it on the
+      // working GPT-5.4 mini model until a usable GPT-5.5 mini arrives.
       return "gpt-5.4-mini";
     case "anthropic":
     default:
       return "claude-haiku-4-5-20251001";
   }
+}
+
+export function sanitizeGeneratedTitle(raw: string): string {
+  let title = raw.trim().toLowerCase().replace(/["""''`]/g, "");
+  // Keep decimal points in model/version names like gpt-5.5, but strip other
+  // periods so sentence punctuation does not end up in sidebar titles.
+  title = title.replace(/\./g, (_dot, index) => {
+    const previous = title[index - 1] ?? "";
+    const next = title[index + 1] ?? "";
+    return /\d/.test(previous) && /\d/.test(next) ? "." : "";
+  });
+  return title;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -101,7 +115,7 @@ export function generateTitle(
     "",
     prompt,
     (generatedTitle) => {
-      let title = generatedTitle.trim().toLowerCase().replace(/["""''`.]/g, "");
+      let title = sanitizeGeneratedTitle(generatedTitle);
       if (markPrefix) title = markPrefix + " " + title;
       setCanonicalTitle(convId, title, state, daemon, scheduleRender);
     },

@@ -9,6 +9,8 @@ export interface InnerLlmSummaryOptions {
 
 const SUMMARY_MODEL_BY_PROVIDER: Record<ProviderId, ModelId> = {
   anthropic: "claude-sonnet-4-6",
+  // Keep mini-tier internal utility calls on the proven GPT-5.4 mini model until
+  // OpenAI ships a usable GPT-5.5 mini equivalent on this Codex backend.
   openai: "gpt-5.4-mini",
 };
 
