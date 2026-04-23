@@ -161,7 +161,7 @@ function profilePromptTyping(): ScenarioReport {
     notes: [
       `computeBottomLayout avg ${avg(bottomLayoutSamples).toFixed(3)}ms (p95 ${percentile(bottomSorted, 0.95).toFixed(3)}ms)`,
       `buildMessageLines avg ${avg(historySamples).toFixed(3)}ms (p95 ${percentile(historySorted, 0.95).toFixed(3)}ms)`,
-      "Only the prompt/cursor changed, but the full message history was rebuilt every frame.",
+      "The full render path reuses cached history; standalone buildMessageLines shows the work avoided on prompt-only frames.",
     ],
   };
 }

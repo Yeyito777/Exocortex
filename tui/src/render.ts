@@ -36,6 +36,8 @@ import { padRightToWidth, termWidth } from "./textwidth";
 const ESC = "\x1b[";
 const clear_line = `${ESC}2K`;
 const move_to = (row: number, col: number) => `${ESC}${row};${col}H`;
+const begin_synchronized_update = `${ESC}?2026h`;
+const end_synchronized_update = `${ESC}?2026l`;
 
 interface HistoryRenderCacheEntry {
   width: number;
@@ -199,15 +201,27 @@ function renderImageIndicator(images: ImageAttachment[], width: number): string 
 
 // ── Shared render context ───────────────────────────────────────────
 
+interface ScrollRegion {
+  start: number;
+  end: number;
+}
+
+interface RenderFrame {
+  rows: string[];
+  cursor: string;
+  scrollRegion: ScrollRegion | null;
+  viewStart: number;
+}
+
+const lastRenderedFrames = new WeakMap<RenderState, RenderFrame>();
+
 /**
  * Shared rendering primitives computed once in render() and threaded
  * through extracted sub-functions. Avoids long parameter lists.
  */
 interface RenderCtx {
-  /** Output buffer — sub-functions push ANSI strings here. */
-  out: string[];
-  /** Clear-line escape pre-filled with app background. */
-  cl: string;
+  /** Per-screen-row ANSI payloads. Each payload fully redraws that row. */
+  frameRows: string[];
   /** Whether the sidebar is currently open. */
   sidebarOpen: boolean;
   /** Pre-rendered sidebar rows (one per screen row). */
@@ -218,10 +232,129 @@ interface RenderCtx {
   bgLine: (line: string) => string;
 }
 
+function createFrameRows(totalRows: number, cl: string): string[] {
+  return Array.from({ length: totalRows }, (_, i) => move_to(i + 1, 1) + cl);
+}
+
+function appendRowWrite(ctx: RenderCtx, row: number, col: number, text: string): void {
+  if (row < 1 || row > ctx.frameRows.length) return;
+  ctx.frameRows[row - 1] += move_to(row, col) + text;
+}
+
+function appendPositionedPayload(ctx: RenderCtx, payload: string): void {
+  const moveRe = /\x1b\[(\d+);(\d+)H/g;
+  let currentRow: number | null = null;
+  let currentCol: number | null = null;
+  let lastEnd = 0;
+
+  for (let match = moveRe.exec(payload); match !== null; match = moveRe.exec(payload)) {
+    if (currentRow !== null && currentCol !== null && currentRow >= 1 && currentRow <= ctx.frameRows.length) {
+      ctx.frameRows[currentRow - 1] += move_to(currentRow, currentCol) + payload.slice(lastEnd, match.index);
+    }
+    currentRow = Number(match[1]);
+    currentCol = Number(match[2]);
+    lastEnd = moveRe.lastIndex;
+  }
+
+  if (currentRow !== null && currentCol !== null && currentRow >= 1 && currentRow <= ctx.frameRows.length) {
+    ctx.frameRows[currentRow - 1] += move_to(currentRow, currentCol) + payload.slice(lastEnd);
+  }
+}
+
+function normalizeRowMoves(row: string | undefined): string | undefined {
+  return row?.replace(/\x1b\[\d+;(\d+)H/g, "\x1b[ROW;$1H");
+}
+
+function sameRowContent(a: string | undefined, b: string | undefined): boolean {
+  return a !== undefined && b !== undefined && normalizeRowMoves(a) === normalizeRowMoves(b);
+}
+
+function sameScrollRegion(a: ScrollRegion | null, b: ScrollRegion | null): a is ScrollRegion {
+  return !!a && !!b && a.start === b.start && a.end === b.end;
+}
+
+function scrollUpRegion(region: ScrollRegion, amount: number): string {
+  // DECSTBM + LF at the bottom margin scrolls only the message region. This is
+  // supported by the Linux console and common terminal emulators.
+  return `${ESC}${region.start};${region.end}r${move_to(region.end, 1)}${"\n".repeat(amount)}${ESC}r`;
+}
+
+function detectUpwardScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): number {
+  if (!sameScrollRegion(prevFrame.scrollRegion, nextFrame.scrollRegion)) return 0;
+  const region = nextFrame.scrollRegion;
+  if (!region) return 0;
+  const viewportShift = nextFrame.viewStart - prevFrame.viewStart;
+  if (viewportShift <= 0) return 0;
+
+  const height = region.end - region.start + 1;
+  if (height < 4) return 0;
+
+  const maxShift = Math.min(10, Math.floor(height / 2), viewportShift);
+  let bestShift = 0;
+  let bestMatches = 0;
+
+  for (let shift = viewportShift; shift <= maxShift; shift++) {
+    let matches = 0;
+    for (let row = region.start - 1; row <= region.end - 1 - shift; row++) {
+      if (sameRowContent(prevFrame.rows[row + shift], nextFrame.rows[row])) matches++;
+    }
+
+    const comparableRows = height - shift;
+    const threshold = Math.max(3, Math.floor(comparableRows * 0.6));
+    if (matches >= threshold && matches > bestMatches) {
+      bestShift = shift;
+      bestMatches = matches;
+    }
+  }
+
+  return bestShift;
+}
+
+function flushFrame(state: RenderState, nextFrame: RenderFrame): void {
+  const prevFrame = lastRenderedFrames.get(state);
+  const out: string[] = [];
+  const rowCount = Math.max(prevFrame?.rows.length ?? 0, nextFrame.rows.length);
+  const scrollShift = prevFrame ? detectUpwardScroll(prevFrame, nextFrame) : 0;
+  const scrollRegion = scrollShift > 0 ? nextFrame.scrollRegion : null;
+
+  if (scrollRegion && scrollShift > 0) {
+    out.push(scrollUpRegion(scrollRegion, scrollShift));
+  }
+
+  for (let i = 0; i < rowCount; i++) {
+    const nextRow = nextFrame.rows[i];
+    if (nextRow === undefined) continue;
+
+    let prevRow = prevFrame?.rows[i];
+    let unchanged = prevRow === nextRow;
+
+    if (scrollRegion && i >= scrollRegion.start - 1 && i <= scrollRegion.end - 1) {
+      const shiftedPrevRow = i + scrollShift <= scrollRegion.end - 1 ? prevFrame?.rows[i + scrollShift] : undefined;
+      unchanged = sameRowContent(shiftedPrevRow, nextRow);
+      prevRow = shiftedPrevRow;
+    }
+
+    if (!unchanged) out.push(nextRow);
+  }
+
+  if (out.length > 0 || !prevFrame || prevFrame.cursor !== nextFrame.cursor) {
+    out.push(nextFrame.cursor);
+  }
+
+  if (out.length > 0) {
+    // Terminals that support synchronized updates (most modern GUI emulators)
+    // will present multi-row diffs atomically. Unsupported terminals, including
+    // the Linux virtual console, ignore the DEC private mode sequences.
+    if (out.length > 2) process.stdout.write(begin_synchronized_update + out.join("") + end_synchronized_update);
+    else process.stdout.write(out.join(""));
+  }
+  lastRenderedFrames.set(state, nextFrame);
+}
+
 /** Emit a sidebar column for the given screen row (if sidebar is open). */
 function emitSidebarCol(ctx: RenderCtx, screenRow: number): void {
   if (ctx.sidebarOpen && ctx.sbRows[screenRow - 1]) {
-    ctx.out.push(ctx.sbRows[screenRow - 1]);
+    appendRowWrite(ctx, screenRow, 1, ctx.sbRows[screenRow - 1]);
   }
 }
 
@@ -250,14 +383,11 @@ function renderMessageArea(
   hlLast: number,
   searchQuery: string | null,
 ): void {
-  const { out, cl, chatCol, bgLine } = ctx;
+  const { chatCol, bgLine } = ctx;
 
   for (let i = 0; i < messageAreaHeight; i++) {
     const row = messageAreaStart + i;
-    out.push(move_to(row, 1) + cl);
     emitSidebarCol(ctx, row);
-    // Chat content at chatCol
-    out.push(move_to(row, chatCol));
     const lineIdx = viewStart + i;
     if (lineIdx < totalLines) {
       const line = allLines[lineIdx];
@@ -304,12 +434,10 @@ function renderMessageArea(
         rendered = renderLineWithCursor(rendered, vCursor.col);
       }
 
-      if (historyFocused && !inVisual && lineIdx >= hlFirst && lineIdx <= hlLast) {
-        // Normal mode: highlight the full logical line group
-        out.push(applyLineBg(rendered, theme.historyLineBg));
-      } else {
-        out.push(bgLine(rendered));
-      }
+      const finalLine = historyFocused && !inVisual && lineIdx >= hlFirst && lineIdx <= hlLast
+        ? applyLineBg(rendered, theme.historyLineBg)
+        : bgLine(rendered);
+      appendRowWrite(ctx, row, chatCol, finalLine);
     }
   }
 }
@@ -326,7 +454,7 @@ function renderAutocompletePopup(
 ): void {
   if (!state.autocomplete || state.autocomplete.matches.length === 0) return;
 
-  const { out, chatCol } = ctx;
+  const { chatCol } = ctx;
   const { matches, selection: sel } = state.autocomplete;
   const maxName = matches.reduce((m, c) => Math.max(m, termWidth(c.name)), 0);
   const maxDesc = matches.reduce((m, c) => Math.max(m, termWidth(c.desc)), 0);
@@ -353,24 +481,20 @@ function renderAutocompletePopup(
     const marker = isSelected ? "▸ " : "  ";
     const name = padRightToWidth(matches[i].name, nameWidth);
     const desc = padRightToWidth(matches[i].desc, descWidth);
-    out.push(
-      move_to(row, chatCol) + bg + theme.accent + marker
-      + theme.text + name + theme.dim + desc + theme.reset,
+    appendRowWrite(
+      ctx,
+      row,
+      chatCol,
+      bg + theme.accent + marker + theme.text + name + theme.dim + desc + theme.reset,
     );
   }
 
   // Scroll indicators when items are clipped
   if (winStart > 0) {
-    out.push(
-      move_to(topRow, chatCol + popupWidth - 2)
-      + theme.sidebarBg + theme.dim + " ▲" + theme.reset,
-    );
+    appendRowWrite(ctx, topRow, chatCol + popupWidth - 2, theme.sidebarBg + theme.dim + " ▲" + theme.reset);
   }
   if (winStart + winSize < total) {
-    out.push(
-      move_to(topRow + winSize - 1, chatCol + popupWidth - 2)
-      + theme.sidebarBg + theme.dim + " ▼" + theme.reset,
-    );
+    appendRowWrite(ctx, topRow + winSize - 1, chatCol + popupWidth - 2, theme.sidebarBg + theme.dim + " ▼" + theme.reset);
   }
 }
 
@@ -384,11 +508,10 @@ function renderSearchBar(
   const search = state.search;
   if (!search?.barOpen) return;
 
-  const { out, cl, chatCol, bgLine } = ctx;
+  const { chatCol, bgLine } = ctx;
   const { line } = getSearchBarViewport(search, chatW);
-  out.push(move_to(row, 1) + cl);
   emitSidebarCol(ctx, row);
-  out.push(move_to(row, chatCol) + bgLine(line));
+  appendRowWrite(ctx, row, chatCol, bgLine(line));
 }
 
 /**
@@ -406,7 +529,7 @@ function renderInputArea(
   newPromptScroll: number,
   promptFocused: boolean,
 ): void {
-  const { out, cl, chatCol, bgLine } = ctx;
+  const { chatCol, bgLine } = ctx;
   const promptInVisual = promptFocused
     && (state.vim.mode === "visual" || state.vim.mode === "visual-line");
   // Compute once for all visual-selection calls inside the loop
@@ -437,9 +560,8 @@ function renderInputArea(
         state.inputBuffer, inputOffsets, state.vim.mode === "visual-line");
     }
 
-    out.push(move_to(row, 1) + cl);
     emitSidebarCol(ctx, row);
-    out.push(move_to(row, chatCol) + bgLine(prompt + lineContent));
+    appendRowWrite(ctx, row, chatCol, bgLine(prompt + lineContent));
   }
 }
 
@@ -448,8 +570,7 @@ function renderInputArea(
  * focus and vim mode. Hides the cursor when history is focused (the
  * history cursor is rendered inline via reverse video).
  */
-function renderCursorPosition(
-  ctx: RenderCtx,
+function buildCursorPayload(
   state: RenderState,
   promptFocused: boolean,
   firstInputRow: number,
@@ -457,9 +578,10 @@ function renderCursorPosition(
   cursorCol: number,
   promptLen: number,
   searchBarRow: number,
+  chatCol: number,
   chatW: number,
-): void {
-  const { out, chatCol } = ctx;
+): string {
+  const out: string[] = [];
 
   if (state.panelFocus === "sidebar" && state.sidebar.search?.barOpen) {
     const { cursorCol: searchCursorCol } = getSidebarSearchBarViewport(
@@ -469,7 +591,7 @@ function renderCursorPosition(
     out.push(move_to(state.rows, 1 + searchCursorCol));
     out.push(cursor_bar);
     out.push(show_cursor);
-    return;
+    return out.join("");
   }
 
   if (state.search?.barOpen) {
@@ -477,12 +599,12 @@ function renderCursorPosition(
     out.push(move_to(searchBarRow, chatCol + searchCursorCol));
     out.push(cursor_bar);
     out.push(show_cursor);
-    return;
+    return out.join("");
   }
 
   if (state.voicePrompt) {
     out.push(hide_cursor);
-    return;
+    return out.join("");
   }
 
   if (promptFocused) {
@@ -499,13 +621,14 @@ function renderCursorPosition(
     // History cursor is rendered inline (reverse video) — hide hardware cursor
     out.push(hide_cursor);
   }
+
+  return out.join("");
 }
 
 // ── Main render ─────────────────────────────────────────────────────
 
 export function render(state: RenderState): void {
   const { cols, rows } = state;
-  const out: string[] = [];
 
   // App-wide background: fills empty areas and persists through resets
   const appBg = theme.appBg ?? '';
@@ -532,25 +655,23 @@ export function render(state: RenderState): void {
   }
 
   // ── Shared render context ─────────────────────────────────────
-  const ctx: RenderCtx = { out, cl, sidebarOpen, sbRows, chatCol, bgLine };
+  const ctx: RenderCtx = {
+    frameRows: createFrameRows(rows, cl),
+    sidebarOpen,
+    sbRows,
+    chatCol,
+    bgLine,
+  };
 
   // ── Top bar (row 1, full width) ───────────────────────────────
-  out.push(move_to(1, 1) + cl);
-  if (sidebarOpen) {
-    out.push(sbRows[0]);
-    out.push(move_to(1, chatCol));
-  }
-  out.push(renderTopbar(state, chatW));
+  emitSidebarCol(ctx, 1);
+  appendRowWrite(ctx, 1, chatCol, renderTopbar(state, chatW));
 
   // ── Row 2: separator ──────────────────────────────────────────
   const historyFocused = state.panelFocus === "chat" && state.chatFocus === "history";
   const historyColor = historyFocused ? theme.accent : theme.dim;
-  out.push(move_to(2, 1) + cl);
-  if (sidebarOpen) {
-    out.push(sbRows[1]);
-    out.push(move_to(2, chatCol));
-  }
-  out.push(bgLine(`${historyColor}${"─".repeat(chatW)}${theme.reset}`));
+  emitSidebarCol(ctx, 2);
+  appendRowWrite(ctx, 2, chatCol, bgLine(`${historyColor}${"─".repeat(chatW)}${theme.reset}`));
 
   // ── Input line wrapping + bottom layout ─────────────────────────
   const bottomLayout = computeBottomLayout(state, chatW, rows);
@@ -669,16 +790,14 @@ export function render(state: RenderState): void {
   }
 
   // ── Separator above input ─────────────────────────────────────
-  out.push(move_to(promptSepRow, 1) + cl);
   emitSidebarCol(ctx, promptSepRow);
-  out.push(move_to(promptSepRow, chatCol) + bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
+  appendRowWrite(ctx, promptSepRow, chatCol, bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
 
   // ── Image indicator (between separator and prompt) ────────────
   if (imageIndicatorRows > 0) {
     const indRow = promptSepRow + 1;
-    out.push(move_to(indRow, 1) + cl);
     emitSidebarCol(ctx, indRow);
-    out.push(move_to(indRow, chatCol) + bgLine(renderImageIndicator(state.pendingImages, chatW)));
+    appendRowWrite(ctx, indRow, chatCol, bgLine(renderImageIndicator(state.pendingImages, chatW)));
   }
 
   // ── Input rows ────────────────────────────────────────────────
@@ -689,40 +808,49 @@ export function render(state: RenderState): void {
   );
 
   // ── Separator below input ─────────────────────────────────────
-  out.push(move_to(sepBelow, 1) + cl);
   emitSidebarCol(ctx, sepBelow);
-  out.push(move_to(sepBelow, chatCol) + bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
+  appendRowWrite(ctx, sepBelow, chatCol, bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
 
   // ── Status lines (chat area width) ─────────────────────────────
   for (let i = 0; i < slHeight; i++) {
     const row = sepBelow + 1 + i;
-    out.push(move_to(row, 1) + cl);
     emitSidebarCol(ctx, row);
-    out.push(move_to(row, chatCol) + bgLine(statusLines[i]));
+    appendRowWrite(ctx, row, chatCol, bgLine(statusLines[i]));
   }
 
   // ── Queue prompt overlay ───────────────────────────────────────
   if (state.queuePrompt) {
-    out.push(renderQueuePromptOverlay(state.queuePrompt, chatW, chatCol, bottomStartRow));
+    appendPositionedPayload(ctx, renderQueuePromptOverlay(state.queuePrompt, chatW, chatCol, bottomStartRow));
   }
 
   // ── Edit message overlay ──────────────────────────────────────
   if (state.editMessagePrompt) {
-    out.push(renderEditMessageOverlay(state.editMessagePrompt, chatW, chatCol, bottomStartRow, messageAreaHeight));
+    appendPositionedPayload(ctx, renderEditMessageOverlay(state.editMessagePrompt, chatW, chatCol, bottomStartRow, messageAreaHeight));
   }
 
-  // ── Cursor ─────────────────────────────────────────────────────
-  renderCursorPosition(
-    ctx,
-    state,
-    promptFocused,
-    firstInputRow,
-    cursorLine,
-    cursorCol,
-    PROMPT_PREFIX_WIDTH,
-    searchBarRow,
-    chatW,
-  );
+  const canScrollMessageRegion = !sidebarOpen
+    && !state.autocomplete
+    && !state.search?.barOpen
+    && !state.queuePrompt
+    && !state.editMessagePrompt
+    && messageAreaHeight > 0;
 
-  process.stdout.write(out.join(""));
+  flushFrame(state, {
+    rows: ctx.frameRows,
+    cursor: buildCursorPayload(
+      state,
+      promptFocused,
+      firstInputRow,
+      cursorLine,
+      cursorCol,
+      PROMPT_PREFIX_WIDTH,
+      searchBarRow,
+      chatCol,
+      chatW,
+    ),
+    scrollRegion: canScrollMessageRegion
+      ? { start: messageAreaStart, end: messageAreaStart + messageAreaHeight - 1 }
+      : null,
+    viewStart,
+  });
 }
