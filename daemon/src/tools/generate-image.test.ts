@@ -2,18 +2,17 @@ import { describe, expect, test } from "bun:test";
 import { formatGenerateImageOutput } from "./generate-image";
 
 describe("generate_image tool output", () => {
-  test("shows revised prompt above saved path without echoing the original prompt", () => {
+  test("returns only the saved image path", () => {
     const output = formatGenerateImageOutput("/tmp/example.png", "A polished prompt.");
 
-    expect(output).toBe("Revised prompt:\nA polished prompt.\n\nSaved:\n/tmp/example.png");
-    expect(output).not.toContain("Generated image.");
-    expect(output).not.toContain("Prompt: ");
+    expect(output).toBe("/tmp/example.png");
+    expect(output).not.toContain("Revised prompt:");
+    expect(output).not.toContain("Saved:");
   });
 
-  test("falls back to only the saved path when OpenAI does not return a revised prompt", () => {
+  test("still returns only the saved path when OpenAI does not return a revised prompt", () => {
     const output = formatGenerateImageOutput("/tmp/example.png", null);
 
-    expect(output).toBe("Saved:\n/tmp/example.png");
-    expect(output).not.toContain("Revised prompt:");
+    expect(output).toBe("/tmp/example.png");
   });
 });

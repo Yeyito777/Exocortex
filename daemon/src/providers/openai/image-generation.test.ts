@@ -29,8 +29,8 @@ afterEach(() => {
 describe("openai image generation", () => {
   test("builds the current minimal Responses request body", () => {
     expect(buildImageGenerationRequestBody("a tiny blue square")).toEqual({
-      model: "gpt-5.4",
-      instructions: "Generate exactly one image matching the user's request.",
+      model: "gpt-5.4-mini",
+      instructions: "Call the image generation tool EXACTLY according to the user's request. No interpretation no adding things copy the user request word for word.",
       input: [
         {
           role: "user",
@@ -80,8 +80,8 @@ describe("openai image generation", () => {
     expect(headers.get("Accept")).toBe("text/event-stream");
 
     expect(JSON.parse(String(fetchInit?.body))).toEqual({
-      model: "gpt-5.4",
-      instructions: "Generate exactly one image matching the user's request.",
+      model: "gpt-5.4-mini",
+      instructions: "Call the image generation tool EXACTLY according to the user's request. No interpretation no adding things copy the user request word for word.",
       input: [
         {
           role: "user",

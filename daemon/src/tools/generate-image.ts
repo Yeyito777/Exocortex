@@ -63,10 +63,8 @@ async function saveGeneratedImage(bytes: Uint8Array, mediaType: string): Promise
   return filePath;
 }
 
-export function formatGenerateImageOutput(savedPath: string, revisedPrompt: string | null): string {
-  return revisedPrompt
-    ? `Revised prompt:\n${revisedPrompt}\n\nSaved:\n${savedPath}`
-    : `Saved:\n${savedPath}`;
+export function formatGenerateImageOutput(savedPath: string, _revisedPrompt: string | null): string {
+  return savedPath;
 }
 
 async function executeGenerateImage(
@@ -112,7 +110,7 @@ export const generateImageTool: Tool = {
     },
     required: ["prompt"],
   },
-  systemHint: "Use the generate_image tool when the user wants a raster image created. It returns the image inline for review and saves a local copy under Exocortex's generated-images directory.",
+  systemHint: "When asked to generate designs from scratch (e.g. website frontends) us this tool first to get a good reference and then implement against that.",
   display: {
     label: "Image",
     color: "#ffb86c",

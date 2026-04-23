@@ -2,8 +2,8 @@ import { getVerifiedSession } from "./auth";
 import { OPENAI_CODEX_RESPONSES_URL } from "./constants";
 import { buildOpenAIHeaders } from "./http";
 
-const OPENAI_IMAGE_GENERATION_MODEL = "gpt-5.4";
-const IMAGE_GENERATION_INSTRUCTIONS = "Generate exactly one image matching the user's request.";
+const OPENAI_IMAGE_GENERATION_MODEL = "gpt-5.4-mini";
+const IMAGE_GENERATION_INSTRUCTIONS = "Call the image generation tool EXACTLY according to the user's request. No interpretation no adding things copy the user request word for word.";
 const IMAGE_GENERATION_STALL_TIMEOUT_MS = 180_000;
 
 interface OpenAIImageGenerationResponseItem {

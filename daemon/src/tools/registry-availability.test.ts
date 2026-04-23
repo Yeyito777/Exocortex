@@ -28,13 +28,13 @@ describe("tool availability", () => {
     setOpenAIConfigured(false);
     expect(getToolDefs().some((tool) => tool.name === "generate_image")).toBe(false);
     expect(getToolDisplayInfo().some((tool) => tool.name === "generate_image")).toBe(false);
-    expect(buildToolSystemHints()).not.toContain("generate_image tool");
+    expect(buildToolSystemHints()).not.toContain("website frontends");
   });
 
   test("shows generate_image when OpenAI auth is configured", () => {
     setOpenAIConfigured(true);
     expect(getToolDefs().some((tool) => tool.name === "generate_image")).toBe(true);
     expect(getToolDisplayInfo().some((tool) => tool.name === "generate_image" && tool.label === "Image")).toBe(true);
-    expect(buildToolSystemHints()).toContain("generate_image tool");
+    expect(buildToolSystemHints()).toContain("website frontends");
   });
 });
