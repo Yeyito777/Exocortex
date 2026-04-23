@@ -175,6 +175,8 @@ export interface RenderState {
   historyLines: string[];
   /** true for visual lines that are word-wrap continuations of the previous logical line. */
   historyWrapContinuation: boolean[];
+  /** separator to reinsert before each continuation line when copying/yanking. */
+  historyWrapJoiners: string[];
   /** Per-message row ranges into historyLines (set by renderer). */
   historyMessageBounds: MessageBound[];
   /** Undo/redo state for the prompt line. */
@@ -372,6 +374,7 @@ export function createInitialState(): RenderState {
     historyVisualAnchor: createHistoryCursor(),
     historyLines: [],
     historyWrapContinuation: [],
+    historyWrapJoiners: [],
     historyMessageBounds: [],
     undo: createUndoState(),
     autocomplete: null,

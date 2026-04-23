@@ -534,12 +534,13 @@ export function render(state: RenderState): void {
 
   // ── Message area (rows 3 to bottomStartRow-1) ──────────────────
   const messageAreaStart = 3;
-  const { lines: allLines, messageBounds, wrapContinuation } = buildMessageLines(state, chatW);
+  const { lines: allLines, messageBounds, wrapContinuation, wrapJoiners } = buildMessageLines(state, chatW);
   const totalLines = allLines.length;
 
   // Cache rendered lines and message bounds for history cursor navigation
   state.historyLines = allLines;
   state.historyWrapContinuation = wrapContinuation;
+  state.historyWrapJoiners = wrapJoiners;
   state.historyMessageBounds = messageBounds;
   state.historyCursor = clampCursor(state.historyCursor, allLines);
 

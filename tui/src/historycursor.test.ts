@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildMessageLines } from "./conversation";
-import { applyHistoryAction, contentBounds, getHistoryVisualSelection, stripAnsi } from "./historycursor";
+import { applyHistoryAction, contentBounds, getHistoryVisualSelection, joinLogicalLines, stripAnsi } from "./historycursor";
 import { createInitialState } from "./state";
 import type { RenderState } from "./state";
 
@@ -29,9 +29,10 @@ function setupHistoryState(): RenderState {
     },
   ];
 
-  const { lines, wrapContinuation, messageBounds } = buildMessageLines(state, 24);
+  const { lines, wrapContinuation, wrapJoiners, messageBounds } = buildMessageLines(state, 24);
   state.historyLines = lines;
   state.historyWrapContinuation = wrapContinuation;
+  state.historyWrapJoiners = wrapJoiners;
   state.historyMessageBounds = messageBounds;
   state.layout.totalLines = lines.length;
   state.layout.messageAreaHeight = lines.length;
@@ -47,9 +48,10 @@ function setupRenderedHistory(messages: any[], width: number): RenderState {
   const state = createInitialState();
   state.messages = messages;
 
-  const { lines, wrapContinuation, messageBounds } = buildMessageLines(state, width);
+  const { lines, wrapContinuation, wrapJoiners, messageBounds } = buildMessageLines(state, width);
   state.historyLines = lines;
   state.historyWrapContinuation = wrapContinuation;
+  state.historyWrapJoiners = wrapJoiners;
   state.historyMessageBounds = messageBounds;
   state.layout.totalLines = lines.length;
   state.layout.messageAreaHeight = lines.length;
@@ -128,5 +130,25 @@ describe("history visual selection", () => {
     selectFirstWrappedBoundary(state);
 
     expect(getHistoryVisualSelection(state)).toBe("alpha beta ga");
+  });
+
+  test("hard-wrapped tool result paths rejoin without synthetic spaces", () => {
+    const path = "/home/yeyito/Workspace/Exocortex/.worktrees/image-generation-tool/config/data/instances/image-generation-tool/generated-images/example.png";
+    const state = createInitialState();
+    state.showToolOutput = true;
+    state.messages = [{
+      role: "assistant",
+      blocks: [{ type: "tool_result", toolCallId: "call-1", toolName: "generate_image", output: `Saved:\n${path}`, isError: false }],
+      metadata: null,
+    }];
+
+    const { lines, wrapContinuation, wrapJoiners } = buildMessageLines(state, 90);
+    const firstPathRow = lines.findIndex((line) => stripAnsi(line).includes("/home/yeyito/Workspace/Exocortex/.worktrees"));
+    expect(firstPathRow).toBeGreaterThanOrEqual(0);
+
+    let lastPathRow = firstPathRow;
+    while (lastPathRow + 1 < lines.length && wrapContinuation[lastPathRow + 1]) lastPathRow++;
+
+    expect(joinLogicalLines(lines, wrapContinuation, firstPathRow, lastPathRow, wrapJoiners)).toBe(path);
   });
 });

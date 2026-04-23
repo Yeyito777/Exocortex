@@ -20,36 +20,45 @@ export interface WrapResult {
   lines: string[];
   /** true for visual lines that are continuations of the previous logical line. */
   cont: boolean[];
+  /** separator to reinsert before each continuation line when reconstructing plain text. */
+  join: string[];
 }
 
 export function wordWrap(text: string, width: number): WrapResult {
-  if (width <= 0) return { lines: [text], cont: [false] };
+  if (width <= 0) return { lines: [text], cont: [false], join: [""] };
   const lines: string[] = [];
   const cont: boolean[] = [];
+  const join: string[] = [];
 
   for (const rawLine of text.split("\n")) {
     if (rawLine.length <= width) {
       lines.push(rawLine);
       cont.push(false);
+      join.push("");
       continue;
     }
     let line = rawLine;
     let first = true;
+    let pendingJoin = "";
     while (line.length > width) {
       let breakAt = line.lastIndexOf(" ", width);
+      const nextJoin = breakAt > 0 ? " " : "";
       if (breakAt <= 0) breakAt = width;
       lines.push(line.slice(0, breakAt));
       cont.push(!first);
+      join.push(first ? "" : pendingJoin);
       first = false;
       line = line.slice(breakAt).trimStart();
+      pendingJoin = nextJoin;
     }
     if (line) {
       lines.push(line);
       cont.push(!first);
+      join.push(first ? "" : pendingJoin);
     }
   }
 
-  return { lines, cont };
+  return { lines, cont, join };
 }
 
 /**
@@ -406,6 +415,7 @@ function renderSegmentedBashLines(
 function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDisplayInfo[], externalToolStyles: ExternalToolStyle[], showToolOutput: boolean): WrapResult {
   const lines: string[] = [];
   const cont: boolean[] = [];
+  const join: string[] = [];
 
   switch (block.type) {
     case "thinking": {
@@ -415,6 +425,7 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
       for (let i = 0; i < w.lines.length; i++) {
         lines.push(`  ${theme.dim}${theme.italic}${w.lines[i]}${theme.reset}`);
         cont.push(w.cont[i]);
+        join.push(w.join[i]);
       }
       break;
     }
@@ -428,6 +439,7 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
         for (let i = 0; i < w.lines.length; i++) {
           lines.push(`  ${theme.dim}${w.lines[i]}${theme.reset}`);
           cont.push(w.cont[i]);
+          join.push(w.join[i]);
         }
       } else {
         // Assistant text blocks: full markdown rendering.
@@ -437,6 +449,7 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
         for (let i = 0; i < md.lines.length; i++) {
           lines.push(`  ${md.lines[i]}`);
           cont.push(md.cont[i]);
+          join.push(md.join[i]);
         }
       }
       break;
@@ -519,6 +532,7 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
             lines.push(`  ${entry.display.fg}${w.lines[j]}${theme.reset}`);
           }
           cont.push(w.cont[j]);
+          join.push(w.join[j]);
         }
       }
       break;
@@ -540,13 +554,14 @@ function renderBlock(block: Block, contentWidth: number, toolRegistry: ToolDispl
           first = false;
           lines.push(`${fg}${prefix}${w.lines[i]}${theme.reset}`);
           cont.push(w.cont[i]);
+          join.push(w.join[i]);
         }
       }
       break;
     }
   }
 
-  return { lines, cont };
+  return { lines, cont, join };
 }
 
 // ── User message rendering (right-aligned, themed background) ───────
@@ -566,7 +581,7 @@ function renderUserMessage(text: string, cols: number, images?: ImageAttachment[
     }
   }
 
-  const w = text ? wordWrap(text, innerWidth) : { lines: [] as string[], cont: [] as boolean[] };
+  const w = text ? wordWrap(text, innerWidth) : { lines: [] as string[], cont: [] as boolean[], join: [] as string[] };
 
   // Combine badges + text for width calculation
   const allContentLines = [...badgeLines, ...w.lines];
@@ -581,27 +596,29 @@ function renderUserMessage(text: string, cols: number, images?: ImageAttachment[
 
   const lines: string[] = [];
   const cont: boolean[] = [];
+  const join: string[] = [];
   const screenOffset = " ".repeat(Math.max(0, cols - bubbleWidth - margin));
   const padRight = " ".repeat(padding);
 
   /** Append a right-aligned bubble line with optional style prefix. */
-  const pushBubbleLine = (lineText: string, isCont: boolean, style?: string) => {
+  const pushBubbleLine = (lineText: string, isCont: boolean, joiner = "", style?: string) => {
     const padLeft = " ".repeat(Math.max(0, inner - lineText.length) + padding);
     const styledText = style ? `${style}${lineText}${theme.reset}${theme.userBg}` : lineText;
     lines.push(`${screenOffset}${theme.userBg}${padLeft}${styledText}${padRight}${theme.reset}`);
     cont.push(isCont);
+    join.push(isCont ? joiner : "");
   };
 
   // Render text lines
   for (let i = 0; i < w.lines.length; i++) {
-    pushBubbleLine(w.lines[i], w.cont[i]);
+    pushBubbleLine(w.lines[i], w.cont[i], w.join[i]);
   }
 
   // Render image badges below text (dimmed)
   for (const badge of badgeLines) {
-    pushBubbleLine(badge, false, theme.dim);
+    pushBubbleLine(badge, false, "", theme.dim);
   }
-  return { lines, cont };
+  return { lines, cont, join };
 }
 
 function renderSystemMessage(text: string, availableWidth: number, color?: string): string[] {
@@ -671,6 +688,8 @@ export interface BuildMessageLinesResult {
   lines: string[];
   messageBounds: MessageBound[];
   wrapContinuation: boolean[];
+  /** separator to reinsert before each continuation line when copying/yanking. */
+  wrapJoiners: string[];
   /**
    * Stable per-line anchors used to preserve viewport/cursor position across
    * re-renders when optional blocks appear/disappear (for example Ctrl+O tool
@@ -694,12 +713,14 @@ export function buildMessageLines(
   const contentWidth = availableWidth - 4;
   const lines: string[] = [];
   const wrapContinuation: boolean[] = [];
+  const wrapJoiners: string[] = [];
   const messageBounds: MessageBound[] = [];
   const lineAnchors: RenderLineAnchor[] = [];
 
   const pushAnchoredLine = (
     line: string,
     cont: boolean,
+    joiner: string,
     owner: object,
     segment: RenderLineSegment,
     index: number,
@@ -707,6 +728,7 @@ export function buildMessageLines(
   ) => {
     lines.push(line);
     wrapContinuation.push(cont);
+    wrapJoiners.push(cont ? joiner : "");
     lineAnchors.push({ owner, segment, index, subIndex });
   };
 
@@ -721,13 +743,13 @@ export function buildMessageLines(
       } else {
         subIndex++;
       }
-      pushAnchoredLine(br.lines[i], br.cont[i], owner, segment, logicalIndex, subIndex);
+      pushAnchoredLine(br.lines[i], br.cont[i], br.join[i], owner, segment, logicalIndex, subIndex);
     }
   };
 
   /** Append a non-wrapped line (margin, metadata, etc). */
   const pushLine = (line: string, owner: object, segment: RenderLineSegment, index = 0) => {
-    pushAnchoredLine(line, false, owner, segment, index, 0);
+    pushAnchoredLine(line, false, "", owner, segment, index, 0);
   };
 
   const trimTrailingBlankAssistantContent = (minLength: number) => {
@@ -737,6 +759,7 @@ export function buildMessageLines(
       if (!isVisuallyBlankLine(lines[lines.length - 1])) break;
       lines.pop();
       wrapContinuation.pop();
+      wrapJoiners.pop();
       lineAnchors.pop();
     }
   };
@@ -848,5 +871,5 @@ export function buildMessageLines(
     }
   }
 
-  return { lines, messageBounds, wrapContinuation, lineAnchors };
+  return { lines, messageBounds, wrapContinuation, wrapJoiners, lineAnchors };
 }

@@ -1,5 +1,5 @@
 import { theme } from "../theme";
-import { formatMarkdown, stripMarkdown, termWidth, hardBreak, isHorizontalRule } from "./formatting";
+import { formatMarkdown, stripMarkdown, termWidth, sliceByWidth, isHorizontalRule } from "./formatting";
 import { FENCE_OPEN_RE, isFenceClose, renderCodeBlock } from "./codeblocks";
 import { isTableLine, renderTableBlock } from "./tables";
 
@@ -7,11 +7,42 @@ export interface MarkdownWrapResult {
   lines: string[];
   /** true for visual lines that are continuations of the previous logical line. */
   cont: boolean[];
+  /** separator to reinsert before each continuation line when reconstructing plain text. */
+  join: string[];
 }
 
-function pushStandaloneLines(result: string[], cont: boolean[], lines: string[]): void {
+function pushStandaloneLines(result: string[], cont: boolean[], join: string[], lines: string[]): void {
   result.push(...lines);
   cont.push(...lines.map(() => false));
+  join.push(...lines.map(() => ""));
+}
+
+function takeChunkByWidth(text: string, width: number): [string, string] {
+  const [taken, rest] = sliceByWidth(text, width);
+  if (taken !== "") return [taken, rest];
+  return [text.slice(0, 1), text.slice(1)];
+}
+
+function seedLongWord(
+  word: string,
+  width: number,
+  firstJoin: string,
+): { pushedLines: string[]; pushedJoins: string[]; line: string; lineJoin: string } {
+  const pushedLines: string[] = [];
+  const pushedJoins: string[] = [];
+  let remaining = word;
+  let joinBefore = firstJoin;
+
+  for (;;) {
+    const [taken, rest] = takeChunkByWidth(remaining, width);
+    if (!rest) {
+      return { pushedLines, pushedJoins, line: taken, lineJoin: joinBefore };
+    }
+    pushedLines.push(taken);
+    pushedJoins.push(joinBefore);
+    remaining = rest;
+    joinBefore = "";
+  }
 }
 
 /**
@@ -34,11 +65,12 @@ function pushStandaloneLines(result: string[], cont: boolean[], lines: string[])
  * @returns Wrapped, formatted lines plus continuation flags
  */
 export function markdownWordWrap(text: string, width: number, bgRestore?: string): MarkdownWrapResult {
-  if (width < 1) return { lines: [text], cont: [false] };
+  if (width < 1) return { lines: [text], cont: [false], join: [""] };
 
   const inputLines = text.split("\n");
   const result: string[] = [];
   const cont: boolean[] = [];
+  const join: string[] = [];
 
   let i = 0;
   while (i < inputLines.length) {
@@ -56,7 +88,7 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
       }
       if (i < inputLines.length) i++; // skip closing fence
       const rendered = renderCodeBlock(codeLines, language, width);
-      pushStandaloneLines(result, cont, rendered);
+      pushStandaloneLines(result, cont, join, rendered);
       continue;
     }
 
@@ -67,7 +99,7 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
         i++;
       }
       const rendered = renderTableBlock(inputLines.slice(start, i), width, bgRestore);
-      pushStandaloneLines(result, cont, rendered);
+      pushStandaloneLines(result, cont, join, rendered);
       continue;
     }
 
@@ -77,16 +109,17 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
       const hrWidth = Math.min(width, 40); // cap at 40 chars
       result.push(theme.muted + "─".repeat(hrWidth) + theme.reset);
       cont.push(false);
+      join.push("");
       i++;
       continue;
     }
 
     // Regular paragraph text — word-wrap and optionally format
-    wrapParagraph(inputLines[i], width, result, cont, bgRestore);
+    wrapParagraph(inputLines[i], width, result, cont, join, bgRestore);
     i++;
   }
 
-  return { lines: result, cont };
+  return { lines: result, cont, join };
 }
 
 /**
@@ -101,11 +134,13 @@ function wrapParagraph(
   width: number,
   result: string[],
   cont: boolean[],
+  join: string[],
   bgRestore?: string,
 ): void {
   if (paragraph === "") {
     result.push("");
     cont.push(false);
+    join.push("");
     return;
   }
 
@@ -115,32 +150,55 @@ function wrapParagraph(
     ? (s: string) => termWidth(stripMarkdown(s))
     : termWidth;
 
-  // First pass: word-wrap with correct measurement
+  // First pass: word-wrap with correct measurement and track whether wrapped
+  // continuation rows should reinsert a space when copied back to plain text.
   const wrapped: string[] = [];
+  const wrappedJoin: string[] = [];
   const words = paragraph.split(/\s+/);
   let line = "";
+  let lineJoin = "";
+
+  const startLineWithWord = (word: string, firstJoin: string) => {
+    if (measure(word) <= width) {
+      line = word;
+      lineJoin = firstJoin;
+      return;
+    }
+    const seeded = seedLongWord(word, width, firstJoin);
+    wrapped.push(...seeded.pushedLines);
+    wrappedJoin.push(...seeded.pushedJoins);
+    line = seeded.line;
+    lineJoin = seeded.lineJoin;
+  };
+
   for (const word of words) {
     if (line === "") {
-      line = measure(word) > width ? hardBreak(word, width, wrapped) : word;
+      startLineWithWord(word, wrapped.length > 0 ? " " : "");
     } else if (measure(line) + 1 + measure(word) <= width) {
       line += " " + word;
     } else {
       wrapped.push(line);
-      line = measure(word) > width ? hardBreak(word, width, wrapped) : word;
+      wrappedJoin.push(lineJoin);
+      startLineWithWord(word, " ");
     }
   }
-  if (line !== "") wrapped.push(line);
+  if (line !== "") {
+    wrapped.push(line);
+    wrappedJoin.push(lineJoin);
+  }
 
   // Second pass: apply inline markdown formatting if in assistant mode
   if (bgRestore) {
     for (let i = 0; i < wrapped.length; i++) {
       result.push(formatMarkdown(wrapped[i], bgRestore).text);
       cont.push(i > 0);
+      join.push(wrappedJoin[i]);
     }
   } else {
     for (let i = 0; i < wrapped.length; i++) {
       result.push(wrapped[i]);
       cont.push(i > 0);
+      join.push(wrappedJoin[i]);
     }
   }
 }

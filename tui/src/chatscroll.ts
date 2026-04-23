@@ -135,6 +135,7 @@ export function preserveViewportAcrossResize(state: RenderState, nextCols: numbe
 
   state.historyLines = newRender.lines;
   state.historyWrapContinuation = newRender.wrapContinuation;
+  state.historyWrapJoiners = newRender.wrapJoiners;
   state.historyMessageBounds = newRender.messageBounds;
   state.layout.totalLines = newRender.lines.length;
   state.layout.messageAreaHeight = newMessageAreaHeight;
@@ -178,6 +179,7 @@ export function preserveViewportAcrossHistoryMutation(state: RenderState, mutate
   // total-line delta adjustment on top of this semantic remap.
   state.historyLines = newRender.lines;
   state.historyWrapContinuation = newRender.wrapContinuation;
+  state.historyWrapJoiners = newRender.wrapJoiners;
   state.historyMessageBounds = newRender.messageBounds;
   state.layout.totalLines = newRender.lines.length;
 }

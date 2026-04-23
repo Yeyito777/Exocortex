@@ -158,5 +158,6 @@ function extractHistoryMessageText(state: RenderState, inner: boolean): string {
   return joinLogicalLines(
     state.historyLines, state.historyWrapContinuation,
     range.startRow, range.endRow - 1,
+    state.historyWrapJoiners,
   );
 }

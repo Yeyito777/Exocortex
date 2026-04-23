@@ -329,6 +329,7 @@ function normalizeHistorySelection(anchor: HistoryCursor, cursor: HistoryCursor)
 function extractHistoryCharwiseSelection(
   lines: string[],
   wrapCont: boolean[],
+  wrapJoiners: string[],
   start: HistoryCursor,
   end: HistoryCursor,
 ): string {
@@ -348,7 +349,7 @@ function extractHistoryCharwiseSelection(
     if (r === start.row || !wrapCont[r]) {
       result.push(text);
     } else if (text) {
-      result[result.length - 1] += ` ${text}`;
+      result[result.length - 1] += `${wrapJoiners[r] ?? " "}${text}`;
     }
   }
 
@@ -359,6 +360,7 @@ function extractHistoryCharwiseSelection(
 export function getHistoryVisualSelection(state: RenderState): string {
   const lines = state.historyLines;
   const wrapCont = state.historyWrapContinuation;
+  const wrapJoiners = state.historyWrapJoiners;
   const { start, end } = normalizeHistorySelection(state.historyVisualAnchor, state.historyCursor);
 
   let startRow = start.row;
@@ -370,10 +372,10 @@ export function getHistoryVisualSelection(state: RenderState): string {
       startRow = logicalLineRange(startRow, wrapCont).first;
       endRow = logicalLineRange(endRow, wrapCont).last;
     }
-    return joinLogicalLines(lines, wrapCont, startRow, endRow);
+    return joinLogicalLines(lines, wrapCont, startRow, endRow, wrapJoiners);
   }
 
-  return extractHistoryCharwiseSelection(lines, wrapCont, start, end);
+  return extractHistoryCharwiseSelection(lines, wrapCont, wrapJoiners, start, end);
 }
 
 // ── History cursor action dispatch (yank, visual yank, motions) ───
@@ -413,7 +415,8 @@ export function handleHistoryCursorAction(
 
 /**
  * Join visual rows into text, respecting wrap continuations.
- * Wrap-continuation rows are joined with a space (same logical line).
+ * Continuation rows reinsert their recorded wrap separator (usually a space,
+ * but empty for hard-broken tokens like long paths/URLs).
  * Non-continuation rows start a new \n-delimited line.
  */
 export function joinLogicalLines(
@@ -421,6 +424,7 @@ export function joinLogicalLines(
   wrapCont: boolean[],
   startRow: number,
   endRow: number,
+  wrapJoiners: string[] = [],
 ): string {
   const parts: string[] = [];
   for (let r = startRow; r <= endRow; r++) {
@@ -428,8 +432,8 @@ export function joinLogicalLines(
     if (r === startRow || !wrapCont[r]) {
       parts.push(text);
     } else {
-      // Continuation of previous logical line — append with space
-      parts[parts.length - 1] += (text ? " " + text : "");
+      const joiner = wrapJoiners[r] ?? " ";
+      parts[parts.length - 1] += (text ? joiner + text : "");
     }
   }
   return parts.join("\n");
