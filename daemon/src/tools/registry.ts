@@ -16,6 +16,7 @@ import { grep } from "./grep";
 import { edit } from "./edit";
 import { browse } from "./browse";
 import { context, executeContext, type ContextToolEnv } from "./context";
+import { generateImageTool } from "./generate-image";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 
 export type { ContextToolEnv };
@@ -30,19 +31,28 @@ const TOOLS: Tool[] = [
   grep,
   edit,
   browse,
+  generateImageTool,
   context,
 ];
 
 const toolMap = new Map<string, Tool>(TOOLS.map(t => [t.name, t]));
 
-export function getRegisteredTools(): Tool[] {
-  return [...TOOLS];
+function isToolAvailable(tool: Tool): boolean {
+  return tool.isAvailable?.() ?? true;
 }
 
-// ── API tool definitions (sent to Anthropic) ───────────────────────
+function getAvailableTools(): Tool[] {
+  return TOOLS.filter(isToolAvailable);
+}
+
+export function getRegisteredTools(): Tool[] {
+  return [...getAvailableTools()];
+}
+
+// ── API tool definitions (sent to Anthropic/OpenAI) ─────────────────
 
 export function getToolDefs(): { name: string; description: string; input_schema: Record<string, unknown> }[] {
-  return TOOLS.map(t => ({
+  return getAvailableTools().map(t => ({
     name: t.name,
     description: t.description,
     input_schema: t.inputSchema,
@@ -52,7 +62,7 @@ export function getToolDefs(): { name: string; description: string; input_schema
 // ── Display info (sent to TUI on connect) ──────────────────────────
 
 export function getToolDisplayInfo(): ToolDisplayInfo[] {
-  return TOOLS.map(t => ({
+  return getAvailableTools().map(t => ({
     name: t.name,
     label: t.display.label,
     color: t.display.color,
@@ -62,7 +72,7 @@ export function getToolDisplayInfo(): ToolDisplayInfo[] {
 // ── System prompt hints ────────────────────────────────────────────
 
 export function buildToolSystemHints(): string {
-  return TOOLS
+  return getAvailableTools()
     .filter(t => t.systemHint)
     .map(t => t.systemHint!)
     .join("\n");
@@ -153,6 +163,9 @@ export function buildExecutor(
     const tool = toolMap.get(call.name);
     if (!tool) {
       return { toolCallId: call.id, toolName: call.name, output: `Unknown tool: ${call.name}`, isError: true };
+    }
+    if (!isToolAvailable(tool)) {
+      return { toolCallId: call.id, toolName: call.name, output: `Tool unavailable: ${call.name}`, isError: true };
     }
     return execTool(call, tool.execute(call.input, toolContext, signal), signal);
   }));

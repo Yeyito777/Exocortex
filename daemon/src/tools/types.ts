@@ -49,6 +49,9 @@ export interface Tool {
   /** Optional system prompt fragment — appended to base system prompt. */
   systemHint?: string;
 
+  /** Optional runtime availability gate (auth, platform, env, etc.). */
+  isAvailable?: () => boolean;
+
   /** Display metadata sent to the TUI on connect. */
   display: {
     label: string;   // "Read", "$", "Grep", etc.
