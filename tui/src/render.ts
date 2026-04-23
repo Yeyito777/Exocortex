@@ -30,14 +30,14 @@ import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
 import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
 import { padRightToWidth, termWidth } from "./textwidth";
-
-// ── ANSI positioning (non-color escapes) ────────────────────────────
-
-const ESC = "\x1b[";
-const clear_line = `${ESC}2K`;
-const move_to = (row: number, col: number) => `${ESC}${row};${col}H`;
-const begin_synchronized_update = `${ESC}?2026h`;
-const end_synchronized_update = `${ESC}?2026l`;
+import {
+  appendPositionedPayload as appendFramePositionedPayload,
+  appendRowWrite as appendFrameRowWrite,
+  clearLine,
+  createFrameRows,
+  flushFrame,
+  moveTo,
+} from "./frame";
 
 interface HistoryRenderCacheEntry {
   width: number;
@@ -201,20 +201,6 @@ function renderImageIndicator(images: ImageAttachment[], width: number): string 
 
 // ── Shared render context ───────────────────────────────────────────
 
-interface ScrollRegion {
-  start: number;
-  end: number;
-}
-
-interface RenderFrame {
-  rows: string[];
-  cursor: string;
-  scrollRegion: ScrollRegion | null;
-  viewStart: number;
-}
-
-const lastRenderedFrames = new WeakMap<RenderState, RenderFrame>();
-
 /**
  * Shared rendering primitives computed once in render() and threaded
  * through extracted sub-functions. Avoids long parameter lists.
@@ -232,123 +218,12 @@ interface RenderCtx {
   bgLine: (line: string) => string;
 }
 
-function createFrameRows(totalRows: number, cl: string): string[] {
-  return Array.from({ length: totalRows }, (_, i) => move_to(i + 1, 1) + cl);
-}
-
 function appendRowWrite(ctx: RenderCtx, row: number, col: number, text: string): void {
-  if (row < 1 || row > ctx.frameRows.length) return;
-  ctx.frameRows[row - 1] += move_to(row, col) + text;
+  appendFrameRowWrite(ctx.frameRows, row, col, text);
 }
 
 function appendPositionedPayload(ctx: RenderCtx, payload: string): void {
-  const moveRe = /\x1b\[(\d+);(\d+)H/g;
-  let currentRow: number | null = null;
-  let currentCol: number | null = null;
-  let lastEnd = 0;
-
-  for (let match = moveRe.exec(payload); match !== null; match = moveRe.exec(payload)) {
-    if (currentRow !== null && currentCol !== null && currentRow >= 1 && currentRow <= ctx.frameRows.length) {
-      ctx.frameRows[currentRow - 1] += move_to(currentRow, currentCol) + payload.slice(lastEnd, match.index);
-    }
-    currentRow = Number(match[1]);
-    currentCol = Number(match[2]);
-    lastEnd = moveRe.lastIndex;
-  }
-
-  if (currentRow !== null && currentCol !== null && currentRow >= 1 && currentRow <= ctx.frameRows.length) {
-    ctx.frameRows[currentRow - 1] += move_to(currentRow, currentCol) + payload.slice(lastEnd);
-  }
-}
-
-function normalizeRowMoves(row: string | undefined): string | undefined {
-  return row?.replace(/\x1b\[\d+;(\d+)H/g, "\x1b[ROW;$1H");
-}
-
-function sameRowContent(a: string | undefined, b: string | undefined): boolean {
-  return a !== undefined && b !== undefined && normalizeRowMoves(a) === normalizeRowMoves(b);
-}
-
-function sameScrollRegion(a: ScrollRegion | null, b: ScrollRegion | null): a is ScrollRegion {
-  return !!a && !!b && a.start === b.start && a.end === b.end;
-}
-
-function scrollUpRegion(region: ScrollRegion, amount: number): string {
-  // DECSTBM + LF at the bottom margin scrolls only the message region. This is
-  // supported by the Linux console and common terminal emulators.
-  return `${ESC}${region.start};${region.end}r${move_to(region.end, 1)}${"\n".repeat(amount)}${ESC}r`;
-}
-
-function detectUpwardScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): number {
-  if (!sameScrollRegion(prevFrame.scrollRegion, nextFrame.scrollRegion)) return 0;
-  const region = nextFrame.scrollRegion;
-  if (!region) return 0;
-  const viewportShift = nextFrame.viewStart - prevFrame.viewStart;
-  if (viewportShift <= 0) return 0;
-
-  const height = region.end - region.start + 1;
-  if (height < 4) return 0;
-
-  const maxShift = Math.min(10, Math.floor(height / 2), viewportShift);
-  let bestShift = 0;
-  let bestMatches = 0;
-
-  for (let shift = viewportShift; shift <= maxShift; shift++) {
-    let matches = 0;
-    for (let row = region.start - 1; row <= region.end - 1 - shift; row++) {
-      if (sameRowContent(prevFrame.rows[row + shift], nextFrame.rows[row])) matches++;
-    }
-
-    const comparableRows = height - shift;
-    const threshold = Math.max(3, Math.floor(comparableRows * 0.6));
-    if (matches >= threshold && matches > bestMatches) {
-      bestShift = shift;
-      bestMatches = matches;
-    }
-  }
-
-  return bestShift;
-}
-
-function flushFrame(state: RenderState, nextFrame: RenderFrame): void {
-  const prevFrame = lastRenderedFrames.get(state);
-  const out: string[] = [];
-  const rowCount = Math.max(prevFrame?.rows.length ?? 0, nextFrame.rows.length);
-  const scrollShift = prevFrame ? detectUpwardScroll(prevFrame, nextFrame) : 0;
-  const scrollRegion = scrollShift > 0 ? nextFrame.scrollRegion : null;
-
-  if (scrollRegion && scrollShift > 0) {
-    out.push(scrollUpRegion(scrollRegion, scrollShift));
-  }
-
-  for (let i = 0; i < rowCount; i++) {
-    const nextRow = nextFrame.rows[i];
-    if (nextRow === undefined) continue;
-
-    let prevRow = prevFrame?.rows[i];
-    let unchanged = prevRow === nextRow;
-
-    if (scrollRegion && i >= scrollRegion.start - 1 && i <= scrollRegion.end - 1) {
-      const shiftedPrevRow = i + scrollShift <= scrollRegion.end - 1 ? prevFrame?.rows[i + scrollShift] : undefined;
-      unchanged = sameRowContent(shiftedPrevRow, nextRow);
-      prevRow = shiftedPrevRow;
-    }
-
-    if (!unchanged) out.push(nextRow);
-  }
-
-  if (out.length > 0 || !prevFrame || prevFrame.cursor !== nextFrame.cursor) {
-    out.push(nextFrame.cursor);
-  }
-
-  if (out.length > 0) {
-    // Terminals that support synchronized updates (most modern GUI emulators)
-    // will present multi-row diffs atomically. Unsupported terminals, including
-    // the Linux virtual console, ignore the DEC private mode sequences.
-    if (out.length > 2) process.stdout.write(begin_synchronized_update + out.join("") + end_synchronized_update);
-    else process.stdout.write(out.join(""));
-  }
-  lastRenderedFrames.set(state, nextFrame);
+  appendFramePositionedPayload(ctx.frameRows, payload);
 }
 
 /** Emit a sidebar column for the given screen row (if sidebar is open). */
@@ -588,7 +463,7 @@ function buildCursorPayload(
       state.sidebar.search,
       SIDEBAR_WIDTH - 1,
     );
-    out.push(move_to(state.rows, 1 + searchCursorCol));
+    out.push(moveTo(state.rows, 1 + searchCursorCol));
     out.push(cursor_bar);
     out.push(show_cursor);
     return out.join("");
@@ -596,7 +471,7 @@ function buildCursorPayload(
 
   if (state.search?.barOpen) {
     const { cursorCol: searchCursorCol } = getSearchBarViewport(state.search, chatW);
-    out.push(move_to(searchBarRow, chatCol + searchCursorCol));
+    out.push(moveTo(searchBarRow, chatCol + searchCursorCol));
     out.push(cursor_bar);
     out.push(show_cursor);
     return out.join("");
@@ -609,7 +484,7 @@ function buildCursorPayload(
 
   if (promptFocused) {
     const cursorScreenRow = firstInputRow + cursorLine;
-    out.push(move_to(cursorScreenRow, chatCol + promptLen + cursorCol));
+    out.push(moveTo(cursorScreenRow, chatCol + promptLen + cursorCol));
     // Vim: block cursor in normal mode, bar cursor in insert mode
     out.push(
       state.vim.mode === "insert" ? cursor_bar
@@ -632,7 +507,7 @@ export function render(state: RenderState): void {
 
   // App-wide background: fills empty areas and persists through resets
   const appBg = theme.appBg ?? '';
-  const cl = appBg + clear_line;      // clear_line pre-filled with app bg
+  const cl = appBg + clearLine;       // clear line pre-filled with app bg
   const bgLine = appBg
     ? (line: string) => applyLineBg(line, appBg)
     : (line: string) => line;
