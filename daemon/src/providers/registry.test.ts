@@ -12,7 +12,7 @@ describe("provider registry defaults", () => {
   });
 
   test("tracks per-model image input support", () => {
-    expect(supportsImageInputs("openai", "gpt-5.4")).toBe(true);
+    expect(supportsImageInputs("openai", "gpt-5.5")).toBe(true);
     expect(supportsImageInputs("openai", "gpt-5.3-codex-spark")).toBe(false);
     expect(supportsImageInputs("anthropic", "claude-opus-4-6")).toBe(true);
   });
