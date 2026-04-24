@@ -24,8 +24,18 @@ const IMAGE_EXTENSIONS = [
   "pbm", "pnm",
 ] as const;
 
+const AUDIO_EXTENSIONS = [
+  "mp3", "wav", "flac", "m4a", "aac", "ogg", "oga", "opus", "wma",
+  "aif", "aiff", "alac", "mid", "midi", "mov", "mp4", "m4v", "mkv",
+  "webm", "avi",
+] as const;
+
 const SHOW_EXTENSIONS = [...IMAGE_EXTENSIONS, "pdf"] as const;
 const NVIM_EXTENSIONS = ["md", "py", "txt"] as const;
+
+function terminalCommand(commandLine: string): OpenCommand {
+  return { command: "st", args: ["-e", "zsh", "-ic", commandLine] };
+}
 
 const EXTENSION_OPEN_RULES: readonly ExtensionOpenRule[] = [
   {
@@ -33,11 +43,12 @@ const EXTENSION_OPEN_RULES: readonly ExtensionOpenRule[] = [
     commandForPath: (filePath) => ({ command: "show", args: [filePath] }),
   },
   {
+    extensions: AUDIO_EXTENSIONS,
+    commandForPath: (filePath) => terminalCommand(`exec audio-play ${shellQuote(filePath)}`),
+  },
+  {
     extensions: NVIM_EXTENSIONS,
-    commandForPath: (filePath) => ({
-      command: "st",
-      args: ["-e", "zsh", "-ic", `exec nvim ${shellQuote(filePath)}`],
-    }),
+    commandForPath: (filePath) => terminalCommand(`exec nvim ${shellQuote(filePath)}`),
   },
 ];
 

@@ -110,7 +110,7 @@ export const generateImageTool: Tool = {
     },
     required: ["prompt"],
   },
-  systemHint: "When asked to generate designs from scratch (e.g. website frontends) us this tool first to get a good reference and then implement against that.",
+  systemHint: "Use image generation to create assets when you need them",
   display: {
     label: "Image",
     color: "#ffb86c",
