@@ -53,6 +53,74 @@ function conversation(id: string, sortOrder: number): ConversationSummary {
   };
 }
 
+function renderHistoryForTest(state: ReturnType<typeof createInitialState>, cols = 120): void {
+  const rendered = buildMessageLines(state, cols);
+  state.historyLines = rendered.lines;
+  state.historyWrapContinuation = rendered.wrapContinuation;
+  state.historyWrapJoiners = rendered.wrapJoiners;
+  state.historyMessageBounds = rendered.messageBounds;
+}
+
+function placeHistoryCursorOnText(state: ReturnType<typeof createInitialState>, text: string): void {
+  const row = state.historyLines.findIndex((line) => stripAnsi(line).includes(text));
+  expect(row).toBeGreaterThanOrEqual(0);
+  state.historyCursor = { row, col: stripAnsi(state.historyLines[row]).indexOf(text) };
+}
+
+describe("openable file path activation", () => {
+  test("Enter on a generated image path requests detached open", () => {
+    const path = "/home/yeyito/Workspace/Exocortex/.worktrees/image-generation-tool/config/data/instances/image-generation-tool/generated-images/example.png";
+    const state = createInitialState();
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.showToolOutput = true;
+    state.messages = [{
+      role: "assistant",
+      blocks: [{ type: "tool_result", toolCallId: "1", toolName: "generate_image", output: path, isError: false }],
+      metadata: null,
+    }];
+
+    renderHistoryForTest(state);
+    placeHistoryCursorOnText(state, "/home/yeyito");
+
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "open_target", target: path });
+  });
+
+  test("Enter on a generic openable filepath in assistant text requests detached open", () => {
+    const path = "/tmp/reference-dragon.png";
+    const state = createInitialState();
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.messages = [{
+      role: "assistant",
+      blocks: [{ type: "text", text: `The image file is: ${path}` }],
+      metadata: null,
+    }];
+
+    renderHistoryForTest(state);
+    placeHistoryCursorOnText(state, path);
+
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "open_target", target: path });
+  });
+
+  test("Enter on a link in assistant text requests detached open", () => {
+    const url = "https://example.com/reference";
+    const state = createInitialState();
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.messages = [{
+      role: "assistant",
+      blocks: [{ type: "text", text: `Reference: ${url}` }],
+      metadata: null,
+    }];
+
+    renderHistoryForTest(state);
+    placeHistoryCursorOnText(state, url);
+
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "open_target", target: url });
+  });
+});
+
 describe("image paste guard", () => {
   test("Ctrl+V reports an error instead of attaching an image for unsupported models", () => {
     const state = createInitialState();

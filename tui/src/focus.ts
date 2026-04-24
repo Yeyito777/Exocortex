@@ -36,6 +36,7 @@ import {
 } from "./sidebarsearch";
 import { pushUndo } from "./undo";
 import { placeAtVisibleBottom } from "./historycursor";
+import { openableTargetAtHistoryCursor } from "./historyopenable";
 import { dismissAutocomplete } from "./autocomplete";
 import { handleQueuePromptKey } from "./queue";
 import { handleEditMessageKey, openEditMessageModal } from "./editmessage";
@@ -66,7 +67,8 @@ export type KeyResult =
   | { type: "queue_confirm" }
   | { type: "queue_cancel" }
   | { type: "edit_message_confirm" }
-  | { type: "edit_message_cancel" };
+  | { type: "edit_message_cancel" }
+  | { type: "open_target"; target: string };
 
 // ── Key routing ─────────────────────────────────────────────────────
 
@@ -251,6 +253,11 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
       }
       return { type: "handled" };
     }
+  }
+
+  if (action === "submit" && state.panelFocus === "chat" && state.chatFocus === "history") {
+    const target = openableTargetAtHistoryCursor(state);
+    return target ? { type: "open_target", target } : { type: "handled" };
   }
 
   // ── Abort (Ctrl+Q) — always fires, regardless of focus or vim mode ─

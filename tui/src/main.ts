@@ -26,6 +26,7 @@ import { openQueuePrompt, confirmQueueMessage, cancelQueuePrompt, clearLocalQueu
 import { confirmEditMessage, cancelEditMessage } from "./editmessage";
 import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
+import { openTargetDetached } from "./openable";
 import { msUntilNextElapsedSecond } from "./time";
 import type { Event } from "./protocol";
 import { createVoiceInputController, type VoiceInputController } from "./voiceinput";
@@ -350,6 +351,9 @@ function handleKey(key: KeyEvent): void {
     }
     case "edit_message_cancel":
       cancelEditMessage(state);
+      break;
+    case "open_target":
+      openTargetDetached(result.target);
       break;
     case "quit":
       running = false;
