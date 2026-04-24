@@ -8,8 +8,15 @@ const FG_SYN_LABEL = "\x1b[38;2;80;90;105m";    // #505a69 dim label for languag
 // Gutter character constant
 export const CODE_GUTTER = "▎";
 
-// Regex for detecting opening fence line
-export const FENCE_OPEN_RE = /^ {0,3}(`{3,})(\w*)\s*$/;
+// Regex for detecting opening fence lines.
+//
+// This intentionally accepts arbitrary leading indentation instead of only the
+// CommonMark top-level 0–3 spaces. Assistant replies often put fenced blocks
+// inside list items, e.g. `   - label:` followed by `     ```bash`; because
+// this renderer does not implement full list-container parsing, accepting and
+// later stripping that container indent is the pragmatic markdown-compatible
+// behavior users expect in the TUI.
+export const FENCE_OPEN_RE = /^([ \t]*)(`{3,})[ \t]*([^`]*)[ \t]*$/;
 
 /**
  * Detects if a line was produced by renderCodeBlock
@@ -23,11 +30,28 @@ export function isCodeBlockLine(line: string): boolean {
 }
 
 /**
- * Detects closing fence (at least as many backticks as opening)
+ * Detects closing fence (at least as many backticks as opening).
+ *
+ * Like FENCE_OPEN_RE, this accepts arbitrary leading indentation so fenced
+ * blocks nested inside list items close correctly without a full markdown block
+ * parser.
  */
 export function isFenceClose(line: string, fenceLen: number): boolean {
-  const m = line.match(/^ {0,3}(`{3,})\s*$/);
+  const m = line.match(/^[ \t]*(`{3,})[ \t]*$/);
   return m != null && m[1].length >= fenceLen;
+}
+
+/**
+ * Strips up to the opening fence's indentation from a code content line.
+ * This mirrors the effect of list-container indentation for the simple fenced
+ * blocks the TUI supports.
+ */
+export function stripFenceIndent(line: string, openingIndent: string): string {
+  let i = 0;
+  while (i < openingIndent.length && i < line.length && line[i] === openingIndent[i]) {
+    i++;
+  }
+  return line.slice(i);
 }
 
 /**

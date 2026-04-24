@@ -1,16 +1,44 @@
+# Dependencies
 node_modules/
-node_modules
+
+# Build/test output
 dist/
+build/
+coverage/
+.tmp/
+tmp/
+
+# Worktrees and local runtime data
 .worktrees/
+config/data/
+config/runtime/
+config/storage/
+config/secrets/
+config/secrets
+
+# User cron jobs are local by default; keep the placeholder tracked
+config/cron/*
+!config/cron/.gitkeep
+
+# External tools are installed/generated locally; keep documentation tracked
 external-tools/*
 !external-tools/TOOL_STANDARD.md
 !external-tools/PORT_PROMPT.md
-config/secrets
-config/data
-config/runtime
-config/storage
-config/cron/*
-!config/cron/.gitkeep
-*.lock*
+
+# Environment and secrets
+.env
+.env.*
+*.env
+*.secret
+*.secrets
+
+# Logs and locks
 *.log
-config/secrets
+*.lock*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

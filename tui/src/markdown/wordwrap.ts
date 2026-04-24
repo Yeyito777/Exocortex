@@ -1,6 +1,6 @@
 import { theme } from "../theme";
 import { formatMarkdown, stripMarkdown, termWidth, sliceByWidth, isHorizontalRule } from "./formatting";
-import { FENCE_OPEN_RE, isFenceClose, renderCodeBlock } from "./codeblocks";
+import { FENCE_OPEN_RE, isFenceClose, renderCodeBlock, stripFenceIndent } from "./codeblocks";
 import { isTableLine, renderTableBlock } from "./tables";
 
 export interface MarkdownWrapResult {
@@ -78,12 +78,13 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
     // Only for assistant messages (bgRestore is the markdown-mode signal)
     const fenceMatch = bgRestore != null ? inputLines[i].match(FENCE_OPEN_RE) : null;
     if (fenceMatch) {
-      const fenceLen = fenceMatch[1].length;
-      const language = fenceMatch[2] || "";
+      const openingIndent = fenceMatch[1] || "";
+      const fenceLen = fenceMatch[2].length;
+      const language = (fenceMatch[3] || "").trim().split(/\s+/, 1)[0] || "";
       const codeLines: string[] = [];
       i++; // skip opening fence
       while (i < inputLines.length && !isFenceClose(inputLines[i], fenceLen)) {
-        codeLines.push(inputLines[i]);
+        codeLines.push(stripFenceIndent(inputLines[i], openingIndent));
         i++;
       }
       if (i < inputLines.length) i++; // skip closing fence
