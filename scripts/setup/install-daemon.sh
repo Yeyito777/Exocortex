@@ -42,6 +42,7 @@ WorkingDirectory=$REPO_DIR/daemon
 Environment=PATH=$HOME/.local/bin:$BUN_DIR:$HOME/.bun/bin:$HOME/.local/bun/bin:$HOME/.local/rust/cargo/bin:/usr/local/bin:/usr/bin
 ExecStart=$REPO_DIR/bin/exocortexd
 Restart=on-failure
+RestartPreventExitStatus=78
 RestartSec=2
 TimeoutStopSec=10
 
