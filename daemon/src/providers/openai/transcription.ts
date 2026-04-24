@@ -7,6 +7,11 @@ export interface OpenAITranscriptionSession {
   accountId: string | null;
 }
 
+export interface OpenAITranscriptionOptions {
+  filename?: string;
+  signal?: AbortSignal;
+}
+
 interface TranscriptionResponse {
   text?: unknown;
 }
@@ -14,10 +19,11 @@ interface TranscriptionResponse {
 export async function transcribeAudioWithSession(
   session: OpenAITranscriptionSession,
   audioBytes: Uint8Array,
-  mimeType: string,
+  mimeType = "audio/wav",
+  options: OpenAITranscriptionOptions = {},
 ): Promise<string> {
   const form = new FormData();
-  form.append("file", new Blob([Buffer.from(audioBytes)], { type: mimeType }), "audio.wav");
+  form.append("file", new Blob([Buffer.from(audioBytes)], { type: mimeType }), options.filename ?? "audio.wav");
 
   const headers = buildOpenAIHeaders({
     Authorization: `Bearer ${session.accessToken}`,
@@ -30,6 +36,7 @@ export async function transcribeAudioWithSession(
     method: "POST",
     headers,
     body: form,
+    signal: options.signal,
   });
 
   if (!res.ok) {
@@ -48,7 +55,8 @@ export async function transcribeAudioWithSession(
 export async function transcribeAudio(
   audioBytes: Uint8Array,
   mimeType = "audio/wav",
+  options: OpenAITranscriptionOptions = {},
 ): Promise<string> {
   const session = await getVerifiedSession();
-  return transcribeAudioWithSession(session, audioBytes, mimeType);
+  return transcribeAudioWithSession(session, audioBytes, mimeType, options);
 }

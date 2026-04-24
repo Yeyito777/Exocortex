@@ -16,7 +16,7 @@ import { getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
 import { EFFORT_LEVELS } from "./messages";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode } from "./providers/registry";
-import { transcribeAudio } from "./providers/openai/transcription";
+import { transcribeAudioBytes } from "./transcription";
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command } from "./protocol";
@@ -580,7 +580,7 @@ export function createHandler(server: DaemonServer) {
         log("info", `handler: transcribe_audio (${audioBytes.length} bytes)`);
         server.sendTo(client, { type: "ack", reqId: cmd.reqId });
 
-        transcribeAudio(audioBytes, cmd.mimeType)
+        transcribeAudioBytes(audioBytes, { mimeType: cmd.mimeType })
           .then((text) => {
             server.sendTo(client, { type: "transcription_result", reqId: cmd.reqId, text });
           })

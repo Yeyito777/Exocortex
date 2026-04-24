@@ -24,17 +24,23 @@ afterEach(() => {
 });
 
 describe("tool availability", () => {
-  test("hides generate_image when OpenAI auth is not configured", () => {
+  test("hides OpenAI-backed tools when OpenAI auth is not configured", () => {
     setOpenAIConfigured(false);
     expect(getToolDefs().some((tool) => tool.name === "generate_image")).toBe(false);
+    expect(getToolDefs().some((tool) => tool.name === "transcribe_audio")).toBe(false);
     expect(getToolDisplayInfo().some((tool) => tool.name === "generate_image")).toBe(false);
+    expect(getToolDisplayInfo().some((tool) => tool.name === "transcribe_audio")).toBe(false);
     expect(buildToolSystemHints()).not.toContain("Use image generation to create assets");
+    expect(buildToolSystemHints()).not.toContain("Use audio transcription");
   });
 
-  test("shows generate_image when OpenAI auth is configured", () => {
+  test("shows OpenAI-backed tools when OpenAI auth is configured", () => {
     setOpenAIConfigured(true);
     expect(getToolDefs().some((tool) => tool.name === "generate_image")).toBe(true);
+    expect(getToolDefs().some((tool) => tool.name === "transcribe_audio")).toBe(true);
     expect(getToolDisplayInfo().some((tool) => tool.name === "generate_image" && tool.label === "Image")).toBe(true);
+    expect(getToolDisplayInfo().some((tool) => tool.name === "transcribe_audio" && tool.label === "Transcribe" && tool.color === "#f2fa9c")).toBe(true);
     expect(buildToolSystemHints()).toContain("Use image generation to create assets when you need them");
+    expect(buildToolSystemHints()).toContain("Use audio transcription when you need to understand spoken content in an audio file.");
   });
 });

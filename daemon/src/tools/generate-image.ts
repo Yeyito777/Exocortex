@@ -2,15 +2,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { dataDir } from "@exocortex/shared/paths";
-import { loadProviderAuth, type StoredAuth } from "../store";
 import { generateImage } from "../providers/openai/image-generation";
 import type { ImageData, Tool, ToolExecutionContext, ToolResult, ToolSummary } from "./types";
+import { hasOpenAIAuth } from "./openai-auth";
 import { cap, getString, summarizeParams } from "./util";
-
-function hasOpenAIAuth(): boolean {
-  const stored = loadProviderAuth<StoredAuth>("openai");
-  return !!stored?.tokens?.accessToken || !!stored?.tokens?.refreshToken;
-}
 
 function summarize(input: Record<string, unknown>): ToolSummary {
   const prompt = getString(input, "prompt") ?? "";
