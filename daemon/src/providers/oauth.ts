@@ -17,9 +17,16 @@ export function generateState(): string {
   return base64url(randomBytes(32));
 }
 
-export function openUrlInBrowser(url: string): void {
+export async function openUrlInBrowser(url: string): Promise<boolean> {
   const openCmd = isWindows
     ? ["powershell", "-NoProfile", "-Command", `Start-Process "${url}"`]
     : ["xdg-open", url];
-  Bun.spawn(openCmd, { stdout: "ignore", stderr: "ignore" }).unref();
+
+  try {
+    const proc = Bun.spawn(openCmd, { stdout: "ignore", stderr: "ignore" });
+    const code = await proc.exited;
+    return code === 0;
+  } catch {
+    return false;
+  }
 }

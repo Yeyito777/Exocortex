@@ -609,6 +609,7 @@ export function createHandler(server: DaemonServer) {
           },
           onOpenUrl: (url) => {
             server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, openUrl: url });
+            return true;
           },
         }).then(({ status, email }) => {
           const label = email ?? provider;

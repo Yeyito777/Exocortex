@@ -78,7 +78,7 @@ export interface LoginResult {
 
 export interface LoginCallbacks {
   onProgress?: (msg: string) => void;
-  onOpenUrl?: (url: string) => void;
+  onOpenUrl?: (url: string) => boolean | void | Promise<boolean | void>;
 }
 
 export interface EnsureAuthResult {

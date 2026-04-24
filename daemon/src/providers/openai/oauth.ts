@@ -196,8 +196,13 @@ export async function runOpenAIBrowserOAuth(callbacks?: LoginCallbacks): Promise
     url.searchParams.set("codex_cli_simplified_flow", "true");
     url.searchParams.set("originator", OPENAI_ORIGINATOR);
 
+    const authUrl = url.toString();
     say("Opening browser for OpenAI authentication...");
-    openUrl(url.toString());
+    const opened = await openUrl(authUrl);
+    if (opened === false) {
+      say("Could not automatically open a browser. Paste this URL into a browser instead:");
+      say(authUrl);
+    }
 
     const { code } = await waitForCallback();
     say("Exchanging OpenAI authorization code...");

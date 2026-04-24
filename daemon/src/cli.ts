@@ -17,6 +17,10 @@ export async function handleLogin(providerArg?: string): Promise<void> {
 
   const { status, email } = await ensureAuthenticated(provider, {
     onProgress: (msg) => console.log(`  ${msg}`),
+    onOpenUrl: async (url) => {
+      const { openUrlInBrowser } = await import("./providers/oauth");
+      return openUrlInBrowser(url);
+    },
   });
 
   const name = email ?? provider;

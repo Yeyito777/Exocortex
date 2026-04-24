@@ -626,7 +626,12 @@ export function handleEvent(
         pushSystemMessage(state, event.message, theme.muted);
       }
       if (event.openUrl) {
-        Bun.spawn(["xdg-open", event.openUrl], { stdout: "ignore", stderr: "ignore" }).unref();
+        try {
+          Bun.spawn(["xdg-open", event.openUrl], { stdout: "ignore", stderr: "ignore" }).unref();
+        } catch {
+          pushSystemMessage(state, "Could not automatically open a browser. Paste this URL into a browser instead:", theme.warning);
+          pushSystemMessage(state, event.openUrl, theme.muted);
+        }
       }
       break;
     }
