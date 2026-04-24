@@ -112,6 +112,17 @@ interface PendingHeredoc {
   allowTabs: boolean;
 }
 
+interface PendingExternalCommand {
+  display: ResolvedToolDisplay;
+  state: ShellCommandContinuationState;
+}
+
+interface ShellCommandContinuationState {
+  quote: ShellQuoteState;
+  pendingHeredocs: PendingHeredoc[];
+  lineContinuation: boolean;
+}
+
 const blockRenderCache = new WeakMap<Block, BlockCacheEntry>();
 
 /** Exact mutable block content — used for cache invalidation. */
@@ -293,28 +304,116 @@ function advanceShellQuoteState(line: string, initial: ShellQuoteState = null): 
   return quote;
 }
 
-function shouldPreferLinewiseExternalRender(match: BashExternalMatch): boolean {
-  const firstMatchedLine = match.lines[match.matchLineIndex]?.slice(match.matchStart) ?? "";
-  let quote = advanceShellQuoteState(firstMatchedLine);
-  const pendingHeredocs = parseLineHeredocSpecs(firstMatchedLine.trimStart());
+function endsWithShellLineContinuation(line: string, initial: ShellQuoteState = null): boolean {
+  let quote = initial;
 
-  for (let i = match.matchLineIndex + 1; i < match.lines.length; i++) {
-    const line = match.lines[i];
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
 
-    if (pendingHeredocs.length > 0) {
-      if (isHeredocTerminatorLine(line, pendingHeredocs[0])) pendingHeredocs.shift();
+    if (quote === "'") {
+      if (ch === "'") quote = null;
       continue;
     }
 
-    if (quote) {
-      quote = advanceShellQuoteState(line, quote);
+    if (quote === '"') {
+      if (ch === "\\") {
+        if (i + 1 >= line.length) return true;
+        i++;
+        continue;
+      }
+      if (ch === '"') quote = null;
       continue;
     }
 
-    return true;
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+
+    if (ch === "\\") {
+      if (i + 1 >= line.length) return true;
+      i++;
+      continue;
+    }
   }
 
   return false;
+}
+
+function createShellCommandContinuationState(): ShellCommandContinuationState {
+  return { quote: null, pendingHeredocs: [], lineContinuation: false };
+}
+
+function hasShellCommandContinuation(state: ShellCommandContinuationState): boolean {
+  return state.lineContinuation || state.quote !== null || state.pendingHeredocs.length > 0;
+}
+
+function advanceShellCommandContinuationState(
+  line: string,
+  state: ShellCommandContinuationState = createShellCommandContinuationState(),
+): ShellCommandContinuationState {
+  const pendingHeredocs = [...state.pendingHeredocs];
+
+  if (pendingHeredocs.length > 0) {
+    if (isHeredocTerminatorLine(line, pendingHeredocs[0])) pendingHeredocs.shift();
+    return {
+      quote: state.quote,
+      pendingHeredocs,
+      lineContinuation: false,
+    };
+  }
+
+  const quote = advanceShellQuoteState(line, state.quote);
+  const lineContinuation = endsWithShellLineContinuation(line, state.quote);
+  if (state.quote === null) pendingHeredocs.push(...parseLineHeredocSpecs(line.trimStart()));
+
+  return { quote, pendingHeredocs, lineContinuation };
+}
+
+function maybeContinueExternalCommand(
+  display: ResolvedToolDisplay,
+  text: string,
+  state: ShellCommandContinuationState = createShellCommandContinuationState(),
+): PendingExternalCommand | null {
+  const nextState = advanceShellCommandContinuationState(text, state);
+  return hasShellCommandContinuation(nextState)
+    ? { display, state: nextState }
+    : null;
+}
+
+function shouldPreferLinewiseExternalRender(match: BashExternalMatch): boolean {
+  const firstMatchedLine = match.lines[match.matchLineIndex]?.slice(match.matchStart) ?? "";
+  let continuation = maybeContinueExternalCommand(match.display, firstMatchedLine);
+
+  for (let i = match.matchLineIndex + 1; i < match.lines.length; i++) {
+    if (!continuation) return true;
+    continuation = maybeContinueExternalCommand(continuation.display, match.lines[i], continuation.state);
+  }
+
+  return false;
+}
+
+function appendRenderedBashSegment(
+  logical: RenderLogicalLine[],
+  bashDisplay: ResolvedToolDisplay,
+  text: string,
+  separator: string,
+  match: BashExternalMatch | null,
+  continuation?: PendingExternalCommand,
+): PendingExternalCommand | null {
+  const startIndex = logical.length;
+
+  if (continuation) pushLogicalLine(logical, continuation.display, text, false);
+  else appendMatchedBashSegment(logical, bashDisplay, text, match);
+
+  if (separator && logical.length > startIndex) {
+    logical[logical.length - 1].text += ` ${separator}`;
+    return null;
+  }
+
+  if (continuation) return maybeContinueExternalCommand(continuation.display, text, continuation.state);
+  if (match) return maybeContinueExternalCommand(match.display, text.slice(match.matchStart));
+  return null;
 }
 
 function renderSegmentedBashLines(
@@ -380,8 +479,43 @@ function renderSegmentedBashLines(
 
   const logical: RenderLogicalLine[] = [];
   const bashDisplay = resolveToolDisplay("bash", "", toolRegistry, []);
+  let pendingExternal: PendingExternalCommand | null = null;
 
   for (const { rawLine, lineText, lineMatch, segments, matches, nonEmptySegments, hasSegmentMatch, inHeredocBody } of parsedLines) {
+    if (pendingExternal?.state.pendingHeredocs.length) {
+      pushLogicalLine(logical, pendingExternal.display, lineText, false);
+      pendingExternal = maybeContinueExternalCommand(pendingExternal.display, lineText, pendingExternal.state);
+      continue;
+    }
+
+    if (pendingExternal) {
+      const split = splitTopLevelShellSegmentsWithState(lineText, pendingExternal.state.quote);
+      let renderedFirstSegment = false;
+      let nextPending: PendingExternalCommand | null = null;
+
+      for (const segment of split.segments) {
+        const isContinuationSegment = !renderedFirstSegment;
+        const text = isContinuationSegment ? segment.text : segment.text.trim();
+        if (!isContinuationSegment && !text) continue;
+
+        const match = isContinuationSegment || !text
+          ? null
+          : resolveBashExternalMatch(text, externalToolStyles);
+        nextPending = appendRenderedBashSegment(
+          logical,
+          bashDisplay,
+          text,
+          segment.separator,
+          match,
+          isContinuationSegment ? pendingExternal : undefined,
+        );
+        renderedFirstSegment = true;
+      }
+
+      pendingExternal = nextPending;
+      continue;
+    }
+
     if (!rawLine.trim()) {
       pushLogicalLine(logical, bashDisplay, "", false);
       continue;
@@ -390,20 +524,15 @@ function renderSegmentedBashLines(
     if (!inHeredocBody && appendParentBashOptionContinuation(logical, lineText)) continue;
 
     if (inHeredocBody || lineMatch || nonEmptySegments.length <= 1 || !hasSegmentMatch) {
-      appendMatchedBashSegment(logical, bashDisplay, lineText, inHeredocBody ? null : lineMatch);
+      pendingExternal = appendRenderedBashSegment(logical, bashDisplay, lineText, "", inHeredocBody ? null : lineMatch);
       continue;
     }
 
-    for (const [index, segment] of segments.entries()) {
+    pendingExternal = null;
+    for (const [segmentIndex, segment] of segments.entries()) {
       const text = segment.text.trim();
       if (!text) continue;
-
-      const startIndex = logical.length;
-      appendMatchedBashSegment(logical, bashDisplay, text, matches[index]);
-
-      if (segment.separator && logical.length > startIndex) {
-        logical[logical.length - 1].text += ` ${segment.separator}`;
-      }
+      pendingExternal = appendRenderedBashSegment(logical, bashDisplay, text, segment.separator, matches[segmentIndex]);
     }
   }
 

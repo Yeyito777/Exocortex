@@ -15,7 +15,7 @@ import { handleMouseEvent } from "./mouse";
 import { clearPrompt } from "./promptstate";
 import { tryCommand } from "./commands";
 import { expandMacros } from "./macros";
-import { render } from "./render";
+import { render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
 import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, pushSystemMessage, resetToolOutputState } from "./state";
@@ -39,6 +39,7 @@ const RECONNECT_DELAY_MS = 1000;
 let running = true;
 let daemon: DaemonClient;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
+let renderDueAt = 0;
 let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnecting = false;
@@ -51,6 +52,7 @@ function clearRenderTimer(): void {
   if (!renderTimer) return;
   clearTimeout(renderTimer);
   renderTimer = null;
+  renderDueAt = 0;
 }
 
 function clearStreamTick(): void {
@@ -65,14 +67,36 @@ function clearReconnectTimer(): void {
   reconnectTimer = null;
 }
 
-/** Schedule a render on the next frame. Resets the live stream timer. */
-function scheduleRender(): void {
-  if (renderTimer) return;
+const FRAME_DELAY_MS = 16;
+const STREAM_CHUNK_FRAME_DELAY_MS = 50;
+
+/** Schedule a render. Shorter-delay callers can pull an existing timer earlier. */
+function scheduleRender(delayMs = FRAME_DELAY_MS): void {
+  const dueAt = Date.now() + delayMs;
+  if (renderTimer) {
+    if (dueAt >= renderDueAt) return;
+    clearTimeout(renderTimer);
+  }
+
+  renderDueAt = dueAt;
   renderTimer = setTimeout(() => {
     renderTimer = null;
+    renderDueAt = 0;
     render(state);
     resetStreamTick();
-  }, 16);
+  }, Math.max(0, dueAt - Date.now()));
+}
+
+function renderDelayForEvent(event: Event): number {
+  switch (event.type) {
+    case "text_chunk":
+    case "thinking_chunk":
+    case "streaming_sync":
+    case "tokens_update":
+      return STREAM_CHUNK_FRAME_DELAY_MS;
+    default:
+      return FRAME_DELAY_MS;
+  }
 }
 
 /** During streaming, re-render on the next exact elapsed-second boundary. */
@@ -87,6 +111,7 @@ function resetStreamTick(): void {
 // ── Event handler (daemon → TUI) ───────────────────────────────────
 
 function onDaemonEvent(event: Event): void {
+  invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
 
   // Auto-generate title for newly created conversations when requested.
@@ -106,7 +131,7 @@ function onDaemonEvent(event: Event): void {
 
   if (maybeFlushPendingAuthQueue()) return;
 
-  scheduleRender();
+  scheduleRender(renderDelayForEvent(event));
 }
 
 // ── Input handling ──────────────────────────────────────────────────

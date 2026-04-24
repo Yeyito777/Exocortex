@@ -17,7 +17,7 @@ import { getViewStart } from "./chatscroll";
 import { renderTopbar } from "./topbar";
 import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { getSidebarSearchBarViewport } from "./sidebarsearch";
-import { buildMessageLines } from "./conversation";
+import { buildMessageLines, type BuildMessageLinesResult } from "./conversation";
 import { wrappedLineOffsets } from "./promptline";
 import { computeBottomLayout, PROMPT_PREFIX_WIDTH } from "./chatlayout";
 import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar, applyLineBg } from "./terminal";
@@ -30,12 +30,81 @@ import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
 import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
 import { padRightToWidth, termWidth } from "./textwidth";
+import {
+  appendPositionedPayload as appendFramePositionedPayload,
+  appendRowWrite as appendFrameRowWrite,
+  clearLine,
+  createFrameRows,
+  flushFrame,
+  moveTo,
+} from "./frame";
 
-// ── ANSI positioning (non-color escapes) ────────────────────────────
+interface HistoryRenderCacheEntry {
+  width: number;
+  convId: string | null;
+  messagesRef: RenderState["messages"];
+  messageCount: number;
+  queuedMessagesRef: RenderState["queuedMessages"];
+  queuedMessageCount: number;
+  streamingTailRef: RenderState["streamingTailMessages"];
+  streamingTailCount: number;
+  showToolOutput: boolean;
+  toolRegistryRef: RenderState["toolRegistry"];
+  externalToolStylesRef: RenderState["externalToolStyles"];
+  themeName: string;
+  result: BuildMessageLinesResult;
+}
 
-const ESC = "\x1b[";
-const clear_line = `${ESC}2K`;
-const move_to = (row: number, col: number) => `${ESC}${row};${col}H`;
+const historyRenderCache = new WeakMap<RenderState, HistoryRenderCacheEntry>();
+
+function canReuseHistoryRender(cached: HistoryRenderCacheEntry, state: RenderState, width: number): boolean {
+  return cached.width === width
+    && cached.convId === state.convId
+    && cached.messagesRef === state.messages
+    && cached.messageCount === state.messages.length
+    && cached.queuedMessagesRef === state.queuedMessages
+    && cached.queuedMessageCount === state.queuedMessages.length
+    && cached.streamingTailRef === state.streamingTailMessages
+    && cached.streamingTailCount === state.streamingTailMessages.length
+    && cached.showToolOutput === state.showToolOutput
+    && cached.toolRegistryRef === state.toolRegistry
+    && cached.externalToolStylesRef === state.externalToolStyles
+    && cached.themeName === theme.name;
+}
+
+function getHistoryRender(state: RenderState, width: number): BuildMessageLinesResult {
+  if (state.pendingAI) {
+    historyRenderCache.delete(state);
+    return buildMessageLines(state, width);
+  }
+
+  const cached = historyRenderCache.get(state);
+  if (cached && canReuseHistoryRender(cached, state, width)) {
+    return cached.result;
+  }
+
+  const result = buildMessageLines(state, width);
+  historyRenderCache.set(state, {
+    width,
+    convId: state.convId,
+    messagesRef: state.messages,
+    messageCount: state.messages.length,
+    queuedMessagesRef: state.queuedMessages,
+    queuedMessageCount: state.queuedMessages.length,
+    streamingTailRef: state.streamingTailMessages,
+    streamingTailCount: state.streamingTailMessages.length,
+    showToolOutput: state.showToolOutput,
+    toolRegistryRef: state.toolRegistry,
+    externalToolStylesRef: state.externalToolStyles,
+    themeName: theme.name,
+    result,
+  });
+  return result;
+}
+
+export function invalidateHistoryRenderCache(state: RenderState): void {
+  historyRenderCache.delete(state);
+}
 
 // ── Main render ─────────────────────────────────────────────────────
 
@@ -137,10 +206,8 @@ function renderImageIndicator(images: ImageAttachment[], width: number): string 
  * through extracted sub-functions. Avoids long parameter lists.
  */
 interface RenderCtx {
-  /** Output buffer — sub-functions push ANSI strings here. */
-  out: string[];
-  /** Clear-line escape pre-filled with app background. */
-  cl: string;
+  /** Per-screen-row ANSI payloads. Each payload fully redraws that row. */
+  frameRows: string[];
   /** Whether the sidebar is currently open. */
   sidebarOpen: boolean;
   /** Pre-rendered sidebar rows (one per screen row). */
@@ -151,10 +218,18 @@ interface RenderCtx {
   bgLine: (line: string) => string;
 }
 
+function appendRowWrite(ctx: RenderCtx, row: number, col: number, text: string): void {
+  appendFrameRowWrite(ctx.frameRows, row, col, text);
+}
+
+function appendPositionedPayload(ctx: RenderCtx, payload: string): void {
+  appendFramePositionedPayload(ctx.frameRows, payload);
+}
+
 /** Emit a sidebar column for the given screen row (if sidebar is open). */
 function emitSidebarCol(ctx: RenderCtx, screenRow: number): void {
   if (ctx.sidebarOpen && ctx.sbRows[screenRow - 1]) {
-    ctx.out.push(ctx.sbRows[screenRow - 1]);
+    appendRowWrite(ctx, screenRow, 1, ctx.sbRows[screenRow - 1]);
   }
 }
 
@@ -183,14 +258,11 @@ function renderMessageArea(
   hlLast: number,
   searchQuery: string | null,
 ): void {
-  const { out, cl, chatCol, bgLine } = ctx;
+  const { chatCol, bgLine } = ctx;
 
   for (let i = 0; i < messageAreaHeight; i++) {
     const row = messageAreaStart + i;
-    out.push(move_to(row, 1) + cl);
     emitSidebarCol(ctx, row);
-    // Chat content at chatCol
-    out.push(move_to(row, chatCol));
     const lineIdx = viewStart + i;
     if (lineIdx < totalLines) {
       const line = allLines[lineIdx];
@@ -237,12 +309,10 @@ function renderMessageArea(
         rendered = renderLineWithCursor(rendered, vCursor.col);
       }
 
-      if (historyFocused && !inVisual && lineIdx >= hlFirst && lineIdx <= hlLast) {
-        // Normal mode: highlight the full logical line group
-        out.push(applyLineBg(rendered, theme.historyLineBg));
-      } else {
-        out.push(bgLine(rendered));
-      }
+      const finalLine = historyFocused && !inVisual && lineIdx >= hlFirst && lineIdx <= hlLast
+        ? applyLineBg(rendered, theme.historyLineBg)
+        : bgLine(rendered);
+      appendRowWrite(ctx, row, chatCol, finalLine);
     }
   }
 }
@@ -259,7 +329,7 @@ function renderAutocompletePopup(
 ): void {
   if (!state.autocomplete || state.autocomplete.matches.length === 0) return;
 
-  const { out, chatCol } = ctx;
+  const { chatCol } = ctx;
   const { matches, selection: sel } = state.autocomplete;
   const maxName = matches.reduce((m, c) => Math.max(m, termWidth(c.name)), 0);
   const maxDesc = matches.reduce((m, c) => Math.max(m, termWidth(c.desc)), 0);
@@ -286,24 +356,20 @@ function renderAutocompletePopup(
     const marker = isSelected ? "▸ " : "  ";
     const name = padRightToWidth(matches[i].name, nameWidth);
     const desc = padRightToWidth(matches[i].desc, descWidth);
-    out.push(
-      move_to(row, chatCol) + bg + theme.accent + marker
-      + theme.text + name + theme.dim + desc + theme.reset,
+    appendRowWrite(
+      ctx,
+      row,
+      chatCol,
+      bg + theme.accent + marker + theme.text + name + theme.dim + desc + theme.reset,
     );
   }
 
   // Scroll indicators when items are clipped
   if (winStart > 0) {
-    out.push(
-      move_to(topRow, chatCol + popupWidth - 2)
-      + theme.sidebarBg + theme.dim + " ▲" + theme.reset,
-    );
+    appendRowWrite(ctx, topRow, chatCol + popupWidth - 2, theme.sidebarBg + theme.dim + " ▲" + theme.reset);
   }
   if (winStart + winSize < total) {
-    out.push(
-      move_to(topRow + winSize - 1, chatCol + popupWidth - 2)
-      + theme.sidebarBg + theme.dim + " ▼" + theme.reset,
-    );
+    appendRowWrite(ctx, topRow + winSize - 1, chatCol + popupWidth - 2, theme.sidebarBg + theme.dim + " ▼" + theme.reset);
   }
 }
 
@@ -317,11 +383,10 @@ function renderSearchBar(
   const search = state.search;
   if (!search?.barOpen) return;
 
-  const { out, cl, chatCol, bgLine } = ctx;
+  const { chatCol, bgLine } = ctx;
   const { line } = getSearchBarViewport(search, chatW);
-  out.push(move_to(row, 1) + cl);
   emitSidebarCol(ctx, row);
-  out.push(move_to(row, chatCol) + bgLine(line));
+  appendRowWrite(ctx, row, chatCol, bgLine(line));
 }
 
 /**
@@ -339,7 +404,7 @@ function renderInputArea(
   newPromptScroll: number,
   promptFocused: boolean,
 ): void {
-  const { out, cl, chatCol, bgLine } = ctx;
+  const { chatCol, bgLine } = ctx;
   const promptInVisual = promptFocused
     && (state.vim.mode === "visual" || state.vim.mode === "visual-line");
   // Compute once for all visual-selection calls inside the loop
@@ -370,9 +435,8 @@ function renderInputArea(
         state.inputBuffer, inputOffsets, state.vim.mode === "visual-line");
     }
 
-    out.push(move_to(row, 1) + cl);
     emitSidebarCol(ctx, row);
-    out.push(move_to(row, chatCol) + bgLine(prompt + lineContent));
+    appendRowWrite(ctx, row, chatCol, bgLine(prompt + lineContent));
   }
 }
 
@@ -381,8 +445,7 @@ function renderInputArea(
  * focus and vim mode. Hides the cursor when history is focused (the
  * history cursor is rendered inline via reverse video).
  */
-function renderCursorPosition(
-  ctx: RenderCtx,
+function buildCursorPayload(
   state: RenderState,
   promptFocused: boolean,
   firstInputRow: number,
@@ -390,37 +453,38 @@ function renderCursorPosition(
   cursorCol: number,
   promptLen: number,
   searchBarRow: number,
+  chatCol: number,
   chatW: number,
-): void {
-  const { out, chatCol } = ctx;
+): string {
+  const out: string[] = [];
 
   if (state.panelFocus === "sidebar" && state.sidebar.search?.barOpen) {
     const { cursorCol: searchCursorCol } = getSidebarSearchBarViewport(
       state.sidebar.search,
       SIDEBAR_WIDTH - 1,
     );
-    out.push(move_to(state.rows, 1 + searchCursorCol));
+    out.push(moveTo(state.rows, 1 + searchCursorCol));
     out.push(cursor_bar);
     out.push(show_cursor);
-    return;
+    return out.join("");
   }
 
   if (state.search?.barOpen) {
     const { cursorCol: searchCursorCol } = getSearchBarViewport(state.search, chatW);
-    out.push(move_to(searchBarRow, chatCol + searchCursorCol));
+    out.push(moveTo(searchBarRow, chatCol + searchCursorCol));
     out.push(cursor_bar);
     out.push(show_cursor);
-    return;
+    return out.join("");
   }
 
   if (state.voicePrompt) {
     out.push(hide_cursor);
-    return;
+    return out.join("");
   }
 
   if (promptFocused) {
     const cursorScreenRow = firstInputRow + cursorLine;
-    out.push(move_to(cursorScreenRow, chatCol + promptLen + cursorCol));
+    out.push(moveTo(cursorScreenRow, chatCol + promptLen + cursorCol));
     // Vim: block cursor in normal mode, bar cursor in insert mode
     out.push(
       state.vim.mode === "insert" ? cursor_bar
@@ -432,17 +496,18 @@ function renderCursorPosition(
     // History cursor is rendered inline (reverse video) — hide hardware cursor
     out.push(hide_cursor);
   }
+
+  return out.join("");
 }
 
 // ── Main render ─────────────────────────────────────────────────────
 
 export function render(state: RenderState): void {
   const { cols, rows } = state;
-  const out: string[] = [];
 
   // App-wide background: fills empty areas and persists through resets
   const appBg = theme.appBg ?? '';
-  const cl = appBg + clear_line;      // clear_line pre-filled with app bg
+  const cl = appBg + clearLine;       // clear line pre-filled with app bg
   const bgLine = appBg
     ? (line: string) => applyLineBg(line, appBg)
     : (line: string) => line;
@@ -465,25 +530,23 @@ export function render(state: RenderState): void {
   }
 
   // ── Shared render context ─────────────────────────────────────
-  const ctx: RenderCtx = { out, cl, sidebarOpen, sbRows, chatCol, bgLine };
+  const ctx: RenderCtx = {
+    frameRows: createFrameRows(rows, cl),
+    sidebarOpen,
+    sbRows,
+    chatCol,
+    bgLine,
+  };
 
   // ── Top bar (row 1, full width) ───────────────────────────────
-  out.push(move_to(1, 1) + cl);
-  if (sidebarOpen) {
-    out.push(sbRows[0]);
-    out.push(move_to(1, chatCol));
-  }
-  out.push(renderTopbar(state, chatW));
+  emitSidebarCol(ctx, 1);
+  appendRowWrite(ctx, 1, chatCol, renderTopbar(state, chatW));
 
   // ── Row 2: separator ──────────────────────────────────────────
   const historyFocused = state.panelFocus === "chat" && state.chatFocus === "history";
   const historyColor = historyFocused ? theme.accent : theme.dim;
-  out.push(move_to(2, 1) + cl);
-  if (sidebarOpen) {
-    out.push(sbRows[1]);
-    out.push(move_to(2, chatCol));
-  }
-  out.push(bgLine(`${historyColor}${"─".repeat(chatW)}${theme.reset}`));
+  emitSidebarCol(ctx, 2);
+  appendRowWrite(ctx, 2, chatCol, bgLine(`${historyColor}${"─".repeat(chatW)}${theme.reset}`));
 
   // ── Input line wrapping + bottom layout ─────────────────────────
   const bottomLayout = computeBottomLayout(state, chatW, rows);
@@ -534,7 +597,7 @@ export function render(state: RenderState): void {
 
   // ── Message area (rows 3 to bottomStartRow-1) ──────────────────
   const messageAreaStart = 3;
-  const { lines: allLines, messageBounds, wrapContinuation, wrapJoiners } = buildMessageLines(state, chatW);
+  const { lines: allLines, messageBounds, wrapContinuation, wrapJoiners } = getHistoryRender(state, chatW);
   const totalLines = allLines.length;
 
   // Cache rendered lines and message bounds for history cursor navigation
@@ -603,16 +666,14 @@ export function render(state: RenderState): void {
   }
 
   // ── Separator above input ─────────────────────────────────────
-  out.push(move_to(promptSepRow, 1) + cl);
   emitSidebarCol(ctx, promptSepRow);
-  out.push(move_to(promptSepRow, chatCol) + bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
+  appendRowWrite(ctx, promptSepRow, chatCol, bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
 
   // ── Image indicator (between separator and prompt) ────────────
   if (imageIndicatorRows > 0) {
     const indRow = promptSepRow + 1;
-    out.push(move_to(indRow, 1) + cl);
     emitSidebarCol(ctx, indRow);
-    out.push(move_to(indRow, chatCol) + bgLine(renderImageIndicator(state.pendingImages, chatW)));
+    appendRowWrite(ctx, indRow, chatCol, bgLine(renderImageIndicator(state.pendingImages, chatW)));
   }
 
   // ── Input rows ────────────────────────────────────────────────
@@ -623,40 +684,49 @@ export function render(state: RenderState): void {
   );
 
   // ── Separator below input ─────────────────────────────────────
-  out.push(move_to(sepBelow, 1) + cl);
   emitSidebarCol(ctx, sepBelow);
-  out.push(move_to(sepBelow, chatCol) + bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
+  appendRowWrite(ctx, sepBelow, chatCol, bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
 
   // ── Status lines (chat area width) ─────────────────────────────
   for (let i = 0; i < slHeight; i++) {
     const row = sepBelow + 1 + i;
-    out.push(move_to(row, 1) + cl);
     emitSidebarCol(ctx, row);
-    out.push(move_to(row, chatCol) + bgLine(statusLines[i]));
+    appendRowWrite(ctx, row, chatCol, bgLine(statusLines[i]));
   }
 
   // ── Queue prompt overlay ───────────────────────────────────────
   if (state.queuePrompt) {
-    out.push(renderQueuePromptOverlay(state.queuePrompt, chatW, chatCol, bottomStartRow));
+    appendPositionedPayload(ctx, renderQueuePromptOverlay(state.queuePrompt, chatW, chatCol, bottomStartRow));
   }
 
   // ── Edit message overlay ──────────────────────────────────────
   if (state.editMessagePrompt) {
-    out.push(renderEditMessageOverlay(state.editMessagePrompt, chatW, chatCol, bottomStartRow, messageAreaHeight));
+    appendPositionedPayload(ctx, renderEditMessageOverlay(state.editMessagePrompt, chatW, chatCol, bottomStartRow, messageAreaHeight));
   }
 
-  // ── Cursor ─────────────────────────────────────────────────────
-  renderCursorPosition(
-    ctx,
-    state,
-    promptFocused,
-    firstInputRow,
-    cursorLine,
-    cursorCol,
-    PROMPT_PREFIX_WIDTH,
-    searchBarRow,
-    chatW,
-  );
+  const canScrollMessageRegion = !sidebarOpen
+    && !state.autocomplete
+    && !state.search?.barOpen
+    && !state.queuePrompt
+    && !state.editMessagePrompt
+    && messageAreaHeight > 0;
 
-  process.stdout.write(out.join(""));
+  flushFrame(state, {
+    rows: ctx.frameRows,
+    cursor: buildCursorPayload(
+      state,
+      promptFocused,
+      firstInputRow,
+      cursorLine,
+      cursorCol,
+      PROMPT_PREFIX_WIDTH,
+      searchBarRow,
+      chatCol,
+      chatW,
+    ),
+    scrollRegion: canScrollMessageRegion
+      ? { start: messageAreaStart, end: messageAreaStart + messageAreaHeight - 1 }
+      : null,
+    viewStart,
+  });
 }

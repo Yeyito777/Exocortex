@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { selectOpenAIModelsForTest } from "./models";
 
 describe("OpenAI model selection", () => {
-  test("adds gpt-5.3-codex-spark to the picker when the Codex endpoint omits it", () => {
+  test("adds the GPT-5.5 fallback while keeping the currently listed GPT-5.4 family", () => {
     const models = selectOpenAIModelsForTest([
       {
         slug: "gpt-5.4",
@@ -45,12 +45,13 @@ describe("OpenAI model selection", () => {
     ]);
 
     expect(models.map((model) => model.id)).toEqual([
+      "gpt-5.5",
       "gpt-5.4",
       "gpt-5.4-mini",
       "gpt-5.3-codex-spark",
     ]);
-    expect(models[2]?.maxContext).toBe(128_000);
-    expect(models[2]?.supportsImages).toBe(false);
+    expect(models[3]?.maxContext).toBe(128_000);
+    expect(models[3]?.supportsImages).toBe(false);
   });
 
   test("does not re-add gpt-5.3-codex-spark when the Codex endpoint explicitly hides it", () => {
@@ -65,6 +66,7 @@ describe("OpenAI model selection", () => {
     ]);
 
     expect(models.map((model) => model.id)).toEqual([
+      "gpt-5.5",
       "gpt-5.4",
       "gpt-5.4-mini",
     ]);
@@ -84,7 +86,7 @@ describe("OpenAI model selection", () => {
       },
     ]);
 
-    expect(models[0]).toEqual({
+    expect(models.find((model) => model.id === "gpt-5.3-codex-spark")).toEqual({
       id: "gpt-5.3-codex-spark",
       label: "Gpt-5.3-codex-spark",
       maxContext: 123_000,
@@ -92,5 +94,40 @@ describe("OpenAI model selection", () => {
       defaultEffort: "high",
       supportsImages: false,
     });
+  });
+
+  test("prefers the GPT-5.5 family over GPT-5.4 when both are listed, while keeping gpt-5.4-mini in the picker", () => {
+    const models = selectOpenAIModelsForTest([
+      {
+        slug: "gpt-5.4",
+        display_name: "gpt-5.4",
+        supported_in_api: true,
+        visibility: "list",
+        priority: 3,
+      },
+      {
+        slug: "gpt-5.4-mini",
+        display_name: "gpt-5.4-mini",
+        supported_in_api: true,
+        visibility: "list",
+        priority: 4,
+      },
+      {
+        slug: "gpt-5.5",
+        display_name: "gpt-5.5",
+        supported_in_api: true,
+        visibility: "list",
+        priority: 1,
+        default_reasoning_level: "medium",
+      },
+    ]);
+
+    expect(models.map((model) => model.id)).toEqual([
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex-spark",
+    ]);
+    expect(models[0]?.defaultEffort).toBe("high");
   });
 });

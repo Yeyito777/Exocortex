@@ -78,6 +78,9 @@ interface CostTotals {
  * published standard gpt-5.3-codex API rate as the closest available baseline.
  */
 const MODEL_PRICING_USD_PER_MILLION: Record<ModelId, ModelPricing> = {
+  // OpenAI has not published separate GPT-5.5 API pricing yet; mirror GPT-5.4
+  // for now so /tokens cost stays useful on the new default model.
+  "gpt-5.5": { provider: "openai", inputUsdPerMillion: 2.5, cachedInputUsdPerMillion: 0.25, outputUsdPerMillion: 15 },
   "gpt-5.4": { provider: "openai", inputUsdPerMillion: 2.5, cachedInputUsdPerMillion: 0.25, outputUsdPerMillion: 15 },
   "gpt-5.4-mini": { provider: "openai", inputUsdPerMillion: 0.75, cachedInputUsdPerMillion: 0.075, outputUsdPerMillion: 4.5 },
   "gpt-5.3-codex-spark": { provider: "openai", inputUsdPerMillion: 1.75, cachedInputUsdPerMillion: 0.175, outputUsdPerMillion: 14 },

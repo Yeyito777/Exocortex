@@ -273,6 +273,46 @@ describe("tool call rendering", () => {
     expect(rendered).not.toContain("  $ $ --- DAD ---' && whatsapp messages \"Aurelio Linero Archibold\" -n 8 --timeout 120000");
   });
 
+  test("keeps backslash-continued prompt-prefixed external tool args styled as the same tool", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "bash",
+          input: {},
+          summary: [
+            "$ gcloud compute instances create ai-assistant-demo \\",
+            "$     --zone=europe-west1-b \\",
+            "$     --machine-type=e2-micro",
+            "$ else",
+            "$   echo \"INSTANCE_EXISTS\"",
+            "$ fi",
+          ].join("\n"),
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
+      externalToolStyles: [{ cmd: "gcloud", label: "GCloud", color: "#4285f4" }],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 240).lines.map(stripAnsi);
+
+    expect(rendered).toContain("  GCloud compute instances create ai-assistant-demo \\");
+    expect(rendered).toContain("      --zone=europe-west1-b \\");
+    expect(rendered).toContain("      --machine-type=e2-micro");
+    expect(rendered).not.toContain("  $     --zone=europe-west1-b \\");
+    expect(rendered).not.toContain("  $     --machine-type=e2-micro");
+    expect(rendered).toContain("  $ else");
+    expect(rendered).toContain('  $   echo "INSTANCE_EXISTS"');
+    expect(rendered).toContain("  $ fi");
+  });
+
   test("keeps split parent bash timeout and await args attached to prompt-prefixed external tools", () => {
     const state = {
       messages: [{
