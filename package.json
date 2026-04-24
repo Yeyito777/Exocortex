@@ -3,6 +3,6 @@
   "private": true,
   "workspaces": ["shared", "daemon", "tui"],
   "scripts": {
-    "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p daemon && tsc --noEmit -p tui"
+    "typecheck": "bunx tsc --noEmit -p shared && bunx tsc --noEmit -p daemon && bunx tsc --noEmit -p tui"
   }
 }

@@ -1,7 +1,7 @@
 # Exocortex — Makefile
 #
 # Usage:
-#   make install     Install everything (deps, commands, systemd service)
+#   make install     Install daemon/TUI (deps, commands, systemd service)
 #   make uninstall   Remove commands and systemd service
 #   make windows     Cross-compile Windows executables to dist/
 
@@ -18,7 +18,7 @@ REPO_DIR  := $(CURDIR)
 
 install: check-bun deps links service
 	@printf '\n  ✓ Exocortex installed.\n'
-	@printf '    Commands: exocortexd, exocortex, exo\n'
+	@printf '    Commands: exocortexd, exocortex\n'
 	@printf '    Service:  exocortex-daemon.service (systemd user)\n\n'
 	@printf '  Next steps:\n'
 	@printf '    1. Ensure ~/.local/bin is in your PATH\n'
@@ -51,11 +51,10 @@ links:
 	@mkdir -p $(BIN_DIR)
 	@ln -sf $(REPO_DIR)/bin/exocortexd $(BIN_DIR)/exocortexd
 	@ln -sf $(REPO_DIR)/bin/exocortex  $(BIN_DIR)/exocortex
-	@ln -sf $(REPO_DIR)/bin/exo        $(BIN_DIR)/exo
-	@printf '  ✓ Linked exocortexd, exocortex, exo → $(BIN_DIR)/\n'
+	@printf '  ✓ Linked exocortexd, exocortex → $(BIN_DIR)/\n'
 
 remove-links:
-	@rm -f $(BIN_DIR)/exocortexd $(BIN_DIR)/exocortex $(BIN_DIR)/exo
+	@rm -f $(BIN_DIR)/exocortexd $(BIN_DIR)/exocortex
 	@printf '  ✓ Removed symlinks from $(BIN_DIR)/\n'
 
 # ── Systemd service ─────────────────────────────────────────────────
@@ -92,9 +91,8 @@ windows: check-bun
 	@printf '  Building Windows executables...\n'
 	@bun build --compile --target=bun-windows-x64 daemon/src/main.ts --outfile $(DIST_DIR)/exocortexd.exe
 	@bun build --compile --target=bun-windows-x64 tui/src/main.ts --outfile $(DIST_DIR)/exocortex.exe
-	@bun build --compile --target=bun-windows-x64 external-tools/exo-cli/src/main.ts --outfile $(DIST_DIR)/exo.exe
 	@cp $(REPO_DIR)/scripts/exocortex.bat $(DIST_DIR)/exocortex.bat
-	@printf '  ✓ Built dist/exocortexd.exe, dist/exocortex.exe, dist/exo.exe, dist/exocortex.bat\n'
+	@printf '  ✓ Built dist/exocortexd.exe, dist/exocortex.exe, dist/exocortex.bat\n'
 	@ls -lh $(DIST_DIR)/
 
 clean-windows:

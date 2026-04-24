@@ -33,8 +33,10 @@ make install
 
 This will:
 1. Install dependencies (`bun install`)
-2. Symlink `exocortexd`, `exocortex`, and `exo` into `~/.local/bin/`
+2. Symlink `exocortexd` and `exocortex` into `~/.local/bin/`
 3. Install and start a systemd user service for the daemon
+
+The `exo` CLI is maintained as a separate external tool and is not installed by this repository's `make install` target.
 
 > **Note:** Make sure `~/.local/bin` is in your `PATH`.
 > Add this to your `~/.bashrc` or `~/.zshrc` if it isn't:
@@ -97,7 +99,7 @@ To uninstall, just delete the folder. No registry entries or services are create
 
 #### Power Users — Build from Source
 
-If you want the full toolset (including the `exo` CLI) or want to build from a specific commit:
+If you want to build the daemon and TUI from a specific commit:
 
 **Prerequisites:**
 - **Git** — install from [git-scm.com](https://git-scm.com/download/win) or via `winget`:
@@ -121,7 +123,6 @@ make windows
 This cross-compiles standalone executables into `dist/`:
 - `exocortexd.exe` — the daemon
 - `exocortex.exe` — the TUI client
-- `exo.exe` — the CLI client (not included in the release zip)
 - `exocortex.bat` — launcher script
 
 Copy the contents of `dist/` wherever you like and follow the same authenticate & launch steps from above.
