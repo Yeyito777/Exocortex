@@ -9,9 +9,7 @@
  * that imported it sees changes immediately — no re-imports needed.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
-import { configDir } from "@exocortex/shared/paths";
+import { readExocortexConfig, updateExocortexConfig } from "@exocortex/shared/config";
 import { whale } from "./themes/whale";
 import { cerberus } from "./themes/cerberus";
 
@@ -78,26 +76,20 @@ export type ThemeName = keyof typeof themes;
 
 // ── Config persistence ─────────────────────────────────────────────
 
-function themeConfigPath(): string {
-  return join(configDir(), "theme.json");
-}
-
-/** Read the persisted theme name from ~/.config/exocortex/theme.json. */
+/** Read the persisted theme name from config/config.json. */
 function loadPersistedThemeName(): string | null {
-  try {
-    const data = JSON.parse(readFileSync(themeConfigPath(), "utf8"));
-    if (data && typeof data.theme === "string" && data.theme in themes) {
-      return data.theme;
-    }
-  } catch { /* missing or malformed — fall back to default */ }
+  const data = readExocortexConfig();
+  if (typeof data.theme === "string" && data.theme in themes) {
+    return data.theme;
+  }
   return null;
 }
 
-/** Write the theme name to ~/.config/exocortex/theme.json. */
+/** Write the theme name to config/config.json, preserving other config keys. */
 function persistThemeName(name: string): void {
-  const dir = configDir();
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(themeConfigPath(), JSON.stringify({ theme: name }, null, 2) + "\n");
+  updateExocortexConfig((config) => {
+    config.theme = name;
+  });
 }
 
 // ── Active theme ────────────────────────────────────────────────────
