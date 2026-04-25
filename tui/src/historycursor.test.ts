@@ -29,11 +29,12 @@ function setupHistoryState(): RenderState {
     },
   ];
 
-  const { lines, wrapContinuation, wrapJoiners, messageBounds } = buildMessageLines(state, 24);
+  const { lines, wrapContinuation, wrapJoiners, messageBounds, lineAnchors } = buildMessageLines(state, 24);
   state.historyLines = lines;
   state.historyWrapContinuation = wrapContinuation;
   state.historyWrapJoiners = wrapJoiners;
   state.historyMessageBounds = messageBounds;
+  state.historyLineAnchors = lineAnchors;
   state.layout.totalLines = lines.length;
   state.layout.messageAreaHeight = lines.length;
 
@@ -48,11 +49,12 @@ function setupRenderedHistory(messages: any[], width: number): RenderState {
   const state = createInitialState();
   state.messages = messages;
 
-  const { lines, wrapContinuation, wrapJoiners, messageBounds } = buildMessageLines(state, width);
+  const { lines, wrapContinuation, wrapJoiners, messageBounds, lineAnchors } = buildMessageLines(state, width);
   state.historyLines = lines;
   state.historyWrapContinuation = wrapContinuation;
   state.historyWrapJoiners = wrapJoiners;
   state.historyMessageBounds = messageBounds;
+  state.historyLineAnchors = lineAnchors;
   state.layout.totalLines = lines.length;
   state.layout.messageAreaHeight = lines.length;
   state.vim.mode = "visual";

@@ -137,6 +137,7 @@ export function preserveViewportAcrossResize(state: RenderState, nextCols: numbe
   state.historyWrapContinuation = newRender.wrapContinuation;
   state.historyWrapJoiners = newRender.wrapJoiners;
   state.historyMessageBounds = newRender.messageBounds;
+  state.historyLineAnchors = newRender.lineAnchors;
   state.layout.totalLines = newRender.lines.length;
   state.layout.messageAreaHeight = newMessageAreaHeight;
 }
@@ -181,6 +182,7 @@ export function preserveViewportAcrossHistoryMutation(state: RenderState, mutate
   state.historyWrapContinuation = newRender.wrapContinuation;
   state.historyWrapJoiners = newRender.wrapJoiners;
   state.historyMessageBounds = newRender.messageBounds;
+  state.historyLineAnchors = newRender.lineAnchors;
   state.layout.totalLines = newRender.lines.length;
 }
 

@@ -597,7 +597,7 @@ export function render(state: RenderState): void {
 
   // ── Message area (rows 3 to bottomStartRow-1) ──────────────────
   const messageAreaStart = 3;
-  const { lines: allLines, messageBounds, wrapContinuation, wrapJoiners } = getHistoryRender(state, chatW);
+  const { lines: allLines, messageBounds, wrapContinuation, wrapJoiners, lineAnchors } = getHistoryRender(state, chatW);
   const totalLines = allLines.length;
 
   // Cache rendered lines and message bounds for history cursor navigation
@@ -605,6 +605,7 @@ export function render(state: RenderState): void {
   state.historyWrapContinuation = wrapContinuation;
   state.historyWrapJoiners = wrapJoiners;
   state.historyMessageBounds = messageBounds;
+  state.historyLineAnchors = lineAnchors;
   state.historyCursor = clampCursor(state.historyCursor, allLines);
 
   // Pin scroll position: if user is scrolled up and content changes,
