@@ -31,6 +31,18 @@ export interface RenderFrame {
 
 const lastRenderedFrames = new WeakMap<object, RenderFrame>();
 
+/**
+ * Forget the retained frame for an owner so the next flush repaints every row.
+ *
+ * This is required after terminal resize/expose events: even if a row's desired
+ * payload bytes are unchanged, the terminal backing grid may contain newly
+ * exposed stale cells that only get cleared if we re-emit the row's clear-line
+ * sequence at the new geometry.
+ */
+export function invalidateFrame(owner: object): void {
+  lastRenderedFrames.delete(owner);
+}
+
 export function createFrameRows(totalRows: number, clearPayload: string): string[] {
   return Array.from({ length: totalRows }, (_, i) => moveTo(i + 1, 1) + clearPayload);
 }

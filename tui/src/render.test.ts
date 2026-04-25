@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createPendingAI } from "./messages";
 import { render, invalidateHistoryRenderCache } from "./render";
 import { createInitialState, type RenderState } from "./state";
+import { invalidateFrame } from "./frame";
 
 function captureRenderOutput(state: RenderState): string {
   let out = "";
@@ -110,6 +111,18 @@ describe("render caching and frame diffing", () => {
     const out = captureRenderOutput(state);
 
     expect(out).toBe("");
+  });
+
+  test("invalidating the retained frame forces a full-row repaint", () => {
+    const state = makeState();
+    captureRenderOutput(state); // initial full frame
+    expect(captureRenderOutput(state)).toBe(""); // unchanged frame is otherwise retained
+
+    invalidateFrame(state);
+    const out = captureRenderOutput(state);
+
+    const clearCount = (out.match(/\x1b\[2K/g) || []).length;
+    expect(clearCount).toBe(state.rows);
   });
 
   test("streaming viewport shifts use a scroll region instead of redrawing the full message area", () => {

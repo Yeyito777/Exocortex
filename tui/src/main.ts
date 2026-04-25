@@ -17,6 +17,7 @@ import { tryCommand } from "./commands";
 import { expandMacros } from "./macros";
 import { render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
+import { invalidateFrame } from "./frame";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
 import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, pushSystemMessage, resetToolOutputState } from "./state";
 import { createMessageMetadata, createPendingAI, type ImageAttachment } from "./messages";
@@ -570,6 +571,7 @@ async function main(): Promise<void> {
       process.stdout.columns || 80,
       process.stdout.rows || 24,
     );
+    invalidateFrame(state);
     scheduleRender();
   });
 
