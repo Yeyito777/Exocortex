@@ -13,6 +13,7 @@ import { splitTopLevelShellSegments, splitTopLevelShellSegmentsWithState, type S
 import { formatSize, imageLabel } from "./clipboard";
 import { theme } from "./theme";
 import { markdownWordWrap } from "./markdown";
+import { sliceByWidth, termWidth } from "./textwidth";
 
 // ── Word wrapping ───────────────────────────────────────────────────
 
@@ -24,6 +25,10 @@ export interface WrapResult {
   join: string[];
 }
 
+function firstCodePoint(text: string): string {
+  return Array.from(text)[0] ?? "";
+}
+
 export function wordWrap(text: string, width: number): WrapResult {
   if (width <= 0) return { lines: [text], cont: [false], join: [""] };
   const lines: string[] = [];
@@ -31,7 +36,7 @@ export function wordWrap(text: string, width: number): WrapResult {
   const join: string[] = [];
 
   for (const rawLine of text.split("\n")) {
-    if (rawLine.length <= width) {
+    if (termWidth(rawLine) <= width) {
       lines.push(rawLine);
       cont.push(false);
       join.push("");
@@ -40,10 +45,23 @@ export function wordWrap(text: string, width: number): WrapResult {
     let line = rawLine;
     let first = true;
     let pendingJoin = "";
-    while (line.length > width) {
-      let breakAt = line.lastIndexOf(" ", width);
-      const nextJoin = breakAt > 0 ? " " : "";
-      if (breakAt <= 0) breakAt = width;
+    while (termWidth(line) > width) {
+      const [taken] = sliceByWidth(line, width);
+      let breakAt = taken.lastIndexOf(" ");
+      let nextJoin = breakAt > 0 ? " " : "";
+      if (breakAt <= 0 && taken.length > 0 && line[taken.length] === " ") {
+        // Match the previous ASCII wrapper's behavior when the best break is a
+        // space exactly at the wrap boundary. The space is omitted visually but
+        // preserved as the copy/yank joiner for the continuation row.
+        breakAt = taken.length;
+        nextJoin = " ";
+      }
+      if (breakAt <= 0) {
+        // If the first grapheme is wider than the wrap width, sliceByWidth()
+        // returns an empty prefix. Still consume one codepoint so wrapping makes
+        // progress; extremely narrow terminals may display that glyph as wide.
+        breakAt = taken.length > 0 ? taken.length : firstCodePoint(line).length;
+      }
       lines.push(line.slice(0, breakAt));
       cont.push(!first);
       join.push(first ? "" : pendingJoin);
@@ -719,7 +737,7 @@ function renderUserMessage(text: string, cols: number, images?: ImageAttachment[
   // Size bubble to the longest line
   const bubbleWidth = Math.min(
     maxBubbleWidth,
-    Math.max(...allContentLines.map(l => l.length)) + padding * 2,
+    Math.max(...allContentLines.map(l => termWidth(l))) + padding * 2,
   );
   const inner = bubbleWidth - padding * 2;
 
@@ -731,7 +749,7 @@ function renderUserMessage(text: string, cols: number, images?: ImageAttachment[
 
   /** Append a right-aligned bubble line with optional style prefix. */
   const pushBubbleLine = (lineText: string, isCont: boolean, joiner = "", style?: string) => {
-    const padLeft = " ".repeat(Math.max(0, inner - lineText.length) + padding);
+    const padLeft = " ".repeat(Math.max(0, inner - termWidth(lineText)) + padding);
     const styledText = style ? `${style}${lineText}${theme.reset}${theme.userBg}` : lineText;
     lines.push(`${screenOffset}${theme.userBg}${padLeft}${styledText}${padRight}${theme.reset}`);
     cont.push(isCont);
@@ -942,7 +960,7 @@ export function buildMessageLines(
       const { lines: wrapped } = wordWrap(sanitizeUntrustedText(msg.text), textWidth > 0 ? textWidth : 1);
       for (let i = 0; i < wrapped.length; i++) {
         const sl = wrapped[i];
-        const pad = " ".repeat(Math.max(0, textWidth - sl.length));
+        const pad = " ".repeat(Math.max(0, textWidth - termWidth(sl)));
         pushLine(`${theme.accent}│${theme.reset} ${theme.dim}${sl}${pad}${theme.reset} ${theme.accent}│${theme.reset}`, msg, "system_instructions_content", i);
       }
       const contentEnd = lines.length;

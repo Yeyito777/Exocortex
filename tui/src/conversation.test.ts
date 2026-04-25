@@ -1,12 +1,53 @@
 import { describe, expect, test } from "bun:test";
-import { buildMessageLines } from "./conversation";
+import { buildMessageLines, wordWrap } from "./conversation";
 import { theme } from "./theme";
+import { visibleLength } from "./textwidth";
 
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+describe("plain word wrapping", () => {
+  test("wraps by terminal columns rather than UTF-16 length", () => {
+    const wrapped = wordWrap("abc 重音テト音声ライブラリー def", 14);
+
+    expect(wrapped.lines.length).toBeGreaterThan(1);
+    expect(wrapped.lines.every(line => visibleLength(line) <= 14)).toBe(true);
+  });
+});
+
 describe("tool call rendering", () => {
+  test("wraps wide-character bash tool calls to the chat width", () => {
+    const availableWidth = 162;
+    const summary = [
+      "cd /home/yeyito/Workspace/research/teto-tts/teto-tts-v3 && OTO=voicebanks/english/重音テト音声ライブラリー/重音テト英語音源/oto.ini; for a in 'E s' 'e s' 's t' 's t-' 'sT' 'st' 't -' 'E -' 'I s' 'i s' 's t' 'u' 'U -' 'n i' 'i t' 'u'; do echo --$a; grep -a \\\"=$a\\\" \\\"$OTO\\\" | head -3; done --timeout 10000",
+    ].join("\n");
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "bash",
+          input: {},
+          summary,
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, availableWidth).lines;
+
+    expect(rendered.length).toBeGreaterThan(1);
+    expect(rendered.every(line => visibleLength(line) <= availableWidth)).toBe(true);
+  });
+
   test("preserves multiline bash prelude while styling the external tool line", () => {
     const state = {
       messages: [{
