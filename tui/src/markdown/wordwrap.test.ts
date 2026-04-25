@@ -31,4 +31,17 @@ describe("markdown fenced code block wrapping", () => {
       "▎ router",
     ]);
   });
+
+  test("marks hard-wrapped code lines as continuations", () => {
+    const path = "/home/yeyito/Workspace/research/teto-tts/teto-tts-v3/outputs/teto_normal_kasane_teto_teto_dayo.wav";
+    const result = markdownWordWrap(["```text", path, "```"].join("\n"), 60, "\x1b[0m");
+
+    expect(result.lines.map(stripAnsi)).toEqual([
+      "▎ text",
+      "▎ /home/yeyito/Workspace/research/teto-tts/teto-tts-v3/outpu",
+      "▎ ts/teto_normal_kasane_teto_teto_dayo.wav",
+    ]);
+    expect(result.cont).toEqual([false, false, true]);
+    expect(result.join).toEqual(["", "", ""]);
+  });
 });

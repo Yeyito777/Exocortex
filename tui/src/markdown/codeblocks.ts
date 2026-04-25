@@ -1,6 +1,14 @@
 import { highlightLine, isLanguageSupported, FG_WHITE } from "./highlight";
 import { termWidth, hardBreak } from "./formatting";
 
+export interface CodeBlockRenderResult {
+  lines: string[];
+  /** true for visual lines that are continuations of the previous code line. */
+  cont: boolean[];
+  /** separator to reinsert before each continuation line when reconstructing text. */
+  join: string[];
+}
+
 // ANSI color codes (syntax-highlight-specific, not in theme)
 const FG_SYN_GUTTER = "\x1b[38;2;55;65;80m";   // #374150 gutter char color
 const FG_SYN_LABEL = "\x1b[38;2;80;90;105m";    // #505a69 dim label for language name
@@ -55,42 +63,61 @@ export function stripFenceIndent(line: string, openingIndent: string): string {
 }
 
 /**
- * Renders code block lines with syntax highlighting and gutter
+ * Renders code block lines with syntax highlighting, gutter, and wrap metadata.
+ */
+export function renderCodeBlockWrapped(
+  codeLines: string[],
+  language: string,
+  maxWidth: number
+): CodeBlockRenderResult {
+  const lines: string[] = [];
+  const cont: boolean[] = [];
+  const join: string[] = [];
+  const hasLang = language && isLanguageSupported(language);
+  const displayLang = language || "";
+  const gutterPrefix = FG_SYN_GUTTER + CODE_GUTTER + " ";
+  const codeWidth = Math.max(1, maxWidth - 2);
+
+  const push = (line: string, isContinuation: boolean) => {
+    lines.push(line);
+    cont.push(isContinuation);
+    join.push("");
+  };
+
+  // Language label line (if language specified)
+  if (displayLang) {
+    push(gutterPrefix + FG_SYN_LABEL + displayLang, false);
+  }
+
+  // Code content lines
+  for (const line of codeLines) {
+    if (line === "") {
+      push(gutterPrefix, false);
+      continue;
+    }
+
+    const chunks = breakCodeLine(line, codeWidth);
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const rendered = hasLang
+        ? gutterPrefix + highlightLine(chunk, language)
+        : gutterPrefix + FG_WHITE + chunk;
+      push(rendered, i > 0);
+    }
+  }
+
+  return { lines, cont, join };
+}
+
+/**
+ * Renders code block lines with syntax highlighting and gutter.
  */
 export function renderCodeBlock(
   codeLines: string[],
   language: string,
   maxWidth: number
 ): string[] {
-  const result: string[] = [];
-  const hasLang = language && isLanguageSupported(language);
-  const displayLang = language || "";
-  const gutterPrefix = FG_SYN_GUTTER + CODE_GUTTER + " ";
-  const codeWidth = Math.max(1, maxWidth - 2);
-
-  // Language label line (if language specified)
-  if (displayLang) {
-    result.push(gutterPrefix + FG_SYN_LABEL + displayLang);
-  }
-
-  // Code content lines
-  for (const line of codeLines) {
-    if (line === "") {
-      result.push(gutterPrefix);
-      continue;
-    }
-
-    const chunks = breakCodeLine(line, codeWidth);
-    for (const chunk of chunks) {
-      if (hasLang) {
-        result.push(gutterPrefix + highlightLine(chunk, language));
-      } else {
-        result.push(gutterPrefix + FG_WHITE + chunk);
-      }
-    }
-  }
-
-  return result;
+  return renderCodeBlockWrapped(codeLines, language, maxWidth).lines;
 }
 
 /**

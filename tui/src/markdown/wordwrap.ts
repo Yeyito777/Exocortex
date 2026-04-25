@@ -1,6 +1,6 @@
 import { theme } from "../theme";
 import { formatMarkdown, stripMarkdown, termWidth, sliceByWidth, isHorizontalRule } from "./formatting";
-import { FENCE_OPEN_RE, isFenceClose, renderCodeBlock, stripFenceIndent } from "./codeblocks";
+import { FENCE_OPEN_RE, isFenceClose, renderCodeBlockWrapped, stripFenceIndent } from "./codeblocks";
 import { isTableLine, renderTableBlock } from "./tables";
 
 export interface MarkdownWrapResult {
@@ -88,8 +88,10 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
         i++;
       }
       if (i < inputLines.length) i++; // skip closing fence
-      const rendered = renderCodeBlock(codeLines, language, width);
-      pushStandaloneLines(result, cont, join, rendered);
+      const rendered = renderCodeBlockWrapped(codeLines, language, width);
+      result.push(...rendered.lines);
+      cont.push(...rendered.cont);
+      join.push(...rendered.join);
       continue;
     }
 
