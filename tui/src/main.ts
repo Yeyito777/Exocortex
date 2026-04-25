@@ -71,6 +71,16 @@ function clearReconnectTimer(): void {
 const FRAME_DELAY_MS = 16;
 const STREAM_CHUNK_FRAME_DELAY_MS = 50;
 
+function performRender(): void {
+  render(state);
+  resetStreamTick();
+}
+
+function renderImmediately(): void {
+  clearRenderTimer();
+  performRender();
+}
+
 /** Schedule a render. Shorter-delay callers can pull an existing timer earlier. */
 function scheduleRender(delayMs = FRAME_DELAY_MS): void {
   const dueAt = Date.now() + delayMs;
@@ -83,8 +93,7 @@ function scheduleRender(delayMs = FRAME_DELAY_MS): void {
   renderTimer = setTimeout(() => {
     renderTimer = null;
     renderDueAt = 0;
-    render(state);
-    resetStreamTick();
+    performRender();
   }, Math.max(0, dueAt - Date.now()));
 }
 
@@ -572,7 +581,10 @@ async function main(): Promise<void> {
       process.stdout.rows || 24,
     );
     invalidateFrame(state);
-    scheduleRender();
+    // Resize/expose repaints should not wait for the normal frame throttle:
+    // the terminal may have just revealed stale cells from the previous window
+    // geometry, so repaint the invalidated full frame immediately.
+    renderImmediately();
   });
 
   render(state);
