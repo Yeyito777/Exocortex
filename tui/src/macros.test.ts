@@ -13,6 +13,17 @@ describe("macro expansion", () => {
   test("/xenv expands to the xenv test loop prompt", () => {
     expect(expandMacros("/xenv")).toBe("You're going to test this in a xenv and go into a loop: build → test in xenv → fix anything that's wrong → ... until it's complete");
   });
+
+  test("/exocortex exposes quality task macros", () => {
+    expect(getMacroArgs()["/exocortex"]?.map(arg => arg.name)).toEqual(["tui-quality", "daemon-quality"]);
+  });
+
+  test("/exocortex quality task macros expand to scoped worktree prompts", () => {
+    expect(expandMacros("/exocortex tui-quality")).toContain("Check the code quality of exocortex's tui.");
+    expect(expandMacros("/exocortex daemon-quality")).toContain("Check the code quality of exocortex's daemon.");
+    expect(expandMacros("/exocortex tui-quality")).toContain("./scripts/dev/create-worktree <name>");
+    expect(expandMacros("/exocortex daemon-quality")).toContain("./scripts/dev/clean-worktree <name-or-path>");
+  });
 });
 
 describe("tool macros", () => {
