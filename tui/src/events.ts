@@ -76,6 +76,50 @@ function blocksMatch(a: Block, b: Block): boolean {
   }
 }
 
+function snapshotBlockAtLeastAsComplete(local: Block, snapshot: Block): boolean {
+  if (local.type !== snapshot.type) return false;
+  switch (local.type) {
+    case "text":
+    case "thinking":
+      return snapshot.type === local.type && snapshot.text.startsWith(local.text);
+    case "tool_call":
+      // Tool-call summaries/inputs may be normalized by the daemon, but the id
+      // is stable. A matching daemon tool call is at least as authoritative as
+      // the local one.
+      return snapshot.type === "tool_call" && local.toolCallId === snapshot.toolCallId;
+    case "tool_result":
+      // Do not replace a full local tool result with a compact empty one. Do
+      // allow the daemon snapshot to fill in output that the local TUI lacks.
+      return snapshot.type === "tool_result"
+        && local.toolCallId === snapshot.toolCallId
+        && local.isError === snapshot.isError
+        && (local.output === "" || snapshot.output === local.output || snapshot.output.startsWith(local.output));
+  }
+}
+
+function snapshotStrictlyExtendsLocal(localBlocks: Block[], snapshotBlocks: Block[]): boolean {
+  if (snapshotBlocks.length < localBlocks.length) return false;
+
+  let strictlyNewer = snapshotBlocks.length > localBlocks.length;
+  for (let i = 0; i < localBlocks.length; i++) {
+    const local = localBlocks[i];
+    const snapshot = snapshotBlocks[i];
+    if (!snapshotBlockAtLeastAsComplete(local, snapshot)) return false;
+    if ((local.type === "text" || local.type === "thinking")
+        && snapshot.type === local.type
+        && snapshot.text.length > local.text.length) {
+      strictlyNewer = true;
+    }
+    if (local.type === "tool_result"
+        && snapshot.type === "tool_result"
+        && snapshot.output.length > local.output.length) {
+      strictlyNewer = true;
+    }
+  }
+
+  return strictlyNewer;
+}
+
 function subtractLoadedAssistantPrefix(localBlocks: Block[], entries: DisplayEntry[]): Block[] {
   if (localBlocks.length === 0) return [];
   let loadedAiBlocks: Block[] | null = null;
@@ -243,8 +287,15 @@ export function handleEvent(
       // Only replace blocks when we do not already have live local state. A
       // same-conversation reload can deliver an older snapshot after newer local
       // chunks were already rendered; clobbering with that stale snapshot makes
-      // already-streamed text disappear until completion.
-      if (event.blocks && (state.pendingAIHydratedFromSnapshot || pending.blocks.length === 0)) {
+      // already-streamed text disappear until completion. The exception is a
+      // compatible strict extension: if the daemon snapshot contains all local
+      // blocks plus more (commonly a missed just-started tool_call), use it to
+      // repair the live tail.
+      if (event.blocks && (
+        state.pendingAIHydratedFromSnapshot
+        || pending.blocks.length === 0
+        || snapshotStrictlyExtendsLocal(pending.blocks, event.blocks)
+      )) {
         pending.blocks = [...event.blocks];
         state.pendingAIHydratedFromSnapshot = true;
       }
@@ -491,8 +542,17 @@ export function handleEvent(
       pushDisplayEntries(state, event.entries);
 
       if (preservedPendingAI) {
-        state.pendingAI = preservedPendingAI;
-        state.pendingAIHydratedFromSnapshot = false;
+        if (event.pendingAI && snapshotStrictlyExtendsLocal(preservedPendingAI.blocks, event.pendingAI.blocks)) {
+          // Same-conversation reloads usually preserve local live state to avoid
+          // clobbering newer chunks with an older snapshot. However, the daemon
+          // snapshot may contain a just-started tool call that this TUI missed
+          // (for example while the client was between load and subscribe). In
+          // that compatible-extension case, adopt the daemon's fuller snapshot.
+          hydratePendingAIFromSnapshot(state, event.pendingAI);
+        } else {
+          state.pendingAI = preservedPendingAI;
+          state.pendingAIHydratedFromSnapshot = false;
+        }
       } else if (event.pendingAI) {
         hydratePendingAIFromSnapshot(state, event.pendingAI);
       }

@@ -195,6 +195,79 @@ describe("streaming system-message tail", () => {
     });
   });
 
+  test("same-conversation reload adopts a daemon snapshot that adds a missed in-progress tool call", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages.push({ role: "user", text: "hello", metadata: null });
+    state.pendingAI = createPendingAI(1, "gpt-5.4");
+    state.pendingAI.blocks.push(
+      { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "pwd" }, summary: "pwd" },
+      { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
+      { type: "text", text: "checking the long command" },
+    );
+    state.pendingAI.metadata!.tokens = 10;
+
+    const daemon = { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} };
+    const snapshotBlocks = [
+      { type: "text" as const, text: "checking the long command" },
+      { type: "tool_call" as const, toolCallId: "call-2", toolName: "bash", input: { command: "sleep 60" }, summary: "sleep 60" },
+    ];
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "medium",
+      fastMode: false,
+      entries: [
+        { type: "user", text: "hello" },
+        {
+          type: "ai",
+          blocks: [
+            { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "pwd" }, summary: "pwd" },
+            { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
+          ],
+          metadata: null,
+        },
+      ],
+      pendingAI: {
+        blocks: snapshotBlocks,
+        metadata: { startedAt: 1, endedAt: null, model: "gpt-5.4", tokens: 12 },
+      },
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    handleEvent({
+      type: "streaming_started",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      startedAt: 1,
+      blocks: snapshotBlocks,
+      tokens: 12,
+    }, state, daemon);
+
+    expect(state.messages).toMatchObject([
+      { role: "user", text: "hello" },
+      {
+        role: "assistant",
+        blocks: [
+          { type: "tool_call", toolCallId: "call-1" },
+          { type: "tool_result", toolCallId: "call-1", isError: false },
+        ],
+      },
+    ]);
+    expect(state.pendingAI).toMatchObject({
+      blocks: [
+        { type: "text", text: "checking the long command" },
+        { type: "tool_call", toolCallId: "call-2", toolName: "bash", summary: "sleep 60" },
+      ],
+      metadata: { startedAt: 1, endedAt: null, model: "gpt-5.4", tokens: 12 },
+    });
+  });
+
   test("same-conversation reload keeps only the newer local live tail instead of duplicating completed rounds", () => {
     const state = createInitialState();
     state.convId = "conv-1";
