@@ -225,9 +225,10 @@ describe("rewriteExternalToolShellCommand", () => {
       .toBe("discord dm 123 --send '$HOME' | tee /tmp/out.txt");
   });
 
-  test("leaves unsupported redirects alone within a segment", () => {
+  test("rewrites literals before trailing redirects", () => {
     const command = 'discord dm 123 --send "$HOME" >/tmp/out.txt';
-    expect(rewriteExternalToolShellCommand(command, [discord])).toBe(command);
+    expect(rewriteExternalToolShellCommand(command, [discord]))
+      .toBe("discord dm 123 --send '$HOME' >/tmp/out.txt");
   });
 
   test("leaves unconfigured subcommands alone", () => {
@@ -238,5 +239,76 @@ describe("rewriteExternalToolShellCommand", () => {
   test("leaves flag rules alone when the flag has no value", () => {
     const command = 'discord dm 123 --send --file note.txt';
     expect(rewriteExternalToolShellCommand(command, [discord])).toBe(command);
+  });
+
+  const exo = makeTool({
+    manifest: {
+      name: "exo",
+      bin: "./bin/exo",
+      display: { label: "Exocortex", color: "#1d9bf0" },
+      shell: {
+        literalArgs: [
+          {
+            subcommand: "send",
+            kind: "positional",
+            index: 0,
+            flagsWithValues: ["-c", "--conv", "--provider", "--model", "--instance", "--timeout", "--notify-parent", "--system"],
+          },
+          {
+            subcommand: "llm",
+            kind: "positional",
+            index: 0,
+            flagsWithValues: ["-c", "--conv", "--provider", "--model", "--instance", "--timeout", "--notify-parent", "--system"],
+          },
+          { subcommand: "llm", kind: "flag", flag: "--system" },
+          { subcommand: "queue", kind: "positional", index: 1, flagsWithValues: ["-c", "--conv", "--provider", "--model", "--instance", "--timeout", "--notify-parent", "--system"] },
+          { subcommand: "rename", kind: "positional", index: 1, flagsWithValues: ["-c", "--conv", "--provider", "--model", "--instance", "--timeout", "--notify-parent", "--system"] },
+        ],
+      },
+    },
+    toolDir: "/tmp/tools/exo",
+  });
+
+  test("rewrites configured positional literal arguments before later flags", () => {
+    const command = 'exo send "prompt with `date` and $HOME" -c abc --timeout 1800';
+    expect(rewriteExternalToolShellCommand(command, [exo]))
+      .toBe("exo send 'prompt with `date` and $HOME' -c abc --timeout 1800");
+  });
+
+  test("rewrites eligible tool invocations after newline separators", () => {
+    const command = 'echo setup\nexo send "prompt with `date` and $HOME" -c abc --timeout 1800';
+    expect(rewriteExternalToolShellCommand(command, [exo]))
+      .toBe("echo setup\nexo send 'prompt with `date` and $HOME' -c abc --timeout 1800");
+  });
+
+  test("rewrites configured positional literal arguments before trailing redirects", () => {
+    const command = 'exo send "prompt with `date` and $HOME" --timeout 1800 >/tmp/out.txt 2>/tmp/err.txt';
+    expect(rewriteExternalToolShellCommand(command, [exo]))
+      .toBe("exo send 'prompt with `date` and $HOME' --timeout 1800 >/tmp/out.txt 2>/tmp/err.txt");
+  });
+
+  test("skips configured flag values while finding positional literals", () => {
+    const command = 'exo send --timeout 1800 --json "prompt with $HOME"';
+    expect(rewriteExternalToolShellCommand(command, [exo]))
+      .toBe("exo send --timeout 1800 --json 'prompt with $HOME'");
+  });
+
+  test("rewrites multiple literal arguments in one command segment", () => {
+    const command = 'exo llm "user $HOME" --system "system `date`" --haiku';
+    expect(rewriteExternalToolShellCommand(command, [exo]))
+      .toBe("exo llm 'user $HOME' --system 'system `date`' --haiku");
+  });
+
+  test("rewrites inline literal flag assignments alongside positional literals", () => {
+    const command = 'exo llm "user $HOME" --system="system $PATH"';
+    expect(rewriteExternalToolShellCommand(command, [exo]))
+      .toBe("exo llm 'user $HOME' --system='system $PATH'");
+  });
+
+  test("rewrites later positional literals for queue and rename", () => {
+    expect(rewriteExternalToolShellCommand('exo queue abc "queued $HOME" --end', [exo]))
+      .toBe("exo queue abc 'queued $HOME' --end");
+    expect(rewriteExternalToolShellCommand('exo rename abc "title `date`"', [exo]))
+      .toBe("exo rename abc 'title `date`'");
   });
 });
