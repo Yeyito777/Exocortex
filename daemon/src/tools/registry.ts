@@ -159,7 +159,7 @@ export function buildExecutor(
     // Bash tool — use backgroundable executor so long-running commands
     // are detached after TOOL_BACKGROUND_SECONDS instead of blocking.
     if (call.name === "bash") {
-      return execTool(call, executeBashBackgroundable(call.input, signal, TOOL_BACKGROUND_SECONDS * 1000), signal);
+      return execTool(call, executeBashBackgroundable(call.input, signal, TOOL_BACKGROUND_SECONDS * 1000, toolContext), signal);
     }
 
     const tool = toolMap.get(call.name);

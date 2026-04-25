@@ -8,11 +8,13 @@ import {
   readOpenAIEventsForTest,
   streamMessageWithSession,
 } from "./api";
+import { clearCloudflareCookiesForTest } from "./cookies";
 
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  clearCloudflareCookiesForTest();
 });
 
 describe("OpenAI replay input", () => {
@@ -154,7 +156,58 @@ describe("OpenAI replay input", () => {
     const headers = new Headers(fetchInit?.headers);
     expect(headers.get("session_id")).toBe("conv-1");
     expect(headers.get("x-client-request-id")).toBe("conv-1");
+    expect(headers.get("x-codex-window-id")).toBe("conv-1:0");
     expect(headers.get("ChatGPT-Account-ID")).toBe("acct_123");
+    expect(headers.get("User-Agent")).toStartWith("codex_cli_rs/");
+    expect(headers.get("Content-Encoding")).toBe("zstd");
+  });
+
+  test("stores Cloudflare cookies and reuses them on the next OpenAI request", async () => {
+    const seenCookies: Array<string | null> = [];
+
+    globalThis.fetch = mock((_input: RequestInfo | URL, init?: RequestInit) => {
+      seenCookies.push(new Headers(init?.headers).get("Cookie"));
+      return Promise.resolve(new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode([
+            'data: {"type":"response.created","response":{"id":"resp_1"}}',
+            'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1},"output":[]}}',
+            "data: [DONE]",
+            "",
+          ].join("\n\n")));
+          controller.close();
+        },
+      }), {
+        status: 200,
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Set-Cookie": "__cf_bm=abc123; Path=/; Secure; HttpOnly",
+        },
+      }));
+    }) as unknown as typeof fetch;
+
+    const callbacks = {
+      onText: () => {},
+      onThinking: () => {},
+    };
+
+    await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [{ role: "user", content: "hello" }],
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-1" },
+    );
+
+    await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [{ role: "user", content: "again" }],
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-2" },
+    );
+
+    expect(seenCookies).toEqual([null, "__cf_bm=abc123"]);
   });
 
   test("does not send previous_response_id to the codex backend", () => {

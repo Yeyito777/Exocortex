@@ -15,7 +15,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { buildHistoryTurnMap, createMessageMetadata, isHistoryMessage, isToolResultMessage, type StoredMessage, type ApiContentBlock, type ModelId } from "./messages";
+import { buildHistoryTurnMap, createMessageMetadata, isHistoryMessage, isToolResultMessage, type StoredMessage, type ApiContentBlock, type ModelId, type Block } from "./messages";
 import type { ContentBlock as ProviderContentBlock } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ToolExecutionContext } from "./tools/types";
@@ -142,6 +142,17 @@ function isPersistableThinkingBlock(block: Extract<ApiContentBlock, { type: "thi
 
 // ── Orchestrate assistant turns ────────────────────────────────────
 
+export interface AssistantTurnOutcome {
+  ok: boolean;
+  blocks: Block[];
+  tokens: number;
+  durationMs: number;
+  endedAt: number;
+  error?: string;
+  aborted?: boolean;
+  watchdog?: boolean;
+}
+
 interface AssistantTurnOptions {
   userMessage?: {
     text: string;
@@ -158,8 +169,8 @@ export async function orchestrateSendMessage(
   startedAt: number,
   ext: OrchestrationCallbacks,
   images?: ImageAttachment[],
-): Promise<void> {
-  await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext, {
+): Promise<AssistantTurnOutcome> {
+  return await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext, {
     userMessage: { text, images },
   });
 }
@@ -171,8 +182,8 @@ export async function orchestrateReplayConversation(
   convId: string,
   startedAt: number,
   ext: OrchestrationCallbacks,
-): Promise<void> {
-  await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext);
+): Promise<AssistantTurnOutcome> {
+  return await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext);
 }
 
 async function orchestrateAssistantTurn(
@@ -183,20 +194,30 @@ async function orchestrateAssistantTurn(
   startedAt: number,
   ext: OrchestrationCallbacks,
   options: AssistantTurnOptions = {},
-): Promise<void> {
+): Promise<AssistantTurnOutcome> {
   const conv = convStore.get(convId);
   if (!conv) {
-    if (client) server.sendTo(client, { type: "error", reqId, convId, message: `Conversation ${convId} not found` });
-    return;
+    const message = `Conversation ${convId} not found`;
+    if (client) server.sendTo(client, { type: "error", reqId, convId, message });
+    return { ok: false, blocks: [], tokens: 0, durationMs: 0, endedAt: Date.now(), error: message };
   }
 
   const { userMessage } = options;
   const replaying = !userMessage;
 
-  const reportSendError = (message: string): void => {
+  const buildErrorOutcome = (message: string): AssistantTurnOutcome => ({
+    ok: false,
+    blocks: [],
+    tokens: 0,
+    durationMs: Date.now() - startedAt,
+    endedAt: Date.now(),
+    error: message,
+  });
+
+  const reportSendError = (message: string): AssistantTurnOutcome => {
     if (client) {
       server.sendTo(client, { type: "error", reqId, convId, message });
-      return;
+      return buildErrorOutcome(message);
     }
 
     const text = `✗ ${message}`;
@@ -206,28 +227,29 @@ async function orchestrateAssistantTurn(
     convStore.flush(convId);
     server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
     server.sendToSubscribers(convId, { type: "system_message", convId, text, color: "error" });
+    return buildErrorOutcome(text);
   };
 
   if (!hasConfiguredCredentials(conv.provider)) {
+    const message = `Not authenticated for provider ${conv.provider}. Run: bun run src/main.ts login ${conv.provider}`;
     if (client) server.sendTo(client, {
       type: "error",
       reqId,
       convId,
-      message: `Not authenticated for provider ${conv.provider}. Run: bun run src/main.ts login ${conv.provider}`,
+      message,
     });
-    return;
+    return buildErrorOutcome(message);
   }
   if (convStore.isStreaming(convId)) {
-    if (client) server.sendTo(client, { type: "error", reqId, convId, message: "Already streaming" });
-    return;
+    const message = "Already streaming";
+    if (client) server.sendTo(client, { type: "error", reqId, convId, message });
+    return buildErrorOutcome(message);
   }
   if (userMessage?.images?.length && !supportsImageInputs(conv.provider, conv.model)) {
-    reportSendError(`Image inputs are not supported by ${conv.provider}/${conv.model}. Remove the attachment or switch to a vision-capable model.`);
-    return;
+    return reportSendError(`Image inputs are not supported by ${conv.provider}/${conv.model}. Remove the attachment or switch to a vision-capable model.`);
   }
   if (replaying && !hasReplayableHistory(conv.messages)) {
-    reportSendError("No conversation history to replay.");
-    return;
+    return reportSendError("No conversation history to replay.");
   }
 
   if (userMessage) {
@@ -301,6 +323,7 @@ async function orchestrateAssistantTurn(
   const toolContext: ToolExecutionContext = {
     provider: conv.provider,
     conversationId: convId,
+    model: conv.model,
   };
 
   const contextEnv: ContextToolEnv = {
@@ -331,6 +354,7 @@ async function orchestrateAssistantTurn(
   const partialContent: import("./messages").ApiContentBlock[] = [];
   /** Blocks that survived persistence on abort/error — sent to TUI so it can trim display. */
   let abortPersistedBlocks: import("./messages").Block[] | undefined;
+  let outcome: AssistantTurnOutcome | undefined;
 
   function completedDisplayMessages(): StoredMessage[] {
     return toStoredMessages(agentState.completedMessages);
@@ -575,6 +599,13 @@ async function orchestrateAssistantTurn(
     });
 
     const endedAt = Date.now();
+    outcome = {
+      ok: true,
+      blocks: result.blocks,
+      tokens: result.tokens,
+      durationMs: endedAt - startedAt,
+      endedAt,
+    };
 
     // Convert ApiMessage[] → StoredMessage[], stamp metadata on last assistant
     const storedMessages: StoredMessage[] = result.newMessages.map(m => ({
@@ -703,20 +734,35 @@ async function orchestrateAssistantTurn(
     }
 
     // Persist and broadcast system message
+    let outcomeError: string;
     if (isWatchdog) {
       const sysText = "✗ Timed out (stale stream)";
+      outcomeError = sysText;
       conv.messages.push({ role: "system", content: sysText, metadata: null });
       server.sendToSubscribers(convId, { type: "system_message", convId, text: sysText, color: "error" });
     } else if (isAbort) {
       const sysText = "✗ Interrupted";
+      outcomeError = sysText;
       conv.messages.push({ role: "system", content: sysText, metadata: null });
       server.sendToSubscribers(convId, { type: "system_message", convId, text: sysText, color: "error" });
     } else {
       const errMsg = err instanceof Error ? err.message : String(err);
       const sysText = `✗ ${errMsg}`;
+      outcomeError = sysText;
       conv.messages.push({ role: "system", content: sysText, metadata: null });
       server.sendToSubscribers(convId, { type: "system_message", convId, text: sysText, color: "error" });
     }
+    const endedAt = Date.now();
+    outcome = {
+      ok: false,
+      blocks: abortPersistedBlocks ?? [...agentState.completedBlocks],
+      tokens: agentState.tokens,
+      durationMs: endedAt - startedAt,
+      endedAt,
+      error: outcomeError,
+      aborted: isAbort,
+      watchdog: isWatchdog,
+    };
   } finally {
     convStore.clearActiveJob(convId);
     convStore.clearCurrentStreamingBlocks(convId);
@@ -765,4 +811,6 @@ async function orchestrateAssistantTurn(
       await orchestrateSendMessage(server, null, undefined, convId, first.text, Date.now(), ext, first.images);
     }
   }
+
+  return outcome ?? buildErrorOutcome("Assistant turn ended without an outcome.");
 }

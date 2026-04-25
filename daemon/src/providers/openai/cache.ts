@@ -1,4 +1,5 @@
 import { buildOpenAIHeaders } from "./http";
+import { buildCodexWindowId } from "./identity";
 import type { StreamOptions } from "../types";
 
 export interface OpenAIRequestSession {
@@ -19,6 +20,7 @@ export function buildOpenAIRequestHeaders(
   if (options.promptCacheKey) {
     headers.session_id = options.promptCacheKey;
     headers["x-client-request-id"] = options.promptCacheKey;
+    headers["x-codex-window-id"] = buildCodexWindowId(options.promptCacheKey);
   }
 
   if (session.accountId) {

@@ -14,6 +14,8 @@ export interface ToolExecutionContext {
   provider?: ProviderId;
   /** Conversation id, if any. Reserved for future tool policies/logging. */
   conversationId?: string;
+  /** Model backing the active conversation, when the tool is run from one. */
+  model?: string;
 }
 
 export interface ImageData {

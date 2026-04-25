@@ -4,6 +4,8 @@ import { getVerifiedSession } from "./auth";
 import { AuthError } from "../errors";
 import { OPENAI_CODEX_RESPONSES_URL } from "./constants";
 import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
+import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "./cookies";
+import { encodeOpenAIRequestBody } from "./encoding";
 import { buildOpenAIInput, buildRequestBody } from "./request";
 import { mergeReasoningSummaries } from "./reasoning";
 import { readOpenAIEventsForTest, readOpenAIStream } from "./stream";
@@ -86,16 +88,27 @@ export async function streamMessageWithSession(
   const { signal } = options;
   let retryAttempt = 0;
   const requestBody = buildRequestBody(messages, model, options);
+  const encodedBody = encodeOpenAIRequestBody(requestBody);
 
   while (true) {
     let res: Response;
     try {
+      const headers = {
+        ...buildOpenAIRequestHeaders(session, options),
+        ...encodedBody.headers,
+      };
+      const cookieHeader = buildCloudflareCookieHeader(OPENAI_CODEX_RESPONSES_URL);
+      if (cookieHeader) {
+        headers.Cookie = cookieHeader;
+      }
+
       res = await fetch(OPENAI_CODEX_RESPONSES_URL, {
         method: "POST",
-        headers: buildOpenAIRequestHeaders(session, options),
-        body: JSON.stringify(requestBody),
+        headers,
+        body: encodedBody.body,
         signal,
       });
+      storeCloudflareCookiesFromHeaders(OPENAI_CODEX_RESPONSES_URL, res.headers);
     } catch (err) {
       if (signal?.aborted || isAbortLikeError(err)) throw err;
       if (retryAttempt < MAX_RETRIES) {

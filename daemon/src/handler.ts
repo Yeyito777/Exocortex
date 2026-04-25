@@ -9,7 +9,7 @@
 
 import { log } from "./log";
 import { refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
-import { orchestrateReplayConversation, orchestrateSendMessage } from "./orchestrator";
+import { orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
 import { buildAnthropicSystemPrompt, buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
@@ -19,7 +19,7 @@ import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnown
 import { transcribeAudioBytes } from "./transcription";
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
-import type { Command } from "./protocol";
+import type { Command, ParentNotificationTarget } from "./protocol";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials } from "./auth";
 import { getTokenStatsSnapshot } from "./token-stats";
 
@@ -50,8 +50,90 @@ export function createHandler(server: DaemonServer) {
       ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
     });
   };
+  const buildOrchestrationCallbacks = (convId: string) => ({
+    onHeaders: (h: Headers) => {
+      const provider = convStore.get(convId)?.provider ?? getDefaultProvider().id;
+      handleUsageHeaders(provider, h, (usage) => broadcastUsage(provider, usage));
+    },
+    onComplete: () => {
+      const provider = convStore.get(convId)?.provider ?? getDefaultProvider().id;
+      refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
+      broadcastTokenStats();
+    },
+  });
 
   const getRenderSnapshot = (convId: string) => convStore.getRenderSnapshot(convId, false);
+
+  const textFromBlocks = (blocks: import("./messages").Block[]): string => blocks
+    .filter((block): block is Extract<import("./messages").Block, { type: "text" }> => block.type === "text")
+    .map((block) => block.text.trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+
+  const capText = (text: string, maxChars: number): string => {
+    if (text.length <= maxChars) return text;
+    return text.slice(0, Math.max(0, maxChars - 1)).trimEnd() + "…";
+  };
+
+  const buildSubagentNotification = (
+    childConvId: string,
+    task: string,
+    outcome: AssistantTurnOutcome,
+    maxChars: number,
+  ): string => {
+    const title = (convStore.get(childConvId)?.title || task.split("\n")[0] || "subagent task").trim();
+    const body = outcome.ok
+      ? (textFromBlocks(outcome.blocks) || "(subagent completed without text output)")
+      : (outcome.error || "Subagent did not complete successfully.");
+    const status = outcome.ok ? "completed" : "failed";
+    const section = outcome.ok ? "Result" : "Error";
+    return [
+      `[notification] Subagent ${status}: exo:${childConvId}`,
+      `Task: ${capText(title, 160)}`,
+      "",
+      `${section}:`,
+      capText(body, maxChars),
+      "",
+      "Full details:",
+      `exo history ${childConvId} --full`,
+    ].join("\n");
+  };
+
+  const deliverParentNotification = (
+    parent: ParentNotificationTarget,
+    childConvId: string,
+    task: string,
+    outcome: AssistantTurnOutcome,
+  ): void => {
+    if (parent.convId === childConvId) {
+      log("warn", `handler: skipping self-notification for ${childConvId}`);
+      return;
+    }
+    if (!convStore.get(parent.convId)) {
+      log("warn", `handler: parent conversation ${parent.convId} not found for subagent ${childConvId}`);
+      return;
+    }
+    const text = buildSubagentNotification(childConvId, task, outcome, parent.maxChars ?? 6000);
+    if (convStore.isStreaming(parent.convId)) {
+      convStore.pushQueuedMessage(parent.convId, text, "message-end");
+      log("info", `handler: queued subagent completion notification ${childConvId} -> parent ${parent.convId}`);
+      return;
+    }
+    log("info", `handler: sending subagent completion notification ${childConvId} -> parent ${parent.convId}`);
+    void orchestrateSendMessage(
+      server,
+      null,
+      undefined,
+      parent.convId,
+      text,
+      Date.now(),
+      buildOrchestrationCallbacks(parent.convId),
+    ).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      log("error", `handler: parent notification send failed for ${parent.convId}: ${msg}`);
+    });
+  };
 
   const sendCompactHistoryUpdated = (convId: string): boolean => {
     const data = getRenderSnapshot(convId);
@@ -196,19 +278,40 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "send_message": {
+        const callbacks = buildOrchestrationCallbacks(cmd.convId);
+        if (cmd.detached) {
+          if (cmd.notifyParent?.convId === cmd.convId) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot notify the same conversation that is running the detached task." });
+            break;
+          }
+          if (convStore.isStreaming(cmd.convId)) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Already streaming" });
+            break;
+          }
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+          void orchestrateSendMessage(
+            server, null, undefined, cmd.convId, cmd.text, cmd.startedAt, callbacks, cmd.images,
+          ).then((outcome) => {
+            if (cmd.notifyParent) deliverParentNotification(cmd.notifyParent, cmd.convId, cmd.text, outcome);
+          }).catch((err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            log("error", `handler: detached send failed for ${cmd.convId}: ${message}`);
+            if (cmd.notifyParent) {
+              deliverParentNotification(cmd.notifyParent, cmd.convId, cmd.text, {
+                ok: false,
+                blocks: [],
+                tokens: 0,
+                durationMs: 0,
+                endedAt: Date.now(),
+                error: `✗ ${message}`,
+              });
+            }
+          });
+          break;
+        }
         await orchestrateSendMessage(
           server, client, cmd.reqId, cmd.convId, cmd.text, cmd.startedAt,
-          {
-            onHeaders: (h) => {
-              const provider = convStore.get(cmd.convId)?.provider ?? getDefaultProvider().id;
-              handleUsageHeaders(provider, h, (usage) => broadcastUsage(provider, usage));
-            },
-            onComplete: () => {
-              const provider = convStore.get(cmd.convId)?.provider ?? getDefaultProvider().id;
-              refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
-              broadcastTokenStats();
-            },
-          },
+          callbacks,
           cmd.images,
         );
         break;
@@ -217,17 +320,7 @@ export function createHandler(server: DaemonServer) {
       case "replay_conversation": {
         await orchestrateReplayConversation(
           server, client, cmd.reqId, cmd.convId, cmd.startedAt,
-          {
-            onHeaders: (h) => {
-              const provider = convStore.get(cmd.convId)?.provider ?? getDefaultProvider().id;
-              handleUsageHeaders(provider, h, (usage) => broadcastUsage(provider, usage));
-            },
-            onComplete: () => {
-              const provider = convStore.get(cmd.convId)?.provider ?? getDefaultProvider().id;
-              refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
-              broadcastTokenStats();
-            },
-          },
+          buildOrchestrationCallbacks(cmd.convId),
         );
         break;
       }

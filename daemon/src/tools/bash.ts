@@ -157,6 +157,7 @@ export async function executeBashBackgroundable(
   input: Record<string, unknown>,
   signal?: AbortSignal,
   defaultBgMs?: number,
+  context?: ToolExecutionContext,
 ): Promise<ToolResult> {
   const awaitSeconds = getNumber(input, "await");
   let bgMs: number | undefined;
@@ -168,13 +169,14 @@ export async function executeBashBackgroundable(
     const isLongRunning = LONG_RUNNING_COMMANDS.some(prefix => cmdTrimmed.startsWith(prefix));
     bgMs = isLongRunning ? LONG_RUNNING_BG_MS : defaultBgMs;
   }
-  return executeBashImpl(input, signal, bgMs);
+  return executeBashImpl(input, signal, bgMs, context);
 }
 
 async function executeBashImpl(
   input: Record<string, unknown>,
   signal?: AbortSignal,
   backgroundAfterMs?: number,
+  context?: ToolExecutionContext,
 ): Promise<ToolResult> {
   const command = getString(input, "command");
   if (!command) return { output: "Error: missing 'command' parameter", isError: true };
@@ -190,7 +192,12 @@ async function executeBashImpl(
       isWindows ? ["-NoProfile", "-Command", rewrittenCommand] : ["-c", rewrittenCommand],
       {
         cwd: process.cwd(),
-        env: process.env,
+        env: {
+          ...process.env,
+          ...(context?.conversationId ? { EXOCORTEX_PARENT_CONV_ID: context.conversationId } : {}),
+          ...(context?.provider ? { EXOCORTEX_PARENT_PROVIDER: context.provider } : {}),
+          ...(context?.model ? { EXOCORTEX_PARENT_MODEL: context.model } : {}),
+        },
         stdio: ["ignore", "pipe", "pipe"],
         timeout,
         detached: !isWindows,   // own process group so we can kill the entire tree (breaks on Windows)

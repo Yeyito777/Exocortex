@@ -2,6 +2,7 @@ import type { ApiMessage, ApiContentBlock, ModelId, EffortLevel } from "../../me
 import type { StreamOptions } from "../types";
 import { buildPromptCacheBodyFields } from "./cache";
 import { supportsOpenAIReasoningSummary } from "./capabilities";
+import { buildCodexClientMetadata } from "./identity";
 import type { OpenAIReasoningItem } from "./types";
 
 export type OpenAIInputItem =
@@ -236,6 +237,7 @@ export function buildRequestBody(
   return {
     ...shape,
     input,
+    client_metadata: buildCodexClientMetadata(),
     stream: true,
     store: false,
     ...buildPromptCacheBodyFields(options),

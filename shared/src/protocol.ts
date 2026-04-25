@@ -29,6 +29,13 @@ export interface NewConversationCommand {
   title?: string;
 }
 
+export interface ParentNotificationTarget {
+  /** Parent conversation to notify when this detached child task completes. */
+  convId: string;
+  /** Maximum characters of child result to include in the parent notification. */
+  maxChars?: number;
+}
+
 export interface SendMessageCommand {
   type: "send_message";
   reqId?: string;
@@ -38,6 +45,10 @@ export interface SendMessageCommand {
   startedAt: number;
   /** Base64-encoded image attachments from clipboard paste. */
   images?: ImageAttachment[];
+  /** If true, acknowledge immediately and run the assistant turn in the daemon. */
+  detached?: boolean;
+  /** Optional parent conversation to notify when the detached turn completes. */
+  notifyParent?: ParentNotificationTarget;
 }
 
 export interface ReplayConversationCommand {

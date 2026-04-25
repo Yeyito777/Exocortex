@@ -1,6 +1,8 @@
-import { OPENAI_ORIGINATOR } from "./constants";
+import { arch, platform, release } from "node:os";
+import { OPENAI_CODEX_CLIENT_VERSION, OPENAI_ORIGINATOR } from "./constants";
 
-const OPENAI_USER_AGENT = "exocortexd/openai";
+const OPENAI_USER_AGENT =
+  `${OPENAI_ORIGINATOR}/${OPENAI_CODEX_CLIENT_VERSION} (${platform()} ${release()}; ${arch()}) exocortexd/openai`;
 
 export function buildOpenAIHeaders(overrides: Record<string, string> = {}): Record<string, string> {
   return {
