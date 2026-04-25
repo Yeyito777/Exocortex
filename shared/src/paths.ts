@@ -9,7 +9,7 @@
  *
  * Directory layout under <repo>/config/:
  *
- *   config root/        system.md, theme.json (tracked config)
+ *   config root/        system.md (tracked), config.json (local/generated)
  *   secrets/            env, credentials.json (never tracked)
  *   data/               conversations/, trash/, trash/external-tools/ (bulk data, never tracked)
  *   runtime/            PID, socket, logs, usage.json (ephemeral)

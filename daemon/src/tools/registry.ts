@@ -19,6 +19,7 @@ import { context, executeContext, type ContextToolEnv } from "./context";
 import { generateImageTool } from "./generate-image";
 import { transcribeAudioTool } from "./transcribe-audio";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
+import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
 
 export type { ContextToolEnv };
 
@@ -151,6 +152,16 @@ export function buildExecutor(
   toolContext?: ToolExecutionContext,
 ): (calls: ApiToolCall[], signal?: AbortSignal) => Promise<ToolExecResult[]> {
   return (calls, signal?) => Promise.all(calls.map(async (call): Promise<ToolExecResult> => {
+    const safety = evaluateToolCallSafety(call.name, call.input);
+    if (!safety.allowed) {
+      return {
+        toolCallId: call.id,
+        toolName: call.name,
+        output: formatSafetyBlock(safety),
+        isError: true,
+      };
+    }
+
     // Context tool — needs conversation access, bypass normal execute()
     if (call.name === "context" && contextEnv) {
       return execTool(call, executeContext(call.input, contextEnv, signal), signal);
