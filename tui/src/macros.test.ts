@@ -23,6 +23,8 @@ describe("macro expansion", () => {
     expect(expandMacros("/exocortex daemon-quality")).toContain("Check the code quality of exocortex's daemon.");
     expect(expandMacros("/exocortex tui-quality")).toContain("./scripts/dev/create-worktree <name>");
     expect(expandMacros("/exocortex daemon-quality")).toContain("./scripts/dev/clean-worktree <name-or-path>");
+    expect(expandMacros("/exocortex tui-quality")).toContain("Once done, test end to end with xenv to make sure nothing broke.");
+    expect(expandMacros("/exocortex daemon-quality")).toContain("Once done, test the daemon in the worktree end to end with exo-cli to make sure nothing broke. Check exo-cli -h first to see how to test in worktree.");
   });
 });
 

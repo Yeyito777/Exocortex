@@ -134,7 +134,11 @@ function dynamicToolUninstallArgs(): MacroArg[] {
 const EXOCORTEX_QUALITY_WORKTREE_PROMPT = "Work in a git worktree for this task. Find the repo root first (the directory containing .git/; don't assume CWD is it). From there, create the worktree with `./scripts/dev/create-worktree <name>`. Work inside that worktree. When I say I'm satisfied, merge back to main and clean up with `./scripts/dev/clean-worktree <name-or-path>`.";
 
 function exocortexQualityPrompt(component: "tui" | "daemon"): string {
-  return `Check the code quality of exocortex's ${component}. Fix the code quality issues you think are worth fixing, let's prioritize the modularity and longevity of this codebase. ${EXOCORTEX_QUALITY_WORKTREE_PROMPT}`;
+  const testingPrompt = component === "tui"
+    ? "Once done, test end to end with xenv to make sure nothing broke."
+    : "Once done, test the daemon in the worktree end to end with exo-cli to make sure nothing broke. Check exo-cli -h first to see how to test in worktree.";
+
+  return `Check the code quality of exocortex's ${component}. Fix the code quality issues you think are worth fixing, let's prioritize the modularity and longevity of this codebase. ${EXOCORTEX_QUALITY_WORKTREE_PROMPT} ${testingPrompt}`;
 }
 
 const MACROS: MacroDef[] = [
