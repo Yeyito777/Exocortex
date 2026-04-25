@@ -1,862 +1,122 @@
 /**
- * External tools — discovery, PATH injection, daemon supervision, and runtime watching.
+ * External tools facade — discovery, PATH injection, daemon supervision, and runtime watching.
  *
- * Scans external-tools/{tool}/manifest.json for tool metadata.
- * Each manifest declares:
- *   - name:       command name (e.g. "gmail")
- *   - bin:        relative path to executable (e.g. "./gmail" or "./bin/twitter")
- *   - systemHint: text injected into the system prompt
- *   - display:    { label, color } for TUI bash sub-command styling
- *   - shell:      (optional) bash-harness hints for safe literal argument rewriting
- *   - daemon:     (optional) long-running background process to supervise
- *
- * On startup, all manifests are loaded and:
- *   - Their bin directories are prepended to process.env.PATH
- *   - System hints are aggregated for the system prompt builder
- *   - Display styles are collected for the TUI
- *   - Declared daemons are spawned and supervised
- *
- * A filesystem watcher on the external-tools/ directory detects tools
- * being added or removed at runtime. Changes are debounced and trigger
- * a full re-scan + callback so the daemon can broadcast updated styles
- * to connected clients.
+ * Scans external-tools/{tool}/manifest.json for tool metadata and coordinates the
+ * narrower modules that own manifest parsing, watcher lifecycle, shell rewriting,
+ * and supervised daemon lifecycle.
  */
 
-import { readFileSync, readdirSync, statSync, watch, existsSync, mkdirSync, openSync, closeSync, writeFileSync, unlinkSync, readlinkSync, realpathSync } from "fs";
-import { join, dirname, resolve } from "path";
-import { spawn, type ChildProcess } from "child_process";
-import { log } from "./log";
+import { mkdirSync } from "fs";
 import { externalToolsDir as getExternalToolsDir } from "@exocortex/shared/paths";
 import type { ExternalToolStyle } from "@exocortex/shared/messages";
-import {
-  type ManifestShell,
-  isValidShellConfig,
-  getShellConfigHint,
-  rewriteExternalToolShellCommandForTools,
-} from "./external-tools-shell";
-
-// ── Manifest schema ──────────────────────────────────────────────
-
-export interface ManifestDaemon {
-  /** Shell command to run from the tool directory (executed via `bash -lc`). */
-  command: string;
-  /**
-   * When to restart the daemon after it exits.
-   *   "on-failure" (default) — restart only on non-zero exit code
-   *   "always"               — restart on any exit
-   *   "never"                — don't restart
-   */
-  restart?: "on-failure" | "always" | "never";
-  /** Additional environment variables merged into the process env. */
-  env?: Record<string, string>;
-}
+import { log } from "./log";
+import { getShellConfigHint, rewriteExternalToolShellCommandForTools } from "./external-tools-shell";
+import { scanExternalTools, getToolReloadKey } from "./external-tools-manifest";
+import { ExternalToolWatcher, getExternalToolWatchTargets } from "./external-tools-watcher";
+import { ExternalToolDaemonSupervisor } from "./external-tools-daemon";
+import type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool } from "./external-tools-types";
 
 export type { ManifestShellLiteralArg, ManifestShell } from "./external-tools-shell";
-
-export interface Manifest {
-  name: string;
-  bin: string;
-  systemHint: string;
-  display: {
-    label: string;
-    color: string;
-  };
-  /** Optional shell invocation hints for the bash harness. */
-  shell?: ManifestShell;
-  /** Optional long-running daemon that exocortexd will spawn and supervise. */
-  daemon?: ManifestDaemon;
-}
-
-export interface LoadedTool {
-  manifest: Manifest;
-  /** Absolute path to the directory containing the binary. */
-  binDir: string;
-  /** Absolute path to the tool's root directory. */
-  toolDir: string;
-}
-
-// ── State ────────────────────────────────────────────────────────
+export type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool, Manifest, ManifestDaemon } from "./external-tools-types";
+export { getToolReloadKey } from "./external-tools-manifest";
+export { getExternalToolWatchTargets } from "./external-tools-watcher";
+export { buildDaemonSpawnSpec, getDaemonStatePaths, isLikelyManagedDaemonPid, reapStaleManagedDaemonPid } from "./external-tools-daemon-process";
 
 const BASE_PATH = process.env.PATH ?? "";
-let _tools: LoadedTool[] = [];
-type FsWatcher = ReturnType<typeof watch>;
-
-let _watcher: FsWatcher | null = null;
-let _toolDirWatchers = new Map<string, FsWatcher>();
-let _debounceTimer: ReturnType<typeof setTimeout> | null = null;
-let _externalToolsDir: string | null = null;
-
 const DEBOUNCE_MS = 1_000;
 
-// ── Daemon supervision ───────────────────────────────────────────
-
-interface ManagedDaemon {
-  toolName: string;
-  toolDir: string;
-  config: ManifestDaemon;
-  child: ChildProcess | null;
-  restartCount: number;
-  restartTimer: ReturnType<typeof setTimeout> | null;
-  lastStartTime: number;
-  stopping: boolean;
-  starting: boolean;
-}
-
-const _daemons = new Map<string, ManagedDaemon>();
-
-export type ExternalToolDaemonAction = "start" | "stop" | "restart" | "status";
-
-export interface ExternalToolDaemonStatus {
-  toolName: string;
-  action: ExternalToolDaemonAction;
-  configured: boolean;
-  managed: boolean;
-  running: boolean;
-  pid: number | null;
-  restartPolicy: Exclude<ManifestDaemon["restart"], undefined> | null;
-  message: string;
-}
-
-/** Restart backoff schedule (ms). Resets after 5 min of stable uptime. */
-const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
-const BACKOFF_RESET_MS = 5 * 60_000;
-
-export function buildDaemonSpawnSpec(command: string): { cmd: string; args: string[] } | null {
-  const trimmed = command.trim();
-  if (!trimmed) return null;
-  return { cmd: "bash", args: ["-lc", trimmed] };
-}
-
-export function getDaemonStatePaths(toolDir: string): { configDir: string; logPath: string; pidPath: string } {
-  const configDir = join(toolDir, "config");
-  return {
-    configDir,
-    logPath: join(configDir, "service.log"),
-    pidPath: join(configDir, "service.pid"),
-  };
-}
-
-function clearDaemonPidFile(toolDir: string): void {
-  const { pidPath } = getDaemonStatePaths(toolDir);
-  try {
-    unlinkSync(pidPath);
-  } catch {
-    // already gone / best-effort cleanup
-  }
-}
-
-function resolveExistingPath(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return resolve(path);
-  }
-}
-
-function writeDaemonPidFile(toolDir: string, pid: number): void {
-  const { configDir, pidPath } = getDaemonStatePaths(toolDir);
-  mkdirSync(configDir, { recursive: true });
-  writeFileSync(pidPath, `${pid}\n`);
-}
-
-export function isLikelyManagedDaemonPid(pid: number, toolDir: string): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  if (process.platform === "win32") return false;
-
-  try {
-    process.kill(pid, 0);
-  } catch {
-    return false;
-  }
-
-  try {
-    const cwd = resolveExistingPath(readlinkSync(`/proc/${pid}/cwd`));
-    if (cwd !== resolveExistingPath(toolDir)) return false;
-
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
-    const closeParen = stat.lastIndexOf(")");
-    if (closeParen === -1) return false;
-    const fields = stat.slice(closeParen + 2).trim().split(/\s+/);
-    const pgid = Number.parseInt(fields[2] ?? "", 10); // state, ppid, pgrp
-    return Number.isInteger(pgid) && pgid === pid;
-  } catch {
-    return false;
-  }
-}
-
-function killProcessGroup(pid: number, label: string): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let settled = false;
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
-    let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
-    let bailTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const settle = () => {
-      if (settled) return;
-      settled = true;
-      if (pollTimer) clearInterval(pollTimer);
-      if (forceKillTimer) clearTimeout(forceKillTimer);
-      if (bailTimer) clearTimeout(bailTimer);
-      resolve();
-    };
-
-    try {
-      process.kill(-pid, "SIGTERM");
-    } catch {
-      settle();
-      return;
-    }
-
-    pollTimer = setInterval(() => {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        settle();
-      }
-    }, 100);
-    pollTimer.unref?.();
-
-    forceKillTimer = setTimeout(() => {
-      log("warn", `external-tools: force-killing ${label} (pgid ${pid})`);
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch {
-        // already dead
-      }
-    }, 5_000);
-    forceKillTimer.unref?.();
-
-    bailTimer = setTimeout(() => {
-      log("warn", `external-tools: giving up waiting for ${label} (pid ${pid})`);
-      settle();
-    }, 7_000);
-    bailTimer.unref?.();
-  });
-}
-
-export async function reapStaleManagedDaemonPid(toolDir: string, toolName: string): Promise<boolean> {
-  const { pidPath } = getDaemonStatePaths(toolDir);
-  if (!existsSync(pidPath)) return false;
-
-  let pid: number | null = null;
-  try {
-    pid = Number.parseInt(readFileSync(pidPath, "utf-8").trim(), 10);
-  } catch {
-    // Treat unreadable/corrupt files as stale.
-  }
-
-  if (!pid || !isLikelyManagedDaemonPid(pid, toolDir)) {
-    clearDaemonPidFile(toolDir);
-    return false;
-  }
-
-  log("warn", `external-tools: reaping stale daemon '${toolName}' from previous exocortexd run (pgid ${pid})`);
-  await killProcessGroup(pid, `stale daemon '${toolName}'`);
-  clearDaemonPidFile(toolDir);
-  return true;
-}
-
-function spawnDaemonProcess(managed: ManagedDaemon): void {
-  const spec = buildDaemonSpawnSpec(managed.config.command);
-  if (!spec) {
-    log("warn", `external-tools: empty daemon command for '${managed.toolName}'`);
-    return;
-  }
-
-  // Ensure config/ dir exists for the log/state files
-  const { configDir, logPath } = getDaemonStatePaths(managed.toolDir);
-  mkdirSync(configDir, { recursive: true });
-  const logFd = openSync(logPath, "a");
-
-  try {
-    const child = spawn(spec.cmd, spec.args, {
-      cwd: managed.toolDir,
-      stdio: ["ignore", logFd, logFd],
-      env: { ...process.env, ...managed.config.env },
-      detached: true,
-    });
-
-    managed.child = child;
-    managed.lastStartTime = Date.now();
-
-    if (child.pid) {
-      writeDaemonPidFile(managed.toolDir, child.pid);
-    }
-
-    log("info", `external-tools: started daemon '${managed.toolName}' (pid ${child.pid})`);
-
-    child.on("error", (err) => {
-      log("warn", `external-tools: daemon '${managed.toolName}' spawn error: ${err.message}`);
-      managed.child = null;
-      clearDaemonPidFile(managed.toolDir);
-      scheduleDaemonRestart(managed);
-    });
-
-    child.on("exit", (code, signal) => {
-      managed.child = null;
-      clearDaemonPidFile(managed.toolDir);
-
-      if (managed.stopping) return;
-
-      log("warn", `external-tools: daemon '${managed.toolName}' exited (code=${code}, signal=${signal})`);
-
-      const policy = managed.config.restart ?? "on-failure";
-      const shouldRestart =
-        policy === "always" || (policy === "on-failure" && code !== 0);
-
-      if (shouldRestart) {
-        scheduleDaemonRestart(managed);
-      }
-    });
-  } finally {
-    // Parent closes its copy — child inherited the fd on spawn
-    closeSync(logFd);
-  }
-}
-
-function trySpawnDaemonProcess(managed: ManagedDaemon): void {
-  try {
-    spawnDaemonProcess(managed);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    managed.child = null;
-    clearDaemonPidFile(managed.toolDir);
-    log("warn", `external-tools: failed to start daemon '${managed.toolName}': ${msg}`);
-    if (!managed.stopping) {
-      scheduleDaemonRestart(managed);
-    }
-  }
-}
-
-function scheduleDaemonRestart(managed: ManagedDaemon): void {
-  if (managed.stopping) return;
-
-  // Reset backoff after sustained uptime
-  const uptime = Date.now() - managed.lastStartTime;
-  if (uptime > BACKOFF_RESET_MS) managed.restartCount = 0;
-
-  const delay = BACKOFF_MS[Math.min(managed.restartCount, BACKOFF_MS.length - 1)];
-  managed.restartCount++;
-
-  log("info", `external-tools: restarting daemon '${managed.toolName}' in ${delay / 1000}s (attempt ${managed.restartCount})`);
-
-  managed.restartTimer = setTimeout(() => {
-    managed.restartTimer = null;
-    if (!managed.stopping) trySpawnDaemonProcess(managed);
-  }, delay);
-  managed.restartTimer.unref?.();
-}
-
-async function startToolDaemon(tool: LoadedTool): Promise<void> {
-  if (!tool.manifest.daemon) return;
-
-  let managed = _daemons.get(tool.manifest.name);
-  if (managed?.child || managed?.starting) return; // already running / starting
-
-  if (!managed) {
-    managed = {
-      toolName: tool.manifest.name,
-      toolDir: tool.toolDir,
-      config: tool.manifest.daemon,
-      child: null,
-      restartCount: 0,
-      restartTimer: null,
-      lastStartTime: 0,
-      stopping: false,
-      starting: false,
-    };
-    _daemons.set(tool.manifest.name, managed);
-  } else {
-    managed.toolDir = tool.toolDir;
-    managed.config = tool.manifest.daemon;
-    managed.stopping = false;
-  }
-
-  managed.starting = true;
-  try {
-    await reapStaleManagedDaemonPid(managed.toolDir, managed.toolName);
-    if (!managed.stopping) {
-      trySpawnDaemonProcess(managed);
-    }
-  } finally {
-    managed.starting = false;
-    if (managed.stopping && !managed.child) {
-      _daemons.delete(tool.manifest.name);
-    }
-  }
-}
-
-function stopToolDaemon(name: string): Promise<void> {
-  const managed = _daemons.get(name);
-  if (!managed) return Promise.resolve();
-
-  managed.stopping = true;
-
-  if (managed.restartTimer) {
-    clearTimeout(managed.restartTimer);
-    managed.restartTimer = null;
-  }
-
-  if (!managed.child || !managed.child.pid) {
-    clearDaemonPidFile(managed.toolDir);
-    _daemons.delete(name);
-    return Promise.resolve();
-  }
-
-  const child = managed.child;
-  const pid = child.pid!;
-
-  return new Promise<void>((resolve) => {
-    let settled = false;
-    const settle = () => {
-      if (settled) return;
-      settled = true;
-      managed.child = null;
-      clearDaemonPidFile(managed.toolDir);
-      _daemons.delete(name);
-      resolve();
-    };
-
-    child.once("exit", () => {
-      log("info", `external-tools: daemon '${name}' stopped (pid ${pid})`);
-      settle();
-    });
-
-    void killProcessGroup(pid, `daemon '${name}'`).then(() => {
-      settle();
-    });
-  });
-}
-
-function stopAllDaemons(): Promise<void> {
-  const promises = [..._daemons.keys()].map((name) => stopToolDaemon(name));
-  return Promise.all(promises).then(() => {});
-}
-
-function getToolByName(name: string): LoadedTool | null {
-  return _tools.find((tool) => tool.manifest.name === name) ?? null;
-}
-
-function buildExternalToolDaemonStatus(
-  toolName: string,
-  action: ExternalToolDaemonAction,
-  message: string,
-  tool: LoadedTool | null = getToolByName(toolName),
-): ExternalToolDaemonStatus {
-  const managed = _daemons.get(toolName) ?? null;
-  const configured = Boolean(tool?.manifest.daemon);
-  const pid = managed?.child?.pid ?? null;
-  return {
-    toolName,
-    action,
-    configured,
-    managed: managed !== null,
-    running: pid !== null,
-    pid,
-    restartPolicy: tool?.manifest.daemon?.restart ?? (configured ? "on-failure" : null),
-    message,
-  };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForDaemonStateToSettle(toolName: string, checks = 4, delayMs = 50): Promise<void> {
-  for (let i = 0; i < checks; i++) {
-    await sleep(delayMs);
-    const managed = _daemons.get(toolName);
-    if (!managed?.starting) return;
-  }
-}
-
-export async function manageExternalToolDaemon(toolName: string, action: ExternalToolDaemonAction): Promise<ExternalToolDaemonStatus> {
-  const tool = getToolByName(toolName);
-  if (!tool) {
-    throw new Error(`External tool '${toolName}' is not loaded`);
-  }
-  if (!tool.manifest.daemon) {
-    throw new Error(`External tool '${toolName}' does not declare a supervised daemon`);
-  }
-
-  const before = _daemons.get(toolName) ?? null;
-  const wasRunning = Boolean(before?.child?.pid);
-
-  switch (action) {
-    case "status":
-      return buildExternalToolDaemonStatus(
-        toolName,
-        action,
-        wasRunning
-          ? `Supervised daemon '${toolName}' is running${before?.child?.pid ? ` (pid ${before.child.pid})` : ""}`
-          : `Supervised daemon '${toolName}' is not running`,
-        tool,
-      );
-
-    case "start":
-      await startToolDaemon(tool);
-      await waitForDaemonStateToSettle(toolName);
-      if (wasRunning) {
-        return buildExternalToolDaemonStatus(toolName, action, `Supervised daemon '${toolName}' is already running`, tool);
-      }
-      return buildExternalToolDaemonStatus(
-        toolName,
-        action,
-        _daemons.get(toolName)?.child?.pid
-          ? `Started supervised daemon '${toolName}' (pid ${_daemons.get(toolName)?.child?.pid})`
-          : `Requested start for supervised daemon '${toolName}'`,
-        tool,
-      );
-
-    case "stop":
-      if (!_daemons.has(toolName)) {
-        return buildExternalToolDaemonStatus(toolName, action, `Supervised daemon '${toolName}' is already stopped`, tool);
-      }
-      await stopToolDaemon(toolName);
-      await waitForDaemonStateToSettle(toolName);
-      return buildExternalToolDaemonStatus(toolName, action, `Stopped supervised daemon '${toolName}'`, tool);
-
-    case "restart":
-      if (_daemons.has(toolName)) {
-        await stopToolDaemon(toolName);
-      }
-      await startToolDaemon(tool);
-      await waitForDaemonStateToSettle(toolName);
-      return buildExternalToolDaemonStatus(
-        toolName,
-        action,
-        _daemons.get(toolName)?.child?.pid
-          ? `Restarted supervised daemon '${toolName}' (pid ${_daemons.get(toolName)?.child?.pid})`
-          : `Requested restart for supervised daemon '${toolName}'`,
-        tool,
-      );
-  }
-}
-
-// ── External tools directory ─────────────────────────────────────
-// Resolved from import.meta.dir via @exocortex/shared/paths — no
-// git dependency, survives mv of the repo.
-
-// ── Manifest loading ─────────────────────────────────────────────
-
-function loadManifest(toolDir: string): LoadedTool | null {
-  const manifestPath = join(toolDir, "manifest.json");
-  if (!existsSync(manifestPath)) return null;
-
-  try {
-    const raw = readFileSync(manifestPath, "utf-8");
-    const data = JSON.parse(raw);
-
-    // Validate required fields
-    if (
-      typeof data.name !== "string" || !data.name ||
-      typeof data.bin !== "string" || !data.bin ||
-      typeof data.systemHint !== "string" ||
-      typeof data.display !== "object" || !data.display ||
-      typeof data.display.label !== "string" ||
-      typeof data.display.color !== "string"
-    ) {
-      log("warn", `external-tools: invalid manifest at ${manifestPath} — skipping`);
-      return null;
-    }
-
-    // Validate optional shell field
-    if (data.shell !== undefined && !isValidShellConfig(data.shell)) {
-      log("warn", `external-tools: invalid shell config in ${manifestPath} — ignoring shell hints`);
-      data.shell = undefined;
-    }
-
-    // Validate optional daemon field
-    if (data.daemon !== undefined) {
-      if (typeof data.daemon !== "object" || typeof data.daemon.command !== "string" || !data.daemon.command) {
-        log("warn", `external-tools: invalid daemon config in ${manifestPath} — ignoring daemon`);
-        data.daemon = undefined;
-      }
-    }
-
-    const binPath = resolve(toolDir, data.bin);
-    const binDir = dirname(binPath);
-
-    if (!existsSync(binPath)) {
-      log("warn", `external-tools: binary not found at ${binPath} (declared in ${manifestPath}) — skipping`);
-      return null;
-    }
-
-    return {
-      manifest: data as Manifest,
-      binDir,
-      toolDir,
-    };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log("warn", `external-tools: failed to read ${manifestPath}: ${msg}`);
-    return null;
-  }
-}
-
-function scanTools(dir: string): LoadedTool[] {
-  if (!existsSync(dir)) return [];
-
-  const tools: LoadedTool[] = [];
-  let entries: string[];
-
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return [];
-  }
-
-  for (const entry of entries) {
-    const toolDir = join(dir, entry);
-    try {
-      if (!statSync(toolDir).isDirectory()) continue;
-    } catch {
-      continue;
-    }
-    const tool = loadManifest(toolDir);
-    if (tool) tools.push(tool);
-  }
-
-  // Sort by name for deterministic ordering
-  tools.sort((a, b) => a.manifest.name.localeCompare(b.manifest.name));
-  return tools;
-}
-
-// ── PATH management ──────────────────────────────────────────────
-
-function updatePath(tools: LoadedTool[]): void {
-  if (tools.length === 0) {
+let tools: LoadedTool[] = [];
+let watcher: ExternalToolWatcher | null = null;
+let externalToolsDir: string | null = null;
+const daemonSupervisor = new ExternalToolDaemonSupervisor();
+
+function updatePath(loadedTools: LoadedTool[]): void {
+  if (loadedTools.length === 0) {
     process.env.PATH = BASE_PATH;
     return;
   }
   // Deduplicate bin dirs (multiple tools could share a bin/ directory)
-  const dirs = [...new Set(tools.map(t => t.binDir))];
-  process.env.PATH = dirs.join(":") + ":" + BASE_PATH;
+  const dirs = [...new Set(loadedTools.map((tool) => tool.binDir))];
+  process.env.PATH = `${dirs.join(":")}:${BASE_PATH}`;
 }
 
-export function getExternalToolWatchTargets(externalToolsDir: string): string[] {
-  if (!existsSync(externalToolsDir)) return [externalToolsDir];
-
-  const dirs: string[] = [];
-  let entries: string[];
-  try {
-    entries = readdirSync(externalToolsDir);
-  } catch {
-    return [externalToolsDir];
-  }
-
-  for (const entry of entries) {
-    const target = join(externalToolsDir, entry);
-    try {
-      if (!statSync(target).isDirectory()) continue;
-    } catch {
-      continue;
-    }
-    dirs.push(target);
-  }
-
-  dirs.sort((a, b) => a.localeCompare(b));
-  return [externalToolsDir, ...dirs];
-}
-
-function closeWatcherQuietly(watcher: FsWatcher, label: string): void {
-  try {
-    watcher.close();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log("warn", `external-tools: failed to close watcher for ${label}: ${msg}`);
-  }
-}
-
-function clearAllWatchers(): void {
-  if (_watcher) {
-    closeWatcherQuietly(_watcher, "external-tools root");
-    _watcher = null;
-  }
-  for (const [target, watcher] of _toolDirWatchers) {
-    closeWatcherQuietly(watcher, `external-tools child '${target}'`);
-  }
-  _toolDirWatchers.clear();
-}
-
-function scheduleToolReload(externalToolsDir: string, onUpdate?: () => void): void {
-  if (_debounceTimer) clearTimeout(_debounceTimer);
-  _debounceTimer = setTimeout(() => {
-    _debounceTimer = null;
-    refreshToolDirWatchers(externalToolsDir, onUpdate);
-    const updated = scanTools(externalToolsDir);
-    if (applyTools(updated)) {
-      log("info", `external-tools: reloaded — ${updated.length} tool(s): ${updated.map(t => t.manifest.name).join(", ") || "(none)"}`);
-      onUpdate?.();
-    }
-  }, DEBOUNCE_MS);
-}
-
-function openWatcher(target: string, label: string, onEvent: () => void): FsWatcher | null {
-  try {
-    const watcher = watch(target, { persistent: false }, () => {
-      try {
-        onEvent();
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log("warn", `external-tools: watcher callback failed for ${label}: ${msg}`);
-      }
-    });
-    watcher.on?.("error", (err: Error) => {
-      log("warn", `external-tools: watcher error for ${label}: ${err.message}`);
-    });
-    return watcher;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log("warn", `external-tools: failed to watch ${label}: ${msg}`);
-    return null;
-  }
-}
-
-function refreshToolDirWatchers(externalToolsDir: string, onUpdate?: () => void): void {
-  const targets = new Set(getExternalToolWatchTargets(externalToolsDir).slice(1));
-
-  for (const [target, watcher] of _toolDirWatchers) {
-    if (targets.has(target)) continue;
-    closeWatcherQuietly(watcher, `external-tools child '${target}'`);
-    _toolDirWatchers.delete(target);
-  }
-
-  for (const target of targets) {
-    if (_toolDirWatchers.has(target)) continue;
-    const watcher = openWatcher(target, `external-tools child '${target}'`, () => scheduleToolReload(externalToolsDir, onUpdate));
-    if (watcher) _toolDirWatchers.set(target, watcher);
-  }
-}
-
-export function getToolReloadKey(tools: LoadedTool[]): string {
-  return JSON.stringify(tools.map((tool) => ({
-    name: tool.manifest.name,
-    bin: tool.manifest.bin,
-    systemHint: tool.manifest.systemHint,
-    display: tool.manifest.display,
-    shell: tool.manifest.shell ?? null,
-    daemon: tool.manifest.daemon ?? null,
-    binDir: tool.binDir,
-    toolDir: tool.toolDir,
-  })));
-}
-
-function daemonSignature(daemon: ManifestDaemon | undefined): string {
-  return JSON.stringify(daemon ?? null);
-}
-
-function daemonConfigChanged(oldTool: LoadedTool, newTool: LoadedTool): boolean {
-  return oldTool.toolDir !== newTool.toolDir || daemonSignature(oldTool.manifest.daemon) !== daemonSignature(newTool.manifest.daemon);
-}
-
-// ── Apply scan results ───────────────────────────────────────────
-
-function applyTools(tools: LoadedTool[]): boolean {
-  // Check if anything actually changed
-  const oldKey = getToolReloadKey(_tools);
-  const newKey = getToolReloadKey(tools);
+function applyTools(nextTools: LoadedTool[]): boolean {
+  const oldKey = getToolReloadKey(tools);
+  const newKey = getToolReloadKey(nextTools);
   if (oldKey === newKey) return false;
 
-  const oldByName = new Map(_tools.map((tool) => [tool.manifest.name, tool]));
-  const newByName = new Map(tools.map((tool) => [tool.manifest.name, tool]));
-
-  // Stop daemons for removed tools or tools whose daemon config disappeared.
-  for (const [name, oldTool] of oldByName) {
-    const newTool = newByName.get(name);
-    if (!newTool || (oldTool.manifest.daemon && !newTool.manifest.daemon)) {
-      void stopToolDaemon(name);
-    }
-  }
-
-  for (const [name, newTool] of newByName) {
-    const oldTool = oldByName.get(name);
-    if (!oldTool) {
-      if (newTool.manifest.daemon) void startToolDaemon(newTool);
-      continue;
-    }
-
-    if (!oldTool.manifest.daemon && newTool.manifest.daemon) {
-      void startToolDaemon(newTool);
-      continue;
-    }
-
-    if (oldTool.manifest.daemon && newTool.manifest.daemon && daemonConfigChanged(oldTool, newTool)) {
-      void stopToolDaemon(name).then(() => startToolDaemon(newTool));
-    }
-  }
-
-  _tools = tools;
-  updatePath(tools);
+  daemonSupervisor.applyToolChanges(nextTools);
+  tools = nextTools;
+  updatePath(nextTools);
   return true;
 }
 
-// ── Shell rewriting helpers ──────────────────────────────────────
+function reloadTools(onUpdate?: () => void): void {
+  if (!externalToolsDir) return;
 
-export function rewriteExternalToolShellCommand(command: string, tools: LoadedTool[] = _tools): string {
-  return rewriteExternalToolShellCommandForTools(command, tools);
+  const updated = scanExternalTools(externalToolsDir);
+  if (!applyTools(updated)) return;
+
+  log("info", `external-tools: reloaded — ${updated.length} tool(s): ${updated.map((tool) => tool.manifest.name).join(", ") || "(none)"}`);
+  onUpdate?.();
 }
 
-// ── Public API ───────────────────────────────────────────────────
+export function rewriteExternalToolShellCommand(command: string, loadedTools: LoadedTool[] = tools): string {
+  return rewriteExternalToolShellCommandForTools(command, loadedTools);
+}
 
 /**
  * Initialize external tools: scan, update PATH, start daemons, start watcher.
  * The onUpdate callback fires when tools are added, removed, or changed at runtime.
  */
 export function initExternalTools(onUpdate?: () => void): void {
-  _externalToolsDir = getExternalToolsDir();
+  externalToolsDir = getExternalToolsDir();
 
   // Ensure directory exists (gitignored, may not exist yet)
-  mkdirSync(_externalToolsDir, { recursive: true });
+  mkdirSync(externalToolsDir, { recursive: true });
 
-  // Initial scan
-  const tools = scanTools(_externalToolsDir);
-  _tools = tools;
+  tools = scanExternalTools(externalToolsDir);
+  daemonSupervisor.setInitialTools(tools);
   updatePath(tools);
 
   if (tools.length > 0) {
-    log("info", `external-tools: loaded ${tools.length} tool(s): ${tools.map(t => t.manifest.name).join(", ")}`);
+    log("info", `external-tools: loaded ${tools.length} tool(s): ${tools.map((tool) => tool.manifest.name).join(", ")}`);
   }
 
-  // Start declared daemons
-  const daemonTools = tools.filter(t => t.manifest.daemon);
-  for (const tool of daemonTools) {
-    void startToolDaemon(tool);
-  }
+  const daemonTools = tools.filter((tool) => tool.manifest.daemon);
+  daemonSupervisor.startConfiguredDaemons();
   if (daemonTools.length > 0) {
-    log("info", `external-tools: supervising ${daemonTools.length} daemon(s): ${daemonTools.map(t => t.manifest.name).join(", ")}`);
+    log("info", `external-tools: supervising ${daemonTools.length} daemon(s): ${daemonTools.map((tool) => tool.manifest.name).join(", ")}`);
   }
 
   // Watch for changes. Keep watches shallow so tool runtime artifacts
   // (e.g. browser profile sockets inside config/) can't crash the daemon.
-  const externalToolsDir = _externalToolsDir;
-  _watcher = openWatcher(externalToolsDir, "external-tools root", () => scheduleToolReload(externalToolsDir, onUpdate));
-  refreshToolDirWatchers(externalToolsDir, onUpdate);
+  watcher?.stop();
+  watcher = new ExternalToolWatcher(externalToolsDir, DEBOUNCE_MS, () => reloadTools(onUpdate));
+  watcher.start();
 }
 
 /** Stop the filesystem watcher and all supervised daemons (fire-and-forget). */
 export function stopExternalTools(): void {
-  if (_debounceTimer) {
-    clearTimeout(_debounceTimer);
-    _debounceTimer = null;
-  }
-  clearAllWatchers();
-  stopAllDaemons();
+  watcher?.stop();
+  watcher = null;
+  void daemonSupervisor.stopAll();
 }
 
 /** Stop watcher and await all supervised daemons to exit. */
 export async function stopExternalToolsAsync(): Promise<void> {
-  if (_debounceTimer) {
-    clearTimeout(_debounceTimer);
-    _debounceTimer = null;
-  }
-  clearAllWatchers();
-  await stopAllDaemons();
+  watcher?.stop();
+  watcher = null;
+  await daemonSupervisor.stopAll();
+}
+
+export async function manageExternalToolDaemon(toolName: string, action: ExternalToolDaemonAction): Promise<ExternalToolDaemonStatus> {
+  return await daemonSupervisor.manage(toolName, action);
 }
 
 /** Aggregated system hints from all loaded external tools. */
 export function getExternalToolHints(): string {
-  const hints = _tools.flatMap((tool) => {
+  const hints = tools.flatMap((tool) => {
     const entries: string[] = [];
     if (tool.manifest.systemHint) entries.push(tool.manifest.systemHint);
     const shellHint = getShellConfigHint(tool.manifest.name, tool.manifest.shell);
@@ -868,19 +128,19 @@ export function getExternalToolHints(): string {
 
 /** Display styles for TUI bash sub-command matching. */
 export function getExternalToolStyles(): ExternalToolStyle[] {
-  return _tools.map(t => ({
-    cmd: t.manifest.name,
-    label: t.manifest.display.label,
-    color: t.manifest.display.color,
+  return tools.map((tool) => ({
+    cmd: tool.manifest.name,
+    label: tool.manifest.display.label,
+    color: tool.manifest.display.color,
   }));
 }
 
 /** Number of currently loaded external tools. */
 export function getExternalToolCount(): number {
-  return _tools.length;
+  return tools.length;
 }
 
 /** Number of tool daemons currently being supervised. */
 export function getSupervisedDaemonCount(): number {
-  return _daemons.size;
+  return daemonSupervisor.count;
 }
