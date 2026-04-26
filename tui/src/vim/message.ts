@@ -8,7 +8,7 @@
  *
  * The "i"/"a" modifier is set by the vim engine (visual.ts for visual
  * mode, engine.ts for normal mode). This interceptor only fires when
- * the pending modifier is already set and the specifier key is "m".
+ * the pending modifier is already set and the specifier key is "m"/"M".
  */
 
 import type { KeyEvent } from "../input";
@@ -37,7 +37,7 @@ export function handleMessageTextObject(
 ): Handled | null {
   const vim = state.vim;
   const ks = keyString(key);
-  if (!ks || ks !== "m") return null;
+  if (!ks || (ks !== "m" && ks !== "M")) return null;
 
   const inVisual = vim.mode === "visual" || vim.mode === "visual-line";
 
@@ -47,7 +47,7 @@ export function handleMessageTextObject(
     vim.pendingTextObjectModifier = null;
 
     if (context === "prompt") return selectPromptMessage(modifier, state);
-    if (context === "history") return selectHistoryMessage(modifier, state);
+    if (context === "history") return selectHistoryMessage(ks, state);
     return HANDLED;
   }
 
@@ -65,7 +65,7 @@ export function handleMessageTextObject(
       return HANDLED;
     }
     if (context === "history") {
-      const text = extractHistoryMessageText(state, modifier === "i");
+      const text = extractHistoryMessageText(state, ks);
       if (text) copyToClipboard(text);
       return HANDLED;
     }
@@ -97,35 +97,81 @@ function selectPromptMessage(modifier: "i" | "a", state: RenderState): Handled {
 
 // ── History helpers ────────────────────────────────────────────────
 
+function trimRowsToContent(state: RenderState, startRow: number, endRow: number): { startRow: number; endRow: number } | null {
+  const lines = state.historyLines;
+  let start = startRow;
+  let end = endRow;
+  while (start < end && stripAnsi(lines[start]).trim() === "") start++;
+  while (end > start && stripAnsi(lines[end - 1]).trim() === "") end--;
+  return start < end ? { startRow: start, endRow: end } : null;
+}
+
+function findFinalAssistantTextRows(state: RenderState, startRow: number, endRow: number): { startRow: number; endRow: number } | null {
+  const anchors = state.historyLineAnchors ?? [];
+  let currentOwner: object | null = null;
+  let currentStart = -1;
+  let currentEnd = -1;
+  let finalStart = -1;
+  let finalEnd = -1;
+
+  const finishCurrent = () => {
+    if (currentStart >= 0 && currentEnd > currentStart) {
+      finalStart = currentStart;
+      finalEnd = currentEnd;
+    }
+    currentOwner = null;
+    currentStart = -1;
+    currentEnd = -1;
+  };
+
+  for (let row = startRow; row < endRow; row++) {
+    const anchor = anchors[row];
+    const owner = anchor?.owner as ({ type?: string } & object) | undefined;
+    const isTextBlock = anchor?.segment === "assistant_block" && owner?.type === "text";
+    if (!isTextBlock || !owner) {
+      finishCurrent();
+      continue;
+    }
+
+    if (currentOwner !== owner) {
+      finishCurrent();
+      currentOwner = owner;
+      currentStart = row;
+    }
+    currentEnd = row + 1;
+  }
+  finishCurrent();
+
+  if (finalStart >= 0 && finalEnd > finalStart) return trimRowsToContent(state, finalStart, finalEnd);
+  return null;
+}
+
 /**
  * Resolve the effective row range for a message in history.
- * im: content rows only (no metadata/padding, blank edges trimmed).
- * am: full message range.
+ * m: final assistant text block for assistant messages, otherwise content rows.
+ * M: full message range (previous behavior).
  * Returns null if the cursor isn't on a message or the range is empty.
  */
 function resolveMessageRows(
   state: RenderState,
-  inner: boolean,
+  key: "m" | "M",
 ): { startRow: number; endRow: number } | null {
   const bounds = findMessageBoundsAtCursor(state);
   if (!bounds) return null;
 
-  const lines = state.historyLines;
-  let startRow = bounds.start;
-  let endRow = inner ? bounds.contentEnd : bounds.end;
+  if (key === "M") return { startRow: bounds.start, endRow: bounds.end };
 
-  if (inner) {
-    while (startRow < endRow && stripAnsi(lines[startRow]).trim() === "") startRow++;
-    while (endRow > startRow && stripAnsi(lines[endRow - 1]).trim() === "") endRow--;
+  if (bounds.role === "assistant") {
+    const finalText = findFinalAssistantTextRows(state, bounds.contentStart, bounds.contentEnd);
+    if (finalText) return finalText;
   }
 
-  if (startRow >= endRow) return null;
-  return { startRow, endRow };
+  return trimRowsToContent(state, bounds.contentStart, bounds.contentEnd);
 }
 
 /** vim/vam in history: snap visual selection to the chat message at cursor. */
-function selectHistoryMessage(modifier: "i" | "a", state: RenderState): Handled {
-  const range = resolveMessageRows(state, modifier === "i");
+function selectHistoryMessage(key: "m" | "M", state: RenderState): Handled {
+  const range = resolveMessageRows(state, key);
   if (!range) return HANDLED;
 
   const { startRow, endRow } = range;
@@ -142,7 +188,7 @@ function selectHistoryMessage(modifier: "i" | "a", state: RenderState): Handled 
 /** Find the MessageBound that contains the current history cursor row. */
 function findMessageBoundsAtCursor(
   state: RenderState,
-): { start: number; end: number; contentEnd: number } | null {
+): { role: RenderState["historyMessageBounds"][number]["role"]; start: number; end: number; contentStart: number; contentEnd: number } | null {
   const row = state.historyCursor.row;
   for (const b of state.historyMessageBounds) {
     if (row >= b.start && row < b.end) return b;
@@ -151,8 +197,8 @@ function findMessageBoundsAtCursor(
 }
 
 /** Extract plain text of the history message at the cursor row. */
-function extractHistoryMessageText(state: RenderState, inner: boolean): string {
-  const range = resolveMessageRows(state, inner);
+function extractHistoryMessageText(state: RenderState, key: "m" | "M"): string {
+  const range = resolveMessageRows(state, key);
   if (!range) return "";
 
   return joinLogicalLines(

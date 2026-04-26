@@ -450,7 +450,11 @@ function handleKey(key: KeyEvent): void {
       break;
   }
 
-  scheduleRender();
+  // Local key handling mutates UI state synchronously (prompt edits, history
+  // cursor/scroll, focus changes). Now that rendering is retained/diffed, these
+  // updates are cheap and should not wait for the 16ms daemon/stream frame
+  // scheduler; otherwise history navigation feels like prompt typing did before.
+  renderImmediately();
 }
 
 function handleMouse(ev: MouseEvent): void {
@@ -465,7 +469,7 @@ function handleMouse(ev: MouseEvent): void {
     if (state.panelFocus !== prevFocus
         || state.historyCursor.row !== prevCursorRow
         || state.historyCursor.col !== prevCursorCol) {
-      scheduleRender();
+      renderImmediately();
     }
     return;
   }
@@ -483,7 +487,9 @@ function handleMouse(ev: MouseEvent): void {
       break;
   }
 
-  scheduleRender();
+  // Mouse interactions are direct local UI mutations (selection, scroll, focus),
+  // so keep them responsive for the same reason as keyboard navigation.
+  renderImmediately();
 }
 
 function scheduleReconnectAttempt(): void {

@@ -11,7 +11,7 @@ import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, support
 import type { Message, AIMessage, SystemMessage } from "./messages";
 import { loadPreferredProvider } from "./preferences";
 import { theme } from "./theme";
-import type { MessageBound } from "./conversation";
+import type { MessageBound, RenderLineAnchor } from "./conversation";
 import type { PanelFocus } from "./focus";
 import type { ChatFocus } from "./chat";
 import type { SidebarState } from "./sidebar";
@@ -179,6 +179,8 @@ export interface RenderState {
   historyWrapJoiners: string[];
   /** Per-message row ranges into historyLines (set by renderer). */
   historyMessageBounds: MessageBound[];
+  /** Per-rendered-line semantic anchors into historyLines (set by renderer). */
+  historyLineAnchors: RenderLineAnchor[];
   /** Undo/redo state for the prompt line. */
   undo: UndoState;
   /** Autocomplete popup state (command or path completion). */
@@ -376,6 +378,7 @@ export function createInitialState(): RenderState {
     historyWrapContinuation: [],
     historyWrapJoiners: [],
     historyMessageBounds: [],
+    historyLineAnchors: [],
     undo: createUndoState(),
     autocomplete: null,
     promptScrollOffset: 0,

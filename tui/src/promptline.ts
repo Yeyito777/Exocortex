@@ -10,7 +10,6 @@ import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
 import { resolveAction } from "./keybinds";
 import { updateAutocomplete, cycleAutocomplete, tryPathComplete } from "./autocomplete";
-import { clearPrompt } from "./promptstate";
 import { getSymbol } from "./symbols";
 
 export type PromptKeyResult =

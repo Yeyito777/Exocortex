@@ -14,7 +14,6 @@
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
 import { focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
-import type { Action } from "./keybinds";
 import { resolveAction, sidebarTopShortcutIndex } from "./keybinds";
 import { handleChatKey } from "./chat";
 import { toggleToolOutputPreservingViewport } from "./chatscroll";

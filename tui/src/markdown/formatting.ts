@@ -1,5 +1,4 @@
 import { theme } from "../theme";
-import { hardBreak, sliceByWidth, termWidth, visibleLength } from "../textwidth";
 
 export { hardBreak, sliceByWidth, termWidth, visibleLength } from "../textwidth";
 
