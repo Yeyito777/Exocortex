@@ -10,6 +10,7 @@ tmp/
 
 # Worktrees and local runtime data
 .worktrees/
+.rsync-filter
 config/config.json
 config/data/
 config/runtime/
