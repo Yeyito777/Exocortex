@@ -24,6 +24,7 @@ import { getRunningConversationIds } from "./control";
 import { startScheduler, stopScheduler, getCronDir, getJobs } from "./scheduler";
 import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
+import { recoverPendingTitles } from "./titlegen";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getProviders, refreshProviders } from "./providers/registry";
 import { socketPath, pidPath, runtimeDir, worktreeName, isWindows } from "@exocortex/shared/paths";
@@ -134,6 +135,7 @@ async function startDaemon(): Promise<void> {
 
   // Load persisted conversations
   convStore.loadFromDisk();
+  recoverPendingTitles(server);
 
   const broadcastToolsAvailable = () => {
     const externalStyles = isWindows ? [] : getExternalToolStyles();

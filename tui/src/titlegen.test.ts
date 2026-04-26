@@ -1,13 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { sanitizeGeneratedTitle } from "./titlegen";
+import { createInitialState } from "./state";
+import { generateTitle } from "./titlegen";
 
-describe("sanitizeGeneratedTitle", () => {
-  test("keeps decimal points in model names", () => {
-    expect(sanitizeGeneratedTitle("exo gpt 5.5 support")).toBe("exo gpt 5.5 support");
-    expect(sanitizeGeneratedTitle("exo gpt-5.5 support")).toBe("exo gpt-5.5 support");
-  });
-
-  test("strips sentence punctuation periods and quotes", () => {
-    expect(sanitizeGeneratedTitle('"context tool."')).toBe("context tool");
+describe("generateTitle", () => {
+  test("delegates title generation to the daemon", () => {
+    const calls: string[] = [];
+    generateTitle(
+      "conv-1",
+      createInitialState(),
+      { generateTitle: (convId: string) => calls.push(convId) } as never,
+      () => { throw new Error("scheduleRender should not be needed"); },
+    );
+    expect(calls).toEqual(["conv-1"]);
   });
 });

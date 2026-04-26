@@ -51,7 +51,7 @@ export interface Conversation {
   marked: boolean;
   pinned: boolean;
   sortOrder: number;
-  /** Client-set title. The daemon stores it as-is — naming logic lives in the client. */
+  /** Conversation title. The daemon owns automatic title generation. */
   title: string;
 }
 

@@ -17,6 +17,7 @@ import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tool
 import { EFFORT_LEVELS } from "./messages";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode } from "./providers/registry";
 import { transcribeAudioBytes } from "./transcription";
+import { startTitleGeneration, isPendingTitle } from "./titlegen";
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command, ParentNotificationTarget } from "./protocol";
@@ -63,6 +64,15 @@ export function createHandler(server: DaemonServer) {
   });
 
   const getRenderSnapshot = (convId: string) => convStore.getRenderSnapshot(convId, false);
+
+  const shouldAutoGenerateTitle = (convId: string): boolean => {
+    const title = convStore.get(convId)?.title.trim() ?? "";
+    return title === "" || isPendingTitle(title);
+  };
+
+  const maybeStartAutoTitleGeneration = (convId: string): void => {
+    if (shouldAutoGenerateTitle(convId)) startTitleGeneration(server, convId);
+  };
 
   const textFromBlocks = (blocks: import("./messages").Block[]): string => blocks
     .filter((block): block is Extract<import("./messages").Block, { type: "text" }> => block.type === "text")
@@ -289,9 +299,11 @@ export function createHandler(server: DaemonServer) {
             break;
           }
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-          void orchestrateSendMessage(
+          const turn = orchestrateSendMessage(
             server, null, undefined, cmd.convId, cmd.text, cmd.startedAt, callbacks, cmd.images,
-          ).then((outcome) => {
+          );
+          maybeStartAutoTitleGeneration(cmd.convId);
+          void turn.then((outcome) => {
             if (cmd.notifyParent) deliverParentNotification(cmd.notifyParent, cmd.convId, cmd.text, outcome);
           }).catch((err) => {
             const message = err instanceof Error ? err.message : String(err);
@@ -309,11 +321,13 @@ export function createHandler(server: DaemonServer) {
           });
           break;
         }
-        await orchestrateSendMessage(
+        const outcome = orchestrateSendMessage(
           server, client, cmd.reqId, cmd.convId, cmd.text, cmd.startedAt,
           callbacks,
           cmd.images,
         );
+        maybeStartAutoTitleGeneration(cmd.convId);
+        await outcome;
         break;
       }
 
@@ -500,6 +514,17 @@ export function createHandler(server: DaemonServer) {
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
         }
+        break;
+      }
+
+      case "generate_title": {
+        if (!convStore.get(cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        const started = startTitleGeneration(server, cmd.convId, { force: true });
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        log("info", `handler: title generation ${started ? "started" : "skipped"} for ${cmd.convId}`);
         break;
       }
 

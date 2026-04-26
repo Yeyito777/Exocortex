@@ -213,7 +213,7 @@ export interface ConversationSummary {
   createdAt: number;
   updatedAt: number;
   messageCount: number;
-  /** Client-set title. The daemon stores it as-is — naming logic lives in the client. */
+  /** Conversation title. The daemon owns automatic title generation. */
   title: string;
   marked: boolean;
   pinned: boolean;

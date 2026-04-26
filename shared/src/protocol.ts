@@ -169,6 +169,12 @@ export interface RenameConversationCommand {
   title: string;
 }
 
+export interface GenerateTitleCommand {
+  type: "generate_title";
+  reqId?: string;
+  convId: string;
+}
+
 export interface CloneConversationCommand {
   type: "clone_conversation";
   reqId?: string;
@@ -277,6 +283,7 @@ export type Command =
   | PinConversationCommand
   | MoveConversationCommand
   | RenameConversationCommand
+  | GenerateTitleCommand
   | CloneConversationCommand
   | UndoDeleteCommand
   | QueueMessageCommand

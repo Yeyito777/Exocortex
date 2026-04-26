@@ -179,6 +179,10 @@ export class DaemonClient {
     this.send({ type: "rename_conversation", convId, title });
   }
 
+  generateTitle(convId: string): void {
+    this.send({ type: "generate_title", convId });
+  }
+
   queueMessage(convId: string, text: string, timing: QueueTiming, images?: ImageAttachment[]): void {
     this.send({ type: "queue_message", convId, text, timing, ...(images?.length ? { images } : {}) });
   }

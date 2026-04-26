@@ -25,7 +25,7 @@ import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
 import { openQueuePrompt, confirmQueueMessage, cancelQueuePrompt, clearLocalQueue, removeLocalQueueEntry } from "./queue";
 import { confirmEditMessage, cancelEditMessage } from "./editmessage";
-import { generateTitle, PENDING_TITLE } from "./titlegen";
+import { generateTitle } from "./titlegen";
 import { theme } from "./theme";
 import { openTargetDetached } from "./openable";
 import { msUntilNextElapsedSecond } from "./time";
@@ -133,10 +133,9 @@ function onDaemonEvent(event: Event): void {
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
 
-  // Auto-generate title for newly created conversations when requested.
-  if (event.type === "conversation_created" && state.convId && state.pendingGenerateTitleOnCreate) {
+  // The daemon auto-generates titles after the first user message is appended.
+  if (event.type === "conversation_created" && state.pendingGenerateTitleOnCreate) {
     state.pendingGenerateTitleOnCreate = false;
-    generateTitle(state.convId, state, daemon, scheduleRender);
   }
 
   // Clear stream tick on streaming_stopped
@@ -337,17 +336,9 @@ function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
     state.pendingSend.text = messageText;
     state.pendingSend.images = images;
     state.pendingGenerateTitleOnCreate = true;
-    daemon.createConversation(state.provider, state.model, PENDING_TITLE, state.effort, state.fastMode);
+    daemon.createConversation(state.provider, state.model, "", state.effort, state.fastMode);
   } else {
     daemon.sendMessage(state.convId, messageText, startedAt, images);
-
-    // Instructions can create an otherwise-empty conversation before the first
-    // real user message. In that case, kick off the normal pending→generated
-    // title flow when the first user message is sent.
-    const conv = state.sidebar.conversations.find((candidate) => candidate.id === state.convId);
-    if (conv && !conv.title.trim()) {
-      generateTitle(state.convId, state, daemon, scheduleRender);
-    }
   }
 
   scheduleRender();
