@@ -81,6 +81,15 @@ function renderImmediately(): void {
   performRender();
 }
 
+function renderAfterLocalUiMutation(): void {
+  // IMPORTANT: do not replace this with scheduleRender(). Local keyboard/mouse
+  // mutations (prompt edits, chat-history cursor/scroll, focus changes) must be
+  // visible immediately. Waiting for the 16ms daemon/stream frame scheduler makes
+  // chat-history navigation feel laggy and can reintroduce visible tty tearing.
+  // Retained-frame diffing keeps these immediate local paints cheap.
+  renderImmediately();
+}
+
 /** Schedule a render. Shorter-delay callers can pull an existing timer earlier. */
 function scheduleRender(delayMs = FRAME_DELAY_MS): void {
   const dueAt = Date.now() + delayMs;
@@ -450,11 +459,7 @@ function handleKey(key: KeyEvent): void {
       break;
   }
 
-  // Local key handling mutates UI state synchronously (prompt edits, history
-  // cursor/scroll, focus changes). Now that rendering is retained/diffed, these
-  // updates are cheap and should not wait for the 16ms daemon/stream frame
-  // scheduler; otherwise history navigation feels like prompt typing did before.
-  renderImmediately();
+  renderAfterLocalUiMutation();
 }
 
 function handleMouse(ev: MouseEvent): void {
@@ -469,7 +474,7 @@ function handleMouse(ev: MouseEvent): void {
     if (state.panelFocus !== prevFocus
         || state.historyCursor.row !== prevCursorRow
         || state.historyCursor.col !== prevCursorCol) {
-      renderImmediately();
+      renderAfterLocalUiMutation();
     }
     return;
   }
@@ -487,9 +492,7 @@ function handleMouse(ev: MouseEvent): void {
       break;
   }
 
-  // Mouse interactions are direct local UI mutations (selection, scroll, focus),
-  // so keep them responsive for the same reason as keyboard navigation.
-  renderImmediately();
+  renderAfterLocalUiMutation();
 }
 
 function scheduleReconnectAttempt(): void {
