@@ -116,7 +116,7 @@ export function createHandler(server: DaemonServer) {
     }
     const text = buildSubagentNotification(childConvId, task, outcome, parent.maxChars ?? 6000);
     if (convStore.isStreaming(parent.convId)) {
-      convStore.pushQueuedMessage(parent.convId, text, "message-end");
+      convStore.pushQueuedMessage(parent.convId, text, "next-turn");
       log("info", `handler: queued subagent completion notification ${childConvId} -> parent ${parent.convId}`);
       return;
     }
