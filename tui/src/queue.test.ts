@@ -71,6 +71,43 @@ describe("queue prompt image handling", () => {
     expect(state.cursorPos).toBe("caption".length);
   });
 
+  test("cancel restores macro text without expanding it", () => {
+    const state = createInitialState();
+
+    openQueuePrompt(state, "/go please");
+    cancelQueuePrompt(state);
+
+    expect(state.queuePrompt).toBeNull();
+    expect(state.inputBuffer).toBe("/go please");
+    expect(state.cursorPos).toBe("/go please".length);
+  });
+
+  test("confirm expands macros only when queueing the message", () => {
+    const state = createInitialState();
+
+    state.convId = "conv-1";
+    state.pendingAI = createPendingAI(Date.now(), state.model);
+
+    openQueuePrompt(state, "/go please");
+    const result = confirmQueueMessage(state);
+
+    expect(result).toEqual({
+      action: "queue",
+      convId: "conv-1",
+      text: "Go ahead and implement that please",
+      timing: "message-end",
+      images: undefined,
+    });
+    expect(state.queuedMessages).toEqual([
+      {
+        convId: "conv-1",
+        text: "Go ahead and implement that please",
+        timing: "message-end",
+        images: undefined,
+      },
+    ]);
+  });
+
   test("send-direct confirm clears pending images after streaming has already ended", () => {
     const state = createInitialState();
     const img = makeImage();

@@ -16,10 +16,15 @@
 import type { KeyEvent } from "./input";
 import type { ImageAttachment } from "./messages";
 import type { RenderState, QueueTiming, QueuedMessage } from "./state";
+import { expandMacros } from "./macros";
 import { isStreaming } from "./state";
 
 /**
  * Open the queue prompt for the current prompt buffer.
+ *
+ * The text is intentionally stored unexpanded so canceling the modal restores
+ * exactly what the user typed. Macros are expanded only on confirm, when the
+ * message is actually sent or queued.
  *
  * Images are copied into the queue prompt so they travel with the queued
  * message, but they remain in state.pendingImages until the user actually
@@ -94,9 +99,11 @@ export function confirmQueueMessage(state: RenderState): ConfirmResult {
   const timing = qp.selection;
   const convId = state.convId;
 
-  // If streaming already finished while the overlay was showing, send directly
+  // If streaming already finished while the overlay was showing, send directly.
+  // This is a real send path, so expand macros here rather than when the modal
+  // opens (so cancel can still restore the raw prompt text).
   if (!isStreaming(state) && convId) {
-    const text = qp.text;
+    const text = expandMacros(qp.text);
     const images = qp.images;
     if (images?.length) state.pendingImages = [];
     state.queuePrompt = null;
@@ -106,22 +113,24 @@ export function confirmQueueMessage(state: RenderState): ConfirmResult {
   }
 
   if (!convId) {
-    // No conversation — can't queue. Restore text to prompt.
+    // No conversation — can't queue. Restore the raw text to prompt.
     state.inputBuffer = qp.text;
     state.cursorPos = qp.text.length;
     state.queuePrompt = null;
     return { action: "cancel" };
   }
 
-  // Queue the message — local shadow for display
+  // Queue the message — local shadow for display. Store the expanded text so
+  // the shadow matches what the daemon will later echo back as a user message.
   const images = qp.images;
-  const queued: QueuedMessage = { convId, text: qp.text, timing, images };
+  const text = expandMacros(qp.text);
+  const queued: QueuedMessage = { convId, text, timing, images };
   if (images?.length) state.pendingImages = [];
   state.queuedMessages.push(queued);
   state.queuePrompt = null;
   state.inputBuffer = "";
   state.cursorPos = 0;
-  return { action: "queue", convId, text: qp.text, timing, images };
+  return { action: "queue", convId, text, timing, images };
 }
 
 /**
