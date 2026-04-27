@@ -9,7 +9,8 @@
  * State lifecycle:
  *   - Typing activates/updates command/macro autocomplete (updateAutocomplete)
  *   - Tab/Shift+Tab cycles through matches (cycleAutocomplete)
- *   - Escape dismisses and restores original text (dismissAutocomplete)
+ *   - Escape from insert mode accepts the current completion and closes the popup
+ *   - Explicit cancellation can restore original text (dismissAutocomplete)
  *   - Enter/newline dismisses without restoring (state.autocomplete = null)
  */
 
@@ -265,7 +266,8 @@ function fillAutocomplete(state: RenderState, name: string): void {
 
 /**
  * Dismiss autocomplete, restoring original text if the user was Tab-cycling.
- * Called on Escape (before vim enters normal mode).
+ * This is for explicit cancellation; vim Escape uses acceptAutocomplete so
+ * leaving insert mode does not undo the selected completion.
  */
 export function dismissAutocomplete(state: RenderState): void {
   if (!state.autocomplete) return;
@@ -286,6 +288,15 @@ export function dismissAutocomplete(state: RenderState): void {
   }
   // Path: keep current text (common prefix already filled in, that's useful)
 
+  state.autocomplete = null;
+}
+
+/**
+ * Accept the currently displayed completion text and close the popup.
+ * Used when Escape is also leaving insert mode: vim's Escape should not
+ * undo a completion the user already cycled to with Tab.
+ */
+export function acceptAutocomplete(state: RenderState): void {
   state.autocomplete = null;
 }
 

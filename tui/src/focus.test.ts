@@ -143,6 +143,48 @@ function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+function typePromptText(state: ReturnType<typeof createInitialState>, text: string): void {
+  for (const char of text) {
+    expect(handleFocusedKey({ type: "char", char }, state)).toEqual({ type: "handled" });
+  }
+}
+
+describe("autocomplete with vim Escape", () => {
+  test("Escape after tab-completing a macro enters normal mode without undoing the completion", () => {
+    const state = createInitialState();
+
+    typePromptText(state, "/g");
+    expect(state.autocomplete?.type).toBe("command");
+
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("/go");
+
+    expect(handleFocusedKey({ type: "escape" }, state)).toEqual({ type: "handled" });
+
+    expect(state.vim.mode).toBe("normal");
+    expect(state.autocomplete).toBeNull();
+    expect(state.inputBuffer).toBe("/go");
+    expect(state.cursorPos).toBe(2);
+  });
+
+  test("Escape after tab-completing a command enters normal mode without undoing the completion", () => {
+    const state = createInitialState();
+
+    typePromptText(state, "/m");
+    expect(state.autocomplete?.type).toBe("command");
+
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("/model");
+
+    expect(handleFocusedKey({ type: "escape" }, state)).toEqual({ type: "handled" });
+
+    expect(state.vim.mode).toBe("normal");
+    expect(state.autocomplete).toBeNull();
+    expect(state.inputBuffer).toBe("/model");
+    expect(state.cursorPos).toBe(5);
+  });
+});
+
 function buildToolToggleState(showToolOutput: boolean) {
   const state = createInitialState();
   state.cols = 80;

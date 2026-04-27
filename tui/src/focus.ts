@@ -36,7 +36,7 @@ import {
 import { pushUndo } from "./undo";
 import { placeAtVisibleBottom } from "./historycursor";
 import { openableTargetAtHistoryCursor } from "./historyopenable";
-import { dismissAutocomplete } from "./autocomplete";
+import { acceptAutocomplete } from "./autocomplete";
 import { handleQueuePromptKey } from "./queue";
 import { handleEditMessageKey, openEditMessageModal } from "./editmessage";
 import { readClipboardImage } from "./clipboard";
@@ -274,11 +274,12 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
     return { type: "handled" };
   }
 
-  // ── Autocomplete dismiss on Escape ─────────────────────────────
-  // Must happen before vim so the buffer is restored before vim
-  // computes the normal-mode cursor position.
+  // ── Autocomplete accept on Escape ──────────────────────────────
+  // Esc in insert mode should still enter normal mode, but it must not
+  // undo a completion the user already chose with Tab. Close the popup
+  // before vim computes the normal-mode cursor position from the buffer.
   if (key.type === "escape" && state.autocomplete) {
-    dismissAutocomplete(state);
+    acceptAutocomplete(state);
   }
 
   // ── Sidebar marks (digit keys) — intercept before vim count prefix ──
