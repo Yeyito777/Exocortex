@@ -276,16 +276,17 @@ function handleSubmit(): void {
     }
   }
 
-  // Regular message — expand macros before sending
-  const messageText = expandMacros(text);
-
   if (isStreaming(state)) {
-    // Copy images into the queue prompt, but keep them pending until the user
-    // actually confirms queueing/sending so the promptline indicator stays visible.
-    openQueuePrompt(state, messageText);
+    // Keep the queue prompt text exactly as typed. Macro expansion happens only
+    // if the user confirms the modal; canceling should restore the original
+    // promptline contents.
+    openQueuePrompt(state, text);
     scheduleRender();
     return;
   }
+
+  // Regular message — expand macros before sending
+  const messageText = expandMacros(text);
 
   const images = hasImages ? [...state.pendingImages] : undefined;
   if (!canSendImages(images)) {
