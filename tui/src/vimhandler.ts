@@ -23,7 +23,7 @@ import {
   scrollPageUp, scrollPageDown,
   scrollToTop, scrollToBottom,
 } from "./chat";
-import { handleSidebarAction, type SidebarKeyResult } from "./sidebar";
+import { handleSidebarAction, handleSidebarScrollAction, type SidebarKeyResult } from "./sidebar";
 import { processKey, copyToClipboard, pasteFromClipboard, type VimContext } from "./vim";
 import { clampNormal } from "./vim/buffer";
 import { pushUndo, markInsertEntry, commitInsertSession, undo as undoFn, redo as redoFn } from "./undo";
@@ -276,6 +276,12 @@ function handlePaste(position: "after" | "before", state: RenderState): void {
  * cursor-aware scrolling. Otherwise falls back to viewport-only scroll.
  */
 export function handleScrollAction(action: Action, state: RenderState): void {
+  const inSidebar = state.panelFocus === "sidebar" && state.sidebar.open;
+  if (inSidebar) {
+    handleSidebarScrollAction(action, state.sidebar, state.rows);
+    return;
+  }
+
   const inHistory = state.panelFocus === "chat" && state.chatFocus === "history";
 
   if (inHistory) {

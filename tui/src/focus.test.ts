@@ -397,6 +397,71 @@ describe("sidebar marked navigation", () => {
   });
 });
 
+describe("sidebar Ctrl scrolling", () => {
+  function setupSidebarScrollState() {
+    const state = createInitialState();
+    state.rows = 8;
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.layout.totalLines = 100;
+    state.layout.messageAreaHeight = 10;
+    state.scrollOffset = 7;
+    state.sidebar.conversations = Array.from({ length: 12 }, (_, i) => conversation(`conv-${i + 1}`, i + 1));
+    state.sidebar.selectedIndex = 4;
+    state.sidebar.selectedId = "conv-5";
+    return state;
+  }
+
+  test("Ctrl+E/Y use chat-history sticky-cursor scrolling on the sidebar", () => {
+    const state = setupSidebarScrollState();
+    state.sidebar.scrollOffset = 0;
+    state.sidebar.selectedIndex = 0;
+    state.sidebar.selectedId = "conv-1";
+
+    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toEqual({ type: "handled" });
+
+    // Ctrl+E scrolls the sidebar down one row; because the selected row would
+    // leave the viewport, the selection is clamped to the new top edge.
+    expect(state.sidebar.scrollOffset).toBe(1);
+    expect(state.sidebar.selectedId).toBe("conv-2");
+    expect(state.scrollOffset).toBe(7);
+
+    expect(handleFocusedKey({ type: "ctrl-y" }, state)).toEqual({ type: "handled" });
+
+    // Ctrl+Y scrolls back up one row while the selected row sticks to the same
+    // buffer row because it remains visible.
+    expect(state.sidebar.scrollOffset).toBe(0);
+    expect(state.sidebar.selectedId).toBe("conv-2");
+    expect(state.scrollOffset).toBe(7);
+  });
+
+  test("Ctrl+D/U/F/B move the sidebar selection by the same amount as the viewport", () => {
+    const state = setupSidebarScrollState();
+    state.sidebar.scrollOffset = 0;
+    state.sidebar.selectedIndex = 4;
+    state.sidebar.selectedId = "conv-5";
+
+    expect(handleFocusedKey({ type: "ctrl-d" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.scrollOffset).toBe(3);
+    expect(state.sidebar.selectedId).toBe("conv-8");
+    expect(state.scrollOffset).toBe(7);
+
+    expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.scrollOffset).toBe(0);
+    expect(state.sidebar.selectedId).toBe("conv-5");
+
+    expect(handleFocusedKey({ type: "ctrl-f" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.scrollOffset).toBe(6);
+    expect(state.sidebar.selectedId).toBe("conv-11");
+
+    expect(handleFocusedKey({ type: "ctrl-b" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.scrollOffset).toBe(0);
+    expect(state.sidebar.selectedId).toBe("conv-5");
+  });
+});
+
 describe("sidebar visible jumps", () => {
   function setupSidebarJumpState() {
     const state = createInitialState();

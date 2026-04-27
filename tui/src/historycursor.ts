@@ -10,7 +10,12 @@
 import type { KeyEvent } from "./input";
 import type { Action } from "./keybinds";
 import type { RenderState } from "./state";
-import { getViewStart } from "./chatscroll";
+import { getScrollOffsetForViewStart, getViewStart } from "./chatscroll";
+import {
+  ensureCursorRowVisibleInViewport,
+  scrollLineWithStickyCursorInViewport,
+  scrollWithCursorInViewport,
+} from "./viewportscroll";
 import { copyToClipboard } from "./vim/clipboard";
 import { keyString, resetPending } from "./vim/types";
 import { resolveTextObject, isTextObjectKey } from "./vim/textobjects";
@@ -137,36 +142,31 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
  */
 export function scrollHalfPageWithCursor(state: RenderState, dir: number): void {
   const amount = Math.floor(state.layout.messageAreaHeight / 2);
-  scrollWithCursor(state, dir * amount);
+  scrollHistoryViewportWithCursor(state, dir, amount);
 }
 
 /**
  * Ctrl+B / Ctrl+F — scroll full page AND move cursor by the same amount.
  */
 export function scrollFullPageWithCursor(state: RenderState, dir: number): void {
-  scrollWithCursor(state, dir * state.layout.messageAreaHeight);
+  scrollHistoryViewportWithCursor(state, dir, state.layout.messageAreaHeight);
 }
 
-/**
- * Scroll viewport and move cursor by `lines` rows.
- * Positive = up (towards older), negative = down (towards newer).
- * Cursor always moves (clamped to buffer bounds), viewport follows.
- */
-function scrollWithCursor(state: RenderState, lines: number): void {
+/** Apply the shared cursor-aware page scroll logic to chat history's inverted scrollOffset. */
+function scrollHistoryViewportWithCursor(state: RenderState, dir: number, amount: number): void {
   const totalLines = state.historyLines.length;
   if (totalLines === 0) return;
 
-  // Always move cursor, even if viewport can't scroll further
-  const newRow = Math.max(0, Math.min(state.historyCursor.row - lines, totalLines - 1));
-  state.historyCursor = clampCursor({ row: newRow, col: state.historyCursor.col }, state.historyLines);
-
-  // Move viewport by same amount (clamped)
   const { messageAreaHeight } = state.layout;
-  const maxOff = Math.max(0, totalLines - messageAreaHeight);
-  state.scrollOffset = Math.max(0, Math.min(state.scrollOffset + lines, maxOff));
+  const next = scrollWithCursorInViewport({
+    totalLines,
+    viewportHeight: messageAreaHeight,
+    viewStart: getViewStart(state),
+    cursorRow: state.historyCursor.row,
+  }, dir, amount);
 
-  // Ensure cursor is visible (cursor may have moved past viewport)
-  ensureCursorVisible(state);
+  state.historyCursor = clampCursor({ row: next.cursorRow, col: state.historyCursor.col }, state.historyLines);
+  state.scrollOffset = getScrollOffsetForViewStart(totalLines, messageAreaHeight, next.viewStart);
 }
 
 /**
@@ -180,25 +180,15 @@ export function scrollLineWithStickyCursor(state: RenderState, dir: number): voi
   if (totalLines === 0) return;
 
   const { messageAreaHeight } = state.layout;
-  const maxOff = Math.max(0, totalLines - messageAreaHeight);
+  const next = scrollLineWithStickyCursorInViewport({
+    totalLines,
+    viewportHeight: messageAreaHeight,
+    viewStart: getViewStart(state),
+    cursorRow: state.historyCursor.row,
+  }, dir);
 
-  // Move viewport only
-  state.scrollOffset = Math.max(0, Math.min(state.scrollOffset + dir, maxOff));
-
-  // Cursor stays on same buffer row — only adjust if off-screen
-  const viewStart = getViewStart(state);
-  const viewEnd = viewStart + messageAreaHeight - 1;
-  const curRow = state.historyCursor.row;
-
-  if (curRow < viewStart) {
-    state.historyCursor = clampCursor(
-      { row: viewStart, col: state.historyCursor.col }, state.historyLines,
-    );
-  } else if (curRow > viewEnd) {
-    state.historyCursor = clampCursor(
-      { row: viewEnd, col: state.historyCursor.col }, state.historyLines,
-    );
-  }
+  state.historyCursor = clampCursor({ row: next.cursorRow, col: state.historyCursor.col }, state.historyLines);
+  state.scrollOffset = getScrollOffsetForViewStart(totalLines, messageAreaHeight, next.viewStart);
 }
 
 // ── Find interception for history ────────────────────────────────
@@ -459,21 +449,11 @@ export function placeAtVisibleBottom(state: RenderState): HistoryCursor {
 /** Adjust scrollOffset so the cursor row is within the visible message area. */
 export function ensureCursorVisible(state: RenderState): void {
   const { totalLines, messageAreaHeight } = state.layout;
-  if (totalLines <= messageAreaHeight) {
-    state.scrollOffset = 0;
-    return;
-  }
-
-  const cursorRow = state.historyCursor.row;
-  const viewStart = getViewStart(state);
-  const viewEnd = viewStart + messageAreaHeight;
-
-  if (cursorRow < viewStart) {
-    state.scrollOffset = totalLines - messageAreaHeight - cursorRow;
-  } else if (cursorRow >= viewEnd) {
-    state.scrollOffset = totalLines - messageAreaHeight - (cursorRow - messageAreaHeight + 1);
-  }
-
-  const maxScroll = Math.max(0, totalLines - messageAreaHeight);
-  state.scrollOffset = Math.max(0, Math.min(state.scrollOffset, maxScroll));
+  const next = ensureCursorRowVisibleInViewport({
+    totalLines,
+    viewportHeight: messageAreaHeight,
+    viewStart: getViewStart(state),
+    cursorRow: state.historyCursor.row,
+  });
+  state.scrollOffset = getScrollOffsetForViewStart(totalLines, messageAreaHeight, next.viewStart);
 }
