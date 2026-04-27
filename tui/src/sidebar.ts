@@ -10,6 +10,12 @@ import type { ConversationSummary } from "./messages";
 import { sortConversations, bottomPinnedOrder, topUnpinnedOrder } from "./messages";
 import type { Action } from "./keybinds";
 import { resolveAction } from "./keybinds";
+import {
+  clampViewStart,
+  ensureCursorRowVisibleInViewport,
+  scrollLineWithStickyCursorInViewport,
+  scrollWithCursorInViewport,
+} from "./viewportscroll";
 import { theme } from "./theme";
 import { getMarkFromTitle, toggleMark } from "./marks";
 import { padRightToWidth, termWidth, truncateToWidth } from "./textwidth";
@@ -376,7 +382,7 @@ function pad(text: string, width: number): string {
 
 // ── Display row layout ─────────────────────────────────────────────
 
-interface DisplayRow {
+export interface DisplayRow {
   type: "label" | "delimiter" | "entry";
   convIdx?: number;
   text?: string;
@@ -387,7 +393,7 @@ interface DisplayRow {
  * Used by both rendering and mouse hit-testing so the layout is
  * defined in one place.
  */
-function buildDisplayRows(sidebar: SidebarState): DisplayRow[] {
+export function buildDisplayRows(sidebar: SidebarState): DisplayRow[] {
   const visibleIndices = getVisibleConversationIndices(sidebar);
   const pinnedIndices = visibleIndices.filter(index => sidebar.conversations[index]?.pinned);
   const unpinnedIndices = visibleIndices.filter(index => !sidebar.conversations[index]?.pinned);
@@ -407,7 +413,7 @@ function buildDisplayRows(sidebar: SidebarState): DisplayRow[] {
   return rows;
 }
 
-function sidebarListRows(totalRows: number, sidebar: SidebarState): number {
+export function sidebarListRows(totalRows: number, sidebar: SidebarState): number {
   const searchBarRows = sidebar.search?.barOpen ? 1 : 0;
   return Math.max(0, totalRows - 2 - searchBarRows);
 }
@@ -422,6 +428,140 @@ function findDisplayEntry(
     if (displayRows[row]?.type === "entry") return displayRows[row].convIdx ?? null;
   }
   return null;
+}
+
+function selectedDisplayRow(displayRows: DisplayRow[], sidebar: SidebarState): number {
+  const row = displayRows.findIndex((dr) => dr.type === "entry" && dr.convIdx === sidebar.selectedIndex);
+  if (row !== -1) return row;
+  const firstEntry = displayRows.findIndex((dr) => dr.type === "entry");
+  return firstEntry === -1 ? 0 : firstEntry;
+}
+
+function nearestDisplayEntry(
+  displayRows: DisplayRow[],
+  targetRow: number,
+  preferredStep: -1 | 0 | 1,
+): number | null {
+  const clampedTarget = Math.max(0, Math.min(targetRow, Math.max(0, displayRows.length - 1)));
+  if (displayRows[clampedTarget]?.type === "entry") return displayRows[clampedTarget].convIdx ?? null;
+
+  const scan = (step: 1 | -1): number | null => {
+    for (let row = clampedTarget + step; row >= 0 && row < displayRows.length; row += step) {
+      if (displayRows[row]?.type === "entry") return displayRows[row].convIdx ?? null;
+    }
+    return null;
+  };
+
+  if (preferredStep < 0) return scan(-1) ?? scan(1);
+  if (preferredStep > 0) return scan(1) ?? scan(-1);
+  return scan(1) ?? scan(-1);
+}
+
+function applySidebarCursorViewport(
+  sidebar: SidebarState,
+  totalRows: number,
+  cursorRow: number,
+  viewStart: number,
+  previousCursorRow: number,
+): void {
+  const displayRows = buildDisplayRows(sidebar);
+  const listRows = sidebarListRows(totalRows, sidebar);
+  if (displayRows.length === 0 || listRows <= 0) return;
+
+  const preferredStep = cursorRow < previousCursorRow ? -1 : cursorRow > previousCursorRow ? 1 : 0;
+  const target = nearestDisplayEntry(displayRows, cursorRow, preferredStep);
+  if (target == null) return;
+
+  focusConversationAt(sidebar, target);
+
+  // Keep the shared scroll result, then re-run the shared visibility clamp using
+  // the actual entry row we landed on (labels/delimiters are skipped by selection).
+  const actualCursorRow = selectedDisplayRow(displayRows, sidebar);
+  const visible = ensureCursorRowVisibleInViewport({
+    totalLines: displayRows.length,
+    viewportHeight: listRows,
+    viewStart,
+    cursorRow: actualCursorRow,
+  });
+  sidebar.scrollOffset = visible.viewStart;
+  sidebar.pendingDeleteId = null;
+}
+
+/**
+ * Apply the same cursor-aware Ctrl+E/Y/D/U/F/B scrolling used by chat history to
+ * the conversations sidebar. The sidebar adapts its selected conversation to the
+ * shared "cursor row" abstraction, skipping over section labels/delimiters.
+ */
+export function handleSidebarScrollAction(action: Action, sidebar: SidebarState, totalRows: number): boolean {
+  const displayRows = buildDisplayRows(sidebar);
+  const listRows = sidebarListRows(totalRows, sidebar);
+  if (displayRows.length === 0 || listRows <= 0) return true;
+
+  const currentCursorRow = selectedDisplayRow(displayRows, sidebar);
+  const currentViewStart = clampViewStart(displayRows.length, listRows, sidebar.scrollOffset);
+  let next: { viewStart: number; cursorRow: number } | null = null;
+
+  switch (action) {
+    case "scroll_line_up":
+      next = scrollLineWithStickyCursorInViewport({
+        totalLines: displayRows.length,
+        viewportHeight: listRows,
+        viewStart: currentViewStart,
+        cursorRow: currentCursorRow,
+      }, 1);
+      break;
+    case "scroll_line_down":
+      next = scrollLineWithStickyCursorInViewport({
+        totalLines: displayRows.length,
+        viewportHeight: listRows,
+        viewStart: currentViewStart,
+        cursorRow: currentCursorRow,
+      }, -1);
+      break;
+    case "scroll_half_up":
+      next = scrollWithCursorInViewport({
+        totalLines: displayRows.length,
+        viewportHeight: listRows,
+        viewStart: currentViewStart,
+        cursorRow: currentCursorRow,
+      }, 1, Math.floor(listRows / 2));
+      break;
+    case "scroll_half_down":
+      next = scrollWithCursorInViewport({
+        totalLines: displayRows.length,
+        viewportHeight: listRows,
+        viewStart: currentViewStart,
+        cursorRow: currentCursorRow,
+      }, -1, Math.floor(listRows / 2));
+      break;
+    case "scroll_page_up":
+      next = scrollWithCursorInViewport({
+        totalLines: displayRows.length,
+        viewportHeight: listRows,
+        viewStart: currentViewStart,
+        cursorRow: currentCursorRow,
+      }, 1, listRows);
+      break;
+    case "scroll_page_down":
+      next = scrollWithCursorInViewport({
+        totalLines: displayRows.length,
+        viewportHeight: listRows,
+        viewStart: currentViewStart,
+        cursorRow: currentCursorRow,
+      }, -1, listRows);
+      break;
+    case "scroll_top":
+      next = { viewStart: 0, cursorRow: 0 };
+      break;
+    case "scroll_bottom":
+      next = { viewStart: Math.max(0, displayRows.length - listRows), cursorRow: displayRows.length - 1 };
+      break;
+    default:
+      return false;
+  }
+
+  applySidebarCursorViewport(sidebar, totalRows, next.cursorRow, next.viewStart, currentCursorRow);
+  return true;
 }
 
 /** Vim-like H/L for the sidebar — jump to the top/bottom visible conversation. */
