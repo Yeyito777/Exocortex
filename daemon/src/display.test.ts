@@ -579,6 +579,17 @@ describe("system messages", () => {
     });
   });
 
+  test("OpenAI usage-limit retry notices → color: warning", () => {
+    const { entries } = build([
+      { role: "system", content: "OpenAI usage limit reached — retrying at 4/27/2026, 7:07:51 PM…", metadata: null },
+    ]);
+    expect(systemEntry(entries[0])).toEqual({
+      type: "system",
+      text: "OpenAI usage limit reached — retrying at 4/27/2026, 7:07:51 PM…",
+      color: "warning",
+    });
+  });
+
   test("content not starting with ⟳ → color: error", () => {
     const { entries } = build([
       { role: "system", content: "API error: rate limit exceeded", metadata: null },

@@ -511,6 +511,9 @@ export interface StreamRetryEvent {
   maxAttempts: number;
   errorMessage: string;
   delaySec: number;
+  kind?: "transient" | "usage_limit_reset";
+  /** Unix epoch milliseconds when retry is expected, if known. */
+  resetAt?: number;
 }
 
 export interface SystemMessageEvent {

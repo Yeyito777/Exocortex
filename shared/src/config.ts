@@ -45,11 +45,27 @@ export interface OpenersConfig {
   rules?: OpenFileRuleConfig[];
 }
 
+export interface OpenAIProviderConfig {
+  /**
+   * If true, an OpenAI usage_limit_reached 429 with a reset timestamp keeps the
+   * stream open and retries when the usage window resets. Defaults to false.
+   */
+  retryOnUsageLimitReset?: boolean;
+}
+
+export interface ProvidersConfig {
+  openai?: OpenAIProviderConfig;
+  /** Preserve unknown provider config blocks. */
+  [provider: string]: unknown;
+}
+
 export interface ExocortexConfig {
   /** Active TUI theme name. */
   theme?: string;
   /** TUI open-on-enter commands for links and file paths. */
   openers?: OpenersConfig;
+  /** Provider-specific behavior. */
+  providers?: ProvidersConfig;
   /** Tool safety policy. */
   safety?: SafetyConfig;
   /** Preserve unknown future/user keys. */

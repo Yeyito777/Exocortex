@@ -16,7 +16,7 @@ import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
 import { buildHistoryTurnMap, createMessageMetadata, isHistoryMessage, isToolResultMessage, type StoredMessage, type ApiContentBlock, type ModelId, type Block } from "./messages";
-import type { ContentBlock as ProviderContentBlock } from "./providers/types";
+import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ToolExecutionContext } from "./tools/types";
 import { complete } from "./llm";
@@ -34,6 +34,20 @@ import { getInnerLlmSummaryOptions } from "./tools/inner-llm";
  * since they're appended chronologically and completed-round counts are
  * monotonically non-decreasing.
  */
+function formatRetryNotice(
+  attempt: number,
+  maxAttempts: number,
+  errorMessage: string,
+  delaySec: number,
+  metadata?: StreamRetryMetadata,
+): string {
+  if (metadata?.kind === "usage_limit_reset") {
+    const reset = metadata.resetAt != null ? ` at ${new Date(metadata.resetAt).toLocaleString()}` : "";
+    return `${errorMessage} — retrying${reset}…`;
+  }
+  return `⟳ ${errorMessage} — retrying in ${delaySec}s (${attempt}/${maxAttempts})…`;
+}
+
 function interleaveRetryMarkers(
   messages: StoredMessage[],
   markers: Array<{ afterIndex: number; text: string }>,
@@ -491,19 +505,34 @@ async function orchestrateAssistantTurn(
       convStore.touchActivity(convId);
       ext.onHeaders(headers);
     },
-    onRetry(attempt, maxAttempts, errorMessage, delaySec) {
+    onRetry(attempt, maxAttempts, errorMessage, delaySec, metadata) {
       convStore.touchActivity(convId);
-      // Transient stream error → clear partial state so the retry starts clean.
+      // Provider retry → clear partial state so the retry starts clean.
       // Completed rounds stay visible via streamingDisplayMessages.
       partialContent.length = 0;
       convStore.initStreamingState(convId);
       // Track for correct interleaving on the success/error path.
       // Don't push to conv.messages now — newMessages haven't been pushed yet,
       // so a system message here would end up before all AI blocks.
-      const sysText = `⟳ ${errorMessage} — retrying in ${delaySec}s (${attempt}/${maxAttempts})…`;
+      const sysText = formatRetryNotice(attempt, maxAttempts, errorMessage, delaySec, metadata);
       retryMarkers.push({ afterIndex: agentState.completedMessages.length, text: sysText });
       syncCompletedStreamingDisplayMessages();
-      server.sendToSubscribers(convId, { type: "stream_retry", convId, attempt, maxAttempts, errorMessage, delaySec });
+      server.sendToSubscribers(convId, {
+        type: "stream_retry",
+        convId,
+        attempt,
+        maxAttempts,
+        errorMessage,
+        delaySec,
+        ...(metadata?.kind ? { kind: metadata.kind } : {}),
+        ...(metadata?.resetAt != null ? { resetAt: metadata.resetAt } : {}),
+      });
+    },
+    onRetryWaitStart() {
+      convStore.pauseActivity(convId);
+    },
+    onRetryWaitEnd() {
+      convStore.resumeActivity(convId);
     },
     onRoundComplete() {
       // Clear partial content — completed rounds are tracked via agentState.completedMessages.
