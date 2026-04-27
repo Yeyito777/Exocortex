@@ -14,6 +14,7 @@ import { getScrollOffsetForViewStart, getViewStart } from "./chatscroll";
 import {
   ensureCursorRowVisibleInViewport,
   scrollLineWithStickyCursorInViewport,
+  scrollPageWithCursorInViewport,
   scrollWithCursorInViewport,
 } from "./viewportscroll";
 import { copyToClipboard } from "./vim/clipboard";
@@ -146,10 +147,22 @@ export function scrollHalfPageWithCursor(state: RenderState, dir: number): void 
 }
 
 /**
- * Ctrl+B / Ctrl+F — scroll full page AND move cursor by the same amount.
+ * Ctrl+B / Ctrl+F — Vim-style page scroll with cursor placed at the edge of the new page.
  */
 export function scrollFullPageWithCursor(state: RenderState, dir: number): void {
-  scrollHistoryViewportWithCursor(state, dir, state.layout.messageAreaHeight);
+  const totalLines = state.historyLines.length;
+  if (totalLines === 0) return;
+
+  const { messageAreaHeight } = state.layout;
+  const next = scrollPageWithCursorInViewport({
+    totalLines,
+    viewportHeight: messageAreaHeight,
+    viewStart: getViewStart(state),
+    cursorRow: state.historyCursor.row,
+  }, dir);
+
+  state.historyCursor = clampCursor({ row: next.cursorRow, col: state.historyCursor.col }, state.historyLines);
+  state.scrollOffset = getScrollOffsetForViewStart(totalLines, messageAreaHeight, next.viewStart);
 }
 
 /** Apply the shared cursor-aware page scroll logic to chat history's inverted scrollOffset. */

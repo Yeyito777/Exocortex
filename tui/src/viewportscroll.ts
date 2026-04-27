@@ -1,7 +1,7 @@
 /**
  * Shared cursor-aware viewport scrolling.
  *
- * This is the exact vim-style Ctrl+E/Y/D/U/F/B behavior used by chat history,
+ * This is the vim-style Ctrl+E/Y/D/U/F/B behavior used by chat history,
  * expressed in terms of a conventional top-based viewStart so other panes (like
  * the conversations sidebar) can use the same logic even if they store scroll
  * offsets differently.
@@ -76,7 +76,7 @@ export function scrollLineWithStickyCursorInViewport(view: CursorViewport, dir: 
 }
 
 /**
- * Ctrl+U/D/F/B behavior: scroll the viewport and move the cursor by the same
+ * Ctrl+U / Ctrl+D behavior: scroll the viewport and move the cursor by the same
  * amount. `dir`: positive = up/older, negative = down/newer.
  */
 export function scrollWithCursorInViewport(view: CursorViewport, dir: number, amount: number): CursorViewport {
@@ -89,4 +89,37 @@ export function scrollWithCursorInViewport(view: CursorViewport, dir: number, am
   const viewStart = clampViewStart(totalLines, viewportHeight, view.viewStart - lines);
 
   return ensureCursorRowVisibleInViewport({ ...view, totalLines, viewportHeight, viewStart, cursorRow });
+}
+
+/**
+ * Ctrl+B / Ctrl+F behavior: scroll a page and place the cursor at the edge of
+ * the new page, matching Vim's page-scroll feel. Vim uses roughly one window
+ * minus two context lines.  `dir`: positive = up/older, negative = down/newer.
+ *
+ * Note: Exocortex viewports clamp to a full viewport of content at EOF/BOF (they
+ * do not represent Vim's trailing blank rows after EOF), so EOF page placement is
+ * Vim-like within that storage constraint.
+ */
+export function scrollPageWithCursorInViewport(view: CursorViewport, dir: number): CursorViewport {
+  const totalLines = Math.max(0, view.totalLines);
+  if (totalLines === 0) return { ...view, totalLines, viewStart: 0, cursorRow: 0 };
+
+  const viewportHeight = Math.max(0, view.viewportHeight);
+  if (viewportHeight <= 0 || totalLines <= viewportHeight) {
+    return {
+      ...view,
+      totalLines,
+      viewportHeight,
+      viewStart: 0,
+      cursorRow: Math.max(0, Math.min(view.cursorRow, totalLines - 1)),
+    };
+  }
+
+  const amount = Math.max(1, viewportHeight - 2);
+  const viewStart = clampViewStart(totalLines, viewportHeight, view.viewStart - dir * amount);
+  const cursorRow = dir < 0
+    ? viewStart
+    : Math.min(totalLines - 1, viewStart + viewportHeight - 1);
+
+  return { ...view, totalLines, viewportHeight, viewStart, cursorRow };
 }

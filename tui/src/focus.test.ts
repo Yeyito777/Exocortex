@@ -3,6 +3,7 @@ import { handleFocusedKey } from "./focus";
 import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
 import { handleEvent } from "./events";
+import { buildDisplayRows } from "./sidebar";
 import { createInitialState } from "./state";
 import type { ConversationSummary, ProviderInfo } from "./messages";
 
@@ -34,7 +35,7 @@ const providers: ProviderInfo[] = [
   },
 ];
 
-function conversation(id: string, sortOrder: number): ConversationSummary {
+function conversation(id: string, sortOrder: number, overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
     id,
     provider: "openai",
@@ -50,6 +51,7 @@ function conversation(id: string, sortOrder: number): ConversationSummary {
     streaming: false,
     unread: false,
     sortOrder,
+    ...overrides,
   };
 }
 
@@ -456,6 +458,12 @@ describe("sidebar marked navigation", () => {
   });
 });
 
+function selectedSidebarScreenPosition(state: ReturnType<typeof createInitialState>): number {
+  const rows = buildDisplayRows(state.sidebar);
+  const selectedDisplayRow = rows.findIndex((row) => row.type === "entry" && row.convIdx === state.sidebar.selectedIndex);
+  return selectedDisplayRow - state.sidebar.scrollOffset;
+}
+
 describe("sidebar Ctrl scrolling", () => {
   function setupSidebarScrollState() {
     const state = createInitialState();
@@ -496,7 +504,7 @@ describe("sidebar Ctrl scrolling", () => {
     expect(state.scrollOffset).toBe(7);
   });
 
-  test("Ctrl+D/U/F/B move the sidebar selection by the same amount as the viewport", () => {
+  test("Ctrl+D/U move the sidebar selection by the same amount as the viewport", () => {
     const state = setupSidebarScrollState();
     state.sidebar.scrollOffset = 0;
     state.sidebar.selectedIndex = 4;
@@ -510,14 +518,53 @@ describe("sidebar Ctrl scrolling", () => {
     expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
     expect(state.sidebar.scrollOffset).toBe(0);
     expect(state.sidebar.selectedId).toBe("conv-5");
+  });
+
+  test("Ctrl+F/B use Vim page edge placement", () => {
+    const state = setupSidebarScrollState();
+    state.sidebar.scrollOffset = 0;
+    state.sidebar.selectedIndex = 4;
+    state.sidebar.selectedId = "conv-5";
 
     expect(handleFocusedKey({ type: "ctrl-f" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.scrollOffset).toBe(6);
-    expect(state.sidebar.selectedId).toBe("conv-11");
+    expect(state.sidebar.scrollOffset).toBe(4);
+    expect(state.sidebar.selectedId).toBe("conv-5");
+    expect(selectedSidebarScreenPosition(state)).toBe(0);
 
     expect(handleFocusedKey({ type: "ctrl-b" }, state)).toEqual({ type: "handled" });
     expect(state.sidebar.scrollOffset).toBe(0);
-    expect(state.sidebar.selectedId).toBe("conv-5");
+    expect(state.sidebar.selectedId).toBe("conv-6");
+    expect(selectedSidebarScreenPosition(state)).toBe(5);
+  });
+
+  test("Ctrl+D/U snap sidebar chrome off the viewport edge", () => {
+    const state = setupSidebarScrollState();
+    state.sidebar.conversations = Array.from({ length: 12 }, (_, i) =>
+      conversation(`conv-${i + 1}`, i + 1, { pinned: i < 2 }),
+    );
+    state.sidebar.scrollOffset = 0;
+    state.sidebar.selectedIndex = 0;
+    state.sidebar.selectedId = "conv-1";
+
+    expect(handleFocusedKey({ type: "ctrl-d" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-3");
+    expect(state.sidebar.scrollOffset).toBe(4);
+    expect(selectedSidebarScreenPosition(state)).toBe(0);
+
+    expect(handleFocusedKey({ type: "ctrl-d" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-6");
+    expect(state.sidebar.scrollOffset).toBe(7);
+    expect(selectedSidebarScreenPosition(state)).toBe(0);
+
+    expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-3");
+    expect(state.sidebar.scrollOffset).toBe(4);
+    expect(selectedSidebarScreenPosition(state)).toBe(0);
+
+    expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("conv-1");
+    expect(state.sidebar.scrollOffset).toBe(1);
+    expect(selectedSidebarScreenPosition(state)).toBe(0);
   });
 });
 

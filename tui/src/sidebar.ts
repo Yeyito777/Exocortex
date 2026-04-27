@@ -14,6 +14,7 @@ import {
   clampViewStart,
   ensureCursorRowVisibleInViewport,
   scrollLineWithStickyCursorInViewport,
+  scrollPageWithCursorInViewport,
   scrollWithCursorInViewport,
 } from "./viewportscroll";
 import { theme } from "./theme";
@@ -457,19 +458,71 @@ function nearestDisplayEntry(
   return scan(1) ?? scan(-1);
 }
 
+function snapSidebarViewStartToEntry(
+  displayRows: DisplayRow[],
+  listRows: number,
+  viewStart: number,
+  direction: -1 | 0 | 1,
+): number {
+  const maxStart = Math.max(0, displayRows.length - listRows);
+  const clamped = Math.max(0, Math.min(viewStart, maxStart));
+  if (displayRows[clamped]?.type === "entry") return clamped;
+
+  const scan = (step: 1 | -1): number | null => {
+    for (let row = clamped + step; row >= 0 && row <= maxStart; row += step) {
+      if (displayRows[row]?.type === "entry") return row;
+    }
+    return null;
+  };
+
+  // Sidebar labels/delimiters are chrome, not cursor-bearing content.  If a
+  // scroll lands the viewport top on chrome, keep moving in the scroll direction
+  // until the top row is an actual conversation.  This prevents Ctrl+D/U/F/B
+  // from preserving a one-row offset just because a Pinned label or delimiter was
+  // visible when the scroll began.
+  if (direction > 0) return scan(1) ?? scan(-1) ?? clamped;
+  if (direction < 0) return scan(-1) ?? scan(1) ?? clamped;
+  return scan(1) ?? scan(-1) ?? clamped;
+}
+
+function sidebarScrollDirection(action: Action): -1 | 0 | 1 {
+  switch (action) {
+    case "scroll_line_down":
+    case "scroll_half_down":
+    case "scroll_page_down":
+    case "scroll_bottom":
+      return 1;
+    case "scroll_line_up":
+    case "scroll_half_up":
+    case "scroll_page_up":
+    case "scroll_top":
+      return -1;
+    default:
+      return 0;
+  }
+}
+
 function applySidebarCursorViewport(
   sidebar: SidebarState,
   totalRows: number,
   cursorRow: number,
   viewStart: number,
   previousCursorRow: number,
+  direction: -1 | 0 | 1,
+  edgePlacement: "top" | "bottom" | null = null,
 ): void {
   const displayRows = buildDisplayRows(sidebar);
   const listRows = sidebarListRows(totalRows, sidebar);
   if (displayRows.length === 0 || listRows <= 0) return;
 
-  const preferredStep = cursorRow < previousCursorRow ? -1 : cursorRow > previousCursorRow ? 1 : 0;
-  const target = nearestDisplayEntry(displayRows, cursorRow, preferredStep);
+  const snappedViewStart = snapSidebarViewStartToEntry(displayRows, listRows, viewStart, direction);
+  const edgeCursorRow = edgePlacement === "top"
+    ? snappedViewStart
+    : edgePlacement === "bottom"
+      ? snappedViewStart + listRows - 1
+      : cursorRow;
+  const preferredStep = edgeCursorRow < previousCursorRow ? -1 : edgeCursorRow > previousCursorRow ? 1 : 0;
+  const target = nearestDisplayEntry(displayRows, edgeCursorRow, preferredStep);
   if (target == null) return;
 
   focusConversationAt(sidebar, target);
@@ -480,7 +533,7 @@ function applySidebarCursorViewport(
   const visible = ensureCursorRowVisibleInViewport({
     totalLines: displayRows.length,
     viewportHeight: listRows,
-    viewStart,
+    viewStart: snappedViewStart,
     cursorRow: actualCursorRow,
   });
   sidebar.scrollOffset = visible.viewStart;
@@ -535,20 +588,20 @@ export function handleSidebarScrollAction(action: Action, sidebar: SidebarState,
       }, -1, Math.floor(listRows / 2));
       break;
     case "scroll_page_up":
-      next = scrollWithCursorInViewport({
+      next = scrollPageWithCursorInViewport({
         totalLines: displayRows.length,
         viewportHeight: listRows,
         viewStart: currentViewStart,
         cursorRow: currentCursorRow,
-      }, 1, listRows);
+      }, 1);
       break;
     case "scroll_page_down":
-      next = scrollWithCursorInViewport({
+      next = scrollPageWithCursorInViewport({
         totalLines: displayRows.length,
         viewportHeight: listRows,
         viewStart: currentViewStart,
         cursorRow: currentCursorRow,
-      }, -1, listRows);
+      }, -1);
       break;
     case "scroll_top":
       next = { viewStart: 0, cursorRow: 0 };
@@ -560,7 +613,15 @@ export function handleSidebarScrollAction(action: Action, sidebar: SidebarState,
       return false;
   }
 
-  applySidebarCursorViewport(sidebar, totalRows, next.cursorRow, next.viewStart, currentCursorRow);
+  applySidebarCursorViewport(
+    sidebar,
+    totalRows,
+    next.cursorRow,
+    next.viewStart,
+    currentCursorRow,
+    sidebarScrollDirection(action),
+    action === "scroll_page_down" ? "top" : action === "scroll_page_up" ? "bottom" : null,
+  );
   return true;
 }
 
