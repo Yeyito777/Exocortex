@@ -26,17 +26,69 @@ export interface SafetyConfig {
   [toolName: string]: unknown;
 }
 
+export interface OpenCommandConfig {
+  /** Executable to spawn when opening a matching target. */
+  command: string;
+  /** Arguments passed to command. Supports {target}, {path}, {target:sh}, and {path:sh}. */
+  args?: string[];
+}
+
+export interface OpenFileRuleConfig extends OpenCommandConfig {
+  /** File extensions handled by this opener, without a leading dot. */
+  extensions: string[];
+}
+
+export interface OpenersConfig {
+  /** Opener used for http/https links. Set to null to disable link opening. */
+  url?: OpenCommandConfig | null;
+  /** File openers matched by extension, checked in order. */
+  rules?: OpenFileRuleConfig[];
+}
+
 export interface ExocortexConfig {
   /** Active TUI theme name. */
   theme?: string;
+  /** TUI open-on-enter commands for links and file paths. */
+  openers?: OpenersConfig;
   /** Tool safety policy. */
   safety?: SafetyConfig;
   /** Preserve unknown future/user keys. */
   [key: string]: unknown;
 }
 
+export function defaultOpenersConfig(): OpenersConfig {
+  return {
+    url: { command: "xdg-open", args: ["{target}"] },
+    rules: [
+      {
+        extensions: [
+          "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff",
+          "avif", "heic", "heif", "svg", "ico", "jxl", "jp2", "ppm", "pgm",
+          "pbm", "pnm", "pdf",
+        ],
+        command: "show",
+        args: ["{path}"],
+      },
+      {
+        extensions: [
+          "mp3", "wav", "flac", "m4a", "aac", "ogg", "oga", "opus", "wma",
+          "aif", "aiff", "alac", "mid", "midi", "mov", "mp4", "m4v", "mkv",
+          "webm", "avi",
+        ],
+        command: "st",
+        args: ["-e", "zsh", "-ic", "exec audio-play {path:sh}"],
+      },
+      {
+        extensions: ["md", "py", "txt"],
+        command: "st",
+        args: ["-e", "zsh", "-ic", "exec nvim {path:sh}"],
+      },
+    ],
+  };
+}
+
 export function defaultExocortexConfig(): ExocortexConfig {
-  return { theme: "whale" };
+  return { theme: "whale", openers: defaultOpenersConfig() };
 }
 
 export function exocortexConfigPath(): string {

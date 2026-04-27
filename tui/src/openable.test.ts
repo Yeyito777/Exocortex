@@ -1,5 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { defaultExocortexConfig, writeExocortexConfig } from "@exocortex/shared/config";
 import { findOpenableTargetMatches, openTargetDetached, resolveOpenCommand } from "./openable";
+
+function resetConfig(): void {
+  writeExocortexConfig(defaultExocortexConfig());
+}
+
+beforeEach(resetConfig);
+afterEach(resetConfig);
 
 describe("openable target detection", () => {
   test("detects image, pdf, and audio/video paths", () => {
@@ -80,5 +88,47 @@ describe("openable target command resolution", () => {
   test("does not open unconfigured extensions", () => {
     expect(resolveOpenCommand("/tmp/archive.zip")).toBeNull();
     expect(openTargetDetached("/tmp/archive.zip")).toBe(false);
+  });
+
+  test("uses opener commands configured in config.json", () => {
+    writeExocortexConfig({
+      theme: "whale",
+      openers: {
+        url: { command: "browser", args: ["--new-tab", "{target}"] },
+        rules: [
+          { extensions: ["png"], command: "image-viewer", args: ["{path}"] },
+          { extensions: ["log"], command: "term", args: ["-e", "editor {path:sh}"] },
+        ],
+      },
+    });
+
+    expect(findOpenableTargetMatches("/tmp/a.png /tmp/b.md /tmp/c.log https://example.com").map((m) => m.target)).toEqual([
+      "/tmp/a.png",
+      "/tmp/c.log",
+      "https://example.com",
+    ]);
+    expect(resolveOpenCommand("https://example.com")).toEqual({
+      command: "browser",
+      args: ["--new-tab", "https://example.com"],
+    });
+    expect(resolveOpenCommand("/tmp/a.png")).toEqual({ command: "image-viewer", args: ["/tmp/a.png"] });
+    expect(resolveOpenCommand("/tmp/it's tricky.log")).toEqual({
+      command: "term",
+      args: ["-e", "editor '/tmp/it'\\''s tricky.log'"],
+    });
+    expect(resolveOpenCommand("/tmp/b.md")).toBeNull();
+  });
+
+  test("can disable link opening from config.json", () => {
+    writeExocortexConfig({
+      theme: "whale",
+      openers: {
+        url: null,
+        rules: [{ extensions: ["txt"], command: "viewer", args: ["{path}"] }],
+      },
+    });
+
+    expect(findOpenableTargetMatches("https://example.com /tmp/a.txt").map((m) => m.target)).toEqual(["/tmp/a.txt"]);
+    expect(resolveOpenCommand("https://example.com")).toBeNull();
   });
 });
