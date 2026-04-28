@@ -1,4 +1,4 @@
-import { formatMarkdown, stripMarkdown, termWidth, hardBreak } from "./formatting";
+import { formatMarkdownChunks, stripMarkdown, termWidth, sliceByWidth, visibleLength } from "./formatting";
 
 /**
  * Detects markdown table rows (start and end with |)
@@ -82,45 +82,90 @@ function distributeWidths(natural: number[], available: number): number[] {
   return result;
 }
 
+interface CellWrapResult {
+  lines: string[];
+  join: string[];
+}
+
+function takeChunkByWidth(text: string, width: number): [string, string] {
+  const [taken, rest] = sliceByWidth(text, width);
+  if (taken !== "") return [taken, rest];
+  return [text.slice(0, 1), text.slice(1)];
+}
+
+function seedLongWord(
+  word: string,
+  width: number,
+  firstJoin: string,
+): { pushedLines: string[]; pushedJoins: string[]; line: string; lineJoin: string } {
+  const pushedLines: string[] = [];
+  const pushedJoins: string[] = [];
+  let remaining = word;
+  let joinBefore = firstJoin;
+
+  for (;;) {
+    const [taken, rest] = takeChunkByWidth(remaining, width);
+    if (!rest) {
+      return { pushedLines, pushedJoins, line: taken, lineJoin: joinBefore };
+    }
+    pushedLines.push(taken);
+    pushedJoins.push(joinBefore);
+    remaining = rest;
+    joinBefore = "";
+  }
+}
+
 /**
  * Word-wrap cell content using markdown-aware visible width measurement.
  * Uses termWidth(stripMarkdown(line)) to decide breaks so that markdown
  * markers completing within a line are correctly excluded from width.
- * Returns at least one line (empty string for empty content).
+ * Returns at least one line (empty string for empty content), plus invisible
+ * joins used to parse inline markdown across wrapped cell lines.
  */
-function wrapCellContent(text: string, width: number): string[] {
-  if (!text) return [""];
-  if (width < 1) return [text];
-  if (termWidth(stripMarkdown(text)) <= width) return [text];
+function wrapCellContent(text: string, width: number): CellWrapResult {
+  if (!text) return { lines: [""], join: [""] };
+  if (width < 1) return { lines: [text], join: [""] };
+  if (termWidth(stripMarkdown(text)) <= width) return { lines: [text], join: [""] };
 
   const words = text.split(/\s+/);
   const result: string[] = [];
+  const joins: string[] = [];
   let line = "";
+  let lineJoin = "";
+
+  const startLineWithWord = (word: string, firstJoin: string) => {
+    if (termWidth(stripMarkdown(word)) <= width) {
+      line = word;
+      lineJoin = firstJoin;
+      return;
+    }
+    const seeded = seedLongWord(word, width, firstJoin);
+    result.push(...seeded.pushedLines);
+    joins.push(...seeded.pushedJoins);
+    line = seeded.line;
+    lineJoin = seeded.lineJoin;
+  };
 
   for (const word of words) {
     if (line === "") {
-      if (termWidth(stripMarkdown(word)) > width) {
-        line = hardBreak(word, width, result);
-      } else {
-        line = word;
-      }
+      startLineWithWord(word, result.length > 0 ? " " : "");
     } else {
       const candidate = line + " " + word;
       if (termWidth(stripMarkdown(candidate)) <= width) {
         line = candidate;
       } else {
         result.push(line);
-        if (termWidth(stripMarkdown(word)) > width) {
-          line = hardBreak(word, width, result);
-        } else {
-          line = word;
-        }
+        joins.push(lineJoin);
+        startLineWithWord(word, " ");
       }
     }
   }
 
-  if (line) result.push(line);
-  return result.length > 0 ? result : [""];
+  if (line) {
+    result.push(line);
+    joins.push(lineJoin);
+  }
+  return result.length > 0 ? { lines: result, join: joins } : { lines: [""], join: [""] };
 }
 
 /**
@@ -206,19 +251,18 @@ export function renderTableBlock(
       // Data row — wrap each cell, then render line-by-line
       const cells = dataRows[i];
       const wrapped = colWidths.map((w, c) => wrapCellContent(cells[c] || "", w));
-      const rowHeight = Math.max(1, ...wrapped.map(wc => wc.length));
+      const formatted = bgRestore
+        ? wrapped.map(wc => formatMarkdownChunks(wc.lines, wc.join, bgRestore))
+        : wrapped.map(wc => wc.lines);
+      const rowHeight = Math.max(1, ...wrapped.map(wc => wc.lines.length));
 
       for (let ln = 0; ln < rowHeight; ln++) {
         const parts = colWidths.map((w, c) => {
-          const cellLine = wrapped[c]?.[ln] || "";
-          const visLen = termWidth(stripMarkdown(cellLine));
+          const cellLine = wrapped[c]?.lines[ln] || "";
+          const renderedCellLine = formatted[c]?.[ln] || "";
+          const visLen = bgRestore ? visibleLength(renderedCellLine) : termWidth(stripMarkdown(cellLine));
           const pad = " ".repeat(Math.max(0, w - visLen));
-          if (bgRestore) {
-            // Apply formatting per-cell to prevent cross-cell regex matches
-            const fmt = formatMarkdown(cellLine, bgRestore);
-            return " " + fmt.text + pad + " ";
-          }
-          return " " + cellLine + pad + " ";
+          return " " + renderedCellLine + pad + " ";
         });
         result.push("│" + parts.join("│") + "│");
       }
