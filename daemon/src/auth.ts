@@ -13,20 +13,41 @@ interface StoredAuthLike extends StoredAuth {
   source?: string | null;
 }
 
-export function login(provider: ProviderId, callbacks?: LoginCallbacks | ((msg: string) => void), options?: LoginOptions): Promise<LoginResult> {
-  return getProviderAdapter(provider).auth.login(callbacks, options);
+const CREDENTIALS_CACHE_TTL_MS = 5_000;
+
+const credentialsCache = new Map<ProviderId, { value: boolean; expiresAt: number }>();
+
+function invalidateCredentialsCache(provider?: ProviderId): void {
+  if (provider) credentialsCache.delete(provider);
+  else credentialsCache.clear();
 }
 
-export function ensureAuthenticated(provider: ProviderId, callbacks?: LoginCallbacks, options?: LoginOptions): Promise<EnsureAuthResult> {
-  return getProviderAdapter(provider).auth.ensureAuthenticated(callbacks, options);
+export async function login(provider: ProviderId, callbacks?: LoginCallbacks | ((msg: string) => void), options?: LoginOptions): Promise<LoginResult> {
+  try {
+    return await getProviderAdapter(provider).auth.login(callbacks, options);
+  } finally {
+    invalidateCredentialsCache(provider);
+  }
 }
 
-export function refreshTokens(provider: ProviderId, refreshToken: string) {
+export async function ensureAuthenticated(provider: ProviderId, callbacks?: LoginCallbacks, options?: LoginOptions): Promise<EnsureAuthResult> {
+  try {
+    return await getProviderAdapter(provider).auth.ensureAuthenticated(callbacks, options);
+  } finally {
+    invalidateCredentialsCache(provider);
+  }
+}
+
+export async function refreshTokens(provider: ProviderId, refreshToken: string): Promise<unknown> {
   const refresh = getProviderAdapter(provider).auth.refreshTokens;
   if (!refresh) {
     throw new Error(`Token refresh is not supported for provider: ${provider}`);
   }
-  return refresh(refreshToken);
+  try {
+    return await refresh(refreshToken);
+  } finally {
+    invalidateCredentialsCache(provider);
+  }
 }
 
 export function verifyAuth(provider: ProviderId, accessToken: string): Promise<boolean> {
@@ -34,11 +55,21 @@ export function verifyAuth(provider: ProviderId, accessToken: string): Promise<b
 }
 
 export function clearAuth(provider: ProviderId): boolean {
-  return getProviderAdapter(provider).auth.clearAuth();
+  try {
+    return getProviderAdapter(provider).auth.clearAuth();
+  } finally {
+    invalidateCredentialsCache(provider);
+  }
 }
 
 export function hasConfiguredCredentials(provider: ProviderId): boolean {
-  return getProviderAdapter(provider).auth.hasConfiguredCredentials();
+  const now = Date.now();
+  const cached = credentialsCache.get(provider);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const value = getProviderAdapter(provider).auth.hasConfiguredCredentials();
+  credentialsCache.set(provider, { value, expiresAt: now + CREDENTIALS_CACHE_TTL_MS });
+  return value;
 }
 
 export function getAuthByProvider(): Record<ProviderId, boolean> {

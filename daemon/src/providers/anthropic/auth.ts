@@ -160,12 +160,17 @@ export function hasConfiguredCredentials(): boolean {
   if (typeof process.env.CLAUDE_CODE_OAUTH_TOKEN === "string" && process.env.CLAUDE_CODE_OAUTH_TOKEN.length > 0) {
     return true;
   }
-  const liveStatus = getClaudeAuthStatusSync();
-  if (liveStatus?.loggedIn === true) return true;
-  if (liveStatus?.loggedIn === false) return false;
+
+  // Prefer Exocortex's cached Claude Code auth metadata for hot paths like
+  // daemon/TUI startup. Spawning `claude auth status --json` synchronously costs
+  // hundreds of milliseconds on every check, while real send/login paths still
+  // call ensureAuthenticated()/verifyAuth() and refresh the cache from the CLI.
   const stored = loadStoredAuth();
-  if (stored?.cli.authenticated === true) return true;
-  return loadClaudeLocalProfile() !== null;
+  if (stored?.cli?.authenticated === true) return true;
+  if (loadClaudeLocalProfile() !== null) return true;
+
+  const liveStatus = getClaudeAuthStatusSync();
+  return liveStatus?.loggedIn === true;
 }
 
 export function clearAuth(): boolean {

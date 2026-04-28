@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT"
+
+WT_NAME=$(basename "$(git rev-parse --git-dir)")
+COMMON_DIR=$(git rev-parse --git-common-dir)
+GIT_DIR=$(git rev-parse --git-dir)
+if [ "$(realpath "$GIT_DIR")" = "$(realpath "$COMMON_DIR")" ]; then
+  WT_NAME="main"
+fi
+
+RUNTIME_DIR="config/runtime"
+if [ "$WT_NAME" != "main" ]; then
+  RUNTIME_DIR="config/runtime/$WT_NAME"
+fi
+SOCKET="$RUNTIME_DIR/exocortexd.sock"
+PID_FILE="$RUNTIME_DIR/exocortexd.pid"
+
+if [ "$WT_NAME" = "main" ]; then
+  CONV_DIR="config/data/conversations"
+else
+  CONV_DIR="config/data/instances/$WT_NAME/conversations"
+fi
+
+if [ ! -d "$CONV_DIR" ]; then
+  echo "Conversation directory missing: $CONV_DIR" >&2
+  echo "For a realistic worktree profile, copy main's config/data/conversations into $CONV_DIR" >&2
+  exit 1
+fi
+
+cleanup() {
+  if [ -f "$PID_FILE" ]; then
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    if [ -n "${pid:-}" ]; then kill "$pid" 2>/dev/null || true; fi
+  fi
+  if [ -n "${DAEMON_SHELL_PID:-}" ]; then kill "$DAEMON_SHELL_PID" 2>/dev/null || true; fi
+}
+trap cleanup EXIT
+
+cleanup
+rm -rf "$RUNTIME_DIR"
+mkdir -p "$RUNTIME_DIR"
+TMP_DIR=$(mktemp -d /tmp/exocortex-startup-profile.XXXXXX)
+DAEMON_LOG="$TMP_DIR/daemon.log"
+TUI_LOG="$TMP_DIR/tui.log"
+
+CONV_COUNT=$(find "$CONV_DIR" -maxdepth 1 -name '*.json' | wc -l | tr -d ' ')
+CONV_BYTES=$(du -sh "$CONV_DIR" | awk '{print $1}')
+echo "Profiling worktree: $WT_NAME"
+echo "Conversations: $CONV_COUNT files, $CONV_BYTES in $CONV_DIR"
+echo
+
+(
+  cd daemon
+  EXOCORTEX_PROFILE_STARTUP=1 bun run src/main.ts --profile-startup >"$DAEMON_LOG" 2>&1
+) &
+DAEMON_SHELL_PID=$!
+
+python3 - "$SOCKET" <<'PY'
+import json, os, socket, sys, time
+path = sys.argv[1]
+start = time.perf_counter()
+socket_seen = None
+connected = None
+pong = None
+last_error = None
+sock = None
+for _ in range(4000):
+    if socket_seen is None and os.path.exists(path):
+        socket_seen = time.perf_counter()
+    if socket_seen is not None:
+        s = socket.socket(socket.AF_UNIX)
+        try:
+            s.connect(path)
+            connected = time.perf_counter()
+            sock = s
+            break
+        except Exception as exc:
+            last_error = repr(exc)
+            s.close()
+    time.sleep(0.005)
+if sock is not None:
+    sock.sendall(b'{"type":"ping","reqId":"startup-profile"}\n')
+    buf = b""
+    while time.perf_counter() - start < 30:
+        data = sock.recv(1024 * 1024)
+        if not data:
+            break
+        buf += data
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if event.get("type") == "pong":
+                pong = time.perf_counter()
+                break
+        if pong is not None:
+            break
+    sock.close()
+print("external daemon timing:", json.dumps({
+    "socketExistsMs": None if socket_seen is None else round((socket_seen - start) * 1000, 3),
+    "connectMs": None if connected is None else round((connected - start) * 1000, 3),
+    "pongMs": None if pong is None else round((pong - start) * 1000, 3),
+    "lastError": last_error if connected is None else None,
+}))
+if connected is None:
+    sys.exit(1)
+PY
+
+for _ in $(seq 1 4000); do
+  if grep -q '"event":"ready"' "$DAEMON_LOG" 2>/dev/null; then break; fi
+  sleep 0.005
+done
+
+echo
+echo "daemon profile marks:"
+grep '^\[startup-profile\]' "$DAEMON_LOG" || true
+
+echo
+echo "tui startup profile:"
+(
+  cd tui
+  EXOCORTEX_PROFILE_STARTUP=1 bun run src/main.ts --profile-startup >"$TUI_LOG" 2>&1
+) || true
+grep -o '\[startup-profile\] .*' "$TUI_LOG" || true
+
+echo
+echo "raw logs saved in $TMP_DIR"

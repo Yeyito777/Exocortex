@@ -10,11 +10,11 @@
  */
 
 import { join } from "path";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, renameSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, renameSync, statSync } from "fs";
 import { log } from "./log";
-import { conversationsDir, trashDir } from "@exocortex/shared/paths";
-import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary } from "./messages";
-import { DEFAULT_EFFORT, countConversationMessages, sortConversations } from "./messages";
+import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
+import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary } from "./messages";
+import { DEFAULT_EFFORT, countConversationMessages, sortConversations, summarizeConversation } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
@@ -309,8 +309,10 @@ function migrate(raw: Record<string, unknown>): ConversationFile {
 // ── Paths ───────────────────────────────────────────────────────────
 
 const CONV_DIR = conversationsDir();
+const DATA_DIR = dataDir();
 const TRASH_DIR = trashDir();
 const TRASH_META = join(TRASH_DIR, "trash.json");
+const INDEX_FILE = join(DATA_DIR, "conversations-index.json");
 
 /** Reject IDs that contain path separators or parent-directory traversal sequences. */
 function assertSafeId(id: string): void {
@@ -319,7 +321,14 @@ function assertSafeId(id: string): void {
   }
 }
 
+function ensureDataDir(): void {
+  if (!existsSync(DATA_DIR)) {
+    mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  }
+}
+
 function ensureDir(): void {
+  ensureDataDir();
   if (!existsSync(CONV_DIR)) {
     mkdirSync(CONV_DIR, { recursive: true, mode: 0o700 });
   }
@@ -392,6 +401,128 @@ function fromFile(file: ConversationFile): Conversation {
     pinned: file.pinned,
     sortOrder: file.sortOrder,
     title: file.title,
+  };
+}
+
+// ── Summary index ───────────────────────────────────────────────────
+
+const INDEX_VERSION = 1;
+
+export interface ConversationIndexEntry extends PersistedConversationSummary {
+  fileSize: number;
+  fileMtimeMs: number;
+}
+
+interface ConversationIndexFile {
+  version: 1;
+  updatedAt: number;
+  conversations: ConversationIndexEntry[];
+}
+
+export interface LoadConversationIndexResult {
+  summaries: PersistedConversationSummary[];
+  reused: number;
+  rebuilt: number;
+  removed: number;
+  saved: boolean;
+}
+
+export function getConversationFileStat(id: string): { fileSize: number; fileMtimeMs: number } {
+  const stat = statSync(convPath(id));
+  return { fileSize: stat.size, fileMtimeMs: stat.mtimeMs };
+}
+
+function statConversationFile(id: string): { fileSize: number; fileMtimeMs: number } | null {
+  try {
+    return getConversationFileStat(id);
+  } catch {
+    return null;
+  }
+}
+
+export function indexEntryFromConversation(conv: Conversation): ConversationIndexEntry {
+  const stat = statConversationFile(conv.id) ?? { fileSize: 0, fileMtimeMs: 0 };
+  return { ...summarizeConversation(conv), ...stat };
+}
+
+function readConversationIndex(): ConversationIndexFile | null {
+  try {
+    if (!existsSync(INDEX_FILE)) return null;
+    const parsed = JSON.parse(readFileSync(INDEX_FILE, "utf-8")) as ConversationIndexFile;
+    if (parsed.version !== INDEX_VERSION || !Array.isArray(parsed.conversations)) return null;
+    return parsed;
+  } catch (err) {
+    log("warn", `persistence: failed to read conversation index: ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
+}
+
+export function saveConversationIndex(entries: ConversationIndexEntry[]): void {
+  ensureDataDir();
+  const file: ConversationIndexFile = {
+    version: INDEX_VERSION,
+    updatedAt: Date.now(),
+    conversations: entries,
+  };
+  const tmp = `${INDEX_FILE}.tmp`;
+  writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
+  renameSync(tmp, INDEX_FILE);
+}
+
+/** Load summaries from the index, repairing stale/missing entries by parsing only those conversation files. */
+export function loadConversationIndex(): LoadConversationIndexResult {
+  ensureDir();
+  const index = readConversationIndex();
+  const indexed = new Map<string, ConversationIndexEntry>();
+  for (const entry of index?.conversations ?? []) indexed.set(entry.id, entry);
+
+  const entries: ConversationIndexEntry[] = [];
+  let reused = 0;
+  let rebuilt = 0;
+  let removed = 0;
+  let saved = index === null;
+  const seen = new Set<string>();
+
+  for (const filename of readdirSync(CONV_DIR)) {
+    if (!filename.endsWith(".json")) continue;
+    const id = filename.slice(0, -".json".length);
+    seen.add(id);
+    const stat = statConversationFile(id);
+    if (!stat) continue;
+
+    const cached = indexed.get(id);
+    if (cached && cached.fileSize === stat.fileSize && cached.fileMtimeMs === stat.fileMtimeMs) {
+      entries.push(cached);
+      reused++;
+      continue;
+    }
+
+    const conv = load(id);
+    if (conv) {
+      entries.push({ ...summarizeConversation(conv), ...stat });
+      rebuilt++;
+      saved = true;
+    } else {
+      saved = true;
+    }
+  }
+
+  for (const id of indexed.keys()) {
+    if (!seen.has(id)) {
+      removed++;
+      saved = true;
+    }
+  }
+
+  sortConversations(entries);
+  if (saved) saveConversationIndex(entries);
+
+  return {
+    summaries: entries.map(({ fileSize: _fileSize, fileMtimeMs: _fileMtimeMs, ...summary }) => summary),
+    reused,
+    rebuilt,
+    removed,
+    saved,
   };
 }
 
