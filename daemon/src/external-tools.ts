@@ -10,14 +10,15 @@ import { mkdirSync } from "fs";
 import { externalToolsDir as getExternalToolsDir } from "@exocortex/shared/paths";
 import type { ExternalToolStyle } from "@exocortex/shared/messages";
 import { log } from "./log";
-import { getShellConfigHint, rewriteExternalToolShellCommandForTools } from "./external-tools-shell";
+import { getShellConfigHint, rewriteExternalToolShellCommandForTools, rewriteExternalToolShellCommandForToolsWithAuth } from "./external-tools-shell";
 import { scanExternalTools, getToolReloadKey } from "./external-tools-manifest";
 import { ExternalToolWatcher, getExternalToolWatchTargets } from "./external-tools-watcher";
 import { ExternalToolDaemonSupervisor } from "./external-tools-daemon";
+import { getExternalToolAuthArgs } from "./external-tools-auth";
 import type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool } from "./external-tools-types";
 
 export type { ManifestShellLiteralArg, ManifestShell } from "./external-tools-shell";
-export type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool, Manifest, ManifestDaemon } from "./external-tools-types";
+export type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool, Manifest, ManifestAuth, ManifestDaemon } from "./external-tools-types";
 export { getToolReloadKey } from "./external-tools-manifest";
 export { getExternalToolWatchTargets } from "./external-tools-watcher";
 export { buildDaemonSpawnSpec, getDaemonStatePaths, isLikelyManagedDaemonPid, reapStaleManagedDaemonPid } from "./external-tools-daemon-process";
@@ -63,6 +64,10 @@ function reloadTools(onUpdate?: () => void): void {
 
 export function rewriteExternalToolShellCommand(command: string, loadedTools: LoadedTool[] = tools): string {
   return rewriteExternalToolShellCommandForTools(command, loadedTools);
+}
+
+export async function rewriteExternalToolShellCommandForExecution(command: string, loadedTools: LoadedTool[] = tools): Promise<string> {
+  return await rewriteExternalToolShellCommandForToolsWithAuth(command, loadedTools, async (tool) => getExternalToolAuthArgs(tool as LoadedTool));
 }
 
 /**

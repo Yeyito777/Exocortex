@@ -16,8 +16,6 @@ import { grep } from "./grep";
 import { edit } from "./edit";
 import { browse } from "./browse";
 import { context, executeContext, type ContextToolEnv } from "./context";
-import { generateImageTool } from "./generate-image";
-import { transcribeAudioTool } from "./transcribe-audio";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
 
@@ -33,8 +31,6 @@ const TOOLS: Tool[] = [
   grep,
   edit,
   browse,
-  generateImageTool,
-  transcribeAudioTool,
   context,
 ];
 

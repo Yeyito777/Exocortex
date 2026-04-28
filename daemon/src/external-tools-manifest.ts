@@ -31,6 +31,19 @@ function loadManifest(toolDir: string): LoadedTool | null {
       data.shell = undefined;
     }
 
+    // Validate optional auth field
+    if (data.auth !== undefined) {
+      const providers = data.auth && typeof data.auth === "object" && Array.isArray(data.auth.providers)
+        ? data.auth.providers
+        : null;
+      if (!providers || providers.some((provider: unknown) => typeof provider !== "string" || provider.trim().length === 0)) {
+        log("warn", `external-tools: invalid auth config in ${manifestPath} — ignoring auth`);
+        data.auth = undefined;
+      } else {
+        data.auth = { providers: [...new Set(providers.map((provider: string) => provider.trim()))] };
+      }
+    }
+
     // Validate optional daemon field
     if (data.daemon !== undefined) {
       if (typeof data.daemon !== "object" || typeof data.daemon.command !== "string" || !data.daemon.command) {
@@ -94,6 +107,7 @@ export function getToolReloadKey(tools: LoadedTool[]): string {
     systemHint: tool.manifest.systemHint,
     display: tool.manifest.display,
     shell: tool.manifest.shell ?? null,
+    auth: tool.manifest.auth ?? null,
     daemon: tool.manifest.daemon ?? null,
     binDir: tool.binDir,
     toolDir: tool.toolDir,

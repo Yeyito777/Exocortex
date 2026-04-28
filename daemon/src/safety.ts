@@ -109,8 +109,6 @@ function primaryInputStrings(toolName: string, input: Record<string, unknown>): 
     grep: ["pattern", "path", "glob", "type"],
     glob: ["pattern", "path"],
     browse: ["url", "prompt"],
-    transcribe_audio: ["file_path", "mime_type"],
-    generate_image: ["prompt"],
   };
 
   const values: string[] = [];

@@ -19,7 +19,7 @@ import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./type
 import { MAX_OUTPUT_CHARS, getString, getNumber, safeSlice, summarizeParams } from "./util";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { isWindows } from "@exocortex/shared/paths";
-import { rewriteExternalToolShellCommand } from "../external-tools";
+import { rewriteExternalToolShellCommandForExecution } from "../external-tools";
 import { log } from "../log";
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -181,7 +181,13 @@ async function executeBashImpl(
   const command = getString(input, "command");
   if (!command) return { output: "Error: missing 'command' parameter", isError: true };
 
-  const rewrittenCommand = isWindows ? command : rewriteExternalToolShellCommand(command);
+  let rewrittenCommand: string;
+  try {
+    rewrittenCommand = isWindows ? command : await rewriteExternalToolShellCommandForExecution(command);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { output: `Error preparing external tool command: ${msg}`, isError: true };
+  }
   const timeout = getNumber(input, "timeout") ?? DEFAULT_TIMEOUT_MS;
 
   const startTime = Date.now();
