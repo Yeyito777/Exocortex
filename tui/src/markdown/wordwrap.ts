@@ -1,5 +1,5 @@
 import { theme } from "../theme";
-import { formatMarkdown, stripMarkdown, termWidth, sliceByWidth, isHorizontalRule } from "./formatting";
+import { formatMarkdownChunks, stripMarkdown, termWidth, sliceByWidth, isHorizontalRule } from "./formatting";
 import { FENCE_OPEN_RE, isFenceClose, renderCodeBlockWrapped, stripFenceIndent } from "./codeblocks";
 import { isTableLine, renderTableBlock } from "./tables";
 
@@ -117,35 +117,44 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
       continue;
     }
 
-    // Regular paragraph text — word-wrap and optionally format
-    wrapParagraph(inputLines[i], width, result, cont, join, bgRestore);
+    // Regular paragraph text.  Collect consecutive non-special physical lines
+    // so inline markdown can span hard newlines while preserving those line
+    // breaks in the rendered output.
+    const paragraphLines: string[] = [];
+    while (i < inputLines.length) {
+      const line = inputLines[i];
+      if (line === "") break;
+      if (bgRestore != null && line.match(FENCE_OPEN_RE)) break;
+      if (isTableLine(line)) break;
+      if (bgRestore != null && isHorizontalRule(line)) break;
+      paragraphLines.push(line);
+      i++;
+    }
+
+    if (paragraphLines.length > 0) {
+      wrapParagraphBlock(paragraphLines, width, result, cont, join, bgRestore);
+      continue;
+    }
+
+    wrapParagraphBlock([inputLines[i]], width, result, cont, join, bgRestore);
     i++;
   }
 
   return { lines: result, cont, join };
 }
 
+interface RawWrapResult {
+  lines: string[];
+  join: string[];
+}
+
 /**
- * Wraps a single paragraph to fit within width.
- *
- * When bgRestore is provided (assistant mode), width measurement accounts
- * for markdown markers (** etc.) being invisible after formatting, and
- * formatMarkdown is applied to each wrapped line.
+ * Wraps one physical paragraph line to fit within width, but leaves markdown
+ * markers in place. Formatting is applied later across all related visual
+ * chunks so spans can cross soft wraps and hard newlines.
  */
-function wrapParagraph(
-  paragraph: string,
-  width: number,
-  result: string[],
-  cont: boolean[],
-  join: string[],
-  bgRestore?: string,
-): void {
-  if (paragraph === "") {
-    result.push("");
-    cont.push(false);
-    join.push("");
-    return;
-  }
+function wrapParagraphRaw(paragraph: string, width: number, bgRestore?: string): RawWrapResult {
+  if (paragraph === "") return { lines: [""], join: [""] };
 
   // In markdown mode, measure visible width excluding markers.
   // In plain mode, measure raw terminal width.
@@ -153,8 +162,6 @@ function wrapParagraph(
     ? (s: string) => termWidth(stripMarkdown(s))
     : termWidth;
 
-  // First pass: word-wrap with correct measurement and track whether wrapped
-  // continuation rows should reinsert a space when copied back to plain text.
   const wrapped: string[] = [];
   const wrappedJoin: string[] = [];
   const words = paragraph.split(/\s+/);
@@ -190,18 +197,37 @@ function wrapParagraph(
     wrappedJoin.push(lineJoin);
   }
 
-  // Second pass: apply inline markdown formatting if in assistant mode
-  if (bgRestore) {
-    for (let i = 0; i < wrapped.length; i++) {
-      result.push(formatMarkdown(wrapped[i], bgRestore).text);
-      cont.push(i > 0);
-      join.push(wrappedJoin[i]);
-    }
-  } else {
-    for (let i = 0; i < wrapped.length; i++) {
-      result.push(wrapped[i]);
-      cont.push(i > 0);
-      join.push(wrappedJoin[i]);
+  return { lines: wrapped, join: wrappedJoin };
+}
+
+function wrapParagraphBlock(
+  paragraphs: string[],
+  width: number,
+  result: string[],
+  cont: boolean[],
+  join: string[],
+  bgRestore?: string,
+): void {
+  const rawLines: string[] = [];
+  const parseJoin: string[] = [];
+  const outCont: boolean[] = [];
+  const outJoin: string[] = [];
+
+  for (let p = 0; p < paragraphs.length; p++) {
+    const wrapped = wrapParagraphRaw(paragraphs[p], width, bgRestore);
+    for (let i = 0; i < wrapped.lines.length; i++) {
+      rawLines.push(wrapped.lines[i]);
+      parseJoin.push(i === 0 ? (rawLines.length === 1 ? "" : "\n") : wrapped.join[i]);
+      outCont.push(i > 0);
+      outJoin.push(i > 0 ? wrapped.join[i] : "");
     }
   }
+
+  const rendered = bgRestore
+    ? formatMarkdownChunks(rawLines, parseJoin, bgRestore)
+    : rawLines;
+
+  result.push(...rendered);
+  cont.push(...outCont);
+  join.push(...outJoin);
 }

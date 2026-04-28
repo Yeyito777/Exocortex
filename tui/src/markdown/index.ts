@@ -5,7 +5,7 @@
 export { markdownWordWrap } from "./wordwrap";
 
 // Inline formatting and width utilities
-export { formatMarkdown, stripMarkdown, visibleLength, termWidth, sliceByWidth, hardBreak, isHorizontalRule } from "./formatting";
+export { formatMarkdown, formatMarkdownChunks, stripMarkdown, visibleLength, termWidth, sliceByWidth, hardBreak, isHorizontalRule } from "./formatting";
 
 // Syntax highlighting
 export { highlightLine, isLanguageSupported } from "./highlight";
