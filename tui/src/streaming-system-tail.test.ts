@@ -274,6 +274,69 @@ describe("streaming system-message tail", () => {
     });
   });
 
+  test("streaming_started catch-up preserves full local tool output from compact snapshots", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.pendingAI = createPendingAI(1, "gpt-5.4");
+    state.pendingAI.blocks.push(
+      { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "make" }, summary: "$ make" },
+      { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "full build output", isError: false },
+    );
+
+    handleEvent({
+      type: "streaming_started",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      startedAt: 1,
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "make" }, summary: "$ make" },
+        { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
+        { type: "text", text: "Continuing after the build" },
+        { type: "tool_call", toolCallId: "call-2", toolName: "bash", input: { command: "tail log" }, summary: "$ tail log" },
+      ],
+      tokens: 12,
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.pendingAI).toMatchObject({
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "$ make" },
+        { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "full build output", isError: false },
+        { type: "text", text: "Continuing after the build" },
+        { type: "tool_call", toolCallId: "call-2", toolName: "bash", summary: "$ tail log" },
+      ],
+      metadata: { startedAt: 1, endedAt: null, model: "gpt-5.4", tokens: 12 },
+    });
+  });
+
+  test("compact catch-up snapshots do not erase local tool output when they add nothing", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.pendingAI = createPendingAI(1, "gpt-5.4");
+    state.pendingAI.blocks.push(
+      { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "make" }, summary: "$ make" },
+      { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "full build output", isError: false },
+    );
+
+    handleEvent({
+      type: "streaming_started",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      startedAt: 1,
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "make" }, summary: "$ make" },
+        { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
+      ],
+      tokens: 12,
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.pendingAI.blocks).toMatchObject([
+      { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "$ make" },
+      { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "full build output", isError: false },
+    ]);
+  });
+
   test("same-conversation reload keeps only the newer local live tail instead of duplicating completed rounds", () => {
     const state = createInitialState();
     state.convId = "conv-1";

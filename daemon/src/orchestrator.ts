@@ -71,6 +71,8 @@ function interleaveRetryMarkers(
   return result;
 }
 
+const STREAMING_SNAPSHOT_INTERVAL_MS = 5_000;
+
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface OrchestrationCallbacks {
@@ -344,6 +346,7 @@ async function orchestrateAssistantTurn(
   /** Blocks that survived persistence on abort/error — sent to TUI so it can trim display. */
   let abortPersistedBlocks: import("./messages").Block[] | undefined;
   let outcome: AssistantTurnOutcome | undefined;
+  let streamingSnapshotTimer: ReturnType<typeof setInterval> | null = null;
 
   function completedDisplayMessages(): StoredMessage[] {
     return toStoredMessages(agentState.completedMessages);
@@ -355,6 +358,37 @@ async function orchestrateAssistantTurn(
 
   function syncCompletedStreamingDisplayMessages(): void {
     syncStreamingDisplayMessages(completedDisplayMessages());
+  }
+
+  function sendStreamingSnapshot(): void {
+    if (!server.hasSubscribers(convId) || !convStore.isStreaming(convId)) return;
+    const snapshot = convStore.getRenderSnapshot(convId, false);
+    const pendingAI = snapshot?.pendingAI;
+    if (!snapshot || !pendingAI) return;
+
+    server.sendToSubscribers(convId, {
+      type: "streaming_started",
+      convId,
+      provider: snapshot.provider,
+      model: snapshot.model,
+      startedAt: pendingAI.metadata?.startedAt ?? startedAt,
+      blocks: pendingAI.blocks,
+      tokens: pendingAI.metadata?.tokens ?? 0,
+    });
+  }
+
+  function startStreamingSnapshotHeartbeat(): void {
+    if (streamingSnapshotTimer) return;
+    streamingSnapshotTimer = setInterval(sendStreamingSnapshot, STREAMING_SNAPSHOT_INTERVAL_MS);
+    if (typeof streamingSnapshotTimer === "object" && "unref" in streamingSnapshotTimer) {
+      (streamingSnapshotTimer as { unref(): void }).unref();
+    }
+  }
+
+  function stopStreamingSnapshotHeartbeat(): void {
+    if (!streamingSnapshotTimer) return;
+    clearInterval(streamingSnapshotTimer);
+    streamingSnapshotTimer = null;
   }
 
   function ensurePartialContentTail(type: "text" | "thinking"): ApiContentBlock {
@@ -583,6 +617,8 @@ async function orchestrateAssistantTurn(
     }
   };
 
+  startStreamingSnapshotHeartbeat();
+
   try {
     const result = await runAgentLoop(apiMessages, conv.provider, conv.model, callbacks, {
       system: conv.provider === "anthropic"
@@ -768,6 +804,7 @@ async function orchestrateAssistantTurn(
       watchdog: isWatchdog,
     };
   } finally {
+    stopStreamingSnapshotHeartbeat();
     convStore.clearActiveJob(convId);
     convStore.clearCurrentStreamingBlocks(convId);
     convStore.resetChunkCounter(convId);

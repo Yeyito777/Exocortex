@@ -339,9 +339,9 @@ export interface StreamingStartedEvent {
   model: ModelId;
   /** When the AI started processing. Lets late-joining clients show the correct elapsed time. */
   startedAt: number;
-  /** Accumulated blocks so far — included for late-joining clients. */
+  /** Accumulated blocks so far — included for late-joining clients and periodic catch-up snapshots. */
   blocks?: Block[];
-  /** Accumulated output tokens so far — included for late-joining clients. */
+  /** Accumulated output tokens so far — included for late-joining clients and periodic catch-up snapshots. */
   tokens?: number;
 }
 

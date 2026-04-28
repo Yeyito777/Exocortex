@@ -655,13 +655,14 @@ export function createHandler(server: DaemonServer) {
         // After subscribing, send a fresh streaming snapshot for late-join catch-up.
         // This covers any chunks emitted between the initial load snapshot and the
         // moment the new subscriber was attached.
-        const pendingAI = data.pendingAI;
+        const catchupData = getRenderSnapshot(cmd.convId) ?? data;
+        const pendingAI = catchupData.pendingAI;
         if (pendingAI) {
           server.sendTo(client, {
             type: "streaming_started",
-            convId: data.convId,
-            provider: data.provider,
-            model: data.model,
+            convId: catchupData.convId,
+            provider: catchupData.provider,
+            model: catchupData.model,
             startedAt: pendingAI.metadata?.startedAt ?? Date.now(),
             blocks: pendingAI.blocks,
             tokens: pendingAI.metadata?.tokens ?? 0,

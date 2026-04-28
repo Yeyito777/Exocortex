@@ -21,6 +21,7 @@ import {
 import { theme } from "./theme";
 import { clearLocalQueue, removeLocalQueueEntry } from "./queue";
 import type { Event, DisplayEntry, SystemMessageEvent } from "./protocol";
+import { log } from "./log";
 
 // ── Display entry → TUI message conversion ─────────────────────────
 
@@ -76,7 +77,24 @@ function blocksMatch(a: Block, b: Block): boolean {
   }
 }
 
-function snapshotBlockAtLeastAsComplete(local: Block, snapshot: Block): boolean {
+interface SnapshotAlignment {
+  pairs: Array<{ localIndex: number; snapshotIndex: number }>;
+  strictlyNewer: boolean;
+}
+
+function cloneBlock(block: Block): Block {
+  return structuredClone(block);
+}
+
+function toolResultOutputsCompatible(local: Extract<Block, { type: "tool_result" }>, snapshot: Extract<Block, { type: "tool_result" }>): boolean {
+  return local.output === ""
+    || snapshot.output === ""
+    || local.output === snapshot.output
+    || snapshot.output.startsWith(local.output)
+    || local.output.startsWith(snapshot.output);
+}
+
+function snapshotBlockCanCoverLocal(local: Block, snapshot: Block): boolean {
   if (local.type !== snapshot.type) return false;
   switch (local.type) {
     case "text":
@@ -84,40 +102,144 @@ function snapshotBlockAtLeastAsComplete(local: Block, snapshot: Block): boolean 
       return snapshot.type === local.type && snapshot.text.startsWith(local.text);
     case "tool_call":
       // Tool-call summaries/inputs may be normalized by the daemon, but the id
-      // is stable. A matching daemon tool call is at least as authoritative as
-      // the local one.
+      // is stable. A matching daemon tool call is authoritative.
       return snapshot.type === "tool_call" && local.toolCallId === snapshot.toolCallId;
     case "tool_result":
-      // Do not replace a full local tool result with a compact empty one. Do
-      // allow the daemon snapshot to fill in output that the local TUI lacks.
+      // Compact daemon snapshots intentionally omit historical tool output. Treat
+      // an empty/shorter snapshot output as compatible so a later catch-up snapshot
+      // can still repair missed blocks after the tool result; the merge step below
+      // preserves the fuller local output instead of clobbering it.
       return snapshot.type === "tool_result"
         && local.toolCallId === snapshot.toolCallId
         && local.isError === snapshot.isError
-        && (local.output === "" || snapshot.output === local.output || snapshot.output.startsWith(local.output));
+        && toolResultOutputsCompatible(local, snapshot);
   }
 }
 
-function snapshotStrictlyExtendsLocal(localBlocks: Block[], snapshotBlocks: Block[]): boolean {
-  if (snapshotBlocks.length < localBlocks.length) return false;
+function snapshotBlockStrictlyNewer(local: Block, snapshot: Block): boolean {
+  if (local.type !== snapshot.type) return false;
+  switch (local.type) {
+    case "text":
+    case "thinking":
+      return snapshot.type === local.type && snapshot.text.length > local.text.length;
+    case "tool_result":
+      return snapshot.type === "tool_result" && snapshot.output.length > local.output.length;
+    case "tool_call":
+      return false;
+  }
+}
 
-  let strictlyNewer = snapshotBlocks.length > localBlocks.length;
-  for (let i = 0; i < localBlocks.length; i++) {
-    const local = localBlocks[i];
-    const snapshot = snapshotBlocks[i];
-    if (!snapshotBlockAtLeastAsComplete(local, snapshot)) return false;
-    if ((local.type === "text" || local.type === "thinking")
-        && snapshot.type === local.type
-        && snapshot.text.length > local.text.length) {
-      strictlyNewer = true;
+function findSnapshotAlignment(localBlocks: Block[], snapshotBlocks: Block[]): SnapshotAlignment | null {
+  let snapshotCursor = 0;
+  let strictlyNewer = false;
+  const pairs: SnapshotAlignment["pairs"] = [];
+
+  for (let localIndex = 0; localIndex < localBlocks.length; localIndex++) {
+    const local = localBlocks[localIndex];
+    const expectedSnapshotIndex = snapshotCursor;
+    let matchedSnapshotIndex = -1;
+
+    for (let i = snapshotCursor; i < snapshotBlocks.length; i++) {
+      if (snapshotBlockCanCoverLocal(local, snapshotBlocks[i])) {
+        matchedSnapshotIndex = i;
+        break;
+      }
     }
-    if (local.type === "tool_result"
-        && snapshot.type === "tool_result"
-        && snapshot.output.length > local.output.length) {
-      strictlyNewer = true;
-    }
+
+    if (matchedSnapshotIndex === -1) return null;
+    if (matchedSnapshotIndex > expectedSnapshotIndex) strictlyNewer = true;
+    if (snapshotBlockStrictlyNewer(local, snapshotBlocks[matchedSnapshotIndex])) strictlyNewer = true;
+    pairs.push({ localIndex, snapshotIndex: matchedSnapshotIndex });
+    snapshotCursor = matchedSnapshotIndex + 1;
   }
 
-  return strictlyNewer;
+  if (snapshotCursor < snapshotBlocks.length) strictlyNewer = true;
+  return { pairs, strictlyNewer };
+}
+
+function mergeSnapshotBlocksPreservingLocalDetails(
+  localBlocks: Block[],
+  snapshotBlocks: Block[],
+  alignment = findSnapshotAlignment(localBlocks, snapshotBlocks),
+): Block[] {
+  if (!alignment) return snapshotBlocks.map(cloneBlock);
+
+  const localBySnapshotIndex = new Map<number, Block>();
+  for (const pair of alignment.pairs) {
+    localBySnapshotIndex.set(pair.snapshotIndex, localBlocks[pair.localIndex]);
+  }
+
+  return snapshotBlocks.map((snapshot, snapshotIndex) => {
+    const local = localBySnapshotIndex.get(snapshotIndex);
+    if (local?.type === "tool_result" && snapshot.type === "tool_result") {
+      const merged = cloneBlock(snapshot);
+      if (merged.type === "tool_result") {
+        if (local.output && (!snapshot.output || local.output.length > snapshot.output.length)) {
+          merged.output = local.output;
+        }
+        if (!snapshot.toolName && local.toolName) merged.toolName = local.toolName;
+      }
+      return merged;
+    }
+    return cloneBlock(snapshot);
+  });
+}
+
+function blockSignature(block: Block): string {
+  switch (block.type) {
+    case "text":
+    case "thinking":
+      return `${block.type}:${block.text.length}`;
+    case "tool_call":
+      return `tool_call:${block.toolName}:${block.toolCallId}`;
+    case "tool_result":
+      return `tool_result:${block.toolName}:${block.toolCallId}:${block.output.length}:${block.isError ? "err" : "ok"}`;
+  }
+}
+
+function blockStats(blocks: Block[]): Record<string, unknown> {
+  let textChars = 0;
+  let thinkingChars = 0;
+  let toolCalls = 0;
+  let toolResults = 0;
+  for (const block of blocks) {
+    if (block.type === "text") textChars += block.text.length;
+    else if (block.type === "thinking") thinkingChars += block.text.length;
+    else if (block.type === "tool_call") toolCalls += 1;
+    else if (block.type === "tool_result") toolResults += 1;
+  }
+  return {
+    blocks: blocks.length,
+    textChars,
+    thinkingChars,
+    toolCalls,
+    toolResults,
+    signature: blocks.map(blockSignature).join(","),
+  };
+}
+
+function logStreamingRepair(
+  source: string,
+  convId: string | null,
+  localBlocks: Block[],
+  snapshotBlocks: Block[],
+  mergedBlocks: Block[],
+  alignment: SnapshotAlignment | null,
+  localTokens: number | null | undefined,
+  snapshotTokens: number | null | undefined,
+  hydratedFromSnapshot: boolean,
+): void {
+  log("warn", `tui: streaming snapshot repaired ${JSON.stringify({
+    source,
+    convId,
+    hydratedFromSnapshot,
+    strictlyNewer: alignment?.strictlyNewer ?? false,
+    matchedLocalBlocks: alignment?.pairs.length ?? 0,
+    local: blockStats(localBlocks),
+    snapshot: blockStats(snapshotBlocks),
+    merged: blockStats(mergedBlocks),
+    tokens: { local: localTokens ?? null, snapshot: snapshotTokens ?? null },
+  })}`);
 }
 
 function subtractLoadedAssistantPrefix(localBlocks: Block[], entries: DisplayEntry[]): Block[] {
@@ -299,13 +421,33 @@ export function handleEvent(
       // compatible strict extension: if the daemon snapshot contains all local
       // blocks plus more (commonly a missed just-started tool_call), use it to
       // repair the live tail.
-      if (event.blocks && (
-        state.pendingAIHydratedFromSnapshot
-        || pending.blocks.length === 0
-        || snapshotStrictlyExtendsLocal(pending.blocks, event.blocks)
-      )) {
-        pending.blocks = [...event.blocks];
-        state.pendingAIHydratedFromSnapshot = true;
+      if (event.blocks) {
+        const alignment = findSnapshotAlignment(pending.blocks, event.blocks);
+        if (
+          state.pendingAIHydratedFromSnapshot
+          || pending.blocks.length === 0
+          || alignment?.strictlyNewer
+        ) {
+          const localBlocks = [...pending.blocks];
+          const localTokens = pending.metadata?.tokens;
+          const wasHydratedFromSnapshot = state.pendingAIHydratedFromSnapshot;
+          const mergedBlocks = mergeSnapshotBlocksPreservingLocalDetails(localBlocks, event.blocks, alignment);
+          pending.blocks = mergedBlocks;
+          state.pendingAIHydratedFromSnapshot = true;
+          if (alignment?.strictlyNewer && localBlocks.length > 0) {
+            logStreamingRepair(
+              "streaming_started",
+              event.convId,
+              localBlocks,
+              event.blocks,
+              mergedBlocks,
+              alignment,
+              localTokens,
+              event.tokens,
+              wasHydratedFromSnapshot,
+            );
+          }
+        }
       }
       // Restore accumulated token count for late-joining clients.
       if (typeof event.tokens === "number") {
@@ -557,13 +699,32 @@ export function handleEvent(
       pushDisplayEntries(state, event.entries);
 
       if (preservedPendingAI) {
-        if (event.pendingAI && snapshotStrictlyExtendsLocal(preservedPendingAI.blocks, event.pendingAI.blocks)) {
+        const alignment = event.pendingAI
+          ? findSnapshotAlignment(preservedPendingAI.blocks, event.pendingAI.blocks)
+          : null;
+        if (event.pendingAI && alignment?.strictlyNewer) {
           // Same-conversation reloads usually preserve local live state to avoid
           // clobbering newer chunks with an older snapshot. However, the daemon
-          // snapshot may contain a just-started tool call that this TUI missed
-          // (for example while the client was between load and subscribe). In
-          // that compatible-extension case, adopt the daemon's fuller snapshot.
-          hydratePendingAIFromSnapshot(state, event.pendingAI);
+          // snapshot may contain blocks this TUI missed while it was unfocused or
+          // between load and subscribe. In that compatible-extension case, adopt
+          // the daemon's fuller snapshot while preserving any full local tool
+          // output omitted from the compact snapshot.
+          const mergedBlocks = mergeSnapshotBlocksPreservingLocalDetails(preservedPendingAI.blocks, event.pendingAI.blocks, alignment);
+          logStreamingRepair(
+            "conversation_loaded",
+            event.convId,
+            preservedPendingAI.blocks,
+            event.pendingAI.blocks,
+            mergedBlocks,
+            alignment,
+            preservedPendingAI.metadata?.tokens,
+            event.pendingAI.metadata?.tokens,
+            false,
+          );
+          hydratePendingAIFromSnapshot(state, {
+            ...event.pendingAI,
+            blocks: mergedBlocks,
+          });
         } else {
           state.pendingAI = preservedPendingAI;
           state.pendingAIHydratedFromSnapshot = false;
