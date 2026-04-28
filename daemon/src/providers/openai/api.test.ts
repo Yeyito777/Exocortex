@@ -142,6 +142,44 @@ describe("OpenAI replay input", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  test("hard-fails context-window stream errors without transient retries", async () => {
+    const onRetry = mock(() => {});
+    const fetchMock = mock(() => Promise.resolve(new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode([
+          "data: " + JSON.stringify({
+            type: "response.failed",
+            response: {
+              error: {
+                code: "context_length_exceeded",
+                message: "Your input exceeds the context window of this model. Please adjust your input and try again.",
+              },
+            },
+          }),
+          "",
+        ].join("\n")));
+        controller.close();
+      },
+    }), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    })));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [{ role: "user", content: "hello" }],
+      "gpt-5.4",
+      {
+        onText: () => {},
+        onThinking: () => {},
+        onRetry,
+      },
+    )).rejects.toThrow(/exceeds the context window/i);
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   test("aborting an in-flight stream does not emit retry callbacks", async () => {
     const ac = new AbortController();
     let fetchSignal: AbortSignal | undefined;

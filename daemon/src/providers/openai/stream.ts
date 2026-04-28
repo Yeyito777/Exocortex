@@ -1,4 +1,5 @@
 import { log } from "../../log";
+import { NonRetryableProviderError } from "../errors";
 import type { ApiToolCall } from "../types";
 import type { ContentBlock, StreamCallbacks, StreamResult } from "../types";
 import { extractReasoningRawContent, extractReasoningSummaries, finalizeReasoningItem, hasRenderableReasoning, mergeReasoningSummaries } from "./reasoning";
@@ -41,6 +42,44 @@ function createReadState(): OpenAIReadState {
     currentReasoningOutputIndex: null,
     currentRawReasoningIndexes: new Map<number, number>(),
   };
+}
+
+interface OpenAIErrorPayload {
+  message?: string;
+  code?: string;
+  type?: string;
+}
+
+function extractOpenAIErrorPayload(value: unknown): OpenAIErrorPayload | undefined {
+  if (typeof value === "string") return { message: value };
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  return {
+    ...(typeof record.message === "string" ? { message: record.message } : {}),
+    ...(typeof record.code === "string" ? { code: record.code } : {}),
+    ...(typeof record.type === "string" ? { type: record.type } : {}),
+  };
+}
+
+function isContextWindowExceededError(error: OpenAIErrorPayload | undefined): boolean {
+  const haystacks = [error?.message, error?.code, error?.type]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.toLowerCase());
+
+  return haystacks.some((value) =>
+    value.includes("context_length_exceeded")
+    || value.includes("maximum context length")
+    || value.includes("too many tokens")
+    || (value.includes("context window") && (value.includes("exceed") || value.includes("too large")))
+    || (value.includes("input") && value.includes("exceed") && value.includes("context"))
+  );
+}
+
+function buildOpenAIStreamError(error: OpenAIErrorPayload | undefined, fallback: string): Error {
+  const message = error?.message ?? fallback;
+  return isContextWindowExceededError(error)
+    ? new NonRetryableProviderError(message)
+    : new Error(message);
 }
 
 function nextOutputStateIndex(state: OpenAIReadState): number {
@@ -469,13 +508,13 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
     }
 
     case "response.failed": {
-      const response = event.response as { error?: { message?: string } } | undefined;
-      throw new Error(response?.error?.message ?? "OpenAI response failed");
+      const response = event.response as { error?: unknown } | undefined;
+      throw buildOpenAIStreamError(extractOpenAIErrorPayload(response?.error), "OpenAI response failed");
     }
 
     case "error": {
-      const err = event.error as { message?: string } | undefined;
-      throw new Error(err?.message ?? "OpenAI stream error");
+      const error = extractOpenAIErrorPayload(event.error) ?? extractOpenAIErrorPayload(event);
+      throw buildOpenAIStreamError(error, "OpenAI stream error");
     }
   }
 }

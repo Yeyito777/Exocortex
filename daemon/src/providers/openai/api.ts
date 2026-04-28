@@ -2,7 +2,7 @@ import type { ApiMessage, ModelId } from "../../messages";
 import { createAbortError, isAbortLikeError } from "../../abort";
 import { readExocortexConfig } from "@exocortex/shared/config";
 import { getVerifiedSession } from "./auth";
-import { AuthError } from "../errors";
+import { AuthError, isNonRetryableProviderError } from "../errors";
 import { OPENAI_CODEX_RESPONSES_URL } from "./constants";
 import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "./cookies";
@@ -230,7 +230,7 @@ export async function streamMessageWithSession(
       });
       storeCloudflareCookiesFromHeaders(OPENAI_CODEX_RESPONSES_URL, res.headers);
     } catch (err) {
-      if (signal?.aborted || isAbortLikeError(err)) throw err;
+      if (signal?.aborted || isAbortLikeError(err) || isNonRetryableProviderError(err)) throw err;
       if (retryAttempt < MAX_RETRIES) {
         await retryBackoff(retryAttempt++, err instanceof Error ? err.message : String(err), callbacks, signal);
         continue;
@@ -279,7 +279,7 @@ export async function streamMessageWithSession(
     try {
       return await readOpenAIStream(res, callbacks, STREAM_STALL_TIMEOUT);
     } catch (err) {
-      if (signal?.aborted || isAbortLikeError(err)) throw err;
+      if (signal?.aborted || isAbortLikeError(err) || isNonRetryableProviderError(err)) throw err;
       if (retryAttempt < MAX_RETRIES) {
         await retryBackoff(retryAttempt++, err instanceof Error ? err.message : String(err), callbacks, signal);
         continue;
