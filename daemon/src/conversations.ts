@@ -31,8 +31,64 @@ export {
 // ── State ───────────────────────────────────────────────────────────
 
 const conversations = new Map<string, Conversation>();
+const summaries = new Map<string, persistence.PersistedConversationSummary>();
 const dirty = new Set<string>();
 const unread = new Set<string>();
+
+function summaryFromConversation(conv: Conversation): persistence.PersistedConversationSummary {
+  return {
+    id: conv.id,
+    provider: conv.provider,
+    model: conv.model,
+    effort: conv.effort ?? DEFAULT_EFFORT,
+    fastMode: conv.fastMode ?? false,
+    createdAt: conv.createdAt,
+    updatedAt: conv.updatedAt,
+    messageCount: countConversationMessages(conv.messages),
+    title: conv.title,
+    marked: conv.marked,
+    pinned: conv.pinned,
+    sortOrder: conv.sortOrder,
+  };
+}
+
+function saveSummaryIndex(): void {
+  const entries: persistence.ConversationIndexEntry[] = [];
+  for (const summary of summaries.values()) {
+    const loaded = conversations.get(summary.id);
+    if (loaded) {
+      entries.push(persistence.indexEntryFromConversation(loaded));
+      continue;
+    }
+    try {
+      entries.push({ ...summary, ...persistence.getConversationFileStat(summary.id) });
+    } catch {
+      // The file disappeared between a mutation and the index write; omit it.
+    }
+  }
+  persistence.saveConversationIndex(entries);
+}
+
+function updateSummaryFromConversation(conv: Conversation): void {
+  summaries.set(conv.id, summaryFromConversation(conv));
+}
+
+function loadConversation(id: string): Conversation | undefined {
+  const cached = conversations.get(id);
+  if (cached) return cached;
+
+  const conv = persistence.load(id);
+  if (!conv) return undefined;
+  const normalizedEffort = normalizeEffort(conv.provider, conv.model, conv.effort);
+  if (normalizedEffort !== conv.effort) {
+    conv.effort = normalizedEffort;
+    markDirty(conv.id);
+  }
+  conversations.set(id, conv);
+  updateSummaryFromConversation(conv);
+  if (dirty.has(conv.id)) flush(conv.id);
+  return conv;
+}
 
 function applyConversationMutation(id: string, conv: Conversation): void {
   conv.lastContextTokens = null;
@@ -42,7 +98,7 @@ function applyConversationMutation(id: string, conv: Conversation): void {
 }
 
 export function trimConversation(id: string, mode: TrimMode, count: number): TrimConversationResult | null {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv) return null;
 
   const result = trimConversationInPlace(conv, mode, count);
@@ -59,7 +115,7 @@ export function generateId(): string {
 // ── Conversations ───────────────────────────────────────────────────
 
 export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode = false): Conversation {
-  const conv = createConversation(id, provider, model, topUnpinnedOrder(conversations.values()), title, effort, fastMode);
+  const conv = createConversation(id, provider, model, topUnpinnedOrder(summaries.values()), title, effort, fastMode);
   conversations.set(id, conv);
   markDirty(id);
   flush(id);
@@ -68,16 +124,16 @@ export function create(id: string, provider: ProviderId, model: ModelId, title?:
 
 /** Bump an unpinned conversation to the top of the unpinned section. No-op for pinned conversations. */
 export function bumpToTop(id: string): boolean {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv || conv.pinned) return false;
-  conv.sortOrder = topUnpinnedOrder(conversations.values(), id);
+  conv.sortOrder = topUnpinnedOrder(summaries.values(), id);
   markDirty(id);
   return true;
 }
 
 /** Clone a conversation: deep-copy with a new ID, placed right after the original in sort order. */
 export function clone(id: string): Conversation | null {
-  const src = conversations.get(id);
+  const src = get(id);
   if (!src) return null;
 
   const newId = generateId();
@@ -118,17 +174,21 @@ export function clone(id: string): Conversation | null {
 }
 
 export function get(id: string): Conversation | undefined {
-  return conversations.get(id);
+  return loadConversation(id);
 }
 
 export function remove(id: string): boolean {
-  const existed = conversations.delete(id);
+  const existed = summaries.has(id) || conversations.has(id);
   if (existed) {
+    conversations.delete(id);
+    summaries.delete(id);
     dirty.delete(id);
+    unread.delete(id);
     streaming.clearActiveJob(id);
     streaming.resetChunkCounter(id);
     streaming.clearQueuedMessages(id);
     persistence.trashFile(id);
+    saveSummaryIndex();
   }
   return existed;
 }
@@ -138,12 +198,14 @@ export function undoDelete(): Conversation | null {
   const conv = persistence.restoreLatest();
   if (!conv) return null;
   conversations.set(conv.id, conv);
+  updateSummaryFromConversation(conv);
+  saveSummaryIndex();
   log("info", `conversations: restored ${conv.id} from trash`);
   return conv;
 }
 
 export function setModel(id: string, provider: ProviderId, model: ModelId, effort: EffortLevel, fastMode: boolean): boolean {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv) return false;
   conv.provider = provider;
   conv.model = model;
@@ -157,7 +219,7 @@ export function setModel(id: string, provider: ProviderId, model: ModelId, effor
 }
 
 export function setEffort(id: string, effort: EffortLevel): boolean {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv) return false;
   conv.effort = effort;
   markDirty(id);
@@ -166,7 +228,7 @@ export function setEffort(id: string, effort: EffortLevel): boolean {
 }
 
 export function setFastMode(id: string, enabled: boolean): boolean {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv) return false;
   conv.fastMode = enabled;
   markDirty(id);
@@ -175,7 +237,7 @@ export function setFastMode(id: string, enabled: boolean): boolean {
 }
 
 export function rename(id: string, title: string): boolean {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv) return false;
   conv.title = title;
   markDirty(id);
@@ -185,7 +247,7 @@ export function rename(id: string, title: string): boolean {
 
 /** Set or update per-conversation system instructions. Empty text clears them. */
 export function setSystemInstructions(id: string, text: string): boolean {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv) return false;
 
   const hasExisting = conv.messages.length > 0 && conv.messages[0].role === "system_instructions";
@@ -217,7 +279,7 @@ export function setSystemInstructions(id: string, text: string): boolean {
 
 /** Get the per-conversation system instructions text, or null if none. */
 export function getSystemInstructions(id: string): string | null {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv) return null;
   if (conv.messages.length > 0 && conv.messages[0].role === "system_instructions") {
     return typeof conv.messages[0].content === "string" ? conv.messages[0].content : null;
@@ -232,7 +294,7 @@ export function getSystemInstructions(id: string): string | null {
  * Returns a promise that resolves when any active stream has stopped.
  */
 export async function unwindTo(id: string, userMessageIndex: number): Promise<boolean> {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv) return false;
 
   // Validate the index before doing anything destructive.
@@ -290,54 +352,65 @@ export interface LoadFromDiskStats {
   normalizedEffort: number;
   deduplicatedSortOrders: number;
   durationMs: number;
+  indexReused: number;
+  indexRebuilt: number;
+  indexRemoved: number;
+  indexSaved: boolean;
 }
 
-/** Load all conversations from disk into memory on daemon startup. */
+/** Load conversation summaries from disk into memory on daemon startup. Full conversations are lazy-loaded on demand. */
 export function loadFromDisk(): LoadFromDiskStats {
   const startedAt = performance.now();
-  const loaded = persistence.loadAllConversations();
-  let inserted = 0;
+  const index = persistence.loadConversationIndex();
+  summaries.clear();
+
   let normalizedEffortCount = 0;
-  for (const conv of loaded) {
-    if (conversations.has(conv.id)) continue;
-    const normalizedEffort = normalizeEffort(conv.provider, conv.model, conv.effort);
-    if (normalizedEffort !== conv.effort) {
-      conv.effort = normalizedEffort;
+  for (const summary of index.summaries) {
+    const normalizedEffort = normalizeEffort(summary.provider, summary.model, summary.effort);
+    if (normalizedEffort !== summary.effort) {
+      summary.effort = normalizedEffort;
       normalizedEffortCount++;
-      markDirty(conv.id);
     }
-    conversations.set(conv.id, conv);
-    inserted++;
+    summaries.set(summary.id, summary);
   }
-  log("info", `conversations: loaded ${conversations.size} from disk`);
+  log("info", `conversations: loaded ${summaries.size} summaries from disk (index reused=${index.reused}, rebuilt=${index.rebuilt})`);
 
   // Deduplicate sortOrders — duplicate values cause move operations to
   // be no-ops (swapping identical values).  Walk each section (pinned,
   // unpinned) in order and bump any collision by a small offset.
-  const sorted = [...conversations.values()].sort(
+  const sorted = [...summaries.values()].sort(
     (a, b) => (a.pinned === b.pinned ? 0 : a.pinned ? -1 : 1) || a.sortOrder - b.sortOrder,
   );
   const seen = new Set<string>();    // "pinned:sortOrder"
   let fixed = 0;
-  for (const conv of sorted) {
-    const key = `${conv.pinned}:${conv.sortOrder}`;
+  for (const summary of sorted) {
+    const key = `${summary.pinned}:${summary.sortOrder}`;
     if (seen.has(key)) {
-      conv.sortOrder += 0.001 * ++fixed;
-      markDirty(conv.id);
+      summary.sortOrder += 0.001 * ++fixed;
+      const conv = get(summary.id);
+      if (conv) {
+        conv.sortOrder = summary.sortOrder;
+        markDirty(conv.id);
+      }
     }
-    seen.add(`${conv.pinned}:${conv.sortOrder}`);
+    seen.add(`${summary.pinned}:${summary.sortOrder}`);
   }
-  if (fixed > 0) {
-    log("info", `conversations: deduplicated ${fixed} colliding sortOrder(s)`);
-    flushAll();
+  if (fixed > 0 || normalizedEffortCount > 0 || index.saved) {
+    log("info", `conversations: repaired index (deduplicated=${fixed}, normalizedEffort=${normalizedEffortCount})`);
+    if (dirty.size > 0) flushAll();
+    else saveSummaryIndex();
   }
 
   return {
-    loaded: inserted,
-    total: conversations.size,
+    loaded: index.summaries.length,
+    total: summaries.size,
     normalizedEffort: normalizedEffortCount,
     deduplicatedSortOrders: fixed,
     durationMs: performance.now() - startedAt,
+    indexReused: index.reused,
+    indexRebuilt: index.rebuilt,
+    indexRemoved: index.removed,
+    indexSaved: index.saved,
   };
 }
 
@@ -353,15 +426,20 @@ export function flush(id: string): void {
   if (!conv) return;
   persistence.save(conv);
   dirty.delete(id);
+  updateSummaryFromConversation(conv);
+  saveSummaryIndex();
 }
 
 /** Flush all dirty conversations. */
 export function flushAll(): void {
   for (const id of dirty) {
     const conv = conversations.get(id);
-    if (conv) persistence.save(conv);
+    if (!conv) continue;
+    persistence.save(conv);
+    updateSummaryFromConversation(conv);
   }
   dirty.clear();
+  saveSummaryIndex();
 }
 
 /** Track chunk count and flush every N chunks. Returns true on save boundaries. */
@@ -376,13 +454,16 @@ export function onChunk(id: string): boolean {
 
 /** Get conversation summaries for the sidebar (from in-memory state). */
 export function listSummaries(): ConversationSummary[] {
-  const summaries: ConversationSummary[] = [];
-  for (const conv of conversations.values()) {
-    const s = getSummary(conv.id);
-    if (s) summaries.push(s);
+  const result: ConversationSummary[] = [];
+  for (const summary of summaries.values()) {
+    result.push({
+      ...summary,
+      streaming: streaming.isStreaming(summary.id),
+      unread: unread.has(summary.id),
+    });
   }
-  sortConversations(summaries);
-  return summaries;
+  sortConversations(result);
+  return result;
 }
 
 /** List conversation IDs that currently have an in-flight stream. */
@@ -394,7 +475,7 @@ export function listRunningConversationIds(): string[] {
 
 /** Toggle or set the marked flag on a conversation. */
 export function mark(id: string, marked: boolean): boolean {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv) return false;
   conv.marked = marked;
   markDirty(id);
@@ -404,12 +485,12 @@ export function mark(id: string, marked: boolean): boolean {
 
 /** Toggle or set the pinned flag on a conversation. */
 export function pin(id: string, pinned: boolean): boolean {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv) return false;
   conv.pinned = pinned;
   conv.sortOrder = pinned
-    ? bottomPinnedOrder(conversations.values(), id)
-    : topUnpinnedOrder(conversations.values(), id);
+    ? bottomPinnedOrder(summaries.values(), id)
+    : topUnpinnedOrder(summaries.values(), id);
   markDirty(id);
   flush(id);
   return true;
@@ -430,8 +511,8 @@ export function move(id: string, direction: "up" | "down"): boolean {
   if (target.pinned !== current.pinned) return false;
 
   // Swap sortOrder values
-  const currentConv = conversations.get(id)!;
-  const targetConv = conversations.get(target.id)!;
+  const currentConv = get(id)!;
+  const targetConv = get(target.id)!;
   const tmp = currentConv.sortOrder;
   currentConv.sortOrder = targetConv.sortOrder;
   targetConv.sortOrder = tmp;
@@ -455,23 +536,13 @@ export function move(id: string, direction: "up" | "down"): boolean {
 
 /** Get a single conversation's summary. */
 export function getSummary(id: string): ConversationSummary | null {
-  const conv = conversations.get(id);
-  if (!conv) return null;
+  const loaded = conversations.get(id);
+  const summary = loaded ? summaryFromConversation(loaded) : summaries.get(id);
+  if (!summary) return null;
   return {
-    id: conv.id,
-    provider: conv.provider,
-    model: conv.model,
-    effort: conv.effort ?? DEFAULT_EFFORT,
-    fastMode: conv.fastMode ?? false,
-    createdAt: conv.createdAt,
-    updatedAt: conv.updatedAt,
-    messageCount: countConversationMessages(conv.messages),
-    title: conv.title,
-    marked: conv.marked,
-    pinned: conv.pinned,
-    streaming: streaming.isStreaming(conv.id),
-    unread: unread.has(conv.id),
-    sortOrder: conv.sortOrder,
+    ...summary,
+    streaming: streaming.isStreaming(id),
+    unread: unread.has(id),
   };
 }
 
@@ -510,7 +581,7 @@ function isCurrentAssistantAlreadyCommitted(conv: Conversation, startedAt: numbe
 }
 
 export function getRenderSnapshot(id: string, includeToolOutputs = true): ConversationRenderSnapshot | null {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv) return null;
 
   const persisted = buildSnapshotDisplayData(conv, conv.messages, includeToolOutputs);
@@ -543,7 +614,7 @@ export function getRenderSnapshot(id: string, includeToolOutputs = true): Conver
 }
 
 export function getDisplayData(id: string, includeToolOutputs = true): ConversationDisplayData | null {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv) return null;
   const transientMessages = streaming.getStreamingDisplayMessages(id);
   return buildSnapshotDisplayData(
@@ -554,7 +625,7 @@ export function getDisplayData(id: string, includeToolOutputs = true): Conversat
 }
 
 export function getToolOutputs(id: string): ToolOutputInfo[] | null {
-  const conv = conversations.get(id);
+  const conv = get(id);
   if (!conv) return null;
   const transientMessages = streaming.getStreamingDisplayMessages(id);
   const messages = transientMessages.length > 0 ? [...conv.messages, ...transientMessages] : conv.messages;
