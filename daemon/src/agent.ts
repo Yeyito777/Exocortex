@@ -12,7 +12,7 @@
 import { streamMessage, type ApiToolCall } from "./api";
 import { log } from "./log";
 import type { ProviderId, ModelId, EffortLevel, Block, ToolCallBlock, ToolResultBlock, ApiMessage, ApiContentBlock, TokenTrackingContext } from "./messages";
-import type { ContentBlock as ProviderContentBlock, ServiceTier } from "./providers/types";
+import type { ContentBlock as ProviderContentBlock, ServiceTier, StreamRetryMetadata } from "./providers/types";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
 import { getMaxContext } from "./providers/registry";
 
@@ -39,8 +39,11 @@ export interface AgentCallbacks {
   onContextUpdate(contextTokens: number): void;
   /** Response headers received (fires once per API round, carries rate-limit info). */
   onHeaders(headers: Headers): void;
-  /** A transient stream error triggered a retry. Reset any accumulated partial state. */
-  onRetry?(attempt: number, maxAttempts: number, errorMessage: string, delaySec: number): void;
+  /** A provider retry was scheduled. Reset any accumulated partial state. */
+  onRetry?(attempt: number, maxAttempts: number, errorMessage: string, delaySec: number, metadata?: StreamRetryMetadata): void;
+  /** Pause/resume stale-stream watchdogs around intentional long retry waits. */
+  onRetryWaitStart?(): void;
+  onRetryWaitEnd?(): void;
   /** A tool-use round completed — all tool results received, next API call starting. */
   onRoundComplete?(): void;
   /**
@@ -201,6 +204,8 @@ export async function runAgentLoop(
       onToolResult: callbacks.onToolResult,
       onHeaders: callbacks.onHeaders,
       onRetry: callbacks.onRetry,
+      onRetryWaitStart: callbacks.onRetryWaitStart,
+      onRetryWaitEnd: callbacks.onRetryWaitEnd,
     }, {
       system: options.system,
       signal: options.signal,

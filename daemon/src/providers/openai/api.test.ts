@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { defaultExocortexConfig, writeExocortexConfig } from "@exocortex/shared/config";
 import type { ApiMessage } from "../../messages";
 import {
   buildOpenAIInputForTest,
   buildRequestBodyForTest,
   isRetriableOpenAIStatusForTest,
   mergeReasoningSummariesForTest,
+  parseOpenAIUsageLimitErrorForTest,
   readOpenAIEventsForTest,
+  shouldRetryOpenAIUsageLimitResetForTest,
   streamMessageWithSession,
 } from "./api";
 import { clearCloudflareCookiesForTest } from "./cookies";
@@ -15,6 +18,7 @@ const originalFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = originalFetch;
   clearCloudflareCookiesForTest();
+  writeExocortexConfig(defaultExocortexConfig());
 });
 
 describe("OpenAI replay input", () => {
@@ -82,6 +86,60 @@ describe("OpenAI replay input", () => {
   test("treats HTTP 507 as retriable", () => {
     expect(isRetriableOpenAIStatusForTest(507)).toBe(true);
     expect(isRetriableOpenAIStatusForTest(401)).toBe(false);
+  });
+
+  test("parses OpenAI usage-limit 429 reset metadata", () => {
+    const parsed = parseOpenAIUsageLimitErrorForTest(JSON.stringify({
+      error: {
+        type: "usage_limit_reached",
+        message: "The usage limit has been reached",
+        plan_type: "pro",
+        resets_at: 1_700_000_060,
+        resets_in_seconds: 999,
+      },
+    }), 1_700_000_000_000);
+
+    expect(parsed).toEqual({
+      message: "The usage limit has been reached",
+      planType: "pro",
+      resetAt: 1_700_000_060_000,
+      resetDelayMs: 62_000,
+    });
+  });
+
+  test("reads usage-limit reset retry toggle from config", () => {
+    expect(shouldRetryOpenAIUsageLimitResetForTest()).toBe(false);
+    writeExocortexConfig({
+      ...defaultExocortexConfig(),
+      providers: { openai: { retryOnUsageLimitReset: true } },
+    });
+    expect(shouldRetryOpenAIUsageLimitResetForTest()).toBe(true);
+  });
+
+  test("hard-fails OpenAI usage-limit 429 without transient retries by default", async () => {
+    const onRetry = mock(() => {});
+    const fetchMock = mock(() => Promise.resolve(new Response(JSON.stringify({
+      error: {
+        type: "usage_limit_reached",
+        message: "The usage limit has been reached",
+        plan_type: "pro",
+        resets_in_seconds: 5456,
+      },
+    }), { status: 429 })));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [{ role: "user", content: "hello" }],
+      "gpt-5.4",
+      {
+        onText: () => {},
+        onThinking: () => {},
+        onRetry,
+      },
+    )).rejects.toThrow(/usage limit/i);
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   test("aborting an in-flight stream does not emit retry callbacks", async () => {

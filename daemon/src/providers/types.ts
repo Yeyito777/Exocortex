@@ -27,6 +27,12 @@ export interface StreamResult {
   assistantProviderData?: AssistantProviderData;
 }
 
+export interface StreamRetryMetadata {
+  kind?: "transient" | "usage_limit_reset";
+  /** Unix epoch milliseconds when retry is expected, if known. */
+  resetAt?: number;
+}
+
 export interface StreamCallbacks {
   onText: (chunk: string) => void;
   onThinking: (chunk: string) => void;
@@ -37,7 +43,10 @@ export interface StreamCallbacks {
   onToolCall?: (block: ToolCallBlock) => void;
   onToolResult?: (block: ToolResultBlock) => void;
   onHeaders?: (headers: Headers) => void;
-  onRetry?: (attempt: number, maxAttempts: number, errorMessage: string, delaySec: number) => void;
+  onRetry?: (attempt: number, maxAttempts: number, errorMessage: string, delaySec: number, metadata?: StreamRetryMetadata) => void;
+  /** Pause/resume stale-stream watchdogs around intentional long retry waits. */
+  onRetryWaitStart?: () => void;
+  onRetryWaitEnd?: () => void;
 }
 
 export interface StreamToolExecutionResult {

@@ -203,6 +203,14 @@ function pushInlineSystemNotice(
   state.messages.push({ role: "system", text, color: resolveSystemMessageColor(color), metadata: null });
 }
 
+function formatStreamRetryNotice(event: Extract<Event, { type: "stream_retry" }>): string {
+  if (event.kind === "usage_limit_reset") {
+    const reset = event.resetAt != null ? ` at ${new Date(event.resetAt).toLocaleString()}` : "";
+    return `${event.errorMessage} — retrying${reset}…`;
+  }
+  return `⟳ ${event.errorMessage} — retrying in ${event.delaySec}s (${event.attempt}/${event.maxAttempts})…`;
+}
+
 function shouldReconcileInlineSystemNoticeOnStop(event: SystemMessageEvent): boolean {
   // The daemon currently uses `system_message` both for durable stream
   // failures (timeouts, interrupts, hard errors) and for ordinary notices.
@@ -581,7 +589,7 @@ export function handleEvent(
       }
       pushInlineSystemNotice(
         state,
-        `⟳ ${event.errorMessage} — retrying in ${event.delaySec}s (${event.attempt}/${event.maxAttempts})…`,
+        formatStreamRetryNotice(event),
         theme.warning,
       );
       break;
