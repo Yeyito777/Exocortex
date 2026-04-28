@@ -1,0 +1,22 @@
+{
+  "theme": "whale",
+  "providers": {
+    "openai": {
+      "retryOnUsageLimitReset": false
+    }
+  },
+  "safety": {
+    "enabled": true,
+    "bash": [],
+    "read": [],
+    "write": [],
+    "edit": [],
+    "grep": [],
+    "glob": [],
+    "browse": []
+  },
+  "openers": {
+    "url": null,
+    "rules": []
+  }
+}
