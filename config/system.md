@@ -25,4 +25,6 @@ If any external tool is clunky / broken feel free to modify it and notify the us
 
 When modifying exocortex in a workspace you may use the "exotest" script in ~/Workspace/exocortex/scripts/dev/exotest inside of a xenv to test your changes (you must cd into the workspace you wish to test so exotest auto-detects the correct branch). For lighter e2e testing you can use exo-cli with the --instance param. Clean up after testing.
 
+You will get context warnings when your context is getting full. Don't ignore them.
+
 Do not, under any circumstance restart the main instance of exocortexd. You're running under it! Restarting it NUKES yourself which is not good.
