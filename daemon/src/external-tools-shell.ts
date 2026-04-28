@@ -44,6 +44,8 @@ interface ShellToolLike {
   };
 }
 
+type AuthArgResolver = (tool: ShellToolLike) => Promise<string[]>;
+
 interface ShellSegment {
   text: string;
   separator: string;
@@ -375,7 +377,11 @@ function applyReplacements(segment: string, replacements: TokenReplacement[]): s
   return rewritten;
 }
 
-function rewriteSimpleExternalToolShellSegment(segment: string, tools: ShellToolLike[]): string {
+function rewriteSimpleExternalToolShellSegmentWithAuthArgs(
+  segment: string,
+  tools: ShellToolLike[],
+  authArgsByToolName: Map<string, string[]> = new Map(),
+): string {
   const { commandPart, redirectionSuffix } = splitAtFirstTopLevelRedirection(segment);
   const tokens = tokenizeSimpleShellCommand(commandPart);
   if (!tokens) return segment;
@@ -385,48 +391,55 @@ function rewriteSimpleExternalToolShellSegment(segment: string, tools: ShellTool
     commandIndex++;
   }
 
-  if (tokens.length - commandIndex < 2) return segment;
+  if (tokens.length - commandIndex < 1) return segment;
 
   const tool = tools.find((entry) => entry.manifest.name === tokens[commandIndex]!.text);
   if (!tool) return segment;
 
   const rules = getLiteralArgRules(tool.manifest.shell);
-  if (rules.length === 0) return segment;
-
-  const subcommand = tokens[commandIndex + 1]!.text;
-  const subcommandArgsStart = commandIndex + 2;
   const replacements: TokenReplacement[] = [];
 
-  for (const rule of rules) {
-    if (rule.subcommand !== subcommand) continue;
+  const authArgs = authArgsByToolName.get(tool.manifest.name) ?? [];
+  if (authArgs.length > 0) {
+    const insertion = authArgs.map(quoteBashLiteral).join(" ");
+    addReplacement(replacements, { start: tokens[commandIndex]!.end, end: tokens[commandIndex]!.end, text: ` ${insertion}` });
+  }
 
-    if (rule.kind === "tail") {
-      if (subcommandArgsStart >= tokens.length) continue;
-      const lastToken = tokens[tokens.length - 1]!;
-      addReplacement(replacements, { start: lastToken.start, end: lastToken.end, text: quoteBashLiteral(lastToken.text) });
-      continue;
-    }
+  if (rules.length > 0 && tokens.length - commandIndex >= 2) {
+    const subcommand = tokens[commandIndex + 1]!.text;
+    const subcommandArgsStart = commandIndex + 2;
 
-    if (rule.kind === "positional") {
-      const token = findPositionalToken(tokens, subcommandArgsStart, rule.index, rule.flagsWithValues);
-      if (!token) continue;
-      addReplacement(replacements, { start: token.start, end: token.end, text: quoteBashLiteral(token.text) });
-      continue;
-    }
+    for (const rule of rules) {
+      if (rule.subcommand !== subcommand) continue;
 
-    for (let i = subcommandArgsStart; i < tokens.length; i++) {
-      const token = tokens[i]!;
-      if (token.text === rule.flag) {
-        const valueToken = tokens[i + 1];
-        if (!valueToken || looksLikeOptionToken(valueToken.text)) continue;
-        addReplacement(replacements, { start: valueToken.start, end: valueToken.end, text: quoteBashLiteral(valueToken.text) });
-        break;
+      if (rule.kind === "tail") {
+        if (subcommandArgsStart >= tokens.length) continue;
+        const lastToken = tokens[tokens.length - 1]!;
+        addReplacement(replacements, { start: lastToken.start, end: lastToken.end, text: quoteBashLiteral(lastToken.text) });
+        continue;
       }
 
-      const inlineReplacement = getInlineFlagValueReplacement(token, rule.flag);
-      if (inlineReplacement !== null) {
-        addReplacement(replacements, inlineReplacement);
-        break;
+      if (rule.kind === "positional") {
+        const token = findPositionalToken(tokens, subcommandArgsStart, rule.index, rule.flagsWithValues);
+        if (!token) continue;
+        addReplacement(replacements, { start: token.start, end: token.end, text: quoteBashLiteral(token.text) });
+        continue;
+      }
+
+      for (let i = subcommandArgsStart; i < tokens.length; i++) {
+        const token = tokens[i]!;
+        if (token.text === rule.flag) {
+          const valueToken = tokens[i + 1];
+          if (!valueToken || looksLikeOptionToken(valueToken.text)) continue;
+          addReplacement(replacements, { start: valueToken.start, end: valueToken.end, text: quoteBashLiteral(valueToken.text) });
+          break;
+        }
+
+        const inlineReplacement = getInlineFlagValueReplacement(token, rule.flag);
+        if (inlineReplacement !== null) {
+          addReplacement(replacements, inlineReplacement);
+          break;
+        }
       }
     }
   }
@@ -434,9 +447,49 @@ function rewriteSimpleExternalToolShellSegment(segment: string, tools: ShellTool
   return applyReplacements(commandPart, replacements) + redirectionSuffix;
 }
 
+function toolsReferencedByCommand(command: string, tools: ShellToolLike[]): ShellToolLike[] {
+  const segments = splitTopLevelShellSegments(command);
+  const seen = new Set<string>();
+  const referenced: ShellToolLike[] = [];
+
+  for (const segment of segments) {
+    const { commandPart } = splitAtFirstTopLevelRedirection(segment.text);
+    const tokens = tokenizeSimpleShellCommand(commandPart);
+    if (!tokens) continue;
+
+    let commandIndex = 0;
+    while (commandIndex < tokens.length && isEnvAssignmentToken(tokens[commandIndex]!.text)) commandIndex++;
+    const tool = tools.find((entry) => entry.manifest.name === tokens[commandIndex]?.text);
+    if (!tool || seen.has(tool.manifest.name)) continue;
+    seen.add(tool.manifest.name);
+    referenced.push(tool);
+  }
+
+  return referenced;
+}
+
+export async function rewriteExternalToolShellCommandForToolsWithAuth(
+  command: string,
+  tools: ShellToolLike[],
+  authArgResolver?: AuthArgResolver,
+): Promise<string> {
+  const authArgsByToolName = new Map<string, string[]>();
+  if (authArgResolver) {
+    await Promise.all(toolsReferencedByCommand(command, tools).map(async (tool) => {
+      const authArgs = await authArgResolver(tool);
+      if (authArgs.length > 0) authArgsByToolName.set(tool.manifest.name, authArgs);
+    }));
+  }
+
+  const segments = splitTopLevelShellSegments(command);
+  return segments
+    .map((segment) => rewriteSimpleExternalToolShellSegmentWithAuthArgs(segment.text, tools, authArgsByToolName) + segment.separator)
+    .join("");
+}
+
 export function rewriteExternalToolShellCommandForTools(command: string, tools: ShellToolLike[]): string {
   const segments = splitTopLevelShellSegments(command);
   return segments
-    .map((segment) => rewriteSimpleExternalToolShellSegment(segment.text, tools) + segment.separator)
+    .map((segment) => rewriteSimpleExternalToolShellSegmentWithAuthArgs(segment.text, tools) + segment.separator)
     .join("");
 }

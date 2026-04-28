@@ -1,0 +1,12 @@
+{
+  "name": "transcribe",
+  "bin": "./bin/transcribe",
+  "systemHint": "You can transcribe speech from local audio files through the `transcribe` CLI tool. Run `transcribe -h` for usage reference. Use `transcribe <audio-file>` and optionally `--mime-type <type>`.",
+  "display": {
+    "label": "Transcribe",
+    "color": "#f2fa9c"
+  },
+  "auth": {
+    "providers": ["openai"]
+  }
+}

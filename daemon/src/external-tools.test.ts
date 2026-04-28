@@ -13,6 +13,7 @@ import {
   reapStaleManagedDaemonPid,
   rewriteExternalToolShellCommand,
 } from "./external-tools";
+import { rewriteExternalToolShellCommandForToolsWithAuth } from "./external-tools-shell";
 
 function makeTool(overrides: {
   manifest?: Partial<Manifest>;
@@ -138,6 +139,12 @@ describe("getToolReloadKey", () => {
     const after = [makeTool({ manifest: { daemon: { command: "node daemon.js", restart: "always" } } })];
     expect(getToolReloadKey(before)).not.toBe(getToolReloadKey(after));
   });
+
+  test("auth config changes invalidate the reload key", () => {
+    const before = [makeTool()];
+    const after = [makeTool({ manifest: { auth: { providers: ["openai"] } } })];
+    expect(getToolReloadKey(before)).not.toBe(getToolReloadKey(after));
+  });
 });
 
 describe("getExternalToolWatchTargets", () => {
@@ -239,6 +246,25 @@ describe("rewriteExternalToolShellCommand", () => {
   test("leaves flag rules alone when the flag has no value", () => {
     const command = 'discord dm 123 --send --file note.txt';
     expect(rewriteExternalToolShellCommand(command, [discord])).toBe(command);
+  });
+
+  test("injects requested auth args while preserving literal argument rewrites", async () => {
+    const image = makeTool({
+      manifest: {
+        name: "image",
+        bin: "./bin/image",
+        display: { label: "Image", color: "#ffb86c" },
+        shell: { literalArgs: [{ subcommand: "generate", kind: "tail" }] },
+        auth: { providers: ["openai"] },
+      },
+      toolDir: "/tmp/tools/image",
+    });
+
+    await expect(rewriteExternalToolShellCommandForToolsWithAuth(
+      'image generate "$HOME poster"',
+      [image],
+      async () => ["--exocortex-auth-openai", "token with spaces"],
+    )).resolves.toBe("image '--exocortex-auth-openai' 'token with spaces' generate '$HOME poster'");
   });
 
   const exo = makeTool({
