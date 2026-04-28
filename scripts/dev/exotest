@@ -75,11 +75,17 @@ if $DAEMON_ALIVE; then
   echo "  Daemon already running (pid $OLD_PID)"
 else
   mkdir -p "$RUNTIME_DIR"
+  # A previous test daemon can leave a stale unix socket behind after it exits.
+  # If we let the readiness loop see that stale socket, the TUI may start while
+  # the new daemon is still unlinking/rebinding it, producing connect ENOENT.
+  rm -f "$SOCKET"
+  rm -f "$PID_FILE"
+
   echo "  Starting daemon (log: $LOG)"
   (cd "$WORKTREE_DIR/daemon" && exec bun run src/main.ts >>"$LOG" 2>&1) &
   DAEMON_PID=$!
 
-  # Wait for socket to appear (up to 5s)
+  # Wait for the new socket to appear (up to 5s)
   for _ in $(seq 1 50); do
     [[ -S "$SOCKET" ]] && break
     # Bail early if the daemon process died
