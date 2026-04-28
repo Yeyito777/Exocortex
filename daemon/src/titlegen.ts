@@ -14,6 +14,7 @@ import type { DaemonServer } from "./server";
 import type { ApiContentBlock, Conversation, ProviderId, StoredMessage } from "./messages";
 import { isToolResultMessage } from "./messages";
 import { getTokenStatsSnapshot } from "./token-stats";
+import { broadcastConversationUpdated } from "./conversation-events";
 
 const INSTRUCTION = `You generate short conversation titles. Output ONLY the title — 3 to 4 lowercase words, no quotes, no punctuation, no explanation. Match this naming style:
 exo bash truncate, exo code qa, berlin airbnb, tokens bug, context tool, unbricking convo, merging img pasting, netherlands trains, exo vim linewrapping, exo msg queuing, fixing message queuing, airpods pro autoconnect, discord streaming, context management`;
@@ -111,8 +112,7 @@ function hasTitleContext(conv: Conversation): boolean {
 
 function broadcastTitle(server: DaemonServer, convId: string, title: string, reason: string): void {
   if (!convStore.rename(convId, title)) return;
-  const summary = convStore.getSummary(convId);
-  if (summary) server.broadcast({ type: "conversation_updated", summary });
+  broadcastConversationUpdated(server, convId);
   log("info", `titlegen: ${reason} for ${convId} -> "${title}"`);
 }
 

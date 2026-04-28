@@ -334,7 +334,8 @@ export function updateConversationList(sidebar: SidebarState, conversations: Con
   syncSelectedIndex(sidebar);
 }
 
-export function updateConversation(sidebar: SidebarState, summary: ConversationSummary): void {
+export function updateConversation(sidebar: SidebarState, summary: ConversationSummary | null | undefined): void {
+  if (!summary) return;
   const idx = sidebar.conversations.findIndex(c => c.id === summary.id);
   if (idx !== -1) {
     sidebar.conversations[idx] = summary;

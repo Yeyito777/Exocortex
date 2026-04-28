@@ -23,6 +23,7 @@ import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command, ParentNotificationTarget } from "./protocol";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials } from "./auth";
 import { getTokenStatsSnapshot } from "./token-stats";
+import { broadcastConversationUpdated } from "./conversation-events";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
@@ -263,7 +264,7 @@ export function createHandler(server: DaemonServer) {
           effort,
           fastMode,
         });
-        server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(id)! });
+        broadcastConversationUpdated(server, id);
 
         if (initialMessage) {
           // The creating client already has the local user echo and pending AI.
@@ -288,7 +289,7 @@ export function createHandler(server: DaemonServer) {
         server.subscribe(client, cmd.convId);
         // Clear unread when a client views the conversation
         if (convStore.clearUnread(cmd.convId)) {
-          server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
+          broadcastConversationUpdated(server, cmd.convId);
         }
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         break;
@@ -402,7 +403,7 @@ export function createHandler(server: DaemonServer) {
         const ok = convStore.setModel(cmd.convId, nextProvider, cmd.model, nextEffort, nextFastMode);
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-          server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
+          broadcastConversationUpdated(server, cmd.convId);
           log("info", `handler: conversation ${cmd.convId} switched to ${nextProvider}/${cmd.model} (effort=${nextEffort}, fastMode=${nextFastMode})`);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
@@ -428,7 +429,7 @@ export function createHandler(server: DaemonServer) {
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         if (result.changed) {
           sendCompactHistoryUpdated(cmd.convId);
-          server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
+          broadcastConversationUpdated(server, cmd.convId);
           server.sendToSubscribers(cmd.convId, { type: "system_message", convId: cmd.convId, text: result.message });
           log("info", `handler: trimmed ${cmd.mode} (${cmd.count}) for ${cmd.convId}`);
         } else {
@@ -460,7 +461,7 @@ export function createHandler(server: DaemonServer) {
         const ok = convStore.setEffort(cmd.convId, cmd.effort);
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-          server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
+          broadcastConversationUpdated(server, cmd.convId);
           log("info", `handler: effort set to ${cmd.effort} for ${cmd.convId}`);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
@@ -486,7 +487,7 @@ export function createHandler(server: DaemonServer) {
         const ok = convStore.setFastMode(cmd.convId, cmd.enabled);
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-          server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
+          broadcastConversationUpdated(server, cmd.convId);
           log("info", `handler: fast mode ${cmd.enabled ? "enabled" : "disabled"} for ${cmd.convId}`);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
@@ -543,7 +544,7 @@ export function createHandler(server: DaemonServer) {
         const ok = convStore.rename(cmd.convId, cmd.title);
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-          server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
+          broadcastConversationUpdated(server, cmd.convId);
           log("info", `handler: renamed conversation ${cmd.convId} to "${cmd.title}"`);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
@@ -611,7 +612,7 @@ export function createHandler(server: DaemonServer) {
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
           server.broadcast({ type: "system_instructions_updated", convId: cmd.convId, text: cmd.text });
-          server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
+          broadcastConversationUpdated(server, cmd.convId);
           // Rebuild display for subscribers so the TUI shows the instructions entry
           sendCompactHistoryUpdated(cmd.convId);
           log("info", `handler: system instructions ${cmd.text ? "set" : "cleared"} for ${cmd.convId}`);
@@ -630,7 +631,7 @@ export function createHandler(server: DaemonServer) {
         log("info", `handler: unwound conversation ${cmd.convId} to before user message ${cmd.userMessageIndex}`);
         // Respond with the truncated state (reuse conversation_loaded)
         sendCompactConversationLoaded(client, cmd.convId, cmd.reqId);
-        server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(cmd.convId)! });
+        broadcastConversationUpdated(server, cmd.convId);
         break;
       }
 
@@ -668,7 +669,7 @@ export function createHandler(server: DaemonServer) {
         }
         // Clear unread when a client views the conversation
         if (convStore.clearUnread(data.convId)) {
-          server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(data.convId)! });
+          broadcastConversationUpdated(server, data.convId);
         }
         break;
       }

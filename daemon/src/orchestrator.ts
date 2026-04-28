@@ -21,6 +21,7 @@ import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ToolExecutionContext } from "./tools/types";
 import { complete } from "./llm";
 import { getInnerLlmSummaryOptions } from "./tools/inner-llm";
+import { broadcastConversationUpdated } from "./conversation-events";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -213,7 +214,7 @@ async function orchestrateAssistantTurn(
     conv.updatedAt = Date.now();
     convStore.bumpToTop(convId);
     convStore.flush(convId);
-    server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
+    broadcastConversationUpdated(server, convId);
     server.sendToSubscribers(convId, { type: "system_message", convId, text, color: "error" });
     return buildErrorOutcome(text);
   };
@@ -273,7 +274,7 @@ async function orchestrateAssistantTurn(
   convStore.initStreamingState(convId);
 
   // Broadcast sidebar update (streaming indicator)
-  server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
+  broadcastConversationUpdated(server, convId);
   server.sendToSubscribers(convId, { type: "streaming_started", convId, provider: conv.provider, model: conv.model, startedAt });
 
   // Extract per-conversation system instructions (if present)
@@ -654,7 +655,7 @@ async function orchestrateAssistantTurn(
     // Persist and notify sidebar
     convStore.markDirty(convId);
     convStore.flush(convId);
-    server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
+    broadcastConversationUpdated(server, convId);
 
   } catch (err) {
     const isAbort = ac.signal.aborted;
@@ -774,7 +775,7 @@ async function orchestrateAssistantTurn(
     convStore.flush(convId);
     server.sendToSubscribers(convId, { type: "streaming_stopped", convId, persistedBlocks: abortPersistedBlocks });
     // Broadcast updated summary (streaming=false, possibly unread=true)
-    server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(convId)! });
+    broadcastConversationUpdated(server, convId);
 
     // When the active stream built up any transient display-only history
     // (completed rounds for late joiners, retries, or next-turn injections),

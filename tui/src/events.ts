@@ -462,25 +462,31 @@ export function handleEvent(
     }
 
     case "conversation_updated": {
-      updateConversation(state.sidebar, event.summary);
+      const summary = event.summary;
+      if (!summary) break;
+
+      updateConversation(state.sidebar, summary);
       // Sync provider/model/effort if this is the active conversation
-      if (event.summary.id === state.convId) {
-        const nextProvider = event.summary.provider ?? fallbackProvider(state);
-        const nextModel = event.summary.model ?? state.model;
+      if (summary.id === state.convId) {
+        const nextProvider = summary.provider ?? fallbackProvider(state);
+        const nextModel = summary.model ?? state.model;
         const providerOrModelChanged = nextProvider !== state.provider || nextModel !== state.model;
         syncChosenProvider(state, nextProvider);
         state.model = nextModel;
-        state.effort = event.summary.effort ?? state.effort;
-        state.fastMode = event.summary.fastMode ?? state.fastMode;
+        state.effort = summary.effort ?? state.effort;
+        state.fastMode = summary.fastMode ?? state.fastMode;
         if (providerOrModelChanged) state.contextTokens = null;
       }
       break;
     }
 
     case "conversation_restored": {
-      updateConversation(state.sidebar, event.summary);
+      const summary = event.summary;
+      if (!summary) break;
+
+      updateConversation(state.sidebar, summary);
       // Select the restored conversation in the sidebar
-      focusConversationById(state.sidebar, event.summary.id);
+      focusConversationById(state.sidebar, summary.id);
       syncSelectedIndex(state.sidebar);
       break;
     }
