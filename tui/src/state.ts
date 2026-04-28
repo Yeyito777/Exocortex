@@ -298,6 +298,17 @@ export function modelSupportsImages(state: RenderState, provider = state.provide
   return supportsImageInputsForModel(getModelInfo(state, provider, model));
 }
 
+/** Reset the pending-new-conversation settings to the product defaults. */
+export function resetNewConversationDefaults(state: RenderState): void {
+  state.provider = DEFAULT_PROVIDER_ID;
+  // Treat the product default as the selected blank-chat provider so later
+  // provider-registry refreshes don't substitute the focused/sole auth provider.
+  state.hasChosenProvider = true;
+  state.model = DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID];
+  state.effort = DEFAULT_EFFORT;
+  state.fastMode = false;
+}
+
 // ── Focus transition helpers ──────────────────────────────────────
 // Centralise the mode+focus combos that are repeated across call sites.
 

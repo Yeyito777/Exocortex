@@ -6,7 +6,7 @@
  */
 
 import type { RenderState } from "./state";
-import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, resolveSystemMessageColor, resetToolOutputState, setCurrentConversationToolOutputAvailability, setLoadedConversationToolOutputState } from "./state";
+import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, resolveSystemMessageColor, resetNewConversationDefaults, resetToolOutputState, setCurrentConversationToolOutputAvailability, setLoadedConversationToolOutputState } from "./state";
 import { preserveViewportAcrossHistoryMutation, toggleToolOutputPreservingViewport } from "./chatscroll";
 import { DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER, ensureCurrentBlock, createMessageMetadata, createPendingAI, normalizeEffortForModel, truncateToCompletedRounds, splitPendingAI, replacePendingStreamingTail } from "./messages";
 import type { AIMessage, ImageAttachment, Block } from "./messages";
@@ -505,6 +505,7 @@ export function handleEvent(
         clearPendingAI(state);
         state.contextTokens = null;
         resetToolOutputState(state);
+        resetNewConversationDefaults(state);
       }
       clearLocalQueue(state, event.convId);
       break;

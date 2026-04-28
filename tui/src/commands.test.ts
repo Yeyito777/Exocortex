@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { tryCommand } from "./commands";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
-import type { ProviderInfo, TokenStatsSnapshot } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, type ProviderInfo, type TokenStatsSnapshot } from "./messages";
 import { theme } from "./theme";
 
 const providers: ProviderInfo[] = [
@@ -159,6 +159,31 @@ const tokenStats: TokenStatsSnapshot = {
 
 beforeEach(() => {
   clearPreferredProvider();
+});
+
+describe("/new", () => {
+  test("resets pending conversation settings to product defaults", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "anthropic";
+    state.model = "claude-opus-4-6";
+    state.effort = "max";
+    state.fastMode = true;
+    state.hasChosenProvider = true;
+    state.contextTokens = 42_000;
+    state.messages.push({ role: "user", text: "old chat", metadata: null });
+
+    const result = tryCommand("/new", state);
+
+    expect(result).toEqual({ type: "new_conversation" });
+    expect(state.messages).toEqual([]);
+    expect(state.contextTokens).toBeNull();
+    expect(String(state.provider)).toBe(DEFAULT_PROVIDER_ID);
+    expect(String(state.model)).toBe(DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    expect(String(state.effort)).toBe(DEFAULT_EFFORT);
+    expect(state.fastMode).toBe(false);
+    expect(state.hasChosenProvider).toBe(true);
+  });
 });
 
 describe("/fast command", () => {

@@ -19,7 +19,7 @@ import { render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, pushSystemMessage, resetToolOutputState } from "./state";
+import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, pushSystemMessage, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { createMessageMetadata, createPendingAI, type ImageAttachment } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
@@ -265,10 +265,12 @@ function handleSubmit(): void {
         case "new_conversation":
           if (state.convId) daemon.unsubscribe(state.convId);
           state.convId = null;
+          resetNewConversationDefaults(state);
           break;
         case "create_conversation_for_instructions":
           if (state.convId) daemon.unsubscribe(state.convId);
           state.convId = null;
+          resetNewConversationDefaults(state);
           state.pendingSystemInstructions = cmdResult.text;
           state.pendingGenerateTitleOnCreate = false;
           daemon.createConversation(state.provider, state.model, "", state.effort);
@@ -462,6 +464,7 @@ function handleKey(key: KeyEvent): void {
       clearStreamingTailMessages(state);
       state.contextTokens = null;
       resetToolOutputState(state);
+      resetNewConversationDefaults(state);
       state.pendingSystemInstructions = null;
       state.pendingGenerateTitleOnCreate = false;
       break;
@@ -475,6 +478,7 @@ function handleKey(key: KeyEvent): void {
         clearPendingAI(state);
         state.contextTokens = null;
         resetToolOutputState(state);
+        resetNewConversationDefaults(state);
       }
       break;
     case "undo_delete":

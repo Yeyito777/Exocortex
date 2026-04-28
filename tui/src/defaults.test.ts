@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, MAX_CONTEXT, normalizeEffortForModel } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, MAX_CONTEXT, normalizeEffortForModel } from "./messages";
 import { clearPreferredProvider } from "./preferences";
-import { createInitialState } from "./state";
+import { createInitialState, resetNewConversationDefaults } from "./state";
 
 describe("tui defaults", () => {
   beforeEach(() => {
@@ -13,6 +13,21 @@ describe("tui defaults", () => {
     expect(state.hasChosenProvider).toBe(false);
     expect(state.provider).toBe(DEFAULT_PROVIDER_ID);
     expect(state.model).toBe(DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+  });
+
+  test("new-conversation reset ignores focused conversation settings", () => {
+    const state = createInitialState();
+    state.provider = "anthropic";
+    state.model = "claude-opus-4-6";
+    state.effort = "max";
+    state.fastMode = true;
+
+    resetNewConversationDefaults(state);
+
+    expect(String(state.provider)).toBe(DEFAULT_PROVIDER_ID);
+    expect(String(state.model)).toBe(DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    expect(String(state.effort)).toBe(DEFAULT_EFFORT);
+    expect(state.fastMode).toBe(false);
   });
 
   test("gpt-5.5 has a known context window for default-state UI fallbacks", () => {

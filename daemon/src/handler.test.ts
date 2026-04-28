@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { create, get, remove, replaceStreamingDisplayMessages } from "./conversations";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "./messages";
 import { clearActiveJob, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
 
 const orchestrateSendMessage = mock(async () => {});
@@ -26,6 +27,53 @@ function cleanupIds(): void {
     remove(id);
   }
 }
+
+describe("handler new_conversation defaults", () => {
+  beforeEach(() => {
+    orchestrateSendMessage.mockClear();
+    orchestrateReplayConversation.mockClear();
+    cleanupIds();
+  });
+  afterEach(cleanupIds);
+
+  test("uses OpenAI GPT-5.5 high effort when the client omits model settings", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "new_conversation", reqId: "req-defaults" });
+
+    const created = sent.find((event) => event.type === "conversation_created");
+    expect(created).toMatchObject({
+      type: "conversation_created",
+      reqId: "req-defaults",
+      provider: DEFAULT_PROVIDER_ID,
+      model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID],
+      effort: DEFAULT_EFFORT,
+      fastMode: false,
+    });
+
+    const convId = created?.convId as string | undefined;
+    expect(convId).toBeTruthy();
+    if (convId) {
+      IDS.push(convId);
+      expect(get(convId)).toMatchObject({
+        provider: DEFAULT_PROVIDER_ID,
+        model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID],
+        effort: DEFAULT_EFFORT,
+        fastMode: false,
+      });
+    }
+  });
+});
 
 describe("handler replay_conversation", () => {
   beforeEach(() => {

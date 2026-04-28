@@ -1,4 +1,4 @@
-import { clearPendingAI, clearStreamingTailMessages } from "../state";
+import { clearPendingAI, clearStreamingTailMessages, resetNewConversationDefaults } from "../state";
 import { clearPrompt } from "../promptstate";
 import type { SlashCommand } from "./types";
 
@@ -12,6 +12,7 @@ export const NEW_COMMAND: SlashCommand = {
     clearPrompt(state);
     state.scrollOffset = 0;
     state.contextTokens = null;
+    resetNewConversationDefaults(state);
     return { type: "new_conversation" };
   },
 };
