@@ -12,7 +12,7 @@ export * from "@exocortex/shared/messages";
 
 // ── API-level types (for stored conversations / API replay) ─────────
 
-import { DEFAULT_EFFORT, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata } from "@exocortex/shared/messages";
+import { DEFAULT_EFFORT, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
 
 export type ApiContentBlock =
@@ -93,6 +93,25 @@ export function buildHistoryTurnMap(messages: StoredMessage[]): number[] {
 /** Count messages for summaries/UI, excluding per-conversation instructions metadata. */
 export function countConversationMessages(messages: StoredMessage[]): number {
   return messages.filter((msg) => msg.role !== "system_instructions").length;
+}
+
+export type PersistedConversationSummary = Omit<ConversationSummary, "streaming" | "unread">;
+
+export function summarizeConversation(conv: Conversation): PersistedConversationSummary {
+  return {
+    id: conv.id,
+    provider: conv.provider,
+    model: conv.model,
+    effort: conv.effort ?? DEFAULT_EFFORT,
+    fastMode: conv.fastMode ?? false,
+    createdAt: conv.createdAt,
+    updatedAt: conv.updatedAt,
+    messageCount: countConversationMessages(conv.messages),
+    title: conv.title,
+    marked: conv.marked,
+    pinned: conv.pinned,
+    sortOrder: conv.sortOrder,
+  };
 }
 
 export function createConversation(

@@ -6,8 +6,8 @@
  * In-flight stream tracking lives in streaming.ts.
  */
 
-import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, StoredMessage, Block, MessageMetadata } from "./messages";
-import { DEFAULT_EFFORT, createConversation, createMessageMetadata, sortConversations, countConversationMessages, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder } from "./messages";
+import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, StoredMessage, Block, MessageMetadata, PersistedConversationSummary } from "./messages";
+import { DEFAULT_EFFORT, createConversation, createMessageMetadata, sortConversations, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation } from "./messages";
 import type { TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
 import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
@@ -31,26 +31,9 @@ export {
 // ── State ───────────────────────────────────────────────────────────
 
 const conversations = new Map<string, Conversation>();
-const summaries = new Map<string, persistence.PersistedConversationSummary>();
+const summaries = new Map<string, PersistedConversationSummary>();
 const dirty = new Set<string>();
 const unread = new Set<string>();
-
-function summaryFromConversation(conv: Conversation): persistence.PersistedConversationSummary {
-  return {
-    id: conv.id,
-    provider: conv.provider,
-    model: conv.model,
-    effort: conv.effort ?? DEFAULT_EFFORT,
-    fastMode: conv.fastMode ?? false,
-    createdAt: conv.createdAt,
-    updatedAt: conv.updatedAt,
-    messageCount: countConversationMessages(conv.messages),
-    title: conv.title,
-    marked: conv.marked,
-    pinned: conv.pinned,
-    sortOrder: conv.sortOrder,
-  };
-}
 
 function saveSummaryIndex(): void {
   const entries: persistence.ConversationIndexEntry[] = [];
@@ -70,7 +53,7 @@ function saveSummaryIndex(): void {
 }
 
 function updateSummaryFromConversation(conv: Conversation): void {
-  summaries.set(conv.id, summaryFromConversation(conv));
+  summaries.set(conv.id, summarizeConversation(conv));
 }
 
 function loadConversation(id: string): Conversation | undefined {
@@ -537,7 +520,7 @@ export function move(id: string, direction: "up" | "down"): boolean {
 /** Get a single conversation's summary. */
 export function getSummary(id: string): ConversationSummary | null {
   const loaded = conversations.get(id);
-  const summary = loaded ? summaryFromConversation(loaded) : summaries.get(id);
+  const summary = loaded ? summarizeConversation(loaded) : summaries.get(id);
   if (!summary) return null;
   return {
     ...summary,

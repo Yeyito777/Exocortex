@@ -13,8 +13,8 @@ import { join } from "path";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, renameSync, statSync } from "fs";
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
-import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary } from "./messages";
-import { DEFAULT_EFFORT, countConversationMessages, sortConversations } from "./messages";
+import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary } from "./messages";
+import { DEFAULT_EFFORT, countConversationMessages, sortConversations, summarizeConversation } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
@@ -408,8 +408,6 @@ function fromFile(file: ConversationFile): Conversation {
 
 const INDEX_VERSION = 1;
 
-export type PersistedConversationSummary = Omit<ConversationSummary, "streaming" | "unread">;
-
 export interface ConversationIndexEntry extends PersistedConversationSummary {
   fileSize: number;
   fileMtimeMs: number;
@@ -429,23 +427,6 @@ export interface LoadConversationIndexResult {
   saved: boolean;
 }
 
-function summaryFromConversation(conv: Conversation): PersistedConversationSummary {
-  return {
-    id: conv.id,
-    provider: conv.provider,
-    model: conv.model,
-    effort: conv.effort,
-    fastMode: conv.fastMode,
-    createdAt: conv.createdAt,
-    updatedAt: conv.updatedAt,
-    messageCount: countConversationMessages(conv.messages),
-    title: conv.title,
-    marked: conv.marked,
-    pinned: conv.pinned,
-    sortOrder: conv.sortOrder,
-  };
-}
-
 export function getConversationFileStat(id: string): { fileSize: number; fileMtimeMs: number } {
   const stat = statSync(convPath(id));
   return { fileSize: stat.size, fileMtimeMs: stat.mtimeMs };
@@ -461,7 +442,7 @@ function statConversationFile(id: string): { fileSize: number; fileMtimeMs: numb
 
 export function indexEntryFromConversation(conv: Conversation): ConversationIndexEntry {
   const stat = statConversationFile(conv.id) ?? { fileSize: 0, fileMtimeMs: 0 };
-  return { ...summaryFromConversation(conv), ...stat };
+  return { ...summarizeConversation(conv), ...stat };
 }
 
 function readConversationIndex(): ConversationIndexFile | null {
@@ -518,7 +499,7 @@ export function loadConversationIndex(): LoadConversationIndexResult {
 
     const conv = load(id);
     if (conv) {
-      entries.push({ ...summaryFromConversation(conv), ...stat });
+      entries.push({ ...summarizeConversation(conv), ...stat });
       rebuilt++;
       saved = true;
     } else {
