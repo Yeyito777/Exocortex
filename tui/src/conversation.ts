@@ -204,7 +204,14 @@ export function buildMessageLines(
     for (const block of state.pendingAI.blocks) {
       pushBlock(block, "assistant_block", renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
     }
-    const metadataLines = renderMetadata(state.pendingAI.metadata);
+    // Terminal stream notices (abort/error/watchdog) commit the visible assistant
+    // blocks before streaming_stopped arrives, but keep pendingAI around so the
+    // final persisted blocks can reconcile into that same history slot. During
+    // that short interval pendingAI usually has no blocks; rendering its live
+    // metadata would add a duplicate transient line below "✗ Interrupted", then
+    // remove it on streaming_stopped, causing a visible scroll jump.
+    const shouldRenderPendingMetadata = state.pendingAI.blocks.length > 0 || state.pendingAICommittedIndex === null;
+    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(state.pendingAI.metadata) : [];
     if (metadataLines.length > 0) trimTrailingBlankAssistantContent(start);
     const contentEnd = lines.length;
     for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], state.pendingAI, "assistant_metadata", i);

@@ -103,7 +103,7 @@ describe("streaming system-message tail", () => {
   });
 
   test("reconciles terminal stream errors at the inline assistant position on streaming_stopped", () => {
-    const { state } = plainLines();
+    const { state, render } = plainLines();
     state.pendingAI!.blocks.push({ type: "text", text: "partial reply" });
     state.pendingAI!.metadata!.tokens = 42;
 
@@ -113,6 +113,12 @@ describe("streaming system-message tail", () => {
     expect(state.messages[0]).toMatchObject({ role: "assistant" });
     expect(state.messages[1]).toMatchObject({ role: "system", text: "✗ Timed out (stale stream)" });
     expect(state.pendingAICommittedIndex).toBe(0);
+
+    const interruptedLines = render();
+    expect(interruptedLines.filter(line => line.includes("Gpt-5.4 | 42 tokens"))).toHaveLength(1);
+    expect(interruptedLines.indexOf("  ✗ Timed out (stale stream)")).toBeGreaterThan(
+      interruptedLines.findIndex(line => line.includes("Gpt-5.4 | 42 tokens")),
+    );
 
     handleEvent({
       type: "streaming_stopped",
