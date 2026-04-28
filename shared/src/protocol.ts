@@ -254,6 +254,8 @@ export interface LoginCommand {
   type: "login";
   reqId?: string;
   provider?: ProviderId;
+  /** Provider-specific secret. DeepSeek uses this for `/login deepseek <api-key>`. */
+  apiKey?: string;
 }
 
 export interface LogoutCommand {

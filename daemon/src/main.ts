@@ -196,7 +196,7 @@ const command = process.argv[2];
 async function main(): Promise<void> {
   if (command === "login") {
     try {
-      await handleLogin(process.argv[3]);
+      await handleLogin(process.argv[3], process.argv[4]);
       return;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

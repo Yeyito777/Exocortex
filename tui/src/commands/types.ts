@@ -19,7 +19,7 @@ export type CommandResult =
   | { type: "fast_mode_changed"; enabled: boolean }
   | { type: "rename_conversation"; title: string }
   | { type: "generate_title" }
-  | { type: "login"; provider?: ProviderId }
+  | { type: "login"; provider?: ProviderId; apiKey?: string }
   | { type: "logout"; provider?: ProviderId }
   | { type: "theme_changed" }
   | { type: "get_system_prompt" }

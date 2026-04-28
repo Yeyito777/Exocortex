@@ -33,7 +33,7 @@ function updatePreferences(mutator: (prefs: TuiPreferences) => TuiPreferences): 
 
 export function loadPreferredProvider(): ProviderId | null {
   const provider = readPreferences().preferredProvider;
-  return provider === "openai" || provider === "anthropic" ? provider : null;
+  return provider === "openai" || provider === "anthropic" || provider === "deepseek" ? provider : null;
 }
 
 export function savePreferredProvider(provider: ProviderId): void {

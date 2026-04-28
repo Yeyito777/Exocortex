@@ -53,8 +53,14 @@ export interface OpenAIProviderConfig {
   retryOnUsageLimitReset?: boolean;
 }
 
+export interface DeepSeekProviderConfig {
+  /** Override the OpenAI-compatible DeepSeek API base URL. Defaults to https://api.deepseek.com. */
+  baseUrl?: string;
+}
+
 export interface ProvidersConfig {
   openai?: OpenAIProviderConfig;
+  deepseek?: DeepSeekProviderConfig;
   /** Preserve unknown provider config blocks. */
   [provider: string]: unknown;
 }

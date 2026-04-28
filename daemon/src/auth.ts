@@ -2,7 +2,7 @@ import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
 import type { ProviderId } from "./messages";
 import type { ProviderAuthInfo } from "./protocol";
 import { getProviderAdapter } from "./providers/catalog";
-import type { EnsureAuthResult, LoginCallbacks, LoginResult } from "./providers/types";
+import type { EnsureAuthResult, LoginCallbacks, LoginOptions, LoginResult } from "./providers/types";
 import { AuthError } from "./providers/errors";
 import { isTokenExpired, loadProviderAuth, type StoredAuth } from "./store";
 
@@ -13,12 +13,12 @@ interface StoredAuthLike extends StoredAuth {
   source?: string | null;
 }
 
-export function login(provider: ProviderId, callbacks?: LoginCallbacks | ((msg: string) => void)): Promise<LoginResult> {
-  return getProviderAdapter(provider).auth.login(callbacks);
+export function login(provider: ProviderId, callbacks?: LoginCallbacks | ((msg: string) => void), options?: LoginOptions): Promise<LoginResult> {
+  return getProviderAdapter(provider).auth.login(callbacks, options);
 }
 
-export function ensureAuthenticated(provider: ProviderId, callbacks?: LoginCallbacks): Promise<EnsureAuthResult> {
-  return getProviderAdapter(provider).auth.ensureAuthenticated(callbacks);
+export function ensureAuthenticated(provider: ProviderId, callbacks?: LoginCallbacks, options?: LoginOptions): Promise<EnsureAuthResult> {
+  return getProviderAdapter(provider).auth.ensureAuthenticated(callbacks, options);
 }
 
 export function refreshTokens(provider: ProviderId, refreshToken: string) {
@@ -45,6 +45,7 @@ export function getAuthByProvider(): Record<ProviderId, boolean> {
   return {
     openai: hasConfiguredCredentials("openai"),
     anthropic: hasConfiguredCredentials("anthropic"),
+    deepseek: hasConfiguredCredentials("deepseek"),
   };
 }
 
@@ -81,5 +82,6 @@ export function getAuthInfoByProvider(): Record<ProviderId, ProviderAuthInfo> {
   return {
     openai: getAuthInfo("openai"),
     anthropic: getAuthInfo("anthropic"),
+    deepseek: getAuthInfo("deepseek"),
   };
 }

@@ -90,6 +90,11 @@ export interface LoginCallbacks {
   onOpenUrl?: (url: string) => boolean | void | Promise<boolean | void>;
 }
 
+export interface LoginOptions {
+  /** Provider-specific secret supplied by the caller. DeepSeek uses this for API-key login. */
+  apiKey?: string;
+}
+
 export interface EnsureAuthResult {
   status: "already_authenticated" | "refreshed" | "logged_in";
   email: string | null;
@@ -101,8 +106,8 @@ export interface ProviderModelSource {
 }
 
 export interface ProviderAuthAdapter {
-  login(callbacks?: LoginCallbacks | ((msg: string) => void)): Promise<LoginResult>;
-  ensureAuthenticated(callbacks?: LoginCallbacks): Promise<EnsureAuthResult>;
+  login(callbacks?: LoginCallbacks | ((msg: string) => void), options?: LoginOptions): Promise<LoginResult>;
+  ensureAuthenticated(callbacks?: LoginCallbacks, options?: LoginOptions): Promise<EnsureAuthResult>;
   refreshTokens?: (refreshToken: string) => Promise<unknown>;
   verifyAuth(accessToken: string): Promise<boolean>;
   clearAuth(): boolean;

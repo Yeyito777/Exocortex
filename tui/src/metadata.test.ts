@@ -23,4 +23,15 @@ describe("renderMetadata", () => {
 
     expect(line).toContain("Gpt-5.4-mini | 42 tokens | 2s");
   });
+
+  test("renders formatted DeepSeek model names with hyphens", () => {
+    const [line] = renderMetadata({
+      startedAt: 1_000,
+      endedAt: 3_000,
+      model: "deepseek-v4-pro",
+      tokens: 42,
+    });
+
+    expect(line).toContain("DeepSeek-V4-Pro | 42 tokens | 2s");
+  });
 });

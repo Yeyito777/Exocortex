@@ -17,6 +17,11 @@ function formatDuration(ms: number): string {
   return `${m}m ${s}s`;
 }
 
+function formatMetadataModelName(model: MessageMetadata["model"]): string {
+  const displayName = formatModelDisplayName(model);
+  return model.startsWith("deepseek-") ? displayName.replace(/\s+/g, "-") : displayName;
+}
+
 // ── Renderer ────────────────────────────────────────────────────────
 
 /**
@@ -33,7 +38,7 @@ export function renderMetadata(metadata: MessageMetadata | null): string[] {
   const parts: string[] = [];
 
   // Model
-  parts.push(formatModelDisplayName(metadata.model));
+  parts.push(formatMetadataModelName(metadata.model));
 
   // Tokens
   parts.push(`${metadata.tokens.toLocaleString("en-US")} tokens`);

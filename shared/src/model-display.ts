@@ -8,6 +8,7 @@
 import type { ModelId } from "./messages";
 
 const ANTHROPIC_MODEL_RE = /^claude-([a-z]+)-(\d+)-(\d+)(?:-.+)?$/i;
+const DEEPSEEK_MODEL_RE = /^deepseek-v(\d+)-(.+)$/i;
 
 function capitalizeFirst(text: string): string {
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
@@ -22,6 +23,14 @@ function formatAnthropicModelDisplayName(modelId: string): string | null {
   return `${capitalizeFirst(family.toLowerCase())}-${major}.${minor}`;
 }
 
+function formatDeepSeekModelDisplayName(modelId: string): string | null {
+  const match = DEEPSEEK_MODEL_RE.exec(modelId);
+  if (!match) return null;
+
+  const [, version, tier] = match;
+  return `DeepSeek V${version} ${capitalizeFirst(tier.toLowerCase())}`;
+}
+
 /**
  * Convert a canonical provider model id into a short deterministic UI label.
  *
@@ -32,5 +41,5 @@ function formatAnthropicModelDisplayName(modelId: string): string | null {
  *   claude-haiku-4-5-20251001  -> Haiku-4.5
  */
 export function formatModelDisplayName(modelId: ModelId): string {
-  return formatAnthropicModelDisplayName(modelId) ?? capitalizeFirst(modelId);
+  return formatAnthropicModelDisplayName(modelId) ?? formatDeepSeekModelDisplayName(modelId) ?? capitalizeFirst(modelId);
 }

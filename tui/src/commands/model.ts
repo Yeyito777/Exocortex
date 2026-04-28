@@ -1,5 +1,5 @@
 import { clearPrompt } from "../promptstate";
-import { isStreaming, pushSystemMessage } from "../state";
+import { getProviderInfo, isStreaming, pushSystemMessage } from "../state";
 import { DEFAULT_EFFORT, type ModelId, type ProviderId } from "../messages";
 import {
   applyProviderModelSelection,
@@ -20,7 +20,7 @@ export const MODEL_COMMAND: SlashCommand = {
     const registry: Record<string, { name: string; desc: string }[]> = {
       "/model": availableProviders(state).map((provider) => ({
         name: provider,
-        desc: provider === "openai" ? "OpenAI models" : "Anthropic models",
+        desc: `${getProviderInfo(state, provider)?.label ?? provider} models`,
       })),
     };
     for (const provider of availableProviders(state)) {

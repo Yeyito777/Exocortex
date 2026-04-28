@@ -11,7 +11,7 @@
 
 // ── Providers / Models ──────────────────────────────────────────────
 
-export type ProviderId = "anthropic" | "openai";
+export type ProviderId = "anthropic" | "openai" | "deepseek";
 
 /** Provider-scoped model identifier. */
 export type ModelId = string;
@@ -46,12 +46,13 @@ export interface ProviderInfo {
 export const DEFAULT_PROVIDER_ID: ProviderId = "openai";
 
 /** Preferred provider ordering for UI fallbacks and provider registries. */
-export const DEFAULT_PROVIDER_ORDER: readonly ProviderId[] = [DEFAULT_PROVIDER_ID, "anthropic"];
+export const DEFAULT_PROVIDER_ORDER: readonly ProviderId[] = [DEFAULT_PROVIDER_ID, "anthropic", "deepseek"];
 
 /** Preferred default model per provider when the app needs a fallback selection. */
 export const DEFAULT_MODEL_BY_PROVIDER = {
   anthropic: "claude-opus-4-6",
   openai: "gpt-5.5",
+  deepseek: "deepseek-v4-pro",
 } as const satisfies Record<ProviderId, ModelId>;
 
 // ── Effort ─────────────────────────────────────────────────────────
@@ -90,6 +91,8 @@ export const MAX_CONTEXT: Record<string, number> = {
   "gpt-5.4": 272_000,
   "gpt-5.4-mini": 272_000,
   "gpt-5.3-codex-spark": 128_000,
+  "deepseek-v4-pro": 1_000_000,
+  "deepseek-v4-flash": 1_000_000,
 };
 
 // ── Image attachments ──────────────────────────────────────────────

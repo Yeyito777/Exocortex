@@ -11,7 +11,7 @@ import { getDefaultProvider } from "./providers/registry";
 
 // ── Login ──────────────────────────────────────────────────────────
 
-export async function handleLogin(providerArg?: string): Promise<void> {
+export async function handleLogin(providerArg?: string, apiKeyArg?: string): Promise<void> {
   const provider = (providerArg as ProviderId | undefined) ?? getDefaultProvider().id;
   console.log(`\n  Exocortex — Authentication (${provider})\n`);
 
@@ -21,7 +21,7 @@ export async function handleLogin(providerArg?: string): Promise<void> {
       const { openUrlInBrowser } = await import("./providers/oauth");
       return openUrlInBrowser(url);
     },
-  });
+  }, apiKeyArg ? { apiKey: apiKeyArg } : undefined);
 
   const name = email ?? provider;
   if (status === "already_authenticated") {

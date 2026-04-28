@@ -3,6 +3,9 @@
   "providers": {
     "openai": {
       "retryOnUsageLimitReset": false
+    },
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.com"
     }
   },
   "safety": {

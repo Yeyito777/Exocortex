@@ -42,6 +42,27 @@ const providers: ProviderInfo[] = [
       },
     ],
   },
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    defaultModel: "deepseek-v4-pro",
+    allowsCustomModels: true,
+    supportsFastMode: false,
+    models: [
+      {
+        id: "deepseek-v4-pro",
+        label: "DeepSeek V4 Pro",
+        maxContext: 1_000_000,
+        supportedEfforts: [
+          { effort: "none", description: "Off" },
+          { effort: "high", description: "Deep" },
+          { effort: "max", description: "Max" },
+        ],
+        defaultEffort: "high",
+        supportsImages: false,
+      },
+    ],
+  },
 ];
 
 function localDayKey(date: Date): string {
@@ -577,6 +598,30 @@ describe("/login", () => {
     expect(state.hasChosenProvider).toBe(true);
     expect(state.provider).toBe("anthropic");
     expect(state.model).toBe("claude-opus-4-6");
+  });
+
+  test("returns an API-key login command for DeepSeek", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    const result = tryCommand("/login deepseek sk-test123", state);
+
+    expect(result).toEqual({ type: "login", provider: "deepseek", apiKey: "sk-test123" });
+    expect(state.hasChosenProvider).toBe(true);
+    expect(state.provider).toBe("deepseek");
+    expect(state.model).toBe("deepseek-v4-pro");
+  });
+
+  test("instructs DeepSeek users to supply an API key", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    const result = tryCommand("/login deepseek", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("/login deepseek <api-key>");
+    expect(text).toContain("platform.deepseek.com/api_keys");
   });
 
   test("shows simplified login status when called without a provider", () => {

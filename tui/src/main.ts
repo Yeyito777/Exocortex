@@ -263,7 +263,7 @@ function handleSubmit(): void {
           if (state.convId) daemon.setSystemInstructions(state.convId, cmdResult.text);
           break;
         case "login":
-          daemon.login(cmdResult.provider ?? state.provider);
+          daemon.login(cmdResult.provider ?? state.provider, cmdResult.apiKey);
           break;
         case "logout":
           daemon.logout(cmdResult.provider ?? state.provider);

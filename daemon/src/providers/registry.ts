@@ -33,6 +33,7 @@ function getFallbackProvidersById(): Record<ProviderId, ProviderInfo> {
   fallbackProvidersByIdCache = {
     openai: buildFallbackProviderInfo("openai"),
     anthropic: buildFallbackProviderInfo("anthropic"),
+    deepseek: buildFallbackProviderInfo("deepseek"),
   };
   return fallbackProvidersByIdCache;
 }
@@ -48,6 +49,12 @@ const MODEL_ID_ALIASES: Record<ProviderId, Record<string, ModelId>> = {
     sonnet: "claude-sonnet-4-6",
     haiku: "claude-haiku-4-5-20251001",
     opus: "claude-opus-4-6",
+  },
+  deepseek: {
+    pro: "deepseek-v4-pro",
+    "v4-pro": "deepseek-v4-pro",
+    flash: "deepseek-v4-flash",
+    "v4-flash": "deepseek-v4-flash",
   },
 };
 

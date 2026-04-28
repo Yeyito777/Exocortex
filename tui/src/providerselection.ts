@@ -8,11 +8,7 @@ export function availableProviders(state: RenderState): ProviderId[] {
 }
 
 export function loginPromptProviders(state: RenderState): ProviderId[] {
-  const providers = availableProviders(state);
-  if (providers.includes("openai") && providers.includes("anthropic")) {
-    return ["openai", "anthropic"];
-  }
-  return providers;
+  return availableProviders(state);
 }
 
 export function setChosenProvider(state: RenderState, provider: ProviderId, persist = true): void {

@@ -24,8 +24,15 @@ describe("getInnerLlmSummaryOptions", () => {
     });
   });
 
+  test("uses DeepSeek's flash model when the conversation provider is deepseek", () => {
+    expect(getInnerLlmSummaryOptions({ provider: "deepseek" })).toEqual({
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+    });
+  });
+
   test("always chooses a model known to the selected provider", () => {
-    for (const provider of ["openai", "anthropic"] as const) {
+    for (const provider of ["openai", "anthropic", "deepseek"] as const) {
       const options = getInnerLlmSummaryOptions({ provider });
       expect(isKnownModel(provider, options.model)).toBe(true);
     }

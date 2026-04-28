@@ -343,14 +343,17 @@ export function createInitialState(): RenderState {
     authByProvider: {
       anthropic: false,
       openai: false,
+      deepseek: false,
     },
     authInfoByProvider: {
       anthropic: createEmptyProviderAuthInfo(),
       openai: createEmptyProviderAuthInfo(),
+      deepseek: createEmptyProviderAuthInfo(),
     },
     usageByProvider: {
       anthropic: null,
       openai: null,
+      deepseek: null,
     },
     tokenStats: null,
     contextTokens: null,

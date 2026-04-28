@@ -87,6 +87,8 @@ const MODEL_PRICING_USD_PER_MILLION: Record<ModelId, ModelPricing> = {
   "claude-opus-4-6": { provider: "anthropic", inputUsdPerMillion: 5, cachedInputUsdPerMillion: 0.5, outputUsdPerMillion: 25 },
   "claude-sonnet-4-6": { provider: "anthropic", inputUsdPerMillion: 3, cachedInputUsdPerMillion: 0.3, outputUsdPerMillion: 15 },
   "claude-haiku-4-5-20251001": { provider: "anthropic", inputUsdPerMillion: 1, cachedInputUsdPerMillion: 0.1, outputUsdPerMillion: 5 },
+  "deepseek-v4-pro": { provider: "deepseek", inputUsdPerMillion: 0.435, cachedInputUsdPerMillion: 0.003625, outputUsdPerMillion: 0.87 },
+  "deepseek-v4-flash": { provider: "deepseek", inputUsdPerMillion: 0.14, cachedInputUsdPerMillion: 0.0028, outputUsdPerMillion: 0.28 },
 };
 
 // Heuristic for /tokens cost until daemon-side cache usage accounting exists.
@@ -346,6 +348,8 @@ function formatProviderLabel(provider: ProviderId): string {
       return "OpenAI";
     case "anthropic":
       return "Anthropic";
+    case "deepseek":
+      return "DeepSeek";
   }
 }
 
@@ -423,7 +427,7 @@ function buildCostBreakdownMessage(stats: TokenStatsSnapshot): string {
     grouped.set(row.provider, rows);
   }
 
-  const providerOrder: ProviderId[] = ["openai", "anthropic"];
+  const providerOrder: ProviderId[] = ["openai", "anthropic", "deepseek"];
   const sortedProviders = [...grouped.keys()].sort((a, b) => {
     const aIndex = providerOrder.indexOf(a);
     const bIndex = providerOrder.indexOf(b);

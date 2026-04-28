@@ -729,7 +729,7 @@ export function createHandler(server: DaemonServer) {
             server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, openUrl: url });
             return true;
           },
-        }).then(({ status, email }) => {
+        }, cmd.apiKey ? { apiKey: cmd.apiKey } : undefined).then(({ status, email }) => {
           const label = email ?? provider;
           server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: statusMessages[status](label) });
           log("info", `handler: login ${status} (${label})`);
