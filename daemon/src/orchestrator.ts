@@ -15,7 +15,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { buildHistoryTurnMap, createMessageMetadata, isHistoryMessage, isToolResultMessage, type StoredMessage, type ApiContentBlock, type ModelId, type Block } from "./messages";
+import { buildHistoryTurnMap, createStoredUserMessage, isHistoryMessage, isToolResultMessage, type StoredMessage, type ApiContentBlock, type Block } from "./messages";
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ToolExecutionContext } from "./tools/types";
@@ -80,32 +80,6 @@ export interface OrchestrationCallbacks {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
-
-/** Build API-ready user content — structured array when images are present, plain string otherwise. */
-function buildUserContent(text: string, images?: ImageAttachment[]): string | ApiContentBlock[] {
-  if (!images?.length) return text;
-  return [
-    ...images.map((img): ApiContentBlock => ({
-      type: "image",
-      source: { type: "base64", media_type: img.mediaType, data: img.base64 },
-    })),
-    ...(text ? [{ type: "text" as const, text }] : []),
-  ];
-}
-
-/** Build a stored user message from text + optional images. */
-function buildStoredUserMessage(
-  text: string,
-  model: ModelId,
-  startedAt: number,
-  images?: ImageAttachment[],
-): StoredMessage {
-  return {
-    role: "user",
-    content: buildUserContent(text, images),
-    metadata: createMessageMetadata(startedAt, model, { endedAt: startedAt }),
-  };
-}
 
 /** Convert API messages to stored-message shape for transient display state. */
 function toStoredMessages(messages: import("./messages").ApiMessage[]): StoredMessage[] {
@@ -267,7 +241,7 @@ async function orchestrateAssistantTurn(
   }
 
   if (userMessage) {
-    conv.messages.push(buildStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images));
+    conv.messages.push(createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images));
 
     // Notify subscribers about the user message.
     // When client is set, it already added the message locally — skip it.
@@ -560,7 +534,7 @@ async function orchestrateAssistantTurn(
           startedAt: injectedStartedAt,
           images: qm.images,
         });
-        const storedUser = buildStoredUserMessage(qm.text, conv.model, injectedStartedAt, qm.images);
+        const storedUser = createStoredUserMessage(qm.text, conv.model, injectedStartedAt, qm.images);
         apiMsgs.push({ role: "user", content: storedUser.content });
         injectedStored.push(storedUser);
         log("info", `orchestrator: injected next-turn message: "${qm.text.slice(0, 50)}"`);

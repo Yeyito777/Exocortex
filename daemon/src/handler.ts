@@ -15,9 +15,9 @@ import { buildAnthropicSystemPrompt, buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
 import { EFFORT_LEVELS } from "./messages";
-import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode } from "./providers/registry";
+import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode, supportsImageInputs } from "./providers/registry";
 import { transcribeAudioBytes } from "./transcription";
-import { startTitleGeneration, isPendingTitle } from "./titlegen";
+import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen";
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command, ParentNotificationTarget } from "./protocol";
@@ -234,8 +234,25 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Fast mode is only available for ${provider} conversations that support it.` });
           break;
         }
-        convStore.create(id, provider, model, cmd.title, effort, fastMode);
-        log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, fastMode=${fastMode}, title="${cmd.title ?? ""}")`);
+        const initialMessage = cmd.initialMessage;
+        if (initialMessage) {
+          if (!hasConfiguredCredentials(provider)) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Not authenticated for provider ${provider}. Run: bun run src/main.ts login ${provider}` });
+            break;
+          }
+          if (initialMessage.images?.length && !supportsImageInputs(provider, model)) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Image inputs are not supported by ${provider}/${model}. Remove the attachment or switch to a vision-capable model.` });
+            break;
+          }
+        }
+
+        const title = cmd.title ?? (initialMessage ? PENDING_TITLE : undefined);
+        if (initialMessage) {
+          convStore.createWithInitialUserMessage(id, provider, model, title, effort, fastMode, initialMessage);
+        } else {
+          convStore.create(id, provider, model, title, effort, fastMode);
+        }
+        log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, fastMode=${fastMode}, title="${title ?? ""}", initialMessage=${Boolean(initialMessage)})`);
 
         server.sendTo(client, {
           type: "conversation_created",
@@ -247,6 +264,23 @@ export function createHandler(server: DaemonServer) {
           fastMode,
         });
         server.broadcast({ type: "conversation_updated", summary: convStore.getSummary(id)! });
+
+        if (initialMessage) {
+          // The creating client already has the local user echo and pending AI.
+          // Subscribe it before starting the turn so it receives the stream as
+          // soon as it processes the preceding conversation_created event.
+          server.subscribe(client, id);
+          const turn = orchestrateReplayConversation(
+            server,
+            client,
+            cmd.reqId,
+            id,
+            initialMessage.startedAt,
+            buildOrchestrationCallbacks(id),
+          );
+          maybeStartAutoTitleGeneration(id);
+          await turn;
+        }
         break;
       }
 

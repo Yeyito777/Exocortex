@@ -12,7 +12,7 @@ export * from "@exocortex/shared/messages";
 
 // ── API-level types (for stored conversations / API replay) ─────────
 
-import { DEFAULT_EFFORT, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary } from "@exocortex/shared/messages";
+import { DEFAULT_EFFORT, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type ImageAttachment } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
 
 export type ApiContentBlock =
@@ -79,6 +79,32 @@ export function isToolResultMessage(msg: StoredMessage): boolean {
 /** True for actual user/assistant history turns, excluding daemon metadata entries. */
 export function isHistoryMessage(msg: StoredMessage): msg is StoredMessage & { role: "user" | "assistant" } {
   return msg.role !== "system" && msg.role !== "system_instructions";
+}
+
+/** Build API-ready user content — structured array when images are present, plain string otherwise. */
+export function buildUserContent(text: string, images?: ImageAttachment[]): string | ApiContentBlock[] {
+  if (!images?.length) return text;
+  return [
+    ...images.map((img): ApiContentBlock => ({
+      type: "image",
+      source: { type: "base64", media_type: img.mediaType, data: img.base64 },
+    })),
+    ...(text ? [{ type: "text" as const, text }] : []),
+  ];
+}
+
+/** Build a stored user message from text + optional images. */
+export function createStoredUserMessage(
+  text: string,
+  model: ModelId,
+  startedAt: number,
+  images?: ImageAttachment[],
+): StoredMessage {
+  return {
+    role: "user",
+    content: buildUserContent(text, images),
+    metadata: createMessageMetadata(startedAt, model, { endedAt: startedAt }),
+  };
 }
 
 /** Build turn index → messages index mapping for real conversation history. */

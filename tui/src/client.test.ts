@@ -49,6 +49,28 @@ describe("DaemonClient request-scoped events", () => {
   });
 });
 
+describe("DaemonClient commands", () => {
+  test("can create a conversation with an atomic initial message", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.createConversation("openai", "gpt-5.4", "pending", "high", false, {
+      text: "hello",
+      startedAt: 456,
+    });
+
+    expect(internal.pendingCommands).toEqual([{
+      type: "new_conversation",
+      provider: "openai",
+      model: "gpt-5.4",
+      title: "pending",
+      effort: "high",
+      fastMode: false,
+      initialMessage: { text: "hello", startedAt: 456 },
+    }]);
+  });
+});
+
 describe("DaemonClient reconnect behavior", () => {
   test("queues commands while disconnected and flushes them on reconnect", () => {
     const client = new DaemonClient(() => {});

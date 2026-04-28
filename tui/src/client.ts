@@ -107,8 +107,15 @@ export class DaemonClient {
 
   // ── Convenience methods ─────────────────────────────────────────
 
-  createConversation(provider?: ProviderId, model?: import("./protocol").ModelId, title?: string, effort?: EffortLevel, fastMode?: boolean): void {
-    this.send({ type: "new_conversation", provider, model, title, effort, fastMode });
+  createConversation(
+    provider?: ProviderId,
+    model?: import("./protocol").ModelId,
+    title?: string,
+    effort?: EffortLevel,
+    fastMode?: boolean,
+    initialMessage?: { text: string; startedAt: number; images?: ImageAttachment[] },
+  ): void {
+    this.send({ type: "new_conversation", provider, model, title, effort, fastMode, initialMessage });
   }
 
   subscribe(convId: string): void {

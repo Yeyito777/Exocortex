@@ -7,7 +7,8 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, StoredMessage, Block, MessageMetadata, PersistedConversationSummary } from "./messages";
-import { DEFAULT_EFFORT, createConversation, createMessageMetadata, sortConversations, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation } from "./messages";
+import { DEFAULT_EFFORT, createConversation, createMessageMetadata, createStoredUserMessage, sortConversations, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation } from "./messages";
+import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
 import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
@@ -99,6 +100,23 @@ export function generateId(): string {
 
 export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode = false): Conversation {
   const conv = createConversation(id, provider, model, topUnpinnedOrder(summaries.values()), title, effort, fastMode);
+  conversations.set(id, conv);
+  markDirty(id);
+  flush(id);
+  return conv;
+}
+
+export function createWithInitialUserMessage(
+  id: string,
+  provider: ProviderId,
+  model: ModelId,
+  title: string | undefined,
+  effort: EffortLevel | undefined,
+  fastMode: boolean,
+  message: { text: string; startedAt: number; images?: ImageAttachment[] },
+): Conversation {
+  const conv = createConversation(id, provider, model, topUnpinnedOrder(summaries.values()), title, effort, fastMode);
+  conv.messages.push(createStoredUserMessage(message.text, model, message.startedAt, message.images));
   conversations.set(id, conv);
   markDirty(id);
   flush(id);

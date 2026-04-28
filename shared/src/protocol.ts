@@ -27,6 +27,17 @@ export interface NewConversationCommand {
   fastMode?: boolean;
   /** Initial title. Clients that don't set this get an empty title. */
   title?: string;
+  /**
+   * Optional first user message to append atomically with conversation creation.
+   * This lets clients create the conversation with a daemon-owned pending title
+   * without persisting a title-generation placeholder before the daemon owns the
+   * message context needed to resolve it.
+   */
+  initialMessage?: {
+    text: string;
+    startedAt: number;
+    images?: ImageAttachment[];
+  };
 }
 
 export interface ParentNotificationTarget {

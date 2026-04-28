@@ -25,7 +25,7 @@ import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
 import { openQueuePrompt, confirmQueueMessage, cancelQueuePrompt, clearLocalQueue, removeLocalQueueEntry } from "./queue";
 import { confirmEditMessage, cancelEditMessage } from "./editmessage";
-import { generateTitle } from "./titlegen";
+import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
 import { openTargetDetached } from "./openable";
 import { msUntilNextElapsedSecond } from "./time";
@@ -377,11 +377,15 @@ function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
   state.pendingAI = createPendingAI(startedAt, state.model);
 
   if (!state.convId) {
-    state.pendingSend.active = true;
-    state.pendingSend.text = messageText;
-    state.pendingSend.images = images;
-    state.pendingGenerateTitleOnCreate = true;
-    daemon.createConversation(state.provider, state.model, "", state.effort, state.fastMode);
+    state.pendingSend.active = false;
+    state.pendingSend.text = "";
+    state.pendingSend.images = undefined;
+    state.pendingGenerateTitleOnCreate = false;
+    daemon.createConversation(state.provider, state.model, PENDING_TITLE, state.effort, state.fastMode, {
+      text: messageText,
+      startedAt,
+      images,
+    });
   } else {
     daemon.sendMessage(state.convId, messageText, startedAt, images);
   }

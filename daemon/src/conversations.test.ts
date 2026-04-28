@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { create, get, getDisplayData, getSummary, getToolOutputs, listRunningConversationIds, remove, setModel, setSystemInstructions, trimConversation } from "./conversations";
+import { create, createWithInitialUserMessage, get, getDisplayData, getSummary, getToolOutputs, listRunningConversationIds, remove, setModel, setSystemInstructions, trimConversation } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
@@ -19,6 +19,28 @@ beforeEach(() => {
     clearActiveJob(id);
     remove(id);
   }
+});
+
+describe("createWithInitialUserMessage", () => {
+  test("persists the pending title and first user message in one conversation mutation", () => {
+    const id = mkId("initial-user-message");
+
+    createWithInitialUserMessage(id, "openai", "gpt-5.4", "pending", "high", false, {
+      text: "name this chat",
+      startedAt: 123,
+    });
+
+    expect(get(id)).toMatchObject({
+      id,
+      title: "pending",
+      messages: [{
+        role: "user",
+        content: "name this chat",
+        metadata: { startedAt: 123, endedAt: 123, model: "gpt-5.4", tokens: 0 },
+      }],
+    });
+    expect(getSummary(id)).toMatchObject({ title: "pending", messageCount: 1 });
+  });
 });
 
 describe("setModel", () => {

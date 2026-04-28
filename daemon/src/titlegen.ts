@@ -133,7 +133,9 @@ export function startTitleGeneration(server: DaemonServer, convId: string, optio
   const prompt = `${INSTRUCTION}\n\nHere is the conversation to generate a title for:\n<prompt>\n${context}\n</prompt>`;
 
   activeTitleJobs.add(convId);
-  broadcastTitle(server, convId, pendingTitle, "pending title");
+  if (existingTitle !== pendingTitle) {
+    broadcastTitle(server, convId, pendingTitle, "pending title");
+  }
 
   void complete("", prompt, {
     provider: conv.provider,
