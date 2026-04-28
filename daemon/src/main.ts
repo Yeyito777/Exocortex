@@ -29,12 +29,23 @@ import { getToolDisplayInfo } from "./tools/registry";
 import { getProviders, refreshProviders } from "./providers/registry";
 import { socketPath, pidPath, runtimeDir, worktreeName, isWindows } from "@exocortex/shared/paths";
 
+// ── Startup profiling ────────────────────────────────────────────────
+
+const STARTUP_PROFILE = process.env.EXOCORTEX_PROFILE_STARTUP === "1" || process.argv.includes("--profile-startup");
+
+function profileMark(event: string, details: object = {}): void {
+  if (!STARTUP_PROFILE) return;
+  console.error(`[startup-profile] ${JSON.stringify({ process: "daemon", event, elapsedMs: Math.round(performance.now() * 1000) / 1000, ...details })}`);
+}
+
 // ── Paths ───────────────────────────────────────────────────────────
 
 mkdirSync(runtimeDir(), { recursive: true });
 
 const SOCKET_PATH = socketPath();
 const PID_PATH = pidPath();
+
+profileMark("module_ready");
 
 // ── Singleton guard ─────────────────────────────────────────────────
 
@@ -70,21 +81,25 @@ async function isAlreadyRunning(): Promise<boolean> {
 // ── Daemon startup ──────────────────────────────────────────────────
 
 async function startDaemon(): Promise<void> {
+  profileMark("startDaemon_begin");
   log("info", "exocortexd: starting");
 
   if (await isAlreadyRunning()) {
     console.error("  ✗ exocortexd is already running");
     process.exit(1);
   }
+  profileMark("singleton_checked");
 
   // Write PID file
   writeFileSync(PID_PATH, String(process.pid));
+  profileMark("pid_written");
 
   // Create server — handler is set up with a forward reference
   // since the handler needs the server instance for sending events.
   let commandHandler: ((client: import("./server").ConnectedClient, cmd: import("./protocol").Command) => void | Promise<void>) | null = null;
   const server = new DaemonServer(SOCKET_PATH, (client, cmd) => commandHandler?.(client, cmd));
   commandHandler = createHandler(server);
+  profileMark("server_constructed");
 
   const formatFatal = (err: unknown): string => err instanceof Error ? (err.stack ?? err.message) : String(err);
 
@@ -132,10 +147,13 @@ async function startDaemon(): Promise<void> {
   });
 
   await server.start();
+  profileMark("clients_can_connect", { socket: SOCKET_PATH });
 
   // Load persisted conversations
-  convStore.loadFromDisk();
+  const conversationLoadStats = convStore.loadFromDisk();
+  profileMark("conversations_loaded", conversationLoadStats);
   recoverPendingTitles(server);
+  profileMark("pending_titles_recovered");
 
   const broadcastToolsAvailable = () => {
     const externalStyles = isWindows ? [] : getExternalToolStyles();
@@ -156,6 +174,7 @@ async function startDaemon(): Promise<void> {
       broadcastToolsAvailable();
     });
   }
+  profileMark("external_tools_initialized", { externalToolCount: isWindows ? 0 : getExternalToolCount(), supervisedDaemonCount: isWindows ? 0 : getSupervisedDaemonCount() });
 
   void refreshProviders(true).then((changed) => {
     if (!changed) return;
@@ -174,6 +193,7 @@ async function startDaemon(): Promise<void> {
   const authSummary = getProviders()
     .map((provider) => `${provider.id}=${hasConfiguredCredentials(provider.id) ? "✓" : "✗"}`)
     .join(" ");
+  profileMark("auth_checked", { authSummary });
 
   const wt = worktreeName();
   const cronJobs = isWindows ? [] : getJobs();
@@ -187,6 +207,7 @@ async function startDaemon(): Promise<void> {
   console.log(`\n  Waiting for connections...\n`);
 
   log("info", `exocortexd: ready on ${SOCKET_PATH} (auth=${authSummary}, cron=${cronJobs.length})`);
+  profileMark("ready", { cronJobs: cronJobs.length, externalToolCount: extToolCount, supervisedDaemonCount: supervisedCount });
 }
 
 // ── Main ────────────────────────────────────────────────────────────

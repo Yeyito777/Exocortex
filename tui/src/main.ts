@@ -36,6 +36,20 @@ import { createVoiceInputController, type VoiceInputController } from "./voicein
 
 const state = createInitialState();
 const RECONNECT_DELAY_MS = 1000;
+const STARTUP_PROFILE = process.env.EXOCORTEX_PROFILE_STARTUP === "1" || process.argv.includes("--profile-startup");
+
+type StartupProfileMark = { event: string; elapsedMs: number } & Record<string, unknown>;
+const startupProfileMarks: StartupProfileMark[] = [];
+let startupProfileConversationsLoaded = false;
+let startupProfileReported = false;
+let startupProfileConversationCount = 0;
+
+function startupProfileMark(event: string, details: Record<string, unknown> = {}): void {
+  if (!STARTUP_PROFILE || startupProfileReported) return;
+  startupProfileMarks.push({ event, elapsedMs: Math.round(performance.now() * 1000) / 1000, ...details });
+}
+
+startupProfileMark("module_ready");
 
 let running = true;
 let daemon: DaemonClient;
@@ -48,6 +62,23 @@ let terminalSetUp = false;
 let voiceInput: VoiceInputController | null = null;
 
 // ── Render scheduling ───────────────────────────────────────────────
+
+function maybeReportStartupProfile(finalRenderMs: number): void {
+  if (!STARTUP_PROFILE || !startupProfileConversationsLoaded || startupProfileReported) return;
+  startupProfileReported = true;
+  startupProfileMarks.push({
+    event: "ready_render_completed",
+    elapsedMs: Math.round(performance.now() * 1000) / 1000,
+    renderMs: Math.round(finalRenderMs * 1000) / 1000,
+  });
+  console.error(`[startup-profile] ${JSON.stringify({
+    process: "tui",
+    readyMs: Math.round(performance.now() * 1000) / 1000,
+    conversationCount: startupProfileConversationCount,
+    marks: startupProfileMarks,
+  })}`);
+  cleanup();
+}
 
 function clearRenderTimer(): void {
   if (!renderTimer) return;
@@ -72,8 +103,11 @@ const FRAME_DELAY_MS = 16;
 const STREAM_CHUNK_FRAME_DELAY_MS = 50;
 
 function performRender(): void {
+  const renderStartedAt = performance.now();
   render(state);
+  const renderMs = performance.now() - renderStartedAt;
   resetStreamTick();
+  maybeReportStartupProfile(renderMs);
 }
 
 function renderImmediately(): void {
@@ -130,8 +164,18 @@ function resetStreamTick(): void {
 // ── Event handler (daemon → TUI) ───────────────────────────────────
 
 function onDaemonEvent(event: Event): void {
+  if (event.type === "conversations_list") {
+    startupProfileMark("conversations_list_received", { conversationCount: event.conversations.length });
+  }
+
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
+
+  if (event.type === "conversations_list") {
+    startupProfileConversationCount = event.conversations.length;
+    startupProfileConversationsLoaded = true;
+    startupProfileMark("conversations_list_handled", { conversationCount: state.sidebar.conversations.length });
+  }
 
   // The daemon auto-generates titles after the first user message is appended.
   if (event.type === "conversation_created" && state.pendingGenerateTitleOnCreate) {
@@ -560,11 +604,13 @@ function restoreTerminal(): void {
 // ── Main ────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  startupProfileMark("main_begin");
   daemon = new DaemonClient(onDaemonEvent);
   daemon.onConnectionLost(handleDaemonConnectionLost);
   voiceInput = createVoiceInputController(state, daemon, scheduleRender);
   try {
     await daemon.connect();
+    startupProfileMark("daemon_connected");
   } catch (err) {
     console.error(`\n  ✗ ${(err as Error).message}\n`);
     process.exit(1);
@@ -572,8 +618,10 @@ async function main(): Promise<void> {
 
   // Request initial usage data from daemon
   daemon.ping();
+  startupProfileMark("ping_sent");
 
   setupTerminal();
+  startupProfileMark("terminal_setup_done");
 
   process.stdout.on("resize", () => {
     preserveViewportAcrossResize(
@@ -588,7 +636,9 @@ async function main(): Promise<void> {
     renderImmediately();
   });
 
+  const initialRenderStartedAt = performance.now();
   render(state);
+  startupProfileMark("initial_render_done", { renderMs: Math.round((performance.now() - initialRenderStartedAt) * 1000) / 1000 });
 
   // Buffer stdin across bracketed-paste chunk boundaries so large pastes
   // aren't split into individual keystrokes (which turns newlines into submits).

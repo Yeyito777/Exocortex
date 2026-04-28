@@ -284,17 +284,30 @@ function waitForStreamStop(id: string, timeoutMs = 10_000): Promise<boolean> {
 
 // ── Persistence ─────────────────────────────────────────────────────
 
+export interface LoadFromDiskStats {
+  loaded: number;
+  total: number;
+  normalizedEffort: number;
+  deduplicatedSortOrders: number;
+  durationMs: number;
+}
+
 /** Load all conversations from disk into memory on daemon startup. */
-export function loadFromDisk(): void {
+export function loadFromDisk(): LoadFromDiskStats {
+  const startedAt = performance.now();
   const loaded = persistence.loadAllConversations();
+  let inserted = 0;
+  let normalizedEffortCount = 0;
   for (const conv of loaded) {
     if (conversations.has(conv.id)) continue;
     const normalizedEffort = normalizeEffort(conv.provider, conv.model, conv.effort);
     if (normalizedEffort !== conv.effort) {
       conv.effort = normalizedEffort;
+      normalizedEffortCount++;
       markDirty(conv.id);
     }
     conversations.set(conv.id, conv);
+    inserted++;
   }
   log("info", `conversations: loaded ${conversations.size} from disk`);
 
@@ -318,6 +331,14 @@ export function loadFromDisk(): void {
     log("info", `conversations: deduplicated ${fixed} colliding sortOrder(s)`);
     flushAll();
   }
+
+  return {
+    loaded: inserted,
+    total: conversations.size,
+    normalizedEffort: normalizedEffortCount,
+    deduplicatedSortOrders: fixed,
+    durationMs: performance.now() - startedAt,
+  };
 }
 
 /** Mark a conversation as needing a save. */
