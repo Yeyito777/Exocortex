@@ -7,7 +7,7 @@
 
 import type { KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
-import type { SidebarItemRef } from "./messages";
+import { bottomPinnedOrder, topUnpinnedOrder, type SidebarItemRef } from "./messages";
 import {
   enterSelectedFolder,
   leaveFolder,
@@ -56,6 +56,29 @@ export { createSidebarState } from "./sidebar/state";
 export type { SidebarState } from "./sidebar/state";
 export type { SidebarKeyResult } from "./sidebar/types";
 export { syncSelectedIndex, updateConversation, updateConversationList } from "./sidebar/updates";
+
+type PlacementEntry = { id: string; pinned: boolean; sortOrder: number };
+
+function sidebarPlacementEntries(sidebar: SidebarState, parentId: string | null): PlacementEntry[] {
+  return [
+    ...sidebar.folders
+      .filter(folder => (folder.parentId ?? null) === parentId)
+      .map(folder => ({ id: folder.id, pinned: folder.pinned, sortOrder: folder.sortOrder })),
+    ...sidebar.conversations
+      .filter(conv => (conv.folderId ?? null) === parentId)
+      .map(conv => ({ id: conv.id, pinned: conv.pinned, sortOrder: conv.sortOrder })),
+  ];
+}
+
+function optimisticSortOrderAfterPin(sidebar: SidebarState, item: SidebarItemRef, pinned: boolean): number {
+  const parentId = item.type === "folder"
+    ? sidebar.folders.find(folder => folder.id === item.id)?.parentId ?? null
+    : sidebar.conversations.find(conv => conv.id === item.id)?.folderId ?? null;
+  const entries = sidebarPlacementEntries(sidebar, parentId);
+  return pinned
+    ? bottomPinnedOrder(entries, item.id)
+    : topUnpinnedOrder(entries, item.id);
+}
 
 export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarKeyResult {
   if (key.type === "escape" || key.type === "ctrl-c") {
@@ -180,12 +203,15 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       if (item.type === "folder") {
         const folder = sidebar.folders.find(f => f.id === item.id);
         if (!folder) return { type: "handled" };
-        folder.pinned = !folder.pinned;
+        const newPinned = !folder.pinned;
+        folder.sortOrder = optimisticSortOrderAfterPin(sidebar, item, newPinned);
+        folder.pinned = newPinned;
         return { type: "pin_folder", folderId: folder.id, pinned: folder.pinned };
       }
       const conv = sidebar.conversations.find(c => c.id === item.id);
       if (!conv) return { type: "handled" };
       const newPinned = !conv.pinned;
+      conv.sortOrder = optimisticSortOrderAfterPin(sidebar, item, newPinned);
       conv.pinned = newPinned;
       return { type: "pin_conversation", convId: conv.id, pinned: newPinned };
     }
