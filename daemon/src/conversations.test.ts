@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { create, createFolder, createWithInitialUserMessage, deleteFolder, get, getDisplayData, getSummary, getToolOutputs, listSidebarState, listRunningConversationIds, loadFromDisk, moveSidebarItems, pin, remove, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
+import { clearUnread, create, createFolder, createWithInitialUserMessage, deleteFolder, get, getDisplayData, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, markUnread, moveSidebarItems, pin, remove, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
@@ -379,6 +379,27 @@ describe("getSummary", () => {
 
     const summary = getSummary(id)!;
     expect(summary.messageCount).toBe(2);
+  });
+});
+
+describe("unread persistence", () => {
+  test("unread indicators survive conversation-store reloads and clear durably", () => {
+    const id = mkId("unread-restart");
+    create(id, "openai", "gpt-5.4", "unread");
+
+    markUnread(id);
+    expect(isUnread(id)).toBe(true);
+    expect(getSummary(id)).toMatchObject({ unread: true });
+
+    loadFromDisk();
+    expect(isUnread(id)).toBe(true);
+    expect(getSummary(id)).toMatchObject({ unread: true });
+
+    expect(clearUnread(id)).toBe(true);
+    expect(isUnread(id)).toBe(false);
+
+    loadFromDisk();
+    expect(getSummary(id)).toMatchObject({ unread: false });
   });
 });
 

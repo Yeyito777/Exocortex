@@ -342,6 +342,7 @@ const TRASH_DIR = trashDir();
 const TRASH_META = join(TRASH_DIR, "trash.json");
 const INDEX_FILE = join(DATA_DIR, "conversations-index.json");
 const FOLDERS_FILE = join(DATA_DIR, "folders.json");
+const UNREAD_FILE = join(DATA_DIR, "unread.json");
 
 /** Reject IDs that contain path separators or parent-directory traversal sequences. */
 function assertSafeId(id: string): void {
@@ -598,6 +599,55 @@ export function saveFolders(folders: PersistedFolderSummary[]): void {
   const tmp = `${FOLDERS_FILE}.tmp`;
   writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
   renameSync(tmp, FOLDERS_FILE);
+}
+
+interface UnreadFile {
+  version: 1;
+  updatedAt: number;
+  conversationIds: string[];
+}
+
+/** Load persisted unread conversation IDs. Invalid/corrupt files are treated as empty. */
+export function loadUnreadConversationIds(): string[] {
+  ensureDataDir();
+  try {
+    if (!existsSync(UNREAD_FILE)) return [];
+    const parsed = JSON.parse(readFileSync(UNREAD_FILE, "utf-8")) as UnreadFile;
+    if (parsed.version !== 1 || !Array.isArray(parsed.conversationIds)) return [];
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of parsed.conversationIds) {
+      if (typeof raw !== "string" || seen.has(raw)) continue;
+      try {
+        assertSafeId(raw);
+      } catch {
+        continue;
+      }
+      seen.add(raw);
+      ids.push(raw);
+    }
+    return ids;
+  } catch (err) {
+    log("warn", `persistence: failed to read unread state: ${err instanceof Error ? err.message : err}`);
+    return [];
+  }
+}
+
+/** Persist unread conversation IDs in a small sidecar file. */
+export function saveUnreadConversationIds(conversationIds: Iterable<string>): void {
+  ensureDataDir();
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const id of conversationIds) {
+    if (seen.has(id)) continue;
+    assertSafeId(id);
+    seen.add(id);
+    ids.push(id);
+  }
+  const file: UnreadFile = { version: 1, updatedAt: Date.now(), conversationIds: ids };
+  const tmp = `${UNREAD_FILE}.tmp`;
+  writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
+  renameSync(tmp, UNREAD_FILE);
 }
 
 /** Load summaries from the index, repairing stale/missing entries by parsing only those conversation files. */

@@ -37,6 +37,10 @@ const folders = new Map<string, PersistedFolderSummary>();
 const dirty = new Set<string>();
 const unread = new Set<string>();
 
+function saveUnreadState(): void {
+  persistence.saveUnreadConversationIds([...unread].filter((id) => summaries.has(id) || conversations.has(id)));
+}
+
 // ── Summary/index persistence helpers ──────────────────────────────
 
 function saveSummaryIndex(): void {
@@ -296,11 +300,12 @@ export function remove(id: string): boolean {
     conversations.delete(id);
     summaries.delete(id);
     dirty.delete(id);
-    unread.delete(id);
+    const wasUnread = unread.delete(id);
     streaming.clearActiveJob(id);
     streaming.resetChunkCounter(id);
     streaming.clearQueuedMessages(id);
     persistence.trashFile(id);
+    if (wasUnread) saveUnreadState();
     saveSummaryIndex();
   }
   return existed;
@@ -537,6 +542,15 @@ export function loadFromDisk(): LoadFromDiskStats {
     summary.folderId = summary.folderId && folders.has(summary.folderId) ? summary.folderId : null;
     summaries.set(summary.id, summary);
   }
+
+  unread.clear();
+  let staleUnreadCount = 0;
+  for (const id of persistence.loadUnreadConversationIds()) {
+    if (summaries.has(id)) unread.add(id);
+    else staleUnreadCount++;
+  }
+  if (staleUnreadCount > 0) saveUnreadState();
+
   log("info", `conversations: loaded ${summaries.size} summaries from disk (index reused=${index.reused}, rebuilt=${index.rebuilt})`);
 
   // Deduplicate sortOrders — duplicate values cause move operations to
@@ -883,17 +897,19 @@ export function deleteFolder(folderId: string, mode: "recursive" | "unwrap" = "r
     return false;
   }
 
+  let unreadChanged = false;
   for (const convId of conversationIds) {
     conversations.delete(convId);
     summaries.delete(convId);
     dirty.delete(convId);
-    unread.delete(convId);
+    unreadChanged = unread.delete(convId) || unreadChanged;
     streaming.clearActiveJob(convId);
     streaming.resetChunkCounter(convId);
     streaming.clearQueuedMessages(convId);
   }
   for (const id of folderIds) folders.delete(id);
   saveFolderState();
+  if (unreadChanged) saveUnreadState();
   saveSummaryIndex();
   return true;
 }
@@ -998,14 +1014,19 @@ export function getToolOutputs(id: string): ToolOutputInfo[] | null {
   return collectToolOutputs(messages);
 }
 
-// ── Unread state (runtime only, not persisted) ──────────────────────
+// ── Unread state ─────────────────────────────────────────────────────
 
 export function markUnread(convId: string): void {
+  if (!summaries.has(convId) && !conversations.has(convId)) return;
+  if (unread.has(convId)) return;
   unread.add(convId);
+  saveUnreadState();
 }
 
 export function clearUnread(convId: string): boolean {
-  return unread.delete(convId);
+  const changed = unread.delete(convId);
+  if (changed) saveUnreadState();
+  return changed;
 }
 
 export function isUnread(convId: string): boolean {
