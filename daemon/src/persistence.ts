@@ -13,7 +13,7 @@ import { join } from "path";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, renameSync, statSync } from "fs";
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
-import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary } from "./messages";
+import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef } from "./messages";
 import { DEFAULT_EFFORT, countConversationMessages, sortConversations, summarizeConversation } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
@@ -379,19 +379,91 @@ function trashPath(id: string): string {
   return join(TRASH_DIR, `${id}.json`);
 }
 
-/** Read the trash stack (array of conversation IDs, last = most recent). */
-function readTrashStack(): string[] {
+export interface TrashSidebarItemSnapshot {
+  item: SidebarItemRef;
+  parentId: string | null;
+  pinned: boolean;
+  sortOrder: number;
+}
+
+export type TrashStackEntry =
+  | { type: "conversation"; id: string }
+  | { type: "folder_recursive"; folderId: string; folders: PersistedFolderSummary[]; conversationIds: string[] }
+  | { type: "folder_unwrap"; folder: PersistedFolderSummary; children: TrashSidebarItemSnapshot[] };
+
+export type RestoreLatestResult =
+  | { type: "conversation"; conversation: Conversation }
+  | { type: "folder_recursive"; folders: PersistedFolderSummary[]; conversations: Conversation[] }
+  | { type: "folder_unwrap"; folder: PersistedFolderSummary; children: TrashSidebarItemSnapshot[] };
+
+function normalizeFolderSummary(folder: Partial<PersistedFolderSummary>): PersistedFolderSummary {
+  return {
+    id: String(folder.id),
+    name: String(folder.name || "Folder"),
+    parentId: folder.parentId ?? null,
+    createdAt: Number(folder.createdAt) || Date.now(),
+    updatedAt: Number(folder.updatedAt) || Date.now(),
+    pinned: folder.pinned === true,
+    sortOrder: Number(folder.sortOrder) || 0,
+  };
+}
+
+function normalizeTrashEntry(entry: unknown): TrashStackEntry | null {
+  if (typeof entry === "string") return { type: "conversation", id: entry };
+  if (!entry || typeof entry !== "object") return null;
+  const record = entry as Record<string, unknown>;
+  if (record.type === "conversation" && typeof record.id === "string") {
+    return { type: "conversation", id: record.id };
+  }
+  if (record.type === "folder_recursive" && typeof record.folderId === "string" && Array.isArray(record.folders)) {
+    return {
+      type: "folder_recursive",
+      folderId: record.folderId,
+      folders: record.folders.map(folder => normalizeFolderSummary(folder as Partial<PersistedFolderSummary>)),
+      conversationIds: Array.isArray(record.conversationIds) ? record.conversationIds.map(String) : [],
+    };
+  }
+  if (record.type === "folder_unwrap" && record.folder && Array.isArray(record.children)) {
+    const children: TrashSidebarItemSnapshot[] = [];
+    for (const child of record.children) {
+      if (!child || typeof child !== "object") continue;
+      const snapshot = child as Record<string, unknown>;
+      const item = snapshot.item as Partial<SidebarItemRef> | undefined;
+      if (!item || (item.type !== "conversation" && item.type !== "folder") || typeof item.id !== "string") continue;
+      children.push({
+        item: { type: item.type, id: item.id },
+        parentId: typeof snapshot.parentId === "string" ? snapshot.parentId : null,
+        pinned: snapshot.pinned === true,
+        sortOrder: Number(snapshot.sortOrder) || 0,
+      });
+    }
+    return { type: "folder_unwrap", folder: normalizeFolderSummary(record.folder as Partial<PersistedFolderSummary>), children };
+  }
+  return null;
+}
+
+/** Read the trash stack (last = most recent). Legacy string entries are single trashed conversations. */
+function readTrashStack(): TrashStackEntry[] {
   try {
     if (!existsSync(TRASH_META)) return [];
-    return JSON.parse(readFileSync(TRASH_META, "utf-8"));
+    const parsed = JSON.parse(readFileSync(TRASH_META, "utf-8"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(normalizeTrashEntry).filter((entry): entry is TrashStackEntry => entry !== null);
   } catch {
     return [];
   }
 }
 
 /** Write the trash stack back to disk. */
-function writeTrashStack(stack: string[]): void {
+function writeTrashStack(stack: TrashStackEntry[]): void {
   writeFileSync(TRASH_META, JSON.stringify(stack, null, 2), { mode: 0o600 });
+}
+
+export function pushTrashEntry(entry: TrashStackEntry): void {
+  ensureTrashDir();
+  const stack = readTrashStack();
+  stack.push(entry);
+  writeTrashStack(stack);
 }
 
 // ── Serialize / Deserialize ─────────────────────────────────────────
@@ -513,15 +585,7 @@ export function loadFolders(): PersistedFolderSummary[] {
     if (!existsSync(FOLDERS_FILE)) return [];
     const parsed = JSON.parse(readFileSync(FOLDERS_FILE, "utf-8")) as FoldersFile;
     if (parsed.version !== 1 || !Array.isArray(parsed.folders)) return [];
-    return parsed.folders.map((folder) => ({
-      id: String(folder.id),
-      name: String(folder.name || "Folder"),
-      parentId: folder.parentId ?? null,
-      createdAt: Number(folder.createdAt) || Date.now(),
-      updatedAt: Number(folder.updatedAt) || Date.now(),
-      pinned: folder.pinned === true,
-      sortOrder: Number(folder.sortOrder) || 0,
-    }));
+    return parsed.folders.map((folder) => normalizeFolderSummary(folder));
   } catch (err) {
     log("warn", `persistence: failed to read folders: ${err instanceof Error ? err.message : err}`);
     return [];
@@ -606,49 +670,85 @@ export function save(conv: Conversation): void {
   renameSync(tmp, dest);
 }
 
+function moveConversationFilesToTrash(ids: string[]): string[] {
+  const moved: string[] = [];
+  ensureTrashDir();
+  for (const id of ids) {
+    assertSafeId(id);
+    const src = convPath(id);
+    if (!existsSync(src)) continue;
+    renameSync(src, trashPath(id));
+    moved.push(id);
+  }
+  return moved;
+}
+
 /** Move a conversation file to trash instead of deleting it. */
 export function trashFile(id: string): void {
-  assertSafeId(id);
-  const src = convPath(id);
   try {
-    if (!existsSync(src)) return;
-    ensureTrashDir();
-    const dst = trashPath(id);
-    renameSync(src, dst);
-    const stack = readTrashStack();
-    stack.push(id);
-    writeTrashStack(stack);
+    const moved = moveConversationFilesToTrash([id]);
+    if (moved.length === 0) return;
+    pushTrashEntry({ type: "conversation", id });
     log("info", `persistence: trashed ${id}`);
   } catch (err) {
     log("error", `persistence: failed to trash ${id}: ${err}`);
   }
 }
 
+/** Move a folder's conversations to trash and push one undo entry for the whole folder tree. */
+export function trashFolderRecursive(entry: Extract<TrashStackEntry, { type: "folder_recursive" }>): boolean {
+  try {
+    const moved = moveConversationFilesToTrash(entry.conversationIds);
+    pushTrashEntry({ ...entry, conversationIds: moved });
+    log("info", `persistence: trashed folder ${entry.folderId} (${moved.length} conversations)`);
+    return true;
+  } catch (err) {
+    log("error", `persistence: failed to trash folder ${entry.folderId}: ${err}`);
+    return false;
+  }
+}
+
+function restoreConversationFile(id: string): Conversation | null {
+  const src = trashPath(id);
+  if (!existsSync(src)) {
+    log("warn", `persistence: trashed file missing for ${id}`);
+    return null;
+  }
+
+  ensureDir();
+  renameSync(src, convPath(id));
+  log("info", `persistence: restored ${id} from trash`);
+  return load(id);
+}
+
 /**
- * Restore the most recently trashed conversation.
- * Moves the file back to conversations/ and returns the restored conversation,
- * or null if the trash is empty.
+ * Restore the most recent trash entry.
+ * Conversation entries move one file back from trash. Folder entries either
+ * restore a recursively deleted folder tree or return an unwrap snapshot for the
+ * conversation store to re-apply.
  */
-export function restoreLatest(): Conversation | null {
+export function restoreLatest(): RestoreLatestResult | null {
   try {
     ensureTrashDir();
     const stack = readTrashStack();
     if (stack.length === 0) return null;
 
-    const id = stack.pop()!;
+    const entry = stack.pop()!;
     writeTrashStack(stack);
 
-    const src = trashPath(id);
-    if (!existsSync(src)) {
-      log("warn", `persistence: trashed file missing for ${id}`);
-      return null;
+    if (entry.type === "conversation") {
+      const conversation = restoreConversationFile(entry.id);
+      return conversation ? { type: "conversation", conversation } : null;
     }
 
-    ensureDir();
-    const dst = convPath(id);
-    renameSync(src, dst);
-    log("info", `persistence: restored ${id} from trash`);
-    return load(id);
+    if (entry.type === "folder_recursive") {
+      const conversations = entry.conversationIds
+        .map(restoreConversationFile)
+        .filter((conv): conv is Conversation => conv !== null);
+      return { type: "folder_recursive", folders: entry.folders, conversations };
+    }
+
+    return { type: "folder_unwrap", folder: entry.folder, children: entry.children };
   } catch (err) {
     log("error", `persistence: failed to restore from trash: ${err}`);
     return null;

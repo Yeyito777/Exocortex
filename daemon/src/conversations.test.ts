@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { create, createFolder, createWithInitialUserMessage, deleteFolder, get, getDisplayData, getSummary, getToolOutputs, listSidebarState, listRunningConversationIds, moveSidebarItems, pin, remove, setModel, setSystemInstructions, trimConversation } from "./conversations";
+import { create, createFolder, createWithInitialUserMessage, deleteFolder, get, getDisplayData, getSummary, getToolOutputs, listSidebarState, listRunningConversationIds, loadFromDisk, moveSidebarItems, pin, remove, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
@@ -66,10 +66,83 @@ describe("folders", () => {
     create(childId, "openai", "gpt-5.4", "child", undefined, false, folder.id);
 
     expect(rootRows([beforeId, folder.id, afterId]).map(row => row.id)).toEqual([beforeId, folder.id, afterId]);
-    expect(deleteFolder(folder.id)).toBe(true);
+    expect(deleteFolder(folder.id, "unwrap")).toBe(true);
 
     expect(getSummary(childId)?.folderId ?? null).toBeNull();
     expect(rootRows([beforeId, childId, afterId]).map(row => row.id)).toEqual([beforeId, childId, afterId]);
+  });
+
+  test("undo restores a safe folder unwrap", () => {
+    const childId = mkId("folder-unwrap-undo-child");
+    const folder = createFolder(`Undo Unwrap Folder ${Date.now()} ${Math.random()}`)!;
+    FOLDER_IDS.push(folder.id);
+    create(childId, "openai", "gpt-5.4", "child", undefined, false, folder.id);
+    expect(pin(childId, true)).toBe(true);
+
+    expect(deleteFolder(folder.id, "unwrap")).toBe(true);
+    expect(getSummary(childId)?.folderId ?? null).toBeNull();
+
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(listSidebarState().folders.find(candidate => candidate.id === folder.id)).toMatchObject({ id: folder.id, name: folder.name });
+    expect(getSummary(childId)).toMatchObject({ folderId: folder.id, pinned: true });
+  });
+
+  test("recursive folder delete removes descendants and undo restores the tree", () => {
+    const childId = mkId("folder-recursive-child");
+    const nestedChildId = mkId("folder-recursive-nested-child");
+    const folder = createFolder(`Recursive Folder ${Date.now()} ${Math.random()}`)!;
+    const nested = createFolder(`Nested Folder ${Date.now()} ${Math.random()}`, folder.id)!;
+    FOLDER_IDS.push(folder.id, nested.id);
+    create(childId, "openai", "gpt-5.4", "child", undefined, false, folder.id);
+    create(nestedChildId, "openai", "gpt-5.4", "nested", undefined, false, nested.id);
+
+    expect(deleteFolder(folder.id, "recursive")).toBe(true);
+    expect(getSummary(childId)).toBeNull();
+    expect(getSummary(nestedChildId)).toBeNull();
+    expect(listSidebarState().folders.some(candidate => candidate.id === folder.id || candidate.id === nested.id)).toBe(false);
+
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(listSidebarState().folders.find(candidate => candidate.id === folder.id)).toMatchObject({ id: folder.id, parentId: null });
+    expect(listSidebarState().folders.find(candidate => candidate.id === nested.id)).toMatchObject({ id: nested.id, parentId: folder.id });
+    expect(getSummary(childId)).toMatchObject({ folderId: folder.id });
+    expect(getSummary(nestedChildId)).toMatchObject({ folderId: nested.id });
+  });
+
+  test("folder delete undo survives a conversation-store reload", () => {
+    const childId = mkId("folder-restart-recursive-child");
+    const nestedChildId = mkId("folder-restart-recursive-nested-child");
+    const folder = createFolder(`Restart Recursive Folder ${Date.now()} ${Math.random()}`)!;
+    const nested = createFolder(`Restart Nested Folder ${Date.now()} ${Math.random()}`, folder.id)!;
+    FOLDER_IDS.push(folder.id, nested.id);
+    create(childId, "openai", "gpt-5.4", "child", undefined, false, folder.id);
+    create(nestedChildId, "openai", "gpt-5.4", "nested", undefined, false, nested.id);
+
+    expect(deleteFolder(folder.id, "recursive")).toBe(true);
+    loadFromDisk();
+    expect(getSummary(childId)).toBeNull();
+    expect(listSidebarState().folders.some(candidate => candidate.id === folder.id || candidate.id === nested.id)).toBe(false);
+
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(listSidebarState().folders.find(candidate => candidate.id === folder.id)).toMatchObject({ id: folder.id, parentId: null });
+    expect(listSidebarState().folders.find(candidate => candidate.id === nested.id)).toMatchObject({ id: nested.id, parentId: folder.id });
+    expect(getSummary(childId)).toMatchObject({ folderId: folder.id });
+    expect(getSummary(nestedChildId)).toMatchObject({ folderId: nested.id });
+  });
+
+  test("folder unwrap undo survives a conversation-store reload", () => {
+    const childId = mkId("folder-restart-unwrap-child");
+    const folder = createFolder(`Restart Unwrap Folder ${Date.now()} ${Math.random()}`)!;
+    FOLDER_IDS.push(folder.id);
+    create(childId, "openai", "gpt-5.4", "child", undefined, false, folder.id);
+
+    expect(deleteFolder(folder.id, "unwrap")).toBe(true);
+    loadFromDisk();
+    expect(getSummary(childId)?.folderId ?? null).toBeNull();
+    expect(listSidebarState().folders.some(candidate => candidate.id === folder.id)).toBe(false);
+
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(listSidebarState().folders.find(candidate => candidate.id === folder.id)).toMatchObject({ id: folder.id, parentId: null });
+    expect(getSummary(childId)).toMatchObject({ folderId: folder.id });
   });
 
   test("moving a visual block down preserves the block order", () => {
@@ -98,6 +171,26 @@ describe("folders", () => {
 
     expect(getSummary(ids[1])?.pinned).toBe(true);
     expect(getSummary(ids[2])?.pinned).toBe(true);
+  });
+
+  test("creating a folder from pinned conversations creates a pinned folder in their slot", () => {
+    const ids = ["folder-pinned-before", "folder-pinned-a", "folder-pinned-b", "folder-unpinned"].map(mkId);
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+    expect(pin(ids[0], true)).toBe(true);
+    expect(pin(ids[1], true)).toBe(true);
+    expect(pin(ids[2], true)).toBe(true);
+
+    const folder = createFolder("Pinned Folder", null, [
+      { type: "conversation", id: ids[1] },
+      { type: "conversation", id: ids[2] },
+    ]);
+    expect(folder).not.toBeNull();
+    FOLDER_IDS.push(folder!.id);
+
+    expect(folder!.pinned).toBe(true);
+    expect(getSummary(ids[1])?.folderId).toBe(folder!.id);
+    expect(getSummary(ids[2])?.folderId).toBe(folder!.id);
+    expect(rootRows([...ids, folder!.id]).map(row => row.id)).toEqual([ids[0], folder!.id, ids[3]]);
   });
 });
 

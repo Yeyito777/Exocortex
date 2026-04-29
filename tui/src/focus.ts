@@ -59,7 +59,7 @@ export type KeyResult =
   | { type: "load_tool_outputs"; convId: string }
   | { type: "delete_conversation"; convId: string }
   | { type: "delete_conversations"; convIds: string[] }
-  | { type: "delete_folder"; folderId: string }
+  | { type: "delete_folder"; folderId: string; mode: "recursive" | "unwrap" }
   | { type: "undo_delete" }
   | { type: "mark_conversation"; convId: string; marked: boolean }
   | { type: "rename_conversation"; convId: string; title: string }
@@ -310,7 +310,7 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
   // ── Sidebar folder shortcuts that would otherwise be eaten by vim find/replace ──
   if (state.panelFocus === "sidebar" && state.sidebar.open && state.vim.mode === "normal"
       && !vimHasPendingInput(state)
-      && key.type === "char" && key.char && ["v", "V", "f", "F", "<", "r"].includes(key.char)) {
+      && key.type === "char" && key.char && ["v", "V", "f", "F", "<", "r", "x"].includes(key.char)) {
     return mapSidebarResult(handleSidebarKey(key, state.sidebar));
   }
 

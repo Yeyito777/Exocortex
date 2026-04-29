@@ -207,8 +207,8 @@ export class DaemonClient {
     this.send({ type: "move_sidebar_items", items, parentId, before, preservePinned: options.preservePinned, placement: options.placement });
   }
 
-  deleteFolder(folderId: string): void {
-    this.send({ type: "delete_folder", folderId, mode: "unwrap" });
+  deleteFolder(folderId: string, mode: "recursive" | "unwrap" = "recursive"): void {
+    this.send({ type: "delete_folder", folderId, mode });
   }
 
   generateTitle(convId: string): void {

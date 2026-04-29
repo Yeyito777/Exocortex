@@ -244,8 +244,12 @@ export interface DeleteFolderCommand {
   type: "delete_folder";
   reqId?: string;
   folderId: string;
-  /** unwrap keeps conversations/folders by moving children up to the parent. */
-  mode: "unwrap";
+  /**
+   * recursive moves the entire folder tree to undoable trash.
+   * unwrap removes only the folder shell and moves children up to the parent.
+   * Defaults to recursive for backwards-compatible callers that omit it.
+   */
+  mode?: "recursive" | "unwrap";
 }
 
 export interface UndoDeleteCommand {

@@ -496,7 +496,7 @@ function handleKey(key: KeyEvent): void {
       break;
     }
     case "delete_folder":
-      daemon.deleteFolder(result.folderId);
+      daemon.deleteFolder(result.folderId, result.mode);
       break;
     case "undo_delete":
       daemon.undoDelete();

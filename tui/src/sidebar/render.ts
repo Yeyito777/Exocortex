@@ -143,7 +143,6 @@ export function renderSidebar(
       const hasUnread = childConvs.some(c => c.unread);
       streamIcon = hasStreaming ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = hasStreaming ? theme.accent : hasUnread ? theme.success : "";
-      starIcon = folder?.pinned ? "◆ " : "";
       itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "conversation") {
       const conv = convs[dr.convIdx ?? -1];

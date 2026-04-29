@@ -140,6 +140,29 @@ function isDescendantFolder(folderId: string, candidateParentId: string | null):
   return false;
 }
 
+function descendantFolderIdsIncluding(folderId: string): Set<string> {
+  const ids = new Set<string>();
+  const queue = [folderId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (ids.has(current)) continue;
+    ids.add(current);
+    for (const folder of folders.values()) {
+      if ((folder.parentId ?? null) === current) queue.push(folder.id);
+    }
+  }
+  return ids;
+}
+
+function childSnapshots(folderId: string): persistence.TrashSidebarItemSnapshot[] {
+  return sidebarEntries(folderId).map((entry) => ({
+    item: { type: entry.type, id: entry.id },
+    parentId: getItemParent({ type: entry.type, id: entry.id }) ?? null,
+    pinned: entry.pinned,
+    sortOrder: entry.sortOrder,
+  }));
+}
+
 // ── Conversation loading/mutation helpers ─────────────────────────
 
 function loadConversation(id: string): Conversation | undefined {
@@ -283,15 +306,61 @@ export function remove(id: string): boolean {
   return existed;
 }
 
-/** Restore the most recently trashed conversation. Returns it, or null if trash is empty. */
-export function undoDelete(): Conversation | null {
-  const conv = persistence.restoreLatest();
-  if (!conv) return null;
-  conversations.set(conv.id, conv);
-  updateSummaryFromConversation(conv);
+export type UndoDeleteResult =
+  | { type: "conversation"; conversation: Conversation }
+  | { type: "sidebar_state" };
+
+/** Restore the most recent undoable delete/unwrap operation, or null if trash is empty. */
+export function undoDelete(): UndoDeleteResult | null {
+  const restored = persistence.restoreLatest();
+  if (!restored) return null;
+
+  if (restored.type === "conversation") {
+    const conv = restored.conversation;
+    conversations.set(conv.id, conv);
+    updateSummaryFromConversation(conv);
+    saveSummaryIndex();
+    log("info", `conversations: restored ${conv.id} from trash`);
+    return { type: "conversation", conversation: conv };
+  }
+
+  if (restored.type === "folder_recursive") {
+    for (const folder of restored.folders) {
+      folders.set(folder.id, { ...folder });
+    }
+    for (const conv of restored.conversations) {
+      conversations.set(conv.id, conv);
+      updateSummaryFromConversation(conv);
+    }
+    saveFolderState();
+    saveSummaryIndex();
+    log("info", `conversations: restored folder tree from trash (${restored.folders.length} folders, ${restored.conversations.length} conversations)`);
+    return { type: "sidebar_state" };
+  }
+
+  folders.set(restored.folder.id, { ...restored.folder });
+  for (const child of restored.children) {
+    if (child.item.type === "conversation") {
+      const conv = get(child.item.id);
+      if (!conv) continue;
+      conv.folderId = child.parentId;
+      conv.pinned = child.pinned;
+      conv.sortOrder = child.sortOrder;
+      markDirty(conv.id);
+      flush(conv.id);
+    } else {
+      const folder = folders.get(child.item.id);
+      if (!folder) continue;
+      folder.parentId = child.parentId;
+      folder.pinned = child.pinned;
+      folder.sortOrder = child.sortOrder;
+      folder.updatedAt = Date.now();
+    }
+  }
+  saveFolderState();
   saveSummaryIndex();
-  log("info", `conversations: restored ${conv.id} from trash`);
-  return conv;
+  log("info", `conversations: restored unwrapped folder ${restored.folder.id}`);
+  return { type: "sidebar_state" };
 }
 
 export function setModel(id: string, provider: ProviderId, model: ModelId, effort: EffortLevel, fastMode: boolean): boolean {
@@ -617,18 +686,24 @@ export function createFolder(name: string, parentId: string | null = null, items
   if (!cleanName) return null;
   const safeParent = parentId && folders.has(parentId) ? parentId : null;
   const now = Date.now();
-  const selectedOrders = items
-    .filter(item => getItemParent(item) === safeParent)
+  const selectedItemsInParent = items.filter(item => getItemParent(item) === safeParent);
+  const selectedOrders = selectedItemsInParent
     .map(item => getItemSortOrder(item))
     .filter((order): order is number => typeof order === "number");
+  const selectedPinnedStates = selectedItemsInParent
+    .map(item => getItemPinned(item))
+    .filter((pinned): pinned is boolean => typeof pinned === "boolean");
+  const pinned = selectedPinnedStates.length > 0 && selectedPinnedStates.every(Boolean);
   const folder: PersistedFolderSummary = {
     id: `folder-${generateId()}`,
     name: cleanName,
     parentId: safeParent,
     createdAt: now,
     updatedAt: now,
-    pinned: false,
-    sortOrder: selectedOrders.length > 0 ? Math.min(...selectedOrders) : nextUnpinnedOrderInFolder(safeParent),
+    pinned,
+    sortOrder: selectedOrders.length > 0
+      ? Math.min(...selectedOrders)
+      : pinned ? nextPinnedOrderInFolder(safeParent) : nextUnpinnedOrderInFolder(safeParent),
   };
   folders.set(folder.id, folder);
   saveFolderState();
@@ -682,6 +757,13 @@ export function moveSidebarItem(item: SidebarItemRef, direction: "up" | "down"):
     setItemSortOrder(item, currentOrder + (direction === "up" ? -0.5 : 0.5));
   }
   return true;
+}
+
+export function listFolderConversationIds(folderId: string): string[] {
+  const folderIds = descendantFolderIdsIncluding(folderId);
+  return [...summaries.values()]
+    .filter(summary => summary.folderId && folderIds.has(summary.folderId))
+    .map(summary => summary.id);
 }
 
 export function moveSidebarItems(
@@ -762,20 +844,57 @@ export function moveSidebarItems(
   return moved;
 }
 
-export function deleteFolder(folderId: string, mode: "unwrap" = "unwrap"): boolean {
-  if (mode !== "unwrap") return false;
+export function deleteFolder(folderId: string, mode: "recursive" | "unwrap" = "recursive"): boolean {
   const folder = folders.get(folderId);
   if (!folder) return false;
-  const parentId = folder.parentId ?? null;
-  const children: SidebarItemRef[] = sidebarEntries(folderId).map(entry => ({ type: entry.type, id: entry.id }));
 
-  // Unwrap children into the exact slot occupied by the folder before deleting
-  // the folder record. Moving while the folder still exists lets moveSidebarItems
-  // use it as a stable insertion anchor; deleting first would dump children at the
-  // top of the parent and make the TUI cursor appear to flicker/jump.
-  if (children.length > 0) moveSidebarItems(children, parentId, { type: "folder", id: folderId });
-  folders.delete(folderId);
+  if (mode === "unwrap") {
+    const parentId = folder.parentId ?? null;
+    const children: SidebarItemRef[] = sidebarEntries(folderId).map(entry => ({ type: entry.type, id: entry.id }));
+    try {
+      persistence.pushTrashEntry({ type: "folder_unwrap", folder: { ...folder }, children: childSnapshots(folderId) });
+    } catch (err) {
+      log("error", `conversations: failed to record undo entry before unwrapping folder ${folderId}: ${err}`);
+      return false;
+    }
+
+    // Unwrap children into the exact slot occupied by the folder before deleting
+    // the folder record. Moving while the folder still exists lets moveSidebarItems
+    // use it as a stable insertion anchor; deleting first would dump children at the
+    // top of the parent and make the TUI cursor appear to flicker/jump.
+    if (children.length > 0) moveSidebarItems(children, parentId, { type: "folder", id: folderId });
+    folders.delete(folderId);
+    saveFolderState();
+    return true;
+  }
+
+  const folderIds = descendantFolderIdsIncluding(folderId);
+  const folderSnapshots = [...folders.values()]
+    .filter(candidate => folderIds.has(candidate.id))
+    .map(candidate => ({ ...candidate }));
+  const conversationIds = [...summaries.values()]
+    .filter(summary => summary.folderId && folderIds.has(summary.folderId))
+    .map(summary => summary.id);
+
+  for (const convId of conversationIds) {
+    if (dirty.has(convId)) flush(convId);
+  }
+  if (!persistence.trashFolderRecursive({ type: "folder_recursive", folderId, folders: folderSnapshots, conversationIds })) {
+    return false;
+  }
+
+  for (const convId of conversationIds) {
+    conversations.delete(convId);
+    summaries.delete(convId);
+    dirty.delete(convId);
+    unread.delete(convId);
+    streaming.clearActiveJob(convId);
+    streaming.resetChunkCounter(convId);
+    streaming.clearQueuedMessages(convId);
+  }
+  for (const id of folderIds) folders.delete(id);
   saveFolderState();
+  saveSummaryIndex();
   return true;
 }
 

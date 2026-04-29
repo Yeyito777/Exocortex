@@ -476,6 +476,19 @@ describe("sidebar folders", () => {
     expect(selected).toEqual({ type: "folder", id: "folder-project" });
   });
 
+  test("pinned folders render without a separate pinned marker", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [{ id: "folder-work", name: "Work", parentId: null, createdAt: 1, updatedAt: 1, pinned: true, sortOrder: 1 }];
+    state.sidebar.selectedItem = { type: "folder", id: "folder-work" };
+
+    const rendered = stripAnsi(renderSidebar(state.sidebar, 8, true, null).join("\n"));
+    expect(rendered).toContain("📁 Work/ 0");
+    expect(rendered).not.toContain("◆");
+  });
+
   test("folder rename prompt starts empty instead of autofilling the current name", () => {
     const state = createInitialState();
     state.sidebar.open = true;
@@ -810,7 +823,7 @@ describe("sidebar folders", () => {
     state.sidebar.selectedItem = { type: "folder", id: "folder-b" };
 
     expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({ type: "handled" });
-    expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({ type: "delete_folder", folderId: "folder-b" });
+    expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({ type: "delete_folder", folderId: "folder-b", mode: "recursive" });
     expect(state.sidebar.selectedItem).toEqual({ type: "folder", id: "folder-b" });
 
     handleEvent({
@@ -825,7 +838,7 @@ describe("sidebar folders", () => {
     expect(state.sidebar.selectedItem).toEqual({ type: "folder", id: "folder-c" });
   });
 
-  test("dd on a folder with children focuses the first unwrapped child after the server update", () => {
+  test("dd on a folder recursively deletes children and focuses the next nearby item", () => {
     const state = createInitialState();
     state.sidebar.open = true;
     state.panelFocus = "sidebar";
@@ -838,7 +851,33 @@ describe("sidebar folders", () => {
     state.sidebar.selectedItem = { type: "folder", id: "folder-b" };
 
     expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({ type: "handled" });
-    expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({ type: "delete_folder", folderId: "folder-b" });
+    expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({ type: "delete_folder", folderId: "folder-b", mode: "recursive" });
+    expect(state.sidebar.selectedItem).toEqual({ type: "folder", id: "folder-b" });
+    expect(state.sidebar.pendingFocusItem).toEqual({ type: "folder", id: "folder-c" });
+
+    handleEvent({
+      type: "conversation_moved",
+      folders: [{ id: "folder-c", name: "C", parentId: null, createdAt: 3, updatedAt: 3, pinned: false, sortOrder: 3 }],
+      conversations: [],
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.sidebar.selectedItem as { type: string; id?: string } | null).toEqual({ type: "folder", id: "folder-c" });
+    expect(state.sidebar.pendingFocusItem).toBeNull();
+  });
+
+  test("x unwraps a folder and focuses the first unwrapped child after the server update", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [
+      { id: "folder-b", name: "B", parentId: null, createdAt: 2, updatedAt: 2, pinned: false, sortOrder: 2 },
+      { id: "folder-c", name: "C", parentId: null, createdAt: 3, updatedAt: 3, pinned: false, sortOrder: 3 },
+    ];
+    state.sidebar.conversations = [conversation("conv-child", 1, { folderId: "folder-b" })];
+    state.sidebar.selectedItem = { type: "folder", id: "folder-b" };
+
+    expect(handleFocusedKey({ type: "char", char: "x" }, state)).toEqual({ type: "delete_folder", folderId: "folder-b", mode: "unwrap" });
     expect(state.sidebar.selectedItem).toEqual({ type: "folder", id: "folder-b" });
     expect(state.sidebar.pendingFocusItem).toEqual({ type: "conversation", id: "conv-child" });
 

@@ -643,7 +643,12 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "delete_folder": {
-        if (convStore.deleteFolder(cmd.folderId, cmd.mode)) {
+        const mode = cmd.mode ?? "recursive";
+        const deletedConvIds = mode === "recursive" ? convStore.listFolderConversationIds(cmd.folderId) : [];
+        if (convStore.deleteFolder(cmd.folderId, mode)) {
+          for (const convId of deletedConvIds) {
+            server.broadcast({ type: "conversation_deleted", convId });
+          }
           server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Folder ${cmd.folderId} not found` });
@@ -653,13 +658,15 @@ export function createHandler(server: DaemonServer) {
 
       case "undo_delete": {
         const restored = convStore.undoDelete();
-        if (restored) {
-          const summary = convStore.getSummary(restored.id);
+        if (restored?.type === "conversation") {
+          const summary = convStore.getSummary(restored.conversation.id);
           if (summary) {
-            log("info", `handler: restored conversation ${restored.id} from trash`);
+            log("info", `handler: restored conversation ${restored.conversation.id} from trash`);
             server.broadcast({ type: "conversation_restored", reqId: cmd.reqId, summary });
             server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
           }
+        } else if (restored?.type === "sidebar_state") {
+          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Nothing to undo" });
         }

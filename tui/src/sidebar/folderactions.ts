@@ -36,11 +36,18 @@ function firstFolderChildItem(sidebar: SidebarState, folderId: string): SidebarI
   return entries[0]?.item ?? null;
 }
 
-export function requestFocusAfterDeletingFolder(sidebar: SidebarState, item: SidebarItemRef & { type: "folder" }): void {
+export function requestFocusAfterRecursivelyDeletingFolder(sidebar: SidebarState, item: SidebarItemRef & { type: "folder" }): void {
   // Do not move the cursor optimistically while the folder row is still present.
-  // The daemon will unwrap children and broadcast the final sidebar in a moment;
-  // selecting the final target only after that authoritative update avoids a
-  // visible one-frame cursor jump from the next sibling to the unwrapped rows.
+  // The daemon will recursively delete the folder tree and broadcast the final
+  // sidebar in a moment; selecting only after that authoritative update avoids a
+  // visible one-frame cursor jump.
+  const next = nextItemAfterRemovingItem(sidebar, item);
+  sidebar.pendingFocusItem = next?.type === "up" ? null : next;
+}
+
+export function requestFocusAfterUnwrappingFolder(sidebar: SidebarState, item: SidebarItemRef & { type: "folder" }): void {
+  // Prefer the first unwrapped child after the server update. If the folder is
+  // empty, fall back to the next nearby row after removing the folder shell.
   const child = firstFolderChildItem(sidebar, item.id);
   const next = nextItemAfterRemovingItem(sidebar, item);
   const target = child ?? (next?.type === "up" ? null : next);
@@ -129,6 +136,16 @@ export function openRenameSelectedFolderPrompt(sidebar: SidebarState): SidebarKe
   if (!folder) return { type: "handled" };
   sidebar.prompt = { purpose: "rename_folder", input: "", cursorPos: 0, items: [], folderId: folder.id };
   return { type: "handled" };
+}
+
+export function unwrapSelectedFolder(sidebar: SidebarState): SidebarKeyResult {
+  const item = getSelectedSidebarItem(sidebar);
+  if (item?.type !== "folder") return { type: "handled" };
+  sidebar.visualAnchor = null;
+  sidebar.pendingDeleteId = null;
+  sidebar.pendingDeleteItem = null;
+  requestFocusAfterUnwrappingFolder(sidebar, item);
+  return { type: "delete_folder", folderId: item.id, mode: "unwrap" };
 }
 
 export function enterSelectedFolder(sidebar: SidebarState): SidebarKeyResult {

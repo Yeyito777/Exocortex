@@ -16,8 +16,9 @@ import {
   openCreateFolderPrompt,
   openMoveItemsPrompt,
   openRenameSelectedFolderPrompt,
-  requestFocusAfterDeletingFolder,
+  requestFocusAfterRecursivelyDeletingFolder,
   toggleVisualSelection,
+  unwrapSelectedFolder,
 } from "./sidebar/folderactions";
 import { sameSidebarItem as sameItem } from "./sidebar/items";
 import { moveSelection, moveToMarked, moveToStreaming } from "./sidebar/navigation";
@@ -84,6 +85,8 @@ export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarK
         return enterSelectedFolder(sidebar);
       case "r":
         return openRenameSelectedFolderPrompt(sidebar);
+      case "x":
+        return unwrapSelectedFolder(sidebar);
     }
   }
   const action = resolveAction(key, "navigation");
@@ -143,8 +146,8 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
           return { type: "delete_conversation", convId: item.id };
         }
         sidebar.visualAnchor = null;
-        requestFocusAfterDeletingFolder(sidebar, item);
-        return { type: "delete_folder", folderId: item.id };
+        requestFocusAfterRecursivelyDeletingFolder(sidebar, item);
+        return { type: "delete_folder", folderId: item.id, mode: "recursive" };
       }
       sidebar.pendingDeleteItem = item;
       sidebar.pendingDeleteId = item.type === "conversation" ? item.id : null;
@@ -153,6 +156,9 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
 
     case "undo_delete":
       return { type: "undo_delete" };
+
+    case "unwrap_folder":
+      return unwrapSelectedFolder(sidebar);
 
     case "clone": {
       const conv = getSelectedVisibleConversation(sidebar);
