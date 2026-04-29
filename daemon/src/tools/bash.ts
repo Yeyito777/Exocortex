@@ -18,6 +18,7 @@ import { join } from "path";
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
 import { MAX_OUTPUT_CHARS, getString, getNumber, safeSlice, summarizeParams } from "./util";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
+import { formatToolAbortMessage } from "../abort";
 import { isWindows } from "@exocortex/shared/paths";
 import { rewriteExternalToolShellCommandForExecution } from "../external-tools";
 import { log } from "../log";
@@ -268,9 +269,7 @@ async function executeBashImpl(
         settled = true;
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         const partial = Buffer.concat(chunks).toString("utf8").trimEnd();
-        const reason = signal.reason === "watchdog"
-          ? `Watchdog timed out after ${elapsed}s (stream was inactive too long).`
-          : `User interrupted after ${elapsed}s of execution.`;
+        const reason = formatToolAbortMessage(signal, elapsed);
         let output = reason;
         if (partial) output += ` Partial output captured:\n${partial}`;
         resolve({ output, isError: false });

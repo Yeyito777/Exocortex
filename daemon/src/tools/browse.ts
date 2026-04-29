@@ -13,6 +13,7 @@ import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./type
 import { cap, getString, summarizeParams } from "./util";
 import { htmlToMarkdown } from "./html";
 import { complete } from "../llm";
+import { formatToolAbortMessage } from "../abort";
 import { log } from "../log";
 import { getInnerLlmSummaryOptions } from "./inner-llm";
 
@@ -250,7 +251,7 @@ async function executeBrowse(input: Record<string, unknown>, context?: ToolExecu
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      return { output: `User interrupted after ${elapsed}s of execution.`, isError: false };
+      return { output: formatToolAbortMessage(signal, elapsed), isError: false };
     }
 
     const msg = err instanceof Error ? err.message : String(err);

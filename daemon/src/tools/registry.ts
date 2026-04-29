@@ -17,6 +17,7 @@ import { edit } from "./edit";
 import { browse } from "./browse";
 import { context, executeContext, type ContextToolEnv } from "./context";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
+import { formatToolAbortMessage } from "../abort";
 import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
 
 export type { ContextToolEnv };
@@ -110,7 +111,7 @@ function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 /**
  * Run a tool promise with abort-race support. Handles:
  * - Racing the promise against the AbortSignal
- * - AbortError → friendly "User interrupted" message
+ * - AbortError → friendly interrupt/restart/timeout message
  * - Unexpected errors → "Tool error" message
  * - Building the ToolExecResult envelope
  */
@@ -132,9 +133,7 @@ async function execTool(
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      const msg = signal?.reason === "watchdog"
-        ? `Watchdog timed out after ${elapsed}s (stream was inactive too long).`
-        : `User interrupted after ${elapsed}s of execution.`;
+      const msg = formatToolAbortMessage(signal, elapsed);
       return { toolCallId: call.id, toolName: call.name, output: msg, isError: false };
     }
     return { toolCallId: call.id, toolName: call.name, output: `Tool error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
