@@ -12,7 +12,7 @@ import type { RenderState } from "./state";
 import { focusPrompt, focusSidebar } from "./state";
 import type { KeyResult } from "./focus";
 import { scrollBy, getViewStart } from "./chat";
-import { focusConversationAt, sidebarHitTest, scrollSidebar, SIDEBAR_WIDTH } from "./sidebar";
+import { activateSidebarItem, sidebarHitTest, scrollSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { mouse_cursor_pointer, mouse_cursor_text, mouse_cursor_hand } from "./terminal";
 import { clampCol, ensureCursorVisible } from "./historycursor";
 
@@ -145,11 +145,11 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
   // ── Left click (button 0) ───────────────────────────────────────
   if (button === 0 && action === "press") {
     if (inSidebar) {
-      // Click on a conversation in the sidebar — focus already set above
-      const convIdx = sidebarHitTest(row, state.rows, sidebar);
-      if (convIdx !== null && convIdx < sidebar.conversations.length) {
-        focusConversationAt(sidebar, convIdx);
-        return { type: "load_conversation", convId: sidebar.conversations[convIdx].id };
+      // Click on a sidebar item — focus already set above.
+      const item = sidebarHitTest(row, state.rows, sidebar);
+      if (item) {
+        const result = activateSidebarItem(sidebar, item);
+        return result.type === "select" ? { type: "load_conversation", convId: result.convId } : { type: "handled" };
       }
       return { type: "handled" };
     }

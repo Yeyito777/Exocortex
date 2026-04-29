@@ -3,10 +3,11 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { create, createWithInitialUserMessage, get, getDisplayData, getSummary, getToolOutputs, listRunningConversationIds, remove, setModel, setSystemInstructions, trimConversation } from "./conversations";
+import { create, createFolder, createWithInitialUserMessage, deleteFolder, get, getDisplayData, getSummary, getToolOutputs, listSidebarState, listRunningConversationIds, moveSidebarItems, pin, remove, setModel, setSystemInstructions, trimConversation } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
+const FOLDER_IDS: string[] = [];
 
 function mkId(suffix: string): string {
   const id = `test-conv-${suffix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -19,6 +20,85 @@ beforeEach(() => {
     clearActiveJob(id);
     remove(id);
   }
+  for (const id of FOLDER_IDS.splice(0)) {
+    deleteFolder(id);
+  }
+});
+
+describe("folders", () => {
+  function rootRows(ids: string[]): { type: "conversation" | "folder"; id: string; sortOrder: number; pinned: boolean }[] {
+    return [
+      ...listSidebarState().conversations
+        .filter(summary => ids.includes(summary.id) && (summary.folderId ?? null) === null)
+        .map(summary => ({ type: "conversation" as const, id: summary.id, sortOrder: summary.sortOrder, pinned: summary.pinned })),
+      ...listSidebarState().folders
+        .filter(summary => ids.includes(summary.id) && (summary.parentId ?? null) === null)
+        .map(summary => ({ type: "folder" as const, id: summary.id, sortOrder: summary.sortOrder, pinned: summary.pinned })),
+    ].sort((a, b) => (a.pinned === b.pinned ? 0 : a.pinned ? -1 : 1) || a.sortOrder - b.sortOrder);
+  }
+
+  test("moving conversations out can insert them immediately before their source folder", () => {
+    const beforeId = mkId("folder-before");
+    const movedId = mkId("folder-moved");
+    create(beforeId, "openai", "gpt-5.4", "before");
+    const folder = createFolder(`Folder ${Date.now()} ${Math.random()}`)!;
+    FOLDER_IDS.push(folder.id);
+    create(movedId, "openai", "gpt-5.4", "moved", undefined, false, folder.id);
+
+    expect(moveSidebarItems([{ type: "conversation", id: movedId }], null, { type: "folder", id: folder.id })).toBe(true);
+
+    const rows = rootRows([beforeId, movedId, folder.id]);
+    const folderIndex = rows.findIndex(row => row.id === folder.id);
+    expect(folderIndex).toBeGreaterThan(0);
+    expect(rows[folderIndex - 1]?.id).toBe(movedId);
+    expect(getSummary(movedId)?.folderId ?? null).toBeNull();
+  });
+
+  test("deleting a folder unwraps children into the deleted folder's previous slot", () => {
+    const afterId = mkId("folder-delete-after");
+    const beforeId = mkId("folder-delete-before");
+    const childId = mkId("folder-delete-child");
+
+    create(afterId, "openai", "gpt-5.4", "after");
+    const folder = createFolder(`Delete Folder ${Date.now()} ${Math.random()}`)!;
+    FOLDER_IDS.push(folder.id);
+    create(beforeId, "openai", "gpt-5.4", "before");
+    create(childId, "openai", "gpt-5.4", "child", undefined, false, folder.id);
+
+    expect(rootRows([beforeId, folder.id, afterId]).map(row => row.id)).toEqual([beforeId, folder.id, afterId]);
+    expect(deleteFolder(folder.id)).toBe(true);
+
+    expect(getSummary(childId)?.folderId ?? null).toBeNull();
+    expect(rootRows([beforeId, childId, afterId]).map(row => row.id)).toEqual([beforeId, childId, afterId]);
+  });
+
+  test("moving a visual block down preserves the block order", () => {
+    const ids = ["visual-a", "visual-b", "visual-c", "visual-d", "visual-e"].map(mkId);
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+    expect(rootRows(ids).map(row => row.id)).toEqual(ids);
+
+    expect(moveSidebarItems([
+      { type: "conversation", id: ids[1] },
+      { type: "conversation", id: ids[2] },
+    ], null, { type: "conversation", id: ids[4] }, { preservePinned: true })).toBe(true);
+
+    expect(rootRows(ids).map(row => row.id)).toEqual([ids[0], ids[3], ids[1], ids[2], ids[4]]);
+  });
+
+  test("visual block moves can preserve pinned state", () => {
+    const ids = ["visual-pinned-a", "visual-pinned-b", "visual-pinned-c"].map(mkId);
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+    expect(pin(ids[1], true)).toBe(true);
+    expect(pin(ids[2], true)).toBe(true);
+
+    expect(moveSidebarItems([
+      { type: "conversation", id: ids[1] },
+      { type: "conversation", id: ids[2] },
+    ], null, undefined, { preservePinned: true, placement: "bottom" })).toBe(true);
+
+    expect(getSummary(ids[1])?.pinned).toBe(true);
+    expect(getSummary(ids[2])?.pinned).toBe(true);
+  });
 });
 
 describe("createWithInitialUserMessage", () => {

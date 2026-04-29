@@ -273,7 +273,7 @@ function handleSubmit(): void {
           resetNewConversationDefaults(state);
           state.pendingSystemInstructions = cmdResult.text;
           state.pendingGenerateTitleOnCreate = false;
-          daemon.createConversation(state.provider, state.model, "", state.effort);
+          daemon.createConversation(state.provider, state.model, "", state.effort, state.fastMode, undefined, state.sidebar.currentFolderId);
           break;
         case "replay_requested":
           if (state.convId) daemon.replayConversation(state.convId, Date.now());
@@ -387,7 +387,7 @@ function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
       text: messageText,
       startedAt,
       images,
-    });
+    }, state.sidebar.currentFolderId);
   } else {
     daemon.sendMessage(state.convId, messageText, startedAt, images);
   }
@@ -481,6 +481,23 @@ function handleKey(key: KeyEvent): void {
         resetNewConversationDefaults(state);
       }
       break;
+    case "delete_conversations": {
+      for (const convId of result.convIds) {
+        daemon.deleteConversation(convId);
+        clearLocalQueue(state, convId);
+      }
+      if (state.convId && result.convIds.includes(state.convId)) {
+        state.convId = null;
+        state.messages = [];
+        clearPendingAI(state);
+        state.contextTokens = null;
+        resetToolOutputState(state);
+      }
+      break;
+    }
+    case "delete_folder":
+      daemon.deleteFolder(result.folderId);
+      break;
     case "undo_delete":
       daemon.undoDelete();
       break;
@@ -493,11 +510,26 @@ function handleKey(key: KeyEvent): void {
     case "pin_conversation":
       daemon.pinConversation(result.convId, result.pinned);
       break;
+    case "pin_folder":
+      daemon.pinFolder(result.folderId, result.pinned);
+      break;
     case "move_conversation":
       daemon.moveConversation(result.convId, result.direction);
       break;
+    case "move_sidebar_item":
+      daemon.moveSidebarItem(result.item, result.direction);
+      break;
+    case "move_sidebar_items":
+      daemon.moveSidebarItems(result.items, result.parentId, result.before, { preservePinned: result.preservePinned, placement: result.placement });
+      break;
     case "clone_conversation":
       daemon.cloneConversation(result.convId);
+      break;
+    case "create_folder":
+      daemon.createFolder(result.name, result.parentId, result.items);
+      break;
+    case "rename_folder":
+      daemon.renameFolder(result.folderId, result.name);
       break;
     case "handled":
       break;

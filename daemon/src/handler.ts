@@ -28,6 +28,8 @@ import { broadcastConversationUpdated } from "./conversation-events";
 // ── Handler ─────────────────────────────────────────────────────────
 
 export function createHandler(server: DaemonServer) {
+  // ── Local helper functions ────────────────────────────────────────
+
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     server.broadcast({ type: "usage_update", provider, usage });
   };
@@ -41,6 +43,8 @@ export function createHandler(server: DaemonServer) {
   const unknownModelMessage = (provider: import("./messages").ProviderId, model: string): string => {
     return `Unknown model for provider ${provider}: ${model}. Available models: ${describeAvailableModels(provider)}`;
   };
+  // ── Outbound status/tool broadcasts ───────────────────────────────
+
   const broadcastToolsAvailable = () => {
     const externalStyles = getExternalToolStyles();
     server.broadcast({
@@ -74,6 +78,8 @@ export function createHandler(server: DaemonServer) {
   const maybeStartAutoTitleGeneration = (convId: string): void => {
     if (shouldAutoGenerateTitle(convId)) startTitleGeneration(server, convId);
   };
+
+  // ── Subagent parent notifications ────────────────────────────────
 
   const textFromBlocks = (blocks: import("./messages").Block[]): string => blocks
     .filter((block): block is Extract<import("./messages").Block, { type: "text" }> => block.type === "text")
@@ -146,6 +152,8 @@ export function createHandler(server: DaemonServer) {
     });
   };
 
+  // ── Compact conversation payload helpers ─────────────────────────
+
   const sendCompactHistoryUpdated = (convId: string): boolean => {
     const data = getRenderSnapshot(convId);
     if (!data) return false;
@@ -183,6 +191,8 @@ export function createHandler(server: DaemonServer) {
   return async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
     switch (cmd.type) {
 
+      // ── Connection/bootstrap commands ──────────────────────────────
+
       case "ping": {
         server.sendTo(client, { type: "pong", reqId: cmd.reqId });
         const externalStyles = getExternalToolStyles();
@@ -199,7 +209,7 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, { type: "usage_update", provider: provider.id, usage: lastUsage });
         }
         server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
-        server.sendTo(client, { type: "conversations_list", conversations: convStore.listSummaries() });
+        server.sendTo(client, { type: "conversations_list", ...convStore.listSidebarState() });
         for (const provider of getProviders()) {
           if (!hasConfiguredCredentials(provider.id)) continue;
           refreshUsage(provider.id, (usage) => broadcastUsage(provider.id, usage));
@@ -211,6 +221,8 @@ export function createHandler(server: DaemonServer) {
         });
         break;
       }
+
+      // ── Conversation lifecycle commands ───────────────────────────
 
       case "new_conversation": {
         const id = convStore.generateId();
@@ -248,12 +260,13 @@ export function createHandler(server: DaemonServer) {
         }
 
         const title = cmd.title ?? (initialMessage ? PENDING_TITLE : undefined);
+        const folderId = cmd.folderId ?? null;
         if (initialMessage) {
-          convStore.createWithInitialUserMessage(id, provider, model, title, effort, fastMode, initialMessage);
+          convStore.createWithInitialUserMessage(id, provider, model, title, effort, fastMode, initialMessage, folderId);
         } else {
-          convStore.create(id, provider, model, title, effort, fastMode);
+          convStore.create(id, provider, model, title, effort, fastMode, folderId);
         }
-        log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, fastMode=${fastMode}, title="${title ?? ""}", initialMessage=${Boolean(initialMessage)})`);
+        log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, fastMode=${fastMode}, title="${title ?? ""}", initialMessage=${Boolean(initialMessage)}, folderId=${folderId ?? "root"})`);
 
         server.sendTo(client, {
           type: "conversation_created",
@@ -322,6 +335,8 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      // ── Assistant turn commands ───────────────────────────────────
+
       case "send_message": {
         const callbacks = buildOrchestrationCallbacks(cmd.convId);
         if (cmd.detached) {
@@ -373,6 +388,8 @@ export function createHandler(server: DaemonServer) {
         );
         break;
       }
+
+      // ── Conversation configuration/edit commands ──────────────────
 
       case "set_model": {
         const conv = convStore.get(cmd.convId);
@@ -495,9 +512,10 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      // ── Sidebar/list commands ─────────────────────────────────────
+
       case "list_conversations": {
-        const conversations = convStore.listSummaries();
-        server.sendTo(client, { type: "conversations_list", reqId: cmd.reqId, conversations });
+        server.sendTo(client, { type: "conversations_list", reqId: cmd.reqId, ...convStore.listSidebarState() });
         break;
       }
 
@@ -527,7 +545,7 @@ export function createHandler(server: DaemonServer) {
           // correct pinned flags and sortOrders.  A separate
           // conversation_pinned event is unnecessary and caused flicker
           // when the TUI re-sorted with stale sortOrder values.
-          server.broadcast({ type: "conversation_moved", conversations: convStore.listSummaries() });
+          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
         }
         break;
       }
@@ -535,7 +553,7 @@ export function createHandler(server: DaemonServer) {
       case "move_conversation": {
         const ok = convStore.move(cmd.convId, cmd.direction);
         if (ok) {
-          server.broadcast({ type: "conversation_moved", conversations: convStore.listSummaries() });
+          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
         }
         break;
       }
@@ -570,10 +588,65 @@ export function createHandler(server: DaemonServer) {
           if (summary) {
             log("info", `handler: cloned conversation ${cmd.convId} → ${cloned.id}`);
             server.broadcast({ type: "conversation_restored", reqId: cmd.reqId, summary });
-            server.broadcast({ type: "conversation_moved", conversations: convStore.listSummaries() });
+            server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
           }
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+        }
+        break;
+      }
+
+      // ── Folder/sidebar organization commands ──────────────────────
+
+      case "create_folder": {
+        const folder = convStore.createFolder(cmd.name, cmd.parentId ?? null, cmd.items ?? []);
+        if (folder) {
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+          log("info", `handler: created folder ${folder.id} (${folder.name})`);
+        } else {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Folder name cannot be empty" });
+        }
+        break;
+      }
+
+      case "rename_folder": {
+        const ok = convStore.renameFolder(cmd.folderId, cmd.name);
+        if (ok) {
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+        } else {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Folder ${cmd.folderId} not found` });
+        }
+        break;
+      }
+
+      case "pin_folder": {
+        if (convStore.pinFolder(cmd.folderId, cmd.pinned)) {
+          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+        }
+        break;
+      }
+
+      case "move_sidebar_item": {
+        if (convStore.moveSidebarItem(cmd.item, cmd.direction)) {
+          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+        }
+        break;
+      }
+
+      case "move_sidebar_items": {
+        if (convStore.moveSidebarItems(cmd.items, cmd.parentId, cmd.before, { preservePinned: cmd.preservePinned, placement: cmd.placement })) {
+          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+        }
+        break;
+      }
+
+      case "delete_folder": {
+        if (convStore.deleteFolder(cmd.folderId, cmd.mode)) {
+          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+        } else {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Folder ${cmd.folderId} not found` });
         }
         break;
       }
@@ -585,13 +658,15 @@ export function createHandler(server: DaemonServer) {
           if (summary) {
             log("info", `handler: restored conversation ${restored.id} from trash`);
             server.broadcast({ type: "conversation_restored", reqId: cmd.reqId, summary });
-            server.broadcast({ type: "conversation_moved", conversations: convStore.listSummaries() });
+            server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
           }
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Nothing to undo" });
         }
         break;
       }
+
+      // ── Queue/system/history commands ─────────────────────────────
 
       case "queue_message": {
         convStore.pushQueuedMessage(cmd.convId, cmd.text, cmd.timing, cmd.images);
@@ -676,6 +751,8 @@ export function createHandler(server: DaemonServer) {
         }
         break;
       }
+
+      // ── Utility/tool/auth commands ────────────────────────────────
 
       case "get_system_prompt": {
         const instructions = cmd.convId ? convStore.getSystemInstructions(cmd.convId) : null;

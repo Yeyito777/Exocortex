@@ -5,7 +5,7 @@ import { createInitialState } from "./state";
 import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { termWidth } from "./textwidth";
 
-function conversation(id: string, title: string, sortOrder: number): ConversationSummary {
+function conversation(id: string, title: string, sortOrder: number, folderId: string | null = null): ConversationSummary {
   return {
     id,
     provider: "openai",
@@ -21,6 +21,7 @@ function conversation(id: string, title: string, sortOrder: number): Conversatio
     streaming: false,
     unread: false,
     sortOrder,
+    folderId,
   };
 }
 
@@ -128,6 +129,36 @@ describe("sidebar conversation search", () => {
     expect(handleFocusedKey({ type: "char", char: "n" }, state)).toEqual({ type: "handled" });
     expect(state.sidebar.search?.highlightsVisible).toBe(true);
     expect(state.sidebar.selectedId).toBe("conv-4");
+  });
+
+  test("sidebar search finds conversations inside nested folders from the root", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [
+      { id: "folder-work", name: "Work", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 1 },
+      { id: "folder-clients", name: "Clients", parentId: "folder-work", createdAt: 2, updatedAt: 2, pinned: false, sortOrder: 2 },
+    ];
+    state.sidebar.conversations = [
+      conversation("conv-root", "Root notes", 1),
+      conversation("conv-nested", "Needle project", 2, "folder-clients"),
+    ];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-root" };
+    state.sidebar.selectedId = "conv-root";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "/" }, state)).toEqual({ type: "handled" });
+    for (const ch of "needle") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
+
+    expect(state.sidebar.selectedId).toBe("conv-nested");
+    const rendered = renderSidebar(state.sidebar, 8, true, null).map(stripAnsi).join("\n");
+    expect(rendered).toContain("Needle");
+    expect(rendered).not.toContain("Work/Clients");
+    expect(rendered).not.toContain("Root notes");
+
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "load_conversation", convId: "conv-nested" });
   });
 
   test("renderSidebar keeps the search bar at the bottom and filters out non-matches", () => {

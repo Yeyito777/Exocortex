@@ -6,10 +6,10 @@
  * In-flight stream tracking lives in streaming.ts.
  */
 
-import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, StoredMessage, Block, MessageMetadata, PersistedConversationSummary } from "./messages";
-import { DEFAULT_EFFORT, createConversation, createMessageMetadata, createStoredUserMessage, sortConversations, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation } from "./messages";
+import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary } from "./messages";
+import { DEFAULT_EFFORT, createConversation, createMessageMetadata, createStoredUserMessage, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
-import type { TrimMode, ToolOutputInfo } from "./protocol";
+import type { MoveSidebarItemsOptions, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
 import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
@@ -33,8 +33,11 @@ export {
 
 const conversations = new Map<string, Conversation>();
 const summaries = new Map<string, PersistedConversationSummary>();
+const folders = new Map<string, PersistedFolderSummary>();
 const dirty = new Set<string>();
 const unread = new Set<string>();
+
+// ── Summary/index persistence helpers ──────────────────────────────
 
 function saveSummaryIndex(): void {
   const entries: persistence.ConversationIndexEntry[] = [];
@@ -56,6 +59,88 @@ function saveSummaryIndex(): void {
 function updateSummaryFromConversation(conv: Conversation): void {
   summaries.set(conv.id, summarizeConversation(conv));
 }
+
+// ── Sidebar/folder ordering helpers ───────────────────────────────
+
+type SidebarOrderEntry = { type: "conversation" | "folder"; id: string; pinned: boolean; sortOrder: number };
+
+function sidebarItemKey(item: SidebarItemRef): string {
+  return `${item.type}:${item.id}`;
+}
+
+function sortSidebarEntries<T extends Pick<SidebarOrderEntry, "pinned" | "sortOrder">>(entries: T[]): T[] {
+  return entries.sort((a, b) => (a.pinned === b.pinned ? 0 : a.pinned ? -1 : 1) || a.sortOrder - b.sortOrder);
+}
+
+function sidebarEntries(parentId: string | null): SidebarOrderEntry[] {
+  const entries: SidebarOrderEntry[] = [];
+  for (const summary of summaries.values()) {
+    if ((summary.folderId ?? null) === parentId) {
+      entries.push({ type: "conversation", id: summary.id, pinned: summary.pinned, sortOrder: summary.sortOrder });
+    }
+  }
+  for (const folder of folders.values()) {
+    if ((folder.parentId ?? null) === parentId) {
+      entries.push({ type: "folder", id: folder.id, pinned: folder.pinned, sortOrder: folder.sortOrder });
+    }
+  }
+  return sortSidebarEntries(entries);
+}
+
+function nextUnpinnedOrderInFolder(folderId: string | null, excludeId?: string): number {
+  return topUnpinnedOrder(sidebarEntries(folderId).filter(e => e.id !== excludeId));
+}
+
+function nextPinnedOrderInFolder(folderId: string | null, excludeId?: string): number {
+  return bottomPinnedOrder(sidebarEntries(folderId).filter(e => e.id !== excludeId), excludeId ?? "");
+}
+
+function saveFolderState(): void {
+  persistence.saveFolders(sortSidebarEntries([...folders.values()]));
+}
+
+function getItemParent(item: SidebarItemRef): string | null | undefined {
+  if (item.type === "conversation") return summaries.get(item.id)?.folderId ?? null;
+  return folders.get(item.id)?.parentId ?? null;
+}
+
+function getItemPinned(item: SidebarItemRef): boolean | undefined {
+  if (item.type === "conversation") return summaries.get(item.id)?.pinned;
+  return folders.get(item.id)?.pinned;
+}
+
+function getItemSortOrder(item: SidebarItemRef): number | undefined {
+  if (item.type === "conversation") return summaries.get(item.id)?.sortOrder;
+  return folders.get(item.id)?.sortOrder;
+}
+
+function setItemSortOrder(item: SidebarItemRef, sortOrder: number): boolean {
+  if (item.type === "conversation") {
+    const conv = get(item.id);
+    if (!conv) return false;
+    conv.sortOrder = sortOrder;
+    markDirty(conv.id);
+    flush(conv.id);
+    return true;
+  }
+  const folder = folders.get(item.id);
+  if (!folder) return false;
+  folder.sortOrder = sortOrder;
+  folder.updatedAt = Date.now();
+  saveFolderState();
+  return true;
+}
+
+function isDescendantFolder(folderId: string, candidateParentId: string | null): boolean {
+  let current = candidateParentId;
+  while (current) {
+    if (current === folderId) return true;
+    current = folders.get(current)?.parentId ?? null;
+  }
+  return false;
+}
+
+// ── Conversation loading/mutation helpers ─────────────────────────
 
 function loadConversation(id: string): Conversation | undefined {
   const cached = conversations.get(id);
@@ -96,10 +181,11 @@ export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-// ── Conversations ───────────────────────────────────────────────────
+// ── Conversation CRUD/configuration ─────────────────────────────────
 
-export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode = false): Conversation {
-  const conv = createConversation(id, provider, model, topUnpinnedOrder(summaries.values()), title, effort, fastMode);
+export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode = false, folderId: string | null = null): Conversation {
+  const parentId = folderId && folders.has(folderId) ? folderId : null;
+  const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
   conversations.set(id, conv);
   markDirty(id);
   flush(id);
@@ -114,8 +200,10 @@ export function createWithInitialUserMessage(
   effort: EffortLevel | undefined,
   fastMode: boolean,
   message: { text: string; startedAt: number; images?: ImageAttachment[] },
+  folderId: string | null = null,
 ): Conversation {
-  const conv = createConversation(id, provider, model, topUnpinnedOrder(summaries.values()), title, effort, fastMode);
+  const parentId = folderId && folders.has(folderId) ? folderId : null;
+  const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
   conv.messages.push(createStoredUserMessage(message.text, model, message.startedAt, message.images));
   conversations.set(id, conv);
   markDirty(id);
@@ -127,7 +215,7 @@ export function createWithInitialUserMessage(
 export function bumpToTop(id: string): boolean {
   const conv = get(id);
   if (!conv || conv.pinned) return false;
-  conv.sortOrder = topUnpinnedOrder(summaries.values(), id);
+  conv.sortOrder = nextUnpinnedOrderInFolder(conv.folderId ?? null, id);
   markDirty(id);
   return true;
 }
@@ -140,13 +228,13 @@ export function clone(id: string): Conversation | null {
   const newId = generateId();
   const now = Date.now();
 
-  // Compute a sortOrder between the original and the item after it
-  const summaries = listSummaries();
-  const srcIdx = summaries.findIndex(s => s.id === id);
+  // Compute a sortOrder between the original and the item after it in the same folder.
+  const siblings = sidebarEntries(src.folderId ?? null);
+  const srcIdx = siblings.findIndex(s => s.type === "conversation" && s.id === id);
   let newOrder: number;
-  if (srcIdx >= 0 && srcIdx + 1 < summaries.length && summaries[srcIdx + 1].pinned === src.pinned) {
+  if (srcIdx >= 0 && srcIdx + 1 < siblings.length && siblings[srcIdx + 1].pinned === src.pinned) {
     // Place between the original and the next item in the same section
-    newOrder = (src.sortOrder + summaries[srcIdx + 1].sortOrder) / 2;
+    newOrder = (src.sortOrder + siblings[srcIdx + 1].sortOrder) / 2;
   } else {
     // Last item in its section — place after it
     newOrder = src.sortOrder + 1;
@@ -165,6 +253,7 @@ export function clone(id: string): Conversation | null {
     marked: src.marked,
     pinned: src.pinned,
     sortOrder: newOrder,
+    folderId: src.folderId ?? null,
     title: (src.title || "clone") + " 📋",
   };
 
@@ -345,7 +434,7 @@ function waitForStreamStop(id: string, timeoutMs = 10_000): Promise<boolean> {
   });
 }
 
-// ── Persistence ─────────────────────────────────────────────────────
+// ── Startup/load and flush persistence ──────────────────────────────
 
 export interface LoadFromDiskStats {
   loaded: number;
@@ -364,6 +453,10 @@ export function loadFromDisk(): LoadFromDiskStats {
   const startedAt = performance.now();
   const index = persistence.loadConversationIndex();
   summaries.clear();
+  folders.clear();
+  for (const folder of persistence.loadFolders()) {
+    folders.set(folder.id, { ...folder, parentId: folder.parentId && folder.parentId !== folder.id ? folder.parentId : null });
+  }
 
   let normalizedEffortCount = 0;
   for (const summary of index.summaries) {
@@ -372,20 +465,23 @@ export function loadFromDisk(): LoadFromDiskStats {
       summary.effort = normalizedEffort;
       normalizedEffortCount++;
     }
+    summary.folderId = summary.folderId && folders.has(summary.folderId) ? summary.folderId : null;
     summaries.set(summary.id, summary);
   }
   log("info", `conversations: loaded ${summaries.size} summaries from disk (index reused=${index.reused}, rebuilt=${index.rebuilt})`);
 
   // Deduplicate sortOrders — duplicate values cause move operations to
-  // be no-ops (swapping identical values).  Walk each section (pinned,
-  // unpinned) in order and bump any collision by a small offset.
+  // be no-ops (swapping identical values).  Walk each folder+pinned section
+  // in order and bump any collision by a small offset.
   const sorted = [...summaries.values()].sort(
-    (a, b) => (a.pinned === b.pinned ? 0 : a.pinned ? -1 : 1) || a.sortOrder - b.sortOrder,
+    (a, b) => ((a.folderId ?? "") === (b.folderId ?? "") ? 0 : (a.folderId ?? "").localeCompare(b.folderId ?? ""))
+      || (a.pinned === b.pinned ? 0 : a.pinned ? -1 : 1)
+      || a.sortOrder - b.sortOrder,
   );
-  const seen = new Set<string>();    // "pinned:sortOrder"
+  const seen = new Set<string>();    // "folder:pinned:sortOrder"
   let fixed = 0;
   for (const summary of sorted) {
-    const key = `${summary.pinned}:${summary.sortOrder}`;
+    const key = `${summary.folderId ?? "root"}:${summary.pinned}:${summary.sortOrder}`;
     if (seen.has(key)) {
       summary.sortOrder += 0.001 * ++fixed;
       const conv = get(summary.id);
@@ -394,7 +490,7 @@ export function loadFromDisk(): LoadFromDiskStats {
         markDirty(conv.id);
       }
     }
-    seen.add(`${summary.pinned}:${summary.sortOrder}`);
+    seen.add(`${summary.folderId ?? "root"}:${summary.pinned}:${summary.sortOrder}`);
   }
   if (fixed > 0 || normalizedEffortCount > 0 || index.saved) {
     log("info", `conversations: repaired index (deduplicated=${fixed}, normalizedEffort=${normalizedEffortCount})`);
@@ -453,6 +549,8 @@ export function onChunk(id: string): boolean {
   return false;
 }
 
+// ── Sidebar/listing state ───────────────────────────────────────────
+
 /** Get conversation summaries for the sidebar (from in-memory state). */
 export function listSummaries(): ConversationSummary[] {
   const result: ConversationSummary[] = [];
@@ -463,8 +561,16 @@ export function listSummaries(): ConversationSummary[] {
       unread: unread.has(summary.id),
     });
   }
-  sortConversations(result);
+  sortSidebarEntries(result);
   return result;
+}
+
+export function listFolders(): FolderSummary[] {
+  return sortSidebarEntries([...folders.values()].map(folder => ({ ...folder })));
+}
+
+export function listSidebarState(): { conversations: ConversationSummary[]; folders: FolderSummary[] } {
+  return { conversations: listSummaries(), folders: listFolders() };
 }
 
 /** List conversation IDs that currently have an in-flight stream. */
@@ -473,6 +579,8 @@ export function listRunningConversationIds(): string[] {
     .filter((summary) => summary.streaming)
     .map((summary) => summary.id);
 }
+
+// ── Conversation sidebar actions ───────────────────────────────────
 
 /** Toggle or set the marked flag on a conversation. */
 export function mark(id: string, marked: boolean): boolean {
@@ -490,50 +598,188 @@ export function pin(id: string, pinned: boolean): boolean {
   if (!conv) return false;
   conv.pinned = pinned;
   conv.sortOrder = pinned
-    ? bottomPinnedOrder(summaries.values(), id)
-    : topUnpinnedOrder(summaries.values(), id);
+    ? nextPinnedOrderInFolder(conv.folderId ?? null, id)
+    : nextUnpinnedOrderInFolder(conv.folderId ?? null, id);
   markDirty(id);
   flush(id);
   return true;
 }
 
-/** Move a conversation up or down within its section (pinned or unpinned). */
+/** Move a conversation up or down within its folder section (pinned or unpinned). */
 export function move(id: string, direction: "up" | "down"): boolean {
-  const summaries = listSummaries();
-  const idx = summaries.findIndex(s => s.id === id);
+  return moveSidebarItem({ type: "conversation", id }, direction);
+}
+
+// ── Folder operations ───────────────────────────────────────────────
+
+export function createFolder(name: string, parentId: string | null = null, items: SidebarItemRef[] = []): FolderSummary | null {
+  const cleanName = name.trim();
+  if (!cleanName) return null;
+  const safeParent = parentId && folders.has(parentId) ? parentId : null;
+  const now = Date.now();
+  const selectedOrders = items
+    .filter(item => getItemParent(item) === safeParent)
+    .map(item => getItemSortOrder(item))
+    .filter((order): order is number => typeof order === "number");
+  const folder: PersistedFolderSummary = {
+    id: `folder-${generateId()}`,
+    name: cleanName,
+    parentId: safeParent,
+    createdAt: now,
+    updatedAt: now,
+    pinned: false,
+    sortOrder: selectedOrders.length > 0 ? Math.min(...selectedOrders) : nextUnpinnedOrderInFolder(safeParent),
+  };
+  folders.set(folder.id, folder);
+  saveFolderState();
+  if (items.length > 0) moveSidebarItems(items, folder.id);
+  return { ...folder };
+}
+
+export function renameFolder(folderId: string, name: string): boolean {
+  const folder = folders.get(folderId);
+  const cleanName = name.trim();
+  if (!folder || !cleanName) return false;
+  folder.name = cleanName;
+  folder.updatedAt = Date.now();
+  saveFolderState();
+  return true;
+}
+
+export function pinFolder(folderId: string, pinned: boolean): boolean {
+  const folder = folders.get(folderId);
+  if (!folder) return false;
+  folder.pinned = pinned;
+  folder.sortOrder = pinned
+    ? nextPinnedOrderInFolder(folder.parentId ?? null, folder.id)
+    : nextUnpinnedOrderInFolder(folder.parentId ?? null, folder.id);
+  folder.updatedAt = Date.now();
+  saveFolderState();
+  return true;
+}
+
+export function moveSidebarItem(item: SidebarItemRef, direction: "up" | "down"): boolean {
+  const parentId = getItemParent(item);
+  const pinned = getItemPinned(item);
+  if (parentId === undefined || pinned === undefined) return false;
+
+  const siblings = sidebarEntries(parentId);
+  const idx = siblings.findIndex(entry => entry.type === item.type && entry.id === item.id);
   if (idx === -1) return false;
-
-  const current = summaries[idx];
   const targetIdx = direction === "up" ? idx - 1 : idx + 1;
-  if (targetIdx < 0 || targetIdx >= summaries.length) return false;
+  if (targetIdx < 0 || targetIdx >= siblings.length) return false;
+  const target = siblings[targetIdx];
+  if (target.pinned !== pinned) return false;
 
-  const target = summaries[targetIdx];
-  // Don't cross the pinned/unpinned boundary
-  if (target.pinned !== current.pinned) return false;
+  const currentOrder = getItemSortOrder(item);
+  if (currentOrder === undefined) return false;
+  const targetRef: SidebarItemRef = { type: target.type, id: target.id };
+  const targetOrder = target.sortOrder;
+  setItemSortOrder(item, targetOrder);
+  setItemSortOrder(targetRef, currentOrder);
 
-  // Swap sortOrder values
-  const currentConv = get(id)!;
-  const targetConv = get(target.id)!;
-  const tmp = currentConv.sortOrder;
-  currentConv.sortOrder = targetConv.sortOrder;
-  targetConv.sortOrder = tmp;
+  if (targetOrder === currentOrder) {
+    setItemSortOrder(item, currentOrder + (direction === "up" ? -0.5 : 0.5));
+  }
+  return true;
+}
 
-  // If sortOrders were equal the swap is a no-op — differentiate them
-  // so the move actually takes effect.
-  if (currentConv.sortOrder === targetConv.sortOrder) {
-    if (direction === "up") {
-      currentConv.sortOrder -= 0.5;
-    } else {
-      currentConv.sortOrder += 0.5;
-    }
+export function moveSidebarItems(
+  items: SidebarItemRef[],
+  parentId: string | null,
+  before?: SidebarItemRef,
+  options: MoveSidebarItemsOptions = {},
+): boolean {
+  const safeParent = parentId && folders.has(parentId) ? parentId : null;
+  let moved = false;
+  const seen = new Set<string>();
+  const movableItems: SidebarItemRef[] = [];
+  for (const item of items) {
+    const key = sidebarItemKey(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (item.type === "folder" && (item.id === safeParent || isDescendantFolder(item.id, safeParent))) continue;
+    if (item.type === "conversation" && !summaries.has(item.id) && !conversations.has(item.id)) continue;
+    if (item.type === "folder" && !folders.has(item.id)) continue;
+    movableItems.push(item);
+  }
+  if (movableItems.length === 0) return false;
+
+  const movingKeys = new Set(movableItems.map(sidebarItemKey));
+  const destinationEntries = sidebarEntries(safeParent).filter(entry => !movingKeys.has(sidebarItemKey({ type: entry.type, id: entry.id })));
+  const preservedPinned = options.preservePinned ? getItemPinned(movableItems[0]) : undefined;
+  const hasHomogeneousPinnedState = preservedPinned !== undefined && movableItems.every(item => getItemPinned(item) === preservedPinned);
+  const anchorEntries = hasHomogeneousPinnedState
+    ? destinationEntries.filter(entry => entry.pinned === preservedPinned)
+    : destinationEntries;
+  const beforeEntry = before && getItemParent(before) === safeParent
+    ? anchorEntries.find(entry => entry.type === before.type && entry.id === before.id)
+    : undefined;
+  const beforeIndex = beforeEntry ? anchorEntries.findIndex(entry => entry.type === beforeEntry.type && entry.id === beforeEntry.id) : -1;
+  const previousEntry = beforeIndex > 0 ? anchorEntries[beforeIndex - 1] : undefined;
+
+  let startOrder: number;
+  let step: number;
+  if (beforeEntry) {
+    startOrder = previousEntry
+      ? previousEntry.sortOrder + ((beforeEntry.sortOrder - previousEntry.sortOrder) / (movableItems.length + 1))
+      : beforeEntry.sortOrder - movableItems.length;
+    step = previousEntry ? (beforeEntry.sortOrder - previousEntry.sortOrder) / (movableItems.length + 1) : 1;
+  } else if (options.placement === "bottom") {
+    const placementEntries = hasHomogeneousPinnedState ? anchorEntries : destinationEntries;
+    const maxOrder = placementEntries.reduce((max, entry) => Math.max(max, entry.sortOrder), -Infinity);
+    startOrder = maxOrder === -Infinity ? 0 : maxOrder + 1;
+    step = 1;
+  } else {
+    startOrder = nextUnpinnedOrderInFolder(safeParent) - movableItems.length;
+    step = 1;
   }
 
-  markDirty(id);
-  markDirty(target.id);
-  flush(id);
-  flush(target.id);
+  let order = startOrder - step;
+  for (const item of movableItems) {
+    order += step;
+    const pinned = options.preservePinned ? getItemPinned(item) ?? false : false;
+    if (item.type === "conversation") {
+      const conv = get(item.id);
+      if (!conv) continue;
+      conv.folderId = safeParent;
+      conv.pinned = pinned;
+      conv.sortOrder = order;
+      markDirty(conv.id);
+      flush(conv.id);
+      moved = true;
+    } else {
+      const folder = folders.get(item.id);
+      if (!folder) continue;
+      folder.parentId = safeParent;
+      folder.pinned = pinned;
+      folder.sortOrder = order;
+      folder.updatedAt = Date.now();
+      moved = true;
+    }
+  }
+  if (moved) saveFolderState();
+  return moved;
+}
+
+export function deleteFolder(folderId: string, mode: "unwrap" = "unwrap"): boolean {
+  if (mode !== "unwrap") return false;
+  const folder = folders.get(folderId);
+  if (!folder) return false;
+  const parentId = folder.parentId ?? null;
+  const children: SidebarItemRef[] = sidebarEntries(folderId).map(entry => ({ type: entry.type, id: entry.id }));
+
+  // Unwrap children into the exact slot occupied by the folder before deleting
+  // the folder record. Moving while the folder still exists lets moveSidebarItems
+  // use it as a stable insertion anchor; deleting first would dump children at the
+  // top of the parent and make the TUI cursor appear to flicker/jump.
+  if (children.length > 0) moveSidebarItems(children, parentId, { type: "folder", id: folderId });
+  folders.delete(folderId);
+  saveFolderState();
   return true;
 }
+
+// ── Conversation summaries ─────────────────────────────────────────
 
 /** Get a single conversation's summary. */
 export function getSummary(id: string): ConversationSummary | null {

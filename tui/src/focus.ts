@@ -12,6 +12,7 @@
  */
 
 import type { KeyEvent } from "./input";
+import type { MoveSidebarItemsOptions, SidebarItemRef } from "./protocol";
 import type { RenderState } from "./state";
 import { focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
 import { resolveAction, sidebarTopShortcutIndex } from "./keybinds";
@@ -23,6 +24,7 @@ import {
   focusPreviousEnteredConversation,
   handleSidebarKey,
   handleSidebarMark,
+  handleSidebarPromptKey,
   handleSidebarViewportAction,
   moveSelection,
   syncSelectedIndex,
@@ -56,12 +58,19 @@ export type KeyResult =
   | { type: "load_conversation"; convId: string }
   | { type: "load_tool_outputs"; convId: string }
   | { type: "delete_conversation"; convId: string }
+  | { type: "delete_conversations"; convIds: string[] }
+  | { type: "delete_folder"; folderId: string }
   | { type: "undo_delete" }
   | { type: "mark_conversation"; convId: string; marked: boolean }
   | { type: "rename_conversation"; convId: string; title: string }
   | { type: "pin_conversation"; convId: string; pinned: boolean }
+  | { type: "pin_folder"; folderId: string; pinned: boolean }
   | { type: "move_conversation"; convId: string; direction: "up" | "down" }
+  | { type: "move_sidebar_item"; item: SidebarItemRef; direction: "up" | "down" }
+  | ({ type: "move_sidebar_items"; items: SidebarItemRef[]; parentId: string | null; before?: SidebarItemRef } & MoveSidebarItemsOptions)
   | { type: "clone_conversation"; convId: string }
+  | { type: "create_folder"; name: string; parentId: string | null; items: SidebarItemRef[] }
+  | { type: "rename_folder"; folderId: string; name: string }
   | { type: "new_conversation" }
   | { type: "queue_confirm" }
   | { type: "queue_cancel" }
@@ -124,6 +133,11 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
     if (er.type === "confirm") return { type: "edit_message_confirm" };
     if (er.type === "cancel")  return { type: "edit_message_cancel" };
     return { type: "handled" };
+  }
+
+  // ── Sidebar folder prompt — intercept all keys while open ─────
+  if (state.panelFocus === "sidebar" && state.sidebar.prompt) {
+    return mapSidebarResult(handleSidebarPromptKey(state.sidebar, key));
   }
 
   // ── Sidebar search bar — intercept all keys while open ───────
@@ -265,8 +279,10 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
   }
 
   // ── Sidebar pending delete cancel (before vim) ──────────────────
-  if (key.type === "escape" && state.panelFocus === "sidebar" && state.sidebar.pendingDeleteId) {
+  if (key.type === "escape" && state.panelFocus === "sidebar" && (state.sidebar.pendingDeleteId || state.sidebar.pendingDeleteItem || state.sidebar.visualAnchor)) {
     state.sidebar.pendingDeleteId = null;
+    state.sidebar.pendingDeleteItem = null;
+    state.sidebar.visualAnchor = null;
     // Also normalize vim to normal mode so we don't eat the next Escape
     if (state.vim.mode === "insert") {
       state.vim.mode = "normal";
@@ -289,6 +305,13 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
       && state.vim.mode === "normal"
       && key.type === "char" && key.char && /^[0-9]$/.test(key.char)) {
     return mapSidebarResult(handleSidebarMark(state.sidebar, parseInt(key.char, 10)));
+  }
+
+  // ── Sidebar folder shortcuts that would otherwise be eaten by vim find/replace ──
+  if (state.panelFocus === "sidebar" && state.sidebar.open && state.vim.mode === "normal"
+      && !vimHasPendingInput(state)
+      && key.type === "char" && key.char && ["v", "V", "f", "F", "<", "r"].includes(key.char)) {
+    return mapSidebarResult(handleSidebarKey(key, state.sidebar));
   }
 
   // ── Vim-style sidebar search (/ ? n N) ─────────────────────────

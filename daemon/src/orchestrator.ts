@@ -23,7 +23,7 @@ import { complete } from "./llm";
 import { getInnerLlmSummaryOptions } from "./tools/inner-llm";
 import { broadcastConversationUpdated } from "./conversation-events";
 
-// ── Helpers ─────────────────────────────────────────────────────────
+// ── Retry marker helpers ───────────────────────────────────────────
 
 /**
  * Interleave retry system markers into a message array at the correct positions.
@@ -82,7 +82,7 @@ export interface OrchestrationCallbacks {
   onComplete(): void;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────
+// ── Message history/replay helpers ─────────────────────────────────
 
 /** Convert API messages to stored-message shape for transient display state. */
 function toStoredMessages(messages: import("./messages").ApiMessage[]): StoredMessage[] {
@@ -196,6 +196,8 @@ async function orchestrateAssistantTurn(
   const { userMessage } = options;
   const replaying = !userMessage;
 
+  // ── Preflight/error helpers ───────────────────────────────────────
+
   const buildErrorOutcome = (message: string): AssistantTurnOutcome => ({
     ok: false,
     blocks: [],
@@ -242,6 +244,8 @@ async function orchestrateAssistantTurn(
   if (replaying && !hasReplayableHistory(conv.messages)) {
     return reportSendError("No conversation history to replay.");
   }
+
+  // ── Start stream and broadcast initial state ──────────────────────
 
   if (userMessage) {
     conv.messages.push(createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images));
@@ -346,6 +350,8 @@ async function orchestrateAssistantTurn(
     },
   };
 
+  // ── Streaming runtime state ───────────────────────────────────────
+
   // Agent state for abort recovery — the agent populates completedMessages
   // after each full round. partialContent tracks the in-flight round only
   // (cleared via onRoundComplete between rounds).
@@ -431,6 +437,8 @@ async function orchestrateAssistantTurn(
       .filter((block): block is Extract<ProviderContentBlock, { type: "text" | "thinking" }> => block.type === "text" || block.type === "thinking")
       .map((block) => ({ type: block.type, text: block.text }));
   }
+
+  // ── Agent callbacks: stream events and live display state ─────────
 
   const callbacks: AgentCallbacks = {
     onBlockStart(blockType) {
@@ -618,6 +626,8 @@ async function orchestrateAssistantTurn(
     },
   };
 
+  // ── Tool executor wrapper ─────────────────────────────────────────
+
   // Pause staleness tracking during tool execution. Tools can run for
   // hours (e.g. kernel builds, long test suites) — the watchdog has no
   // business timing them out. When tools finish, resume tracking so the
@@ -628,9 +638,12 @@ async function orchestrateAssistantTurn(
     try {
       return await rawExecutor(calls, signal);
     } finally {
+    // ── Final cleanup/broadcast/queue drain ─────────────────────────
       convStore.resumeActivity(convId);
     }
   };
+
+  // ── Run provider/agent loop ───────────────────────────────────────
 
   startStreamingSnapshotHeartbeat();
 
@@ -661,6 +674,8 @@ async function orchestrateAssistantTurn(
       durationMs: endedAt - startedAt,
       endedAt,
     };
+
+    // ── Success path: persist assistant turn ────────────────────────
 
     // Convert ApiMessage[] → StoredMessage[], stamp metadata on last assistant
     const storedMessages: StoredMessage[] = result.newMessages.map(m => ({
@@ -712,6 +727,7 @@ async function orchestrateAssistantTurn(
     broadcastConversationUpdated(server, convId);
 
   } catch (err) {
+    // ── Error/abort path: persist salvageable state ─────────────────
     const isAbort = ac.signal.aborted;
 
     const isWatchdog = isAbort && ac.signal.reason === "watchdog";

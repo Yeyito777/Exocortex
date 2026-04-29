@@ -6,7 +6,7 @@
  */
 
 import type { KeyEvent } from "./input";
-import type { ConversationSummary } from "./messages";
+import type { ConversationSummary, SidebarItemRef } from "./messages";
 import { convDisplayName } from "./messages";
 import { stripMark } from "./marks";
 import { theme } from "./theme";
@@ -33,6 +33,7 @@ export interface SidebarSearchState {
   highlightsVisible: boolean;
   savedSelectedId: string | null;
   savedSelectedIndex: number;
+  savedSelectedItem?: SidebarItemRef | { type: "up" } | null;
   savedScrollOffset: number;
 }
 
@@ -42,6 +43,9 @@ export interface SidebarSearchableState {
   selectedIndex: number;
   scrollOffset: number;
   pendingDeleteId: string | null;
+  pendingDeleteItem?: SidebarItemRef | null;
+  currentFolderId?: string | null;
+  selectedItem?: SidebarItemRef | { type: "up" } | null;
   search: SidebarSearchState | null;
 }
 
@@ -49,6 +53,7 @@ export function focusConversationAt(sidebar: SidebarSearchableState, index: numb
   if (sidebar.conversations.length === 0) {
     sidebar.selectedIndex = 0;
     sidebar.selectedId = null;
+    if ("selectedItem" in sidebar) sidebar.selectedItem = null;
     return;
   }
 
@@ -56,6 +61,7 @@ export function focusConversationAt(sidebar: SidebarSearchableState, index: numb
   const nextId = sidebar.conversations[nextIndex]?.id ?? null;
   sidebar.selectedIndex = nextIndex;
   sidebar.selectedId = nextId;
+  if ("selectedItem" in sidebar) sidebar.selectedItem = nextId ? { type: "conversation", id: nextId } : null;
 }
 
 export function focusConversationById(sidebar: SidebarSearchableState, convId: string): boolean {
@@ -70,14 +76,15 @@ export function getSearchableConversationTitle(conv: Pick<ConversationSummary, "
 }
 
 export function getVisibleConversationIndicesForQuery(
-  sidebar: Pick<SidebarSearchableState, "conversations">,
+  sidebar: Pick<SidebarSearchableState, "conversations"> & { currentFolderId?: string | null },
   query: string | null,
 ): number[] {
-  if (!query) return sidebar.conversations.map((_, index) => index);
-
   const visible: number[] = [];
+  const scopedToCurrentFolder = !query;
   for (let i = 0; i < sidebar.conversations.length; i++) {
-    if (findAllCaseInsensitiveMatchStarts(getSearchableConversationTitle(sidebar.conversations[i]), query).length > 0) {
+    const conv = sidebar.conversations[i];
+    if (scopedToCurrentFolder && "currentFolderId" in sidebar && (conv.folderId ?? null) !== (sidebar.currentFolderId ?? null)) continue;
+    if (!query || findAllCaseInsensitiveMatchStarts(getSearchableConversationTitle(conv), query).length > 0) {
       visible.push(i);
     }
   }
@@ -95,7 +102,7 @@ export function getActiveSidebarSearchQuery(sidebar: Pick<SidebarSearchableState
 }
 
 export function getVisibleConversationIndices(
-  sidebar: Pick<SidebarSearchableState, "conversations" | "search">,
+  sidebar: Pick<SidebarSearchableState, "conversations" | "search"> & { currentFolderId?: string | null },
 ): number[] {
   return getVisibleConversationIndicesForQuery(sidebar, getActiveSidebarSearchQuery(sidebar));
 }
@@ -147,6 +154,7 @@ function buildSidebarSearchState(
     highlightsVisible: sidebar.search?.highlightsVisible ?? false,
     savedSelectedId: sidebar.selectedId,
     savedSelectedIndex: sidebar.selectedIndex,
+    savedSelectedItem: sidebar.selectedItem ? { ...sidebar.selectedItem } : null,
     savedScrollOffset: sidebar.scrollOffset,
   };
 }
@@ -171,6 +179,21 @@ function getSavedSearchStartIndex(sidebar: SidebarSearchableState, search: Sideb
 
 function restoreSidebarSearchOrigin(sidebar: SidebarSearchableState, search: SidebarSearchState): void {
   sidebar.scrollOffset = search.savedScrollOffset;
+  if (search.savedSelectedItem && "selectedItem" in sidebar) {
+    sidebar.selectedItem = { ...search.savedSelectedItem };
+    if (search.savedSelectedItem.type === "conversation") {
+      const savedId = search.savedSelectedItem.id;
+      const idx = sidebar.conversations.findIndex(c => c.id === savedId);
+      if (idx !== -1) {
+        sidebar.selectedIndex = idx;
+        sidebar.selectedId = savedId;
+        return;
+      }
+    } else {
+      sidebar.selectedId = null;
+      return;
+    }
+  }
   if (search.savedSelectedId && focusConversationById(sidebar, search.savedSelectedId)) return;
   focusConversationAt(sidebar, search.savedSelectedIndex);
 }
@@ -232,11 +255,13 @@ function executeSidebarCommand(sidebar: SidebarSearchableState, command: string)
 
 export function openSidebarSearchBar(sidebar: SidebarSearchableState, direction: SidebarSearchDirection): void {
   sidebar.pendingDeleteId = null;
+  if ("pendingDeleteItem" in sidebar) sidebar.pendingDeleteItem = null;
   sidebar.search = buildSidebarSearchState(sidebar, "search", direction);
 }
 
 export function openSidebarCommandBar(sidebar: SidebarSearchableState): void {
   sidebar.pendingDeleteId = null;
+  if ("pendingDeleteItem" in sidebar) sidebar.pendingDeleteItem = null;
   sidebar.search = buildSidebarSearchState(sidebar, "command", sidebar.search?.direction ?? "forward");
 }
 

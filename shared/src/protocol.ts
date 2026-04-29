@@ -8,8 +8,8 @@
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource } from "./messages";
-export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource };
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource } from "./messages";
+export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
@@ -38,6 +38,8 @@ export interface NewConversationCommand {
     startedAt: number;
     images?: ImageAttachment[];
   };
+  /** Folder to create the conversation in. Null/omitted means the sidebar root. */
+  folderId?: string | null;
 }
 
 export interface ParentNotificationTarget {
@@ -192,6 +194,60 @@ export interface CloneConversationCommand {
   convId: string;
 }
 
+export interface CreateFolderCommand {
+  type: "create_folder";
+  reqId?: string;
+  name: string;
+  parentId?: string | null;
+  /** Optional items to move into the new folder, preserving the given order. */
+  items?: SidebarItemRef[];
+}
+
+export interface RenameFolderCommand {
+  type: "rename_folder";
+  reqId?: string;
+  folderId: string;
+  name: string;
+}
+
+export interface PinFolderCommand {
+  type: "pin_folder";
+  reqId?: string;
+  folderId: string;
+  pinned: boolean;
+}
+
+export interface MoveSidebarItemCommand {
+  type: "move_sidebar_item";
+  reqId?: string;
+  item: SidebarItemRef;
+  direction: "up" | "down";
+}
+
+export interface MoveSidebarItemsOptions {
+  /** When moving within a folder for reordering, keep the existing pinned state. */
+  preservePinned?: boolean;
+  /** Used when no insertion anchor exists, e.g. moving a visual block to the bottom. */
+  placement?: "bottom";
+}
+
+export interface MoveSidebarItemsCommand extends MoveSidebarItemsOptions {
+  type: "move_sidebar_items";
+  reqId?: string;
+  items: SidebarItemRef[];
+  parentId: string | null;
+  /** Optional insertion anchor in the destination parent. Items are inserted before it. */
+  before?: SidebarItemRef;
+}
+
+export interface DeleteFolderCommand {
+  type: "delete_folder";
+  reqId?: string;
+  folderId: string;
+  /** unwrap keeps conversations/folders by moving children up to the parent. */
+  mode: "unwrap";
+}
+
 export interface UndoDeleteCommand {
   type: "undo_delete";
   reqId?: string;
@@ -298,6 +354,12 @@ export type Command =
   | RenameConversationCommand
   | GenerateTitleCommand
   | CloneConversationCommand
+  | CreateFolderCommand
+  | RenameFolderCommand
+  | PinFolderCommand
+  | MoveSidebarItemCommand
+  | MoveSidebarItemsCommand
+  | DeleteFolderCommand
   | UndoDeleteCommand
   | QueueMessageCommand
   | UnqueueMessageCommand
@@ -457,6 +519,7 @@ export interface ConversationsListEvent {
   type: "conversations_list";
   reqId?: string;
   conversations: ConversationSummary[];
+  folders?: FolderSummary[];
 }
 
 export interface AIMessagePayload {
@@ -532,6 +595,7 @@ export interface ConversationPinnedEvent {
 export interface ConversationMovedEvent {
   type: "conversation_moved";
   conversations: ConversationSummary[];
+  folders?: FolderSummary[];
 }
 
 export interface UserMessageEvent {

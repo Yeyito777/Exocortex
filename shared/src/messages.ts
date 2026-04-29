@@ -223,7 +223,24 @@ export interface ConversationSummary {
   streaming: boolean;
   unread: boolean;
   sortOrder: number;
+  /** Folder containing this conversation. Null means the sidebar root. */
+  folderId?: string | null;
 }
+
+export interface FolderSummary {
+  id: string;
+  name: string;
+  /** Parent folder. Null means the sidebar root. */
+  parentId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  pinned: boolean;
+  sortOrder: number;
+}
+
+export type SidebarItemRef =
+  | { type: "conversation"; id: string }
+  | { type: "folder"; id: string };
 
 // ── Conversation sorting ────────────────────────────────────────────
 

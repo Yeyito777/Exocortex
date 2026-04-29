@@ -12,7 +12,7 @@ export * from "@exocortex/shared/messages";
 
 // ── API-level types (for stored conversations / API replay) ─────────
 
-import { DEFAULT_EFFORT, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type ImageAttachment } from "@exocortex/shared/messages";
+import { DEFAULT_EFFORT, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
 
 export type ApiContentBlock =
@@ -51,6 +51,8 @@ export interface Conversation {
   marked: boolean;
   pinned: boolean;
   sortOrder: number;
+  /** Folder containing this conversation. Null means the sidebar root. */
+  folderId?: string | null;
   /** Conversation title. The daemon owns automatic title generation. */
   title: string;
 }
@@ -122,6 +124,7 @@ export function countConversationMessages(messages: StoredMessage[]): number {
 }
 
 export type PersistedConversationSummary = Omit<ConversationSummary, "streaming" | "unread">;
+export type PersistedFolderSummary = FolderSummary;
 
 export function summarizeConversation(conv: Conversation): PersistedConversationSummary {
   return {
@@ -137,6 +140,7 @@ export function summarizeConversation(conv: Conversation): PersistedConversation
     marked: conv.marked,
     pinned: conv.pinned,
     sortOrder: conv.sortOrder,
+    folderId: conv.folderId ?? null,
   };
 }
 
@@ -148,6 +152,7 @@ export function createConversation(
   title?: string,
   effort?: EffortLevel,
   fastMode = false,
+  folderId: string | null = null,
 ): Conversation {
   const now = Date.now();
   return {
@@ -163,6 +168,7 @@ export function createConversation(
     marked: false,
     pinned: false,
     sortOrder: sortOrder ?? -now,
+    folderId,
     title: title ?? "",
   };
 }

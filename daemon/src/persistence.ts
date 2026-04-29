@@ -13,12 +13,12 @@ import { join } from "path";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, renameSync, statSync } from "fs";
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
-import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary } from "./messages";
+import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary } from "./messages";
 import { DEFAULT_EFFORT, countConversationMessages, sortConversations, summarizeConversation } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 11;
+const CURRENT_VERSION = 12;
 
 interface ConversationFileV1 {
   version: 1;
@@ -165,7 +165,25 @@ interface ConversationFileV11 {
   title: string;
 }
 
-type ConversationFile = ConversationFileV11;
+interface ConversationFileV12 {
+  version: 12;
+  id: string;
+  provider: ProviderId;
+  model: ModelId;
+  effort: EffortLevel;
+  fastMode: boolean;
+  messages: StoredMessage[];
+  createdAt: number;
+  updatedAt: number;
+  lastContextTokens: number | null;
+  marked: boolean;
+  pinned: boolean;
+  sortOrder: number;
+  folderId: string | null;
+  title: string;
+}
+
+type ConversationFile = ConversationFileV12;
 
 // ── Migrations ──────────────────────────────────────────────────────
 
@@ -282,6 +300,15 @@ function migrateV10toV11(data: ConversationFileV10): ConversationFileV11 {
   };
 }
 
+/** v11 → v12: Add sidebar folder membership. */
+function migrateV11toV12(data: ConversationFileV11): ConversationFileV12 {
+  return {
+    ...data,
+    version: 12,
+    folderId: null,
+  };
+}
+
 function migrate(raw: Record<string, unknown>): ConversationFile {
   // Progressive migration — each function validates and upgrades one version.
   // `any` is intentional at this deserialization boundary: the data is parsed
@@ -298,6 +325,7 @@ function migrate(raw: Record<string, unknown>): ConversationFile {
   if (data.version < 9) data = migrateV8toV9(data);
   if (data.version < 10) data = migrateV9toV10(data);
   if (data.version < 11) data = migrateV10toV11(data);
+  if (data.version < 12) data = migrateV11toV12(data);
 
   if (data.version !== CURRENT_VERSION) {
     log("warn", `persistence: unknown schema version ${data.version}, attempting to load as v${CURRENT_VERSION}`);
@@ -313,6 +341,7 @@ const DATA_DIR = dataDir();
 const TRASH_DIR = trashDir();
 const TRASH_META = join(TRASH_DIR, "trash.json");
 const INDEX_FILE = join(DATA_DIR, "conversations-index.json");
+const FOLDERS_FILE = join(DATA_DIR, "folders.json");
 
 /** Reject IDs that contain path separators or parent-directory traversal sequences. */
 function assertSafeId(id: string): void {
@@ -382,12 +411,13 @@ function toFile(conv: Conversation): ConversationFile {
     marked: conv.marked,
     pinned: conv.pinned,
     sortOrder: conv.sortOrder,
+    folderId: conv.folderId ?? null,
     title: conv.title,
   };
 }
 
 function fromFile(file: ConversationFile): Conversation {
-  return {
+  const conv: Conversation = {
     id: file.id,
     provider: file.provider,
     model: file.model,
@@ -402,11 +432,13 @@ function fromFile(file: ConversationFile): Conversation {
     sortOrder: file.sortOrder,
     title: file.title,
   };
+  if (file.folderId != null) conv.folderId = file.folderId;
+  return conv;
 }
 
 // ── Summary index ───────────────────────────────────────────────────
 
-const INDEX_VERSION = 1;
+const INDEX_VERSION = 2;
 
 export interface ConversationIndexEntry extends PersistedConversationSummary {
   fileSize: number;
@@ -414,7 +446,7 @@ export interface ConversationIndexEntry extends PersistedConversationSummary {
 }
 
 interface ConversationIndexFile {
-  version: 1;
+  version: number;
   updatedAt: number;
   conversations: ConversationIndexEntry[];
 }
@@ -467,6 +499,41 @@ export function saveConversationIndex(entries: ConversationIndexEntry[]): void {
   const tmp = `${INDEX_FILE}.tmp`;
   writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
   renameSync(tmp, INDEX_FILE);
+}
+
+interface FoldersFile {
+  version: 1;
+  updatedAt: number;
+  folders: PersistedFolderSummary[];
+}
+
+export function loadFolders(): PersistedFolderSummary[] {
+  ensureDataDir();
+  try {
+    if (!existsSync(FOLDERS_FILE)) return [];
+    const parsed = JSON.parse(readFileSync(FOLDERS_FILE, "utf-8")) as FoldersFile;
+    if (parsed.version !== 1 || !Array.isArray(parsed.folders)) return [];
+    return parsed.folders.map((folder) => ({
+      id: String(folder.id),
+      name: String(folder.name || "Folder"),
+      parentId: folder.parentId ?? null,
+      createdAt: Number(folder.createdAt) || Date.now(),
+      updatedAt: Number(folder.updatedAt) || Date.now(),
+      pinned: folder.pinned === true,
+      sortOrder: Number(folder.sortOrder) || 0,
+    }));
+  } catch (err) {
+    log("warn", `persistence: failed to read folders: ${err instanceof Error ? err.message : err}`);
+    return [];
+  }
+}
+
+export function saveFolders(folders: PersistedFolderSummary[]): void {
+  ensureDataDir();
+  const file: FoldersFile = { version: 1, updatedAt: Date.now(), folders };
+  const tmp = `${FOLDERS_FILE}.tmp`;
+  writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
+  renameSync(tmp, FOLDERS_FILE);
 }
 
 /** Load summaries from the index, repairing stale/missing entries by parsing only those conversation files. */
@@ -641,6 +708,7 @@ export function loadAll(): ConversationSummary[] {
     streaming: false,
     unread: false,
     sortOrder: conv.sortOrder,
+    folderId: conv.folderId ?? null,
   }));
   sortConversations(summaries);
   return summaries;

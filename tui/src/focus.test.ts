@@ -3,7 +3,8 @@ import { handleFocusedKey } from "./focus";
 import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
 import { handleEvent } from "./events";
-import { buildDisplayRows } from "./sidebar";
+import { buildDisplayRows, renderSidebar, sidebarHitTest } from "./sidebar";
+import { theme } from "./theme";
 import { createInitialState } from "./state";
 import type { ConversationSummary, ProviderInfo } from "./messages";
 
@@ -403,6 +404,489 @@ describe("sidebar top shortcuts", () => {
     expect(state.cursorPos).toBe(2);
     expect(state.sidebar.open).toBe(false);
     expect(state.panelFocus).toBe("chat");
+  });
+});
+
+describe("sidebar folders", () => {
+  test("visual f opens a create-folder prompt for the selected conversations", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [
+      conversation("conv-a", 1),
+      conversation("conv-b", 2),
+      conversation("conv-c", 3),
+    ];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
+    state.sidebar.selectedId = "conv-a";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "v" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "j" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "f" }, state)).toEqual({ type: "handled" });
+    for (const ch of "Project") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
+
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
+      type: "create_folder",
+      name: "Project",
+      parentId: null,
+      items: [
+        { type: "conversation", id: "conv-a" },
+        { type: "conversation", id: "conv-b" },
+      ],
+    });
+    expect(state.sidebar.visualAnchor).toBeNull();
+  });
+
+  test("creating a folder does not move the sidebar into that new folder", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [
+      conversation("conv-a", 1),
+      conversation("conv-b", 2),
+    ];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
+    state.sidebar.selectedId = "conv-a";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "v" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "j" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "f" }, state)).toEqual({ type: "handled" });
+    for (const ch of "Project") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "enter" }, state).type).toBe("create_folder");
+
+    // Daemon response after folder creation: selected conversations now belong
+    // to the new folder, but the current sidebar folder should remain root.
+    handleEvent({
+      type: "conversation_moved",
+      folders: [{ id: "folder-project", name: "Project", parentId: null, createdAt: 3, updatedAt: 3, pinned: false, sortOrder: 1 }],
+      conversations: [
+        conversation("top", 0),
+        conversation("conv-a", 1, { folderId: "folder-project" }),
+        conversation("conv-b", 2, { folderId: "folder-project" }),
+      ],
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.sidebar.currentFolderId).toBeNull();
+    expect(buildDisplayRows(state.sidebar).some(row => row.item?.type === "folder" && row.item.id === "folder-project")).toBe(true);
+    const selected = state.sidebar.selectedItem as { type: string; id?: string } | null;
+    expect(selected).toEqual({ type: "folder", id: "folder-project" });
+  });
+
+  test("folder rename prompt starts empty instead of autofilling the current name", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [{ id: "folder-work", name: "Work", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 1 }];
+    state.sidebar.selectedItem = { type: "folder", id: "folder-work" };
+
+    expect(handleFocusedKey({ type: "char", char: "r" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.prompt).toMatchObject({ purpose: "rename_folder", input: "", cursorPos: 0, folderId: "folder-work" });
+    expect(stripAnsi(renderSidebar(state.sidebar, 8, true, null).join("\n"))).toContain("Rename: name");
+
+    for (const ch of "Projects") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "rename_folder", folderId: "folder-work", name: "Projects" });
+  });
+
+  test("move prompt autocompletes folder names with the promptline-style popup", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [
+      { id: "folder-archive", name: "Archive", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 1 },
+      { id: "folder-work", name: "Work", parentId: null, createdAt: 2, updatedAt: 2, pinned: false, sortOrder: 2 },
+    ];
+    state.sidebar.conversations = [conversation("conv-a", 3)];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
+    state.sidebar.selectedId = "conv-a";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "F" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.prompt?.autocomplete?.matches.map(match => match.name)).toContain("Work");
+    const renderedPrompt = stripAnsi(renderSidebar(state.sidebar, 10, true, null).join("\n"));
+    expect(renderedPrompt).toContain("root folder");
+    expect(renderedPrompt).toContain("top-level");
+    expect(renderedPrompt).not.toContain("top-level folder");
+    expect(renderedPrompt).toContain("Move: folder");
+
+    expect(handleFocusedKey({ type: "char", char: "W" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.prompt?.autocomplete?.matches.map(match => match.name)).toEqual(["Work"]);
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.prompt?.input).toBe("Work");
+
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
+      type: "move_sidebar_items",
+      items: [{ type: "conversation", id: "conv-a" }],
+      parentId: "folder-work",
+      before: undefined,
+    });
+  });
+
+  test("move prompt autocompletes nested folder paths and Enter resolves them", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [
+      { id: "folder-work", name: "Work", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 1 },
+      { id: "folder-clients", name: "Clients", parentId: "folder-work", createdAt: 2, updatedAt: 2, pinned: false, sortOrder: 2 },
+    ];
+    state.sidebar.conversations = [conversation("conv-a", 3)];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
+    state.sidebar.selectedId = "conv-a";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "F" }, state)).toEqual({ type: "handled" });
+    for (const ch of "Cli") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.prompt?.autocomplete?.matches.map(match => match.name)).toEqual(["Work/Clients"]);
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.prompt?.input).toBe("Work/Clients");
+
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
+      type: "move_sidebar_items",
+      items: [{ type: "conversation", id: "conv-a" }],
+      parentId: "folder-clients",
+      before: undefined,
+    });
+  });
+
+  test("moving a conversation into a visible folder focuses that folder", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [{ id: "folder-work", name: "Work", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 2 }];
+    state.sidebar.conversations = [conversation("conv-a", 1), conversation("top", 0)];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
+    state.sidebar.selectedId = "conv-a";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "F" }, state)).toEqual({ type: "handled" });
+    for (const ch of "Work") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
+      type: "move_sidebar_items",
+      items: [{ type: "conversation", id: "conv-a" }],
+      parentId: "folder-work",
+    });
+
+    handleEvent({
+      type: "conversation_moved",
+      folders: state.sidebar.folders,
+      conversations: [conversation("top", 0), conversation("conv-a", 1, { folderId: "folder-work" })],
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.sidebar.currentFolderId).toBeNull();
+    expect(state.sidebar.selectedItem as { type: string; id?: string } | null).toEqual({ type: "folder", id: "folder-work" });
+  });
+
+  test("moving a conversation out requests insertion immediately before the source folder", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.currentFolderId = "folder-work";
+    state.sidebar.folders = [{ id: "folder-work", name: "Work", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 2 }];
+    state.sidebar.conversations = [conversation("conv-a", 1, { folderId: "folder-work" })];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
+    state.sidebar.selectedId = "conv-a";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "<" }, state)).toEqual({
+      type: "move_sidebar_items",
+      items: [{ type: "conversation", id: "conv-a" }],
+      parentId: null,
+      before: { type: "folder", id: "folder-work" },
+    });
+  });
+
+  test("move prompt .. inserts immediately before the folder being moved out of", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.currentFolderId = "folder-clients";
+    state.sidebar.folders = [
+      { id: "folder-work", name: "Work", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 1 },
+      { id: "folder-clients", name: "Clients", parentId: "folder-work", createdAt: 2, updatedAt: 2, pinned: false, sortOrder: 2 },
+    ];
+    state.sidebar.conversations = [conversation("conv-a", 1, { folderId: "folder-clients" })];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
+    state.sidebar.selectedId = "conv-a";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "F" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "." }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "." }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
+      type: "move_sidebar_items",
+      items: [{ type: "conversation", id: "conv-a" }],
+      parentId: "folder-work",
+      before: { type: "folder", id: "folder-clients" },
+    });
+  });
+
+  test("move prompt / inserts immediately before the top-level source folder", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.currentFolderId = "folder-clients";
+    state.sidebar.folders = [
+      { id: "folder-work", name: "Work", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 1 },
+      { id: "folder-clients", name: "Clients", parentId: "folder-work", createdAt: 2, updatedAt: 2, pinned: false, sortOrder: 2 },
+    ];
+    state.sidebar.conversations = [conversation("conv-a", 1, { folderId: "folder-clients" })];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
+    state.sidebar.selectedId = "conv-a";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "F" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "/" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
+      type: "move_sidebar_items",
+      items: [{ type: "conversation", id: "conv-a" }],
+      parentId: null,
+      before: { type: "folder", id: "folder-work" },
+    });
+  });
+
+  test("visual e moves the selected sidebar block up", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [
+      conversation("conv-a", 1),
+      conversation("conv-b", 2),
+      conversation("conv-c", 3),
+      conversation("conv-d", 4),
+    ];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-b" };
+    state.sidebar.selectedId = "conv-b";
+    state.sidebar.selectedIndex = 1;
+
+    expect(handleFocusedKey({ type: "char", char: "v" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "j" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "e" }, state)).toEqual({
+      type: "move_sidebar_items",
+      items: [
+        { type: "conversation", id: "conv-b" },
+        { type: "conversation", id: "conv-c" },
+      ],
+      parentId: null,
+      before: { type: "conversation", id: "conv-a" },
+      preservePinned: true,
+    });
+    expect(state.sidebar.visualAnchor).toEqual({ type: "conversation", id: "conv-b" });
+  });
+
+  test("visual Shift+E moves the selected sidebar block down", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [
+      conversation("conv-a", 1),
+      conversation("conv-b", 2),
+      conversation("conv-c", 3),
+      conversation("conv-d", 4),
+      conversation("conv-e", 5),
+    ];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-b" };
+    state.sidebar.selectedId = "conv-b";
+    state.sidebar.selectedIndex = 1;
+
+    expect(handleFocusedKey({ type: "char", char: "v" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "j" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "E" }, state)).toEqual({
+      type: "move_sidebar_items",
+      items: [
+        { type: "conversation", id: "conv-b" },
+        { type: "conversation", id: "conv-c" },
+      ],
+      parentId: null,
+      before: { type: "conversation", id: "conv-e" },
+      preservePinned: true,
+      placement: undefined,
+    });
+  });
+
+  test("visual Shift+E can move the selected sidebar block to the bottom", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [
+      conversation("conv-a", 1),
+      conversation("conv-b", 2),
+      conversation("conv-c", 3),
+      conversation("conv-d", 4),
+      conversation("conv-e", 5),
+    ];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-c" };
+    state.sidebar.selectedId = "conv-c";
+    state.sidebar.selectedIndex = 2;
+
+    expect(handleFocusedKey({ type: "char", char: "v" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "j" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "E" }, state)).toEqual({
+      type: "move_sidebar_items",
+      items: [
+        { type: "conversation", id: "conv-c" },
+        { type: "conversation", id: "conv-d" },
+      ],
+      parentId: null,
+      before: undefined,
+      preservePinned: true,
+      placement: "bottom",
+    });
+  });
+
+  test("pending visual dd renders all selected conversations as delete-pending", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [
+      conversation("conv-a", 1),
+      conversation("conv-b", 2),
+      conversation("conv-c", 3),
+    ];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
+    state.sidebar.selectedId = "conv-a";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "v" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "j" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({ type: "handled" });
+
+    const rows = renderSidebar(state.sidebar, 8, true, null);
+    const deleteRows = rows.filter(row => row.includes(theme.error));
+    expect(deleteRows).toHaveLength(2);
+    expect(stripAnsi(deleteRows[0])).toContain("conv-a");
+    expect(stripAnsi(deleteRows[1])).toContain("conv-b");
+  });
+
+  test("visual dd deletes all selected conversations", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [
+      conversation("conv-a", 1),
+      conversation("conv-b", 2),
+      conversation("conv-c", 3),
+    ];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
+    state.sidebar.selectedId = "conv-a";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "v" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "j" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({
+      type: "delete_conversations",
+      convIds: ["conv-a", "conv-b"],
+    });
+    expect(state.sidebar.conversations.map(c => c.id)).toEqual(["conv-c"]);
+    expect(state.sidebar.visualAnchor).toBeNull();
+  });
+
+  test("dd on a folder waits for the server update before moving the cursor to a nearby item", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [
+      { id: "folder-a", name: "A", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 1 },
+      { id: "folder-b", name: "B", parentId: null, createdAt: 2, updatedAt: 2, pinned: false, sortOrder: 2 },
+      { id: "folder-c", name: "C", parentId: null, createdAt: 3, updatedAt: 3, pinned: false, sortOrder: 3 },
+    ];
+    state.sidebar.selectedItem = { type: "folder", id: "folder-b" };
+
+    expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({ type: "delete_folder", folderId: "folder-b" });
+    expect(state.sidebar.selectedItem).toEqual({ type: "folder", id: "folder-b" });
+
+    handleEvent({
+      type: "conversation_moved",
+      folders: [
+        { id: "folder-a", name: "A", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 1 },
+        { id: "folder-c", name: "C", parentId: null, createdAt: 3, updatedAt: 3, pinned: false, sortOrder: 3 },
+      ],
+      conversations: [],
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.sidebar.selectedItem).toEqual({ type: "folder", id: "folder-c" });
+  });
+
+  test("dd on a folder with children focuses the first unwrapped child after the server update", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [
+      { id: "folder-b", name: "B", parentId: null, createdAt: 2, updatedAt: 2, pinned: false, sortOrder: 2 },
+      { id: "folder-c", name: "C", parentId: null, createdAt: 3, updatedAt: 3, pinned: false, sortOrder: 3 },
+    ];
+    state.sidebar.conversations = [conversation("conv-child", 1, { folderId: "folder-b" })];
+    state.sidebar.selectedItem = { type: "folder", id: "folder-b" };
+
+    expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({ type: "delete_folder", folderId: "folder-b" });
+    expect(state.sidebar.selectedItem).toEqual({ type: "folder", id: "folder-b" });
+    expect(state.sidebar.pendingFocusItem).toEqual({ type: "conversation", id: "conv-child" });
+
+    handleEvent({
+      type: "conversation_moved",
+      folders: [{ id: "folder-c", name: "C", parentId: null, createdAt: 3, updatedAt: 3, pinned: false, sortOrder: 3 }],
+      conversations: [conversation("conv-child", 1)],
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.sidebar.selectedItem as { type: string; id?: string } | null).toEqual({ type: "conversation", id: "conv-child" });
+    expect(state.sidebar.pendingFocusItem).toBeNull();
+  });
+
+  test("sidebar hit testing returns folders as sidebar items", () => {
+    const state = createInitialState();
+    state.sidebar.folders = [
+      { id: "folder-a", name: "A", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 1 },
+    ];
+    state.sidebar.conversations = [conversation("conv-a", 2)];
+
+    expect(sidebarHitTest(3, 10, state.sidebar)).toEqual({ type: "folder", id: "folder-a" });
+    expect(sidebarHitTest(4, 10, state.sidebar)).toEqual({ type: "conversation", id: "conv-a" });
+  });
+
+  test("l enters a folder and h leaves back to the parent", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [{
+      id: "folder-1",
+      name: "Work",
+      parentId: null,
+      createdAt: 1,
+      updatedAt: 1,
+      pinned: false,
+      sortOrder: 1,
+    }];
+    state.sidebar.conversations = [conversation("inside", 1, { folderId: "folder-1" })];
+    state.sidebar.selectedItem = { type: "folder", id: "folder-1" };
+
+    expect(handleFocusedKey({ type: "char", char: "l" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.currentFolderId).toBe("folder-1");
+    expect(buildDisplayRows(state.sidebar).some(row => row.item?.type === "up")).toBe(true);
+
+    expect(handleFocusedKey({ type: "char", char: "h" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.currentFolderId).toBeNull();
+    expect(state.sidebar.selectedItem).toEqual({ type: "folder", id: "folder-1" });
   });
 });
 

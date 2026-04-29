@@ -6,7 +6,7 @@
 
 import { connect, type Socket } from "net";
 import { existsSync } from "fs";
-import type { Command, Event, QueueTiming, TrimMode } from "./protocol";
+import type { Command, Event, MoveSidebarItemsOptions, QueueTiming, TrimMode, SidebarItemRef } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 
@@ -114,8 +114,9 @@ export class DaemonClient {
     effort?: EffortLevel,
     fastMode?: boolean,
     initialMessage?: { text: string; startedAt: number; images?: ImageAttachment[] },
+    folderId?: string | null,
   ): void {
-    this.send({ type: "new_conversation", provider, model, title, effort, fastMode, initialMessage });
+    this.send({ type: "new_conversation", provider, model, title, effort, fastMode, initialMessage, folderId });
   }
 
   subscribe(convId: string): void {
@@ -184,6 +185,30 @@ export class DaemonClient {
 
   renameConversation(convId: string, title: string): void {
     this.send({ type: "rename_conversation", convId, title });
+  }
+
+  createFolder(name: string, parentId: string | null, items: SidebarItemRef[]): void {
+    this.send({ type: "create_folder", name, parentId, items });
+  }
+
+  renameFolder(folderId: string, name: string): void {
+    this.send({ type: "rename_folder", folderId, name });
+  }
+
+  pinFolder(folderId: string, pinned: boolean): void {
+    this.send({ type: "pin_folder", folderId, pinned });
+  }
+
+  moveSidebarItem(item: SidebarItemRef, direction: "up" | "down"): void {
+    this.send({ type: "move_sidebar_item", item, direction });
+  }
+
+  moveSidebarItems(items: SidebarItemRef[], parentId: string | null, before?: SidebarItemRef, options: MoveSidebarItemsOptions = {}): void {
+    this.send({ type: "move_sidebar_items", items, parentId, before, preservePinned: options.preservePinned, placement: options.placement });
+  }
+
+  deleteFolder(folderId: string): void {
+    this.send({ type: "delete_folder", folderId, mode: "unwrap" });
   }
 
   generateTitle(convId: string): void {
