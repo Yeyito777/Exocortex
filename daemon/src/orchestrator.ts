@@ -686,7 +686,9 @@ async function orchestrateAssistantTurn(
     const interleavedMessages = interleaveRetryMarkers(storedMessages, retryMarkers);
     conv.messages.push(...interleavedMessages);
     conv.updatedAt = Date.now();
-    convStore.bumpToTop(convId);
+    // Do not bump on completion. The conversation was already brought to the
+    // top when the user/queued message started; bumping again here can race with
+    // manual sidebar reordering performed while the stream is ending.
 
     server.sendToSubscribers(convId, {
       type: "message_complete",
