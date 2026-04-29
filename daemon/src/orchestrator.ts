@@ -277,7 +277,15 @@ async function orchestrateAssistantTurn(
 
   // Broadcast sidebar update (streaming indicator)
   broadcastConversationUpdated(server, convId);
-  server.sendToSubscribers(convId, { type: "streaming_started", convId, provider: conv.provider, model: conv.model, startedAt });
+  server.sendToSubscribers(convId, {
+    type: "streaming_started",
+    convId,
+    provider: conv.provider,
+    model: conv.model,
+    streamSeq: convStore.nextStreamSeq(convId),
+    snapshotKind: "start",
+    startedAt,
+  });
 
   // Extract per-conversation system instructions (if present)
   const systemInstructionsText = convStore.getSystemInstructions(convId);
@@ -371,6 +379,8 @@ async function orchestrateAssistantTurn(
       convId,
       provider: snapshot.provider,
       model: snapshot.model,
+      streamSeq: convStore.nextStreamSeq(convId),
+      snapshotKind: "heartbeat",
       startedAt: pendingAI.metadata?.startedAt ?? startedAt,
       blocks: pendingAI.blocks,
       tokens: pendingAI.metadata?.tokens ?? 0,
@@ -425,7 +435,7 @@ async function orchestrateAssistantTurn(
   const callbacks: AgentCallbacks = {
     onBlockStart(blockType) {
       convStore.touchActivity(convId);
-      server.sendToSubscribers(convId, { type: "block_start", convId, blockType });
+      server.sendToSubscribers(convId, { type: "block_start", convId, streamSeq: convStore.nextStreamSeq(convId), blockType });
       if (blockType === "text") {
         partialContent.push({ type: "text", text: "" });
       } else if (blockType === "thinking") {
@@ -438,7 +448,7 @@ async function orchestrateAssistantTurn(
       convStore.resetChunkCounter(convId);
     },
     onTextChunk(chunk) {
-      server.sendToSubscribers(convId, { type: "text_chunk", convId, text: chunk });
+      server.sendToSubscribers(convId, { type: "text_chunk", convId, streamSeq: convStore.nextStreamSeq(convId), text: chunk });
       const block = ensurePartialContentTail("text");
       if (block.type === "text") block.text += chunk;
       convStore.appendToStreamingBlock(convId, "text", chunk);
@@ -447,7 +457,7 @@ async function orchestrateAssistantTurn(
       if (convStore.onChunk(convId)) convStore.touchActivity(convId);
     },
     onThinkingChunk(chunk) {
-      server.sendToSubscribers(convId, { type: "thinking_chunk", convId, text: chunk });
+      server.sendToSubscribers(convId, { type: "thinking_chunk", convId, streamSeq: convStore.nextStreamSeq(convId), text: chunk });
       const block = ensurePartialContentTail("thinking");
       if (block.type === "thinking") block.thinking += chunk;
       convStore.appendToStreamingBlock(convId, "thinking", chunk);
@@ -458,7 +468,7 @@ async function orchestrateAssistantTurn(
       convStore.touchActivity(convId);
       replacePartialContentFromBlocks(blocks);
       convStore.replaceCurrentStreamingBlocks(convId, syncedBlocks);
-      server.sendToSubscribers(convId, { type: "streaming_sync", convId, blocks: syncedBlocks });
+      server.sendToSubscribers(convId, { type: "streaming_sync", convId, streamSeq: convStore.nextStreamSeq(convId), blocks: syncedBlocks });
     },
     onSignature(signature) {
       for (let i = partialContent.length - 1; i >= 0; i--) {
@@ -472,6 +482,7 @@ async function orchestrateAssistantTurn(
       convStore.touchActivity(convId);
       server.sendToSubscribers(convId, {
         type: "tool_call", convId,
+        streamSeq: convStore.nextStreamSeq(convId),
         toolCallId: block.toolCallId,
         toolName: block.toolName,
         input: block.input,
@@ -489,6 +500,7 @@ async function orchestrateAssistantTurn(
       convStore.touchActivity(convId);
       server.sendToSubscribers(convId, {
         type: "tool_result", convId,
+        streamSeq: convStore.nextStreamSeq(convId),
         toolCallId: block.toolCallId,
         toolName: block.toolName,
         output: block.output,
@@ -504,11 +516,11 @@ async function orchestrateAssistantTurn(
     },
     onTokensUpdate(tokens) {
       convStore.setStreamingTokens(convId, tokens);
-      server.sendToSubscribers(convId, { type: "tokens_update", convId, tokens });
+      server.sendToSubscribers(convId, { type: "tokens_update", convId, streamSeq: convStore.nextStreamSeq(convId), tokens });
     },
     onContextUpdate(contextTokens) {
       conv.lastContextTokens = contextTokens;
-      server.sendToSubscribers(convId, { type: "context_update", convId, contextTokens });
+      server.sendToSubscribers(convId, { type: "context_update", convId, streamSeq: convStore.nextStreamSeq(convId), contextTokens });
     },
     onHeaders(headers) {
       convStore.touchActivity(convId);
@@ -529,6 +541,7 @@ async function orchestrateAssistantTurn(
       server.sendToSubscribers(convId, {
         type: "stream_retry",
         convId,
+        streamSeq: convStore.nextStreamSeq(convId),
         attempt,
         maxAttempts,
         errorMessage,
@@ -565,6 +578,7 @@ async function orchestrateAssistantTurn(
         server.sendToSubscribers(convId, {
           type: "user_message",
           convId,
+          streamSeq: convStore.nextStreamSeq(convId),
           text: qm.text,
           startedAt: injectedStartedAt,
           images: qm.images,
@@ -594,6 +608,7 @@ async function orchestrateAssistantTurn(
         server.sendToSubscribers(convId, {
           type: "history_updated",
           convId,
+          streamSeq: convStore.nextStreamSeq(convId),
           entries: displayData.entries,
           contextTokens: displayData.contextTokens,
           toolOutputsIncluded: displayData.toolOutputsIncluded,
@@ -676,6 +691,7 @@ async function orchestrateAssistantTurn(
     server.sendToSubscribers(convId, {
       type: "message_complete",
       convId,
+      streamSeq: convStore.nextStreamSeq(convId),
       blocks: result.blocks,
       endedAt,
       tokens: result.tokens,
@@ -779,18 +795,18 @@ async function orchestrateAssistantTurn(
       const sysText = "✗ Timed out (stale stream)";
       outcomeError = sysText;
       conv.messages.push({ role: "system", content: sysText, metadata: null });
-      server.sendToSubscribers(convId, { type: "system_message", convId, text: sysText, color: "error" });
+      server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text: sysText, color: "error" });
     } else if (isAbort) {
       const sysText = "✗ Interrupted";
       outcomeError = sysText;
       conv.messages.push({ role: "system", content: sysText, metadata: null });
-      server.sendToSubscribers(convId, { type: "system_message", convId, text: sysText, color: "error" });
+      server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text: sysText, color: "error" });
     } else {
       const errMsg = err instanceof Error ? err.message : String(err);
       const sysText = `✗ ${errMsg}`;
       outcomeError = sysText;
       conv.messages.push({ role: "system", content: sysText, metadata: null });
-      server.sendToSubscribers(convId, { type: "system_message", convId, text: sysText, color: "error" });
+      server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text: sysText, color: "error" });
     }
     const endedAt = Date.now();
     outcome = {
@@ -805,12 +821,18 @@ async function orchestrateAssistantTurn(
     };
   } finally {
     stopStreamingSnapshotHeartbeat();
+    const stoppedStreamSeq = convStore.nextStreamSeq(convId);
     convStore.clearActiveJob(convId);
     convStore.clearCurrentStreamingBlocks(convId);
     convStore.resetChunkCounter(convId);
     convStore.markDirty(convId);
     convStore.flush(convId);
-    server.sendToSubscribers(convId, { type: "streaming_stopped", convId, persistedBlocks: abortPersistedBlocks });
+    server.sendToSubscribers(convId, {
+      type: "streaming_stopped",
+      convId,
+      streamSeq: stoppedStreamSeq,
+      persistedBlocks: abortPersistedBlocks,
+    });
     // Broadcast updated summary (streaming=false, possibly unread=true)
     broadcastConversationUpdated(server, convId);
 

@@ -663,6 +663,8 @@ export function createHandler(server: DaemonServer) {
             convId: catchupData.convId,
             provider: catchupData.provider,
             model: catchupData.model,
+            streamSeq: convStore.getStreamSeq(cmd.convId),
+            snapshotKind: "catchup",
             startedAt: pendingAI.metadata?.startedAt ?? Date.now(),
             blocks: pendingAI.blocks,
             tokens: pendingAI.metadata?.tokens ?? 0,

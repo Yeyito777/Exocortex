@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { appendToStreamingBlock, clearActiveJob, getCurrentStreamingBlocks, initStreamingState, setActiveJob } from "./streaming";
+import { appendToStreamingBlock, clearActiveJob, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, nextStreamSeq, setActiveJob } from "./streaming";
 
 const IDS: string[] = [];
 
@@ -11,6 +11,24 @@ function mkId(suffix: string): string {
 
 beforeEach(() => {
   for (const id of IDS.splice(0)) clearActiveJob(id);
+});
+
+describe("stream event sequence", () => {
+  test("increments during an active stream and resets on the next active job", () => {
+    const id = mkId("seq");
+    setActiveJob(id, new AbortController(), 1);
+
+    expect(getStreamSeq(id)).toBe(0);
+    expect(nextStreamSeq(id)).toBe(1);
+    expect(nextStreamSeq(id)).toBe(2);
+    expect(getStreamSeq(id)).toBe(2);
+
+    clearActiveJob(id);
+    expect(getStreamSeq(id)).toBe(0);
+
+    setActiveJob(id, new AbortController(), 2);
+    expect(nextStreamSeq(id)).toBe(1);
+  });
 });
 
 describe("appendToStreamingBlock", () => {

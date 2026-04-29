@@ -32,6 +32,8 @@ const streamingDisplayMessages = new Map<string, StoredMessage[]>();
 const streamingStartedAt = new Map<string, number>();
 /** Accumulated output token count per streaming job (for late-joining clients). */
 const streamingTokens = new Map<string, number>();
+/** Monotonic event sequence per active stream, used by clients to diagnose missed IPC events. */
+const streamSequences = new Map<string, number>();
 /** Messages queued for delivery during or after streaming. */
 const messageQueues = new Map<string, QueuedMessage[]>();
 /** Last meaningful activity timestamp per streaming job (for stale stream detection). */
@@ -54,6 +56,7 @@ export function isStreaming(convId: string): boolean {
 export function setActiveJob(convId: string, ac: AbortController, startedAt: number): void {
   activeJobs.set(convId, ac);
   streamingStartedAt.set(convId, startedAt);
+  streamSequences.set(convId, 0);
   lastActivityAt.set(convId, startedAt);
 }
 
@@ -66,6 +69,7 @@ export function clearActiveJob(convId: string): void {
   streamingBlocks.delete(convId);
   streamingStartedAt.delete(convId);
   streamingTokens.delete(convId);
+  streamSequences.delete(convId);
   streamingDisplayMessages.delete(convId);
   lastActivityAt.delete(convId);
   pausedStreams.delete(convId);
@@ -85,6 +89,20 @@ export function setStreamingTokens(convId: string, tokens: number): void {
 /** Get the accumulated output token count for an in-flight stream. */
 export function getStreamingTokens(convId: string): number {
   return streamingTokens.get(convId) ?? 0;
+}
+
+// ── Streaming event sequence numbers (diagnostics) ─────────────────
+
+/** Increment and return the stream event sequence for an active conversation. */
+export function nextStreamSeq(convId: string): number {
+  const next = (streamSequences.get(convId) ?? 0) + 1;
+  streamSequences.set(convId, next);
+  return next;
+}
+
+/** Return the current stream event sequence without incrementing it. */
+export function getStreamSeq(convId: string): number {
+  return streamSequences.get(convId) ?? 0;
 }
 
 // ── Activity tracking (for stale stream detection) ──────────────────

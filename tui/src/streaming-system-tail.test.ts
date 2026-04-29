@@ -514,6 +514,45 @@ describe("streaming system-message tail", () => {
     });
   });
 
+  test("tracks daemon stream sequence numbers and treats catch-up snapshots as non-incrementing baselines", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    const daemon = { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} };
+
+    handleEvent({
+      type: "streaming_started",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      streamSeq: 1,
+      snapshotKind: "start",
+      startedAt: 1,
+    }, state, daemon);
+    expect(state.lastStreamSeqByConv["conv-1"]).toBe(1);
+
+    handleEvent({ type: "text_chunk", convId: "conv-1", streamSeq: 2, text: "hello" }, state, daemon);
+    expect(state.lastStreamSeqByConv["conv-1"]).toBe(2);
+
+    handleEvent({
+      type: "streaming_started",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.4",
+      streamSeq: 2,
+      snapshotKind: "catchup",
+      startedAt: 1,
+      blocks: [{ type: "text", text: "hello" }],
+      tokens: 1,
+    }, state, daemon);
+    expect(state.lastStreamSeqByConv["conv-1"]).toBe(2);
+
+    handleEvent({ type: "tokens_update", convId: "conv-1", streamSeq: 3, tokens: 9 }, state, daemon);
+    expect(state.lastStreamSeqByConv["conv-1"]).toBe(3);
+
+    handleEvent({ type: "streaming_stopped", convId: "conv-1", streamSeq: 4 }, state, daemon);
+    expect(state.lastStreamSeqByConv["conv-1"]).toBeUndefined();
+  });
+
   test("clears buffered notices when switching to a different conversation", () => {
     const { state, render } = plainLines();
     state.providerRegistry = structuredClone(providers);

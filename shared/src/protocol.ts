@@ -332,11 +332,17 @@ export interface ConversationCreatedEvent {
   fastMode: boolean;
 }
 
+export type StreamingSnapshotKind = "start" | "catchup" | "heartbeat";
+
 export interface StreamingStartedEvent {
   type: "streaming_started";
   convId: string;
   provider: ProviderId;
   model: ModelId;
+  /** Monotonic daemon event sequence for the active stream (diagnostics). */
+  streamSeq?: number;
+  /** Why this streaming_started event was emitted. Omitted by older daemons. */
+  snapshotKind?: StreamingSnapshotKind;
   /** When the AI started processing. Lets late-joining clients show the correct elapsed time. */
   startedAt: number;
   /** Accumulated blocks so far — included for late-joining clients and periodic catch-up snapshots. */
@@ -348,6 +354,8 @@ export interface StreamingStartedEvent {
 export interface StreamingStoppedEvent {
   type: "streaming_stopped";
   convId: string;
+  /** Monotonic daemon event sequence for the active stream (diagnostics). */
+  streamSeq?: number;
   /** On abort/error: the blocks that were safe to persist. TUI replaces its pending blocks with these. */
   persistedBlocks?: Block[];
 }
@@ -355,18 +363,24 @@ export interface StreamingStoppedEvent {
 export interface BlockStartEvent {
   type: "block_start";
   convId: string;
+  /** Monotonic daemon event sequence for the active stream (diagnostics). */
+  streamSeq?: number;
   blockType: "text" | "thinking";
 }
 
 export interface TextChunkEvent {
   type: "text_chunk";
   convId: string;
+  /** Monotonic daemon event sequence for the active stream (diagnostics). */
+  streamSeq?: number;
   text: string;
 }
 
 export interface ThinkingChunkEvent {
   type: "thinking_chunk";
   convId: string;
+  /** Monotonic daemon event sequence for the active stream (diagnostics). */
+  streamSeq?: number;
   text: string;
 }
 
@@ -374,12 +388,16 @@ export interface ThinkingChunkEvent {
 export interface StreamingSyncEvent {
   type: "streaming_sync";
   convId: string;
+  /** Monotonic daemon event sequence for the active stream (diagnostics). */
+  streamSeq?: number;
   blocks: Block[];
 }
 
 export interface ToolCallEvent {
   type: "tool_call";
   convId: string;
+  /** Monotonic daemon event sequence for the active stream (diagnostics). */
+  streamSeq?: number;
   toolCallId: string;
   toolName: string;
   input: Record<string, unknown>;
@@ -389,6 +407,8 @@ export interface ToolCallEvent {
 export interface ToolResultEvent {
   type: "tool_result";
   convId: string;
+  /** Monotonic daemon event sequence for the active stream (diagnostics). */
+  streamSeq?: number;
   toolCallId: string;
   toolName: string;
   output: string;
@@ -398,18 +418,24 @@ export interface ToolResultEvent {
 export interface TokensUpdateEvent {
   type: "tokens_update";
   convId: string;
+  /** Monotonic daemon event sequence for the active stream (diagnostics). */
+  streamSeq?: number;
   tokens: number;
 }
 
 export interface ContextUpdateEvent {
   type: "context_update";
   convId: string;
+  /** Monotonic daemon event sequence for the active stream (diagnostics). */
+  streamSeq?: number;
   contextTokens: number;
 }
 
 export interface MessageCompleteEvent {
   type: "message_complete";
   convId: string;
+  /** Monotonic daemon event sequence for the active stream (diagnostics). */
+  streamSeq?: number;
   blocks: Block[];
   endedAt: number;
   tokens: number;
@@ -511,6 +537,8 @@ export interface ConversationMovedEvent {
 export interface UserMessageEvent {
   type: "user_message";
   convId: string;
+  /** Monotonic daemon event sequence when emitted inside an active stream (diagnostics). */
+  streamSeq?: number;
   text: string;
   /** Client-originated timestamp when available; daemon-generated for queued sends. */
   startedAt?: number;
@@ -520,6 +548,8 @@ export interface UserMessageEvent {
 export interface StreamRetryEvent {
   type: "stream_retry";
   convId: string;
+  /** Monotonic daemon event sequence for the active stream (diagnostics). */
+  streamSeq?: number;
   attempt: number;
   maxAttempts: number;
   errorMessage: string;
@@ -532,6 +562,8 @@ export interface StreamRetryEvent {
 export interface SystemMessageEvent {
   type: "system_message";
   convId: string;
+  /** Monotonic daemon event sequence when emitted inside an active stream (diagnostics). */
+  streamSeq?: number;
   text: string;
   color?: string;
 }
@@ -566,6 +598,8 @@ export interface ToolsAvailableEvent {
 export interface HistoryUpdatedEvent {
   type: "history_updated";
   convId: string;
+  /** Monotonic daemon event sequence when emitted inside an active stream (diagnostics). */
+  streamSeq?: number;
   /** The full message history after modification (same format as conversation_loaded). */
   entries: DisplayEntry[];
   /** Updated input token count. */

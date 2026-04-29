@@ -153,6 +153,8 @@ export interface RenderState {
    * the correct history position instead of appending a second assistant turn.
    */
   pendingAICommittedIndex: number | null;
+  /** Last daemon streamSeq observed per conversation, used to diagnose missed stream events. */
+  lastStreamSeqByConv: Record<string, number | undefined>;
   /** Available tools reported by the daemon on connect. */
   toolRegistry: ToolDisplayInfo[];
   /** Available providers and models reported by the daemon on connect. */
@@ -379,6 +381,7 @@ export function createInitialState(): RenderState {
     pendingGenerateTitleOnCreate: false,
     streamingTailMessages: [],
     pendingAICommittedIndex: null,
+    lastStreamSeqByConv: {},
     toolRegistry: [],
     providerRegistry: [],
     externalToolStyles: [],

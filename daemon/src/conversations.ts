@@ -21,7 +21,7 @@ import { normalizeEffort } from "./providers/registry";
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
   isStreaming, setActiveJob, getActiveJob, clearActiveJob, getStreamingStartedAt,
-  setStreamingTokens, getStreamingTokens,
+  setStreamingTokens, getStreamingTokens, nextStreamSeq, getStreamSeq,
   touchActivity, pauseActivity, resumeActivity,
   resetChunkCounter,
   initStreamingState, getCurrentStreamingBlocks, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, getStreamingDisplayMessages,
