@@ -19,6 +19,7 @@ import {
   handleConversationsList,
   handleConversationUpdated,
 } from "./events/conversations";
+import { logDiskSyncAssistantDiff } from "./events/disk-sync-diagnostics";
 import { pushDisplayEntries } from "./events/display";
 import { CONV_SCOPED, observeStreamSeq } from "./events/stream-sequence";
 import {
@@ -166,6 +167,11 @@ export function handleEvent(
       // Context tool modified historical messages — replace committed messages
       // but preserve pendingAI (the active streaming response). Flush buffered
       // system messages — they reference pre-modification state.
+      logDiskSyncAssistantDiff("history_updated", event.convId, state, {
+        entries: event.entries,
+        pendingAI: state.pendingAI,
+        toolOutputsIncluded: event.toolOutputsIncluded,
+      });
       state.messages = [];
       clearStreamingTailMessages(state);
       state.contextTokens = event.contextTokens;

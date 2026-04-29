@@ -16,6 +16,7 @@ import {
   resetToolOutputState,
   setLoadedConversationToolOutputState,
 } from "../state";
+import { logDiskSyncAssistantDiff } from "./disk-sync-diagnostics";
 import { pushDisplayEntries } from "./display";
 import { hydratePendingAIFromSnapshot } from "./pending-ai";
 import { fallbackProvider } from "./provider";
@@ -117,6 +118,11 @@ export function handleConversationLoaded(
   daemon: DaemonActions,
 ): void {
   const previousConvId = state.convId;
+  logDiskSyncAssistantDiff("conversation_loaded", event.convId, state, {
+    entries: event.entries,
+    pendingAI: event.pendingAI ?? null,
+    toolOutputsIncluded: event.toolOutputsIncluded,
+  });
   const preserveLivePendingAI = previousConvId === event.convId && state.pendingAI !== null;
   const preservedPendingAIBlocks = preserveLivePendingAI
     ? subtractLoadedAssistantPrefix(state.pendingAI!.blocks, event.entries)
