@@ -137,6 +137,41 @@ describe("streaming system-message tail", () => {
     expect(state.messages[1]).toMatchObject({ role: "system", text: "✗ Timed out (stale stream)" });
   });
 
+  test("does not render transient metadata-only assistant state beside an interrupt", () => {
+    const { state, render } = plainLines();
+
+    handleEvent({ type: "system_message", convId: "conv-1", text: "✗ Interrupted", color: "error" }, state, null as never);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({ role: "system", text: "✗ Interrupted" });
+    expect(state.pendingAI).not.toBeNull();
+
+    const interruptedLines = render();
+    expect(interruptedLines).toContain("  ✗ Interrupted");
+    expect(interruptedLines.some(line => line.includes("tokens"))).toBe(false);
+
+    handleEvent({
+      type: "streaming_stopped",
+      convId: "conv-1",
+      persistedBlocks: [],
+    }, state, null as never);
+
+    expect(state.pendingAI).toBeNull();
+    expect(render()).toEqual(interruptedLines);
+  });
+
+  test("does not commit an empty assistant block as a metadata-only interrupt", () => {
+    const { state, render } = plainLines();
+    state.pendingAI!.blocks.push({ type: "text", text: "" });
+
+    handleEvent({ type: "system_message", convId: "conv-1", text: "✗ Interrupted", color: "error" }, state, null as never);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({ role: "system", text: "✗ Interrupted" });
+    expect(state.pendingAI!.blocks).toEqual([]);
+    expect(render()).toEqual(["  ✗ Interrupted"]);
+  });
+
   test("hydrates the live assistant snapshot from conversation_loaded", () => {
     const state = createInitialState();
     state.convId = "conv-1";

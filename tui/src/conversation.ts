@@ -17,6 +17,10 @@ import { wordWrap, type WrapResult } from "./textwrap";
 
 export { wordWrap, type WrapResult } from "./textwrap";
 
+function isTerminalStreamNotice(msg: Message | undefined): boolean {
+  return msg?.role === "system" && (msg.text.startsWith("✗") || msg.color === theme.error);
+}
+
 // ── Message boundary tracking ───────────────────────────────────────
 
 /** Row range for a single message in the rendered history lines. */
@@ -204,13 +208,14 @@ export function buildMessageLines(
     for (const block of state.pendingAI.blocks) {
       pushBlock(block, "assistant_block", renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
     }
-    // Terminal stream notices (abort/error/watchdog) commit the visible assistant
-    // blocks before streaming_stopped arrives, but keep pendingAI around so the
-    // final persisted blocks can reconcile into that same history slot. During
-    // that short interval pendingAI usually has no blocks; rendering its live
-    // metadata would add a duplicate transient line below "✗ Interrupted", then
-    // remove it on streaming_stopped, causing a visible scroll jump.
-    const shouldRenderPendingMetadata = state.pendingAI.blocks.length > 0 || state.pendingAICommittedIndex === null;
+    // Terminal stream notices (abort/error/watchdog) arrive just before
+    // streaming_stopped. Keep pendingAI around for reconciliation, but do not
+    // render metadata-only pending state next to the notice: if no assistant
+    // content was persisted, that line disappears one frame later and flickers.
+    const terminalNoticePendingStop = isTerminalStreamNotice(state.messages[state.messages.length - 1]);
+    const shouldRenderPendingMetadata = state.pendingAI.blocks.length > 0 || (
+      state.pendingAICommittedIndex === null && !terminalNoticePendingStop
+    );
     const metadataLines = shouldRenderPendingMetadata ? renderMetadata(state.pendingAI.metadata) : [];
     if (metadataLines.length > 0) trimTrailingBlankAssistantContent(start);
     const contentEnd = lines.length;

@@ -68,14 +68,28 @@ export function truncateToCompletedRounds(msg: AIMessage): void {
  * Used when a mid-stream event (retry, queued user message) needs
  * to appear inline between completed and upcoming blocks.
  */
+function hasVisibleBlockContent(block: Block): boolean {
+  if (block.type === "text" || block.type === "thinking") return block.text.trim().length > 0;
+  return true;
+}
+
 export function splitPendingAI(msg: AIMessage): AIMessage | null {
   if (msg.blocks.length === 0) return null;
+
+  const blocks = msg.blocks;
+  msg.blocks = [];
+
+  // A stream can be interrupted after metadata exists but before any visible
+  // assistant content arrives (or after only an empty block_start). Do not commit
+  // a metadata-only assistant turn in that case; the following terminal notice
+  // is the whole visible outcome.
+  if (!blocks.some(hasVisibleBlockContent)) return null;
+
   const finalized: AIMessage = {
     role: "assistant",
-    blocks: msg.blocks,
+    blocks,
     metadata: null,
   };
-  msg.blocks = [];
   return finalized;
 }
 
