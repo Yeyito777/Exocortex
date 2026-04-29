@@ -76,6 +76,8 @@ export interface AbortCommand {
   type: "abort";
   reqId?: string;
   convId: string;
+  /** Optional machine-readable reason used by the daemon to render a clearer system message. */
+  reason?: "user" | "daemon-restart";
 }
 
 export interface SubscribeCommand {

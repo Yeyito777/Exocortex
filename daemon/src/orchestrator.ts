@@ -731,6 +731,7 @@ async function orchestrateAssistantTurn(
     const isAbort = ac.signal.aborted;
 
     const isWatchdog = isAbort && ac.signal.reason === "watchdog";
+    const isDaemonRestart = isAbort && ac.signal.reason === "daemon-restart";
 
     if (!isAbort) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -740,6 +741,8 @@ async function orchestrateAssistantTurn(
       // below, and sending both makes the TUI render the same failure twice.
     } else if (isWatchdog) {
       log("warn", `orchestrator: stream timed out for ${convId} (watchdog)`);
+    } else if (isDaemonRestart) {
+      log("info", `orchestrator: stream interrupted for daemon restart for ${convId}`);
     } else {
       log("info", `orchestrator: stream interrupted for ${convId}`);
     }
@@ -811,6 +814,11 @@ async function orchestrateAssistantTurn(
     let outcomeError: string;
     if (isWatchdog) {
       const sysText = "✗ Timed out (stale stream)";
+      outcomeError = sysText;
+      conv.messages.push({ role: "system", content: sysText, metadata: null });
+      server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text: sysText, color: "error" });
+    } else if (isDaemonRestart) {
+      const sysText = "✗ Daemon restarted";
       outcomeError = sysText;
       conv.messages.push({ role: "system", content: sysText, metadata: null });
       server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text: sysText, color: "error" });

@@ -7,6 +7,7 @@
  * Usage:
  *   bun run src/main.ts          Start the daemon
  *   bun run src/main.ts login [provider]    Authenticate a provider
+ *   bun run src/main.ts prepare-restart     Save/interrupt streams before service restart
  */
 
 import { loadEnvFile } from "./env";
@@ -20,7 +21,8 @@ import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
 import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
-import { getRunningConversationIds } from "./control";
+import { getRunningConversationIds, prepareRestartForReplay } from "./control";
+import { recoverInterruptedStreams } from "./restart-recovery";
 import { startScheduler, stopScheduler, getCronDir, getJobs } from "./scheduler";
 import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
@@ -208,6 +210,12 @@ async function startDaemon(): Promise<void> {
 
   log("info", `exocortexd: ready on ${SOCKET_PATH} (auth=${authSummary}, cron=${cronJobs.length})`);
   profileMark("ready", { cronJobs: cronJobs.length, externalToolCount: extToolCount, supervisedDaemonCount: supervisedCount });
+
+  const recoveredStreams = recoverInterruptedStreams(server);
+  if (recoveredStreams.length > 0) {
+    console.log(`  replay: scheduled ${recoveredStreams.length} interrupted conversation(s): ${recoveredStreams.join(", ")}`);
+    profileMark("interrupted_streams_recovered", { count: recoveredStreams.length });
+  }
 }
 
 // ── Main ────────────────────────────────────────────────────────────
@@ -234,6 +242,21 @@ async function main(): Promise<void> {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`\n  ✗ Failed to query running conversations: ${message}\n`);
+      process.exit(1);
+    }
+  }
+
+  if (command === "prepare-restart") {
+    try {
+      const result = await prepareRestartForReplay();
+      if (result.convIds.length > 0) process.stdout.write(`${result.convIds.join("\n")}\n`);
+      if (result.stillStreaming.length > 0) {
+        console.error(`  ⚠ Still streaming after graceful interrupt timeout: ${result.stillStreaming.join(", ")}; restart will replay from saved history.`);
+      }
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`\n  ✗ Failed to prepare restart: ${message}\n`);
       process.exit(1);
     }
   }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # exocortexd — Exocortex daemon.
 # Thin wrapper that resolves the project root and runs the daemon entry point.
-# Service subcommands use systemctl; restart refuses while conversations are running unless forced.
+# Service subcommands use systemctl; restart gracefully interrupts active streams and replays them after boot.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -24,10 +24,10 @@ restart_service() {
   systemctl --user status "$SERVICE" --no-pager
 }
 
-get_running_conversations() {
+prepare_restart_for_replay() {
   (
     cd "$PROJECT_DIR/daemon"
-    bun run src/main.ts running-conversations
+    bun run src/main.ts prepare-restart
   )
 }
 
@@ -61,21 +61,20 @@ handle_restart() {
   done
 
   if (( force == 0 )) && systemctl --user is-active --quiet "$SERVICE"; then
-    local running_output
-    if ! running_output="$(get_running_conversations)"; then
-      print_error "Failed to check for running conversations; use --force to override"
+    local interrupted_output
+    if ! interrupted_output="$(prepare_restart_for_replay)"; then
+      print_error "Failed to prepare running conversations for replay; use --force to override"
       exit 1
     fi
 
-    local running_ids=()
+    local interrupted_ids=()
     local line
     while IFS= read -r line; do
-      [[ -n "$line" ]] && running_ids+=("$line")
-    done <<< "$running_output"
+      [[ -n "$line" ]] && interrupted_ids+=("$line")
+    done <<< "$interrupted_output"
 
-    if ((${#running_ids[@]} > 0)); then
-      print_error "there are conversations running! $(join_ids "${running_ids[@]}") --force to override"
-      exit 1
+    if ((${#interrupted_ids[@]} > 0)); then
+      echo "  • Interrupted and scheduled replay: $(join_ids "${interrupted_ids[@]}")"
     fi
   fi
 

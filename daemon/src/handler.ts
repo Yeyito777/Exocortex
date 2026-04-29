@@ -316,8 +316,8 @@ export function createHandler(server: DaemonServer) {
       case "abort": {
         const ac = convStore.getActiveJob(cmd.convId);
         if (ac) {
-          ac.abort();
-          log("info", `handler: abort requested for ${cmd.convId}`);
+          ac.abort(cmd.reason === "daemon-restart" ? "daemon-restart" : undefined);
+          log("info", `handler: abort requested for ${cmd.convId}${cmd.reason ? ` (${cmd.reason})` : ""}`);
         }
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         break;
