@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { clearUnread, create, createFolder, createWithInitialUserMessage, deleteFolder, get, getDisplayData, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, markUnread, moveSidebarItems, pin, remove, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
+import { bumpToTop, clearUnread, create, createFolder, createWithInitialUserMessage, deleteFolder, get, getDisplayData, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, markUnread, moveSidebarItem, moveSidebarItems, pin, remove, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
@@ -191,6 +191,31 @@ describe("folders", () => {
     expect(getSummary(ids[1])?.folderId).toBe(folder!.id);
     expect(getSummary(ids[2])?.folderId).toBe(folder!.id);
     expect(rootRows([...ids, folder!.id]).map(row => row.id)).toEqual([ids[0], folder!.id, ids[3]]);
+  });
+});
+
+describe("sidebar ordering", () => {
+  function rootConversationOrder(ids: string[]): string[] {
+    return listSidebarState().conversations
+      .filter(summary => ids.includes(summary.id) && (summary.folderId ?? null) === null)
+      .map(summary => summary.id);
+  }
+
+  test("manual moves use the latest unflushed bump-to-top order", () => {
+    const ids = ["bump-one", "bump-two", "bump-three", "bump-four"].map(mkId);
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+    expect(rootConversationOrder(ids)).toEqual(ids);
+
+    // Sending a message bumps the active conversation immediately for the TUI,
+    // but the stream setup intentionally does not flush the conversation yet.
+    expect(bumpToTop(ids[2])).toBe(true);
+    expect(getSummary(ids[2])!.sortOrder).toBeLessThan(getSummary(ids[0])!.sortOrder);
+
+    // If the daemon's sidebar index still has the old order, moving the bumped
+    // row down swaps it with ids[3] and produces [1, 2, 4, 3]. It should instead
+    // move one row down from the visible [3, 1, 2, 4] order.
+    expect(moveSidebarItem({ type: "conversation", id: ids[2] }, "down")).toBe(true);
+    expect(rootConversationOrder(ids)).toEqual([ids[0], ids[2], ids[1], ids[3]]);
   });
 });
 
