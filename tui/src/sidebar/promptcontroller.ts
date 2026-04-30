@@ -1,6 +1,6 @@
 import type { KeyEvent } from "../input";
 import { findFolderDestination } from "./folders";
-import { currentFolderRef, topLevelCurrentFolderRef } from "./folderactions";
+import { currentFolderRef, requestFocusAfterMovingItemsOutOfView, topLevelCurrentFolderRef } from "./folderactions";
 import { cycleMovePromptAutocomplete, updateMovePromptAutocomplete } from "./moveautocomplete";
 import type { SidebarState } from "./state";
 import type { SidebarKeyResult } from "./types";
@@ -35,10 +35,8 @@ export function handleSidebarPromptKey(sidebar: SidebarState, key: KeyEvent): Si
         : (!raw || raw === "/")
           ? topLevelCurrentFolderRef(sidebar)
           : undefined;
-      if (destinationFolder && (destinationFolder.parentId ?? null) === sidebar.currentFolderId) {
-        // The moved item disappears from this view; keep the cursor on the
-        // destination folder rather than falling back to the top.
-        sidebar.pendingFocusItem = { type: "folder", id: destinationFolder.id };
+      if (destination !== undefined && destination !== sidebar.currentFolderId) {
+        requestFocusAfterMovingItemsOutOfView(sidebar, prompt.items);
       }
       return destination !== undefined
         ? { type: "move_sidebar_items", items: prompt.items, parentId: destination, before }

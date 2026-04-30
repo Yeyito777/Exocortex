@@ -1,7 +1,7 @@
 import type { SidebarItemRef } from "../messages";
 import { getActiveSidebarSearchQuery } from "../sidebarsearch";
 import { currentFolder, parentOfCurrentFolder } from "./folders";
-import { isMovableSidebarItem, sameSidebarItem as sameItem, sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
+import { isMovableSidebarItem, sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { compareSidebarOrder } from "./order";
 import { updateMovePromptAutocomplete } from "./moveautocomplete";
 import { buildDisplayRows, type DisplayRow } from "./rows";
@@ -15,13 +15,26 @@ import type { SidebarState } from "./state";
 import type { SidebarKeyResult } from "./types";
 import { syncSelectedIndex } from "./updates";
 
-function nextItemAfterRemovingItem(sidebar: SidebarState, item: SidebarItemRef): SidebarItemRef | { type: "up" } | null {
+function nextItemAfterRemovingItems(sidebar: SidebarState, items: SidebarItemRef[]): SidebarItemRef | { type: "up" } | null {
+  const removedKeys = new Set(items.map(item => itemKey(item)));
   const rowsBefore = buildDisplayRows(sidebar).filter((row): row is DisplayRow & { type: "entry"; item: SidebarItemRef | { type: "up" } } => row.type === "entry" && !!row.item && row.item.type !== "folder_instructions");
-  const removedIndex = rowsBefore.findIndex(row => sameItem(row.item ?? null, item));
-  const rowsAfter = rowsBefore.filter(row => !sameItem(row.item ?? null, item));
+  const removedIndices = rowsBefore
+    .map((row, index) => removedKeys.has(itemKey(row.item)) ? index : -1)
+    .filter(index => index !== -1);
+  const rowsAfter = rowsBefore.filter(row => !removedKeys.has(itemKey(row.item)));
   if (rowsAfter.length === 0) return null;
-  const nextIndex = removedIndex === -1 ? 0 : Math.min(removedIndex, rowsAfter.length - 1);
+  const removedIndex = removedIndices.length === 0 ? 0 : Math.min(...removedIndices);
+  const nextIndex = Math.min(removedIndex, rowsAfter.length - 1);
   return rowsAfter[nextIndex]?.item ?? null;
+}
+
+function nextItemAfterRemovingItem(sidebar: SidebarState, item: SidebarItemRef): SidebarItemRef | { type: "up" } | null {
+  return nextItemAfterRemovingItems(sidebar, [item]);
+}
+
+export function requestFocusAfterMovingItemsOutOfView(sidebar: SidebarState, items: SidebarItemRef[]): void {
+  const next = nextItemAfterRemovingItems(sidebar, items);
+  sidebar.pendingFocusItem = next?.type === "up" ? null : next;
 }
 
 function firstFolderChildItem(sidebar: SidebarState, folderId: string): SidebarItemRef | null {

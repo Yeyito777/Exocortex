@@ -640,16 +640,16 @@ describe("sidebar folders", () => {
     expect(state.sidebar.prompt?.input).toBe("/");
   });
 
-  test("moving a conversation into a visible folder focuses that folder", () => {
+  test("moving a conversation into a visible folder keeps focus at the removed row", () => {
     const state = createInitialState();
     state.sidebar.open = true;
     state.panelFocus = "sidebar";
     state.vim.mode = "normal";
-    state.sidebar.folders = [{ id: "folder-work", name: "Work", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 2 }];
-    state.sidebar.conversations = [conversation("conv-a", 1), conversation("top", 0)];
+    state.sidebar.folders = [{ id: "folder-work", name: "Work", parentId: null, createdAt: 3, updatedAt: 3, pinned: false, sortOrder: 3 }];
+    state.sidebar.conversations = [conversation("top", 0), conversation("conv-a", 1), conversation("conv-b", 2)];
     state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
     state.sidebar.selectedId = "conv-a";
-    state.sidebar.selectedIndex = 0;
+    state.sidebar.selectedIndex = 1;
 
     expect(handleFocusedKey({ type: "char", char: "F" }, state)).toEqual({ type: "handled" });
     for (const ch of "Work") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
@@ -658,15 +658,20 @@ describe("sidebar folders", () => {
       items: [{ type: "conversation", id: "conv-a" }],
       parentId: "folder-work",
     });
+    expect(state.sidebar.pendingFocusItem).toEqual({ type: "conversation", id: "conv-b" });
 
     handleEvent({
       type: "conversation_moved",
       folders: state.sidebar.folders,
-      conversations: [conversation("top", 0), conversation("conv-a", 1, { folderId: "folder-work" })],
+      conversations: [
+        conversation("top", 0),
+        conversation("conv-a", 1, { folderId: "folder-work" }),
+        conversation("conv-b", 2),
+      ],
     }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
 
     expect(state.sidebar.currentFolderId).toBeNull();
-    expect(state.sidebar.selectedItem as { type: string; id?: string } | null).toEqual({ type: "folder", id: "folder-work" });
+    expect(state.sidebar.selectedItem as { type: string; id?: string } | null).toEqual({ type: "conversation", id: "conv-b" });
   });
 
   test("moving a conversation out requests insertion immediately before the source folder", () => {
