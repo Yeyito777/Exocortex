@@ -9,6 +9,7 @@
 
 import type { HistoryCursor } from "./historycursor";
 import { isWordChar, isSpace } from "./chars";
+import { graphemeStartAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./graphemes";
 
 // ── ANSI stripping ─────────────────────────────────────────────────
 
@@ -28,15 +29,15 @@ export function stripAnsi(s: string): string {
 export function contentBounds(plain: string): { start: number; end: number } {
   let start = 0;
   while (start < plain.length && plain[start] === " ") start++;
-  let end = plain.length - 1;
-  while (end > start && plain[end] === " ") end--;
+  let endExclusive = plain.length;
+  while (endExclusive > start && plain[endExclusive - 1] === " ") endExclusive--;
   // All spaces or empty (e.g. blank indented AI line): cursor at
   // indentation point (where text would start on this line).
-  if (start >= plain.length) {
+  if (start >= plain.length || endExclusive <= start) {
     const pos = Math.max(0, plain.length);
     return { start: pos, end: pos };
   }
-  return { start, end };
+  return { start, end: previousGraphemeStart(plain, endExclusive) };
 }
 
 /** Clamp a column to the content bounds of a line. */
@@ -44,7 +45,7 @@ export function clampCol(col: number, lines: string[], row: number): number {
   const plain = stripAnsi(lines[row] ?? "");
   if (plain.length === 0) return 0;
   const { start, end } = contentBounds(plain);
-  return Math.max(start, Math.min(col, end));
+  return graphemeStartAtOrAfter(plain, Math.max(start, Math.min(col, end)));
 }
 
 // ── Logical line groups ──────────────────────────────────────────
@@ -68,13 +69,15 @@ export function logicalLineRange(
 // ── Basic motions ─────────────────────────────────────────────────
 
 export function charLeft(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  const { start } = contentBounds(stripAnsi(lines[cursor.row] ?? ""));
-  return { row: cursor.row, col: Math.max(start, cursor.col - 1) };
+  const plain = stripAnsi(lines[cursor.row] ?? "");
+  const { start } = contentBounds(plain);
+  return { row: cursor.row, col: Math.max(start, previousGraphemeStart(plain, cursor.col)) };
 }
 
 export function charRight(cursor: HistoryCursor, lines: string[]): HistoryCursor {
-  const { end } = contentBounds(stripAnsi(lines[cursor.row] ?? ""));
-  return { row: cursor.row, col: Math.min(end, cursor.col + 1) };
+  const plain = stripAnsi(lines[cursor.row] ?? "");
+  const { end } = contentBounds(plain);
+  return { row: cursor.row, col: Math.min(end, nextGraphemeEnd(plain, cursor.col)) };
 }
 
 export function lineUp(cursor: HistoryCursor, lines: string[]): HistoryCursor {
@@ -262,8 +265,12 @@ export function wordEndBig(cursor: HistoryCursor, lines: string[]): HistoryCurso
 export function findForward(cursor: HistoryCursor, lines: string[], char: string): HistoryCursor {
   const plain = stripAnsi(lines[cursor.row] ?? "");
   const { end } = contentBounds(plain);
-  for (let i = cursor.col + 1; i <= end; i++) {
-    if (plain[i] === char) return { row: cursor.row, col: i };
+  let i = nextGraphemeEnd(plain, cursor.col);
+  while (i <= end) {
+    if (plain.startsWith(char, i)) return { row: cursor.row, col: i };
+    const next = nextGraphemeEnd(plain, i);
+    if (next === i) break;
+    i = next;
   }
   return cursor;
 }
@@ -271,8 +278,9 @@ export function findForward(cursor: HistoryCursor, lines: string[], char: string
 export function findBackward(cursor: HistoryCursor, lines: string[], char: string): HistoryCursor {
   const plain = stripAnsi(lines[cursor.row] ?? "");
   const { start } = contentBounds(plain);
-  for (let i = cursor.col - 1; i >= start; i--) {
-    if (plain[i] === char) return { row: cursor.row, col: i };
+  for (let i = previousGraphemeStart(plain, cursor.col); i >= start; i = previousGraphemeStart(plain, i)) {
+    if (plain.startsWith(char, i)) return { row: cursor.row, col: i };
+    if (i === start) break;
   }
   return cursor;
 }

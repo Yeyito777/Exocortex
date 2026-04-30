@@ -4,6 +4,7 @@ import { currentFolderRef, topLevelCurrentFolderRef } from "./folderactions";
 import { cycleMovePromptAutocomplete, updateMovePromptAutocomplete } from "./moveautocomplete";
 import type { SidebarState } from "./state";
 import type { SidebarKeyResult } from "./types";
+import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "../graphemes";
 
 export function handleSidebarPromptKey(sidebar: SidebarState, key: KeyEvent): SidebarKeyResult {
   const prompt = sidebar.prompt;
@@ -49,9 +50,11 @@ export function handleSidebarPromptKey(sidebar: SidebarState, key: KeyEvent): Si
     return { type: "handled" };
   }
   if (key.type === "backspace") {
-    if (prompt.cursorPos > 0) {
-      prompt.input = prompt.input.slice(0, prompt.cursorPos - 1) + prompt.input.slice(prompt.cursorPos);
-      prompt.cursorPos--;
+    const pos = graphemeBoundaryAtOrAfter(prompt.input, prompt.cursorPos);
+    if (pos > 0) {
+      const start = previousGraphemeStart(prompt.input, pos);
+      prompt.input = prompt.input.slice(0, start) + prompt.input.slice(pos);
+      prompt.cursorPos = start;
       updateMovePromptAutocomplete(sidebar);
     } else if (prompt.input.length === 0) {
       sidebar.prompt = null;
@@ -59,26 +62,30 @@ export function handleSidebarPromptKey(sidebar: SidebarState, key: KeyEvent): Si
     return { type: "handled" };
   }
   if (key.type === "delete") {
-    if (prompt.cursorPos < prompt.input.length) {
-      prompt.input = prompt.input.slice(0, prompt.cursorPos) + prompt.input.slice(prompt.cursorPos + 1);
+    const pos = graphemeBoundaryAtOrAfter(prompt.input, prompt.cursorPos);
+    if (pos < prompt.input.length) {
+      prompt.input = prompt.input.slice(0, pos) + prompt.input.slice(nextGraphemeEnd(prompt.input, pos));
+      prompt.cursorPos = pos;
       updateMovePromptAutocomplete(sidebar);
     }
     return { type: "handled" };
   }
-  if (key.type === "left") { if (prompt.cursorPos > 0) prompt.cursorPos--; return { type: "handled" }; }
-  if (key.type === "right") { if (prompt.cursorPos < prompt.input.length) prompt.cursorPos++; return { type: "handled" }; }
+  if (key.type === "left") { prompt.cursorPos = previousGraphemeStart(prompt.input, prompt.cursorPos); return { type: "handled" }; }
+  if (key.type === "right") { prompt.cursorPos = nextGraphemeEnd(prompt.input, prompt.cursorPos); return { type: "handled" }; }
   if (key.type === "home") { prompt.cursorPos = 0; return { type: "handled" }; }
   if (key.type === "end") { prompt.cursorPos = prompt.input.length; return { type: "handled" }; }
   if (key.type === "paste" && key.text) {
     const text = key.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, " ");
-    prompt.input = prompt.input.slice(0, prompt.cursorPos) + text + prompt.input.slice(prompt.cursorPos);
-    prompt.cursorPos += text.length;
+    const pos = graphemeBoundaryAtOrAfter(prompt.input, prompt.cursorPos);
+    prompt.input = prompt.input.slice(0, pos) + text + prompt.input.slice(pos);
+    prompt.cursorPos = pos + text.length;
     updateMovePromptAutocomplete(sidebar);
     return { type: "handled" };
   }
   if (key.type === "char" && key.char) {
-    prompt.input = prompt.input.slice(0, prompt.cursorPos) + key.char + prompt.input.slice(prompt.cursorPos);
-    prompt.cursorPos += key.char.length;
+    const pos = graphemeBoundaryAtOrAfter(prompt.input, prompt.cursorPos);
+    prompt.input = prompt.input.slice(0, pos) + key.char + prompt.input.slice(pos);
+    prompt.cursorPos = pos + key.char.length;
     updateMovePromptAutocomplete(sidebar);
   }
   return { type: "handled" };

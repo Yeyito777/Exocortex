@@ -5,6 +5,8 @@
  * (keyboard, mouse, and bracketed paste).
  */
 
+import { nextGraphemeEnd } from "./graphemes";
+
 export interface KeyEvent {
   type: "char" | "enter" | "tab" | "backtab" | "backspace" | "delete"
       | "left" | "right" | "home" | "end"
@@ -178,7 +180,6 @@ export function parseInput(data: Buffer | string): InputEvent[] {
       continue;
     }
 
-    const ch = str[i];
     const code = str.charCodeAt(i);
 
     // Tab
@@ -300,10 +301,12 @@ export function parseInput(data: Buffer | string): InputEvent[] {
       i++;
       continue;
     }
-    // Regular character
+    // Regular character. Consume the whole grapheme cluster so emoji and
+    // composed characters arrive at the editor as one user-visible glyph.
     if (code >= 32) {
-      events.push({ type: "char", char: ch });
-      i++;
+      const end = nextGraphemeEnd(str, i);
+      events.push({ type: "char", char: str.slice(i, end) });
+      i = end;
       continue;
     }
     // Unknown control character

@@ -5,7 +5,7 @@
  * No side effects, no state. Easy to test, easy to compose with operators.
  */
 
-import { lineStartOf, lineEndOf } from "./buffer";
+import { lineStartOf, lineEndOf, nextGraphemeEnd, previousGraphemeStart } from "./buffer";
 import { isWordChar, isBufferSpace as isSpace, isPunct } from "../chars";
 
 // ── Character motions ──────────────────────────────────────────────
@@ -14,14 +14,14 @@ export function charLeft(buffer: string, pos: number): number {
   if (pos <= 0) return 0;
   // Don't cross newline boundary
   if (buffer[pos - 1] === "\n") return pos;
-  return pos - 1;
+  return previousGraphemeStart(buffer, pos);
 }
 
 export function charRight(buffer: string, pos: number): number {
   if (pos >= buffer.length) return buffer.length;
   // Don't cross newline boundary
   if (buffer[pos] === "\n") return pos;
-  return pos + 1;
+  return nextGraphemeEnd(buffer, pos);
 }
 
 // ── Word motions ───────────────────────────────────────────────────
@@ -177,8 +177,12 @@ export function lineUp(buffer: string, pos: number): number {
 /** f{char} — move to next occurrence of char on the current line. */
 export function findForward(buffer: string, pos: number, char: string): number {
   const le = lineEndOf(buffer, pos);
-  for (let i = pos + 1; i <= le; i++) {
-    if (buffer[i] === char) return i;
+  let i = nextGraphemeEnd(buffer, pos);
+  while (i <= le) {
+    if (buffer.startsWith(char, i)) return i;
+    const next = nextGraphemeEnd(buffer, i);
+    if (next === i) break;
+    i = next;
   }
   return pos; // not found — stay put
 }
@@ -186,8 +190,9 @@ export function findForward(buffer: string, pos: number, char: string): number {
 /** F{char} — move to previous occurrence of char on the current line. */
 export function findBackward(buffer: string, pos: number, char: string): number {
   const ls = lineStartOf(buffer, pos);
-  for (let i = pos - 1; i >= ls; i--) {
-    if (buffer[i] === char) return i;
+  for (let i = previousGraphemeStart(buffer, pos); i >= ls; i = previousGraphemeStart(buffer, i)) {
+    if (buffer.startsWith(char, i)) return i;
+    if (i === ls) break;
   }
   return pos; // not found — stay put
 }

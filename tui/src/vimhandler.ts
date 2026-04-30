@@ -25,7 +25,7 @@ import {
 } from "./chat";
 import { handleSidebarAction, handleSidebarScrollAction, type SidebarKeyResult } from "./sidebar";
 import { processKey, copyToClipboard, pasteFromClipboard, type VimContext } from "./vim";
-import { clampNormal } from "./vim/buffer";
+import { clampNormal, nextGraphemeEnd } from "./vim/buffer";
 import { pushUndo, markInsertEntry, commitInsertSession, undo as undoFn, redo as redoFn } from "./undo";
 import {
   ensureCursorVisible,
@@ -266,7 +266,7 @@ function handlePaste(position: "after" | "before", state: RenderState): void {
     pushUndo(state.undo, state.inputBuffer, state.cursorPos);
     const buf = state.inputBuffer;
     const cursor = state.cursorPos;
-    const insertAt = position === "after" ? cursor + 1 : cursor;
+    const insertAt = position === "after" ? nextGraphemeEnd(buf, cursor) : cursor;
     const pos = Math.min(insertAt, buf.length);
 
     state.inputBuffer = buf.slice(0, pos) + text + buf.slice(pos);

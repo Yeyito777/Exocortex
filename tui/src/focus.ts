@@ -45,6 +45,7 @@ import { readClipboardImage } from "./clipboard";
 import { processVimKey, handleScrollAction, mapSidebarResult } from "./vimhandler";
 import { handleSearchBarKey, jumpToSearchMatch, openCommandBar, openSearchBar } from "./search";
 import { theme } from "./theme";
+import { graphemeBoundaryAtOrAfter } from "./graphemes";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -161,7 +162,7 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
     const text = key.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     pushUndo(state.undo, state.inputBuffer, state.cursorPos);
     const buf = state.inputBuffer;
-    const pos = state.cursorPos;
+    const pos = graphemeBoundaryAtOrAfter(buf, state.cursorPos);
     state.inputBuffer = buf.slice(0, pos) + text + buf.slice(pos);
     state.cursorPos = pos + text.length;
     state.autocomplete = null;

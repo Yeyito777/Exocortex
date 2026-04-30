@@ -11,6 +11,8 @@ import type { RenderState } from "./state";
 import { resolveAction } from "./keybinds";
 import { updateAutocomplete, cycleAutocomplete, tryPathComplete } from "./autocomplete";
 import { getSymbol } from "./symbols";
+import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./graphemes";
+import { sliceByWidth, termWidth } from "./textwidth";
 
 export type PromptKeyResult =
   | { type: "handled" }
@@ -46,11 +48,12 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
   // Symbol keys (Ctrl+number row → F14-F24 from st)
   const sym = getSymbol(key);
   if (sym) {
+    const pos = graphemeBoundaryAtOrAfter(state.inputBuffer, state.cursorPos);
     state.inputBuffer =
-      state.inputBuffer.slice(0, state.cursorPos) +
+      state.inputBuffer.slice(0, pos) +
       sym +
-      state.inputBuffer.slice(state.cursorPos);
-    state.cursorPos++;
+      state.inputBuffer.slice(pos);
+    state.cursorPos = pos + sym.length;
     updateAutocomplete(state);
     return HANDLED;
   }
@@ -61,11 +64,12 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
   // chars in insert mode, so we don't gate on resolveAction.
   if (key.type === "char") {
     if (!key.char) return HANDLED;
+    const pos = graphemeBoundaryAtOrAfter(state.inputBuffer, state.cursorPos);
     state.inputBuffer =
-      state.inputBuffer.slice(0, state.cursorPos) +
+      state.inputBuffer.slice(0, pos) +
       key.char +
-      state.inputBuffer.slice(state.cursorPos);
-    state.cursorPos++;
+      state.inputBuffer.slice(pos);
+    state.cursorPos = pos + key.char.length;
     updateAutocomplete(state);
     return HANDLED;
   }
@@ -76,21 +80,24 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
       return SUBMIT;
 
     case "newline": {
+      const pos = graphemeBoundaryAtOrAfter(state.inputBuffer, state.cursorPos);
       state.inputBuffer =
-        state.inputBuffer.slice(0, state.cursorPos) +
+        state.inputBuffer.slice(0, pos) +
         "\n" +
-        state.inputBuffer.slice(state.cursorPos);
-      state.cursorPos++;
+        state.inputBuffer.slice(pos);
+      state.cursorPos = pos + 1;
       state.autocomplete = null;
       return HANDLED;
     }
 
     case "delete_back": {
-      if (state.cursorPos > 0) {
+      const pos = graphemeBoundaryAtOrAfter(state.inputBuffer, state.cursorPos);
+      if (pos > 0) {
+        const start = previousGraphemeStart(state.inputBuffer, pos);
         state.inputBuffer =
-          state.inputBuffer.slice(0, state.cursorPos - 1) +
-          state.inputBuffer.slice(state.cursorPos);
-        state.cursorPos--;
+          state.inputBuffer.slice(0, start) +
+          state.inputBuffer.slice(pos);
+        state.cursorPos = start;
       } else if (state.pendingImages.length > 0) {
         // Backspace at position 0 pops the last pending image
         state.pendingImages.pop();
@@ -100,21 +107,24 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
     }
 
     case "delete_forward": {
-      if (state.cursorPos < state.inputBuffer.length) {
+      const pos = graphemeBoundaryAtOrAfter(state.inputBuffer, state.cursorPos);
+      if (pos < state.inputBuffer.length) {
+        const end = nextGraphemeEnd(state.inputBuffer, pos);
         state.inputBuffer =
-          state.inputBuffer.slice(0, state.cursorPos) +
-          state.inputBuffer.slice(state.cursorPos + 1);
+          state.inputBuffer.slice(0, pos) +
+          state.inputBuffer.slice(end);
+        state.cursorPos = pos;
       }
       updateAutocomplete(state);
       return HANDLED;
     }
 
     case "cursor_left":
-      if (state.cursorPos > 0) state.cursorPos--;
+      state.cursorPos = previousGraphemeStart(state.inputBuffer, state.cursorPos);
       return HANDLED;
 
     case "cursor_right":
-      if (state.cursorPos < state.inputBuffer.length) state.cursorPos++;
+      state.cursorPos = nextGraphemeEnd(state.inputBuffer, state.cursorPos);
       return HANDLED;
 
     case "cursor_home": {
@@ -136,7 +146,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
         const colInLine = state.cursorPos - currentLineStart;
         const prevLineStart = buf.lastIndexOf("\n", currentLineStart - 2) + 1;
         const prevLineLen = currentLineStart - 1 - prevLineStart;
-        state.cursorPos = prevLineStart + Math.min(colInLine, prevLineLen);
+        state.cursorPos = graphemeBoundaryAtOrAfter(buf, prevLineStart + Math.min(colInLine, prevLineLen));
         return HANDLED;
       }
       return UNHANDLED;
@@ -151,7 +161,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
         const nextLineStart = nextNl + 1;
         const nextLineEnd = buf.indexOf("\n", nextLineStart);
         const nextLineLen = (nextLineEnd === -1 ? buf.length : nextLineEnd) - nextLineStart;
-        state.cursorPos = nextLineStart + Math.min(colInLine, nextLineLen);
+        state.cursorPos = graphemeBoundaryAtOrAfter(buf, nextLineStart + Math.min(colInLine, nextLineLen));
         return HANDLED;
       }
       return UNHANDLED;
@@ -181,11 +191,14 @@ export function wrappedLineOffsets(buffer: string, maxWidth: number): number[] {
   let pos = 0;
 
   for (const line of lines) {
-    if (line.length <= maxWidth) {
+    if (line.length === 0 || termWidth(line) <= maxWidth) {
       offsets.push(pos);
     } else {
-      for (let i = 0; i < line.length; i += maxWidth) {
-        offsets.push(pos + i);
+      let rel = 0;
+      while (rel < line.length) {
+        offsets.push(pos + rel);
+        const [chunk] = sliceByWidth(line.slice(rel), maxWidth);
+        rel += chunk.length || nextGraphemeEnd(line, rel) - rel;
       }
     }
     pos += line.length + 1; // +1 for \n
@@ -240,27 +253,31 @@ export function getInputLines(
   for (let li = 0; li < bufferLines.length; li++) {
     const line = bufferLines[li];
 
-    if (line.length <= maxWidth) {
+    if (line.length === 0 || termWidth(line) <= maxWidth) {
       // Cursor within this line?
       if (cursorPos >= bufOffset && cursorPos <= bufOffset + line.length) {
         cursorWrappedLine = wrapped.length;
-        cursorColInLine = cursorPos - bufOffset;
+        cursorColInLine = termWidth(line.slice(0, cursorPos - bufOffset));
       }
       wrapped.push(line);
       isNewLineArr.push(li > 0);
     } else {
-      // Hard-wrap into chunks of maxWidth
-      for (let i = 0; i < line.length; i += maxWidth) {
-        const chunk = line.slice(i, i + maxWidth);
+      // Hard-wrap into terminal-width chunks without splitting grapheme clusters.
+      let rel = 0;
+      while (rel < line.length) {
+        const [taken] = sliceByWidth(line.slice(rel), maxWidth);
+        const chunkEndRel = rel + (taken.length || nextGraphemeEnd(line, rel) - rel);
+        const chunk = line.slice(rel, chunkEndRel);
         // Cursor within this chunk?
-        const chunkStart = bufOffset + i;
-        const chunkEnd = chunkStart + chunk.length;
+        const chunkStart = bufOffset + rel;
+        const chunkEnd = bufOffset + chunkEndRel;
         if (cursorPos >= chunkStart && cursorPos <= chunkEnd) {
           cursorWrappedLine = wrapped.length;
-          cursorColInLine = cursorPos - chunkStart;
+          cursorColInLine = termWidth(line.slice(rel, cursorPos - bufOffset));
         }
         wrapped.push(chunk);
-        isNewLineArr.push(li > 0 && i === 0);
+        isNewLineArr.push(li > 0 && rel === 0);
+        rel = chunkEndRel;
       }
     }
 

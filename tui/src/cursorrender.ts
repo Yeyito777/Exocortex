@@ -13,6 +13,7 @@
 
 import { theme } from "./theme";
 import { stripAnsi } from "./historycursor";
+import { nextGraphemeEnd } from "./graphemes";
 
 const CURSOR_FG = "\x1b[38;2;0;0;0m";  // black text on cursor
 const ANSI_OR_HYPERLINK = /^\x1b(?:\[[0-9;]*[A-Za-z]|\]8;[^;]*;[^\x1b]*\x1b\\)/;
@@ -57,15 +58,17 @@ export function renderLineWithCursor(line: string, col: number): string {
       }
     }
 
-    if (visIdx === col) {
-      // Cursor: override fg/bg, then restore text styles after
-      parts.push(`${CURSOR_FG}${theme.cursorBg}${line[i]}${theme.reset}${activeEscapes.join("")}`);
+    const end = nextGraphemeEnd(line, i);
+    const cluster = line.slice(i, end);
+    if (visIdx <= col && col < visIdx + cluster.length) {
+      // Cursor: override fg/bg for the whole grapheme, then restore text styles after.
+      parts.push(`${CURSOR_FG}${theme.cursorBg}${cluster}${theme.reset}${activeEscapes.join("")}`);
       cursorRendered = true;
     } else {
-      parts.push(line[i]);
+      parts.push(cluster);
     }
-    visIdx++;
-    i++;
+    visIdx += cluster.length;
+    i = end;
   }
 
   if (!cursorRendered) {
@@ -125,20 +128,27 @@ export function renderLineWithSelection(
       }
     }
 
-    if (!fullLine && visIdx === startCol) {
+    const end = nextGraphemeEnd(line, i);
+    const cluster = line.slice(i, end);
+    const clusterSelected = fullLine || (visIdx + cluster.length > startCol && visIdx <= endCol);
+
+    if (!fullLine && clusterSelected && !inSelection) {
       inSelection = true;
       parts.push(theme.selectionBg);
-    }
-
-    parts.push(line[i]);
-
-    if (!fullLine && visIdx === endCol) {
+    } else if (!fullLine && !clusterSelected && inSelection) {
       inSelection = false;
       parts.push(`${theme.reset}${activeEscapes.join("")}`);
     }
 
-    visIdx++;
-    i++;
+    parts.push(cluster);
+
+    if (!fullLine && clusterSelected && visIdx + cluster.length > endCol) {
+      inSelection = false;
+      parts.push(`${theme.reset}${activeEscapes.join("")}`);
+    }
+
+    visIdx += cluster.length;
+    i = end;
   }
 
   // Close selection if it extends to end of line
@@ -176,7 +186,9 @@ export function renderLineWithSearch(
       }
     }
 
-    const nowInSearch = ranges.some((range) => visIdx >= range.from && visIdx < range.to);
+    const end = nextGraphemeEnd(line, i);
+    const cluster = line.slice(i, end);
+    const nowInSearch = ranges.some((range) => visIdx < range.to && visIdx + cluster.length > range.from);
     if (nowInSearch && !inSearch) {
       parts.push(theme.searchBg, theme.searchFg);
       inSearch = true;
@@ -185,9 +197,9 @@ export function renderLineWithSearch(
       inSearch = false;
     }
 
-    parts.push(line[i]);
-    visIdx++;
-    i++;
+    parts.push(cluster);
+    visIdx += cluster.length;
+    i = end;
   }
 
   if (inSearch) parts.push(theme.reset);

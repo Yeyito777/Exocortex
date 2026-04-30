@@ -17,7 +17,7 @@ import { resetPending, keyString } from "./types";
 import { lookupCommand, isPrefix } from "./keymap";
 import { resolveMotion, findForward, findBackward } from "./motions";
 import { resolveTextObject, isTextObjectKey } from "./textobjects";
-import { lineStartOf, lineEndOf, clampNormal } from "./buffer";
+import { lineStartOf, lineEndOf, clampNormal, nextGraphemeEnd, previousGraphemeStart } from "./buffer";
 import * as ops from "./operators";
 import { handleVisualMode } from "./visual";
 
@@ -53,7 +53,7 @@ function handleInsertMode(key: KeyEvent, vim: VimState, buffer: string, cursor: 
     // Vim convention: cursor moves left on Esc, but never across \n
     let newCursor = cursor;
     if (newCursor > 0 && buffer[newCursor - 1] !== "\n") {
-      newCursor--;
+      newCursor = previousGraphemeStart(buffer, newCursor);
     }
     newCursor = clampNormal(buffer, newCursor);
     return { type: "mode_change", mode: "normal", cursor: newCursor };
@@ -399,7 +399,7 @@ function executeModeChange(
   let newCursor = cursor;
   if (context === "prompt") {
     switch (cmd.cursor) {
-      case "after": newCursor = Math.min(cursor + 1, lineEndOf(buffer, cursor)); break;
+      case "after": newCursor = Math.min(nextGraphemeEnd(buffer, cursor), lineEndOf(buffer, cursor)); break;
       case "bol":   newCursor = lineStartOf(buffer, cursor); break;
       case "eol":   newCursor = lineEndOf(buffer, cursor); break;
       // "before" or undefined: stay at current position

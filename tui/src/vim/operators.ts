@@ -6,7 +6,7 @@
  */
 
 import type { BufferEdit } from "./types";
-import { lineStartOf, lineEndOf, clampNormal } from "./buffer";
+import { lineStartOf, lineEndOf, clampNormal, nextGraphemeEnd, previousGraphemeStart } from "./buffer";
 
 // ── Core: delete a range ───────────────────────────────────────────
 
@@ -48,13 +48,13 @@ export function changeLine(buffer: string, pos: number): BufferEdit {
 /** x — delete character under cursor. */
 export function deleteChar(buffer: string, pos: number): BufferEdit {
   if (pos >= buffer.length) return { buffer, cursor: pos };
-  return deleteRange(buffer, pos, pos + 1);
+  return deleteRange(buffer, pos, nextGraphemeEnd(buffer, pos));
 }
 
 /** X — delete character before cursor. */
 export function deleteCharBefore(buffer: string, pos: number): BufferEdit {
   if (pos <= 0) return { buffer, cursor: 0 };
-  return deleteRange(buffer, pos - 1, pos);
+  return deleteRange(buffer, previousGraphemeStart(buffer, pos), pos);
 }
 
 // ── To-end-of-line operators ───────────────────────────────────────
@@ -117,7 +117,7 @@ export function swapCase(buffer: string, pos: number, count: number): BufferEdit
 /** r — replace character under cursor with the given character. */
 export function replaceChar(buffer: string, pos: number, ch: string): BufferEdit {
   if (pos >= buffer.length || buffer[pos] === "\n") return { buffer, cursor: pos };
-  const newBuffer = buffer.slice(0, pos) + ch + buffer.slice(pos + 1);
+  const newBuffer = buffer.slice(0, pos) + ch + buffer.slice(nextGraphemeEnd(buffer, pos));
   return { buffer: newBuffer, cursor: pos };
 }
 
