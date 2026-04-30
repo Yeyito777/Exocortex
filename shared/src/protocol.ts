@@ -40,6 +40,8 @@ export interface NewConversationCommand {
   };
   /** Folder to create the conversation in. Null/omitted means the sidebar root. */
   folderId?: string | null;
+  /** If true, the daemon creates/reuses the top-level "subagents" folder for this conversation. */
+  subagent?: boolean;
 }
 
 export interface ParentNotificationTarget {
