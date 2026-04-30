@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { bumpToTop, clearUnread, create, createFolder, createWithInitialUserMessage, deleteFolder, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, markUnread, moveSidebarItem, moveSidebarItems, pin, remove, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
+import { bumpToTop, clearUnread, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, pin, remove, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
@@ -36,6 +36,21 @@ describe("folders", () => {
         .map(summary => ({ type: "folder" as const, id: summary.id, sortOrder: summary.sortOrder, pinned: summary.pinned })),
     ].sort((a, b) => (a.pinned === b.pinned ? 0 : a.pinned ? -1 : 1) || a.sortOrder - b.sortOrder);
   }
+
+  test("ensures a reusable top-level folder by name and moves conversations into it", () => {
+    const id = mkId("subagent-folder-move");
+    create(id, "openai", "gpt-5.4", "subagent task");
+
+    const folder = ensureTopLevelFolder("subagents")!;
+    FOLDER_IDS.push(folder.id);
+    expect(folder).toMatchObject({ name: "subagents", parentId: null });
+    expect(findTopLevelFolderByName("SUBAGENTS")?.id).toBe(folder.id);
+    expect(ensureTopLevelFolder("subagents")?.id).toBe(folder.id);
+
+    expect(moveConversationToFolder(id, folder.id)).toBe(true);
+    expect(getSummary(id)?.folderId).toBe(folder.id);
+    expect(listSidebarState().conversations.find(summary => summary.id === id)?.folderId).toBe(folder.id);
+  });
 
   test("moving conversations out can insert them immediately before their source folder", () => {
     const beforeId = mkId("folder-before");

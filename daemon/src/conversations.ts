@@ -770,6 +770,26 @@ export function move(id: string, direction: "up" | "down"): boolean {
 
 // ── Folder operations ───────────────────────────────────────────────
 
+export function findTopLevelFolderByName(name: string): FolderSummary | null {
+  const target = name.trim().toLocaleLowerCase();
+  if (!target) return null;
+  const folder = sortSidebarEntries([...folders.values()])
+    .find(candidate => (candidate.parentId ?? null) === null && candidate.name.trim().toLocaleLowerCase() === target);
+  return folder ? { ...folder } : null;
+}
+
+export function ensureTopLevelFolder(name: string): FolderSummary | null {
+  return findTopLevelFolderByName(name) ?? createFolder(name, null);
+}
+
+export function moveConversationToFolder(id: string, folderId: string | null): boolean {
+  const conv = get(id);
+  if (!conv) return false;
+  const parentId = folderId && folders.has(folderId) ? folderId : null;
+  if ((conv.folderId ?? null) === parentId) return true;
+  return moveSidebarItems([{ type: "conversation", id }], parentId, undefined, { placement: "bottom" });
+}
+
 export function createFolder(name: string, parentId: string | null = null, items: SidebarItemRef[] = []): FolderSummary | null {
   const cleanName = name.trim();
   if (!cleanName) return null;

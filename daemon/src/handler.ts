@@ -25,6 +25,8 @@ import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvide
 import { getTokenStatsSnapshot } from "./token-stats";
 import { broadcastConversationUpdated } from "./conversation-events";
 
+const SUBAGENTS_FOLDER_NAME = "subagents";
+
 // ── Handler ─────────────────────────────────────────────────────────
 
 export function createHandler(server: DaemonServer) {
@@ -77,6 +79,18 @@ export function createHandler(server: DaemonServer) {
 
   const maybeStartAutoTitleGeneration = (convId: string): void => {
     if (shouldAutoGenerateTitle(convId)) startTitleGeneration(server, convId);
+  };
+
+  const ensureConversationInSubagentsFolder = (convId: string): void => {
+    const folder = convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME);
+    if (!folder) {
+      log("warn", `handler: failed to ensure ${SUBAGENTS_FOLDER_NAME} folder for detached subagent ${convId}`);
+      return;
+    }
+    if ((convStore.getSummary(convId)?.folderId ?? null) === folder.id) return;
+    if (convStore.moveConversationToFolder(convId, folder.id)) {
+      server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+    }
   };
 
   // ── Subagent parent notifications ────────────────────────────────
@@ -260,7 +274,12 @@ export function createHandler(server: DaemonServer) {
         }
 
         const title = cmd.title ?? (initialMessage ? PENDING_TITLE : undefined);
-        const folderId = cmd.folderId ?? null;
+        const subagentFolder = cmd.subagent ? convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME) : null;
+        if (cmd.subagent && !subagentFolder) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Failed to create ${SUBAGENTS_FOLDER_NAME} folder` });
+          break;
+        }
+        const folderId = subagentFolder?.id ?? cmd.folderId ?? null;
         if (initialMessage) {
           convStore.createWithInitialUserMessage(id, provider, model, title, effort, fastMode, initialMessage, folderId);
         } else {
@@ -278,6 +297,7 @@ export function createHandler(server: DaemonServer) {
           fastMode,
         });
         broadcastConversationUpdated(server, id);
+        if (cmd.subagent) server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
 
         if (initialMessage) {
           // The creating client already has the local user echo and pending AI.
@@ -348,6 +368,7 @@ export function createHandler(server: DaemonServer) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Already streaming" });
             break;
           }
+          if (cmd.notifyParent) ensureConversationInSubagentsFolder(cmd.convId);
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
           const turn = orchestrateSendMessage(
             server, null, undefined, cmd.convId, cmd.text, cmd.startedAt, callbacks, cmd.images,
