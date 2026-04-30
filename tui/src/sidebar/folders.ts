@@ -60,12 +60,36 @@ export function normalizeMoveDestinationInput(input: string): string {
   return trimmed.length > 1 ? trimmed.replace(/\/$/, "") : trimmed;
 }
 
+function movePromptItemParent(state: SidebarFolderViewState, item: SidebarItemRef): string | null | undefined {
+  if (item.type === "conversation") return state.conversations.find(c => c.id === item.id)?.folderId ?? null;
+  return state.folders.find(f => f.id === item.id)?.parentId ?? null;
+}
+
 function movePromptCanTargetFolder(state: SidebarFolderViewState, folderId: string, items: SidebarItemRef[]): boolean {
+  if (items.length > 0 && items.every(item => movePromptItemParent(state, item) === folderId)) return false;
   for (const item of items) {
     if (item.type !== "folder") continue;
     if (item.id === folderId || descendantFolderIds(state, item.id).has(folderId)) return false;
   }
   return true;
+}
+
+function currentFolderDescendantDepth(state: SidebarFolderViewState, folderId: string): number | null {
+  const currentFolderId = state.currentFolderId;
+  if (!currentFolderId) return null;
+
+  const seen = new Set<string>();
+  let depth = 0;
+  let folder = state.folders.find(f => f.id === folderId);
+  while (folder && !seen.has(folder.id)) {
+    seen.add(folder.id);
+    const parentId = folder.parentId ?? null;
+    if (!parentId) return null;
+    depth++;
+    if (parentId === currentFolderId) return depth;
+    folder = state.folders.find(f => f.id === parentId);
+  }
+  return null;
 }
 
 export function movePromptMatches(ctx: MovePromptContext): CompletionItem[] {
@@ -80,19 +104,29 @@ export function movePromptMatches(ctx: MovePromptContext): CompletionItem[] {
     .filter(folder => movePromptCanTargetFolder(ctx, folder.id, ctx.items))
     .map(folder => {
       const path = folderPath(ctx, folder.id);
-      return { folder, path, name: path || folder.name };
+      return { folder, path, name: path || folder.name, localDepth: currentFolderDescendantDepth(ctx, folder.id) };
     })
     .filter(({ folder, path, name }) => {
       if (!normalized) return true;
       return matchesPrefix(name) || matchesPrefix(folder.name) || path.toLowerCase().includes(`/${normalized}`);
     })
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map(({ folder, name }): CompletionItem => ({
-      name,
-      desc: (folder.parentId ? `in ${folderPath(ctx, folder.parentId) || "/"}` : "top-level"),
-    }));
+    .sort((a, b) => {
+      if (a.localDepth !== null || b.localDepth !== null) {
+        if (a.localDepth === null) return 1;
+        if (b.localDepth === null) return -1;
+        if (a.localDepth !== b.localDepth) return a.localDepth - b.localDepth;
+      }
+      return a.name.localeCompare(b.name);
+    });
 
-  return [...special, ...folders];
+  const localFolders = folders.filter(({ localDepth }) => localDepth !== null);
+  const otherFolders = folders.filter(({ localDepth }) => localDepth === null);
+  const toCompletion = ({ folder, name }: (typeof folders)[number]): CompletionItem => ({
+    name,
+    desc: (folder.parentId ? `in ${folderPath(ctx, folder.parentId) || "/"}` : "top-level"),
+  });
+
+  return [...special, ...localFolders.map(toCompletion), ...otherFolders.map(toCompletion)];
 }
 
 export function findFolderDestination(state: SidebarFolderViewState, input: string): FolderSummary | null | undefined {

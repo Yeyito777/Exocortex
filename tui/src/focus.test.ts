@@ -568,6 +568,37 @@ describe("sidebar folders", () => {
     });
   });
 
+  test("move prompt prioritizes the current folder's subfolders", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.currentFolderId = "folder-work";
+    state.sidebar.folders = [
+      { id: "folder-archive", name: "Archive", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 1 },
+      { id: "folder-work", name: "Work", parentId: null, createdAt: 2, updatedAt: 2, pinned: false, sortOrder: 2 },
+      { id: "folder-clients", name: "Clients", parentId: "folder-work", createdAt: 3, updatedAt: 3, pinned: false, sortOrder: 3 },
+      { id: "folder-projects", name: "Projects", parentId: "folder-work", createdAt: 4, updatedAt: 4, pinned: false, sortOrder: 4 },
+    ];
+    state.sidebar.conversations = [conversation("conv-a", 5, { folderId: "folder-work" })];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
+    state.sidebar.selectedId = "conv-a";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "F" }, state)).toEqual({ type: "handled" });
+    const matches = state.sidebar.prompt?.autocomplete?.matches.map(match => match.name) ?? [];
+    expect(matches.slice(0, 4)).toEqual([
+      "/",
+      "..",
+      "Work/Clients",
+      "Work/Projects",
+    ]);
+    expect(matches).not.toContain("Work");
+
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.prompt?.input).toBe("/");
+  });
+
   test("moving a conversation into a visible folder focuses that folder", () => {
     const state = createInitialState();
     state.sidebar.open = true;
