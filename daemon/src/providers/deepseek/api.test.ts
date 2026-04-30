@@ -61,4 +61,37 @@ describe("DeepSeek chat backend", () => {
       { role: "tool", tool_call_id: "call_1", content: "Mon" },
     ]);
   });
+
+  test("keeps reasoning_content present for DeepSeek tool-call assistant turns with no streamed reasoning", () => {
+    const messages: ApiMessage[] = [
+      { role: "user", content: "write the file" },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "call_1", name: "write", input: { file_path: "/tmp/a", content: "x" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call_1", content: "Created /tmp/a", is_error: false }],
+      },
+    ];
+
+    expect(buildDeepSeekMessagesForTest(messages)).toEqual([
+      { role: "user", content: "write the file" },
+      {
+        role: "assistant",
+        content: "",
+        reasoning_content: "",
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: { name: "write", arguments: '{"file_path":"/tmp/a","content":"x"}' },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "Created /tmp/a" },
+    ]);
+  });
 });

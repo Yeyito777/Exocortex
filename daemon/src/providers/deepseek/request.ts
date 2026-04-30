@@ -124,7 +124,14 @@ export function buildDeepSeekMessages(messages: ApiMessage[], system?: string): 
     out.push({
       role: "assistant",
       content,
-      ...(reasoning ? { reasoning_content: reasoning } : {}),
+      // In DeepSeek thinking mode, assistant turns that make tool calls must be
+      // replayed with a `reasoning_content` field on every subsequent request.
+      // Very terse tool-call rounds can stream no reasoning chunks at all, but
+      // omitting the field still trips DeepSeek's validator on the next round
+      // ("reasoning_content ... must be passed back").  Preserve the actual
+      // reasoning text when we have it; otherwise send the empty string for
+      // tool-call assistant messages so the request shape remains valid.
+      ...(reasoning || toolCalls.length > 0 ? { reasoning_content: reasoning } : {}),
       ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
     });
   }
