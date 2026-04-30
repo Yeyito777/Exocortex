@@ -236,6 +236,8 @@ export interface FolderSummary {
   updatedAt: number;
   pinned: boolean;
   sortOrder: number;
+  /** Effective parent→child AGENTS.md context for draft chats in this folder. */
+  effectiveInstructions?: string;
 }
 
 export type SidebarItemRef =

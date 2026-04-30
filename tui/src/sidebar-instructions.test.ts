@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { buildDisplayRows, handleSidebarAction, renderSidebar, updateConversationList } from "./sidebar";
-import { createInitialState, openFolderInstructionsDocument, setFolderInstructionsDocumentText } from "./state";
 import { createSidebarState } from "./sidebar/state";
+import { createInitialState, openFolderInstructionsDocument, resetDraftConversationState, setFolderInstructionsDocumentText } from "./state";
 import type { FolderSummary } from "./messages";
 
-function folder(id: string, name: string, parentId: string | null = null): FolderSummary {
+function folder(id: string, name: string, parentId: string | null = null, effectiveInstructions = ""): FolderSummary {
   return {
     id,
     name,
@@ -13,6 +13,7 @@ function folder(id: string, name: string, parentId: string | null = null): Folde
     updatedAt: 1,
     pinned: false,
     sortOrder: 0,
+    effectiveInstructions,
   };
 }
 
@@ -77,5 +78,31 @@ describe("folder AGENTS.md sidebar entry", () => {
     expect(state.cursorPos).toBe(5);
     expect(state.folderInstructionsDoc?.savedText).toBe("Remember dinosaurs.");
     expect(state.messages[0]).toMatchObject({ role: "system_instructions", text: "Remember dinosaurs." });
+  });
+
+  test("blank new chats in a folder render effective AGENTS.md instructions synchronously", () => {
+    const state = createInitialState();
+    state.sidebar.currentFolderId = "folder-a";
+    state.sidebar.folders = [folder("folder-a", "Project", null, "# Context from AGENTS.md:\nRemember dinosaurs.")];
+    state.inputBuffer = "draft message";
+    state.cursorPos = 5;
+
+    resetDraftConversationState(state);
+
+    expect(state.inputBuffer).toBe("draft message");
+    expect(state.cursorPos).toBe(5);
+    expect(state.messages[0]).toMatchObject({
+      role: "system_instructions",
+      text: "# Context from AGENTS.md:\nRemember dinosaurs.",
+    });
+  });
+
+  test("blank new chats outside folders do not render folder instructions", () => {
+    const state = createInitialState();
+    state.sidebar.folders = [folder("folder-a", "Project", null, "# Context from AGENTS.md:\nRemember dinosaurs.")];
+
+    resetDraftConversationState(state);
+
+    expect(state.messages).toEqual([]);
   });
 });

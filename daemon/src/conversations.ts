@@ -490,6 +490,10 @@ export function getFolderInstructions(folderId: string): string | null {
   return folders.has(folderId) ? folderInstructions.get(folderId) ?? "" : null;
 }
 
+export function getEffectiveFolderInstructions(folderId: string): string | null {
+  return folders.has(folderId) ? formatFolderInstructionsForDisplay(folderId) ?? "" : null;
+}
+
 export function setFolderInstructions(folderId: string, text: string): boolean {
   const folder = folders.get(folderId);
   if (!folder) return false;
@@ -717,7 +721,10 @@ export function listSummaries(): ConversationSummary[] {
 }
 
 export function listFolders(): FolderSummary[] {
-  return sortSidebarEntries([...folders.values()].map(folder => ({ ...folder })));
+  return sortSidebarEntries([...folders.values()].map(folder => ({
+    ...folder,
+    effectiveInstructions: formatFolderInstructionsForDisplay(folder.id) ?? "",
+  })));
 }
 
 export function listSidebarState(): { conversations: ConversationSummary[]; folders: FolderSummary[] } {

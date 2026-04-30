@@ -305,6 +305,30 @@ export function renderFolderInstructionsDocument(state: RenderState, text: strin
   resetToolOutputState(state);
 }
 
+export function currentFolderEffectiveInstructions(state: RenderState): string {
+  const folderId = state.sidebar.currentFolderId;
+  if (!folderId) return "";
+  return state.sidebar.folders.find(folder => folder.id === folderId)?.effectiveInstructions ?? "";
+}
+
+export function renderCurrentFolderDraftInstructions(state: RenderState): void {
+  renderFolderInstructionsDocument(state, currentFolderEffectiveInstructions(state));
+}
+
+export function resetDraftConversationState(state: RenderState): void {
+  state.folderInstructionsDoc = null;
+  state.convId = null;
+  state.messages = [];
+  clearPendingAI(state);
+  clearStreamingTailMessages(state);
+  state.contextTokens = null;
+  resetToolOutputState(state);
+  resetNewConversationDefaults(state);
+  state.pendingSystemInstructions = null;
+  state.pendingGenerateTitleOnCreate = false;
+  renderCurrentFolderDraftInstructions(state);
+}
+
 export function openFolderInstructionsDocument(state: RenderState, folderId: string): void {
   state.folderInstructionsDoc = { folderId, text: "", savedText: "", loading: true };
   state.sidebar.currentFolderId = folderId;

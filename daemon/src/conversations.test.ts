@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { bumpToTop, clearUnread, create, createFolder, createWithInitialUserMessage, deleteFolder, get, getDisplayData, getEffectiveSystemInstructions, getFolderInstructions, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, markUnread, moveSidebarItem, moveSidebarItems, pin, remove, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
+import { bumpToTop, clearUnread, create, createFolder, createWithInitialUserMessage, deleteFolder, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, markUnread, moveSidebarItem, moveSidebarItems, pin, remove, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
@@ -219,6 +219,20 @@ describe("folders", () => {
     loadFromDisk();
 
     expect(getFolderInstructions(folder.id)).toBe("Persistent rules.");
+  });
+
+  test("effective folder instructions can be loaded before a conversation exists", () => {
+    const parent = createFolder(`Draft Parent Agents ${Date.now()} ${Math.random()}`)!;
+    const child = createFolder(`Draft Child Agents ${Date.now()} ${Math.random()}`, parent.id)!;
+    FOLDER_IDS.push(child.id, parent.id);
+
+    expect(setFolderInstructions(parent.id, "Parent draft rules.")).toBe(true);
+    expect(setFolderInstructions(child.id, "Child draft rules.")).toBe(true);
+
+    const effective = getEffectiveFolderInstructions(child.id)!;
+    expect(effective.indexOf("Parent draft rules.")).toBeLessThan(effective.indexOf("Child draft rules."));
+    expect(effective).toContain("# Context from AGENTS.md:\nParent draft rules.");
+    expect(effective).toContain("# Context from AGENTS.md:\nChild draft rules.");
   });
 
   test("nested folder instructions are applied from parent to child", () => {

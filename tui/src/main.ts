@@ -19,7 +19,7 @@ import { render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetNewConversationDefaults, resetToolOutputState } from "./state";
+import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { createMessageMetadata, createPendingAI, type ImageAttachment } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
@@ -255,16 +255,7 @@ function startNewConversation(): void {
     daemon.unsubscribe(state.convId);
     clearLocalQueue(state, state.convId);
   }
-  state.folderInstructionsDoc = null;
-  state.convId = null;
-  state.messages = [];
-  clearPendingAI(state);
-  clearStreamingTailMessages(state);
-  state.contextTokens = null;
-  resetToolOutputState(state);
-  resetNewConversationDefaults(state);
-  state.pendingSystemInstructions = null;
-  state.pendingGenerateTitleOnCreate = false;
+  resetDraftConversationState(state);
   if (wasFolderInstructionsDoc) {
     clearPrompt(state);
     state.pendingImages = [];

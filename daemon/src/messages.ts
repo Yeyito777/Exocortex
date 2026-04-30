@@ -124,7 +124,7 @@ export function countConversationMessages(messages: StoredMessage[]): number {
 }
 
 export type PersistedConversationSummary = Omit<ConversationSummary, "streaming" | "unread">;
-export type PersistedFolderSummary = FolderSummary;
+export type PersistedFolderSummary = Omit<FolderSummary, "effectiveInstructions">;
 
 export function summarizeConversation(conv: Conversation): PersistedConversationSummary {
   return {
