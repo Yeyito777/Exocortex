@@ -9,15 +9,20 @@ import {
   parseOpenAIUsageLimitErrorForTest,
   readOpenAIEventsForTest,
   shouldRetryOpenAIUsageLimitResetForTest,
+  streamMessage,
   streamMessageWithSession,
 } from "./api";
+import { clearProviderAuth, saveProviderAuth } from "../../store";
+import { OPENAI_CODEX_RESPONSES_URL, OPENAI_TOKEN_URL } from "./constants";
 import { clearCloudflareCookiesForTest } from "./cookies";
+import type { StoredOpenAIAuth } from "./session";
 
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
   clearCloudflareCookiesForTest();
+  clearProviderAuth("openai");
   writeExocortexConfig(defaultExocortexConfig());
 });
 
@@ -140,6 +145,84 @@ describe("OpenAI replay input", () => {
     )).rejects.toThrow(/usage limit/i);
     expect(onRetry).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("retries transient OpenAI session refresh connection errors", async () => {
+    const retryCalls: unknown[][] = [];
+    const onRetry = mock((...args: unknown[]) => { retryCalls.push(args); });
+    const auth: StoredOpenAIAuth = {
+      tokens: {
+        accessToken: "expired-token",
+        refreshToken: "refresh-token",
+        expiresAt: Date.now() - 60_000,
+        scopes: [],
+        subscriptionType: null,
+        rateLimitTier: null,
+      },
+      profile: null,
+      updatedAt: new Date().toISOString(),
+      source: "oauth",
+      authMode: null,
+      accountId: null,
+      idToken: null,
+    };
+    saveProviderAuth("openai", auth);
+
+    let tokenRefreshAttempts = 0;
+    globalThis.fetch = mock((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === OPENAI_TOKEN_URL) {
+        tokenRefreshAttempts += 1;
+        if (tokenRefreshAttempts === 1) {
+          return Promise.reject(new Error("Unable to connect. Is the computer able to access the url?"));
+        }
+        return Promise.resolve(new Response(JSON.stringify({
+          access_token: "fresh-token",
+          refresh_token: "refresh-token",
+          expires_in: 3600,
+          scope: "",
+        }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+
+      if (url === OPENAI_CODEX_RESPONSES_URL) {
+        return Promise.resolve(new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode([
+              'data: {"type":"response.created","response":{"id":"resp_1"}}',
+              'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}',
+              'data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"ok"}',
+              'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"message","id":"msg_1","content":[{"type":"output_text","text":"ok"}]}]}}',
+              "data: [DONE]",
+              "",
+            ].join("\n\n")));
+            controller.close();
+          },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }));
+      }
+
+      return Promise.resolve(new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }));
+    }) as unknown as typeof fetch;
+
+    const result = await streamMessage(
+      [{ role: "user", content: "hello" }],
+      "gpt-5.4",
+      {
+        onText: () => {},
+        onThinking: () => {},
+        onRetry,
+      },
+    );
+
+    expect(result.text).toBe("ok");
+    expect(tokenRefreshAttempts).toBe(2);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(retryCalls[0][0]).toBe(1);
+    expect(retryCalls[0][1]).toBe(8);
+    expect(retryCalls[0][2]).toBe("Unable to connect. Is the computer able to access the url?");
+    expect(retryCalls[0][4]).toEqual({ kind: "transient" });
   });
 
   test("hard-fails context-window stream errors without transient retries", async () => {

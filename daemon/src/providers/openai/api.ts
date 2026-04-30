@@ -289,19 +289,41 @@ export async function streamMessageWithSession(
   }
 }
 
+async function getVerifiedSessionWithRetries(
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal,
+  opts: { forceRefresh?: boolean } = {},
+): Promise<OpenAIRequestSession> {
+  let retryAttempt = 0;
+
+  while (true) {
+    try {
+      return await getVerifiedSession(opts);
+    } catch (err) {
+      if (signal?.aborted || isAbortLikeError(err) || isNonRetryableProviderError(err) || isOpenAIAuthFailure(err)) throw err;
+      if (retryAttempt < MAX_RETRIES) {
+        await retryBackoff(retryAttempt++, err instanceof Error ? err.message : String(err), callbacks, signal);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 export async function streamMessage(
   messages: ApiMessage[],
   model: ModelId,
   callbacks: StreamCallbacks,
   options: StreamOptions = {},
 ): Promise<StreamResult> {
-  const session = await getVerifiedSession();
+  const { signal } = options;
+  const session = await getVerifiedSessionWithRetries(callbacks, signal);
   try {
     return await streamMessageWithSession(session, messages, model, callbacks, options);
   } catch (err) {
     if (!isOpenAIAuthFailure(err)) throw err;
 
-    const refreshed = await getVerifiedSession({ forceRefresh: true }).catch(() => null);
+    const refreshed = await getVerifiedSessionWithRetries(callbacks, signal, { forceRefresh: true }).catch(() => null);
     if (!refreshed) throw err;
     if (refreshed.accessToken === session.accessToken && refreshed.accountId === session.accountId) {
       throw err;
