@@ -6,7 +6,7 @@ import { handleEvent } from "./events";
 import { buildDisplayRows, renderSidebar, sidebarHitTest } from "./sidebar";
 import { theme } from "./theme";
 import { createInitialState } from "./state";
-import type { ConversationSummary, ProviderInfo } from "./messages";
+import type { ConversationSummary, FolderSummary, ProviderInfo } from "./messages";
 
 const providers: ProviderInfo[] = [
   {
@@ -51,6 +51,19 @@ function conversation(id: string, sortOrder: number, overrides: Partial<Conversa
     pinned: false,
     streaming: false,
     unread: false,
+    sortOrder,
+    ...overrides,
+  };
+}
+
+function folder(id: string, sortOrder: number, overrides: Partial<FolderSummary> = {}): FolderSummary {
+  return {
+    id,
+    name: id,
+    parentId: null,
+    createdAt: sortOrder,
+    updatedAt: sortOrder,
+    pinned: false,
     sortOrder,
     ...overrides,
   };
@@ -390,6 +403,34 @@ describe("sidebar top shortcuts", () => {
 
     expect(state.convId).toBe("conv-2");
     expect(state.sidebar.previousEnteredId).toBe("conv-1");
+  });
+
+  test("same-conversation reload preserves the sidebar folder being browsed", () => {
+    const state = createInitialState();
+    state.convId = "conv-active";
+    state.sidebar.currentFolderId = null;
+    state.sidebar.folders = [folder("folder-project", 1)];
+    state.sidebar.conversations = [
+      conversation("conv-root", 1),
+      conversation("conv-active", 2, { folderId: "folder-project" }),
+    ];
+    state.sidebar.selectedItem = { type: "folder", id: "folder-project" };
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-active",
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "high",
+      fastMode: false,
+      entries: [],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} } as never);
+
+    expect(state.convId).toBe("conv-active");
+    expect(state.sidebar.currentFolderId).toBeNull();
+    expect(state.sidebar.selectedItem).toEqual({ type: "folder", id: "folder-project" });
   });
 
   test("Ctrl+1 and Ctrl+- still insert symbols while typing in the prompt", () => {

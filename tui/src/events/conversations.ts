@@ -175,7 +175,16 @@ export function handleConversationLoaded(
   rememberEnteredConversation(state.sidebar, previousConvId, event.convId);
   state.folderInstructionsDoc = null;
   state.convId = event.convId;
-  focusConversationById(state.sidebar, event.convId);
+  if (sameConversation) {
+    // Same-conversation loads are used for silent rehydration after daemon
+    // reconnects (and other refreshes). Do not move the sidebar into the
+    // conversation's folder in that case; the user may be browsing elsewhere in
+    // the Conversations menu. Still reconcile the selected index in case the
+    // sidebar list/order changed while disconnected.
+    syncSelectedIndex(state.sidebar);
+  } else {
+    focusConversationById(state.sidebar, event.convId);
+  }
   syncChosenProvider(state, event.provider ?? fallbackProvider(state));
   state.model = event.model ?? state.model;
   state.effort = event.effort ?? state.effort;
