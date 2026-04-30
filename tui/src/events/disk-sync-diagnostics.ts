@@ -10,10 +10,32 @@ interface DiskSyncSnapshot {
   toolOutputsIncluded: boolean;
 }
 
+type DiskSyncSource = "conversation_loaded" | "history_updated";
+
 type VisibleComparableBlock =
   | { type: "text" | "thinking"; text: string }
   | { type: "tool_call"; toolCallId: string; toolName: string; summary: string }
   | { type: "tool_result"; toolCallId: string; toolName: string; output: string; isError: boolean };
+
+export interface AssistantDisplaySnapshot {
+  assistantMessages: number;
+  blocks: Block[];
+  visibleBlocks: VisibleComparableBlock[];
+  showToolOutput: boolean;
+  toolOutputsLoaded: boolean;
+}
+
+interface PreservedToolResultOutput {
+  toolCallId: string;
+  toolName: string;
+  output: string;
+  isError: boolean;
+}
+
+interface ToolOutputPreserveResult {
+  patchedOutputs: number;
+  patchedToolNames: number;
+}
 
 function assistantBlocksFromMessages(messages: Message[], pendingAI: AIMessage | null): Block[] {
   const blocks: Block[] = [];
@@ -22,6 +44,10 @@ function assistantBlocksFromMessages(messages: Message[], pendingAI: AIMessage |
   }
   if (pendingAI) blocks.push(...pendingAI.blocks);
   return blocks;
+}
+
+function assistantMessageCountFromMessages(messages: Message[], pendingAI: AIMessage | null): number {
+  return messages.filter((msg) => msg.role === "assistant").length + (pendingAI ? 1 : 0);
 }
 
 function assistantBlocksFromEntries(entries: DisplayEntry[], pendingAI: DiskSyncSnapshot["pendingAI"]): Block[] {
@@ -155,6 +181,108 @@ function firstVisibleDiff(local: VisibleComparableBlock[], disk: VisibleComparab
   return null;
 }
 
+function collectToolOutputsFromBlocks(blocks: Block[], out: Map<string, PreservedToolResultOutput>): void {
+  for (const block of blocks) {
+    if (block.type !== "tool_result") continue;
+    // Keep both toolName and output. Empty output is tracked too so diagnostics
+    // know the id existed locally, but applyPreservedToolResultOutputs only uses
+    // non-empty output to fill compact snapshots.
+    out.set(block.toolCallId, {
+      toolCallId: block.toolCallId,
+      toolName: block.toolName,
+      output: block.output,
+      isError: block.isError,
+    });
+  }
+}
+
+function applyToolOutputsToBlocks(blocks: Block[], preserved: Map<string, PreservedToolResultOutput>): ToolOutputPreserveResult {
+  let patchedOutputs = 0;
+  let patchedToolNames = 0;
+  for (const block of blocks) {
+    if (block.type !== "tool_result") continue;
+    const local = preserved.get(block.toolCallId);
+    if (!local || local.isError !== block.isError) continue;
+    if (local.output && (!block.output || local.output.length > block.output.length)) {
+      block.output = local.output;
+      patchedOutputs += 1;
+    }
+    if (!block.toolName && local.toolName) {
+      block.toolName = local.toolName;
+      patchedToolNames += 1;
+    }
+  }
+  return { patchedOutputs, patchedToolNames };
+}
+
+export function captureAssistantDisplaySnapshot(state: RenderState): AssistantDisplaySnapshot {
+  const blocks = structuredClone(assistantBlocksFromMessages(state.messages, state.pendingAI));
+  return {
+    assistantMessages: assistantMessageCountFromMessages(state.messages, state.pendingAI),
+    blocks,
+    visibleBlocks: visibleComparableBlocks(blocks, state.showToolOutput),
+    showToolOutput: state.showToolOutput,
+    toolOutputsLoaded: state.toolOutputsLoaded,
+  };
+}
+
+export function collectDisplayedToolResultOutputs(state: RenderState): Map<string, PreservedToolResultOutput> {
+  const preserved = new Map<string, PreservedToolResultOutput>();
+  for (const msg of state.messages) {
+    if (msg.role === "assistant") collectToolOutputsFromBlocks(msg.blocks, preserved);
+  }
+  if (state.pendingAI) collectToolOutputsFromBlocks(state.pendingAI.blocks, preserved);
+  return preserved;
+}
+
+export function applyPreservedToolResultOutputs(
+  state: RenderState,
+  preserved: Map<string, PreservedToolResultOutput>,
+): ToolOutputPreserveResult {
+  let patchedOutputs = 0;
+  let patchedToolNames = 0;
+  for (const msg of state.messages) {
+    if (msg.role !== "assistant") continue;
+    const result = applyToolOutputsToBlocks(msg.blocks, preserved);
+    patchedOutputs += result.patchedOutputs;
+    patchedToolNames += result.patchedToolNames;
+  }
+  if (state.pendingAI) {
+    const result = applyToolOutputsToBlocks(state.pendingAI.blocks, preserved);
+    patchedOutputs += result.patchedOutputs;
+    patchedToolNames += result.patchedToolNames;
+  }
+  return { patchedOutputs, patchedToolNames };
+}
+
+export function buildAssistantDisplayDiffPayload(
+  source: DiskSyncSource,
+  convId: string,
+  before: AssistantDisplaySnapshot,
+  after: AssistantDisplaySnapshot,
+  diagnostics: Record<string, unknown> = {},
+): Record<string, unknown> | null {
+  const firstDiff = firstVisibleDiff(before.visibleBlocks, after.visibleBlocks);
+  if (!firstDiff) return null;
+
+  return {
+    source,
+    convId,
+    ...diagnostics,
+    beforeShowToolOutput: before.showToolOutput,
+    afterShowToolOutput: after.showToolOutput,
+    beforeToolOutputsLoaded: before.toolOutputsLoaded,
+    afterToolOutputsLoaded: after.toolOutputsLoaded,
+    beforeAssistantMessages: before.assistantMessages,
+    afterAssistantMessages: after.assistantMessages,
+    beforeVisibleBlocks: before.visibleBlocks.length,
+    afterVisibleBlocks: after.visibleBlocks.length,
+    before: blockStats(before.blocks),
+    after: blockStats(after.blocks),
+    firstDiff,
+  };
+}
+
 /**
  * Build diagnostics for a same-conversation disk/daemon snapshot that would
  * visibly change the assistant content currently shown by the TUI.
@@ -165,7 +293,7 @@ function firstVisibleDiff(local: VisibleComparableBlock[], disk: VisibleComparab
  * tool output expanded, because hidden output does not affect the current display.
  */
 export function buildDiskSyncAssistantDiffPayload(
-  source: "conversation_loaded" | "history_updated",
+  source: DiskSyncSource,
   convId: string,
   state: RenderState,
   disk: DiskSyncSnapshot,
@@ -179,13 +307,14 @@ export function buildDiskSyncAssistantDiffPayload(
   const firstDiff = firstVisibleDiff(localVisible, diskVisible);
   if (!firstDiff) return null;
 
-  const localAssistantMessages = state.messages.filter((msg) => msg.role === "assistant").length + (state.pendingAI ? 1 : 0);
+  const localAssistantMessages = assistantMessageCountFromMessages(state.messages, state.pendingAI);
   const diskAssistantMessages = assistantMessageCountFromEntries(disk.entries, disk.pendingAI ?? null);
 
   return {
     source,
     convId,
     showToolOutput: state.showToolOutput,
+    toolOutputsLoaded: state.toolOutputsLoaded,
     toolOutputsIncluded: disk.toolOutputsIncluded,
     localAssistantMessages,
     diskAssistantMessages,
@@ -198,7 +327,7 @@ export function buildDiskSyncAssistantDiffPayload(
 }
 
 export function logDiskSyncAssistantDiff(
-  source: "conversation_loaded" | "history_updated",
+  source: DiskSyncSource,
   convId: string,
   state: RenderState,
   disk: DiskSyncSnapshot,
@@ -206,4 +335,18 @@ export function logDiskSyncAssistantDiff(
   const payload = buildDiskSyncAssistantDiffPayload(source, convId, state, disk);
   if (!payload) return;
   log("warn", `tui: disk sync changed displayed assistant messages ${JSON.stringify(payload)}`);
+}
+
+export function logDiskSyncAppliedAssistantDiff(
+  source: DiskSyncSource,
+  convId: string,
+  before: AssistantDisplaySnapshot | null,
+  state: RenderState,
+  diagnostics: Record<string, unknown> = {},
+): void {
+  if (!before || state.convId !== convId) return;
+  const after = captureAssistantDisplaySnapshot(state);
+  const payload = buildAssistantDisplayDiffPayload(source, convId, before, after, diagnostics);
+  if (!payload) return;
+  log("warn", `tui: disk sync changed displayed assistant after apply ${JSON.stringify(payload)}`);
 }

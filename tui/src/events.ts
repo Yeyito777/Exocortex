@@ -19,7 +19,13 @@ import {
   handleConversationsList,
   handleConversationUpdated,
 } from "./events/conversations";
-import { logDiskSyncAssistantDiff } from "./events/disk-sync-diagnostics";
+import {
+  applyPreservedToolResultOutputs,
+  captureAssistantDisplaySnapshot,
+  collectDisplayedToolResultOutputs,
+  logDiskSyncAppliedAssistantDiff,
+  logDiskSyncAssistantDiff,
+} from "./events/disk-sync-diagnostics";
 import { pushDisplayEntries } from "./events/display";
 import { CONV_SCOPED, observeStreamSeq } from "./events/stream-sequence";
 import {
@@ -163,10 +169,18 @@ export function handleEvent(
       handleToolsAvailable(event, state);
       break;
 
-    case "history_updated":
+    case "history_updated": {
       // Context tool modified historical messages — replace committed messages
       // but preserve pendingAI (the active streaming response). Flush buffered
       // system messages — they reference pre-modification state.
+      const beforeApply = captureAssistantDisplaySnapshot(state);
+      const previousShowToolOutput = state.showToolOutput;
+      const previousToolOutputsLoaded = state.toolOutputsLoaded;
+      const shouldPreserveCompactToolOutputs = !event.toolOutputsIncluded
+        && (state.showToolOutput || state.toolOutputsLoaded);
+      const preservedToolOutputs = shouldPreserveCompactToolOutputs
+        ? collectDisplayedToolResultOutputs(state)
+        : new Map();
       logDiskSyncAssistantDiff("history_updated", event.convId, state, {
         entries: event.entries,
         pendingAI: state.pendingAI,
@@ -177,11 +191,25 @@ export function handleEvent(
       state.contextTokens = event.contextTokens;
       setCurrentConversationToolOutputAvailability(state, event.toolOutputsIncluded);
       pushDisplayEntries(state, event.entries);
+      const preservedToolOutputResult = !event.toolOutputsIncluded && preservedToolOutputs.size > 0
+        ? applyPreservedToolResultOutputs(state, preservedToolOutputs)
+        : { patchedOutputs: 0, patchedToolNames: 0 };
+      if (!event.toolOutputsIncluded && preservedToolOutputResult.patchedOutputs > 0) {
+        state.toolOutputsLoaded = previousToolOutputsLoaded || state.toolOutputsLoaded;
+        state.showToolOutput = previousShowToolOutput || state.showToolOutput;
+        state.toolOutputsLoading = false;
+        state.showToolOutputAfterLoad = false;
+      }
+      logDiskSyncAppliedAssistantDiff("history_updated", event.convId, beforeApply, state, {
+        preservedToolOutputs: preservedToolOutputResult.patchedOutputs,
+        preservedToolNames: preservedToolOutputResult.patchedToolNames,
+      });
       if (state.showToolOutput && !state.toolOutputsLoaded && state.convId) {
         state.toolOutputsLoading = true;
         daemon.loadToolOutputs(state.convId);
       }
       break;
+    }
 
     case "tool_outputs_loaded":
       handleToolOutputsLoaded(state, event.outputs);

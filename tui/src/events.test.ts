@@ -61,6 +61,96 @@ describe("disk sync assistant diagnostics", () => {
     });
   });
 
+  test("preserves expanded tool output across a compact same-conversation load", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.showToolOutput = true;
+    state.toolOutputsLoaded = true;
+    state.messages.push({
+      role: "assistant",
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: {}, summary: "$ make" },
+        { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "full output", isError: false },
+      ],
+      metadata: null,
+    });
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      entries: [{
+        type: "ai",
+        blocks: [
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: {}, summary: "$ make" },
+          { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
+        ],
+        metadata: null,
+      }],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(state.showToolOutput).toBe(true);
+    expect(state.toolOutputsLoaded).toBe(true);
+    expect(state.messages[0]).toMatchObject({
+      role: "assistant",
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1" },
+        { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "full output", isError: false },
+      ],
+    });
+  });
+
+  test("preserves expanded tool output across a compact history update", () => {
+    let loadToolOutputsCalls = 0;
+    const localDaemon: DaemonActions = {
+      ...daemon,
+      loadToolOutputs() { loadToolOutputsCalls += 1; },
+    };
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.showToolOutput = true;
+    state.toolOutputsLoaded = true;
+    state.messages.push({
+      role: "assistant",
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: {}, summary: "$ make" },
+        { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "full output", isError: false },
+      ],
+      metadata: null,
+    });
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-1",
+      entries: [{
+        type: "ai",
+        blocks: [
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: {}, summary: "$ make" },
+          { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
+        ],
+        metadata: null,
+      }],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, localDaemon);
+
+    expect(state.showToolOutput).toBe(true);
+    expect(state.toolOutputsLoaded).toBe(true);
+    expect(loadToolOutputsCalls).toBe(0);
+    expect(state.messages[0]).toMatchObject({
+      role: "assistant",
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1" },
+        { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "full output", isError: false },
+      ],
+    });
+  });
+
   test("ignores hidden compact tool-result output differences until output is visible", () => {
     const state = createInitialState();
     state.convId = "conv-1";

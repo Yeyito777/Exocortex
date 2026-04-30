@@ -1,3 +1,4 @@
+import { log } from "../log";
 import type { Event } from "../protocol";
 import { syncChosenProvider } from "../providerselection";
 import { clearLocalQueue } from "../queue";
@@ -16,11 +17,18 @@ import {
   resetToolOutputState,
   setLoadedConversationToolOutputState,
 } from "../state";
-import { logDiskSyncAssistantDiff } from "./disk-sync-diagnostics";
+import {
+  applyPreservedToolResultOutputs,
+  captureAssistantDisplaySnapshot,
+  collectDisplayedToolResultOutputs,
+  logDiskSyncAppliedAssistantDiff,
+  logDiskSyncAssistantDiff,
+} from "./disk-sync-diagnostics";
 import { pushDisplayEntries } from "./display";
 import { hydratePendingAIFromSnapshot } from "./pending-ai";
 import { fallbackProvider } from "./provider";
 import {
+  blockStats,
   clonePendingAI,
   findSnapshotAlignment,
   logStreamingRepair,
@@ -118,18 +126,39 @@ export function handleConversationLoaded(
   daemon: DaemonActions,
 ): void {
   const previousConvId = state.convId;
+  const sameConversation = previousConvId === event.convId;
+  const beforeApply = sameConversation ? captureAssistantDisplaySnapshot(state) : null;
+  const previousShowToolOutput = state.showToolOutput;
+  const previousToolOutputsLoaded = state.toolOutputsLoaded;
+  const shouldPreserveCompactToolOutputs = sameConversation
+    && !event.toolOutputsIncluded
+    && (state.showToolOutput || state.toolOutputsLoaded);
+  const preservedToolOutputs = shouldPreserveCompactToolOutputs
+    ? collectDisplayedToolResultOutputs(state)
+    : new Map();
+
   logDiskSyncAssistantDiff("conversation_loaded", event.convId, state, {
     entries: event.entries,
     pendingAI: event.pendingAI ?? null,
     toolOutputsIncluded: event.toolOutputsIncluded,
   });
-  const preserveLivePendingAI = previousConvId === event.convId && state.pendingAI !== null;
+  const preserveLivePendingAI = sameConversation && state.pendingAI !== null;
   const preservedPendingAIBlocks = preserveLivePendingAI
     ? subtractLoadedAssistantPrefix(state.pendingAI!.blocks, event.entries)
     : [];
   const preservedPendingAI = preserveLivePendingAI && preservedPendingAIBlocks.length > 0
     ? clonePendingAI({ blocks: preservedPendingAIBlocks, metadata: state.pendingAI!.metadata })
     : null;
+  if (sameConversation && (preserveLivePendingAI || event.pendingAI)) {
+    log("info", `tui: conversation load pending preservation ${JSON.stringify({
+      convId: event.convId,
+      hadLocalPendingAI: preserveLivePendingAI,
+      eventHasPendingAI: Boolean(event.pendingAI),
+      localPending: state.pendingAI ? blockStats(state.pendingAI.blocks) : null,
+      eventPending: event.pendingAI ? blockStats(event.pendingAI.blocks) : null,
+      preservedPending: preservedPendingAI ? blockStats(preservedPendingAI.blocks) : null,
+    })}`);
+  }
   // Unsubscribe from old conversation before switching.
   if (previousConvId && previousConvId !== event.convId) {
     daemon.unsubscribe(previousConvId);
@@ -190,6 +219,29 @@ export function handleConversationLoaded(
   } else if (event.pendingAI) {
     hydratePendingAIFromSnapshot(state, event.pendingAI);
   }
+
+  const preservedToolOutputResult = !event.toolOutputsIncluded && preservedToolOutputs.size > 0
+    ? applyPreservedToolResultOutputs(state, preservedToolOutputs)
+    : { patchedOutputs: 0, patchedToolNames: 0 };
+  if (sameConversation && !event.toolOutputsIncluded && preservedToolOutputResult.patchedOutputs > 0) {
+    state.toolOutputsLoaded = previousToolOutputsLoaded || state.toolOutputsLoaded;
+    state.showToolOutput = previousShowToolOutput || state.showToolOutput;
+    state.toolOutputsLoading = false;
+    state.showToolOutputAfterLoad = false;
+    log("info", `tui: preserved compact disk-sync tool outputs ${JSON.stringify({
+      source: "conversation_loaded",
+      convId: event.convId,
+      patchedOutputs: preservedToolOutputResult.patchedOutputs,
+      patchedToolNames: preservedToolOutputResult.patchedToolNames,
+      restoredShowToolOutput: state.showToolOutput,
+      restoredToolOutputsLoaded: state.toolOutputsLoaded,
+    })}`);
+  }
+
+  logDiskSyncAppliedAssistantDiff("conversation_loaded", event.convId, beforeApply, state, {
+    preservedToolOutputs: preservedToolOutputResult.patchedOutputs,
+    preservedToolNames: preservedToolOutputResult.patchedToolNames,
+  });
 
   // Rebuild local queue shadows from daemon state.
   clearLocalQueue(state, event.convId);

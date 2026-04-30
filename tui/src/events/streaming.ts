@@ -1,3 +1,4 @@
+import { log } from "../log";
 import { theme } from "../theme";
 import { clearPendingAI, clearStreamingTailMessages } from "../state";
 import type { RenderState } from "../state";
@@ -16,10 +17,49 @@ import { formatStreamRetryNotice, pushInlineSystemNotice, shouldReconcileInlineS
 import { hydratePendingAIFromSnapshot, markPendingAILive } from "./pending-ai";
 import { fallbackProvider } from "./provider";
 import {
+  blockStats,
   findSnapshotAlignment,
   logStreamingRepair,
   mergeSnapshotBlocksPreservingLocalDetails,
 } from "./streaming-snapshot";
+
+function displayedAssistantBlocks(state: RenderState) {
+  const blocks = [] as NonNullable<RenderState["pendingAI"]>["blocks"];
+  for (const msg of state.messages) {
+    if (msg.role === "assistant") blocks.push(...msg.blocks);
+  }
+  if (state.pendingAI) blocks.push(...state.pendingAI.blocks);
+  return blocks;
+}
+
+function recentBlockSignatures(blocks: ReturnType<typeof displayedAssistantBlocks>, count = 8): string[] {
+  return blocks.slice(-count).map((block) => {
+    switch (block.type) {
+      case "text":
+      case "thinking":
+        return `${block.type}:${block.text.length}`;
+      case "tool_call":
+        return `tool_call:${block.toolName}:${block.toolCallId}`;
+      case "tool_result":
+        return `tool_result:${block.toolName}:${block.toolCallId}:${block.output.length}:${block.isError ? "err" : "ok"}`;
+    }
+  });
+}
+
+function logOrphanToolResult(event: Extract<Event, { type: "tool_result" }>, state: RenderState): void {
+  const blocks = displayedAssistantBlocks(state);
+  const hasMatchingToolCall = blocks.some((block) => block.type === "tool_call" && block.toolCallId === event.toolCallId);
+  if (hasMatchingToolCall) return;
+  log("warn", `tui: stream tool_result without matching tool_call ${JSON.stringify({
+    convId: event.convId,
+    streamSeq: event.streamSeq ?? null,
+    toolCallId: event.toolCallId,
+    toolName: event.toolName,
+    pending: state.pendingAI ? blockStats(state.pendingAI.blocks) : null,
+    displayed: blockStats(blocks),
+    recentBlocks: recentBlockSignatures(blocks),
+  })}`);
+}
 
 export function handleStreamingStarted(event: Extract<Event, { type: "streaming_started" }>, state: RenderState): void {
   // Late-joining client: create pendingAI so future chunks are captured.
@@ -120,6 +160,7 @@ export function handleToolCall(event: Extract<Event, { type: "tool_call" }>, sta
 }
 
 export function handleToolResult(event: Extract<Event, { type: "tool_result" }>, state: RenderState): void {
+  logOrphanToolResult(event, state);
   const pending = markPendingAILive(state);
   if (pending) {
     pending.blocks.push({
