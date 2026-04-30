@@ -7,7 +7,7 @@ import {
   getSidebarPromptBar,
   sidebarPromptAutocompleteVisibleRows,
 } from "./prompt";
-import { buildDisplayRows, sidebarListRows } from "./rows";
+import { buildDisplayRows, revealPrecedingSectionLabel, sidebarListRows } from "./rows";
 import { selectedDisplayRow, selectedVisualItems } from "./selection";
 import type { SidebarState } from "./state";
 import {
@@ -76,7 +76,7 @@ export function renderSidebar(
   const listRows = sidebarListRows(totalRows, sidebar);
   let scrollOffset = sidebar.scrollOffset;
   if (selectedDisplayIdx < scrollOffset) {
-    scrollOffset = selectedDisplayIdx;
+    scrollOffset = revealPrecedingSectionLabel(displayRows, selectedDisplayIdx);
   } else if (selectedDisplayIdx >= scrollOffset + listRows) {
     scrollOffset = selectedDisplayIdx - listRows + 1;
   }

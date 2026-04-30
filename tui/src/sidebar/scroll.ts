@@ -59,6 +59,7 @@ function applySidebarCursorViewport(
   totalRows: number,
   cursorRow: number,
   viewStart: number,
+  previousViewStart: number,
   previousCursorRow: number,
   direction: -1 | 0 | 1,
   edgePlacement: "top" | "bottom" | null = null,
@@ -82,10 +83,26 @@ function applySidebarCursorViewport(
   // Keep the shared scroll result, then re-run the shared visibility clamp using
   // the actual entry row we landed on (labels/delimiters are skipped by selection).
   const actualCursorRow = selectedDisplayRow(displayRows, sidebar);
+  let finalViewStart = snappedViewStart;
+
+  // If the old viewport began with a section label (e.g. "Pinned"), the selected
+  // item's terminal row is one lower than its row among selectable entries. When
+  // scrolling down out of that labeled section, preserve the selectable-entry slot
+  // instead of the raw terminal row: the first pinned conversation should become
+  // the first visible conversation, not remain one row below the top after the
+  // label scrolls away.
+  if (direction > 0
+      && displayRows[previousViewStart]?.type === "label"
+      && previousCursorRow > previousViewStart
+      && previousCursorRow < previousViewStart + listRows) {
+    const previousSelectableSlot = previousCursorRow - previousViewStart - 1;
+    finalViewStart = clampViewStart(displayRows.length, listRows, actualCursorRow - previousSelectableSlot);
+  }
+
   const visible = ensureCursorRowVisibleInViewport({
     totalLines: displayRows.length,
     viewportHeight: listRows,
-    viewStart: snappedViewStart,
+    viewStart: finalViewStart,
     cursorRow: actualCursorRow,
   });
   sidebar.scrollOffset = visible.viewStart;
@@ -170,6 +187,7 @@ export function handleSidebarScrollAction(action: Action, sidebar: SidebarState,
     totalRows,
     next.cursorRow,
     next.viewStart,
+    currentViewStart,
     currentCursorRow,
     sidebarScrollDirection(action),
     action === "scroll_page_down" ? "top" : action === "scroll_page_up" ? "bottom" : null,

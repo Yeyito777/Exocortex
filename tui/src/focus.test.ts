@@ -1132,7 +1132,7 @@ describe("sidebar Ctrl scrolling", () => {
     expect(selectedSidebarScreenPosition(state)).toBe(5);
   });
 
-  test("Ctrl+D/U snap sidebar chrome off the viewport edge", () => {
+  test("Ctrl+D/U keep section labels visible at the viewport edge", () => {
     const state = setupSidebarScrollState();
     state.sidebar.conversations = Array.from({ length: 12 }, (_, i) =>
       conversation(`conv-${i + 1}`, i + 1, { pinned: i < 2 }),
@@ -1158,8 +1158,45 @@ describe("sidebar Ctrl scrolling", () => {
 
     expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
     expect(state.sidebar.selectedId).toBe("conv-1");
-    expect(state.sidebar.scrollOffset).toBe(1);
+    expect(state.sidebar.scrollOffset).toBe(0);
+    expect(selectedSidebarScreenPosition(state)).toBe(1);
+  });
+
+  test("Ctrl+D scrolling down from the Pinned label preserves the selectable entry position", () => {
+    const state = setupSidebarScrollState();
+    state.rows = 4;
+    state.sidebar.conversations = Array.from({ length: 12 }, (_, i) =>
+      conversation(`conv-${i + 1}`, i + 1, { pinned: i < 2 }),
+    );
+    state.sidebar.scrollOffset = 0;
+    state.sidebar.selectedIndex = 0;
+    state.sidebar.selectedId = "conv-1";
+
+    expect(selectedSidebarScreenPosition(state)).toBe(1);
+    expect(handleFocusedKey({ type: "ctrl-d" }, state)).toEqual({ type: "handled" });
+    renderSidebar(state.sidebar, state.rows, true, null);
+
+    expect(state.sidebar.selectedId).toBe("conv-2");
+    expect(state.sidebar.scrollOffset).toBe(2);
     expect(selectedSidebarScreenPosition(state)).toBe(0);
+  });
+
+  test("gg shows the Pinned section label at the top of the sidebar", () => {
+    const state = setupSidebarScrollState();
+    state.sidebar.conversations = Array.from({ length: 12 }, (_, i) =>
+      conversation(`conv-${i + 1}`, i + 1, { pinned: i < 2 }),
+    );
+    state.sidebar.scrollOffset = 7;
+    state.sidebar.selectedIndex = 5;
+    state.sidebar.selectedId = "conv-6";
+
+    expect(handleFocusedKey({ type: "char", char: "g" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "g" }, state)).toEqual({ type: "handled" });
+
+    expect(state.sidebar.selectedId).toBe("conv-1");
+    expect(state.sidebar.scrollOffset).toBe(0);
+    expect(buildDisplayRows(state.sidebar)[state.sidebar.scrollOffset]?.text).toBe(" Pinned");
+    expect(selectedSidebarScreenPosition(state)).toBe(1);
   });
 });
 

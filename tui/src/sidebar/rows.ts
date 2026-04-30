@@ -100,6 +100,15 @@ export function nearestDisplayEntry(
   return scan(1) ?? scan(-1);
 }
 
+export function revealPrecedingSectionLabel(displayRows: DisplayRow[], viewStart: number): number {
+  if (viewStart > 0
+      && displayRows[viewStart]?.type === "entry"
+      && displayRows[viewStart - 1]?.type === "label") {
+    return viewStart - 1;
+  }
+  return viewStart;
+}
+
 export function snapSidebarViewStartToEntry(
   displayRows: DisplayRow[],
   listRows: number,
@@ -108,21 +117,28 @@ export function snapSidebarViewStartToEntry(
 ): number {
   const maxStart = Math.max(0, displayRows.length - listRows);
   const clamped = Math.max(0, Math.min(viewStart, maxStart));
-  if (displayRows[clamped]?.type === "entry") return clamped;
+  const revealSectionLabel = direction < 0;
+  const snapEntry = (row: number): number => revealSectionLabel ? revealPrecedingSectionLabel(displayRows, row) : row;
+
+  if (displayRows[clamped]?.type === "label" && displayRows[clamped + 1]?.type === "entry") return clamped;
+  if (displayRows[clamped]?.type === "entry") return snapEntry(clamped);
 
   const scan = (step: 1 | -1): number | null => {
     for (let row = clamped + step; row >= 0 && row <= maxStart; row += step) {
-      if (displayRows[row]?.type === "entry") return row;
+      if (displayRows[row]?.type === "label" && displayRows[row + 1]?.type === "entry") return row;
+      if (displayRows[row]?.type === "entry") return snapEntry(row);
     }
     return null;
   };
 
   // Sidebar labels/delimiters are chrome, not cursor-bearing content. If a
-  // scroll lands the viewport top on chrome, keep moving in the scroll direction
-  // until the top row is an actual entry. This prevents Ctrl+D/U/F/B from
-  // preserving a one-row offset just because a Pinned label or delimiter was
-  // visible when the scroll began.
+  // scroll lands the viewport top on a delimiter, keep moving in the scroll
+  // direction until the top row is an entry. Section labels such as "Pinned"
+  // are different: when scrolling up into a section, keep that label visible;
+  // when scrolling down, don't pull the viewport back and disturb the cursor's
+  // screen position just to reveal a label above it.
   if (direction > 0) return scan(1) ?? scan(-1) ?? clamped;
   if (direction < 0) return scan(-1) ?? scan(1) ?? clamped;
   return scan(1) ?? scan(-1) ?? clamped;
 }
+
