@@ -211,6 +211,14 @@ export class DaemonClient {
     this.send({ type: "delete_folder", folderId, mode });
   }
 
+  loadFolderInstructions(folderId: string): void {
+    this.send({ type: "load_folder_instructions", folderId });
+  }
+
+  setFolderInstructions(folderId: string, text: string): void {
+    this.send({ type: "set_folder_instructions", folderId, text });
+  }
+
   generateTitle(convId: string): void {
     this.send({ type: "generate_title", convId });
   }

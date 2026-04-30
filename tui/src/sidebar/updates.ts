@@ -72,6 +72,11 @@ export function syncSelectedIndex(sidebar: SidebarState): void {
     sidebar.selectedId = null;
     return;
   }
+  if (item?.type === "folder_instructions" && item.folderId === sidebar.currentFolderId
+      && buildDisplayRows(sidebar).some(row => row.type === "entry" && sameItem(row.item ?? null, item))) {
+    sidebar.selectedId = null;
+    return;
+  }
   const first = buildDisplayRows(sidebar).find(row => row.type === "entry");
   focusSidebarItem(sidebar, first?.item ?? null);
 }

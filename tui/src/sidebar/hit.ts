@@ -1,4 +1,4 @@
-import type { SidebarItemRef } from "../messages";
+import type { SidebarSelectableItem } from "./items";
 import { buildDisplayRows } from "./rows";
 import type { SidebarState } from "./state";
 
@@ -10,7 +10,7 @@ import type { SidebarState } from "./state";
  * @param screenRow 1-based screen row
  * @param sidebar current sidebar state
  */
-export function sidebarHitTest(screenRow: number, totalRows: number, sidebar: SidebarState): SidebarItemRef | { type: "up" } | null {
+export function sidebarHitTest(screenRow: number, totalRows: number, sidebar: SidebarState): SidebarSelectableItem | null {
   // Rows 1-2 are header and separator — not clickable
   if (screenRow <= 2) return null;
   // Bottom row is reserved for the search/command/prompt bar while open.

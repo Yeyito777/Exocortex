@@ -149,7 +149,9 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       const item = sidebarHitTest(row, state.rows, sidebar);
       if (item) {
         const result = activateSidebarItem(sidebar, item);
-        return result.type === "select" ? { type: "load_conversation", convId: result.convId } : { type: "handled" };
+        if (result.type === "select") return { type: "load_conversation", convId: result.convId };
+        if (result.type === "open_folder_instructions") return { type: "open_folder_instructions", folderId: result.folderId };
+        return { type: "handled" };
       }
       return { type: "handled" };
     }

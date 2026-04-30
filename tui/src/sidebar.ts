@@ -140,13 +140,14 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
     case "submit": {
       const item = getSelectedSidebarItem(sidebar);
       if (item?.type === "conversation") return { type: "select", convId: item.id };
+      if (item?.type === "folder_instructions") return { type: "open_folder_instructions", folderId: item.folderId };
       if (item?.type === "folder" || item?.type === "up") return enterSelectedFolder(sidebar);
       return { type: "handled" };
     }
 
     case "delete": {
       const item = getSelectedSidebarItem(sidebar);
-      if (!item || item.type === "up") return { type: "handled" };
+      if (!item || item.type === "up" || item.type === "folder_instructions") return { type: "handled" };
       if (sameItem(sidebar.pendingDeleteItem, item)) {
         sidebar.pendingDeleteId = null;
         sidebar.pendingDeleteItem = null;
@@ -199,7 +200,7 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
 
     case "pin": {
       const item = getSelectedSidebarItem(sidebar);
-      if (!item || item.type === "up") return { type: "handled" };
+      if (!item || item.type === "up" || item.type === "folder_instructions") return { type: "handled" };
       if (item.type === "folder") {
         const folder = sidebar.folders.find(f => f.id === item.id);
         if (!folder) return { type: "handled" };
@@ -221,7 +222,7 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       const direction = action === "move_up" ? "up" : "down";
       if (sidebar.visualAnchor) return moveVisualSelectionWithinFolder(sidebar, direction);
       const item = getSelectedSidebarItem(sidebar);
-      if (!item || item.type === "up") return { type: "handled" };
+      if (!item || item.type === "up" || item.type === "folder_instructions") return { type: "handled" };
       return { type: "move_sidebar_item", item, direction };
     }
 

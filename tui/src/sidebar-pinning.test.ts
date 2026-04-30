@@ -39,7 +39,7 @@ function folder(id: string, sortOrder: number, overrides: Partial<FolderSummary>
 function entryIds(sidebar: SidebarState): string[] {
   const ids: string[] = [];
   for (const row of buildDisplayRows(sidebar)) {
-    if (row.type !== "entry" || !row.item || row.item.type === "up") continue;
+    if (row.type !== "entry" || !row.item || row.item.type === "up" || row.item.type === "folder_instructions") continue;
     ids.push(`${row.item.type}:${row.item.id}`);
   }
   return ids;

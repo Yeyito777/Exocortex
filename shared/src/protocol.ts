@@ -254,6 +254,20 @@ export interface DeleteFolderCommand {
   mode?: "recursive" | "unwrap";
 }
 
+export interface LoadFolderInstructionsCommand {
+  type: "load_folder_instructions";
+  reqId?: string;
+  folderId: string;
+}
+
+export interface SetFolderInstructionsCommand {
+  type: "set_folder_instructions";
+  reqId?: string;
+  folderId: string;
+  /** Empty string clears the folder instructions document. */
+  text: string;
+}
+
 export interface UndoDeleteCommand {
   type: "undo_delete";
   reqId?: string;
@@ -366,6 +380,8 @@ export type Command =
   | MoveSidebarItemCommand
   | MoveSidebarItemsCommand
   | DeleteFolderCommand
+  | LoadFolderInstructionsCommand
+  | SetFolderInstructionsCommand
   | UndoDeleteCommand
   | QueueMessageCommand
   | UnqueueMessageCommand
@@ -692,6 +708,20 @@ export interface SystemInstructionsUpdatedEvent {
   text: string;
 }
 
+export interface FolderInstructionsLoadedEvent {
+  type: "folder_instructions_loaded";
+  reqId?: string;
+  folderId: string;
+  text: string;
+}
+
+export interface FolderInstructionsUpdatedEvent {
+  type: "folder_instructions_updated";
+  reqId?: string;
+  folderId: string;
+  text: string;
+}
+
 export interface LlmCompleteResultEvent {
   type: "llm_complete_result";
   reqId?: string;
@@ -775,6 +805,8 @@ export type Event =
   | HistoryUpdatedEvent
   | ToolOutputsLoadedEvent
   | SystemInstructionsUpdatedEvent
+  | FolderInstructionsLoadedEvent
+  | FolderInstructionsUpdatedEvent
   | LlmCompleteResultEvent
   | SystemPromptEvent
   | TranscriptionResultEvent

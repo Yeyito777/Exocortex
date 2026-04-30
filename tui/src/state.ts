@@ -94,6 +94,13 @@ export interface SearchState {
   originChatFocus: ChatFocus;
 }
 
+export interface FolderInstructionsDocumentState {
+  folderId: string;
+  text: string;
+  savedText: string;
+  loading: boolean;
+}
+
 export interface RenderState {
   messages: Message[];
   /** The AI message currently being streamed (not yet finalized). */
@@ -201,6 +208,8 @@ export interface RenderState {
   pendingImages: ImageAttachment[];
   /** Active hold-to-talk placeholder rendered inline in the prompt, if any. */
   voicePrompt: VoicePromptState | null;
+  /** Folder-level AGENTS.md document currently open instead of a conversation. */
+  folderInstructionsDoc: FolderInstructionsDocumentState | null;
   /** Current mouse cursor shape — used to avoid redundant cursor shape OSC writes. */
   mouseCursor: "pointer" | "text" | "hand";
 }
@@ -286,6 +295,34 @@ export function pushSystemMessage(state: RenderState, text: string, color?: Syst
   } else {
     state.messages.push(msg);
   }
+}
+
+export function renderFolderInstructionsDocument(state: RenderState, text: string): void {
+  const trimmed = text.trim();
+  state.messages = trimmed ? [{ role: "system_instructions", text: trimmed, metadata: null }] : [];
+  clearStreamingTailMessages(state);
+  state.scrollOffset = 0;
+  resetToolOutputState(state);
+}
+
+export function openFolderInstructionsDocument(state: RenderState, folderId: string): void {
+  state.folderInstructionsDoc = { folderId, text: "", savedText: "", loading: true };
+  state.sidebar.currentFolderId = folderId;
+  state.sidebar.selectedItem = { type: "folder_instructions", folderId };
+  state.sidebar.selectedId = null;
+  state.convId = null;
+  state.contextTokens = null;
+  clearPendingAI(state);
+  state.messages = [];
+  clearStreamingTailMessages(state);
+  state.scrollOffset = 0;
+  resetToolOutputState(state);
+}
+
+export function setFolderInstructionsDocumentText(state: RenderState, folderId: string, text: string): void {
+  if (!state.folderInstructionsDoc || state.folderInstructionsDoc.folderId !== folderId) return;
+  state.folderInstructionsDoc = { folderId, text, savedText: text, loading: false };
+  renderFolderInstructionsDocument(state, text);
 }
 
 export function getProviderInfo(state: RenderState, provider = state.provider): ProviderInfo | null {
@@ -405,6 +442,7 @@ export function createInitialState(): RenderState {
     editMessagePrompt: null,
     pendingImages: [],
     voicePrompt: null,
+    folderInstructionsDoc: null,
     mouseCursor: "pointer",
   };
   // App starts in insert mode — mark entry so first Esc commits the session

@@ -132,9 +132,14 @@ export function confirmEditMessage(state: RenderState): EditConfirmResult {
   }
 
   if (item.userMessageIndex === EDIT_INDEX_INSTRUCTIONS) {
-    // System instructions — prepend /instructions so it routes through the slash command
-    state.inputBuffer = `/instructions ${item.text}`;
-    state.cursorPos = state.inputBuffer.length;
+    if (state.folderInstructionsDoc) {
+      state.inputBuffer = item.text;
+      state.cursorPos = state.inputBuffer.length;
+    } else {
+      // Conversation instructions — prepend /instructions so it routes through the slash command.
+      state.inputBuffer = `/instructions ${item.text}`;
+      state.cursorPos = state.inputBuffer.length;
+    }
     return { action: "edit_instructions", text: item.text };
   }
 

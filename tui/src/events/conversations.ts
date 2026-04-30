@@ -43,6 +43,7 @@ export function handleConversationCreated(
   daemon: DaemonActions,
 ): void {
   rememberEnteredConversation(state.sidebar, state.convId, event.convId);
+  state.folderInstructionsDoc = null;
   state.convId = event.convId;
   syncChosenProvider(state, event.provider ?? fallbackProvider(state));
   state.model = event.model ?? state.model;
@@ -172,6 +173,7 @@ export function handleConversationLoaded(
   clearPendingAI(state);
   clearStreamingTailMessages(state);
   rememberEnteredConversation(state.sidebar, previousConvId, event.convId);
+  state.folderInstructionsDoc = null;
   state.convId = event.convId;
   focusConversationById(state.sidebar, event.convId);
   syncChosenProvider(state, event.provider ?? fallbackProvider(state));

@@ -342,6 +342,7 @@ const TRASH_DIR = trashDir();
 const TRASH_META = join(TRASH_DIR, "trash.json");
 const INDEX_FILE = join(DATA_DIR, "conversations-index.json");
 const FOLDERS_FILE = join(DATA_DIR, "folders.json");
+const FOLDER_INSTRUCTIONS_FILE = join(DATA_DIR, "folder-instructions.json");
 const UNREAD_FILE = join(DATA_DIR, "unread.json");
 
 /** Reject IDs that contain path separators or parent-directory traversal sequences. */
@@ -580,6 +581,12 @@ interface FoldersFile {
   folders: PersistedFolderSummary[];
 }
 
+interface FolderInstructionsFile {
+  version: 1;
+  updatedAt: number;
+  instructions: Record<string, string>;
+}
+
 export function loadFolders(): PersistedFolderSummary[] {
   ensureDataDir();
   try {
@@ -599,6 +606,35 @@ export function saveFolders(folders: PersistedFolderSummary[]): void {
   const tmp = `${FOLDERS_FILE}.tmp`;
   writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
   renameSync(tmp, FOLDERS_FILE);
+}
+
+export function loadFolderInstructions(): Map<string, string> {
+  ensureDataDir();
+  try {
+    if (!existsSync(FOLDER_INSTRUCTIONS_FILE)) return new Map();
+    const parsed = JSON.parse(readFileSync(FOLDER_INSTRUCTIONS_FILE, "utf-8")) as FolderInstructionsFile;
+    if (parsed.version !== 1 || !parsed.instructions || typeof parsed.instructions !== "object") return new Map();
+    const result = new Map<string, string>();
+    for (const [folderId, text] of Object.entries(parsed.instructions)) {
+      if (typeof text === "string" && text.length > 0) result.set(folderId, text);
+    }
+    return result;
+  } catch (err) {
+    log("warn", `persistence: failed to read folder instructions: ${err instanceof Error ? err.message : err}`);
+    return new Map();
+  }
+}
+
+export function saveFolderInstructions(instructions: Map<string, string>): void {
+  ensureDataDir();
+  const file: FolderInstructionsFile = {
+    version: 1,
+    updatedAt: Date.now(),
+    instructions: Object.fromEntries([...instructions.entries()].filter(([, text]) => text.length > 0)),
+  };
+  const tmp = `${FOLDER_INSTRUCTIONS_FILE}.tmp`;
+  writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
+  renameSync(tmp, FOLDER_INSTRUCTIONS_FILE);
 }
 
 interface UnreadFile {

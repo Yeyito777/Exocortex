@@ -19,7 +19,7 @@ import { render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, pushSystemMessage, resetNewConversationDefaults, resetToolOutputState } from "./state";
+import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { createMessageMetadata, createPendingAI, type ImageAttachment } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
@@ -249,9 +249,46 @@ function canSendImages(images?: ImageAttachment[]): boolean {
   return false;
 }
 
+function startNewConversation(): void {
+  const wasFolderInstructionsDoc = state.folderInstructionsDoc !== null;
+  if (state.convId) {
+    daemon.unsubscribe(state.convId);
+    clearLocalQueue(state, state.convId);
+  }
+  state.folderInstructionsDoc = null;
+  state.convId = null;
+  state.messages = [];
+  clearPendingAI(state);
+  clearStreamingTailMessages(state);
+  state.contextTokens = null;
+  resetToolOutputState(state);
+  resetNewConversationDefaults(state);
+  state.pendingSystemInstructions = null;
+  state.pendingGenerateTitleOnCreate = false;
+  if (wasFolderInstructionsDoc) {
+    clearPrompt(state);
+    state.pendingImages = [];
+  }
+}
+
 function handleSubmit(): void {
   const text = state.inputBuffer.trim();
   const hasImages = state.pendingImages.length > 0;
+
+  if (state.folderInstructionsDoc) {
+    if (!hasImages && text === "/new") {
+      startNewConversation();
+      return;
+    }
+    state.folderInstructionsDoc.text = text;
+    state.folderInstructionsDoc.savedText = text;
+    state.folderInstructionsDoc.loading = false;
+    daemon.setFolderInstructions(state.folderInstructionsDoc.folderId, text);
+    renderFolderInstructionsDocument(state, text);
+    clearPrompt(state);
+    return;
+  }
+
   if (!text && !hasImages) return;
 
   // Slash commands (only when no images attached — pure text commands)
@@ -263,9 +300,7 @@ function handleSubmit(): void {
           running = false;
           return;
         case "new_conversation":
-          if (state.convId) daemon.unsubscribe(state.convId);
-          state.convId = null;
-          resetNewConversationDefaults(state);
+          startNewConversation();
           break;
         case "create_conversation_for_instructions":
           if (state.convId) daemon.unsubscribe(state.convId);
@@ -448,25 +483,19 @@ function handleKey(key: KeyEvent): void {
       if (isStreaming(state) && state.convId) daemon.abort(state.convId);
       break;
     case "load_conversation":
+      state.folderInstructionsDoc = null;
       daemon.loadConversation(result.convId);
+      break;
+    case "open_folder_instructions":
+      if (state.convId) daemon.unsubscribe(state.convId);
+      openFolderInstructionsDocument(state, result.folderId);
+      daemon.loadFolderInstructions(result.folderId);
       break;
     case "load_tool_outputs":
       daemon.loadToolOutputs(result.convId);
       break;
     case "new_conversation":
-      if (state.convId) {
-        daemon.unsubscribe(state.convId);
-        clearLocalQueue(state, state.convId);
-      }
-      state.convId = null;
-      state.messages = [];
-      clearPendingAI(state);
-      clearStreamingTailMessages(state);
-      state.contextTokens = null;
-      resetToolOutputState(state);
-      resetNewConversationDefaults(state);
-      state.pendingSystemInstructions = null;
-      state.pendingGenerateTitleOnCreate = false;
+      startNewConversation();
       break;
     case "delete_conversation":
       daemon.deleteConversation(result.convId);
@@ -559,7 +588,13 @@ function handleMouse(ev: MouseEvent): void {
 
   switch (result.type) {
     case "load_conversation":
+      state.folderInstructionsDoc = null;
       daemon.loadConversation(result.convId);
+      break;
+    case "open_folder_instructions":
+      if (state.convId) daemon.unsubscribe(state.convId);
+      openFolderInstructionsDocument(state, result.folderId);
+      daemon.loadFolderInstructions(result.folderId);
       break;
     case "handled":
       break;

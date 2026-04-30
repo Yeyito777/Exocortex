@@ -135,6 +135,9 @@ export function renderSidebar(
     if (item?.type === "up") {
       rawTitle = "..";
       itemFg = isSelected ? theme.text : theme.muted;
+    } else if (item?.type === "folder_instructions") {
+      rawTitle = "📄 AGENTS.md";
+      itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "folder") {
       const folder = sidebar.folders[dr.folderIdx ?? -1];
       const childConvs = folder ? folderDescendantConversations(sidebar, folder.id) : [];

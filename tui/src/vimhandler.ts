@@ -223,6 +223,8 @@ export function mapSidebarResult(result: SidebarKeyResult): KeyResult {
   switch (result.type) {
     case "select":
       return { type: "load_conversation", convId: result.convId };
+    case "open_folder_instructions":
+      return { type: "open_folder_instructions", folderId: result.folderId };
     case "handled":
     case "unhandled":
       return { type: "handled" };
@@ -240,6 +242,9 @@ function handleContextNavigation(dir: "up" | "down", state: RenderState): KeyRes
     const result = handleSidebarAction(dir === "up" ? "nav_up" : "nav_down", state.sidebar);
     if (result.type === "select") {
       return { type: "load_conversation", convId: result.convId };
+    }
+    if (result.type === "open_folder_instructions") {
+      return { type: "open_folder_instructions", folderId: result.folderId };
     }
     return { type: "handled" };
   }

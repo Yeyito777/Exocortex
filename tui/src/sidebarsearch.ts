@@ -7,6 +7,7 @@
 
 import type { KeyEvent } from "./input";
 import type { ConversationSummary, SidebarItemRef } from "./messages";
+import type { SidebarSelectableItem } from "./sidebar/items";
 import { convDisplayName } from "./messages";
 import { stripMark } from "./marks";
 import { theme } from "./theme";
@@ -33,7 +34,7 @@ export interface SidebarSearchState {
   highlightsVisible: boolean;
   savedSelectedId: string | null;
   savedSelectedIndex: number;
-  savedSelectedItem?: SidebarItemRef | { type: "up" } | null;
+  savedSelectedItem?: SidebarSelectableItem | null;
   savedScrollOffset: number;
 }
 
@@ -45,7 +46,7 @@ export interface SidebarSearchableState {
   pendingDeleteId: string | null;
   pendingDeleteItem?: SidebarItemRef | null;
   currentFolderId?: string | null;
-  selectedItem?: SidebarItemRef | { type: "up" } | null;
+  selectedItem?: SidebarSelectableItem | null;
   search: SidebarSearchState | null;
 }
 
@@ -240,16 +241,16 @@ function normalizeSidebarSearchPaste(text: string): string {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, " ");
 }
 
-function executeSidebarCommand(sidebar: SidebarSearchableState, command: string): void {
+function executeSidebarCommand(sidebar: SidebarSearchableState, command: string): SidebarSearchKeyResult {
   const search = sidebar.search;
-  if (!search) return;
+  if (!search) return { type: "handled" };
 
   switch (command) {
     case "noh":
       search.highlightsVisible = false;
-      break;
+      return { type: "handled" };
     default:
-      break;
+      return { type: "handled" };
   }
 }
 
@@ -307,9 +308,9 @@ export function handleSidebarSearchBarKey(
 
   if (key.type === "enter") {
     if (search.barMode === "command") {
-      executeSidebarCommand(sidebar, search.barInput.trim());
+      const result = executeSidebarCommand(sidebar, search.barInput.trim());
       closeSidebarSearchBar(sidebar, false);
-      return { type: "handled" };
+      return result;
     }
 
     if (search.barInput) {

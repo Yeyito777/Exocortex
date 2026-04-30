@@ -291,8 +291,8 @@ async function orchestrateAssistantTurn(
     startedAt,
   });
 
-  // Extract per-conversation system instructions (if present)
-  const systemInstructionsText = convStore.getSystemInstructions(convId);
+  // Extract effective folder + per-conversation system instructions (if present)
+  const systemInstructionsText = convStore.getEffectiveSystemInstructions(convId);
 
   // System messages and per-conversation instructions are persisted but never sent as API history messages.
   const apiMessages = conv.messages

@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { bumpToTop, clearUnread, create, createFolder, createWithInitialUserMessage, deleteFolder, get, getDisplayData, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, markUnread, moveSidebarItem, moveSidebarItems, pin, remove, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
+import { bumpToTop, clearUnread, create, createFolder, createWithInitialUserMessage, deleteFolder, get, getDisplayData, getEffectiveSystemInstructions, getFolderInstructions, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, markUnread, moveSidebarItem, moveSidebarItems, pin, remove, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
@@ -191,6 +191,50 @@ describe("folders", () => {
     expect(getSummary(ids[1])?.folderId).toBe(folder!.id);
     expect(getSummary(ids[2])?.folderId).toBe(folder!.id);
     expect(rootRows([...ids, folder!.id]).map(row => row.id)).toEqual([ids[0], folder!.id, ids[3]]);
+  });
+
+  test("folder instructions are included in effective system instructions and display", () => {
+    const folder = createFolder(`Agents Folder ${Date.now()} ${Math.random()}`)!;
+    FOLDER_IDS.push(folder.id);
+    const id = mkId("folder-instructions");
+    create(id, "openai", "gpt-5.4", "child", undefined, false, folder.id);
+
+    expect(setFolderInstructions(folder.id, "Use repo-local conventions.")).toBe(true);
+    expect(getFolderInstructions(folder.id)).toBe("Use repo-local conventions.");
+    expect(setSystemInstructions(id, "Be terse.")).toBe(true);
+
+    expect(getEffectiveSystemInstructions(id)).toContain("# Context from AGENTS.md:\nUse repo-local conventions.");
+    expect(getEffectiveSystemInstructions(id)).toContain("Conversation instructions:\nBe terse.");
+
+    const entries = getDisplayData(id)?.entries ?? [];
+    expect(entries[0]).toEqual({ type: "system_instructions", text: expect.stringContaining("Use repo-local conventions.") });
+    expect(entries[1]).toEqual({ type: "system_instructions", text: "Be terse." });
+  });
+
+  test("folder instructions survive a conversation-store reload", () => {
+    const folder = createFolder(`Persistent Agents ${Date.now()} ${Math.random()}`)!;
+    FOLDER_IDS.push(folder.id);
+    expect(setFolderInstructions(folder.id, "Persistent rules.")).toBe(true);
+
+    loadFromDisk();
+
+    expect(getFolderInstructions(folder.id)).toBe("Persistent rules.");
+  });
+
+  test("nested folder instructions are applied from parent to child", () => {
+    const parent = createFolder(`Parent Agents ${Date.now()} ${Math.random()}`)!;
+    const child = createFolder(`Child Agents ${Date.now()} ${Math.random()}`, parent.id)!;
+    FOLDER_IDS.push(child.id, parent.id);
+    const id = mkId("nested-folder-instructions");
+    create(id, "openai", "gpt-5.4", "child", undefined, false, child.id);
+
+    expect(setFolderInstructions(parent.id, "Parent rules.")).toBe(true);
+    expect(setFolderInstructions(child.id, "Child rules.")).toBe(true);
+
+    const effective = getEffectiveSystemInstructions(id)!;
+    expect(effective.indexOf("Parent rules.")).toBeLessThan(effective.indexOf("Child rules."));
+    expect(effective).toContain("# Context from AGENTS.md:\nParent rules.");
+    expect(effective).toContain("# Context from AGENTS.md:\nChild rules.");
   });
 });
 

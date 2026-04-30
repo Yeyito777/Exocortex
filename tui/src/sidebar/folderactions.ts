@@ -1,7 +1,7 @@
 import type { SidebarItemRef } from "../messages";
 import { getActiveSidebarSearchQuery } from "../sidebarsearch";
 import { currentFolder, parentOfCurrentFolder } from "./folders";
-import { sameSidebarItem as sameItem, sidebarItemKey as itemKey } from "./items";
+import { isMovableSidebarItem, sameSidebarItem as sameItem, sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { compareSidebarOrder } from "./order";
 import { updateMovePromptAutocomplete } from "./moveautocomplete";
 import { buildDisplayRows, type DisplayRow } from "./rows";
@@ -16,7 +16,7 @@ import type { SidebarKeyResult } from "./types";
 import { syncSelectedIndex } from "./updates";
 
 function nextItemAfterRemovingItem(sidebar: SidebarState, item: SidebarItemRef): SidebarItemRef | { type: "up" } | null {
-  const rowsBefore = buildDisplayRows(sidebar).filter(row => row.type === "entry");
+  const rowsBefore = buildDisplayRows(sidebar).filter((row): row is DisplayRow & { type: "entry"; item: SidebarItemRef | { type: "up" } } => row.type === "entry" && !!row.item && row.item.type !== "folder_instructions");
   const removedIndex = rowsBefore.findIndex(row => sameItem(row.item ?? null, item));
   const rowsAfter = rowsBefore.filter(row => !sameItem(row.item ?? null, item));
   if (rowsAfter.length === 0) return null;
@@ -72,7 +72,7 @@ export function moveVisualSelectionWithinFolder(sidebar: SidebarState, direction
   if (items.length === 0) return { type: "handled" };
   if (items.length === 1) return { type: "move_sidebar_item", item: items[0], direction };
 
-  const entries = buildDisplayRows(sidebar).filter((row): row is DisplayRow & { type: "entry"; item: SidebarItemRef } => row.type === "entry" && !!row.item && row.item.type !== "up");
+  const entries = buildDisplayRows(sidebar).filter((row): row is DisplayRow & { type: "entry"; item: SidebarItemRef } => row.type === "entry" && !!row.item && isMovableSidebarItem(row.item));
   const selectedKeys = new Set(items.map(itemKey));
   const selectedIndices = entries
     .map((row, index) => selectedKeys.has(itemKey(row.item)) ? index : -1)
@@ -110,7 +110,7 @@ export function moveVisualSelectionWithinFolder(sidebar: SidebarState, direction
 
 export function toggleVisualSelection(sidebar: SidebarState): void {
   const item = getSelectedSidebarItem(sidebar);
-  if (!item || item.type === "up") return;
+  if (!item || !isMovableSidebarItem(item)) return;
   sidebar.visualAnchor = sidebar.visualAnchor ? null : item;
   sidebar.pendingDeleteId = null;
   sidebar.pendingDeleteItem = null;
@@ -161,9 +161,10 @@ export function enterSelectedFolder(sidebar: SidebarState): SidebarKeyResult {
   return { type: "handled" };
 }
 
-export function activateSidebarItem(sidebar: SidebarState, item: SidebarItemRef | { type: "up" }): SidebarKeyResult {
+export function activateSidebarItem(sidebar: SidebarState, item: SidebarSelectableItem): SidebarKeyResult {
   focusSidebarItem(sidebar, item);
   if (item.type === "conversation") return { type: "select", convId: item.id };
+  if (item.type === "folder_instructions") return { type: "open_folder_instructions", folderId: item.folderId };
   return enterSelectedFolder(sidebar);
 }
 

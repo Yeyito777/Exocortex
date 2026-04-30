@@ -1,5 +1,5 @@
 import type { ConversationSummary, SidebarItemRef } from "../messages";
-import { sidebarItemKey as itemKey, sameSidebarItem as sameItem } from "./items";
+import { isMovableSidebarItem, sidebarItemKey as itemKey, sameSidebarItem as sameItem, type SidebarSelectableItem } from "./items";
 import { buildDisplayRows, type DisplayRow } from "./rows";
 import type { SidebarState } from "./state";
 import {
@@ -7,7 +7,7 @@ import {
   getVisibleConversationIndicesForQuery,
 } from "../sidebarsearch";
 
-export function focusSidebarItem(sidebar: SidebarState, item: SidebarItemRef | { type: "up" } | null): void {
+export function focusSidebarItem(sidebar: SidebarState, item: SidebarSelectableItem | null): void {
   sidebar.selectedItem = item;
   if (item?.type === "conversation") {
     const idx = sidebar.conversations.findIndex(c => c.id === item.id);
@@ -74,7 +74,7 @@ export function selectedDisplayRow(displayRows: DisplayRow[], sidebar: SidebarSt
   return firstEntry === -1 ? 0 : firstEntry;
 }
 
-export function getSelectedSidebarItem(sidebar: SidebarState): SidebarItemRef | { type: "up" } | null {
+export function getSelectedSidebarItem(sidebar: SidebarState): SidebarSelectableItem | null {
   const selected = sidebar.selectedItem;
   if (!selected) return null;
   if (selected.type === "up") return selected;
@@ -85,6 +85,9 @@ export function getSelectedSidebarItem(sidebar: SidebarState): SidebarItemRef | 
     if ((conv.folderId ?? null) === sidebar.currentFolderId) return selected;
     const activeQuery = getActiveSidebarSearchQuery(sidebar);
     return activeQuery && getVisibleConversationIndicesForQuery(sidebar, activeQuery).includes(convIdx) ? selected : null;
+  }
+  if (selected.type === "folder_instructions") {
+    return selected.folderId === sidebar.currentFolderId ? selected : null;
   }
   const folder = sidebar.folders.find(f => f.id === selected.id);
   return folder && (folder.parentId ?? null) === sidebar.currentFolderId ? selected : null;
@@ -98,9 +101,9 @@ export function getSelectedVisibleConversation(sidebar: SidebarState): Conversat
 
 export function selectedVisualItems(sidebar: SidebarState): SidebarItemRef[] {
   const current = getSelectedSidebarItem(sidebar);
-  if (!current || current.type === "up") return [];
+  if (!current || !isMovableSidebarItem(current)) return [];
   if (!sidebar.visualAnchor) return [current];
-  const rows = buildDisplayRows(sidebar).filter((row) => row.type === "entry" && row.item && row.item.type !== "up");
+  const rows = buildDisplayRows(sidebar).filter((row) => row.type === "entry" && row.item && isMovableSidebarItem(row.item));
   const anchorIdx = rows.findIndex(row => sameItem(row.item ?? null, sidebar.visualAnchor));
   const currentIdx = rows.findIndex(row => sameItem(row.item ?? null, current));
   if (anchorIdx === -1 || currentIdx === -1) return [current];

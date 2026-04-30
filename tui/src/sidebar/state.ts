@@ -1,4 +1,5 @@
 import type { ConversationSummary, FolderSummary, SidebarItemRef } from "../messages";
+import type { SidebarSelectableItem } from "./items";
 import type { SidebarPromptState } from "./prompt";
 import type { SidebarSearchState } from "../sidebarsearch";
 
@@ -10,7 +11,7 @@ export interface SidebarState {
   selectedId: string | null;
   previousEnteredId: string | null;
   selectedIndex: number;
-  selectedItem: SidebarItemRef | { type: "up" } | null;
+  selectedItem: SidebarSelectableItem | null;
   scrollOffset: number;
   pendingDeleteId: string | null;
   pendingDeleteItem: SidebarItemRef | null;

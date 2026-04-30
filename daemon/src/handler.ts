@@ -704,6 +704,31 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      case "load_folder_instructions": {
+        const text = convStore.getFolderInstructions(cmd.folderId);
+        if (text !== null) {
+          server.sendTo(client, { type: "folder_instructions_loaded", reqId: cmd.reqId, folderId: cmd.folderId, text });
+        } else {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Folder ${cmd.folderId} not found` });
+        }
+        break;
+      }
+
+      case "set_folder_instructions": {
+        const ok = convStore.setFolderInstructions(cmd.folderId, cmd.text);
+        if (ok) {
+          server.broadcast({ type: "folder_instructions_updated", reqId: cmd.reqId, folderId: cmd.folderId, text: cmd.text.trim() });
+          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+          for (const convId of convStore.listFolderConversationIds(cmd.folderId)) {
+            sendCompactHistoryUpdated(convId);
+          }
+          log("info", `handler: folder instructions ${cmd.text.trim() ? "set" : "cleared"} for ${cmd.folderId}`);
+        } else {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Folder ${cmd.folderId} not found` });
+        }
+        break;
+      }
+
       case "unwind_conversation": {
         const ok = await convStore.unwindTo(cmd.convId, cmd.userMessageIndex);
         if (!ok) {

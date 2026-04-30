@@ -14,7 +14,7 @@
 import type { KeyEvent } from "./input";
 import type { MoveSidebarItemsOptions, SidebarItemRef } from "./protocol";
 import type { RenderState } from "./state";
-import { focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
+import { EDIT_INDEX_INSTRUCTIONS, focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
 import { resolveAction, sidebarTopShortcutIndex } from "./keybinds";
 import { handleChatKey } from "./chat";
 import { toggleToolOutputPreservingViewport } from "./chatscroll";
@@ -56,6 +56,7 @@ export type KeyResult =
   | { type: "quit" }
   | { type: "abort" }
   | { type: "load_conversation"; convId: string }
+  | { type: "open_folder_instructions"; folderId: string }
   | { type: "load_tool_outputs"; convId: string }
   | { type: "delete_conversation"; convId: string }
   | { type: "delete_conversations"; convIds: string[] }
@@ -210,6 +211,16 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
     case "new_conversation":
       return { type: "new_conversation" };
     case "edit_message":
+      if (state.folderInstructionsDoc) {
+        const text = state.folderInstructionsDoc.savedText || state.folderInstructionsDoc.text;
+        if (!text.trim()) return { type: "handled" };
+        state.editMessagePrompt = {
+          items: [{ userMessageIndex: EDIT_INDEX_INSTRUCTIONS, text, isQueued: false }],
+          selection: 0,
+          scrollOffset: 0,
+        };
+        return { type: "handled" };
+      }
       openEditMessageModal(state);
       return { type: "handled" };
     case "focus_history":

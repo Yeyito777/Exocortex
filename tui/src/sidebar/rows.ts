@@ -1,4 +1,5 @@
-import type { ConversationSummary, FolderSummary, SidebarItemRef } from "../messages";
+import type { ConversationSummary, FolderSummary } from "../messages";
+import type { SidebarSelectableItem } from "./items";
 import type { SidebarPromptState } from "./prompt";
 import { sidebarPromptAutocompleteVisibleRows } from "./prompt";
 import { compareSidebarOrder } from "./order";
@@ -19,7 +20,7 @@ export interface DisplayRow {
   type: "label" | "delimiter" | "entry";
   convIdx?: number;
   folderIdx?: number;
-  item?: SidebarItemRef | { type: "up" };
+  item?: SidebarSelectableItem;
   text?: string;
 }
 
@@ -45,7 +46,10 @@ export function buildDisplayRows(sidebar: SidebarRowsState): DisplayRow[] {
     }),
   ].sort(compareSidebarOrder);
 
-  if (sidebar.currentFolderId) rows.push({ type: "entry", item: { type: "up" }, text: ".." });
+  if (sidebar.currentFolderId) {
+    rows.push({ type: "entry", item: { type: "up" }, text: ".." });
+    rows.push({ type: "entry", item: { type: "folder_instructions", folderId: sidebar.currentFolderId } });
+  }
 
   const pinned = entries.filter(entry => entry.pinned);
   const unpinned = entries.filter(entry => !entry.pinned);
@@ -69,7 +73,7 @@ export function findDisplayEntry(
   start: number,
   end: number,
   step: 1 | -1,
-): SidebarItemRef | { type: "up" } | null {
+): SidebarSelectableItem | null {
   for (let row = start; step > 0 ? row <= end : row >= end; row += step) {
     if (displayRows[row]?.type === "entry") return displayRows[row].item ?? null;
   }
@@ -80,11 +84,11 @@ export function nearestDisplayEntry(
   displayRows: DisplayRow[],
   targetRow: number,
   preferredStep: -1 | 0 | 1,
-): SidebarItemRef | { type: "up" } | null {
+): SidebarSelectableItem | null {
   const clampedTarget = Math.max(0, Math.min(targetRow, Math.max(0, displayRows.length - 1)));
   if (displayRows[clampedTarget]?.type === "entry") return displayRows[clampedTarget].item ?? null;
 
-  const scan = (step: 1 | -1): SidebarItemRef | { type: "up" } | null => {
+  const scan = (step: 1 | -1): SidebarSelectableItem | null => {
     for (let row = clampedTarget + step; row >= 0 && row < displayRows.length; row += step) {
       if (displayRows[row]?.type === "entry") return displayRows[row].item ?? null;
     }

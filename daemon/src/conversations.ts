@@ -34,6 +34,7 @@ export {
 const conversations = new Map<string, Conversation>();
 const summaries = new Map<string, PersistedConversationSummary>();
 const folders = new Map<string, PersistedFolderSummary>();
+const folderInstructions = new Map<string, string>();
 const dirty = new Set<string>();
 const unread = new Set<string>();
 
@@ -103,6 +104,10 @@ function saveFolderState(): void {
   persistence.saveFolders(sortSidebarEntries([...folders.values()]));
 }
 
+function saveFolderInstructionsState(): void {
+  persistence.saveFolderInstructions(folderInstructions);
+}
+
 function getItemParent(item: SidebarItemRef): string | null | undefined {
   if (item.type === "conversation") return summaries.get(item.id)?.folderId ?? null;
   return folders.get(item.id)?.parentId ?? null;
@@ -165,6 +170,30 @@ function childSnapshots(folderId: string): persistence.TrashSidebarItemSnapshot[
     pinned: entry.pinned,
     sortOrder: entry.sortOrder,
   }));
+}
+
+function folderInstructionEntriesForFolder(folderId: string | null): string[] {
+  if (!folderId) return [];
+  const chain: string[] = [];
+  const seen = new Set<string>();
+  let current: string | null = folderId;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    chain.push(current);
+    current = folders.get(current)?.parentId ?? null;
+  }
+  return chain.reverse().flatMap((id) => {
+    const text = folderInstructions.get(id)?.trim();
+    return text ? [text] : [];
+  });
+}
+
+function formatFolderInstructionsForDisplay(folderId: string | null): string | null {
+  const entries = folderInstructionEntriesForFolder(folderId);
+  if (entries.length === 0) return null;
+  return entries
+    .map(text => `# Context from AGENTS.md:\n${text}`)
+    .join("\n\n");
 }
 
 // ── Conversation loading/mutation helpers ─────────────────────────
@@ -457,6 +486,35 @@ export function getSystemInstructions(id: string): string | null {
   return null;
 }
 
+export function getFolderInstructions(folderId: string): string | null {
+  return folders.has(folderId) ? folderInstructions.get(folderId) ?? "" : null;
+}
+
+export function setFolderInstructions(folderId: string, text: string): boolean {
+  const folder = folders.get(folderId);
+  if (!folder) return false;
+  const normalized = text.trim();
+  const current = folderInstructions.get(folderId) ?? "";
+  if (normalized === current) return true;
+  if (normalized) folderInstructions.set(folderId, normalized);
+  else folderInstructions.delete(folderId);
+  folder.updatedAt = Date.now();
+  saveFolderInstructionsState();
+  saveFolderState();
+  return true;
+}
+
+export function getEffectiveSystemInstructions(id: string): string | null {
+  const conv = get(id);
+  if (!conv) return null;
+  const parts: string[] = [];
+  const folderText = formatFolderInstructionsForDisplay(conv.folderId ?? null);
+  if (folderText) parts.push(folderText);
+  const conversationText = getSystemInstructions(id)?.trim();
+  if (conversationText) parts.push(`Conversation instructions:\n${conversationText}`);
+  return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
 /**
  * Unwind a conversation to before the Nth user message (0-based).
  * Removes that user message and everything after it.
@@ -534,8 +592,12 @@ export function loadFromDisk(): LoadFromDiskStats {
   const index = persistence.loadConversationIndex();
   summaries.clear();
   folders.clear();
+  folderInstructions.clear();
   for (const folder of persistence.loadFolders()) {
     folders.set(folder.id, { ...folder, parentId: folder.parentId && folder.parentId !== folder.id ? folder.parentId : null });
+  }
+  for (const [folderId, text] of persistence.loadFolderInstructions()) {
+    if (folders.has(folderId)) folderInstructions.set(folderId, text);
   }
 
   let normalizedEffortCount = 0;
@@ -949,14 +1011,19 @@ function buildSnapshotDisplayData(
   conv: Conversation,
   messages: StoredMessage[],
   includeToolOutputs: boolean,
+  includeFolderInstructions = true,
 ): ConversationDisplayData {
+  const folderInstructionsText = includeFolderInstructions ? formatFolderInstructionsForDisplay(conv.folderId ?? null) : null;
+  const displayMessages = folderInstructionsText
+    ? [{ role: "system_instructions" as const, content: folderInstructionsText, metadata: null }, ...messages]
+    : messages;
   return buildDisplayData(
     conv.id,
     conv.provider,
     conv.model,
     conv.effort,
     conv.fastMode ?? false,
-    messages,
+    displayMessages,
     conv.lastContextTokens,
     summarizeTool,
     { includeToolOutputs },
@@ -979,7 +1046,7 @@ export function getRenderSnapshot(id: string, includeToolOutputs = true): Conver
   if (isCurrentAssistantAlreadyCommitted(conv, startedAt)) return persisted;
 
   const transientMessages = streaming.getStreamingDisplayMessages(id);
-  const transient = buildSnapshotDisplayData(conv, transientMessages, includeToolOutputs);
+  const transient = buildSnapshotDisplayData(conv, transientMessages, includeToolOutputs, false);
   const transientEntries = [...transient.entries];
   const trailingAssistant = transientEntries.at(-1);
   const currentBlocks = streaming.getCurrentStreamingBlocks(id) ?? [];

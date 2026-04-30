@@ -1,5 +1,5 @@
 import type { Action } from "../keybinds";
-import type { SidebarItemRef } from "../messages";
+import type { SidebarSelectableItem } from "./items";
 import {
   clampViewStart,
   ensureCursorRowVisibleInViewport,
@@ -194,7 +194,7 @@ export function jumpSidebarSelectionToVisibleEdge(
   const viewEnd = Math.min(viewStart + listRows - 1, displayRows.length - 1);
 
   if (edge === "top") {
-    let target: SidebarItemRef | { type: "up" } | null = findDisplayEntry(displayRows, viewStart, viewEnd, 1);
+    let target: SidebarSelectableItem | null = findDisplayEntry(displayRows, viewStart, viewEnd, 1);
     if (target == null) return;
 
     if (sameItem(sidebar.selectedItem, target)) {
@@ -207,7 +207,7 @@ export function jumpSidebarSelectionToVisibleEdge(
 
     focusSidebarItem(sidebar, target);
   } else {
-    let target: SidebarItemRef | { type: "up" } | null = findDisplayEntry(displayRows, viewEnd, viewStart, -1);
+    let target: SidebarSelectableItem | null = findDisplayEntry(displayRows, viewEnd, viewStart, -1);
     if (target == null) return;
 
     if (sameItem(sidebar.selectedItem, target)) {

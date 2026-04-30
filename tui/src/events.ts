@@ -7,7 +7,7 @@
  */
 
 import type { RenderState } from "./state";
-import { clearStreamingTailMessages, pushSystemMessage, setCurrentConversationToolOutputAvailability } from "./state";
+import { clearStreamingTailMessages, pushSystemMessage, renderFolderInstructionsDocument, setCurrentConversationToolOutputAvailability, setFolderInstructionsDocumentText } from "./state";
 import { theme } from "./theme";
 import type { Event } from "./protocol";
 import {
@@ -235,6 +235,21 @@ export function handleEvent(
 
     case "system_instructions_updated":
       // No-op — the daemon sends history_updated which rebuilds everything.
+      break;
+
+    case "folder_instructions_loaded":
+      setFolderInstructionsDocumentText(state, event.folderId, event.text);
+      break;
+
+    case "folder_instructions_updated":
+      if (state.folderInstructionsDoc?.folderId === event.folderId) {
+        const doc = state.folderInstructionsDoc;
+        const changedRemotely = doc.text !== event.text;
+        doc.text = event.text;
+        doc.savedText = event.text;
+        doc.loading = false;
+        if (changedRemotely) renderFolderInstructionsDocument(state, event.text);
+      }
       break;
 
     case "llm_complete_result":
