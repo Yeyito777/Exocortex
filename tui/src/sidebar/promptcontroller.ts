@@ -9,7 +9,7 @@ import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } fro
 export function handleSidebarPromptKey(sidebar: SidebarState, key: KeyEvent): SidebarKeyResult {
   const prompt = sidebar.prompt;
   if (!prompt) return { type: "handled" };
-  if (key.type === "escape" || key.type === "ctrl-c") {
+  if (key.type === "escape") {
     sidebar.prompt = null;
     return { type: "handled" };
   }

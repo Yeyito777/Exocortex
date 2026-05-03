@@ -301,7 +301,7 @@ export function handleSidebarSearchBarKey(
 
   if (key.type === "ctrl-q") return { type: "abort" };
 
-  if (key.type === "escape" || key.type === "ctrl-c") {
+  if (key.type === "escape") {
     closeSidebarSearchBar(sidebar, true);
     return { type: "handled" };
   }

@@ -214,7 +214,7 @@ export function handleSearchBarKey(state: RenderState, key: KeyEvent): SearchKey
 
   if (key.type === "ctrl-q") return { type: "abort" };
 
-  if (key.type === "escape" || key.type === "ctrl-c") {
+  if (key.type === "escape") {
     closeSearchBar(state, true);
     return { type: "handled" };
   }

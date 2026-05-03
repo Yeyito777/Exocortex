@@ -74,7 +74,6 @@ export function handleQueuePromptKey(key: KeyEvent, state: RenderState): QueueKe
     case "enter":
       return { type: "confirm" };
     case "escape":
-    case "ctrl-c":
       return { type: "cancel" };
     default:
       return { type: "handled" };

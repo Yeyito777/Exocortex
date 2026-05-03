@@ -77,6 +77,21 @@ function renderHistoryForTest(state: ReturnType<typeof createInitialState>, cols
   state.historyMessageBounds = rendered.messageBounds;
 }
 
+test("Ctrl-C always quits, even when the sidebar has selection or prompts", () => {
+  const state = createInitialState();
+  state.panelFocus = "sidebar";
+  state.sidebar.open = true;
+  state.sidebar.conversations = [conversation("conv-a", 0)];
+  state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
+  state.sidebar.visualAnchor = { type: "conversation", id: "conv-a" };
+  state.sidebar.pendingDeleteItem = { type: "conversation", id: "conv-a" };
+
+  expect(handleFocusedKey({ type: "ctrl-c" }, state)).toEqual({ type: "quit" });
+
+  state.sidebar.prompt = { purpose: "create_folder", input: "", cursorPos: 0, items: [] };
+  expect(handleFocusedKey({ type: "ctrl-c" }, state)).toEqual({ type: "quit" });
+});
+
 function placeHistoryCursorOnText(state: ReturnType<typeof createInitialState>, text: string): void {
   const row = state.historyLines.findIndex((line) => stripAnsi(line).includes(text));
   expect(row).toBeGreaterThanOrEqual(0);

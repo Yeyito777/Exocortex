@@ -121,6 +121,9 @@ function focusSidebarShortcutTarget(state: RenderState, focus: () => boolean): K
 }
 
 export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
+  // Ctrl-C is always quit, regardless of focused panel, prompt/modal, or vim state.
+  if (key.type === "ctrl-c") return { type: "quit" };
+
   // ── Queue prompt modal — intercept all keys when showing ──────
   if (state.queuePrompt) {
     const qr = handleQueuePromptKey(key, state);

@@ -94,7 +94,6 @@ export function handleEditMessageKey(key: KeyEvent, state: RenderState): EditMes
     case "enter":
       return { type: "confirm" };
     case "escape":
-    case "ctrl-c":
       return { type: "cancel" };
     default:
       return { type: "handled" };

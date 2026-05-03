@@ -81,7 +81,7 @@ function optimisticSortOrderAfterPin(sidebar: SidebarState, item: SidebarItemRef
 }
 
 export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarKeyResult {
-  if (key.type === "escape" || key.type === "ctrl-c") {
+  if (key.type === "escape") {
     sidebar.visualAnchor = null;
     sidebar.pendingDeleteId = null;
     sidebar.pendingDeleteItem = null;
