@@ -16,6 +16,7 @@ describe("tool execution scheduling", () => {
     expect(getToolParallelSafety("bash")).toBe("exclusive");
     expect(getToolParallelSafety("write")).toBe("exclusive");
     expect(getToolParallelSafety("edit")).toBe("exclusive");
+    expect(getToolParallelSafety("patch")).toBe("exclusive");
     expect(getToolParallelSafety("context")).toBe("exclusive");
     expect(getToolParallelSafety("unknown_tool")).toBe("exclusive");
   });

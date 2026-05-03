@@ -466,6 +466,7 @@ Update hunks start with @@ optionally followed by a context line, then lines pre
 export const patch: Tool = {
   name: "patch",
   description: PATCH_DESCRIPTION,
+  parallelSafety: "exclusive",
   inputSchema: {
     type: "object",
     properties: {
