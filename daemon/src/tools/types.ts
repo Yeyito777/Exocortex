@@ -7,6 +7,8 @@
 
 import type { ProviderId } from "../messages";
 
+export type ToolParallelSafety = "safe" | "exclusive";
+
 // ── Execution context / result ─────────────────────────────────────
 
 export interface ToolExecutionContext {
@@ -53,6 +55,12 @@ export interface Tool {
 
   /** Optional runtime availability gate (auth, platform, env, etc.). */
   isAvailable?: () => boolean;
+
+  /**
+   * Whether this tool may run concurrently with adjacent safe tool calls.
+   * Defaults to "exclusive" so new or side-effecting tools are conservative.
+   */
+  parallelSafety?: ToolParallelSafety;
 
   /** Display metadata sent to the TUI on connect. */
   display: {

@@ -61,6 +61,7 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 export const write: Tool = {
   name: "write",
   description: "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Parent directories are created automatically.",
+  parallelSafety: "exclusive",
   inputSchema: {
     type: "object",
     properties: {

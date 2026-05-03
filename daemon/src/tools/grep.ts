@@ -131,6 +131,7 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 export const grep: Tool = {
   name: "grep",
   description: "Search file contents using ripgrep. Supports regex patterns, glob filters, file type filters, context lines, and three output modes.",
+  parallelSafety: "safe",
   inputSchema: {
     type: "object",
     properties: {

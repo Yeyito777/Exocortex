@@ -701,6 +701,7 @@ export async function executeContext(
 export const context: Tool = {
   name: "context",
   description: "Inspect and manage the conversation context. Actions: 'list' shows all turns with token estimates; 'delete' removes a contiguous range of turns; 'summarize' replaces a range with an LLM-generated summary; 'strip_thinking' removes thinking blocks from old assistant turns; 'strip_results' replaces tool result contents with a placeholder.",
+  parallelSafety: "exclusive",
   inputSchema: {
     type: "object",
     properties: {
