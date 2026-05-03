@@ -478,7 +478,7 @@ export const patch: Tool = {
   systemHint: "Prefer the patch tool for multi-file edits, file creates/deletes/renames, or structured changes. Use relative paths inside the patch; do not use absolute paths in patch file headers.",
   display: {
     label: "Patch",
-    color: "#ffcb6b",
+    color: "#ff6b9d",  // rose pink
   },
   summarize,
   execute: executePatch,
