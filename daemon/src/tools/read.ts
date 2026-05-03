@@ -57,7 +57,7 @@ async function compressImage(
   originalBase64Size: number,
 ): Promise<{ base64: string; mediaType: string; compressedBytes: number } | { error: string }> {
   const { tmpdir } = await import("os");
-  const tmpOut = `${tmpdir()}/exocortex-compress-${Date.now()}.jpg`;
+  const tmpOut = `${tmpdir()}/exocortex-compress-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
 
   try {
     for (const quality of COMPRESSION_QUALITIES) {
@@ -234,6 +234,7 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 export const read: Tool = {
   name: "read",
   description: "Read a file from the local filesystem. Returns file content with line numbers (cat -n format). By default reads up to 2000 lines. Lines longer than 2000 characters are truncated. For image files (PNG, JPEG, GIF, WebP, BMP, TIFF, SVG, AVIF, ICO), returns the image for visual inspection; large images are automatically compressed to fit API limits.",
+  parallelSafety: "safe",
   inputSchema: {
     type: "object",
     properties: {

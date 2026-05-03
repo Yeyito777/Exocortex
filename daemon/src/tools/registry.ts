@@ -4,7 +4,7 @@
  * Adding a new tool: import it, add to TOOLS array. Done.
  */
 
-import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
+import type { Tool, ToolResult, ToolSummary, ToolExecutionContext, ToolParallelSafety } from "./types";
 import type { ToolDisplayInfo } from "@exocortex/shared/messages";
 import type { ApiToolCall } from "../api";
 import type { ToolExecResult } from "../agent";
@@ -142,41 +142,101 @@ async function execTool(
   }
 }
 
+// ── Ordered parallel scheduling ────────────────────────────────────
+
+export interface ToolExecutionBatch {
+  mode: "parallel" | "exclusive";
+  calls: ApiToolCall[];
+}
+
+export function getToolParallelSafety(toolName: string): ToolParallelSafety {
+  return toolMap.get(toolName)?.parallelSafety ?? "exclusive";
+}
+
+function callSupportsParallel(call: ApiToolCall): boolean {
+  return getToolParallelSafety(call.name) === "safe";
+}
+
+export function planToolExecutionBatches(calls: ApiToolCall[]): ToolExecutionBatch[] {
+  const batches: ToolExecutionBatch[] = [];
+  let i = 0;
+
+  while (i < calls.length) {
+    const call = calls[i];
+    if (!callSupportsParallel(call)) {
+      batches.push({ mode: "exclusive", calls: [call] });
+      i++;
+      continue;
+    }
+
+    const start = i;
+    while (i < calls.length && callSupportsParallel(calls[i])) i++;
+    batches.push({ mode: "parallel", calls: calls.slice(start, i) });
+  }
+
+  return batches;
+}
+
+async function executeSingleTool(
+  call: ApiToolCall,
+  contextEnv?: ContextToolEnv,
+  toolContext?: ToolExecutionContext,
+  signal?: AbortSignal,
+): Promise<ToolExecResult> {
+  const safety = evaluateToolCallSafety(call.name, call.input);
+  if (!safety.allowed) {
+    return {
+      toolCallId: call.id,
+      toolName: call.name,
+      output: formatSafetyBlock(safety),
+      isError: true,
+    };
+  }
+
+  // Context tool — needs conversation access, bypass normal execute()
+  if (call.name === "context" && contextEnv) {
+    return execTool(call, executeContext(call.input, contextEnv, signal), signal);
+  }
+
+  // Bash tool — use backgroundable executor so long-running commands
+  // are detached after TOOL_BACKGROUND_SECONDS instead of blocking.
+  if (call.name === "bash") {
+    return execTool(call, executeBashBackgroundable(call.input, signal, TOOL_BACKGROUND_SECONDS * 1000, toolContext), signal);
+  }
+
+  const tool = toolMap.get(call.name);
+  if (!tool) {
+    return { toolCallId: call.id, toolName: call.name, output: `Unknown tool: ${call.name}`, isError: true };
+  }
+  if (!isToolAvailable(tool)) {
+    return { toolCallId: call.id, toolName: call.name, output: `Tool unavailable: ${call.name}`, isError: true };
+  }
+  return execTool(call, tool.execute(call.input, toolContext, signal), signal);
+}
+
+async function executeScheduledTools(
+  calls: ApiToolCall[],
+  contextEnv?: ContextToolEnv,
+  toolContext?: ToolExecutionContext,
+  signal?: AbortSignal,
+): Promise<ToolExecResult[]> {
+  const results: ToolExecResult[] = [];
+
+  for (const batch of planToolExecutionBatches(calls)) {
+    const batchResults = batch.mode === "parallel"
+      ? await Promise.all(batch.calls.map(call => executeSingleTool(call, contextEnv, toolContext, signal)))
+      : [await executeSingleTool(batch.calls[0], contextEnv, toolContext, signal)];
+    results.push(...batchResults);
+  }
+
+  return results;
+}
+
 // ── Build executor (injected into the agent loop) ──────────────────
 
 export function buildExecutor(
   contextEnv?: ContextToolEnv,
   toolContext?: ToolExecutionContext,
 ): (calls: ApiToolCall[], signal?: AbortSignal) => Promise<ToolExecResult[]> {
-  return (calls, signal?) => Promise.all(calls.map(async (call): Promise<ToolExecResult> => {
-    const safety = evaluateToolCallSafety(call.name, call.input);
-    if (!safety.allowed) {
-      return {
-        toolCallId: call.id,
-        toolName: call.name,
-        output: formatSafetyBlock(safety),
-        isError: true,
-      };
-    }
-
-    // Context tool — needs conversation access, bypass normal execute()
-    if (call.name === "context" && contextEnv) {
-      return execTool(call, executeContext(call.input, contextEnv, signal), signal);
-    }
-
-    // Bash tool — use backgroundable executor so long-running commands
-    // are detached after TOOL_BACKGROUND_SECONDS instead of blocking.
-    if (call.name === "bash") {
-      return execTool(call, executeBashBackgroundable(call.input, signal, TOOL_BACKGROUND_SECONDS * 1000, toolContext), signal);
-    }
-
-    const tool = toolMap.get(call.name);
-    if (!tool) {
-      return { toolCallId: call.id, toolName: call.name, output: `Unknown tool: ${call.name}`, isError: true };
-    }
-    if (!isToolAvailable(tool)) {
-      return { toolCallId: call.id, toolName: call.name, output: `Tool unavailable: ${call.name}`, isError: true };
-    }
-    return execTool(call, tool.execute(call.input, toolContext, signal), signal);
-  }));
+  return (calls, signal?) => executeScheduledTools(calls, contextEnv, toolContext, signal);
 }

@@ -124,6 +124,7 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 export const edit: Tool = {
   name: "edit",
   description: "Performs exact string replacement in a file. Replaces the first occurrence of old_string with new_string. The old_string must match exactly (including whitespace/indentation). If old_string appears more than once, add more surrounding context to make it unique, or set replace_all to true.",
+  parallelSafety: "exclusive",
   inputSchema: {
     type: "object",
     properties: {
