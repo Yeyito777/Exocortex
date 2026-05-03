@@ -37,6 +37,13 @@ interface ToolOutputPreserveResult {
   patchedToolNames: number;
 }
 
+interface AssistantExtensionPreserveResult {
+  preservedBlocks: number;
+  beforeBlocks: number;
+  afterBlocks: number;
+  mergedBlocks: number;
+}
+
 function assistantBlocksFromMessages(messages: Message[], pendingAI: AIMessage | null): Block[] {
   const blocks: Block[] = [];
   for (const msg of messages) {
@@ -215,6 +222,110 @@ function applyToolOutputsToBlocks(blocks: Block[], preserved: Map<string, Preser
   return { patchedOutputs, patchedToolNames };
 }
 
+function cloneBlock(block: Block): Block {
+  return structuredClone(block);
+}
+
+function toolResultOutputsCompatible(local: Extract<Block, { type: "tool_result" }>, applied: Extract<Block, { type: "tool_result" }>): boolean {
+  return local.output === ""
+    || applied.output === ""
+    || local.output === applied.output
+    || local.output.startsWith(applied.output)
+    || applied.output.startsWith(local.output);
+}
+
+function localBlockCanCoverApplied(local: Block, applied: Block): boolean {
+  if (local.type !== applied.type) return false;
+  switch (local.type) {
+    case "text":
+    case "thinking":
+      return applied.type === local.type && local.text.startsWith(applied.text);
+    case "tool_call":
+      return applied.type === "tool_call" && local.toolCallId === applied.toolCallId;
+    case "tool_result":
+      return applied.type === "tool_result"
+        && local.toolCallId === applied.toolCallId
+        && local.isError === applied.isError
+        && toolResultOutputsCompatible(local, applied);
+  }
+}
+
+function localBlockStrictlyNewerThanApplied(local: Block, applied: Block): boolean {
+  if (local.type !== applied.type) return false;
+  switch (local.type) {
+    case "text":
+    case "thinking":
+      return applied.type === local.type && local.text.length > applied.text.length;
+    case "tool_result":
+      // Compact snapshots routinely omit hidden tool output. That is handled by
+      // applyPreservedToolResultOutputs when output is expanded/loaded; by
+      // itself it must not make a disk snapshot look stale or we would clobber
+      // canonical regenerated tool-call summaries/inputs with older local ones.
+      return false;
+    case "tool_call":
+      return false;
+  }
+}
+
+function mergeLocalAssistantExtension(
+  beforeBlocks: Block[],
+  afterBlocks: Block[],
+): Block[] | null {
+  if (beforeBlocks.length === 0 || beforeBlocks.length < afterBlocks.length) return null;
+
+  let strictlyNewer = beforeBlocks.length > afterBlocks.length;
+  for (let i = 0; i < afterBlocks.length; i++) {
+    const local = beforeBlocks[i];
+    const applied = afterBlocks[i];
+    if (!localBlockCanCoverApplied(local, applied)) return null;
+    if (localBlockStrictlyNewerThanApplied(local, applied)) strictlyNewer = true;
+  }
+  if (!strictlyNewer) return null;
+
+  const merged = beforeBlocks.map(cloneBlock);
+  for (let i = 0; i < afterBlocks.length; i++) {
+    const local = merged[i];
+    const applied = afterBlocks[i];
+    if (local.type !== "tool_result" || applied.type !== "tool_result") continue;
+    if (applied.output && (!local.output || applied.output.length > local.output.length)) {
+      local.output = applied.output;
+    }
+    if (!local.toolName && applied.toolName) local.toolName = applied.toolName;
+  }
+  return merged;
+}
+
+function assistantCarriers(state: RenderState): AIMessage[] {
+  const carriers: AIMessage[] = [];
+  for (const msg of state.messages) {
+    if (msg.role === "assistant") carriers.push(msg);
+  }
+  if (state.pendingAI) carriers.push(state.pendingAI);
+  return carriers;
+}
+
+function applyAssistantBlocksToState(state: RenderState, blocks: Block[]): void {
+  const carriers = assistantCarriers(state);
+  if (carriers.length === 0) {
+    if (blocks.length > 0) {
+      state.messages.push({ role: "assistant", blocks: blocks.map(cloneBlock), metadata: null });
+    }
+    return;
+  }
+
+  let cursor = 0;
+  for (let i = 0; i < carriers.length; i++) {
+    const carrier = carriers[i];
+    const originalLength = carrier.blocks.length;
+    const remaining = blocks.length - cursor;
+    const take = i === carriers.length - 1
+      ? remaining
+      : Math.min(originalLength, Math.max(remaining, 0));
+    carrier.blocks = take > 0 ? blocks.slice(cursor, cursor + take).map(cloneBlock) : [];
+    cursor += Math.max(take, 0);
+  }
+}
+
 export function captureAssistantDisplaySnapshot(state: RenderState): AssistantDisplaySnapshot {
   const blocks = structuredClone(assistantBlocksFromMessages(state.messages, state.pendingAI));
   return {
@@ -253,6 +364,45 @@ export function applyPreservedToolResultOutputs(
     patchedToolNames += result.patchedToolNames;
   }
   return { patchedOutputs, patchedToolNames };
+}
+
+export function preserveLocalAssistantExtensionAfterDiskSync(
+  source: DiskSyncSource,
+  convId: string,
+  before: AssistantDisplaySnapshot | null,
+  state: RenderState,
+): AssistantExtensionPreserveResult {
+  const empty = { preservedBlocks: 0, beforeBlocks: before?.blocks.length ?? 0, afterBlocks: 0, mergedBlocks: 0 };
+  if (!before || state.convId !== convId) return empty;
+
+  const after = captureAssistantDisplaySnapshot(state);
+  const mergedBlocks = mergeLocalAssistantExtension(before.blocks, after.blocks);
+  if (!mergedBlocks) {
+    return {
+      preservedBlocks: 0,
+      beforeBlocks: before.blocks.length,
+      afterBlocks: after.blocks.length,
+      mergedBlocks: after.blocks.length,
+    };
+  }
+
+  applyAssistantBlocksToState(state, mergedBlocks);
+  const preservedBlocks = Math.max(0, mergedBlocks.length - after.blocks.length);
+  log("warn", `tui: preserved local assistant extension across disk sync ${JSON.stringify({
+    source,
+    convId,
+    preservedBlocks,
+    before: blockStats(before.blocks),
+    after: blockStats(after.blocks),
+    merged: blockStats(mergedBlocks),
+  })}`);
+
+  return {
+    preservedBlocks,
+    beforeBlocks: before.blocks.length,
+    afterBlocks: after.blocks.length,
+    mergedBlocks: mergedBlocks.length,
+  };
 }
 
 export function buildAssistantDisplayDiffPayload(

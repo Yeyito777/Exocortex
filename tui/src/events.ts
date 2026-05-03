@@ -25,6 +25,7 @@ import {
   collectDisplayedToolResultOutputs,
   logDiskSyncAppliedAssistantDiff,
   logDiskSyncAssistantDiff,
+  preserveLocalAssistantExtensionAfterDiskSync,
 } from "./events/disk-sync-diagnostics";
 import { pushDisplayEntries } from "./events/display";
 import { CONV_SCOPED, observeStreamSeq } from "./events/stream-sequence";
@@ -201,9 +202,19 @@ export function handleEvent(
         state.toolOutputsLoading = false;
         state.showToolOutputAfterLoad = false;
       }
+      const preservedAssistantExtensionResult = preserveLocalAssistantExtensionAfterDiskSync(
+        "history_updated",
+        event.convId,
+        beforeApply,
+        state,
+      );
       logDiskSyncAppliedAssistantDiff("history_updated", event.convId, beforeApply, state, {
         preservedToolOutputs: preservedToolOutputResult.patchedOutputs,
         preservedToolNames: preservedToolOutputResult.patchedToolNames,
+        preservedAssistantExtensionBlocks: preservedAssistantExtensionResult.preservedBlocks,
+        assistantBlocksBeforeDiskSync: preservedAssistantExtensionResult.beforeBlocks,
+        assistantBlocksAfterDiskSync: preservedAssistantExtensionResult.afterBlocks,
+        assistantBlocksAfterPreserve: preservedAssistantExtensionResult.mergedBlocks,
       });
       if (state.showToolOutput && !state.toolOutputsLoaded && state.convId) {
         state.toolOutputsLoading = true;
