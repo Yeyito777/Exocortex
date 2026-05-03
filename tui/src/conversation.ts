@@ -212,7 +212,8 @@ export function buildMessageLines(
     // streaming_stopped. Keep pendingAI around for reconciliation, but do not
     // render metadata-only pending state next to the notice: if no assistant
     // content was persisted, that line disappears one frame later and flickers.
-    const terminalNoticePendingStop = isTerminalStreamNotice(state.messages[state.messages.length - 1]);
+    const terminalNoticePendingStop = isTerminalStreamNotice(state.messages[state.messages.length - 1])
+      && state.pendingAI.metadata?.startedAt === state.suppressPendingAIMetadataStartedAt;
     const shouldRenderPendingMetadata = state.pendingAI.blocks.length > 0 || (
       state.pendingAICommittedIndex === null && !terminalNoticePendingStop
     );

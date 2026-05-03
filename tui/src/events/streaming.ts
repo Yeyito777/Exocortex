@@ -76,6 +76,9 @@ export function handleStreamingStarted(event: Extract<Event, { type: "streaming_
   }
   const pending = state.pendingAI;
   if (!pending) return;
+  if (pending.metadata?.startedAt !== state.suppressPendingAIMetadataStartedAt || event.snapshotKind === "start") {
+    state.suppressPendingAIMetadataStartedAt = null;
+  }
   // Only replace blocks when we do not already have live local state. A
   // same-conversation reload can deliver an older snapshot after newer local
   // chunks were already rendered; clobbering with that stale snapshot makes

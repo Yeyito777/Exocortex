@@ -31,6 +31,7 @@ import { openTargetDetached } from "./openable";
 import { msUntilNextElapsedSecond } from "./time";
 import type { Event } from "./protocol";
 import { createVoiceInputController, type VoiceInputController } from "./voiceinput";
+import { startReplayConversation } from "./replay";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -193,6 +194,11 @@ function onDaemonEvent(event: Event): void {
 
   if (maybeFlushPendingAuthQueue()) return;
 
+  if (event.type === "streaming_started" && event.convId === state.convId && event.snapshotKind !== "heartbeat") {
+    renderImmediately();
+    return;
+  }
+
   scheduleRender(renderDelayForEvent(event));
 }
 
@@ -302,7 +308,10 @@ function handleSubmit(): void {
           daemon.createConversation(state.provider, state.model, "", state.effort, state.fastMode, undefined, state.sidebar.currentFolderId);
           break;
         case "replay_requested":
-          if (state.convId) daemon.replayConversation(state.convId, Date.now());
+          if (startReplayConversation(state, daemon)) {
+            renderImmediately();
+            return;
+          }
           break;
         case "model_changed":
           if (state.convId) daemon.setModel(state.convId, cmdResult.provider, cmdResult.model);

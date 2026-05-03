@@ -10,11 +10,14 @@ export function pushInlineSystemNotice(
   reconcileOnStop = false,
 ): void {
   if (state.pendingAI) {
+    const startedAt = state.pendingAI.metadata?.startedAt ?? null;
     const finalized = splitPendingAI(state.pendingAI);
     if (finalized) {
       if (reconcileOnStop) finalized.metadata = state.pendingAI.metadata ? { ...state.pendingAI.metadata } : null;
       state.messages.push(finalized);
       if (reconcileOnStop) state.pendingAICommittedIndex = state.messages.length - 1;
+    } else if (reconcileOnStop) {
+      state.suppressPendingAIMetadataStartedAt = startedAt;
     }
   }
   state.messages.push({ role: "system", text, color: resolveSystemMessageColor(color), metadata: null });

@@ -107,6 +107,13 @@ export interface RenderState {
   pendingAI: AIMessage | null;
   /** True when pendingAI was hydrated from a daemon snapshot rather than live local chunks. */
   pendingAIHydratedFromSnapshot: boolean;
+  /**
+   * Started-at timestamp for a metadata-only pendingAI whose metadata should be
+   * hidden while waiting for the matching terminal streaming_stopped. This is
+   * set when a terminal stream notice (interrupt/error) arrives before any
+   * visible assistant content, and cleared for every new assistant turn.
+   */
+  suppressPendingAIMetadataStartedAt: number | null;
   provider: ProviderId;
   hasChosenProvider: boolean;
   model: ModelId;
@@ -224,6 +231,7 @@ export function clearPendingAI(state: RenderState): void {
   state.pendingAI = null;
   state.pendingAIHydratedFromSnapshot = false;
   state.pendingAICommittedIndex = null;
+  state.suppressPendingAIMetadataStartedAt = null;
 }
 
 /** Clear the live streaming tail used for user-invoked notices. */
@@ -403,6 +411,7 @@ export function createInitialState(): RenderState {
     messages: [],
     pendingAI: null,
     pendingAIHydratedFromSnapshot: false,
+    suppressPendingAIMetadataStartedAt: null,
     provider,
     hasChosenProvider: preferredProvider !== null,
     model: DEFAULT_MODEL_BY_PROVIDER[provider],

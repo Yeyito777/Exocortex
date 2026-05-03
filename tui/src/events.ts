@@ -7,7 +7,7 @@
  */
 
 import type { RenderState } from "./state";
-import { clearStreamingTailMessages, pushSystemMessage, renderFolderInstructionsDocument, setCurrentConversationToolOutputAvailability, setFolderInstructionsDocumentText } from "./state";
+import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, renderFolderInstructionsDocument, setCurrentConversationToolOutputAvailability, setFolderInstructionsDocumentText } from "./state";
 import { theme } from "./theme";
 import type { Event } from "./protocol";
 import {
@@ -112,6 +112,7 @@ export function handleEvent(
     case "error":
       // Only show errors for the current conversation (or unscoped errors).
       if (event.convId && event.convId !== state.convId) break;
+      if (event.convId === state.convId && state.pendingAI && state.pendingAI.blocks.length === 0) clearPendingAI(state);
       pushSystemMessage(state, `✗ ${event.message}`, theme.error);
       break;
 

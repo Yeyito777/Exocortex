@@ -5,6 +5,7 @@ import { clonePendingAI } from "./streaming-snapshot";
 export function markPendingAILive(state: RenderState): AIMessage | null {
   if (!state.pendingAI) return null;
   state.pendingAIHydratedFromSnapshot = false;
+  state.suppressPendingAIMetadataStartedAt = null;
   return state.pendingAI;
 }
 
@@ -14,4 +15,5 @@ export function hydratePendingAIFromSnapshot(
 ): void {
   state.pendingAI = clonePendingAI(snapshot);
   state.pendingAIHydratedFromSnapshot = true;
+  state.suppressPendingAIMetadataStartedAt = null;
 }
