@@ -213,26 +213,22 @@ function validateRange(
   if (rawStart < 0 || rawStart >= turnMap.length) {
     return { start: 0, end: 0, snapped: false, error: `'start' index ${rawStart} is out of range (valid: 0–${turnMap.length - 1}).` };
   }
-  if (rawEnd < 0 || rawEnd >= turnMap.length) {
+  if (rawEnd < 0) {
     return { start: 0, end: 0, snapped: false, error: `'end' index ${rawEnd} is out of range (valid: 0–${turnMap.length - 1}).` };
-  }
-  if (rawStart > rawEnd) {
-    return { start: 0, end: 0, snapped: false, error: `'start' (${rawStart}) must be <= 'end' (${rawEnd}).` };
   }
 
   const maxModifiable = turnMap.length - 1 - protectedTailCount;
   if (maxModifiable < 0) {
     return { start: 0, end: 0, snapped: false, error: "No modifiable turns available." };
   }
-  if (rawStart > maxModifiable || rawEnd > maxModifiable) {
-    return {
-      start: rawStart, end: rawEnd, snapped: false,
-      error: `Turns ${maxModifiable + 1}–${turnMap.length - 1} are protected (current turn). Modifiable range: 0–${maxModifiable}.`,
-    };
+
+  const clampedEnd = Math.min(rawEnd, maxModifiable);
+  if (rawStart > clampedEnd) {
+    return { start: 0, end: 0, snapped: false, error: `'start' (${rawStart}) must be <= clamped 'end' (${clampedEnd}).` };
   }
 
   // Snap to tool_use/tool_result boundaries
-  const { start, end, snapped } = snapRange(rawStart, rawEnd, turnMap, messages, maxModifiable);
+  const { start, end, snapped } = snapRange(rawStart, clampedEnd, turnMap, messages, maxModifiable);
 
   return { start, end, snapped };
 }
@@ -489,8 +485,8 @@ function validateScopedRange(
   if (!Number.isInteger(rawStart) || !Number.isInteger(rawEnd)) {
     return { error: "'start' and 'end' must be integers." };
   }
-  if (rawStart > rawEnd) {
-    return { error: `'start' (${rawStart}) must be <= 'end' (${rawEnd}).` };
+  if (rawEnd < 0) {
+    return { error: `'end' index ${rawEnd} is out of range.` };
   }
 
   const historyMap = buildHistoryTurnMap(env.conv.messages);
@@ -503,12 +499,13 @@ function validateScopedRange(
   if (rawStart < 0 || rawStart >= totalCount) {
     return { error: `'start' index ${rawStart} is out of range (valid: 0–${totalCount - 1}).` };
   }
-  if (rawEnd < 0 || rawEnd >= totalCount) {
-    return { error: `'end' index ${rawEnd} is out of range (valid: 0–${totalCount - 1}).` };
+  const clampedRawEnd = Math.min(rawEnd, totalCount - 1);
+  if (rawStart > clampedRawEnd) {
+    return { error: `'start' (${rawStart}) must be <= clamped 'end' (${clampedRawEnd}).` };
   }
 
-  if (rawStart < historyCount && rawEnd >= historyCount) {
-    return { error: `Range ${rawStart}–${rawEnd} crosses from persisted history into the in-progress assistant message. Run '${options.action}' separately for each section.` };
+  if (rawStart < historyCount && clampedRawEnd >= historyCount) {
+    return { error: `Range ${rawStart}–${clampedRawEnd} crosses from persisted history into the in-progress assistant message. Run '${options.action}' separately for each section.` };
   }
 
   if (rawStart >= historyCount) {
@@ -516,7 +513,7 @@ function validateScopedRange(
       return { error: `Cannot ${options.action} in-progress assistant message turns. Use summarize, strip_thinking, or strip_results instead.` };
     }
     const localStart = rawStart - historyCount;
-    const localEnd = rawEnd - historyCount;
+    const localEnd = clampedRawEnd - historyCount;
     const protectedTailCount = env.protectedCurrentTurnTailCount ?? 0;
     const validated = validateRange({ ...input, start: localStart, end: localEnd }, currentMap, currentMessages, protectedTailCount);
     if (validated.error) return { error: validated.error };
@@ -532,7 +529,7 @@ function validateScopedRange(
     };
   }
 
-  const validated = validateRange(input, historyMap, env.conv.messages, env.protectedTailCount);
+  const validated = validateRange({ ...input, end: clampedRawEnd }, historyMap, env.conv.messages, env.protectedTailCount);
   if (validated.error) return { error: validated.error };
   return {
     scope: "history",
@@ -544,6 +541,68 @@ function validateScopedRange(
     globalEnd: validated.end,
     snapped: validated.snapped,
   };
+}
+
+function validateScopedRanges(
+  input: Record<string, unknown>,
+  env: ContextToolEnv,
+  action: string,
+): ScopedRange[] | { error: string } {
+  const rawStart = input.start as number | undefined;
+  const rawEnd = input.end as number | undefined;
+  if (rawStart == null || rawEnd == null) return { error: "Both 'start' and 'end' turn indices are required." };
+  if (!Number.isInteger(rawStart) || !Number.isInteger(rawEnd)) return { error: "'start' and 'end' must be integers." };
+  if (rawEnd < 0) return { error: `'end' index ${rawEnd} is out of range.` };
+
+  const historyMap = buildHistoryTurnMap(env.conv.messages);
+  const currentMessages = currentTurnStoredMessages(env);
+  const currentMap = currentTurnMap(env);
+  const historyCount = historyMap.length;
+  const totalCount = historyCount + currentMap.length;
+  if (totalCount === 0) return { error: "No turns available." };
+  if (rawStart < 0 || rawStart >= totalCount) return { error: `'start' index ${rawStart} is out of range (valid: 0–${totalCount - 1}).` };
+
+  const clampedRawEnd = Math.min(rawEnd, totalCount - 1);
+  if (rawStart > clampedRawEnd) return { error: `'start' (${rawStart}) must be <= clamped 'end' (${clampedRawEnd}).` };
+
+  const ranges: ScopedRange[] = [];
+  const errors: string[] = [];
+
+  if (rawStart < historyCount) {
+    const historyEnd = Math.min(clampedRawEnd, historyCount - 1);
+    const validated = validateRange({ ...input, start: rawStart, end: historyEnd }, historyMap, env.conv.messages, env.protectedTailCount);
+    if (validated.error) errors.push(validated.error);
+    else ranges.push({
+      scope: "history",
+      messages: env.conv.messages,
+      turnMap: historyMap,
+      start: validated.start,
+      end: validated.end,
+      globalStart: validated.start,
+      globalEnd: validated.end,
+      snapped: validated.snapped,
+    });
+  }
+
+  if (clampedRawEnd >= historyCount && currentMap.length > 0) {
+    const currentStart = Math.max(rawStart - historyCount, 0);
+    const currentEnd = clampedRawEnd - historyCount;
+    const validated = validateRange({ ...input, start: currentStart, end: currentEnd }, currentMap, currentMessages, env.protectedCurrentTurnTailCount ?? 0);
+    if (validated.error) errors.push(validated.error);
+    else ranges.push({
+      scope: "current",
+      messages: currentMessages,
+      turnMap: currentMap,
+      start: validated.start,
+      end: validated.end,
+      globalStart: historyCount + validated.start,
+      globalEnd: historyCount + validated.end,
+      snapped: validated.snapped,
+    });
+  }
+
+  if (ranges.length === 0) return { error: errors[0] ?? `No modifiable turns available for ${action}.` };
+  return ranges;
 }
 
 function markRangeMutated(env: ContextToolEnv, scope: MutableScope): void {
@@ -699,34 +758,41 @@ function actionStripThinking(
   input: Record<string, unknown>,
   env: ContextToolEnv,
 ): ToolResult {
-  const scoped = validateScopedRange(input, env, { allowCurrent: true, action: "strip_thinking" });
-  if ("error" in scoped) return { output: scoped.error, isError: true };
-  const { messages, turnMap, start, end, scope } = scoped;
+  const scopedRanges = validateScopedRanges(input, env, "strip_thinking");
+  if ("error" in scopedRanges) return { output: scopedRanges.error, isError: true };
 
   let strippedCount = 0;
   let removedChars = 0;
+  let totalChars = 0;
   const skipped: string[] = [];
+  const mutatedScopes = new Set<MutableScope>();
 
-  for (let t = start; t <= end; t++) {
-    const msg = messages[turnMap[t]];
-    if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+  for (const scoped of scopedRanges) {
+    const { messages, turnMap, start, end, scope } = scoped;
+    totalChars += turnMap.reduce((sum, i) => sum + messageChars(messages[i]), 0);
 
-    const blocks = msg.content as ApiContentBlock[];
-    const thinkingBlocks = blocks.filter((b) => b.type === "thinking");
-    if (thinkingBlocks.length === 0) continue;
+    for (let t = start; t <= end; t++) {
+      const msg = messages[turnMap[t]];
+      if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
 
-    for (const b of thinkingBlocks) {
-      if (b.type === "thinking") removedChars += b.thinking.length + b.signature.length;
+      const blocks = msg.content as ApiContentBlock[];
+      const thinkingBlocks = blocks.filter((b) => b.type === "thinking");
+      if (thinkingBlocks.length === 0) continue;
+
+      for (const b of thinkingBlocks) {
+        if (b.type === "thinking") removedChars += b.thinking.length + b.signature.length;
+      }
+
+      const filtered = blocks.filter((b) => b.type !== "thinking");
+      if (filtered.length === 0) {
+        skipped.push(`Skipped turn ${scoped.globalStart + (t - start)} (only contained thinking, no text/tool_use to preserve).`);
+        continue;
+      }
+
+      msg.content = filtered;
+      strippedCount++;
+      mutatedScopes.add(scope);
     }
-
-    const filtered = blocks.filter((b) => b.type !== "thinking");
-    if (filtered.length === 0) {
-      skipped.push(`Skipped turn ${scoped.globalStart + (t - start)} (only contained thinking, no text/tool_use to preserve).`);
-      continue;
-    }
-
-    msg.content = filtered;
-    strippedCount++;
   }
 
   if (strippedCount === 0 && skipped.length > 0) {
@@ -736,11 +802,9 @@ function actionStripThinking(
     return { output: "No assistant turns with thinking blocks found in the specified range.", isError: false };
   }
 
-  const prevLastCtx = env.conv.lastContextTokens ?? null;
-  markRangeMutated(env, scope);
+  for (const scope of mutatedScopes) markRangeMutated(env, scope);
 
-  const totalChars = turnMap.reduce((sum, i) => sum + messageChars(messages[i]), 0) + removedChars;
-  const removedTokens = estimateTokens(removedChars, totalChars, scope === "history" ? prevLastCtx : null);
+  const removedTokens = estimateTokens(removedChars, totalChars + removedChars, env.conv.lastContextTokens ?? null);
   const parts = [`Stripped thinking from ${strippedCount} assistant turn${strippedCount !== 1 ? "s" : ""}. Removed ~${fmt(removedChars)} chars (~${fmt(removedTokens)} estimated tokens).`];
   if (skipped.length > 0) parts.push(...skipped);
   return { output: parts.join("\n"), isError: false };
@@ -754,27 +818,34 @@ function actionStripResults(
   input: Record<string, unknown>,
   env: ContextToolEnv,
 ): ToolResult {
-  const scoped = validateScopedRange(input, env, { allowCurrent: true, action: "strip_results" });
-  if ("error" in scoped) return { output: scoped.error, isError: true };
-  const { messages, turnMap, start, end, scope } = scoped;
+  const scopedRanges = validateScopedRanges(input, env, "strip_results");
+  if ("error" in scopedRanges) return { output: scopedRanges.error, isError: true };
 
   let strippedCount = 0;
   let removedChars = 0;
+  let totalChars = 0;
+  const mutatedScopes = new Set<MutableScope>();
 
-  for (let t = start; t <= end; t++) {
-    const msg = messages[turnMap[t]];
-    if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
+  for (const scoped of scopedRanges) {
+    const { messages, turnMap, start, end, scope } = scoped;
+    totalChars += turnMap.reduce((sum, i) => sum + messageChars(messages[i]), 0);
 
-    for (let i = 0; i < msg.content.length; i++) {
-      const b = msg.content[i] as ApiContentBlock;
-      if (b.type !== "tool_result") continue;
-      const oldLen = typeof b.content === "string" ? b.content.length : JSON.stringify(b.content).length;
-      if (b.content === STRIPPED_PLACEHOLDER) continue;
-      const saved = oldLen - STRIPPED_PLACEHOLDER.length;
-      if (saved <= 0) continue;
-      removedChars += saved;
-      (b as { content: string }).content = STRIPPED_PLACEHOLDER;
-      strippedCount++;
+    for (let t = start; t <= end; t++) {
+      const msg = messages[turnMap[t]];
+      if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
+
+      for (let i = 0; i < msg.content.length; i++) {
+        const b = msg.content[i] as ApiContentBlock;
+        if (b.type !== "tool_result") continue;
+        const oldLen = typeof b.content === "string" ? b.content.length : JSON.stringify(b.content).length;
+        if (b.content === STRIPPED_PLACEHOLDER) continue;
+        const saved = oldLen - STRIPPED_PLACEHOLDER.length;
+        if (saved <= 0) continue;
+        removedChars += saved;
+        (b as { content: string }).content = STRIPPED_PLACEHOLDER;
+        strippedCount++;
+        mutatedScopes.add(scope);
+      }
     }
   }
 
@@ -782,12 +853,10 @@ function actionStripResults(
     return { output: "No tool results to strip in the specified range.", isError: false };
   }
 
-  const prevLastCtx = env.conv.lastContextTokens ?? null;
-  markRangeMutated(env, scope);
+  for (const scope of mutatedScopes) markRangeMutated(env, scope);
 
-  const totalChars = turnMap.reduce((sum, i) => sum + messageChars(messages[i]), 0) + removedChars;
-  const removedTokens = estimateTokens(removedChars, totalChars, scope === "history" ? prevLastCtx : null);
-  const scopeNote = scope === "current" ? " in the in-progress assistant message" : "";
+  const removedTokens = estimateTokens(removedChars, totalChars + removedChars, env.conv.lastContextTokens ?? null);
+  const scopeNote = mutatedScopes.has("current") ? " including in-progress assistant message results" : "";
   return {
     output: `Stripped ${strippedCount} tool result${strippedCount !== 1 ? "s" : ""}${scopeNote}. Removed ~${fmt(removedChars)} chars (~${fmt(removedTokens)} estimated tokens).`,
     isError: false,

@@ -220,12 +220,47 @@ describe("context tool", () => {
     const result = await executeContext({ action: "strip_results", start: 2, end: 2 }, env);
 
     expect(result.isError).toBe(false);
-    expect(result.output).toContain("in the in-progress assistant message");
+    expect(result.output).toContain("in-progress assistant message");
     expect(wasModified()).toBe(true);
     expect(conv.lastContextTokens).toBeNull();
     expect((conv.messages[0].content as ApiContentBlock[])[0]).toMatchObject({ content: "persisted tool output that must stay intact" });
     expect((current[1].content as ApiContentBlock[])[0]).toMatchObject({ content: "[Output removed by context tool]" });
     expect((current[2].content as ApiContentBlock[])[0]).toMatchObject({ type: "tool_use", id: "tool-2" });
+  });
+
+  test("strip_results clamps oversized end indices", async () => {
+    const conv = makeConversation([
+      makeToolUseAssistantMessage("tool-1"),
+      makeToolResultUserMessage("persisted tool output that is definitely longer than the stripped placeholder", "tool-1"),
+    ]);
+    const { env } = makeEnv(conv);
+
+    const result = await executeContext({ action: "strip_results", start: 0, end: 999 }, env);
+
+    expect(result.isError).toBe(false);
+    expect(result.output).not.toContain("out of range");
+    expect((conv.messages[1].content as ApiContentBlock[])[0]).toMatchObject({ content: "[Output removed by context tool]" });
+  });
+
+  test("strip_results can clamp oversized end indices across persisted and in-progress turns", async () => {
+    const conv = makeConversation([
+      makeToolUseAssistantMessage("persisted-tool"),
+      makeToolResultUserMessage("persisted tool output that is definitely longer than the stripped placeholder", "persisted-tool"),
+    ]);
+    const current = [
+      makeToolUseAssistantMessage("current-tool"),
+      makeToolResultUserMessage("current tool output that is definitely longer than the stripped placeholder", "current-tool"),
+    ];
+    const { env } = makeEnv(conv);
+    env.currentTurnMessages = current;
+    env.protectedCurrentTurnTailCount = 0;
+
+    const result = await executeContext({ action: "strip_results", start: 0, end: 999 }, env);
+
+    expect(result.isError).toBe(false);
+    expect(result.output).not.toContain("out of range");
+    expect((conv.messages[1].content as ApiContentBlock[])[0]).toMatchObject({ content: "[Output removed by context tool]" });
+    expect((current[1].content as ApiContentBlock[])[0]).toMatchObject({ content: "[Output removed by context tool]" });
   });
 
   test("delete rejects in-progress assistant message turn indices", async () => {

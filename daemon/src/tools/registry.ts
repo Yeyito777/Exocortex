@@ -14,6 +14,7 @@ import { write } from "./write";
 import { glob } from "./glob";
 import { grep } from "./grep";
 import { edit } from "./edit";
+import { patch } from "./patch";
 import { browse } from "./browse";
 import { context, executeContext, type ContextToolEnv } from "./context";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
@@ -31,6 +32,7 @@ const TOOLS: Tool[] = [
   glob,
   grep,
   edit,
+  patch,
   browse,
   context,
 ];

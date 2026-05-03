@@ -7,6 +7,7 @@ describe("Anthropic Exocortex MCP bridge", () => {
     expect(toolNames).toContain("mcp__exocortex__bash");
     expect(toolNames).toContain("mcp__exocortex__browse");
     expect(toolNames).toContain("mcp__exocortex__context");
+    expect(toolNames).toContain("mcp__exocortex__patch");
   });
 
   test("normalizes Exocortex MCP names back to plain tool names", () => {
