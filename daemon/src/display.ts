@@ -7,7 +7,7 @@
  */
 
 import type { Block, MessageMetadata, ImageAttachment } from "./messages";
-import type { StoredMessage, ApiContentBlock } from "./messages";
+import { isModelVisibleSystemNotice, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { ProviderId, ModelId, EffortLevel } from "./messages";
 import type { DisplayEntry, ToolOutputInfo } from "@exocortex/shared/protocol";
 
@@ -132,6 +132,17 @@ export function buildDisplayData(
       const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
       const color = text.startsWith("⟳") || text.startsWith("OpenAI usage limit reached") ? "warning" : "error";
       entries.push({ type: "system", text, color });
+      continue;
+    }
+    if (isModelVisibleSystemNotice(msg)) {
+      flushAI();
+      const text = typeof msg.content === "string"
+        ? msg.content
+        : msg.content
+            .filter((c) => c.type === "text")
+            .map((c) => (c as { type: "text"; text: string }).text)
+            .join("\n") || JSON.stringify(msg.content);
+      entries.push({ type: "system", text });
       continue;
     }
     if (msg.role === "user") {

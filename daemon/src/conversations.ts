@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary } from "./messages";
-import { DEFAULT_EFFORT, createConversation, createMessageMetadata, createStoredUserMessage, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation } from "./messages";
+import { DEFAULT_EFFORT, createConversation, createMessageMetadata, createStoredUserMessage, isRealUserMessage, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
@@ -537,7 +537,7 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   let userCount = 0;
   for (let i = 0; i < conv.messages.length; i++) {
     if (conv.messages[i].role === "system_instructions") continue;
-    if (conv.messages[i].role === "user" && !isToolResultMessage(conv.messages[i])) {
+    if (isRealUserMessage(conv.messages[i])) {
       if (userCount === userMessageIndex) { spliceAt = i; break; }
       userCount++;
     }

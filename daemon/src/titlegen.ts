@@ -12,7 +12,7 @@ import { complete } from "./llm";
 import * as convStore from "./conversations";
 import type { DaemonServer } from "./server";
 import type { ApiContentBlock, Conversation, ProviderId, StoredMessage } from "./messages";
-import { isToolResultMessage } from "./messages";
+import { isRealUserMessage } from "./messages";
 import { getTokenStatsSnapshot } from "./token-stats";
 import { broadcastConversationUpdated } from "./conversation-events";
 
@@ -95,7 +95,7 @@ function extractUserContext(conv: Conversation): string {
   const parts: string[] = [];
   let total = 0;
   for (const msg of conv.messages) {
-    if (msg.role !== "user" || isToolResultMessage(msg)) continue;
+    if (!isRealUserMessage(msg)) continue;
     const text = userTextFromContent(msg.content).trim();
     if (!text) continue;
     const remaining = MAX_CONTEXT_CHARS - total;
@@ -107,7 +107,7 @@ function extractUserContext(conv: Conversation): string {
 }
 
 function hasTitleContext(conv: Conversation): boolean {
-  return conv.messages.some((msg) => msg.role === "user" && !isToolResultMessage(msg) && userTextFromContent(msg.content).trim().length > 0);
+  return conv.messages.some((msg) => isRealUserMessage(msg) && userTextFromContent(msg.content).trim().length > 0);
 }
 
 function broadcastTitle(server: DaemonServer, convId: string, title: string, reason: string): void {

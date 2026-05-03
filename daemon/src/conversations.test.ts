@@ -466,13 +466,14 @@ describe("setSystemInstructions", () => {
 });
 
 describe("getSummary", () => {
-  test("messageCount excludes system_instructions", () => {
+  test("messageCount excludes system_instructions and model-visible system notices", () => {
     const id = mkId("summary-count");
     create(id, "anthropic", "sonnet");
     expect(setSystemInstructions(id, "Be terse.")).toBe(true);
 
     const conv = get(id)!;
     conv.messages.push({ role: "user", content: "hello", metadata: null });
+    conv.messages.push({ role: "user", content: "[Context: getting full]", metadata: { startedAt: 1, endedAt: 1, model: "sonnet", tokens: 0, system: true, kind: "context_warning" } });
     conv.messages.push({ role: "assistant", content: "hi", metadata: null });
 
     const summary = getSummary(id)!;

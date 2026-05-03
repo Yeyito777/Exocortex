@@ -494,6 +494,27 @@ describe("tool-result folding", () => {
     expect(ai.blocks[2]).toEqual({ type: "text", text: "⚠ Context usage: 85%" });
   });
 
+  test("model-visible system context warning → rendered as system notice, not user bubble", () => {
+    const metadata: MessageMetadata = {
+      startedAt: 1_000,
+      endedAt: 1_000,
+      model: "sonnet",
+      tokens: 0,
+      system: true,
+      kind: "context_warning",
+    };
+    const { entries } = build([
+      { role: "assistant", content: "Before warning", metadata: null },
+      { role: "user", content: "[Context: 900k/1,000k tokens — context is getting full.]", metadata },
+      { role: "assistant", content: "After warning", metadata: null },
+    ]);
+
+    expect(entries).toHaveLength(3);
+    expect(entries[0].type).toBe("ai");
+    expect(entries[1]).toEqual({ type: "system", text: "[Context: 900k/1,000k tokens — context is getting full.]" });
+    expect(entries[2].type).toBe("ai");
+  });
+
   test("orphaned tool_result (no preceding assistant) → falls through to user entry", () => {
     const content: ApiContentBlock[] = [
       { type: "tool_result", tool_use_id: "tu-orphan", content: "orphan", is_error: false },

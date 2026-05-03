@@ -11,7 +11,7 @@
 
 import { streamMessage, type ApiToolCall } from "./api";
 import { log } from "./log";
-import type { ProviderId, ModelId, EffortLevel, Block, ToolCallBlock, ToolResultBlock, ApiMessage, ApiContentBlock, TokenTrackingContext } from "./messages";
+import { createModelVisibleSystemNotice, type ProviderId, type ModelId, type EffortLevel, type Block, type ToolCallBlock, type ToolResultBlock, type ApiMessage, type ApiContentBlock, type TokenTrackingContext } from "./messages";
 import type { ContentBlock as ProviderContentBlock, ServiceTier, StreamRetryMetadata } from "./providers/types";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
 import { getMaxContext } from "./providers/registry";
@@ -33,6 +33,8 @@ export interface AgentCallbacks {
   onToolCall(block: ToolCallBlock): void;
   /** A tool has finished executing. */
   onToolResult(block: ToolResultBlock): void;
+  /** Expose the mutable current-turn message buffer for context management tools. */
+  onCurrentTurnMessagesUpdate?(messages: ApiMessage[], protectedTailCount: number): void;
   /** Accumulated output token count updated (fires after each API round). */
   onTokensUpdate(tokens: number): void;
   /** Input (context) token count from the latest API round. */
@@ -115,6 +117,76 @@ function defaultSummarizer(name: string, _input: Record<string, unknown>): strin
   return name;
 }
 
+function toolResultOutput(content: string | unknown[]): string {
+  if (typeof content === "string") return content;
+  return content
+    .map((part) => {
+      if (part && typeof part === "object" && "type" in part && (part as { type?: unknown }).type === "text") {
+        return String((part as { text?: unknown }).text ?? "");
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n") || JSON.stringify(content);
+}
+
+/**
+ * Rebuild display blocks from the mutable provider-history messages for the
+ * in-progress assistant message. Current-turn compaction mutates ApiMessage
+ * content directly; this keeps final message_complete blocks in sync with what
+ * is actually persisted/sent to the next model call.
+ */
+function rebuildBlocksFromApiMessages(messages: ApiMessage[], summarizer: ToolSummarizer): Block[] {
+  const blocks: Block[] = [];
+  const toolUseNames = new Map<string, string>();
+
+  for (const msg of messages) {
+    if (msg.role === "assistant") {
+      if (typeof msg.content === "string") {
+        if (msg.content.length > 0) blocks.push({ type: "text", text: msg.content });
+        continue;
+      }
+      for (const block of msg.content) {
+        if (block.type === "thinking") {
+          blocks.push({ type: "thinking", text: block.thinking });
+        } else if (block.type === "text") {
+          blocks.push({ type: "text", text: block.text });
+        } else if (block.type === "tool_use") {
+          toolUseNames.set(block.id, block.name);
+          blocks.push({
+            type: "tool_call",
+            toolCallId: block.id,
+            toolName: block.name,
+            input: block.input,
+            summary: summarizer(block.name, block.input),
+          });
+        }
+      }
+      continue;
+    }
+
+    if (Array.isArray(msg.content) && msg.content.some((b) => b.type === "tool_result")) {
+      for (const block of msg.content) {
+        if (block.type !== "tool_result") continue;
+        blocks.push({
+          type: "tool_result",
+          toolCallId: block.tool_use_id,
+          toolName: toolUseNames.get(block.tool_use_id) ?? "unknown",
+          output: toolResultOutput(block.content),
+          isError: block.is_error ?? false,
+        });
+      }
+    } else if (msg.metadata?.system === true) {
+      const text = typeof msg.content === "string"
+        ? msg.content
+        : msg.content.filter((b) => b.type === "text").map((b) => (b as { type: "text"; text: string }).text).join("\n");
+      if (text.length > 0) blocks.push({ type: "text", text });
+    }
+  }
+
+  return blocks;
+}
+
 const CONTEXT_WARNING_FRACTION = 0.8;
 const CONTEXT_TARGET_FRACTION = 0.4;
 
@@ -178,9 +250,9 @@ export async function runAgentLoop(
   let totalOutputTokens = 0;
   let lastInputTokens = 0;
 
-  // Context pressure warning — injected as a text block in tool result messages.
-  // This only appears on tool-use turns because it is appended to the
-  // tool_result message seen by the model and rendered inline by the TUI.
+  // Context pressure warning — injected after qualifying tool-result rounds as
+  // a model-visible synthetic user message (metadata.system=true) while keeping
+  // the same live dim context-hint UI during streaming.
   // Re-evaluate it after every qualifying tool round while context remains hot.
 
   // Expose state for abort recovery
@@ -294,6 +366,9 @@ export async function runAgentLoop(
     }
 
     log("info", `agent: round ${round}: ${result.toolCalls.length} tool call(s): ${result.toolCalls.map(tc => tc.name).join(", ")}`);
+    // The just-appended assistant tool_use message is incomplete until this
+    // round's tool results are built, so protect it from context compaction.
+    callbacks.onCurrentTurnMessagesUpdate?.(newMessages, 1);
 
     const shouldWarnForThisRound = shouldInjectContextPressureWarning(result.toolCalls);
 
@@ -360,22 +435,17 @@ export async function runAgentLoop(
     }
 
     // ── Context pressure warning ──────────────────────────────────
-    // Inject a text block into the tool_result message whenever the
-    // conversation is at or above 80% of the model's maximum context,
-    // except on rounds already using the context tool.
+    // When the conversation is at or above 80% of the model's maximum
+    // context, inject a separate model-visible synthetic user message after
+    // the tool_result message. Its metadata marks it as system-authored so
+    // clients render/count it like a context notice, not a real user prompt.
+    let contextPressureWarning: ContextPressureWarning | null = null;
     if (shouldWarnForThisRound && lastInputTokens > 0) {
       const contextLimit = getMaxContext(provider, model);
       if (contextLimit == null || contextLimit <= 0) {
         log("warn", `agent: skipping context pressure warning, unknown max context for ${provider}/${model}`);
       } else {
-        const warning = buildContextPressureWarning(lastInputTokens, contextLimit);
-        if (warning) {
-          toolResultContent.push({ type: "text", text: warning.hint } as ApiContentBlock);
-          allBlocks.push({ type: "text", text: warning.hint });
-          callbacks.onBlockStart("text");
-          callbacks.onTextChunk(warning.hint);
-          log("info", `agent: injected context pressure warning (threshold=${Math.round(CONTEXT_WARNING_FRACTION * 100)}%, ${warning.usage})`);
-        }
+        contextPressureWarning = buildContextPressureWarning(lastInputTokens, contextLimit);
       }
     }
 
@@ -383,12 +453,38 @@ export async function runAgentLoop(
     messages.push(toolResultMsg);
     newMessages.push(toolResultMsg);
 
+    if (contextPressureWarning) {
+      const warningMsg: ApiMessage = createModelVisibleSystemNotice(
+        contextPressureWarning.hint,
+        model,
+        "context_warning",
+      );
+      messages.push(warningMsg);
+      newMessages.push(warningMsg);
+
+      // Preserve the current live UI affordance: context hints stream as dim
+      // assistant-tail text until the canonical history snapshot replaces them
+      // with a system-style entry after the turn completes.
+      allBlocks.push({ type: "text", text: contextPressureWarning.hint });
+      callbacks.onBlockStart("text");
+      callbacks.onTextChunk(contextPressureWarning.hint);
+      log("info", `agent: injected context pressure warning (threshold=${Math.round(CONTEXT_WARNING_FRACTION * 100)}%, ${contextPressureWarning.usage})`);
+    }
+
+    // The round is now internally complete; older current-turn rounds may be
+    // compacted by a future context tool call.
+    callbacks.onCurrentTurnMessagesUpdate?.(newMessages, 0);
+
     // ── Context tool rebuild ─────────────────────────────────────
     const rebuilt = callbacks.rebuildMessages?.();
     if (rebuilt) {
       // rebuilt = historical messages (trimmed). Append current loop's new messages.
       messages.length = 0;
       messages.push(...rebuilt, ...newMessages);
+      // Current-turn compaction mutates newMessages; keep final/live canonical
+      // display blocks aligned so stripped outputs don't reappear on completion.
+      allBlocks.length = 0;
+      allBlocks.push(...rebuildBlocksFromApiMessages(newMessages, options.summarizer ?? defaultSummarizer));
       log("info", `agent: context rebuilt, messages=${messages.length} (${rebuilt.length} historical + ${newMessages.length} new)`);
     }
 

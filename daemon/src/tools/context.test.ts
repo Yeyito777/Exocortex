@@ -35,7 +35,7 @@ function makeEnv(conv: Conversation, protectedTailCount = 0): { env: ContextTool
   };
 }
 
-function makeThinkingAssistantMessage(text = "answer"): StoredMessage {
+function makeThinkingAssistantMessage(text = "answer"): StoredMessage & { role: "assistant" } {
   const content: ApiContentBlock[] = [
     { type: "thinking", thinking: "hidden reasoning", signature: "sig" },
     { type: "text", text },
@@ -43,9 +43,16 @@ function makeThinkingAssistantMessage(text = "answer"): StoredMessage {
   return { role: "assistant", content, metadata: null };
 }
 
-function makeToolResultUserMessage(content = "tool output"): StoredMessage {
+function makeToolUseAssistantMessage(id = "tool-1", name = "bash"): StoredMessage & { role: "assistant" } {
   const blocks: ApiContentBlock[] = [
-    { type: "tool_result", tool_use_id: "tool-1", content },
+    { type: "tool_use", id, name, input: { command: "echo hi" } },
+  ];
+  return { role: "assistant", content: blocks, metadata: null };
+}
+
+function makeToolResultUserMessage(content = "tool output", id = "tool-1"): StoredMessage & { role: "user" } {
+  const blocks: ApiContentBlock[] = [
+    { type: "tool_result", tool_use_id: id, content },
   ];
   return { role: "user", content: blocks, metadata: null };
 }
@@ -173,5 +180,89 @@ describe("context tool", () => {
 
     expect(result.isError).toBe(false);
     expect(conv.lastContextTokens).toBeNull();
+  });
+
+  test("list shows in-progress assistant message turns separately from persisted history", async () => {
+    const conv = makeConversation([
+      { role: "user", content: "persisted prompt", metadata: null },
+    ]);
+    const { env } = makeEnv(conv);
+    env.currentTurnMessages = [
+      makeToolUseAssistantMessage(),
+      makeToolResultUserMessage("large current result"),
+      makeToolUseAssistantMessage("tool-2"),
+    ];
+    env.protectedCurrentTurnTailCount = 1;
+
+    const result = await executeContext({ action: "list" }, env);
+
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("In-progress assistant message turns");
+    expect(result.output).toContain("modifiable");
+    expect(result.output).toContain("protected");
+    expect(result.output).toContain("tool_result");
+  });
+
+  test("strip_results can target in-progress assistant message turns by listed index", async () => {
+    const conv = makeConversation([
+      makeToolResultUserMessage("persisted tool output that must stay intact"),
+    ]);
+    conv.lastContextTokens = 2_000;
+    const current = [
+      makeToolUseAssistantMessage("tool-1"),
+      makeToolResultUserMessage("current tool output that is definitely longer than the stripped placeholder", "tool-1"),
+      makeToolUseAssistantMessage("tool-2"),
+    ];
+    const { env, wasModified } = makeEnv(conv);
+    env.currentTurnMessages = current;
+    env.protectedCurrentTurnTailCount = 1;
+
+    const result = await executeContext({ action: "strip_results", start: 2, end: 2 }, env);
+
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("in the in-progress assistant message");
+    expect(wasModified()).toBe(true);
+    expect(conv.lastContextTokens).toBeNull();
+    expect((conv.messages[0].content as ApiContentBlock[])[0]).toMatchObject({ content: "persisted tool output that must stay intact" });
+    expect((current[1].content as ApiContentBlock[])[0]).toMatchObject({ content: "[Output removed by context tool]" });
+    expect((current[2].content as ApiContentBlock[])[0]).toMatchObject({ type: "tool_use", id: "tool-2" });
+  });
+
+  test("delete rejects in-progress assistant message turn indices", async () => {
+    const conv = makeConversation([
+      { role: "user", content: "persisted prompt", metadata: null },
+    ]);
+    const { env } = makeEnv(conv);
+    env.currentTurnMessages = [makeToolUseAssistantMessage("tool-1")];
+
+    const result = await executeContext({ action: "delete", start: 1, end: 1 }, env);
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Cannot delete in-progress assistant message turns");
+    expect(conv.messages).toHaveLength(1);
+  });
+
+  test("summarize can replace in-progress assistant message turns with model-visible summary notice", async () => {
+    const conv = makeConversation([]);
+    const current = [
+      makeToolUseAssistantMessage("tool-1"),
+      makeToolResultUserMessage("x".repeat(3_000), "tool-1"),
+      makeToolUseAssistantMessage("tool-2"),
+    ];
+    const { env } = makeEnv(conv);
+    env.currentTurnMessages = current;
+    env.protectedCurrentTurnTailCount = 1;
+    env.summarizeWithInnerLlm = async () => "important summarized facts";
+
+    const result = await executeContext({ action: "summarize", start: 0, end: 1 }, env);
+
+    expect(result.isError).toBe(false);
+    expect(current).toHaveLength(2);
+    expect(current[0]).toMatchObject({
+      role: "user",
+      content: "[Summary of in-progress assistant message turns 0–1]\nimportant summarized facts",
+      metadata: { system: true, kind: "current_turn_summary" },
+    });
+    expect(current[1].role).toBe("assistant");
   });
 });

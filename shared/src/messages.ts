@@ -150,6 +150,13 @@ export interface MessageMetadata {
   model: ModelId;
   /** Accumulated output tokens. Starts at 0, daemon sends periodic updates. */
   tokens: number;
+  /**
+   * True for daemon-authored messages that should be visible to the model but
+   * treated like system/UI notices instead of real user messages in clients.
+   */
+  system?: boolean;
+  /** Machine-readable subtype for daemon-authored metadata/system notices. */
+  kind?: string;
 }
 
 /** Build standard message metadata with sensible defaults. */

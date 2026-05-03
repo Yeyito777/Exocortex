@@ -48,6 +48,8 @@ export function injectMessageBreakpoints(messages: ApiMessage[]): ApiMessage[] {
   const result: ApiMessage[] = messages.map(m => ({
     role: m.role,
     content: typeof m.content === "string" ? m.content : m.content.map(b => ({ ...b })),
+    ...(m.metadata ? { metadata: m.metadata } : {}),
+    ...(m.providerData ? { providerData: m.providerData } : {}),
   }));
 
   // Fresh breakpoint: always on the last message.

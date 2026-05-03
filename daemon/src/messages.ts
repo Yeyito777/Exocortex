@@ -25,6 +25,12 @@ export type ApiContentBlock =
 export interface ApiMessage {
   role: "user" | "assistant";
   content: string | ApiContentBlock[];
+  /**
+   * Optional persistence/display metadata. Provider request builders ignore it;
+   * the daemon uses it for model-visible system notices such as context
+   * pressure warnings.
+   */
+  metadata?: MessageMetadata | null;
   providerData?: AssistantProviderData;
 }
 
@@ -78,9 +84,41 @@ export function isToolResultMessage(msg: StoredMessage): boolean {
   return msg.content.length > 0 && msg.content.some(b => b.type === "tool_result");
 }
 
-/** True for actual user/assistant history turns, excluding daemon metadata entries. */
+/**
+ * A model-visible system notice is stored with role="user" so providers see it
+ * in conversation history, but is tagged metadata.system=true so app UX treats
+ * it like a daemon/system notice rather than a user-authored prompt.
+ */
+export function isModelVisibleSystemNotice(msg: Pick<StoredMessage, "role" | "metadata">): boolean {
+  return msg.role === "user" && msg.metadata?.system === true;
+}
+
+/** Create a model-visible system notice with standard metadata. */
+export function createModelVisibleSystemNotice(
+  text: string,
+  model: ModelId,
+  kind: string,
+  startedAt = Date.now(),
+): StoredMessage & { role: "user"; content: string; metadata: MessageMetadata } {
+  return {
+    role: "user",
+    content: text,
+    metadata: {
+      ...createMessageMetadata(startedAt, model, { endedAt: startedAt }),
+      system: true,
+      kind,
+    },
+  };
+}
+
+/** True for actual user/assistant API history turns, excluding UI-only daemon entries. */
 export function isHistoryMessage(msg: StoredMessage): msg is StoredMessage & { role: "user" | "assistant" } {
   return msg.role !== "system" && msg.role !== "system_instructions";
+}
+
+/** True for user-authored prompts, excluding tool_result containers and model-visible system notices. */
+export function isRealUserMessage(msg: StoredMessage): boolean {
+  return msg.role === "user" && !isToolResultMessage(msg) && !isModelVisibleSystemNotice(msg);
 }
 
 /** Build API-ready user content — structured array when images are present, plain string otherwise. */
@@ -109,7 +147,7 @@ export function createStoredUserMessage(
   };
 }
 
-/** Build turn index → messages index mapping for real conversation history. */
+/** Build turn index → messages index mapping for model-visible user/assistant history. */
 export function buildHistoryTurnMap(messages: StoredMessage[]): number[] {
   const map: number[] = [];
   for (let i = 0; i < messages.length; i++) {
@@ -118,9 +156,9 @@ export function buildHistoryTurnMap(messages: StoredMessage[]): number[] {
   return map;
 }
 
-/** Count messages for summaries/UI, excluding per-conversation instructions metadata. */
+/** Count messages for summaries/UI, excluding instructions and model-visible system notices. */
 export function countConversationMessages(messages: StoredMessage[]): number {
-  return messages.filter((msg) => msg.role !== "system_instructions").length;
+  return messages.filter((msg) => msg.role !== "system_instructions" && !isModelVisibleSystemNotice(msg)).length;
 }
 
 export type PersistedConversationSummary = Omit<ConversationSummary, "streaming" | "unread">;

@@ -15,7 +15,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { buildHistoryTurnMap, createStoredUserMessage, isHistoryMessage, isToolResultMessage, type StoredMessage, type ApiContentBlock, type Block } from "./messages";
+import { buildHistoryTurnMap, createStoredUserMessage, isHistoryMessage, isRealUserMessage, type StoredMessage, type ApiContentBlock, type Block } from "./messages";
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ToolExecutionContext } from "./tools/types";
@@ -89,7 +89,7 @@ function toStoredMessages(messages: import("./messages").ApiMessage[]): StoredMe
   return messages.map((m) => ({
     role: m.role,
     content: m.content,
-    metadata: null,
+    metadata: m.metadata ?? null,
     providerData: m.providerData,
   }));
 }
@@ -112,7 +112,7 @@ function protectedTailCountForReplay(messages: StoredMessage[]): number {
 
   for (let turn = turnMap.length - 1; turn >= 0; turn--) {
     const msg = messages[turnMap[turn]];
-    if (msg.role === "user" && !isToolResultMessage(msg)) {
+    if (isRealUserMessage(msg)) {
       return turnMap.length - turn;
     }
   }
@@ -300,6 +300,7 @@ async function orchestrateAssistantTurn(
     .map((m) => ({
       role: m.role,
       content: m.content,
+      metadata: m.metadata,
       providerData: m.providerData,
     }));
 
@@ -522,6 +523,10 @@ async function orchestrateAssistantTurn(
         isError: block.isError,
       });
     },
+    onCurrentTurnMessagesUpdate(messages, protectedTailCount) {
+      contextEnv.currentTurnMessages = messages;
+      contextEnv.protectedCurrentTurnTailCount = protectedTailCount;
+    },
     onTokensUpdate(tokens) {
       convStore.setStreamingTokens(convId, tokens);
       server.sendToSubscribers(convId, { type: "tokens_update", convId, streamSeq: convStore.nextStreamSeq(convId), tokens });
@@ -606,7 +611,7 @@ async function orchestrateAssistantTurn(
       // Rebuild from conv.messages (now trimmed) — the source of truth for historical state
       const rebuilt = conv.messages
         .filter(isHistoryMessage)
-        .map(m => ({ role: m.role, content: m.content, providerData: m.providerData }));
+        .map(m => ({ role: m.role, content: m.content, metadata: m.metadata, providerData: m.providerData }));
       // Persist immediately
       convStore.markDirty(convId);
       convStore.flush(convId);
@@ -681,7 +686,7 @@ async function orchestrateAssistantTurn(
     const storedMessages: StoredMessage[] = result.newMessages.map(m => ({
       role: m.role,
       content: m.content,
-      metadata: null,
+      metadata: m.metadata ?? null,
       providerData: m.providerData,
     }));
     const lastAssistant = [...storedMessages].reverse().find(m => m.role === "assistant");
@@ -752,7 +757,7 @@ async function orchestrateAssistantTurn(
     const completedStored: StoredMessage[] = agentState.completedMessages.map(m => ({
       role: m.role,
       content: m.content,
-      metadata: null,
+      metadata: m.metadata ?? null,
       providerData: m.providerData,
     }));
     if (completedStored.length > 0) {

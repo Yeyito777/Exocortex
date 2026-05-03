@@ -6,6 +6,7 @@
  *   delete          — remove a contiguous range of turns
  *   summarize       — replace a range with an LLM-generated summary
  *   strip_thinking  — remove thinking blocks from old assistant turns
+ *   strip_results   — replace old tool result payloads with placeholders
  *
  * Unlike stateless tools, this one needs access to the live conversation.
  * The static tool definition (schema, display, summarize) is registered
@@ -14,8 +15,8 @@
  */
 
 import type { Tool, ToolResult } from "./types";
-import type { Conversation, StoredMessage, ApiContentBlock } from "../messages";
-import { buildHistoryTurnMap, isToolResultMessage } from "../messages";
+import type { Conversation, StoredMessage, ApiMessage, ApiContentBlock } from "../messages";
+import { buildHistoryTurnMap, createModelVisibleSystemNotice, isModelVisibleSystemNotice, isRealUserMessage, isToolResultMessage } from "../messages";
 import { log } from "../log";
 import { safeSlice } from "./util";
 
@@ -37,6 +38,10 @@ export interface ContextToolEnv {
   contextLimit?: number | null;
   /** Provider-aware inner LLM runner used by summarize. */
   summarizeWithInnerLlm: (systemPrompt: string, userText: string, maxTokens: number, signal?: AbortSignal) => Promise<string>;
+  /** Mutable in-flight assistant-turn messages, exposed by the agent loop. */
+  currentTurnMessages?: ApiMessage[];
+  /** Number of current-turn tail entries that are incomplete/unsafe to mutate. */
+  protectedCurrentTurnTailCount?: number;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -90,10 +95,12 @@ function oneLine(s: string, maxLen = 60): string {
  * protect tool_use/tool_result pairs when the tool_result message
  * contains an injected hint.
  */
-function turnType(msg: StoredMessage): "user" | "assistant" | "tool_result" {
+function turnType(msg: StoredMessage): "user" | "assistant" | "tool_result" | "system_hint" {
   if (msg.role === "assistant") return "assistant";
   if (isToolResultMessage(msg)) return "tool_result";
-  return "user";
+  if (isModelVisibleSystemNotice(msg)) return "system_hint";
+  if (isRealUserMessage(msg)) return "user";
+  return "system_hint";
 }
 
 /** Check whether an assistant message has thinking blocks. */
@@ -112,6 +119,27 @@ function estimateTokens(chars: number, totalChars: number, knownTotalTokens: num
 
 /** Mark the conversation as structurally changed so token totals get recomputed. */
 function markContextMutated(env: ContextToolEnv): void {
+  env.conv.lastContextTokens = null;
+  env.onContextModified();
+}
+
+function currentTurnStoredMessages(env: ContextToolEnv): StoredMessage[] {
+  return (env.currentTurnMessages ?? []) as StoredMessage[];
+}
+
+function currentTurnMap(env: ContextToolEnv): number[] {
+  return buildHistoryTurnMap(currentTurnStoredMessages(env));
+}
+
+function currentTurnMaxModifiable(env: ContextToolEnv): number {
+  return currentTurnMap(env).length - 1 - (env.protectedCurrentTurnTailCount ?? 0);
+}
+
+function markCurrentTurnMutated(env: ContextToolEnv): void {
+  // Current-turn messages are not persisted yet, but structural compactions
+  // such as summarize splice the in-memory currentTurnMessages array. Tell the
+  // agent loop to rebuild its full provider-history array from persisted
+  // history + the compacted current-turn buffer before the next model call.
   env.conv.lastContextTokens = null;
   env.onContextModified();
 }
@@ -215,7 +243,7 @@ function actionList(env: ContextToolEnv): ToolResult {
   const { conv, summarizer, protectedTailCount, contextLimit = null } = env;
   const turnMap = buildHistoryTurnMap(conv.messages);
 
-  if (turnMap.length === 0) {
+  if (turnMap.length === 0 && currentTurnMap(env).length === 0) {
     return { output: "No turns in the conversation (system messages and conversation instructions excluded).", isError: false };
   }
 
@@ -240,7 +268,7 @@ function actionList(env: ContextToolEnv): ToolResult {
   lines.push("");
 
   // Table header
-  const idxWidth = Math.max(3, String(turnMap.length - 1).length);
+  const idxWidth = Math.max(3, String(turnMap.length + currentTurnMap(env).length - 1).length);
   lines.push(`${"#".padStart(idxWidth)}  Type           Est.Tok  Content`);
 
   const maxModifiable = turnMap.length - 1 - protectedTailCount;
@@ -333,7 +361,7 @@ function actionList(env: ContextToolEnv): ToolResult {
   }
 
   // Breakdown by type
-  const byType: Record<string, number> = { user: 0, assistant: 0, tool_result: 0 };
+  const byType: Record<string, number> = { user: 0, assistant: 0, tool_result: 0, system_hint: 0 };
   for (let t = 0; t < turnMap.length; t++) {
     const tt = turnType(conv.messages[turnMap[t]]);
     byType[tt] += estTokens[t];
@@ -345,9 +373,47 @@ function actionList(env: ContextToolEnv): ToolResult {
   lines.push(`Breakdown: ${breakdown}`);
 
   if (maxModifiable >= 0) {
-    lines.push(`Modifiable turns: 0–${maxModifiable}  |  Protected (current turn): ${maxModifiable + 1}–${turnMap.length - 1}`);
+    if (maxModifiable === turnMap.length - 1) {
+      lines.push(`Modifiable turns: 0–${maxModifiable}`);
+    } else {
+      lines.push(`Persisted history modifiable turns: 0–${maxModifiable}  |  Protected persisted tail: ${maxModifiable + 1}–${turnMap.length - 1}`);
+    }
   } else {
     lines.push("No modifiable turns (all are protected).");
+  }
+
+  const currentMessages = currentTurnStoredMessages(env);
+  const curMap = currentTurnMap(env);
+  if (curMap.length > 0) {
+    const curMaxModifiable = currentTurnMaxModifiable(env);
+    lines.push("");
+    lines.push("In-progress assistant message turns (use summarize/strip_thinking/strip_results with these indices; delete is not supported):");
+    lines.push(`${"#".padStart(idxWidth)}  Type           Est.Tok  Status      Content`);
+    const currentChars = curMap.map(i => messageChars(currentMessages[i]));
+    const currentTotalChars = currentChars.reduce((a, b) => a + b, 0);
+    for (let t = 0; t < curMap.length; t++) {
+      const msg = currentMessages[curMap[t]];
+      const tt = turnType(msg);
+      const tokens = estimateTokens(currentChars[t], currentTotalChars, null);
+      const status = t <= curMaxModifiable ? "modifiable" : "protected";
+      const text = typeof msg.content === "string"
+        ? msg.content
+        : (msg.content as ApiContentBlock[])
+            .filter((b) => b.type === "text")
+            .map((b) => (b as { type: "text"; text: string }).text)
+            .join(" ");
+      let content = text ? `"${safeSlice(text.replace(/\n/g, "\\n"), 60)}${text.length > 60 ? "…" : ""}"` : "";
+      if (!content && tt === "assistant" && Array.isArray(msg.content)) {
+        const tools = (msg.content as ApiContentBlock[])
+          .filter((b): b is Extract<ApiContentBlock, { type: "tool_use" }> => b.type === "tool_use")
+          .map((b) => `${b.name}(${oneLine(summarizer(b.name, b.input))})`);
+        content = tools.length > 0 ? tools.join(" + ") : "text";
+      } else if (!content && tt === "tool_result" && Array.isArray(msg.content)) {
+        content = "tool_result";
+      }
+      const globalIdx = turnMap.length + t;
+      lines.push(`${String(globalIdx).padStart(idxWidth)}  ${tt.padEnd(14)} ${fmt(tokens).padStart(7)}  ${status.padEnd(10)} ${content}`);
+    }
   }
 
   return { output: lines.join("\n"), isError: false };
@@ -359,11 +425,10 @@ function actionDelete(
   input: Record<string, unknown>,
   env: ContextToolEnv,
 ): ToolResult {
-  const { conv, protectedTailCount } = env;
-  const turnMap = buildHistoryTurnMap(conv.messages);
-
-  const { start, end, snapped, error } = validateRange(input, turnMap, conv.messages, protectedTailCount);
-  if (error) return { output: error, isError: true };
+  const { conv } = env;
+  const scoped = validateScopedRange(input, env, { allowCurrent: false, action: "delete" });
+  if ("error" in scoped) return { output: scoped.error, isError: true };
+  const { start, end, snapped, turnMap } = scoped;
 
   // Compute savings estimate before deleting
   let removedChars = 0;
@@ -395,71 +460,138 @@ function actionDelete(
   };
 }
 
-// ── Action: summarize ─────────────────────────────────────────────
+// ── Scoped mutation helpers ─────────────────────────────────────
 
-async function actionSummarize(
+type MutableScope = "history" | "current";
+
+interface ScopedRange {
+  scope: MutableScope;
+  messages: StoredMessage[];
+  turnMap: number[];
+  start: number;
+  end: number;
+  globalStart: number;
+  globalEnd: number;
+  snapped: boolean;
+}
+
+function validateScopedRange(
   input: Record<string, unknown>,
   env: ContextToolEnv,
-  signal?: AbortSignal,
-): Promise<ToolResult> {
-  const { conv, summarizer, protectedTailCount, summarizeWithInnerLlm } = env;
-  const turnMap = buildHistoryTurnMap(conv.messages);
+  options: { allowCurrent: boolean; action: string },
+): ScopedRange | { error: string } {
+  const rawStart = input.start as number | undefined;
+  const rawEnd = input.end as number | undefined;
 
-  const { start, end, snapped, error } = validateRange(input, turnMap, conv.messages, protectedTailCount);
-  if (error) return { output: error, isError: true };
-
-  // Compute original size
-  let originalChars = 0;
-  for (let t = start; t <= end; t++) {
-    originalChars += messageChars(conv.messages[turnMap[t]]);
+  if (rawStart == null || rawEnd == null) {
+    return { error: "Both 'start' and 'end' turn indices are required." };
   }
-  const totalChars = turnMap.reduce((sum, i) => sum + messageChars(conv.messages[i]), 0);
-  const lastCtx = conv.lastContextTokens ?? null;
-  const originalTokens = estimateTokens(originalChars, totalChars, lastCtx);
+  if (!Number.isInteger(rawStart) || !Number.isInteger(rawEnd)) {
+    return { error: "'start' and 'end' must be integers." };
+  }
+  if (rawStart > rawEnd) {
+    return { error: `'start' (${rawStart}) must be <= 'end' (${rawEnd}).` };
+  }
 
-  // Extract content for summarization
+  const historyMap = buildHistoryTurnMap(env.conv.messages);
+  const currentMessages = currentTurnStoredMessages(env);
+  const currentMap = currentTurnMap(env);
+  const historyCount = historyMap.length;
+  const totalCount = historyCount + currentMap.length;
+
+  if (totalCount === 0) return { error: "No turns available." };
+  if (rawStart < 0 || rawStart >= totalCount) {
+    return { error: `'start' index ${rawStart} is out of range (valid: 0–${totalCount - 1}).` };
+  }
+  if (rawEnd < 0 || rawEnd >= totalCount) {
+    return { error: `'end' index ${rawEnd} is out of range (valid: 0–${totalCount - 1}).` };
+  }
+
+  if (rawStart < historyCount && rawEnd >= historyCount) {
+    return { error: `Range ${rawStart}–${rawEnd} crosses from persisted history into the in-progress assistant message. Run '${options.action}' separately for each section.` };
+  }
+
+  if (rawStart >= historyCount) {
+    if (!options.allowCurrent) {
+      return { error: `Cannot ${options.action} in-progress assistant message turns. Use summarize, strip_thinking, or strip_results instead.` };
+    }
+    const localStart = rawStart - historyCount;
+    const localEnd = rawEnd - historyCount;
+    const protectedTailCount = env.protectedCurrentTurnTailCount ?? 0;
+    const validated = validateRange({ ...input, start: localStart, end: localEnd }, currentMap, currentMessages, protectedTailCount);
+    if (validated.error) return { error: validated.error };
+    return {
+      scope: "current",
+      messages: currentMessages,
+      turnMap: currentMap,
+      start: validated.start,
+      end: validated.end,
+      globalStart: historyCount + validated.start,
+      globalEnd: historyCount + validated.end,
+      snapped: validated.snapped,
+    };
+  }
+
+  const validated = validateRange(input, historyMap, env.conv.messages, env.protectedTailCount);
+  if (validated.error) return { error: validated.error };
+  return {
+    scope: "history",
+    messages: env.conv.messages,
+    turnMap: historyMap,
+    start: validated.start,
+    end: validated.end,
+    globalStart: validated.start,
+    globalEnd: validated.end,
+    snapped: validated.snapped,
+  };
+}
+
+function markRangeMutated(env: ContextToolEnv, scope: MutableScope): void {
+  if (scope === "current") markCurrentTurnMutated(env);
+  else markContextMutated(env);
+}
+
+function extractRangeTextForSummary(
+  messages: StoredMessage[],
+  turnMap: number[],
+  start: number,
+  end: number,
+  summarizer: (name: string, input: Record<string, unknown>) => string,
+): string {
   const textParts: string[] = [];
   for (let t = start; t <= end; t++) {
-    const msg = conv.messages[turnMap[t]];
+    const msg = messages[turnMap[t]];
     const tt = turnType(msg);
 
-    if (tt === "user") {
+    if (tt === "user" || tt === "system_hint") {
       const text = typeof msg.content === "string"
         ? msg.content
         : (msg.content as ApiContentBlock[])
-            .filter((b: ApiContentBlock) => b.type === "text")
-            .map((b: ApiContentBlock) => (b as { type: "text"; text: string }).text)
+            .filter((b) => b.type === "text")
+            .map((b) => (b as { type: "text"; text: string }).text)
             .join("\n");
-      textParts.push(`User: ${text}`);
+      textParts.push(`${tt === "system_hint" ? "System hint" : "User"}: ${text}`);
     } else if (tt === "assistant") {
       if (typeof msg.content === "string") {
         textParts.push(`Assistant: ${msg.content}`);
       } else {
         const parts: string[] = [];
         for (const b of msg.content as ApiContentBlock[]) {
-          if (b.type === "thinking") {
-            parts.push(b.thinking);
-          } else if (b.type === "text") {
-            parts.push(b.text);
-          } else if (b.type === "tool_use") {
-            parts.push(`Tool call: ${b.name}(${summarizer(b.name, b.input)})`);
-          }
+          if (b.type === "thinking") parts.push(b.thinking);
+          else if (b.type === "text") parts.push(b.text);
+          else if (b.type === "tool_use") parts.push(`Tool call: ${b.name}(${summarizer(b.name, b.input)})`);
         }
         textParts.push(`Assistant: ${parts.join("\n")}`);
       }
     } else if (tt === "tool_result" && Array.isArray(msg.content)) {
-      // Resolve tool names from preceding assistant
       const prevTurnIdx = t - 1;
-      const prevMsg = prevTurnIdx >= 0 ? conv.messages[turnMap[prevTurnIdx]] : null;
+      const prevMsg = prevTurnIdx >= 0 ? messages[turnMap[prevTurnIdx]] : null;
       const toolUseMap = new Map<string, string>();
       if (prevMsg && Array.isArray(prevMsg.content)) {
         for (const b of prevMsg.content as ApiContentBlock[]) {
-          if (b.type === "tool_use") {
-            toolUseMap.set(b.id, b.name);
-          }
+          if (b.type === "tool_use") toolUseMap.set(b.id, b.name);
         }
       }
-
       const results: string[] = [];
       for (const b of msg.content as ApiContentBlock[]) {
         if (b.type === "tool_result") {
@@ -471,24 +603,35 @@ async function actionSummarize(
       textParts.push(`Tool results: ${results.join("\n")}`);
     }
   }
+  return textParts.join("\n\n");
+}
 
-  const extractedText = textParts.join("\n\n");
+// ── Action: summarize ─────────────────────────────────────────────
 
-  // Guard: don't summarize ranges that are already compact.
-  // A summary always has overhead (framing, prose), so below a threshold
-  // the output is guaranteed to be bigger than the input.
+async function actionSummarize(
+  input: Record<string, unknown>,
+  env: ContextToolEnv,
+  signal?: AbortSignal,
+): Promise<ToolResult> {
+  const { summarizer, summarizeWithInnerLlm } = env;
+  const scoped = validateScopedRange(input, env, { allowCurrent: true, action: "summarize" });
+  if ("error" in scoped) return { output: scoped.error, isError: true };
+  const { messages, turnMap, start, end, globalStart, globalEnd, snapped, scope } = scoped;
+
+  let originalChars = 0;
+  for (let t = start; t <= end; t++) originalChars += messageChars(messages[turnMap[t]]);
+  const totalChars = turnMap.reduce((sum, i) => sum + messageChars(messages[i]), 0);
+  const originalTokens = estimateTokens(originalChars, totalChars, scope === "history" ? env.conv.lastContextTokens ?? null : null);
+
   const MIN_SUMMARIZE_TOKENS = 500;
   if (originalTokens < MIN_SUMMARIZE_TOKENS) {
     return {
-      output: `Range ${start}–${end} is only ~${fmt(originalTokens)} tokens — too small to benefit from summarization (minimum: ${fmt(MIN_SUMMARIZE_TOKENS)}). Consider 'delete' instead.`,
+      output: `Range ${globalStart}–${globalEnd} is only ~${fmt(originalTokens)} tokens — too small to benefit from summarization (minimum: ${fmt(MIN_SUMMARIZE_TOKENS)}). Consider 'delete' for persisted history or strip_results/strip_thinking instead.`,
       isError: true,
     };
   }
 
-  // Cap output tokens to half the input so the summary is always a net win.
   const maxTokens = Math.min(4096, Math.max(256, Math.round(originalTokens / 2)));
-
-  // LLM call
   let systemPrompt = `You are a conversation summarizer. You receive a portion of a conversation
 between a user and an AI assistant (including tool calls and results).
 Produce a concise summary that preserves:
@@ -501,42 +644,51 @@ Your output MUST be shorter than the input — aim for at most ${fmt(maxTokens)}
 Output plain text, not markdown.`;
 
   const customPrompt = input.prompt as string | undefined;
-  if (customPrompt) {
-    systemPrompt += `\n\nAdditional instructions: ${customPrompt}`;
+  if (customPrompt) systemPrompt += `\n\nAdditional instructions: ${customPrompt}`;
+  if (scope === "current") {
+    systemPrompt += "\n\nThis range is from the in-progress assistant message. Preserve facts needed to continue the current task.";
   }
 
   let summaryText: string;
   try {
-    summaryText = await summarizeWithInnerLlm(systemPrompt, extractedText, maxTokens, signal);
+    summaryText = await summarizeWithInnerLlm(
+      systemPrompt,
+      extractRangeTextForSummary(messages, turnMap, start, end, summarizer),
+      maxTokens,
+      signal,
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log("error", `context: summarize LLM call failed: ${msg}`);
     return { output: `Summarization failed: ${msg}`, isError: true };
   }
 
-  // Replace the range with a user+assistant summary pair.
-  // The Anthropic API auto-merges consecutive same-role messages,
-  // so we don't need to worry about alternation.
   const insertIdx = turnMap[start];
   const afterStart = turnMap[end] + 1;
+  if (scope === "current") {
+    messages.splice(
+      insertIdx,
+      afterStart - insertIdx,
+      createModelVisibleSystemNotice(
+        `[Summary of in-progress assistant message turns ${globalStart}–${globalEnd}]\n${summaryText}`,
+        env.conv.model,
+        "current_turn_summary",
+      ),
+    );
+  } else {
+    messages.splice(insertIdx, afterStart - insertIdx,
+      { role: "user", content: `[Summary of turns ${globalStart}–${globalEnd}]`, metadata: null },
+      { role: "assistant", content: summaryText, metadata: null },
+    );
+  }
 
-  const replacement: StoredMessage[] = [
-    { role: "user" as const, content: `[Summary of turns ${start}–${end}]`, metadata: null },
-    { role: "assistant" as const, content: summaryText, metadata: null },
-  ];
-
-  // Perform the replacement
-  const removeCount = afterStart - insertIdx;
-  conv.messages.splice(insertIdx, removeCount, ...replacement);
-
-  markContextMutated(env);
+  markRangeMutated(env, scope);
 
   const summaryTokens = Math.round(summaryText.length / 4);
-  const snapNote = snapped
-    ? ` (adjusted from ${input.start}–${input.end} to preserve tool_use/tool_result pairs)`
-    : "";
+  const snapNote = snapped ? ` (adjusted from ${input.start}–${input.end} to preserve tool_use/tool_result pairs)` : "";
+  const replacement = scope === "current" ? "1 model-visible summary notice" : "2 turns";
   return {
-    output: `Summarized turns ${start}–${end}${snapNote} into 2 turns. Original: ~${fmt(originalTokens)} tokens → Summary: ~${fmt(summaryTokens)} tokens.`,
+    output: `Summarized turns ${globalStart}–${globalEnd}${snapNote} into ${replacement}. Original: ~${fmt(originalTokens)} tokens → Summary: ~${fmt(summaryTokens)} tokens.`,
     isError: false,
   };
 }
@@ -547,36 +699,29 @@ function actionStripThinking(
   input: Record<string, unknown>,
   env: ContextToolEnv,
 ): ToolResult {
-  const { conv, protectedTailCount } = env;
-  const turnMap = buildHistoryTurnMap(conv.messages);
-
-  const { start, end, error } = validateRange(input, turnMap, conv.messages, protectedTailCount);
-  if (error) return { output: error, isError: true };
+  const scoped = validateScopedRange(input, env, { allowCurrent: true, action: "strip_thinking" });
+  if ("error" in scoped) return { output: scoped.error, isError: true };
+  const { messages, turnMap, start, end, scope } = scoped;
 
   let strippedCount = 0;
   let removedChars = 0;
   const skipped: string[] = [];
 
   for (let t = start; t <= end; t++) {
-    const msg = conv.messages[turnMap[t]];
-    if (msg.role !== "assistant") continue;
-    if (!Array.isArray(msg.content)) continue;
+    const msg = messages[turnMap[t]];
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
 
     const blocks = msg.content as ApiContentBlock[];
-    const thinkingBlocks = blocks.filter(b => b.type === "thinking");
+    const thinkingBlocks = blocks.filter((b) => b.type === "thinking");
     if (thinkingBlocks.length === 0) continue;
 
-    // Count chars being removed
     for (const b of thinkingBlocks) {
-      if (b.type === "thinking") {
-        removedChars += b.thinking.length + b.signature.length;
-      }
+      if (b.type === "thinking") removedChars += b.thinking.length + b.signature.length;
     }
 
-    const filtered = blocks.filter(b => b.type !== "thinking");
+    const filtered = blocks.filter((b) => b.type !== "thinking");
     if (filtered.length === 0) {
-      // Only thinking, nothing else — skip
-      skipped.push(`Skipped turn ${t} (only contained thinking, no text/tool_use to preserve).`);
+      skipped.push(`Skipped turn ${scoped.globalStart + (t - start)} (only contained thinking, no text/tool_use to preserve).`);
       continue;
     }
 
@@ -585,29 +730,19 @@ function actionStripThinking(
   }
 
   if (strippedCount === 0 && skipped.length > 0) {
-    return {
-      output: `No thinking blocks could be stripped. ${skipped.join(" ")} Consider using 'delete' instead.`,
-      isError: true,
-    };
+    return { output: `No thinking blocks could be stripped. ${skipped.join(" ")} Consider using 'delete' instead.`, isError: true };
   }
-
   if (strippedCount === 0) {
     return { output: "No assistant turns with thinking blocks found in the specified range.", isError: false };
   }
 
-  const prevLastCtx = conv.lastContextTokens ?? null;
-  markContextMutated(env);
+  const prevLastCtx = env.conv.lastContextTokens ?? null;
+  markRangeMutated(env, scope);
 
-  const totalChars = turnMap.reduce((sum, i) => sum + messageChars(conv.messages[i]), 0) + removedChars;
-  const removedTokens = estimateTokens(removedChars, totalChars, prevLastCtx);
-
-  const parts = [
-    `Stripped thinking from ${strippedCount} assistant turn${strippedCount !== 1 ? "s" : ""}. Removed ~${fmt(removedChars)} chars (~${fmt(removedTokens)} estimated tokens).`,
-  ];
-  if (skipped.length > 0) {
-    parts.push(...skipped);
-  }
-
+  const totalChars = turnMap.reduce((sum, i) => sum + messageChars(messages[i]), 0) + removedChars;
+  const removedTokens = estimateTokens(removedChars, totalChars, scope === "history" ? prevLastCtx : null);
+  const parts = [`Stripped thinking from ${strippedCount} assistant turn${strippedCount !== 1 ? "s" : ""}. Removed ~${fmt(removedChars)} chars (~${fmt(removedTokens)} estimated tokens).`];
+  if (skipped.length > 0) parts.push(...skipped);
   return { output: parts.join("\n"), isError: false };
 }
 
@@ -619,36 +754,24 @@ function actionStripResults(
   input: Record<string, unknown>,
   env: ContextToolEnv,
 ): ToolResult {
-  const { conv, protectedTailCount } = env;
-  const turnMap = buildHistoryTurnMap(conv.messages);
-
-  const { start, end, error } = validateRange(input, turnMap, conv.messages, protectedTailCount);
-  if (error) return { output: error, isError: true };
+  const scoped = validateScopedRange(input, env, { allowCurrent: true, action: "strip_results" });
+  if ("error" in scoped) return { output: scoped.error, isError: true };
+  const { messages, turnMap, start, end, scope } = scoped;
 
   let strippedCount = 0;
   let removedChars = 0;
 
   for (let t = start; t <= end; t++) {
-    const msg = conv.messages[turnMap[t]];
-    if (msg.role !== "user") continue;
-    if (!Array.isArray(msg.content)) continue;
+    const msg = messages[turnMap[t]];
+    if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
 
-    // Iterate blocks directly (by role, not turnType) so we process both
-    // pure tool_result messages and mixed ones with pressure hint text.
     for (let i = 0; i < msg.content.length; i++) {
       const b = msg.content[i] as ApiContentBlock;
       if (b.type !== "tool_result") continue;
-
-      const oldLen = typeof b.content === "string"
-        ? b.content.length
-        : JSON.stringify(b.content).length;
-
-      // Already stripped — skip
+      const oldLen = typeof b.content === "string" ? b.content.length : JSON.stringify(b.content).length;
       if (b.content === STRIPPED_PLACEHOLDER) continue;
-
       const saved = oldLen - STRIPPED_PLACEHOLDER.length;
       if (saved <= 0) continue;
-
       removedChars += saved;
       (b as { content: string }).content = STRIPPED_PLACEHOLDER;
       strippedCount++;
@@ -659,14 +782,14 @@ function actionStripResults(
     return { output: "No tool results to strip in the specified range.", isError: false };
   }
 
-  const prevLastCtx = conv.lastContextTokens ?? null;
-  markContextMutated(env);
+  const prevLastCtx = env.conv.lastContextTokens ?? null;
+  markRangeMutated(env, scope);
 
-  const totalChars = turnMap.reduce((sum, i) => sum + messageChars(conv.messages[i]), 0) + removedChars;
-  const removedTokens = estimateTokens(removedChars, totalChars, prevLastCtx);
-
+  const totalChars = turnMap.reduce((sum, i) => sum + messageChars(messages[i]), 0) + removedChars;
+  const removedTokens = estimateTokens(removedChars, totalChars, scope === "history" ? prevLastCtx : null);
+  const scopeNote = scope === "current" ? " in the in-progress assistant message" : "";
   return {
-    output: `Stripped ${strippedCount} tool result${strippedCount !== 1 ? "s" : ""}. Removed ~${fmt(removedChars)} chars (~${fmt(removedTokens)} estimated tokens).`,
+    output: `Stripped ${strippedCount} tool result${strippedCount !== 1 ? "s" : ""}${scopeNote}. Removed ~${fmt(removedChars)} chars (~${fmt(removedTokens)} estimated tokens).`,
     isError: false,
   };
 }
@@ -700,7 +823,7 @@ export async function executeContext(
 /** Static tool definition — registered in TOOLS array. execute() is a stub. */
 export const context: Tool = {
   name: "context",
-  description: "Inspect and manage the conversation context. Actions: 'list' shows all turns with token estimates; 'delete' removes a contiguous range of turns; 'summarize' replaces a range with an LLM-generated summary; 'strip_thinking' removes thinking blocks from old assistant turns; 'strip_results' replaces tool result contents with a placeholder.",
+  description: "Inspect and manage the conversation context. Actions: 'list' shows persisted turns plus in-progress assistant message turns with token estimates; 'delete' removes a contiguous range of persisted turns only; 'summarize' replaces a persisted or in-progress range with a summary; 'strip_thinking' removes thinking blocks from persisted or in-progress turns; 'strip_results' replaces persisted or in-progress tool result contents with a placeholder.",
   parallelSafety: "exclusive",
   inputSchema: {
     type: "object",
@@ -712,11 +835,11 @@ export const context: Tool = {
       },
       start: {
         type: "number",
-        description: "Start turn index (inclusive). Required for delete, summarize, strip_thinking, strip_results.",
+        description: "Start turn index (inclusive). Required for delete, summarize, strip_thinking, strip_results. Indices from the in-progress assistant message section are valid for all actions except delete.",
       },
       end: {
         type: "number",
-        description: "End turn index (inclusive). Required for delete, summarize, strip_thinking, strip_results.",
+        description: "End turn index (inclusive). Required for delete, summarize, strip_thinking, strip_results. Indices from the in-progress assistant message section are valid for all actions except delete.",
       },
       prompt: {
         type: "string",
@@ -725,7 +848,7 @@ export const context: Tool = {
     },
     required: ["action"],
   },
-  systemHint: "When approaching the context limit, use the context tool to free space. Start by listing the context, then apply these strategies in order: 1) strip_thinking from older turns (lossless), 2) strip_results where findings are already captured in responses (near-lossless), 3) summarize relevant parts that are high-value and should be kept. 4) delete low-value turns only as a last resort.",
+  systemHint: "When approaching the context limit, use the context tool to free space. Start by listing the context. The listed indices cover both persisted history and in-progress assistant message turns. Use the same actions for both: 1) strip_thinking from older turns (lossless), 2) strip_results where findings are already captured in responses (near-lossless), 3) summarize relevant parts that are high-value and should be kept. Delete works only on persisted history; do not try to delete in-progress assistant message turns.",
   display: {
     label: "Context",
     color: "#2ec4b6",
