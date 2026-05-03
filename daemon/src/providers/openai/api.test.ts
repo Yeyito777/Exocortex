@@ -88,8 +88,10 @@ describe("OpenAI replay input", () => {
     expect((body.reasoning as { summary?: string }).summary).toBeUndefined();
   });
 
-  test("treats HTTP 507 as retriable", () => {
+  test("treats transient HTTP statuses as retriable", () => {
     expect(isRetriableOpenAIStatusForTest(507)).toBe(true);
+    expect(isRetriableOpenAIStatusForTest(520)).toBe(true);
+    expect(isRetriableOpenAIStatusForTest(524)).toBe(true);
     expect(isRetriableOpenAIStatusForTest(401)).toBe(false);
   });
 

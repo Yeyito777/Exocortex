@@ -33,7 +33,7 @@ export function shouldRetryOpenAIUsageLimitResetForTest(): boolean {
 const STREAM_STALL_TIMEOUT = 120_000;
 const MAX_RETRIES = 8;
 const USAGE_LIMIT_RESET_BUFFER_MS = 2_000;
-const RETRIABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504, 507]);
+const RETRIABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504, 507, 520, 521, 522, 523, 524]);
 
 interface OpenAIUsageLimitError {
   message: string;
