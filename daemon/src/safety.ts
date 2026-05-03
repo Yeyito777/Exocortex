@@ -106,6 +106,7 @@ function primaryInputStrings(toolName: string, input: Record<string, unknown>): 
     read: ["file_path"],
     write: ["file_path", "content"],
     edit: ["file_path", "old_string", "new_string"],
+    patch: ["input", "cwd"],
     grep: ["pattern", "path", "glob", "type"],
     glob: ["pattern", "path"],
     browse: ["url", "prompt"],
