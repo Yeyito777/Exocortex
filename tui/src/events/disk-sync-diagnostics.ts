@@ -20,6 +20,8 @@ type VisibleComparableBlock =
 export interface AssistantDisplaySnapshot {
   assistantMessages: number;
   blocks: Block[];
+  /** Blocks that belong specifically to the live, uncommitted assistant tail. */
+  pendingBlocks: Block[] | null;
   visibleBlocks: VisibleComparableBlock[];
   showToolOutput: boolean;
   toolOutputsLoaded: boolean;
@@ -295,42 +297,12 @@ function mergeLocalAssistantExtension(
   return merged;
 }
 
-function assistantCarriers(state: RenderState): AIMessage[] {
-  const carriers: AIMessage[] = [];
-  for (const msg of state.messages) {
-    if (msg.role === "assistant") carriers.push(msg);
-  }
-  if (state.pendingAI) carriers.push(state.pendingAI);
-  return carriers;
-}
-
-function applyAssistantBlocksToState(state: RenderState, blocks: Block[]): void {
-  const carriers = assistantCarriers(state);
-  if (carriers.length === 0) {
-    if (blocks.length > 0) {
-      state.messages.push({ role: "assistant", blocks: blocks.map(cloneBlock), metadata: null });
-    }
-    return;
-  }
-
-  let cursor = 0;
-  for (let i = 0; i < carriers.length; i++) {
-    const carrier = carriers[i];
-    const originalLength = carrier.blocks.length;
-    const remaining = blocks.length - cursor;
-    const take = i === carriers.length - 1
-      ? remaining
-      : Math.min(originalLength, Math.max(remaining, 0));
-    carrier.blocks = take > 0 ? blocks.slice(cursor, cursor + take).map(cloneBlock) : [];
-    cursor += Math.max(take, 0);
-  }
-}
-
 export function captureAssistantDisplaySnapshot(state: RenderState): AssistantDisplaySnapshot {
   const blocks = structuredClone(assistantBlocksFromMessages(state.messages, state.pendingAI));
   return {
     assistantMessages: assistantMessageCountFromMessages(state.messages, state.pendingAI),
     blocks,
+    pendingBlocks: state.pendingAI ? structuredClone(state.pendingAI.blocks) : null,
     visibleBlocks: visibleComparableBlocks(blocks, state.showToolOutput),
     showToolOutput: state.showToolOutput,
     toolOutputsLoaded: state.toolOutputsLoaded,
@@ -372,35 +344,36 @@ export function preserveLocalAssistantExtensionAfterDiskSync(
   before: AssistantDisplaySnapshot | null,
   state: RenderState,
 ): AssistantExtensionPreserveResult {
-  const empty = { preservedBlocks: 0, beforeBlocks: before?.blocks.length ?? 0, afterBlocks: 0, mergedBlocks: 0 };
+  const empty = { preservedBlocks: 0, beforeBlocks: before?.pendingBlocks?.length ?? 0, afterBlocks: 0, mergedBlocks: 0 };
   if (!before || state.convId !== convId) return empty;
+  if (!before.pendingBlocks || !state.pendingAI) return empty;
 
-  const after = captureAssistantDisplaySnapshot(state);
-  const mergedBlocks = mergeLocalAssistantExtension(before.blocks, after.blocks);
+  const afterBlocks = structuredClone(state.pendingAI.blocks);
+  const mergedBlocks = mergeLocalAssistantExtension(before.pendingBlocks, afterBlocks);
   if (!mergedBlocks) {
     return {
       preservedBlocks: 0,
-      beforeBlocks: before.blocks.length,
-      afterBlocks: after.blocks.length,
-      mergedBlocks: after.blocks.length,
+      beforeBlocks: before.pendingBlocks.length,
+      afterBlocks: afterBlocks.length,
+      mergedBlocks: afterBlocks.length,
     };
   }
 
-  applyAssistantBlocksToState(state, mergedBlocks);
-  const preservedBlocks = Math.max(0, mergedBlocks.length - after.blocks.length);
-  log("warn", `tui: preserved local assistant extension across disk sync ${JSON.stringify({
+  state.pendingAI.blocks = mergedBlocks.map(cloneBlock);
+  const preservedBlocks = Math.max(0, mergedBlocks.length - afterBlocks.length);
+  log("warn", `tui: preserved local pending assistant extension across disk sync ${JSON.stringify({
     source,
     convId,
     preservedBlocks,
-    before: blockStats(before.blocks),
-    after: blockStats(after.blocks),
+    before: blockStats(before.pendingBlocks),
+    after: blockStats(afterBlocks),
     merged: blockStats(mergedBlocks),
   })}`);
 
   return {
     preservedBlocks,
-    beforeBlocks: before.blocks.length,
-    afterBlocks: after.blocks.length,
+    beforeBlocks: before.pendingBlocks.length,
+    afterBlocks: afterBlocks.length,
     mergedBlocks: mergedBlocks.length,
   };
 }

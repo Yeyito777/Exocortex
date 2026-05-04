@@ -11,8 +11,17 @@ export const OPENAI_CALLBACK_PATH = "/auth/callback";
 
 export const OPENAI_ORIGINATOR = "codex_cli_rs";
 export const OPENAI_CODEX_CLIENT_VERSION = process.env.OPENAI_CODEX_CLIENT_VERSION?.trim() || "0.99.0";
+export const OPENAI_RESPONSES_WEBSOCKETS_BETA = "responses_websockets=2026-02-06";
 export const OPENAI_ACCOUNTS_URL = `${CHATGPT_BASE_URL}/backend-api/accounts`;
 export const OPENAI_ACCOUNT_CHECK_URL = `${CHATGPT_BASE_URL}/backend-api/accounts/check/v4-2023-04-27`;
 export const OPENAI_MODELS_URL = `${CHATGPT_BASE_URL}/backend-api/codex/models`;
 export const OPENAI_CODEX_RESPONSES_URL = `${CHATGPT_BASE_URL}/backend-api/codex/responses`;
+export const OPENAI_CODEX_RESPONSES_WS_URL = toWebSocketUrl(OPENAI_CODEX_RESPONSES_URL);
 export const OPENAI_TRANSCRIBE_URL = `${CHATGPT_BASE_URL}/backend-api/transcribe`;
+
+function toWebSocketUrl(httpUrl: string): string {
+  const url = new URL(httpUrl);
+  if (url.protocol === "http:") url.protocol = "ws:";
+  else if (url.protocol === "https:") url.protocol = "wss:";
+  return url.toString();
+}

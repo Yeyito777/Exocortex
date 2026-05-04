@@ -65,7 +65,7 @@ describe("disk sync assistant diagnostics", () => {
     });
   });
 
-  test("preserves local assistant tail across a stale same-conversation load", () => {
+  test("canonical same-conversation load replaces non-streaming local assistant tail", () => {
     const state = createInitialState();
     state.convId = "conv-1";
     state.messages.push(
@@ -87,11 +87,38 @@ describe("disk sync assistant diagnostics", () => {
 
     expect(assistantBlocks(state)).toEqual([
       { type: "text", text: "persisted answer" },
-      { type: "text", text: "new local tail" },
     ]);
   });
 
-  test("preserves local assistant tail across a stale history update", () => {
+  test("preserves only the live pending assistant tail across a stale same-conversation load", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages.push({ role: "assistant", blocks: [{ type: "text", text: "persisted answer" }], metadata: null });
+    state.pendingAI = {
+      role: "assistant",
+      blocks: [{ type: "text", text: "new local tail" }],
+      metadata: { startedAt: 2, endedAt: null, model: "gpt-5.5", tokens: 0 },
+    };
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      entries: [{ type: "ai", blocks: [{ type: "text", text: "persisted answer" }], metadata: null }],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(state.messages).toEqual([
+      { role: "assistant", blocks: [{ type: "text", text: "persisted answer" }], metadata: null },
+    ]);
+    expect(state.pendingAI?.blocks).toEqual([{ type: "text", text: "new local tail" }]);
+  });
+
+  test("canonical history update replaces non-streaming local assistant tail", () => {
     const state = createInitialState();
     state.convId = "conv-1";
     state.messages.push({
@@ -114,6 +141,34 @@ describe("disk sync assistant diagnostics", () => {
 
     expect(assistantBlocks(state)).toEqual([
       { type: "text", text: "persisted answer" },
+    ]);
+  });
+
+  test("history update keeps the live pending assistant tail", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages.push({ role: "assistant", blocks: [{ type: "text", text: "persisted answer" }], metadata: null });
+    state.pendingAI = {
+      role: "assistant",
+      blocks: [
+        { type: "thinking", text: "still working" },
+        { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: {}, summary: "$ pwd" },
+      ],
+      metadata: { startedAt: 2, endedAt: null, model: "gpt-5.5", tokens: 0 },
+    };
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-1",
+      entries: [{ type: "ai", blocks: [{ type: "text", text: "persisted answer" }], metadata: null }],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(state.messages).toEqual([
+      { role: "assistant", blocks: [{ type: "text", text: "persisted answer" }], metadata: null },
+    ]);
+    expect(state.pendingAI?.blocks).toEqual([
       { type: "thinking", text: "still working" },
       { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: {}, summary: "$ pwd" },
     ]);

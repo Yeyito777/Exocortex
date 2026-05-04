@@ -19,7 +19,7 @@ function isCloudflareCookieName(name: string): boolean {
 function isChatGPTHost(url: string): boolean {
   try {
     const { hostname, protocol } = new URL(url);
-    if (protocol !== "https:") return false;
+    if (protocol !== "https:" && protocol !== "wss:") return false;
     return hostname === "chatgpt.com"
       || hostname.endsWith(".chatgpt.com")
       || hostname === "chat.openai.com"

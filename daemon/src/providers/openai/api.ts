@@ -3,13 +3,14 @@ import { createAbortError, isAbortLikeError } from "../../abort";
 import { readExocortexConfig } from "@exocortex/shared/config";
 import { getVerifiedSession } from "./auth";
 import { AuthError, isNonRetryableProviderError } from "../errors";
-import { OPENAI_CODEX_RESPONSES_URL } from "./constants";
+import { OPENAI_CODEX_RESPONSES_WS_URL } from "./constants";
 import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "./cookies";
-import { encodeOpenAIRequestBody } from "./encoding";
 import { buildOpenAIInput, buildRequestBody } from "./request";
 import { mergeReasoningSummaries } from "./reasoning";
-import { readOpenAIEventsForTest, readOpenAIStream } from "./stream";
+import { readOpenAIResponsesWebSocket } from "./responses-websocket";
+import { readOpenAIEventsForTest } from "./stream";
+import { connectOpenAIWebSocket, OpenAIWebSocketHttpError, type OpenAIWebSocketConnection } from "./websocket";
 import type { StreamCallbacks, StreamOptions, StreamResult } from "../types";
 
 export {
@@ -208,78 +209,65 @@ export async function streamMessageWithSession(
   const { signal } = options;
   let retryAttempt = 0;
   const requestBody = buildRequestBody(messages, model, options);
-  const encodedBody = encodeOpenAIRequestBody(requestBody);
 
   while (true) {
-    let res: Response;
+    let socket: OpenAIWebSocketConnection | null = null;
     try {
       const headers = {
         ...buildOpenAIRequestHeaders(session, options),
-        ...encodedBody.headers,
       };
-      const cookieHeader = buildCloudflareCookieHeader(OPENAI_CODEX_RESPONSES_URL);
+      const cookieHeader = buildCloudflareCookieHeader(OPENAI_CODEX_RESPONSES_WS_URL);
       if (cookieHeader) {
         headers.Cookie = cookieHeader;
       }
 
-      res = await fetch(OPENAI_CODEX_RESPONSES_URL, {
-        method: "POST",
-        headers,
-        body: encodedBody.body,
+      const connection = await connectOpenAIWebSocket(OPENAI_CODEX_RESPONSES_WS_URL, headers, signal);
+      socket = connection.socket;
+      storeCloudflareCookiesFromHeaders(OPENAI_CODEX_RESPONSES_WS_URL, connection.headers);
+      callbacks.onHeaders?.(connection.headers);
+      const result = await readOpenAIResponsesWebSocket(socket, requestBody, callbacks, {
+        stallTimeoutMs: STREAM_STALL_TIMEOUT,
         signal,
       });
-      storeCloudflareCookiesFromHeaders(OPENAI_CODEX_RESPONSES_URL, res.headers);
+      socket.close();
+      return result;
     } catch (err) {
+      socket?.destroy();
       if (signal?.aborted || isAbortLikeError(err) || isNonRetryableProviderError(err)) throw err;
-      if (retryAttempt < MAX_RETRIES) {
-        await retryBackoff(retryAttempt++, err instanceof Error ? err.message : String(err), callbacks, signal);
-        continue;
-      }
-      throw err;
-    }
-
-    if (res.status === 401) {
-      throw new AuthError("OpenAI authentication failed. Re-run `bun run src/main.ts login openai`.");
-    }
-
-    if (res.status === 429) {
-      const text = await res.text();
-      const usageLimit = parseOpenAIUsageLimitError(text, Date.now());
-      if (usageLimit) {
-        if (!shouldRetryOpenAIUsageLimitReset()) {
-          const resetHint = usageLimit.resetAt != null ? ` Reset: ${formatResetTime(usageLimit.resetAt)}.` : "";
-          throw new Error(`${usageLimit.message}.${resetHint} Enable providers.openai.retryOnUsageLimitReset in config/config.json to keep the stream open until reset.`);
+      if (err instanceof OpenAIWebSocketHttpError) {
+        if (err.status === 401) {
+          throw new AuthError("OpenAI authentication failed. Re-run `bun run src/main.ts login openai`.");
         }
-        await waitForUsageLimitReset(usageLimit, callbacks, signal);
-        continue;
+
+        if (err.status === 429) {
+          const usageLimit = parseOpenAIUsageLimitError(err.body, Date.now());
+          if (usageLimit) {
+            if (!shouldRetryOpenAIUsageLimitReset()) {
+              const resetHint = usageLimit.resetAt != null ? ` Reset: ${formatResetTime(usageLimit.resetAt)}.` : "";
+              throw new Error(`${usageLimit.message}.${resetHint} Enable providers.openai.retryOnUsageLimitReset in config/config.json to keep the stream open until reset.`);
+            }
+            await waitForUsageLimitReset(usageLimit, callbacks, signal);
+            continue;
+          }
+
+          if (retryAttempt < MAX_RETRIES) {
+            await retryBackoff(retryAttempt++, "HTTP 429", callbacks, signal);
+            continue;
+          }
+          throw new Error(`OpenAI API error (429) after ${MAX_RETRIES} retries: ${err.body.slice(0, 200)}`);
+        }
+
+        if (RETRIABLE_STATUS_CODES.has(err.status)) {
+          if (retryAttempt < MAX_RETRIES) {
+            await retryBackoff(retryAttempt++, `HTTP ${err.status}`, callbacks, signal);
+            continue;
+          }
+          throw new Error(`OpenAI API error (${err.status}) after ${MAX_RETRIES} retries: ${err.body.slice(0, 200)}`);
+        }
+
+        throw new Error(`OpenAI API error (${err.status}): ${err.body}`);
       }
 
-      if (retryAttempt < MAX_RETRIES) {
-        await retryBackoff(retryAttempt++, "HTTP 429", callbacks, signal);
-        continue;
-      }
-      throw new Error(`OpenAI API error (429) after ${MAX_RETRIES} retries: ${text.slice(0, 200)}`);
-    }
-
-    if (RETRIABLE_STATUS_CODES.has(res.status)) {
-      if (retryAttempt < MAX_RETRIES) {
-        await retryBackoff(retryAttempt++, `HTTP ${res.status}`, callbacks, signal);
-        continue;
-      }
-      const text = await res.text();
-      throw new Error(`OpenAI API error (${res.status}) after ${MAX_RETRIES} retries: ${text.slice(0, 200)}`);
-    }
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`OpenAI API error (${res.status}): ${text}`);
-    }
-
-    callbacks.onHeaders?.(res.headers);
-    try {
-      return await readOpenAIStream(res, callbacks, STREAM_STALL_TIMEOUT);
-    } catch (err) {
-      if (signal?.aborted || isAbortLikeError(err) || isNonRetryableProviderError(err)) throw err;
       if (retryAttempt < MAX_RETRIES) {
         await retryBackoff(retryAttempt++, err instanceof Error ? err.message : String(err), callbacks, signal);
         continue;

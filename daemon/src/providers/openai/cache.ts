@@ -1,5 +1,6 @@
 import { buildOpenAIHeaders } from "./http";
 import { buildCodexWindowId } from "./identity";
+import { OPENAI_RESPONSES_WEBSOCKETS_BETA } from "./constants";
 import type { StreamOptions } from "../types";
 
 export interface OpenAIRequestSession {
@@ -13,8 +14,8 @@ export function buildOpenAIRequestHeaders(
 ): Record<string, string> {
   const headers: Record<string, string> = buildOpenAIHeaders({
     Authorization: `Bearer ${session.accessToken}`,
-    Accept: "text/event-stream",
-    "Content-Type": "application/json",
+    Accept: "application/json",
+    "OpenAI-Beta": OPENAI_RESPONSES_WEBSOCKETS_BETA,
   });
 
   if (options.promptCacheKey) {
