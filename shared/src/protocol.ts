@@ -8,8 +8,8 @@
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource } from "./messages";
-export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource };
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus } from "./messages";
+export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
@@ -42,6 +42,8 @@ export interface NewConversationCommand {
   folderId?: string | null;
   /** If true, the daemon creates/reuses the top-level "subagents" folder for this conversation. */
   subagent?: boolean;
+  /** Optional goal to set immediately after creating the conversation. */
+  goalObjective?: string;
 }
 
 export interface ParentNotificationTarget {
@@ -131,6 +133,16 @@ export interface SetFastModeCommand {
   reqId?: string;
   convId: string;
   enabled: boolean;
+}
+
+export type GoalAction = "show" | "set" | "pause" | "resume" | "clear";
+
+export interface SetGoalCommand {
+  type: "set_goal";
+  reqId?: string;
+  convId: string;
+  action: GoalAction;
+  objective?: string;
 }
 
 export type TrimMode = "messages" | "thinking" | "toolresults";
@@ -361,6 +373,7 @@ export type Command =
   | SetModelCommand
   | SetEffortCommand
   | SetFastModeCommand
+  | SetGoalCommand
   | ManageExternalToolDaemonCommand
   | TrimConversationCommand
   | AbortCommand
@@ -416,6 +429,7 @@ export interface ConversationCreatedEvent {
   model: ModelId;
   effort: EffortLevel;
   fastMode: boolean;
+  goal?: ConversationGoal | null;
 }
 
 export type StreamingSnapshotKind = "start" | "catchup" | "heartbeat";
@@ -586,6 +600,16 @@ export interface ConversationLoadedEvent {
   toolOutputsIncluded: boolean;
   /** Messages currently queued for delivery (so the TUI can show shadows). */
   queuedMessages?: QueuedMessageInfo[];
+  /** Persistent objective attached to this conversation, if any. */
+  goal?: ConversationGoal | null;
+}
+
+export interface GoalUpdatedEvent {
+  type: "goal_updated";
+  reqId?: string;
+  convId: string;
+  goal: ConversationGoal | null;
+  message?: string;
 }
 
 export interface ConversationUpdatedEvent {
@@ -794,6 +818,7 @@ export type Event =
   | TokenStatsEvent
   | ConversationsListEvent
   | ConversationLoadedEvent
+  | GoalUpdatedEvent
   | ConversationUpdatedEvent
   | ConversationDeletedEvent
   | ConversationRestoredEvent

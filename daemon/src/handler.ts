@@ -9,7 +9,7 @@
 
 import { log } from "./log";
 import { refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
-import { orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
+import { orchestrateGoalContinuation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
 import { buildAnthropicSystemPrompt, buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
@@ -24,6 +24,7 @@ import type { Command, ParentNotificationTarget } from "./protocol";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials } from "./auth";
 import { getTokenStatsSnapshot } from "./token-stats";
 import { broadcastConversationUpdated } from "./conversation-events";
+import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
 
 const SUBAGENTS_FOLDER_NAME = "subagents";
 
@@ -185,6 +186,7 @@ export function createHandler(server: DaemonServer) {
     const data = getRenderSnapshot(convId);
     if (!data) return null;
     const queued = convStore.getQueuedMessages(data.convId);
+    const conv = convStore.get(data.convId);
     server.sendTo(target, {
       type: "conversation_loaded",
       reqId,
@@ -198,8 +200,16 @@ export function createHandler(server: DaemonServer) {
       contextTokens: data.contextTokens,
       toolOutputsIncluded: data.toolOutputsIncluded,
       queuedMessages: queued.length > 0 ? queued : undefined,
+      goal: conv?.goal ?? null,
     });
     return data;
+  };
+
+  const sendGoalUpdated = (convId: string, reqId: string | undefined, message?: string) => {
+    const goal = convStore.get(convId)?.goal ?? null;
+    server.sendToSubscribers(convId, { type: "goal_updated", reqId, convId, goal, message });
+    broadcastConversationUpdated(server, convId);
+    return goal;
   };
 
   return async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
@@ -262,6 +272,11 @@ export function createHandler(server: DaemonServer) {
           break;
         }
         const initialMessage = cmd.initialMessage;
+        const goalObjective = cmd.goalObjective?.trim();
+        if (goalObjective && !hasConfiguredCredentials(provider)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Not authenticated for provider ${provider}. Run: bun run src/main.ts login ${provider}` });
+          break;
+        }
         if (initialMessage) {
           if (!hasConfiguredCredentials(provider)) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Not authenticated for provider ${provider}. Run: bun run src/main.ts login ${provider}` });
@@ -273,7 +288,7 @@ export function createHandler(server: DaemonServer) {
           }
         }
 
-        const title = cmd.title ?? (initialMessage ? PENDING_TITLE : undefined);
+        const title = cmd.title ?? (initialMessage || goalObjective ? PENDING_TITLE : undefined);
         const subagentFolder = cmd.subagent ? convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME) : null;
         if (cmd.subagent && !subagentFolder) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Failed to create ${SUBAGENTS_FOLDER_NAME} folder` });
@@ -285,6 +300,7 @@ export function createHandler(server: DaemonServer) {
         } else {
           convStore.create(id, provider, model, title, effort, fastMode, folderId);
         }
+        const goal = goalObjective ? setConversationGoal(id, goalObjective).goal : null;
         log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, fastMode=${fastMode}, title="${title ?? ""}", initialMessage=${Boolean(initialMessage)}, folderId=${folderId ?? "root"})`);
 
         server.sendTo(client, {
@@ -295,9 +311,19 @@ export function createHandler(server: DaemonServer) {
           model,
           effort,
           fastMode,
+          goal,
         });
         broadcastConversationUpdated(server, id);
         if (cmd.subagent) server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+
+        if (goalObjective && !initialMessage) {
+          server.subscribe(client, id);
+          server.sendToSubscribers(id, { type: "goal_updated", reqId: cmd.reqId, convId: id, goal, message: `Goal set: ${goalObjective}` });
+          startTitleGeneration(server, id, { extraContext: goalObjective });
+          void orchestrateGoalContinuation(server, id, buildOrchestrationCallbacks(id)).catch((err) => {
+            log("error", `handler: initial new-conversation goal continuation failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
 
         if (initialMessage) {
           // The creating client already has the local user echo and pending AI.
@@ -336,10 +362,65 @@ export function createHandler(server: DaemonServer) {
       case "abort": {
         const ac = convStore.getActiveJob(cmd.convId);
         if (ac) {
+          const goal = convStore.get(cmd.convId)?.goal;
+          if (cmd.reason !== "daemon-restart" && goal?.status === "active") {
+            const result = applyUserGoalAction(convStore.get(cmd.convId)!, "pause");
+            server.sendToSubscribers(cmd.convId, { type: "goal_updated", convId: cmd.convId, goal: result.goal, message: "Goal paused after interrupt." });
+          }
           ac.abort(cmd.reason === "daemon-restart" ? "daemon-restart" : undefined);
           log("info", `handler: abort requested for ${cmd.convId}${cmd.reason ? ` (${cmd.reason})` : ""}`);
         }
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        break;
+      }
+
+      case "set_goal": {
+        const conv = convStore.get(cmd.convId);
+        if (!conv) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+
+        if (cmd.action === "set") {
+          const objective = cmd.objective?.trim();
+          if (!objective) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Usage: /goal <objective>" });
+            break;
+          }
+          if (convStore.isStreaming(cmd.convId)) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot set a goal while the conversation is streaming." });
+            break;
+          }
+          const result = applyUserGoalAction(conv, "set", objective);
+          const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
+          log("info", `handler: set goal for ${cmd.convId}: "${objective.slice(0, 80)}"`);
+          if (goal?.status === "active") {
+            void orchestrateGoalContinuation(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId)).catch((err) => {
+              log("error", `handler: initial goal continuation failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
+          break;
+        }
+
+        if (cmd.action === "resume") {
+          if (convStore.isStreaming(cmd.convId)) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot resume a goal while the conversation is streaming." });
+            break;
+          }
+          const result = applyUserGoalAction(conv, "resume");
+          const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
+          if (goal?.status === "active") {
+            void orchestrateGoalContinuation(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId)).catch((err) => {
+              log("error", `handler: resumed goal continuation failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
+          break;
+        }
+
+        const result = applyUserGoalAction(conv, cmd.action);
+        server.sendTo(client, { type: "goal_updated", reqId: cmd.reqId, convId: cmd.convId, goal: result.goal, message: result.message });
+        if (cmd.action !== "show") broadcastConversationUpdated(server, cmd.convId);
+
         break;
       }
 

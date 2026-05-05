@@ -212,6 +212,19 @@ export interface SystemInstructionsMessage {
 
 export type Message = UserMessage | AIMessage | SystemMessage | SystemInstructionsMessage;
 
+// ── Conversation goals ───────────────────────────────────────────────
+
+export type ConversationGoalStatus = "active" | "paused" | "complete";
+
+export interface ConversationGoal {
+  objective: string;
+  status: ConversationGoalStatus;
+  createdAt: number;
+  updatedAt: number;
+  /** Number of automatic continuation turns since the goal was set/resumed. */
+  turns: number;
+}
+
 // ── Conversation summary ────────────────────────────────────────────
 
 export interface ConversationSummary {
@@ -225,6 +238,8 @@ export interface ConversationSummary {
   messageCount: number;
   /** Conversation title. The daemon owns automatic title generation. */
   title: string;
+  /** Optional persistent objective that can auto-continue while active. */
+  goal?: ConversationGoal | null;
   marked: boolean;
   pinned: boolean;
   streaming: boolean;

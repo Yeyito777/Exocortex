@@ -2,6 +2,7 @@ import type { RenderState } from "./state";
 import { CONVO_COMMAND } from "./commands/convo";
 import { EFFORT_COMMAND } from "./commands/effort";
 import { FAST_COMMAND } from "./commands/fast";
+import { GOAL_COMMAND } from "./commands/goal";
 import { createHelpCommand } from "./commands/help";
 import { INSTRUCTIONS_COMMAND } from "./commands/instructions";
 import { LOGIN_COMMAND } from "./commands/login";
@@ -31,6 +32,7 @@ const commands: SlashCommand[] = [
   TRIM_COMMAND,
   EFFORT_COMMAND,
   FAST_COMMAND,
+  GOAL_COMMAND,
   CONVO_COMMAND,
   TOKENS_COMMAND,
   TIME_COMMAND,

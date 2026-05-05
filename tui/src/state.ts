@@ -24,7 +24,7 @@ import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
 import { createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
-import type { ProviderAuthInfo, QueueTiming } from "./protocol";
+import type { ConversationGoal, ProviderAuthInfo, QueueTiming } from "./protocol";
 import type { VoicePromptState } from "./voice";
 
 // ── Queue types ────────────────────────────────────────────────────
@@ -119,6 +119,7 @@ export interface RenderState {
   model: ModelId;
   effort: EffortLevel;
   fastMode: boolean;
+  goal: ConversationGoal | null;
   convId: string | null;
   inputBuffer: string;
   cursorPos: number;
@@ -330,6 +331,7 @@ export function resetDraftConversationState(state: RenderState): void {
   clearPendingAI(state);
   clearStreamingTailMessages(state);
   state.contextTokens = null;
+  state.goal = null;
   resetToolOutputState(state);
   resetNewConversationDefaults(state);
   state.pendingSystemInstructions = null;
@@ -344,6 +346,7 @@ export function openFolderInstructionsDocument(state: RenderState, folderId: str
   state.sidebar.selectedId = null;
   state.convId = null;
   state.contextTokens = null;
+  state.goal = null;
   clearPendingAI(state);
   state.messages = [];
   clearStreamingTailMessages(state);
@@ -417,6 +420,7 @@ export function createInitialState(): RenderState {
     model: DEFAULT_MODEL_BY_PROVIDER[provider],
     effort: DEFAULT_EFFORT,
     fastMode: false,
+    goal: null,
     convId: null,
     inputBuffer: "",
     cursorPos: 0,

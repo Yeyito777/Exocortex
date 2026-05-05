@@ -6,7 +6,7 @@
 
 import { connect, type Socket } from "net";
 import { existsSync } from "fs";
-import type { Command, Event, MoveSidebarItemsOptions, QueueTiming, TrimMode, SidebarItemRef } from "./protocol";
+import type { Command, Event, GoalAction, MoveSidebarItemsOptions, QueueTiming, TrimMode, SidebarItemRef } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 
@@ -115,8 +115,9 @@ export class DaemonClient {
     fastMode?: boolean,
     initialMessage?: { text: string; startedAt: number; images?: ImageAttachment[] },
     folderId?: string | null,
+    goalObjective?: string,
   ): void {
-    this.send({ type: "new_conversation", provider, model, title, effort, fastMode, initialMessage, folderId });
+    this.send({ type: "new_conversation", provider, model, title, effort, fastMode, initialMessage, folderId, goalObjective });
   }
 
   subscribe(convId: string): void {
@@ -153,6 +154,10 @@ export class DaemonClient {
 
   setFastMode(convId: string, enabled: boolean): void {
     this.send({ type: "set_fast_mode", convId, enabled });
+  }
+
+  setGoal(convId: string, action: GoalAction, objective?: string): void {
+    this.send({ type: "set_goal", convId, action, objective });
   }
 
   trimConversation(convId: string, mode: TrimMode, count: number): void {

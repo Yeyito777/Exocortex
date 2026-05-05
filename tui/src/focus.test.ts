@@ -184,18 +184,18 @@ describe("autocomplete with vim Escape", () => {
   test("Escape after tab-completing a macro enters normal mode without undoing the completion", () => {
     const state = createInitialState();
 
-    typePromptText(state, "/g");
+    typePromptText(state, "/tho");
     expect(state.autocomplete?.type).toBe("command");
 
     expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
-    expect(state.inputBuffer).toBe("/go");
+    expect(state.inputBuffer).toBe("/thoughts");
 
     expect(handleFocusedKey({ type: "escape" }, state)).toEqual({ type: "handled" });
 
     expect(state.vim.mode).toBe("normal");
     expect(state.autocomplete).toBeNull();
-    expect(state.inputBuffer).toBe("/go");
-    expect(state.cursorPos).toBe(2);
+    expect(state.inputBuffer).toBe("/thoughts");
+    expect(state.cursorPos).toBe(8);
   });
 
   test("Escape after tab-completing a command enters normal mode without undoing the completion", () => {

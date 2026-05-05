@@ -132,6 +132,11 @@ export function handleEvent(
       handleConversationUpdated(event, state);
       break;
 
+    case "goal_updated":
+      state.goal = event.goal ?? null;
+      if (event.message) pushSystemMessage(state, event.message, theme.muted);
+      break;
+
     case "conversation_restored":
       handleConversationRestored(event, state);
       break;

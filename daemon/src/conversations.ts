@@ -6,7 +6,7 @@
  * In-flight stream tracking lives in streaming.ts.
  */
 
-import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary } from "./messages";
+import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus } from "./messages";
 import { DEFAULT_EFFORT, createConversation, createMessageMetadata, createStoredUserMessage, isRealUserMessage, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, TrimMode, ToolOutputInfo } from "./protocol";
@@ -327,6 +327,52 @@ export function clone(id: string): Conversation | null {
 
 export function get(id: string): Conversation | undefined {
   return loadConversation(id);
+}
+
+export function setGoal(id: string, objective: string): ConversationGoal | null {
+  const conv = get(id);
+  const trimmed = objective.trim();
+  if (!conv || !trimmed) return null;
+  const now = Date.now();
+  conv.goal = {
+    objective: trimmed,
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+    turns: 0,
+  };
+  markDirty(id);
+  flush(id);
+  return conv.goal;
+}
+
+export function updateGoalStatus(id: string, status: ConversationGoalStatus): ConversationGoal | null {
+  const conv = get(id);
+  if (!conv?.goal) return null;
+  conv.goal.status = status;
+  conv.goal.updatedAt = Date.now();
+  markDirty(id);
+  flush(id);
+  return conv.goal;
+}
+
+export function clearGoal(id: string): boolean {
+  const conv = get(id);
+  if (!conv?.goal) return false;
+  conv.goal = null;
+  markDirty(id);
+  flush(id);
+  return true;
+}
+
+export function incrementGoalTurns(id: string): ConversationGoal | null {
+  const conv = get(id);
+  if (!conv?.goal) return null;
+  conv.goal.turns += 1;
+  conv.goal.updatedAt = Date.now();
+  markDirty(id);
+  flush(id);
+  return conv.goal;
 }
 
 export function remove(id: string): boolean {

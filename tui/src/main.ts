@@ -325,6 +325,28 @@ function handleSubmit(): void {
         case "fast_mode_changed":
           if (state.convId) daemon.setFastMode(state.convId, cmdResult.enabled);
           break;
+        case "goal":
+          clearPrompt(state);
+          state.pendingImages = [];
+          state.scrollOffset = 0;
+          if (state.convId) {
+            daemon.setGoal(state.convId, cmdResult.action, cmdResult.objective);
+          } else if (cmdResult.action === "set" && cmdResult.objective?.trim()) {
+            const objective = cmdResult.objective.trim();
+            daemon.createConversation(
+              state.provider,
+              state.model,
+              undefined,
+              state.effort,
+              state.fastMode,
+              undefined,
+              state.sidebar.currentFolderId,
+              objective,
+            );
+          } else {
+            pushSystemMessage(state, "Create or open a conversation before using /goal.", theme.warning);
+          }
+          break;
         case "rename_conversation":
           if (state.convId) daemon.renameConversation(state.convId, cmdResult.title);
           break;
@@ -506,6 +528,7 @@ function handleKey(key: KeyEvent): void {
         state.messages = [];
         clearPendingAI(state);
         state.contextTokens = null;
+        state.goal = null;
         resetToolOutputState(state);
         resetNewConversationDefaults(state);
       }
@@ -520,6 +543,7 @@ function handleKey(key: KeyEvent): void {
         state.messages = [];
         clearPendingAI(state);
         state.contextTokens = null;
+        state.goal = null;
         resetToolOutputState(state);
       }
       break;

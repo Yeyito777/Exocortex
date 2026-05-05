@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
 import { log } from "./log";
-import { orchestrateReplayConversation } from "./orchestrator";
+import { orchestrateGoalContinuation, orchestrateReplayConversation } from "./orchestrator";
 import type { DaemonServer } from "./server";
 import * as convStore from "./conversations";
 import { handleUsageHeaders, refreshUsage } from "./usage";
@@ -125,28 +125,77 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
     }
 
     scheduled.push(convId);
-    log("info", `restart-recovery: replaying interrupted conversation ${convId}`);
-    void orchestrateReplayConversation(
-      server,
-      null,
-      undefined,
-      convId,
-      Date.now(),
-      buildRecoveryCallbacks(server, convId),
-    ).then((outcome) => {
-      if (outcome.ok) {
-        log("info", `restart-recovery: replay completed for ${convId}`);
-      } else {
-        log("warn", `restart-recovery: replay did not complete for ${convId}: ${outcome.error ?? "unknown error"}`);
-      }
-    }).catch((err) => {
-      const message = err instanceof Error ? err.message : String(err);
-      log("error", `restart-recovery: replay failed for ${convId}: ${message}`);
-    });
+    const conv = convStore.get(convId);
+    const callbacks = buildRecoveryCallbacks(server, convId);
+    if (conv?.goal?.status === "active") {
+      log("info", `restart-recovery: continuing interrupted active goal ${convId}`);
+      void orchestrateGoalContinuation(server, convId, callbacks).then((outcome) => {
+        if (outcome.ok) {
+          log("info", `restart-recovery: goal continuation completed for ${convId}`);
+        } else {
+          log("warn", `restart-recovery: goal continuation did not complete for ${convId}: ${outcome.error ?? "unknown error"}`);
+        }
+      }).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        log("error", `restart-recovery: goal continuation failed for ${convId}: ${message}`);
+      });
+    } else {
+      log("info", `restart-recovery: replaying interrupted conversation ${convId}`);
+      void orchestrateReplayConversation(
+        server,
+        null,
+        undefined,
+        convId,
+        Date.now(),
+        callbacks,
+      ).then((outcome) => {
+        if (outcome.ok) {
+          log("info", `restart-recovery: replay completed for ${convId}`);
+        } else {
+          log("warn", `restart-recovery: replay did not complete for ${convId}: ${outcome.error ?? "unknown error"}`);
+        }
+      }).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        log("error", `restart-recovery: replay failed for ${convId}: ${message}`);
+      });
+    }
   }
 
   if (scheduled.length > 0) {
     log("info", `restart-recovery: scheduled ${scheduled.length} interrupted conversation replay(s): ${scheduled.join(", ")}`);
+  }
+
+  return scheduled;
+}
+
+export function recoverActiveGoals(server: DaemonServer, excludeConvIds: Iterable<string> = []): string[] {
+  const excluded = new Set(excludeConvIds);
+  const scheduled: string[] = [];
+
+  for (const summary of convStore.listSummaries()) {
+    const convId = summary.id;
+    if (excluded.has(convId)) continue;
+    const conv = convStore.get(convId);
+    if (conv?.goal?.status !== "active") continue;
+    if (convStore.isStreaming(convId)) continue;
+    if (convStore.getQueuedMessages(convId).length > 0) continue;
+
+    scheduled.push(convId);
+    log("info", `restart-recovery: resuming active goal ${convId}`);
+    void orchestrateGoalContinuation(server, convId, buildRecoveryCallbacks(server, convId)).then((outcome) => {
+      if (outcome.ok) {
+        log("info", `restart-recovery: resumed goal completed for ${convId}`);
+      } else {
+        log("warn", `restart-recovery: resumed goal did not complete for ${convId}: ${outcome.error ?? "unknown error"}`);
+      }
+    }).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      log("error", `restart-recovery: resumed goal failed for ${convId}: ${message}`);
+    });
+  }
+
+  if (scheduled.length > 0) {
+    log("info", `restart-recovery: scheduled ${scheduled.length} active goal continuation(s): ${scheduled.join(", ")}`);
   }
 
   return scheduled;

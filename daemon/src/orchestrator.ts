@@ -22,6 +22,7 @@ import type { ToolExecutionContext } from "./tools/types";
 import { complete } from "./llm";
 import { getInnerLlmSummaryOptions } from "./tools/inner-llm";
 import { broadcastConversationUpdated } from "./conversation-events";
+import { GOAL_CONTINUATION_PROMPT } from "./goals";
 
 // ── Retry marker helpers ───────────────────────────────────────────
 
@@ -149,6 +150,7 @@ interface AssistantTurnOptions {
     text: string;
     images?: ImageAttachment[];
   };
+  goalContinuation?: boolean;
 }
 
 export async function orchestrateSendMessage(
@@ -177,6 +179,16 @@ export async function orchestrateReplayConversation(
   return await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext);
 }
 
+export async function orchestrateGoalContinuation(
+  server: DaemonServer,
+  convId: string,
+  ext: OrchestrationCallbacks,
+): Promise<AssistantTurnOutcome> {
+  return await orchestrateAssistantTurn(server, null, undefined, convId, Date.now(), ext, {
+    goalContinuation: true,
+  });
+}
+
 async function orchestrateAssistantTurn(
   server: DaemonServer,
   client: ConnectedClient | null,
@@ -193,7 +205,7 @@ async function orchestrateAssistantTurn(
     return { ok: false, blocks: [], tokens: 0, durationMs: 0, endedAt: Date.now(), error: message };
   }
 
-  const { userMessage } = options;
+  const { userMessage, goalContinuation = false } = options;
   const replaying = !userMessage;
 
   // ── Preflight/error helpers ───────────────────────────────────────
@@ -241,8 +253,12 @@ async function orchestrateAssistantTurn(
   if (userMessage?.images?.length && !supportsImageInputs(conv.provider, conv.model)) {
     return reportSendError(`Image inputs are not supported by ${conv.provider}/${conv.model}. Remove the attachment or switch to a vision-capable model.`);
   }
-  if (replaying && !hasReplayableHistory(conv.messages)) {
+  if (replaying && !goalContinuation && !hasReplayableHistory(conv.messages)) {
     return reportSendError("No conversation history to replay.");
+  }
+
+  if (goalContinuation && conv.goal?.status !== "active") {
+    return buildErrorOutcome("No active goal to continue.");
   }
 
   // ── Start stream and broadcast initial state ──────────────────────
@@ -292,7 +308,13 @@ async function orchestrateAssistantTurn(
   });
 
   // Extract effective folder + per-conversation system instructions (if present)
-  const systemInstructionsText = convStore.getEffectiveSystemInstructions(convId);
+  const baseSystemInstructionsText = convStore.getEffectiveSystemInstructions(convId);
+  const goalInstructionsText = goalContinuation && conv.goal
+    ? `${GOAL_CONTINUATION_PROMPT}\n\nActive goal objective:\n${conv.goal.objective}`
+    : null;
+  const systemInstructionsText = [baseSystemInstructionsText, goalInstructionsText]
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join("\n\n");
 
   // System messages and per-conversation instructions are persisted but never sent as API history messages.
   const apiMessages = conv.messages
@@ -303,6 +325,14 @@ async function orchestrateAssistantTurn(
       metadata: m.metadata,
       providerData: m.providerData,
     }));
+  if (goalContinuation && conv.goal) {
+    apiMessages.push({
+      role: "user",
+      content: `Continue the active /goal objective now: ${conv.goal.objective}`,
+      metadata: null,
+      providerData: undefined,
+    });
+  }
 
   // ── Context tool support ──────────────────────────────────────────
   // Track whether context was modified this round so the agent loop
@@ -655,8 +685,8 @@ async function orchestrateAssistantTurn(
   try {
     const result = await runAgentLoop(apiMessages, conv.provider, conv.model, callbacks, {
       system: conv.provider === "anthropic"
-        ? buildAnthropicSystemPrompt(systemInstructionsText ?? undefined)
-        : buildSystemPrompt(systemInstructionsText ?? undefined),
+        ? buildAnthropicSystemPrompt(systemInstructionsText || undefined)
+        : buildSystemPrompt(systemInstructionsText || undefined),
       signal: ac.signal,
       tools: getToolDefs(),
       executor,
@@ -720,6 +750,11 @@ async function orchestrateAssistantTurn(
     });
 
     log("info", `orchestrator: message complete for ${convId} (${result.tokens} tokens, ${result.blocks.length} blocks, ${endedAt - startedAt}ms)`);
+
+    if (goalContinuation && conv.goal?.status === "active") {
+      conv.goal.turns += 1;
+      conv.goal.updatedAt = endedAt;
+    }
 
     // Mark unread if no client is viewing this conversation
     if (!server.hasSubscribers(convId)) {
@@ -885,6 +920,10 @@ async function orchestrateAssistantTurn(
       }
     }
 
+    if (conv.goal) {
+      server.sendToSubscribers(convId, { type: "goal_updated", convId, goal: conv.goal });
+    }
+
     ext.onComplete();
 
     // Drain remaining queued messages. "next-turn" messages that weren't
@@ -903,6 +942,17 @@ async function orchestrateAssistantTurn(
       // Await to keep the chain in a single promise so errors propagate and
       // the conversation stays consistent (no orphaned background streams).
       await orchestrateSendMessage(server, null, undefined, convId, first.text, Date.now(), ext, first.images);
+    } else if (outcome?.ok && !outcome.aborted && conv.goal?.status === "active") {
+      queueMicrotask(() => {
+        const latest = convStore.get(convId);
+        if (!latest?.goal || latest.goal.status !== "active") return;
+        if (convStore.isStreaming(convId)) return;
+        if (convStore.getQueuedMessages(convId).length > 0) return;
+        log("info", `orchestrator: continuing active goal for ${convId}: "${latest.goal.objective.slice(0, 80)}"`);
+        void orchestrateGoalContinuation(server, convId, ext).catch((err) => {
+          log("error", `orchestrator: goal continuation failed for ${convId}: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      });
     }
   }
 

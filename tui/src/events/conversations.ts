@@ -49,6 +49,7 @@ export function handleConversationCreated(
   state.model = event.model ?? state.model;
   state.effort = event.effort ?? state.effort;
   state.fastMode = event.fastMode ?? state.fastMode;
+  state.goal = event.goal ?? null;
   daemon.subscribe(event.convId);
 
   if (state.pendingSystemInstructions !== null) {
@@ -83,6 +84,7 @@ export function handleConversationUpdated(event: Extract<Event, { type: "convers
     state.model = nextModel;
     state.effort = summary.effort ?? state.effort;
     state.fastMode = summary.fastMode ?? state.fastMode;
+    state.goal = summary.goal ?? null;
     if (providerOrModelChanged) state.contextTokens = null;
   }
 }
@@ -111,6 +113,7 @@ export function handleConversationDeleted(event: Extract<Event, { type: "convers
     clearPendingAI(state);
     delete state.lastStreamSeqByConv[event.convId];
     state.contextTokens = null;
+    state.goal = null;
     resetToolOutputState(state);
     resetNewConversationDefaults(state);
   }
@@ -189,6 +192,7 @@ export function handleConversationLoaded(
   state.model = event.model ?? state.model;
   state.effort = event.effort ?? state.effort;
   state.fastMode = event.fastMode ?? state.fastMode;
+  state.goal = event.goal ?? null;
   state.scrollOffset = 0;
   state.contextTokens = event.contextTokens;
   setLoadedConversationToolOutputState(state, event.toolOutputsIncluded);

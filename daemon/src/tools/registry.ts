@@ -17,6 +17,7 @@ import { edit } from "./edit";
 import { patch } from "./patch";
 import { browse } from "./browse";
 import { context, executeContext, type ContextToolEnv } from "./context";
+import { goal } from "./goal";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage } from "../abort";
 import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
@@ -35,6 +36,7 @@ const TOOLS: Tool[] = [
   patch,
   browse,
   context,
+  goal,
 ];
 
 const toolMap = new Map<string, Tool>(TOOLS.map(t => [t.name, t]));

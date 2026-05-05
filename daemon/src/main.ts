@@ -22,7 +22,7 @@ import { createHandler } from "./handler";
 import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
 import { getRunningConversationIds, prepareRestartForReplay } from "./control";
-import { recoverInterruptedStreams } from "./restart-recovery";
+import { recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
 import { startScheduler, stopScheduler, getCronDir, getJobs } from "./scheduler";
 import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
@@ -215,6 +215,11 @@ async function startDaemon(): Promise<void> {
   if (recoveredStreams.length > 0) {
     console.log(`  replay: scheduled ${recoveredStreams.length} interrupted conversation(s): ${recoveredStreams.join(", ")}`);
     profileMark("interrupted_streams_recovered", { count: recoveredStreams.length });
+  }
+  const recoveredGoals = recoverActiveGoals(server, recoveredStreams);
+  if (recoveredGoals.length > 0) {
+    console.log(`  goals: scheduled ${recoveredGoals.length} active goal continuation(s): ${recoveredGoals.join(", ")}`);
+    profileMark("active_goals_recovered", { count: recoveredGoals.length });
   }
 }
 

@@ -13,12 +13,12 @@ import { join } from "path";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, renameSync, statSync } from "fs";
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
-import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef } from "./messages";
+import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal } from "./messages";
 import { DEFAULT_EFFORT, countConversationMessages, sortConversations, summarizeConversation } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 12;
+const CURRENT_VERSION = 13;
 
 interface ConversationFileV1 {
   version: 1;
@@ -183,7 +183,26 @@ interface ConversationFileV12 {
   title: string;
 }
 
-type ConversationFile = ConversationFileV12;
+interface ConversationFileV13 {
+  version: 13;
+  id: string;
+  provider: ProviderId;
+  model: ModelId;
+  effort: EffortLevel;
+  fastMode: boolean;
+  messages: StoredMessage[];
+  createdAt: number;
+  updatedAt: number;
+  lastContextTokens: number | null;
+  marked: boolean;
+  pinned: boolean;
+  sortOrder: number;
+  folderId: string | null;
+  title: string;
+  goal: ConversationGoal | null;
+}
+
+type ConversationFile = ConversationFileV13;
 
 // ── Migrations ──────────────────────────────────────────────────────
 
@@ -309,6 +328,15 @@ function migrateV11toV12(data: ConversationFileV11): ConversationFileV12 {
   };
 }
 
+/** v12 → v13: Add persistent conversation goal state. */
+function migrateV12toV13(data: ConversationFileV12): ConversationFileV13 {
+  return {
+    ...data,
+    version: 13,
+    goal: null,
+  };
+}
+
 function migrate(raw: Record<string, unknown>): ConversationFile {
   // Progressive migration — each function validates and upgrades one version.
   // `any` is intentional at this deserialization boundary: the data is parsed
@@ -326,6 +354,7 @@ function migrate(raw: Record<string, unknown>): ConversationFile {
   if (data.version < 10) data = migrateV9toV10(data);
   if (data.version < 11) data = migrateV10toV11(data);
   if (data.version < 12) data = migrateV11toV12(data);
+  if (data.version < 13) data = migrateV12toV13(data);
 
   if (data.version !== CURRENT_VERSION) {
     log("warn", `persistence: unknown schema version ${data.version}, attempting to load as v${CURRENT_VERSION}`);
@@ -487,6 +516,7 @@ function toFile(conv: Conversation): ConversationFile {
     sortOrder: conv.sortOrder,
     folderId: conv.folderId ?? null,
     title: conv.title,
+    goal: conv.goal ?? null,
   };
 }
 
@@ -507,6 +537,7 @@ function fromFile(file: ConversationFile): Conversation {
     title: file.title,
   };
   if (file.folderId != null) conv.folderId = file.folderId;
+  if (file.goal != null) conv.goal = file.goal;
   return conv;
 }
 

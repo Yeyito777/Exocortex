@@ -91,9 +91,14 @@ function userTextFromContent(content: StoredMessage["content"]): string {
 }
 
 /** Collect user messages into a single string, truncated to MAX_CONTEXT_CHARS. */
-function extractUserContext(conv: Conversation): string {
+function extractUserContext(conv: Conversation, extraContext?: string): string {
   const parts: string[] = [];
   let total = 0;
+  const extra = extraContext?.trim();
+  if (extra) {
+    parts.push(extra.slice(0, MAX_CONTEXT_CHARS));
+    total += extra.length;
+  }
   for (const msg of conv.messages) {
     if (!isRealUserMessage(msg)) continue;
     const text = userTextFromContent(msg.content).trim();
@@ -106,7 +111,8 @@ function extractUserContext(conv: Conversation): string {
   return parts.join("\n\n");
 }
 
-function hasTitleContext(conv: Conversation): boolean {
+function hasTitleContext(conv: Conversation, extraContext?: string): boolean {
+  if (extraContext?.trim()) return true;
   return conv.messages.some((msg) => isRealUserMessage(msg) && userTextFromContent(msg.content).trim().length > 0);
 }
 
@@ -120,16 +126,16 @@ function broadcastTitle(server: DaemonServer, convId: string, title: string, rea
  * Start daemon-owned title generation. Returns false if there is nothing to do
  * or a generation job is already active for the conversation.
  */
-export function startTitleGeneration(server: DaemonServer, convId: string, options: { force?: boolean } = {}): boolean {
+export function startTitleGeneration(server: DaemonServer, convId: string, options: { force?: boolean; extraContext?: string } = {}): boolean {
   if (activeTitleJobs.has(convId)) return false;
   const conv = convStore.get(convId);
   if (!conv) return false;
   if (!options.force && conv.title.trim() && !isPendingTitle(conv.title)) return false;
-  if (!hasTitleContext(conv)) return false;
+  if (!hasTitleContext(conv, options.extraContext)) return false;
 
   const existingTitle = conv.title ?? "";
   const { pendingTitle, previousStableTitle, markPrefix } = pendingTitleFor(existingTitle);
-  const context = extractUserContext(conv);
+  const context = extractUserContext(conv, options.extraContext);
   const prompt = `${INSTRUCTION}\n\nHere is the conversation to generate a title for:\n<prompt>\n${context}\n</prompt>`;
 
   activeTitleJobs.add(convId);

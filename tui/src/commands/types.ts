@@ -1,5 +1,5 @@
 import type { RenderState } from "../state";
-import type { TrimMode } from "../protocol";
+import type { GoalAction, TrimMode } from "../protocol";
 import type { ProviderId, ModelId, EffortLevel } from "../messages";
 
 export interface CompletionItem {
@@ -17,6 +17,7 @@ export type CommandResult =
   | { type: "trim_requested"; mode: TrimMode; count: number }
   | { type: "effort_changed"; effort: EffortLevel }
   | { type: "fast_mode_changed"; enabled: boolean }
+  | { type: "goal"; action: GoalAction; objective?: string }
   | { type: "rename_conversation"; title: string }
   | { type: "generate_title" }
   | { type: "login"; provider?: ProviderId; apiKey?: string }

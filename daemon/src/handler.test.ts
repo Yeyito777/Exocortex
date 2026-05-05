@@ -5,10 +5,12 @@ import { clearActiveJob, initStreamingState, replaceCurrentStreamingBlocks, setA
 
 const orchestrateSendMessage = mock(async () => {});
 const orchestrateReplayConversation = mock(async () => {});
+const orchestrateGoalContinuation = mock(async () => {});
 
 mock.module("./orchestrator", () => ({
   orchestrateSendMessage,
   orchestrateReplayConversation,
+  orchestrateGoalContinuation,
 }));
 
 const { createHandler } = await import("./handler");
@@ -32,6 +34,7 @@ describe("handler new_conversation defaults", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
+    orchestrateGoalContinuation.mockClear();
     cleanupIds();
   });
   afterEach(cleanupIds);
@@ -79,6 +82,7 @@ describe("handler replay_conversation", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
+    orchestrateGoalContinuation.mockClear();
     cleanupIds();
   });
   afterEach(cleanupIds);
@@ -123,6 +127,7 @@ describe("handler load_conversation late-join streaming snapshots", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
+    orchestrateGoalContinuation.mockClear();
     cleanupIds();
   });
   afterEach(cleanupIds);

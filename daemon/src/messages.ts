@@ -12,7 +12,7 @@ export * from "@exocortex/shared/messages";
 
 // ── API-level types (for stored conversations / API replay) ─────────
 
-import { DEFAULT_EFFORT, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment } from "@exocortex/shared/messages";
+import { DEFAULT_EFFORT, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
 
 export type ApiContentBlock =
@@ -61,6 +61,8 @@ export interface Conversation {
   folderId?: string | null;
   /** Conversation title. The daemon owns automatic title generation. */
   title: string;
+  /** Optional persistent objective that can auto-continue while active. */
+  goal?: ConversationGoal | null;
 }
 
 /**
@@ -175,6 +177,7 @@ export function summarizeConversation(conv: Conversation): PersistedConversation
     updatedAt: conv.updatedAt,
     messageCount: countConversationMessages(conv.messages),
     title: conv.title,
+    goal: conv.goal ?? null,
     marked: conv.marked,
     pinned: conv.pinned,
     sortOrder: conv.sortOrder,
