@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { create, get, remove, replaceStreamingDisplayMessages } from "./conversations";
 import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "./messages";
-import { clearActiveJob, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
+import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
 
 const orchestrateSendMessage = mock(async () => {});
 const orchestrateReplayConversation = mock(async () => {});
@@ -278,6 +278,65 @@ describe("handler load_conversation late-join streaming snapshots", () => {
         { type: "text", text: "done with the tool round" },
       ],
       tokens: 0,
+    });
+  });
+
+  test("late-join snapshots keep text streamed after a tool-round boundary", async () => {
+    const convId = mkId("post-round-text");
+    create(convId, "openai", "gpt-5.4");
+    const conv = get(convId)!;
+    conv.messages.push({ role: "user", content: "make a game", metadata: null });
+
+    setActiveJob(convId, new AbortController(), 100);
+    initStreamingState(convId);
+    replaceStreamingDisplayMessages(convId, [
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "call-1", name: "bash", input: { command: "cc --version" } }],
+        metadata: null,
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call-1", content: "cc ok", is_error: false }],
+        metadata: null,
+      },
+    ]);
+    // Mirrors orchestrator.onRoundComplete(): completed tool round is now in
+    // streamingDisplayMessages and the next API round starts with fresh text.
+    clearCurrentStreamingBlocks(convId);
+    appendToStreamingBlock(convId, "text", "Planning an ncurses game after the compiler check.");
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "load_conversation", convId });
+
+    expect(sent[0]).toMatchObject({
+      type: "conversation_loaded",
+      pendingAI: {
+        blocks: [
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "cc --version" },
+          { type: "tool_result", toolCallId: "call-1", output: "", isError: false },
+          { type: "text", text: "Planning an ncurses game after the compiler check." },
+        ],
+      },
+    });
+    expect(sent[1]).toMatchObject({
+      type: "streaming_started",
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1" },
+        { type: "tool_result", toolCallId: "call-1" },
+        { type: "text", text: "Planning an ncurses game after the compiler check." },
+      ],
     });
   });
 

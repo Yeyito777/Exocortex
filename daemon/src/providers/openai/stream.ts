@@ -576,61 +576,19 @@ export function readOpenAIEventsForTest(
   return finalizeReadState(state);
 }
 
-function parseEventData(chunk: string): Record<string, unknown>[] {
-  const events: Record<string, unknown>[] = [];
-  const pieces = chunk.split("\n\n");
-  for (const piece of pieces) {
-    const lines = piece.split("\n").map((line) => line.trim()).filter(Boolean);
-    const dataLines = lines.filter((line) => line.startsWith("data: "));
-    if (dataLines.length === 0) continue;
-    const data = dataLines.map((line) => line.slice(6)).join("\n");
-    if (data === "[DONE]") continue;
-    try {
-      events.push(JSON.parse(data) as Record<string, unknown>);
-    } catch {
-      continue;
-    }
-  }
-  return events;
+export interface OpenAIEventAccumulator {
+  handle(event: Record<string, unknown>): void;
+  finalize(): StreamResult;
 }
 
-export async function readOpenAIStream(res: Response, cb: StreamCallbacks, stallTimeoutMs: number): Promise<StreamResult> {
-  if (!res.body) throw new Error("No response body");
-
+export function createOpenAIEventAccumulator(cb: StreamCallbacks): OpenAIEventAccumulator {
   const state = createReadState();
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    let stallTimer: ReturnType<typeof setTimeout>;
-    const { done, value } = await Promise.race([
-      reader.read(),
-      new Promise<never>((_, reject) => {
-        stallTimer = setTimeout(
-          () => reject(new Error(`No data for ${stallTimeoutMs / 1000}s`)),
-          stallTimeoutMs,
-        );
-      }),
-    ]).finally(() => clearTimeout(stallTimer!));
-
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const boundary = buffer.lastIndexOf("\n\n");
-    if (boundary === -1) continue;
-    const ready = buffer.slice(0, boundary);
-    buffer = buffer.slice(boundary + 2);
-    for (const event of parseEventData(ready)) {
+  return {
+    handle(event: Record<string, unknown>) {
       handleStreamEvent(state, event, cb);
-    }
-  }
-
-  buffer += decoder.decode();
-  if (buffer.trim()) {
-    for (const event of parseEventData(buffer)) {
-      handleStreamEvent(state, event, cb);
-    }
-  }
-
-  return finalizeReadState(state);
+    },
+    finalize() {
+      return finalizeReadState(state);
+    },
+  };
 }

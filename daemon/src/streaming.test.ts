@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { appendToStreamingBlock, clearActiveJob, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, nextStreamSeq, setActiveJob } from "./streaming";
+import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, nextStreamSeq, setActiveJob } from "./streaming";
 
 const IDS: string[] = [];
 
@@ -46,5 +46,23 @@ describe("appendToStreamingBlock", () => {
       { type: "thinking", text: "Thinking..." },
       { type: "text", text: "Second paragraph." },
     ]);
+  });
+
+  test("continues capturing chunks after the current round is cleared while streaming", () => {
+    const id = mkId("round-reset");
+    setActiveJob(id, new AbortController(), Date.now());
+    initStreamingState(id);
+
+    appendToStreamingBlock(id, "text", "round one tail");
+    clearCurrentStreamingBlocks(id);
+    appendToStreamingBlock(id, "text", "round two tail");
+
+    expect(getCurrentStreamingBlocks(id)).toEqual([
+      { type: "text", text: "round two tail" },
+    ]);
+
+    clearActiveJob(id);
+    clearCurrentStreamingBlocks(id);
+    expect(getCurrentStreamingBlocks(id)).toBeUndefined();
   });
 });

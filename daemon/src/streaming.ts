@@ -215,9 +215,21 @@ export function appendToStreamingBlock(convId: string, type: "text" | "thinking"
   blocks.push({ type, text: chunk });
 }
 
-/** Clear only the current in-flight assistant blocks between rounds or on finish. */
+/**
+ * Clear only the current in-flight assistant blocks.
+ *
+ * While a stream is still active this must leave an empty accumulator behind:
+ * the next provider round may begin with ordinary text/thinking chunks, and the
+ * late-join/refocus snapshot path depends on appendToStreamingBlock being able
+ * to capture those chunks.  Once the active job is gone, remove the accumulator
+ * entirely as final cleanup.
+ */
 export function clearCurrentStreamingBlocks(convId: string): void {
-  streamingBlocks.delete(convId);
+  if (activeJobs.has(convId)) {
+    streamingBlocks.set(convId, []);
+  } else {
+    streamingBlocks.delete(convId);
+  }
 }
 
 // ── Message queue (queued messages for delivery during/after streaming) ─

@@ -13,14 +13,52 @@ import {
   streamMessageWithSession,
 } from "./api";
 import { clearProviderAuth, saveProviderAuth } from "../../store";
-import { OPENAI_CODEX_RESPONSES_URL, OPENAI_TOKEN_URL } from "./constants";
+import { OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_TOKEN_URL } from "./constants";
 import { clearCloudflareCookiesForTest } from "./cookies";
 import type { StoredOpenAIAuth } from "./session";
+import { setOpenAIWebSocketConnectorForTest, type OpenAIWebSocketConnection } from "./websocket";
 
 const originalFetch = globalThis.fetch;
 
+interface MockWebSocketCall {
+  url: string;
+  headers: Record<string, string>;
+  sent: string[];
+}
+
+function mockOpenAIWebSocket(
+  connections: Array<{
+    events?: Array<Record<string, unknown>>;
+    headers?: HeadersInit;
+    nextMessage?: (signal?: AbortSignal) => Promise<{ type: "text"; text: string } | { type: "close" }>;
+  }>,
+): MockWebSocketCall[] {
+  const calls: MockWebSocketCall[] = [];
+  setOpenAIWebSocketConnectorForTest(mock(async (url, headers, signal) => {
+    const config = connections.shift();
+    if (!config) throw new Error("unexpected websocket connection");
+    const call: MockWebSocketCall = { url, headers, sent: [] };
+    calls.push(call);
+    const queued = [...(config.events ?? []).map((event) => ({ type: "text" as const, text: JSON.stringify(event) }))];
+    const socket = {
+      async sendText(text: string) {
+        call.sent.push(text);
+      },
+      async nextMessage(_timeoutMs: number, nextSignal?: AbortSignal) {
+        if (config.nextMessage) return config.nextMessage(nextSignal ?? signal);
+        return queued.shift() ?? { type: "close" as const };
+      },
+      close() {},
+      destroy() {},
+    } as unknown as OpenAIWebSocketConnection;
+    return { socket, headers: new Headers(config.headers) };
+  }));
+  return calls;
+}
+
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  setOpenAIWebSocketConnectorForTest(null);
   clearCloudflareCookiesForTest();
   clearProviderAuth("openai");
   writeExocortexConfig(defaultExocortexConfig());
@@ -125,15 +163,16 @@ describe("OpenAI replay input", () => {
 
   test("hard-fails OpenAI usage-limit 429 without transient retries by default", async () => {
     const onRetry = mock(() => {});
-    const fetchMock = mock(() => Promise.resolve(new Response(JSON.stringify({
+    const calls = mockOpenAIWebSocket([{ events: [{
+      type: "error",
+      status: 429,
       error: {
         type: "usage_limit_reached",
         message: "The usage limit has been reached",
         plan_type: "pro",
         resets_in_seconds: 5456,
       },
-    }), { status: 429 })));
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    }] }]);
 
     await expect(streamMessageWithSession(
       { accessToken: "test-token", accountId: null },
@@ -146,7 +185,7 @@ describe("OpenAI replay input", () => {
       },
     )).rejects.toThrow(/usage limit/i);
     expect(onRetry).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(1);
   });
 
   test("retries transient OpenAI session refresh connection errors", async () => {
@@ -186,27 +225,14 @@ describe("OpenAI replay input", () => {
         }), { status: 200, headers: { "Content-Type": "application/json" } }));
       }
 
-      if (url === OPENAI_CODEX_RESPONSES_URL) {
-        return Promise.resolve(new Response(new ReadableStream({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode([
-              'data: {"type":"response.created","response":{"id":"resp_1"}}',
-              'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}',
-              'data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"ok"}',
-              'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"message","id":"msg_1","content":[{"type":"output_text","text":"ok"}]}]}}',
-              "data: [DONE]",
-              "",
-            ].join("\n\n")));
-            controller.close();
-          },
-        }), {
-          status: 200,
-          headers: { "Content-Type": "text/event-stream" },
-        }));
-      }
-
       return Promise.resolve(new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }));
     }) as unknown as typeof fetch;
+    mockOpenAIWebSocket([{ events: [
+      { type: "response.created", response: { id: "resp_1" } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1" } },
+      { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, content_index: 0, delta: "ok" },
+      { type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 1, output_tokens: 1 }, output: [{ type: "message", id: "msg_1", content: [{ type: "output_text", text: "ok" }] }] } },
+    ] }]);
 
     const result = await streamMessage(
       [{ role: "user", content: "hello" }],
@@ -229,27 +255,15 @@ describe("OpenAI replay input", () => {
 
   test("hard-fails context-window stream errors without transient retries", async () => {
     const onRetry = mock(() => {});
-    const fetchMock = mock(() => Promise.resolve(new Response(new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode([
-          "data: " + JSON.stringify({
-            type: "response.failed",
-            response: {
-              error: {
-                code: "context_length_exceeded",
-                message: "Your input exceeds the context window of this model. Please adjust your input and try again.",
-              },
-            },
-          }),
-          "",
-        ].join("\n")));
-        controller.close();
+    const calls = mockOpenAIWebSocket([{ events: [{
+      type: "response.failed",
+      response: {
+        error: {
+          code: "context_length_exceeded",
+          message: "Your input exceeds the context window of this model. Please adjust your input and try again.",
+        },
       },
-    }), {
-      status: 200,
-      headers: { "Content-Type": "text/event-stream" },
-    })));
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    }] }]);
 
     await expect(streamMessageWithSession(
       { accessToken: "test-token", accountId: null },
@@ -262,27 +276,23 @@ describe("OpenAI replay input", () => {
       },
     )).rejects.toThrow(/exceeds the context window/i);
     expect(onRetry).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(1);
   });
 
   test("aborting an in-flight stream does not emit retry callbacks", async () => {
     const ac = new AbortController();
-    let fetchSignal: AbortSignal | undefined;
     const onRetry = mock(() => {});
-
-    globalThis.fetch = mock((_input: RequestInfo | URL, init?: RequestInit) => {
-      fetchSignal = init?.signal as AbortSignal | undefined;
-      return Promise.resolve(new Response(new ReadableStream({
-        start(controller) {
-          fetchSignal?.addEventListener("abort", () => {
-            controller.error(new DOMException("The message was aborted", "AbortError"));
-          }, { once: true });
-        },
-      }), {
-        status: 200,
-        headers: { "Content-Type": "text/event-stream" },
-      }));
-    }) as unknown as typeof fetch;
+    mockOpenAIWebSocket([{
+      nextMessage: (signal) => new Promise((_, reject) => {
+        if (signal?.aborted) {
+          reject(new DOMException("The message was aborted", "AbortError"));
+          return;
+        }
+        signal?.addEventListener("abort", () => {
+          reject(new DOMException("The message was aborted", "AbortError"));
+        }, { once: true });
+      }),
+    }]);
 
     const promise = streamMessageWithSession(
       { accessToken: "test-token", accountId: null },
@@ -303,25 +313,10 @@ describe("OpenAI replay input", () => {
   });
 
   test("sends conversation headers alongside prompt_cache_key", async () => {
-    let fetchInit: RequestInit | undefined;
-
-    globalThis.fetch = mock((_input: RequestInfo | URL, init?: RequestInit) => {
-      fetchInit = init;
-      return Promise.resolve(new Response(new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode([
-            'data: {"type":"response.created","response":{"id":"resp_1"}}',
-            'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1},"output":[]}}',
-            "data: [DONE]",
-            "",
-          ].join("\n\n")));
-          controller.close();
-        },
-      }), {
-        status: 200,
-        headers: { "Content-Type": "text/event-stream" },
-      }));
-    }) as unknown as typeof fetch;
+    const calls = mockOpenAIWebSocket([{ events: [
+      { type: "response.created", response: { id: "resp_1" } },
+      { type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 1, output_tokens: 1 }, output: [] } },
+    ] }]);
 
     await streamMessageWithSession(
       { accessToken: "test-token", accountId: "acct_123" },
@@ -334,38 +329,28 @@ describe("OpenAI replay input", () => {
       { promptCacheKey: "conv-1" },
     );
 
-    const headers = new Headers(fetchInit?.headers);
+    expect(calls[0].url).toBe(OPENAI_CODEX_RESPONSES_WS_URL);
+    const headers = new Headers(calls[0].headers);
     expect(headers.get("session_id")).toBe("conv-1");
     expect(headers.get("x-client-request-id")).toBe("conv-1");
     expect(headers.get("x-codex-window-id")).toBe("conv-1:0");
     expect(headers.get("ChatGPT-Account-ID")).toBe("acct_123");
     expect(headers.get("User-Agent")).toStartWith("codex_cli_rs/");
-    expect(headers.get("Content-Encoding")).toBe("zstd");
+    expect(headers.get("OpenAI-Beta")).toBe("responses_websockets=2026-02-06");
+    expect(JSON.parse(calls[0].sent[0])).toMatchObject({ type: "response.create", stream: true });
   });
 
   test("stores Cloudflare cookies and reuses them on the next OpenAI request", async () => {
-    const seenCookies: Array<string | null> = [];
-
-    globalThis.fetch = mock((_input: RequestInfo | URL, init?: RequestInit) => {
-      seenCookies.push(new Headers(init?.headers).get("Cookie"));
-      return Promise.resolve(new Response(new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode([
-            'data: {"type":"response.created","response":{"id":"resp_1"}}',
-            'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1},"output":[]}}',
-            "data: [DONE]",
-            "",
-          ].join("\n\n")));
-          controller.close();
-        },
-      }), {
-        status: 200,
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Set-Cookie": "__cf_bm=abc123; Path=/; Secure; HttpOnly",
-        },
-      }));
-    }) as unknown as typeof fetch;
+    const calls = mockOpenAIWebSocket([
+      { headers: { "Set-Cookie": "__cf_bm=abc123; Path=/; Secure; HttpOnly" }, events: [
+        { type: "response.created", response: { id: "resp_1" } },
+        { type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 1, output_tokens: 1 }, output: [] } },
+      ] },
+      { events: [
+        { type: "response.created", response: { id: "resp_2" } },
+        { type: "response.completed", response: { id: "resp_2", usage: { input_tokens: 1, output_tokens: 1 }, output: [] } },
+      ] },
+    ]);
 
     const callbacks = {
       onText: () => {},
@@ -388,7 +373,8 @@ describe("OpenAI replay input", () => {
       { promptCacheKey: "conv-2" },
     );
 
-    expect(seenCookies).toEqual([null, "__cf_bm=abc123"]);
+    expect(new Headers(calls[0].headers).get("Cookie")).toBeNull();
+    expect(new Headers(calls[1].headers).get("Cookie")).toBe("__cf_bm=abc123");
   });
 
   test("does not send previous_response_id to the codex backend", () => {

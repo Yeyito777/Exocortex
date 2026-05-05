@@ -838,8 +838,13 @@ export function createHandler(server: DaemonServer) {
           break;
         }
         log("info", `handler: unwound conversation ${cmd.convId} to before user message ${cmd.userMessageIndex}`);
-        // Respond with the truncated state (reuse conversation_loaded)
+        // Respond directly to the editor with the full conversation payload, then
+        // broadcast the canonical truncated history to every subscriber.  Ctrl+W
+        // is a real history mutation, not a stale same-conversation refresh; all
+        // open TUIs must discard any local assistant tail that lived past the
+        // unwind point.
         sendCompactConversationLoaded(client, cmd.convId, cmd.reqId);
+        sendCompactHistoryUpdated(cmd.convId);
         broadcastConversationUpdated(server, cmd.convId);
         break;
       }

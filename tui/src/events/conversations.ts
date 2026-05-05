@@ -23,6 +23,7 @@ import {
   collectDisplayedToolResultOutputs,
   logDiskSyncAppliedAssistantDiff,
   logDiskSyncAssistantDiff,
+  preserveLocalAssistantExtensionAfterDiskSync,
 } from "./disk-sync-diagnostics";
 import { pushDisplayEntries } from "./display";
 import { hydratePendingAIFromSnapshot } from "./pending-ai";
@@ -253,9 +254,17 @@ export function handleConversationLoaded(
     })}`);
   }
 
+  const preservedAssistantExtensionResult = sameConversation
+    ? preserveLocalAssistantExtensionAfterDiskSync("conversation_loaded", event.convId, beforeApply, state)
+    : { preservedBlocks: 0, beforeBlocks: 0, afterBlocks: 0, mergedBlocks: 0 };
+
   logDiskSyncAppliedAssistantDiff("conversation_loaded", event.convId, beforeApply, state, {
     preservedToolOutputs: preservedToolOutputResult.patchedOutputs,
     preservedToolNames: preservedToolOutputResult.patchedToolNames,
+    preservedAssistantExtensionBlocks: preservedAssistantExtensionResult.preservedBlocks,
+    assistantBlocksBeforeDiskSync: preservedAssistantExtensionResult.beforeBlocks,
+    assistantBlocksAfterDiskSync: preservedAssistantExtensionResult.afterBlocks,
+    assistantBlocksAfterPreserve: preservedAssistantExtensionResult.mergedBlocks,
   });
 
   // Rebuild local queue shadows from daemon state.
