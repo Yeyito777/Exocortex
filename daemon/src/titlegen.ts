@@ -160,7 +160,6 @@ export function startTitleGeneration(server: DaemonServer, convId: string, optio
       const message = err instanceof Error ? err.message : String(err);
       log("error", `titlegen: failed for ${convId}: ${message}`);
       broadcastTitle(server, convId, previousStableTitle, "reverted failed title");
-      server.sendToSubscribers(convId, { type: "system_message", convId, text: `✗ Title generation failed: ${message}`, color: "error" });
     })
     .finally(() => {
       activeTitleJobs.delete(convId);

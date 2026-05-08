@@ -6,8 +6,8 @@ import { buildCodexClientMetadata } from "./identity";
 import type { OpenAIReasoningItem } from "./types";
 
 export type OpenAIInputItem =
-  | { role: "user"; content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string }> }
-  | { role: "assistant"; content: Array<{ type: "output_text"; text: string }>; id?: string }
+  | { type: "message"; role: "user"; content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string }> }
+  | { type: "message"; role: "assistant"; content: Array<{ type: "output_text"; text: string }>; id?: string }
   | { type: "function_call"; call_id: string; name: string; arguments: string; id?: string }
   | { type: "function_call_output"; call_id: string; output: string }
   | { type: "reasoning"; id: string; encrypted_content?: string | null; summary: Array<{ type: "summary_text"; text: string }> };
@@ -77,6 +77,7 @@ export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
     if (message.role === "user") {
       if (typeof message.content === "string") {
         input.push({
+          type: "message",
           role: "user",
           content: [{ type: "input_text", text: message.content }],
         });
@@ -101,6 +102,7 @@ export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
           const images = extractToolResultImages(result.content);
           if (images.length > 0) {
             input.push({
+              type: "message",
               role: "user",
               content: [
                 { type: "input_text", text: `Image output for tool call ${result.tool_use_id}.` },
@@ -115,6 +117,7 @@ export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
 
         if (plainText) {
           input.push({
+            type: "message",
             role: "user",
             content: [{ type: "input_text", text: plainText }],
           });
@@ -134,7 +137,7 @@ export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
         }
       }
       if (parts.length > 0) {
-        input.push({ role: "user", content: parts });
+        input.push({ type: "message", role: "user", content: parts });
       }
       continue;
     }
@@ -157,6 +160,7 @@ export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
 
     if (textParts.length > 0) {
       input.push({
+        type: "message",
         role: "assistant",
         content: textParts.map((text) => ({ type: "output_text", text })),
       });
@@ -237,7 +241,7 @@ export function buildRequestBody(
   return {
     ...shape,
     input,
-    client_metadata: buildCodexClientMetadata(),
+    client_metadata: buildCodexClientMetadata(options.promptCacheKey),
     stream: true,
     store: false,
     ...buildPromptCacheBodyFields(options),

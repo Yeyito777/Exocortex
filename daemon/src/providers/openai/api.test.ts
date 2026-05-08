@@ -332,12 +332,23 @@ describe("OpenAI replay input", () => {
     expect(calls[0].url).toBe(OPENAI_CODEX_RESPONSES_WS_URL);
     const headers = new Headers(calls[0].headers);
     expect(headers.get("session_id")).toBe("conv-1");
+    expect(headers.get("session-id")).toBe("conv-1");
+    expect(headers.get("thread_id")).toBe("conv-1");
+    expect(headers.get("thread-id")).toBe("conv-1");
     expect(headers.get("x-client-request-id")).toBe("conv-1");
     expect(headers.get("x-codex-window-id")).toBe("conv-1:0");
+    expect(headers.get("x-codex-installation-id")).toBeTruthy();
     expect(headers.get("ChatGPT-Account-ID")).toBe("acct_123");
     expect(headers.get("User-Agent")).toStartWith("codex_cli_rs/");
     expect(headers.get("OpenAI-Beta")).toBe("responses_websockets=2026-02-06");
-    expect(JSON.parse(calls[0].sent[0])).toMatchObject({ type: "response.create", stream: true });
+    expect(JSON.parse(calls[0].sent[0])).toMatchObject({
+      type: "response.create",
+      stream: true,
+      client_metadata: {
+        "x-codex-installation-id": expect.any(String),
+        "x-codex-window-id": "conv-1:0",
+      },
+    });
   });
 
   test("stores Cloudflare cookies and reuses them on the next OpenAI request", async () => {
@@ -399,14 +410,17 @@ describe("OpenAI replay input", () => {
     expect(body.prompt_cache_key).toBe("conv-1");
     expect(body.input).toEqual([
       {
+        type: "message",
         role: "user",
         content: [{ type: "input_text", text: "first prompt" }],
       },
       {
+        type: "message",
         role: "assistant",
         content: [{ type: "output_text", text: "first answer" }],
       },
       {
+        type: "message",
         role: "user",
         content: [{ type: "input_text", text: "follow-up" }],
       },

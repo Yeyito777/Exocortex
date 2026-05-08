@@ -28,6 +28,8 @@ export interface CompleteOptions {
   signal?: AbortSignal;
   /** Optional token-accounting metadata for this helper request. */
   tracking?: TokenTrackingContext;
+  /** OpenAI/Codex request correlation key for inner completions. */
+  promptCacheKey?: string;
 }
 
 export interface CompleteResult {
@@ -39,6 +41,19 @@ export interface CompleteResult {
 // ── No-op callbacks ────────────────────────────────────────────────
 
 const noop = () => {};
+
+let innerCompletionCounter = 0;
+
+function defaultPromptCacheKey(provider: ProviderId, tracking?: TokenTrackingContext): string | undefined {
+  if (provider !== "openai") return undefined;
+
+  const source = tracking?.source?.replace(/[^a-zA-Z0-9_-]/g, "-") || "inner";
+  const conversationId = tracking?.conversationId?.replace(/[^a-zA-Z0-9_-]/g, "-");
+  const sequence = ++innerCompletionCounter;
+  return conversationId
+    ? `${conversationId}-${source}-${sequence}`
+    : `${source}-${Date.now()}-${sequence}`;
+}
 
 // ── Public API ─────────────────────────────────────────────────────
 
@@ -60,8 +75,10 @@ export async function complete(
     maxTokens = 4096,
     signal,
     tracking,
+    promptCacheKey,
   } = options;
   const model = options.model ?? getDefaultModel(provider);
+  const effectivePromptCacheKey = promptCacheKey ?? defaultPromptCacheKey(provider, tracking);
 
   const messages = [{ role: "user" as const, content: userText }];
 
@@ -75,6 +92,7 @@ export async function complete(
     maxTokens,
     signal,
     tracking,
+    promptCacheKey: effectivePromptCacheKey,
   });
 
   log("info", `llm: inner completion done (provider=${provider}, in=${result.inputTokens ?? "?"}, out=${result.outputTokens ?? "?"}, text=${result.text.length} chars)`);

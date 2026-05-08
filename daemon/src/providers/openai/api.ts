@@ -1,5 +1,6 @@
 import type { ApiMessage, ModelId } from "../../messages";
 import { createAbortError, isAbortLikeError } from "../../abort";
+import { log } from "../../log";
 import { readExocortexConfig } from "@exocortex/shared/config";
 import { getVerifiedSession } from "./auth";
 import { AuthError, isNonRetryableProviderError } from "../errors";
@@ -269,7 +270,9 @@ export async function streamMessageWithSession(
       }
 
       if (retryAttempt < MAX_RETRIES) {
-        await retryBackoff(retryAttempt++, err instanceof Error ? err.message : String(err), callbacks, signal);
+        const message = err instanceof Error ? err.message : String(err);
+        log("warn", `openai api: retrying websocket request after ${message} (attempt ${retryAttempt + 1}/${MAX_RETRIES})`);
+        await retryBackoff(retryAttempt++, message, callbacks, signal);
         continue;
       }
       throw err;

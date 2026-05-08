@@ -30,10 +30,14 @@ export function getCodexInstallationId(): string {
   }
 }
 
-export function buildCodexClientMetadata(): Record<string, string> {
-  return {
+export function buildCodexClientMetadata(promptCacheKey?: string): Record<string, string> {
+  const metadata: Record<string, string> = {
     "x-codex-installation-id": getCodexInstallationId(),
   };
+  if (promptCacheKey) {
+    metadata["x-codex-window-id"] = buildCodexWindowId(promptCacheKey);
+  }
+  return metadata;
 }
 
 export function buildCodexWindowId(promptCacheKey: string): string {

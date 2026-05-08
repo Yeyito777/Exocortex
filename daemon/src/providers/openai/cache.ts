@@ -1,5 +1,5 @@
 import { buildOpenAIHeaders } from "./http";
-import { buildCodexWindowId } from "./identity";
+import { buildCodexWindowId, getCodexInstallationId } from "./identity";
 import { OPENAI_RESPONSES_WEBSOCKETS_BETA } from "./constants";
 import type { StreamOptions } from "../types";
 
@@ -16,10 +16,14 @@ export function buildOpenAIRequestHeaders(
     Authorization: `Bearer ${session.accessToken}`,
     Accept: "application/json",
     "OpenAI-Beta": OPENAI_RESPONSES_WEBSOCKETS_BETA,
+    "x-codex-installation-id": getCodexInstallationId(),
   });
 
   if (options.promptCacheKey) {
     headers.session_id = options.promptCacheKey;
+    headers["session-id"] = options.promptCacheKey;
+    headers.thread_id = options.promptCacheKey;
+    headers["thread-id"] = options.promptCacheKey;
     headers["x-client-request-id"] = options.promptCacheKey;
     headers["x-codex-window-id"] = buildCodexWindowId(options.promptCacheKey);
   }

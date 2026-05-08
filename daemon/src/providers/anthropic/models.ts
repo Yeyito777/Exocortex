@@ -28,7 +28,7 @@ export const FALLBACK_ANTHROPIC_MODELS: ModelInfo[] = [
 ];
 
 function storedSubscriptionType(): string | null {
-  return loadProviderAuth<StoredAnthropicAuth>("anthropic")?.cli.subscriptionType ?? null;
+  return loadProviderAuth<StoredAnthropicAuth>("anthropic")?.cli?.subscriptionType ?? null;
 }
 
 function filterModelsForSubscription(models: ModelInfo[], subscriptionType: string | null): ModelInfo[] {

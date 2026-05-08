@@ -1,6 +1,6 @@
 import { randomBytes, createHash } from "node:crypto";
 import { connect as netConnect, type Socket } from "node:net";
-import { connect as tlsConnect } from "node:tls";
+import { checkServerIdentity, connect as tlsConnect } from "node:tls";
 import { createAbortError } from "../../abort";
 
 export interface OpenAIWebSocketConnectResult {
@@ -35,6 +35,23 @@ const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 function abortableError(signal?: AbortSignal): Error {
   return signal?.aborted ? createAbortError() : new Error("OpenAI websocket connection aborted");
+}
+
+const EMPTY_CERT_SUBJECT = {};
+
+function safeCheckServerIdentity(hostname: string, cert: Parameters<typeof checkServerIdentity>[1]): Error | undefined {
+  // Bun's Node TLS shim can call this hook with `cert` missing, or with
+  // `subject: null`, which makes Node's checkServerIdentity throw while
+  // destructuring. The TLS layer still performs CA verification; when Bun
+  // omits the cert object there is no hostname payload for us to inspect.
+  if (cert == null) return undefined;
+
+  // Preserve normal hostname verification when a cert object is available,
+  // normalizing the SAN-only shape Node expects.
+  const safeCert = cert && typeof cert === "object" && (cert as { subject?: unknown }).subject == null
+    ? { ...cert, subject: EMPTY_CERT_SUBJECT }
+    : cert;
+  return checkServerIdentity(hostname, safeCert);
 }
 
 function headerLines(headers: Record<string, string>): string[] {
@@ -74,7 +91,7 @@ async function openTcpSocket(url: URL, signal?: AbortSignal): Promise<Socket> {
     let settled = false;
     const timer = setTimeout(() => fail(new Error("OpenAI websocket connect timeout")), CONNECT_TIMEOUT_MS);
     const socket: Socket = url.protocol === "wss:"
-      ? tlsConnect({ host, port, servername: host })
+      ? tlsConnect({ host, port, servername: host, checkServerIdentity: safeCheckServerIdentity })
       : netConnect({ host, port });
 
     const cleanup = () => {

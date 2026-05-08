@@ -1,4 +1,5 @@
 import type { StreamCallbacks, StreamResult } from "../types";
+import { log } from "../../log";
 import { createOpenAIEventAccumulator } from "./stream";
 import { OpenAIWebSocketHttpError, type OpenAIWebSocketConnection } from "./websocket";
 
@@ -81,6 +82,7 @@ export async function readOpenAIResponsesWebSocket(
   while (true) {
     const message = await socket.nextMessage(options.stallTimeoutMs, options.signal);
     if (message.type === "close") {
+      log("warn", `openai api: websocket closed before completion (code=${message.code ?? "?"}, reason=${message.reason || ""})`);
       throw new Error(message.reason || "OpenAI websocket closed before response.completed");
     }
     if (message.type === "binary") {
