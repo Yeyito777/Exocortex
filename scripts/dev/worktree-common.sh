@@ -56,6 +56,41 @@ sync_external_tools() {
   done
 }
 
+sync_dependency_artifacts() {
+  local worktree_dir="$1"
+
+  # bun.lock is intentionally ignored by git, so `git worktree add` does not
+  # populate it. Keep a local copy in each worktree before any `bun install` so
+  # Bun uses the resolved lockfile instead of doing a fresh network resolution.
+  local lock
+  for lock in bun.lock bun.lockb; do
+    if [[ -f "$EXOCORTEX_ROOT/$lock" && ! -e "$worktree_dir/$lock" ]]; then
+      cp "$EXOCORTEX_ROOT/$lock" "$worktree_dir/$lock"
+    fi
+  done
+
+  # Bun's workspace install can be slow or hang when each worktree starts with
+  # empty node_modules. Seed the ignored dependency layout from the main checkout:
+  # - share the global content-addressed .bun cache via symlink
+  # - copy workspace node_modules directories so their relative workspace links
+  #   (e.g. @exocortex/shared -> ../../../shared) point at this worktree.
+  if [[ -d "$EXOCORTEX_ROOT/node_modules/.bun" ]]; then
+    mkdir -p "$worktree_dir/node_modules"
+    local wt_bun_cache="$worktree_dir/node_modules/.bun"
+    if [[ ! -L "$wt_bun_cache" || "$(readlink "$wt_bun_cache" 2>/dev/null || true)" != "$EXOCORTEX_ROOT/node_modules/.bun" ]]; then
+      rm -rf "$wt_bun_cache"
+      ln -s "$EXOCORTEX_ROOT/node_modules/.bun" "$wt_bun_cache"
+    fi
+  fi
+
+  local workspace
+  for workspace in shared daemon tui; do
+    if [[ -d "$EXOCORTEX_ROOT/$workspace/node_modules" && ! -e "$worktree_dir/$workspace/node_modules" ]]; then
+      cp -a "$EXOCORTEX_ROOT/$workspace/node_modules" "$worktree_dir/$workspace/node_modules"
+    fi
+  done
+}
+
 cleanup_worktree_config() {
   local worktree_dir="$1"
   local wt_name="$(basename "$worktree_dir")"

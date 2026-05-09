@@ -22,10 +22,13 @@ if git -C "$EXOCORTEX_ROOT" show-ref --verify --quiet "refs/heads/$NAME"; then
 fi
 
 mkdir -p "$EXOCORTEX_ROOT/.worktrees"
-git -C "$EXOCORTEX_ROOT" worktree add "$WORKTREE_DIR" -b "$NAME" HEAD
+EXOCORTEX_SKIP_POST_CHECKOUT_INSTALL=1 git -C "$EXOCORTEX_ROOT" worktree add "$WORKTREE_DIR" -b "$NAME" HEAD
 
+sync_dependency_artifacts "$WORKTREE_DIR"
 sync_shared_secrets "$WORKTREE_DIR"
 sync_external_tools "$WORKTREE_DIR"
+
+(cd "$WORKTREE_DIR" && bun install --silent)
 
 cat <<EOF
 

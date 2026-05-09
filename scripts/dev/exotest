@@ -47,6 +47,7 @@ echo ""
 
 # Always run bun install — it's idempotent and fast (~200ms) when
 # everything is resolved, and catches stale/partial node_modules.
+sync_dependency_artifacts "$WORKTREE_DIR"
 (cd "$WORKTREE_DIR" && bun install --silent)
 
 # ── Shared local resources ──────────────────────────────────────────

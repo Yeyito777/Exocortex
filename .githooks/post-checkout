@@ -1,4 +1,11 @@
 #!/bin/sh
 # Install dependencies when node_modules is missing (e.g. after worktree creation).
+[ "${EXOCORTEX_SKIP_POST_CHECKOUT_INSTALL:-}" = "1" ] && exit 0
+
+# Worktrees do not get ignored files (notably bun.lock) during `git worktree add`.
+# If we install before the worktree bootstrap script has copied the lockfile, Bun
+# may fall back to resolving from the network and appear to hang indefinitely.
+[ ! -f bun.lock ] && [ ! -f bun.lockb ] && exit 0
+
 [ ! -d node_modules ] && bun install --silent
 exit 0
