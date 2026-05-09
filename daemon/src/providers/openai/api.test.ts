@@ -133,6 +133,30 @@ describe("OpenAI replay input", () => {
     expect(isRetriableOpenAIStatusForTest(401)).toBe(false);
   });
 
+  test("omits invalid image payloads instead of sending provider-rejected data URLs", () => {
+    const validPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const messages: ApiMessage[] = [{
+      role: "user",
+      content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: validPng } },
+        { type: "text", text: "caption" },
+      ],
+    }];
+
+    const input = buildOpenAIInputForTest(messages) as Array<{
+      type: string;
+      role?: string;
+      content?: Array<{ type: string; text?: string; image_url?: string }>;
+    }>;
+
+    expect(input[0].content).toEqual([
+      { type: "input_text", text: "[Invalid image/png attachment omitted before sending to OpenAI.]" },
+      { type: "input_image", image_url: `data:image/png;base64,${validPng}` },
+      { type: "input_text", text: "caption" },
+    ]);
+  });
+
   test("parses OpenAI usage-limit 429 reset metadata", () => {
     const parsed = parseOpenAIUsageLimitErrorForTest(JSON.stringify({
       error: {

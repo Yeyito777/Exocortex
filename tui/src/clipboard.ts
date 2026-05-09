@@ -51,6 +51,35 @@ const IMAGE_FORMATS: { mime: ImageMediaType; target: string }[] = [
   { mime: "image/webp", target: "image/webp" },
 ];
 
+function detectImageMediaType(buf: Buffer): ImageMediaType | null {
+  if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return "image/png";
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (buf.length >= 6 && (buf.subarray(0, 6).toString("ascii") === "GIF87a" || buf.subarray(0, 6).toString("ascii") === "GIF89a")) {
+    return "image/gif";
+  }
+  if (buf.length >= 12 && buf.subarray(0, 4).toString("ascii") === "RIFF" && buf.subarray(8, 12).toString("ascii") === "WEBP") {
+    return "image/webp";
+  }
+  return null;
+}
+
+function buildImageAttachment(mediaType: ImageMediaType, buf: Buffer): ImageAttachment | null {
+  // Some clipboard owners advertise image/png but return a non-image payload for
+  // that target. If we accept it, the provider rejects the entire request with
+  // “image data ... does not represent a valid image”. Validate the bytes before
+  // attaching them so one bad clipboard target cannot poison the conversation.
+  if (detectImageMediaType(buf) !== mediaType) return null;
+  return {
+    mediaType,
+    base64: buf.toString("base64"),
+    sizeBytes: buf.length,
+  };
+}
+
 // ── Backend implementations ──────────────────────────────────────
 
 function readImageXclip(): ImageAttachment | null {
@@ -65,11 +94,8 @@ function readImageXclip(): ImageAttachment | null {
       maxBuffer: 50 * 1024 * 1024,  // 50 MB
     });
     if (result.status !== 0 || !result.stdout || result.stdout.length === 0) continue;
-    return {
-      mediaType: fmt.mime,
-      base64: Buffer.from(result.stdout).toString("base64"),
-      sizeBytes: result.stdout.length,
-    };
+    const attachment = buildImageAttachment(fmt.mime, Buffer.from(result.stdout));
+    if (attachment) return attachment;
   }
   return null;
 }
@@ -86,11 +112,8 @@ function readImageWayland(): ImageAttachment | null {
       maxBuffer: 50 * 1024 * 1024,  // 50 MB
     });
     if (result.status !== 0 || !result.stdout || result.stdout.length === 0) continue;
-    return {
-      mediaType: fmt.mime,
-      base64: Buffer.from(result.stdout).toString("base64"),
-      sizeBytes: result.stdout.length,
-    };
+    const attachment = buildImageAttachment(fmt.mime, Buffer.from(result.stdout));
+    if (attachment) return attachment;
   }
   return null;
 }
@@ -120,11 +143,7 @@ function readImagePowerShell(): ImageAttachment | null {
   try {
     const buf = readFileSync(tmpPath);
     if (buf.length === 0) return null;
-    return {
-      mediaType: "image/png",
-      base64: buf.toString("base64"),
-      sizeBytes: buf.length,
-    };
+    return buildImageAttachment("image/png", buf);
   } finally {
     try { unlinkSync(tmpPath); } catch { /* already gone */ }
   }

@@ -52,6 +52,49 @@ function encodeImage(mediaType: string, base64: string): string {
   return `data:${mediaType};base64,${base64}`;
 }
 
+function isStrictBase64(value: string): boolean {
+  return value.length > 0
+    && value.length % 4 === 0
+    && /^[A-Za-z0-9+/]+={0,2}$/.test(value)
+    && !/=/.test(value.slice(0, -2));
+}
+
+function isValidImagePayload(mediaType: string, base64: string): boolean {
+  if (!isStrictBase64(base64)) return false;
+
+  const bytes = Buffer.from(base64, "base64");
+  switch (mediaType) {
+    case "image/png":
+      return bytes.length >= 8
+        && bytes[0] === 0x89
+        && bytes[1] === 0x50
+        && bytes[2] === 0x4e
+        && bytes[3] === 0x47
+        && bytes[4] === 0x0d
+        && bytes[5] === 0x0a
+        && bytes[6] === 0x1a
+        && bytes[7] === 0x0a;
+    case "image/jpeg":
+      return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    case "image/gif":
+      return bytes.length >= 6 && (bytes.subarray(0, 6).toString("ascii") === "GIF87a" || bytes.subarray(0, 6).toString("ascii") === "GIF89a");
+    case "image/webp":
+      return bytes.length >= 12 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
+    default:
+      return false;
+  }
+}
+
+function buildImageInputPart(
+  mediaType: string,
+  base64: string,
+): { type: "input_image"; image_url: string } | { type: "input_text"; text: string } {
+  if (isValidImagePayload(mediaType, base64)) {
+    return { type: "input_image", image_url: encodeImage(mediaType, base64) };
+  }
+  return { type: "input_text", text: `[Invalid ${mediaType || "image"} attachment omitted before sending to OpenAI.]` };
+}
+
 function extractToolResultText(content: string | unknown[]): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return String(content ?? "");
@@ -67,7 +110,8 @@ function extractToolResultImages(content: string | unknown[]): Array<{ mediaType
   return content
     .filter((part): part is { type?: string; source?: { type?: string; media_type?: string; data?: string } } => !!part && typeof part === "object")
     .filter((part) => part.type === "image" && part.source?.type === "base64" && !!part.source.media_type && !!part.source.data)
-    .map((part) => ({ mediaType: part.source!.media_type!, base64: part.source!.data! }));
+    .map((part) => ({ mediaType: part.source!.media_type!, base64: part.source!.data! }))
+    .filter((image) => isValidImagePayload(image.mediaType, image.base64));
 }
 
 export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
@@ -130,10 +174,7 @@ export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
         if (block.type === "text") {
           parts.push({ type: "input_text", text: block.text });
         } else if (block.type === "image") {
-          parts.push({
-            type: "input_image",
-            image_url: encodeImage(block.source.media_type, block.source.data),
-          });
+          parts.push(buildImageInputPart(block.source.media_type, block.source.data));
         }
       }
       if (parts.length > 0) {
