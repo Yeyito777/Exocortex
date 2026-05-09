@@ -205,5 +205,6 @@ function extractHistoryMessageText(state: RenderState, key: "m" | "M"): string {
     state.historyLines, state.historyWrapContinuation,
     range.startRow, range.endRow - 1,
     state.historyWrapJoiners,
+    state.historyCopyLines,
   );
 }

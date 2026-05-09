@@ -12,6 +12,24 @@ export interface WrapResult {
   cont: boolean[];
   /** separator to reinsert before each continuation line when reconstructing plain text. */
   join: string[];
+  /**
+   * Optional per-rendered-row projection used for vim yanks/copies.
+   *
+   * Most rendered rows are copied by stripping ANSI and trimming display padding.
+   * Rows with markdown-only decoration (for example fenced-code gutters and
+   * language labels) can provide their source text here so clipboard output does
+   * not include those display-only markers.
+   */
+  copy?: Array<WrapCopyLine | null>;
+}
+
+export interface WrapCopyLine {
+  /** Plain text represented by this visual row. */
+  text: string;
+  /** Column in the ANSI-stripped rendered row where `text` begins. */
+  displayStart: number;
+  /** Omit this display-only row entirely from yanks/copies. */
+  skip?: boolean;
 }
 
 function firstCodePoint(text: string): string {

@@ -29,10 +29,11 @@ function setupHistoryState(): RenderState {
     },
   ];
 
-  const { lines, wrapContinuation, wrapJoiners, messageBounds, lineAnchors } = buildMessageLines(state, 24);
+  const { lines, wrapContinuation, wrapJoiners, copyLines, messageBounds, lineAnchors } = buildMessageLines(state, 24);
   state.historyLines = lines;
   state.historyWrapContinuation = wrapContinuation;
   state.historyWrapJoiners = wrapJoiners;
+  state.historyCopyLines = copyLines;
   state.historyMessageBounds = messageBounds;
   state.historyLineAnchors = lineAnchors;
   state.layout.totalLines = lines.length;
@@ -49,10 +50,11 @@ function setupRenderedHistory(messages: any[], width: number): RenderState {
   const state = createInitialState();
   state.messages = messages;
 
-  const { lines, wrapContinuation, wrapJoiners, messageBounds, lineAnchors } = buildMessageLines(state, width);
+  const { lines, wrapContinuation, wrapJoiners, copyLines, messageBounds, lineAnchors } = buildMessageLines(state, width);
   state.historyLines = lines;
   state.historyWrapContinuation = wrapContinuation;
   state.historyWrapJoiners = wrapJoiners;
+  state.historyCopyLines = copyLines;
   state.historyMessageBounds = messageBounds;
   state.historyLineAnchors = lineAnchors;
   state.layout.totalLines = lines.length;
@@ -152,5 +154,33 @@ describe("history visual selection", () => {
     while (lastPathRow + 1 < lines.length && wrapContinuation[lastPathRow + 1]) lastPathRow++;
 
     expect(joinLogicalLines(lines, wrapContinuation, firstPathRow, lastPathRow, wrapJoiners)).toBe(path);
+  });
+
+  test("visual-line yank from fenced markdown code omits gutter and language label", () => {
+    const state = setupRenderedHistory([
+      { role: "assistant", blocks: [{ type: "text", text: "```bash\necho one\necho two\n```" }], metadata: null },
+    ], 40);
+
+    state.vim.mode = "visual-line";
+    state.historyVisualAnchor = { row: 0, col: contentBounds(stripAnsi(state.historyLines[0])).start };
+    state.historyCursor = { row: 2, col: contentBounds(stripAnsi(state.historyLines[2])).end };
+
+    expect(state.historyLines.map(stripAnsi).join("\n")).toBe("  ▎ bash\n  ▎ echo one\n  ▎ echo two");
+    expect(getHistoryVisualSelection(state)).toBe("echo one\necho two");
+  });
+
+  test("charwise yank from fenced markdown code maps rendered columns to code text", () => {
+    const state = setupRenderedHistory([
+      { role: "assistant", blocks: [{ type: "text", text: "```ts\n  const answer = 42;\n```" }], metadata: null },
+    ], 40);
+
+    state.vim.mode = "visual";
+    const row = 1;
+    const display = stripAnsi(state.historyLines[row]);
+    const start = display.indexOf("const");
+    state.historyVisualAnchor = { row, col: start };
+    state.historyCursor = { row, col: start + "const answer".length - 1 };
+
+    expect(getHistoryVisualSelection(state)).toBe("const answer");
   });
 });

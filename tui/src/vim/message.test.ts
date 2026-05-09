@@ -23,6 +23,7 @@ function setupAssistantHistory(): RenderState {
   state.historyLines = render.lines;
   state.historyWrapContinuation = render.wrapContinuation;
   state.historyWrapJoiners = render.wrapJoiners;
+  state.historyCopyLines = render.copyLines;
   state.historyMessageBounds = render.messageBounds;
   state.historyLineAnchors = render.lineAnchors;
   state.layout.totalLines = render.lines.length;
