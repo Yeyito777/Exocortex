@@ -221,6 +221,13 @@ async function executeBashImpl(
     // When backgrounded, output is redirected to this write stream.
     let bgStream: WriteStream | undefined;
     let bgStreamFailed = false;
+    let backgrounderCleared = false;
+
+    function clearRegisteredBackgrounder(): void {
+      if (backgrounderCleared) return;
+      backgrounderCleared = true;
+      context?.registerBackgrounder?.(null);
+    }
 
     function markBgStreamFailed(err: unknown): void {
       const message = err instanceof Error ? err.message : String(err);
@@ -256,6 +263,64 @@ async function executeBashImpl(
     proc.stdout.on("data", collect);
     proc.stderr.on("data", collect);
 
+    function backgroundNow(trigger: "timeout" | "manual"): boolean {
+      if (settled || !proc.pid) return false;
+      if (bgTimer) {
+        clearTimeout(bgTimer);
+        bgTimer = undefined;
+      }
+      settled = true;
+      clearRegisteredBackgrounder();
+
+      const spillPath = join(tmpdir(), `exocortex-bash-${proc.pid}-${Date.now()}.tmp`);
+      const partial = Buffer.concat(chunks).toString("utf8");
+
+      try {
+        // Open write stream and flush accumulated output to it.
+        bgStream = createWriteStream(spillPath);
+        bgStream.on("error", markBgStreamFailed);
+        bgStream.write(partial);
+        // New data events will now append to bgStream via collect()
+      } catch (err) {
+        markBgStreamFailed(err);
+      }
+
+      const preview = partial.trimEnd();
+      let output = preview ? `${preview}\n\n` : "";
+      const checkCmd = isWindows
+        ? `bash "if (Get-Process -Id ${proc.pid} -ErrorAction SilentlyContinue) { 'running' } else { 'exited' }"`
+        : `bash "kill -0 ${proc.pid} 2>/dev/null && echo running || echo exited"`;
+      const stopCmd = isWindows
+        ? `bash "taskkill /T /F /PID ${proc.pid}"`
+        : `bash "kill ${proc.pid}"`;
+      const headline = trigger === "manual"
+        ? `⏳ Command backgrounded on user request after ${((Date.now() - startTime) / 1000).toFixed(1)}s (PID ${proc.pid}).`
+        : `⏳ Command backgrounded — still running after ${Math.round((backgroundAfterMs ?? 0) / 1000)}s (PID ${proc.pid}).`;
+      output += [
+        headline,
+        ...(bgStreamFailed
+          ? [`Output could not be redirected to a temp file. Additional output may be unavailable.`]
+          : [
+              `Output is being written to: ${spillPath}`,
+              `• View output so far → read tool on that file`,
+              `• Wait for it to finish → ${isWindows ? `bash with command "Get-Content -Path '${spillPath}' -Wait -Tail 50" and await=N` : `bash with command "tail -f ${spillPath}" and await=N`} (where N is how long you're willing to wait in seconds, prevents hangs)`,
+            ]),
+        `• Check if still running → ${checkCmd}`,
+        `• Stop it → ${stopCmd}`,
+      ].join("\n");
+
+      resolve({ output, isError: false });
+      return true;
+    }
+
+    if (context?.registerBackgrounder) {
+      context.registerBackgrounder({
+        toolName: "bash",
+        toolCallId: context.toolCallId,
+        background: () => backgroundNow("manual"),
+      });
+    }
+
     // ── Abort handling: kill entire process group on signal ────
     // Resolves immediately with elapsed time + partial output so the
     // agent loop doesn't block. The process cleanup continues in the
@@ -263,6 +328,7 @@ async function executeBashImpl(
     if (signal) {
       const onAbort = () => {
         if (bgTimer) clearTimeout(bgTimer);
+        clearRegisteredBackgrounder();
         if (proc.pid) killProcessGroup(proc.pid);
         if (bgStream) { bgStream.end(); bgStream = undefined; }
         if (settled) return;
@@ -287,50 +353,13 @@ async function executeBashImpl(
     // The promise resolves with partial output + instructions for the AI.
     if (backgroundAfterMs && backgroundAfterMs > 0) {
       bgTimer = setTimeout(() => {
-        if (settled || !proc.pid) return;
-        settled = true;
-
-        const spillPath = join(tmpdir(), `exocortex-bash-${proc.pid}-${Date.now()}.tmp`);
-        const partial = Buffer.concat(chunks).toString("utf8");
-
-        try {
-          // Open write stream and flush accumulated output to it.
-          bgStream = createWriteStream(spillPath);
-          bgStream.on("error", markBgStreamFailed);
-          bgStream.write(partial);
-          // New data events will now append to bgStream via collect()
-        } catch (err) {
-          markBgStreamFailed(err);
-        }
-
-        const bgSec = Math.round(backgroundAfterMs / 1000);
-        const preview = partial.trimEnd();
-        let output = preview ? `${preview}\n\n` : "";
-        const checkCmd = isWindows
-          ? `bash "if (Get-Process -Id ${proc.pid} -ErrorAction SilentlyContinue) { 'running' } else { 'exited' }"`
-          : `bash "kill -0 ${proc.pid} 2>/dev/null && echo running || echo exited"`;
-        const stopCmd = isWindows
-          ? `bash "taskkill /T /F /PID ${proc.pid}"`
-          : `bash "kill ${proc.pid}"`;
-        output += [
-          `⏳ Command backgrounded — still running after ${bgSec}s (PID ${proc.pid}).`,
-          ...(bgStreamFailed
-            ? [`Output could not be redirected to a temp file. Additional output may be unavailable.`]
-            : [
-                `Output is being written to: ${spillPath}`,
-                `• View output so far → read tool on that file`,
-                `• Wait for it to finish → ${isWindows ? `bash with command "Get-Content -Path '${spillPath}' -Wait -Tail 50" and await=N` : `bash with command "tail -f ${spillPath}" and await=N`} (where N is how long you're willing to wait in seconds, prevents hangs)`,
-              ]),
-          `• Check if still running → ${checkCmd}`,
-          `• Stop it → ${stopCmd}`,
-        ].join("\n");
-
-        resolve({ output, isError: false });
+        backgroundNow("timeout");
       }, backgroundAfterMs);
     }
 
     proc.on("error", (err) => {
       if (bgTimer) clearTimeout(bgTimer);
+      clearRegisteredBackgrounder();
       if (settled) return;
       settled = true;
       resolve({ output: `Error: ${err.message}`, isError: true });
@@ -338,6 +367,7 @@ async function executeBashImpl(
 
     proc.on("close", (code, _sig) => {
       if (bgTimer) clearTimeout(bgTimer);
+      if (!bgStream) clearRegisteredBackgrounder();
 
       // If backgrounded, append exit status to the temp file and close.
       // Stream failures are already reported via markBgStreamFailed; don't crash here.

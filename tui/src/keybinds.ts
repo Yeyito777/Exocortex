@@ -19,6 +19,7 @@ export type Action =
   // Global
   | "quit"
   | "abort"
+  | "background_tool"
   | "sidebar_toggle"
   | "focus_cycle"
   | "paste_image"
@@ -101,6 +102,7 @@ export type Action =
 const BINDS: Record<string, Action> = {
   // Global
   "ctrl-c":     "quit",
+  "ctrl-a":     "background_tool",
   "ctrl-q":     "abort",
   "ctrl-m":     "sidebar_toggle",
   "ctrl-s":     "sidebar_toggle",

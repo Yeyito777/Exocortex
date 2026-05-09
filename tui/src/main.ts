@@ -504,6 +504,9 @@ function handleKey(key: KeyEvent): void {
     case "abort":
       if (isStreaming(state) && state.convId) daemon.abort(state.convId);
       break;
+    case "background_tool":
+      if (isStreaming(state) && state.convId) daemon.backgroundTool(state.convId);
+      break;
     case "load_conversation":
       state.folderInstructionsDoc = null;
       daemon.loadConversation(result.convId);

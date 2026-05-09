@@ -84,6 +84,12 @@ export interface AbortCommand {
   reason?: "user" | "daemon-restart";
 }
 
+export interface BackgroundToolCommand {
+  type: "background_tool";
+  reqId?: string;
+  convId: string;
+}
+
 export interface SubscribeCommand {
   type: "subscribe";
   reqId?: string;
@@ -377,6 +383,7 @@ export type Command =
   | ManageExternalToolDaemonCommand
   | TrimConversationCommand
   | AbortCommand
+  | BackgroundToolCommand
   | SubscribeCommand
   | UnsubscribeCommand
   | ListConversationsCommand

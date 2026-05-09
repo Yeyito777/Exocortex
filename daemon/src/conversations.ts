@@ -23,6 +23,7 @@ export {
   isStreaming, setActiveJob, getActiveJob, clearActiveJob, getStreamingStartedAt,
   setStreamingTokens, getStreamingTokens, nextStreamSeq, getStreamSeq,
   touchActivity, pauseActivity, resumeActivity,
+  setActiveToolBackgrounder, clearActiveToolBackgrounder, backgroundActiveTool,
   resetChunkCounter,
   initStreamingState, getCurrentStreamingBlocks, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, getStreamingDisplayMessages,
   pushStreamingBlock, appendToStreamingBlock, clearCurrentStreamingBlocks,

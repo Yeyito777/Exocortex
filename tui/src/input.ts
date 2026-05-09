@@ -11,7 +11,7 @@ export interface KeyEvent {
   type: "char" | "enter" | "tab" | "backtab" | "backspace" | "delete"
       | "left" | "right" | "home" | "end"
       | "up" | "down"
-      | "ctrl-b" | "ctrl-c" | "ctrl-d" | "ctrl-e" | "ctrl-f"
+      | "ctrl-a" | "ctrl-b" | "ctrl-c" | "ctrl-d" | "ctrl-e" | "ctrl-f"
       | "ctrl-j" | "ctrl-k" | "ctrl-l" | "ctrl-m" | "ctrl-n"
       | "ctrl-o" | "ctrl-p" | "ctrl-q" | "ctrl-r" | "ctrl-s" | "ctrl-u" | "ctrl-v" | "ctrl-w" | "ctrl-y"
       | "ctrl-shift-o"
@@ -59,6 +59,7 @@ const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
   "27":    "escape",          // Escape (ESC=27, no modifiers)
 
   // Ctrl+letter keys — kitty sends these as CSI u instead of raw bytes 1-26
+  "97;5":  "ctrl-a",         // Ctrl+A (a=97)
   "98;5":  "ctrl-b",         // Ctrl+B (b=98)
   "99;5":  "ctrl-c",         // Ctrl+C (c=99)
   "100;5": "ctrl-d",         // Ctrl+D (d=100)
@@ -185,6 +186,7 @@ export function parseInput(data: Buffer | string): InputEvent[] {
     // Tab
     if (code === 9)  { events.push({ type: "tab" }); i++; continue; }
     // Ctrl keys (byte order)
+    if (code === 1)  { events.push({ type: "ctrl-a" }); i++; continue; }
     if (code === 2)  { events.push({ type: "ctrl-b" }); i++; continue; }
     if (code === 3)  { events.push({ type: "ctrl-c" }); i++; continue; }
     if (code === 4)  { events.push({ type: "ctrl-d" }); i++; continue; }

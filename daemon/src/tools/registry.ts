@@ -185,6 +185,10 @@ async function executeSingleTool(
   toolContext?: ToolExecutionContext,
   signal?: AbortSignal,
 ): Promise<ToolExecResult> {
+  const callToolContext: ToolExecutionContext = toolContext
+    ? { ...toolContext, toolCallId: call.id }
+    : { toolCallId: call.id };
+
   const safety = evaluateToolCallSafety(call.name, call.input);
   if (!safety.allowed) {
     return {
@@ -203,7 +207,7 @@ async function executeSingleTool(
   // Bash tool — use backgroundable executor so long-running commands
   // are detached after TOOL_BACKGROUND_SECONDS instead of blocking.
   if (call.name === "bash") {
-    return execTool(call, executeBashBackgroundable(call.input, signal, TOOL_BACKGROUND_SECONDS * 1000, toolContext), signal);
+    return execTool(call, executeBashBackgroundable(call.input, signal, TOOL_BACKGROUND_SECONDS * 1000, callToolContext), signal);
   }
 
   const tool = toolMap.get(call.name);
@@ -213,7 +217,7 @@ async function executeSingleTool(
   if (!isToolAvailable(tool)) {
     return { toolCallId: call.id, toolName: call.name, output: `Tool unavailable: ${call.name}`, isError: true };
   }
-  return execTool(call, tool.execute(call.input, toolContext, signal), signal);
+  return execTool(call, tool.execute(call.input, callToolContext, signal), signal);
 }
 
 async function executeScheduledTools(

@@ -11,6 +11,7 @@
 
 import type { Block, ImageAttachment, StoredMessage } from "./messages";
 import type { QueueTiming } from "./protocol";
+import type { ActiveToolBackgrounder } from "./tools/types";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -40,6 +41,8 @@ const messageQueues = new Map<string, QueuedMessage[]>();
 const lastActivityAt = new Map<string, number>();
 /** Streams paused from staleness tracking (e.g. during tool execution). */
 const pausedStreams = new Set<string>();
+/** Currently executing tool call that can be manually backgrounded by the user. */
+const activeToolBackgrounders = new Map<string, ActiveToolBackgrounder>();
 
 const CHUNK_SAVE_INTERVAL = 5;
 
@@ -73,6 +76,26 @@ export function clearActiveJob(convId: string): void {
   streamingDisplayMessages.delete(convId);
   lastActivityAt.delete(convId);
   pausedStreams.delete(convId);
+  activeToolBackgrounders.delete(convId);
+}
+
+// ── Active backgroundable tool calls ─────────────────────────────────
+
+export type BackgroundActiveToolResult = "backgrounded" | "none" | "already-settled";
+
+export function setActiveToolBackgrounder(convId: string, backgrounder: ActiveToolBackgrounder): void {
+  activeToolBackgrounders.set(convId, backgrounder);
+}
+
+export function clearActiveToolBackgrounder(convId: string, backgrounder?: ActiveToolBackgrounder): void {
+  if (backgrounder && activeToolBackgrounders.get(convId) !== backgrounder) return;
+  activeToolBackgrounders.delete(convId);
+}
+
+export function backgroundActiveTool(convId: string): BackgroundActiveToolResult {
+  const backgrounder = activeToolBackgrounders.get(convId);
+  if (!backgrounder) return "none";
+  return backgrounder.background() ? "backgrounded" : "already-settled";
 }
 
 export function getStreamingStartedAt(convId: string): number | undefined {

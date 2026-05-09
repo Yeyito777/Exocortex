@@ -374,6 +374,22 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      case "background_tool": {
+        const result = convStore.backgroundActiveTool(cmd.convId);
+        if (result === "none") {
+          server.sendToSubscribers(cmd.convId, {
+            type: "system_message",
+            convId: cmd.convId,
+            streamSeq: convStore.isStreaming(cmd.convId) ? convStore.nextStreamSeq(cmd.convId) : undefined,
+            text: "No backgroundable tool call is currently running.",
+            color: "warning",
+          });
+        }
+        log("info", `handler: background_tool requested for ${cmd.convId}: ${result}`);
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        break;
+      }
+
       case "set_goal": {
         const conv = convStore.get(cmd.convId);
         if (!conv) {

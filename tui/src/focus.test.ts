@@ -92,6 +92,13 @@ test("Ctrl-C always quits, even when the sidebar has selection or prompts", () =
   expect(handleFocusedKey({ type: "ctrl-c" }, state)).toEqual({ type: "quit" });
 });
 
+test("Ctrl-A backgrounds the current tool even when a modal has focus", () => {
+  const state = createInitialState();
+  state.queuePrompt = { text: "queued", selection: "next-turn" };
+
+  expect(handleFocusedKey({ type: "ctrl-a" }, state)).toEqual({ type: "background_tool" });
+});
+
 function placeHistoryCursorOnText(state: ReturnType<typeof createInitialState>, text: string): void {
   const row = state.historyLines.findIndex((line) => stripAnsi(line).includes(text));
   expect(row).toBeGreaterThanOrEqual(0);

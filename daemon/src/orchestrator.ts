@@ -358,6 +358,10 @@ async function orchestrateAssistantTurn(
     provider: conv.provider,
     conversationId: convId,
     model: conv.model,
+    registerBackgrounder: (backgrounder) => {
+      if (backgrounder) convStore.setActiveToolBackgrounder(convId, backgrounder);
+      else convStore.clearActiveToolBackgrounder(convId);
+    },
   };
 
   const contextEnv: ContextToolEnv = {

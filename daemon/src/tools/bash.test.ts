@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { spillAndPreviewForTest } from "./bash";
+import { executeBashBackgroundable, spillAndPreviewForTest } from "./bash";
 
 function makeLargeOutput(): string {
   const lines: string[] = [];
@@ -31,5 +31,37 @@ describe("bash spill preview", () => {
     expect(output).toContain("EDQUOT: quota exceeded");
     expect(output).toContain("byte-truncated at 1MB");
     expect(output).not.toContain("Use the read tool with offset/limit to browse.");
+  });
+});
+
+describe("bash manual backgrounding", () => {
+  test("registered backgrounder resolves a running command immediately", async () => {
+    let background: (() => boolean) | null = null;
+
+    const promise = executeBashBackgroundable(
+      { command: "echo start; sleep 0.2; echo done", await: 60 },
+      undefined,
+      60_000,
+      {
+        toolCallId: "call-bash-1",
+        registerBackgrounder: (backgrounder) => {
+          background = backgrounder?.background ?? null;
+        },
+      },
+    );
+
+    for (let i = 0; i < 20 && !background; i++) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+
+    expect(background).toBeTruthy();
+    expect(background!()).toBe(true);
+
+    const result = await promise;
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("start");
+    expect(result.output).toContain("Command backgrounded on user request");
+    expect(result.output).toContain("Output is being written to:");
+    expect(background).toBeNull();
   });
 });

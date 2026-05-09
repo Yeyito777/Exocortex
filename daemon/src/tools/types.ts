@@ -18,6 +18,10 @@ export interface ToolExecutionContext {
   conversationId?: string;
   /** Model backing the active conversation, when the tool is run from one. */
   model?: string;
+  /** Provider-assigned tool call id for the currently executing tool. */
+  toolCallId?: string;
+  /** Register the currently executing tool as user-backgroundable. */
+  registerBackgrounder?: (backgrounder: ActiveToolBackgrounder | null) => void;
 }
 
 export interface ImageData {
@@ -29,6 +33,13 @@ export interface ToolResult {
   output: string;
   isError: boolean;
   image?: ImageData;
+}
+
+export interface ActiveToolBackgrounder {
+  toolName: string;
+  toolCallId?: string;
+  /** Return true when this call was backgrounded by this request. */
+  background(): boolean;
 }
 
 // ── Display data (sent to TUI) ─────────────────────────────────────

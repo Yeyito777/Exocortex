@@ -79,7 +79,7 @@ export function createVoiceInputController(
   }
 
   function isVoicePassthroughKey(key: KeyEvent): boolean {
-    return key.type === "ctrl-c";
+    return key.type === "ctrl-c" || key.type === "ctrl-a";
   }
 
   function stopVoiceAnimation(): void {

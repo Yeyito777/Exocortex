@@ -56,6 +56,7 @@ export type KeyResult =
   | { type: "submit" }
   | { type: "quit" }
   | { type: "abort" }
+  | { type: "background_tool" }
   | { type: "load_conversation"; convId: string }
   | { type: "open_folder_instructions"; folderId: string }
   | { type: "load_tool_outputs"; convId: string }
@@ -123,6 +124,10 @@ function focusSidebarShortcutTarget(state: RenderState, focus: () => boolean): K
 export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
   // Ctrl-C is always quit, regardless of focused panel, prompt/modal, or vim state.
   if (key.type === "ctrl-c") return { type: "quit" };
+
+  // Ctrl-A always asks the daemon to background the current tool call, even
+  // when a prompt/search/modal has focus.
+  if (key.type === "ctrl-a") return { type: "background_tool" };
 
   // ── Queue prompt modal — intercept all keys when showing ──────
   if (state.queuePrompt) {
@@ -293,6 +298,11 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
     return { type: "abort" };
   }
 
+  // ── Background current tool (Ctrl+A) — always fires globally ────────
+  if (action === "background_tool") {
+    return { type: "background_tool" };
+  }
+
   // ── Sidebar pending delete cancel (before vim) ──────────────────
   if (key.type === "escape" && state.panelFocus === "sidebar" && (state.sidebar.pendingDeleteId || state.sidebar.pendingDeleteItem || state.sidebar.visualAnchor)) {
     state.sidebar.pendingDeleteId = null;
@@ -420,4 +430,3 @@ function handleChatFocused(key: KeyEvent, state: RenderState): KeyResult {
       return { type: "handled" };
   }
 }
-
