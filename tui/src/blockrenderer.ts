@@ -75,6 +75,7 @@ function renderBlock(
   const lines: string[] = [];
   const cont: boolean[] = [];
   const join: string[] = [];
+  const copy: WrapResult["copy"] = [];
 
   switch (block.type) {
     case "thinking": {
@@ -85,6 +86,7 @@ function renderBlock(
         lines.push(`  ${theme.dim}${theme.italic}${w.lines[i]}${theme.reset}`);
         cont.push(w.cont[i]);
         join.push(w.join[i]);
+        copy.push(null);
       }
       break;
     }
@@ -99,6 +101,7 @@ function renderBlock(
           lines.push(`  ${theme.dim}${w.lines[i]}${theme.reset}`);
           cont.push(w.cont[i]);
           join.push(w.join[i]);
+          copy.push(null);
         }
       } else {
         // Assistant text blocks: full markdown rendering.
@@ -109,6 +112,8 @@ function renderBlock(
           lines.push(`  ${md.lines[i]}`);
           cont.push(md.cont[i]);
           join.push(md.join[i]);
+          const copyLine = md.copy?.[i] ?? null;
+          copy.push(copyLine ? { ...copyLine, displayStart: copyLine.displayStart + 2 } : null);
         }
       }
       break;
@@ -128,6 +133,7 @@ function renderBlock(
           }
           cont.push(w.cont[j]);
           join.push(w.join[j]);
+          copy.push(null);
         }
       }
       break;
@@ -150,13 +156,14 @@ function renderBlock(
           lines.push(`${fg}${prefix}${w.lines[i]}${theme.reset}`);
           cont.push(w.cont[i]);
           join.push(w.join[i]);
+          copy.push(null);
         }
       }
       break;
     }
   }
 
-  return { lines, cont, join };
+  return { lines, cont, join, copy };
 }
 
 export function renderUserMessage(text: string, cols: number, images?: ImageAttachment[]): WrapResult {

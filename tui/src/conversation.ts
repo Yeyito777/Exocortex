@@ -13,7 +13,7 @@ import { theme } from "./theme";
 import { renderBlockCached, renderSystemMessage, renderUserMessage } from "./blockrenderer";
 import { isVisuallyBlankLine, sanitizeUntrustedText } from "./terminaltext";
 import { termWidth } from "./textwidth";
-import { wordWrap, type WrapResult } from "./textwrap";
+import { wordWrap, type WrapCopyLine, type WrapResult } from "./textwrap";
 
 export { wordWrap, type WrapResult } from "./textwrap";
 
@@ -69,6 +69,8 @@ export interface BuildMessageLinesResult {
   wrapContinuation: boolean[];
   /** separator to reinsert before each continuation line when copying/yanking. */
   wrapJoiners: string[];
+  /** Per-rendered-line source projection for vim yanks/copies. */
+  copyLines: Array<WrapCopyLine | null>;
   /**
    * Stable per-line anchors used to preserve viewport/cursor position across
    * re-renders when optional blocks appear/disappear (for example Ctrl+O tool
@@ -87,6 +89,7 @@ export function buildMessageLines(
   const lines: string[] = [];
   const wrapContinuation: boolean[] = [];
   const wrapJoiners: string[] = [];
+  const copyLines: Array<WrapCopyLine | null> = [];
   const messageBounds: MessageBound[] = [];
   const lineAnchors: RenderLineAnchor[] = [];
 
@@ -98,10 +101,12 @@ export function buildMessageLines(
     segment: RenderLineSegment,
     index: number,
     subIndex: number,
+    copyLine: WrapCopyLine | null = null,
   ) => {
     lines.push(line);
     wrapContinuation.push(cont);
     wrapJoiners.push(cont ? joiner : "");
+    copyLines.push(copyLine);
     lineAnchors.push({ owner, segment, index, subIndex });
   };
 
@@ -116,7 +121,7 @@ export function buildMessageLines(
       } else {
         subIndex++;
       }
-      pushAnchoredLine(br.lines[i], br.cont[i], br.join[i], owner, segment, logicalIndex, subIndex);
+      pushAnchoredLine(br.lines[i], br.cont[i], br.join[i], owner, segment, logicalIndex, subIndex, br.copy?.[i] ?? null);
     }
   };
 
@@ -133,6 +138,7 @@ export function buildMessageLines(
       lines.pop();
       wrapContinuation.pop();
       wrapJoiners.pop();
+      copyLines.pop();
       lineAnchors.pop();
     }
   };
@@ -253,5 +259,5 @@ export function buildMessageLines(
     }
   }
 
-  return { lines, messageBounds, wrapContinuation, wrapJoiners, lineAnchors };
+  return { lines, messageBounds, wrapContinuation, wrapJoiners, copyLines, lineAnchors };
 }

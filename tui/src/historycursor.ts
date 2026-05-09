@@ -330,15 +330,15 @@ function normalizeHistorySelection(anchor: HistoryCursor, cursor: HistoryCursor)
 }
 
 function extractHistoryCharwiseSelection(
-  lines: string[],
-  wrapCont: boolean[],
-  wrapJoiners: string[],
+  state: RenderState,
   start: HistoryCursor,
   end: HistoryCursor,
 ): string {
+  const lines = state.historyLines;
+  const wrapCont = state.historyWrapContinuation;
+  const wrapJoiners = state.historyWrapJoiners;
   if (start.row === end.row) {
-    const plain = stripAnsi(lines[start.row] ?? "");
-    return plain.slice(start.col, end.col + 1);
+    return copyLineSlice(state, start.row, start.col, end.col + 1) ?? "";
   }
 
   const result: string[] = [];
@@ -347,9 +347,10 @@ function extractHistoryCharwiseSelection(
     const { start: lineStart, end: lineEnd } = contentBounds(plain);
     const sliceStart = r === start.row ? start.col : lineStart;
     const sliceEnd = r === end.row ? end.col + 1 : lineEnd + 1;
-    const text = plain.slice(sliceStart, sliceEnd);
+    const text = copyLineSlice(state, r, sliceStart, sliceEnd);
+    if (text == null) continue;
 
-    if (r === start.row || !wrapCont[r]) {
+    if (r === start.row || !wrapCont[r] || result.length === 0) {
       result.push(text);
     } else if (text) {
       result[result.length - 1] += `${wrapJoiners[r] ?? " "}${text}`;
@@ -375,10 +376,10 @@ export function getHistoryVisualSelection(state: RenderState): string {
       startRow = logicalLineRange(startRow, wrapCont).first;
       endRow = logicalLineRange(endRow, wrapCont).last;
     }
-    return joinLogicalLines(lines, wrapCont, startRow, endRow, wrapJoiners);
+    return joinLogicalLines(lines, wrapCont, startRow, endRow, wrapJoiners, state.historyCopyLines);
   }
 
-  return extractHistoryCharwiseSelection(lines, wrapCont, wrapJoiners, start, end);
+  return extractHistoryCharwiseSelection(state, start, end);
 }
 
 // ── History cursor action dispatch (yank, visual yank, motions) ───
@@ -398,7 +399,7 @@ export function handleHistoryCursorAction(
     const { first, last } = wrapCont.length > 0
       ? logicalLineRange(curRow, wrapCont)
       : { first: curRow, last: curRow };
-    const plain = joinLogicalLines(state.historyLines, wrapCont, first, last);
+    const plain = joinLogicalLines(state.historyLines, wrapCont, first, last, state.historyWrapJoiners, state.historyCopyLines);
     if (plain) copyToClipboard(plain);
     ensureCursorVisible(state);
     return { type: "handled" };
@@ -428,11 +429,13 @@ export function joinLogicalLines(
   startRow: number,
   endRow: number,
   wrapJoiners: string[] = [],
+  copyLines: RenderState["historyCopyLines"] = [],
 ): string {
   const parts: string[] = [];
   for (let r = startRow; r <= endRow; r++) {
-    const text = stripAnsi(lines[r] ?? "").trim();
-    if (r === startRow || !wrapCont[r]) {
+    const text = wholeCopyLine(lines, copyLines, r);
+    if (text == null) continue;
+    if (r === startRow || !wrapCont[r] || parts.length === 0) {
       parts.push(text);
     } else {
       const joiner = wrapJoiners[r] ?? " ";
@@ -440,6 +443,35 @@ export function joinLogicalLines(
     }
   }
   return parts.join("\n");
+}
+
+function wholeCopyLine(
+  lines: string[],
+  copyLines: RenderState["historyCopyLines"],
+  row: number,
+): string | null {
+  const projection = copyLines?.[row] ?? null;
+  if (projection?.skip) return null;
+  if (projection) return projection.text;
+  return stripAnsi(lines[row] ?? "").trim();
+}
+
+function copyLineSlice(
+  state: RenderState,
+  row: number,
+  startCol: number,
+  endCol: number,
+): string | null {
+  const projection = state.historyCopyLines?.[row] ?? null;
+  if (projection?.skip) return null;
+  if (projection) {
+    const start = Math.max(0, Math.min(projection.text.length, startCol - projection.displayStart));
+    const end = Math.max(0, Math.min(projection.text.length, endCol - projection.displayStart));
+    return projection.text.slice(start, end);
+  }
+
+  const plain = stripAnsi(state.historyLines[row] ?? "");
+  return plain.slice(startCol, endCol);
 }
 
 /**

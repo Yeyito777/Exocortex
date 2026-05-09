@@ -12,6 +12,7 @@ import type { Message, AIMessage, SystemMessage } from "./messages";
 import { loadPreferredProvider } from "./preferences";
 import { theme } from "./theme";
 import type { MessageBound, RenderLineAnchor } from "./conversation";
+import type { WrapCopyLine } from "./textwrap";
 import type { PanelFocus } from "./focus";
 import type { ChatFocus } from "./chat";
 import type { SidebarState } from "./sidebar";
@@ -194,6 +195,8 @@ export interface RenderState {
   historyWrapContinuation: boolean[];
   /** separator to reinsert before each continuation line when copying/yanking. */
   historyWrapJoiners: string[];
+  /** Per-rendered-line source projection for vim yanks/copies. */
+  historyCopyLines: Array<WrapCopyLine | null>;
   /** Per-message row ranges into historyLines (set by renderer). */
   historyMessageBounds: MessageBound[];
   /** Per-rendered-line semantic anchors into historyLines (set by renderer). */
@@ -468,6 +471,7 @@ export function createInitialState(): RenderState {
     historyLines: [],
     historyWrapContinuation: [],
     historyWrapJoiners: [],
+    historyCopyLines: [],
     historyMessageBounds: [],
     historyLineAnchors: [],
     undo: createUndoState(),

@@ -2,6 +2,7 @@ import { theme } from "../theme";
 import { formatMarkdownChunks, stripMarkdown, termWidth, sliceByWidth, isHorizontalRule } from "./formatting";
 import { FENCE_OPEN_RE, isFenceClose, renderCodeBlockWrapped, stripFenceIndent } from "./codeblocks";
 import { isTableLine, renderTableBlock } from "./tables";
+import type { WrapCopyLine } from "../textwrap";
 
 export interface MarkdownWrapResult {
   lines: string[];
@@ -9,12 +10,15 @@ export interface MarkdownWrapResult {
   cont: boolean[];
   /** separator to reinsert before each continuation line when reconstructing plain text. */
   join: string[];
+  /** Optional per-row plain source projection for vim yanks/copies. */
+  copy?: Array<WrapCopyLine | null>;
 }
 
-function pushStandaloneLines(result: string[], cont: boolean[], join: string[], lines: string[]): void {
+function pushStandaloneLines(result: string[], cont: boolean[], join: string[], copy: Array<WrapCopyLine | null>, lines: string[]): void {
   result.push(...lines);
   cont.push(...lines.map(() => false));
   join.push(...lines.map(() => ""));
+  copy.push(...lines.map(() => null));
 }
 
 function takeChunkByWidth(text: string, width: number): [string, string] {
@@ -71,6 +75,7 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
   const result: string[] = [];
   const cont: boolean[] = [];
   const join: string[] = [];
+  const copy: Array<WrapCopyLine | null> = [];
 
   let i = 0;
   while (i < inputLines.length) {
@@ -92,6 +97,7 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
       result.push(...rendered.lines);
       cont.push(...rendered.cont);
       join.push(...rendered.join);
+      copy.push(...rendered.copy);
       continue;
     }
 
@@ -102,7 +108,7 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
         i++;
       }
       const rendered = renderTableBlock(inputLines.slice(start, i), width, bgRestore);
-      pushStandaloneLines(result, cont, join, rendered);
+      pushStandaloneLines(result, cont, join, copy, rendered);
       continue;
     }
 
@@ -113,6 +119,7 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
       result.push(theme.muted + "─".repeat(hrWidth) + theme.reset);
       cont.push(false);
       join.push("");
+      copy.push(null);
       i++;
       continue;
     }
@@ -132,15 +139,15 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
     }
 
     if (paragraphLines.length > 0) {
-      wrapParagraphBlock(paragraphLines, width, result, cont, join, bgRestore);
+      wrapParagraphBlock(paragraphLines, width, result, cont, join, copy, bgRestore);
       continue;
     }
 
-    wrapParagraphBlock([inputLines[i]], width, result, cont, join, bgRestore);
+    wrapParagraphBlock([inputLines[i]], width, result, cont, join, copy, bgRestore);
     i++;
   }
 
-  return { lines: result, cont, join };
+  return { lines: result, cont, join, copy };
 }
 
 interface RawWrapResult {
@@ -206,6 +213,7 @@ function wrapParagraphBlock(
   result: string[],
   cont: boolean[],
   join: string[],
+  copy: Array<WrapCopyLine | null>,
   bgRestore?: string,
 ): void {
   const rawLines: string[] = [];
@@ -230,4 +238,5 @@ function wrapParagraphBlock(
   result.push(...rendered);
   cont.push(...outCont);
   join.push(...outJoin);
+  copy.push(...rendered.map(() => null));
 }

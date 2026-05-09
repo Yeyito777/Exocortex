@@ -1,5 +1,6 @@
 import { highlightLine, isLanguageSupported, FG_WHITE } from "./highlight";
 import { termWidth, hardBreak } from "./formatting";
+import type { WrapCopyLine } from "../textwrap";
 
 export interface CodeBlockRenderResult {
   lines: string[];
@@ -7,6 +8,8 @@ export interface CodeBlockRenderResult {
   cont: boolean[];
   /** separator to reinsert before each continuation line when reconstructing text. */
   join: string[];
+  /** Plain source projection for vim yanks/copies. */
+  copy: WrapCopyLine[];
 }
 
 // ANSI color codes (syntax-highlight-specific, not in theme)
@@ -73,26 +76,28 @@ export function renderCodeBlockWrapped(
   const lines: string[] = [];
   const cont: boolean[] = [];
   const join: string[] = [];
+  const copy: WrapCopyLine[] = [];
   const hasLang = language && isLanguageSupported(language);
   const displayLang = language || "";
   const gutterPrefix = FG_SYN_GUTTER + CODE_GUTTER + " ";
   const codeWidth = Math.max(1, maxWidth - 2);
 
-  const push = (line: string, isContinuation: boolean) => {
+  const push = (line: string, isContinuation: boolean, copyLine: WrapCopyLine) => {
     lines.push(line);
     cont.push(isContinuation);
     join.push("");
+    copy.push(copyLine);
   };
 
   // Language label line (if language specified)
   if (displayLang) {
-    push(gutterPrefix + FG_SYN_LABEL + displayLang, false);
+    push(gutterPrefix + FG_SYN_LABEL + displayLang, false, { text: "", displayStart: 2, skip: true });
   }
 
   // Code content lines
   for (const line of codeLines) {
     if (line === "") {
-      push(gutterPrefix, false);
+      push(gutterPrefix, false, { text: "", displayStart: 2 });
       continue;
     }
 
@@ -102,11 +107,11 @@ export function renderCodeBlockWrapped(
       const rendered = hasLang
         ? gutterPrefix + highlightLine(chunk, language)
         : gutterPrefix + FG_WHITE + chunk;
-      push(rendered, i > 0);
+      push(rendered, i > 0, { text: chunk, displayStart: 2 });
     }
   }
 
-  return { lines, cont, join };
+  return { lines, cont, join, copy };
 }
 
 /**
