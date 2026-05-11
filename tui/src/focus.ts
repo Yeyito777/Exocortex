@@ -42,7 +42,7 @@ import { acceptAutocomplete } from "./autocomplete";
 import { handleQueuePromptKey } from "./queue";
 import { handleEditMessageKey, openEditMessageModal } from "./editmessage";
 import { readClipboardImage } from "./clipboard";
-import { processVimKey, handleScrollAction, mapSidebarResult } from "./vimhandler";
+import { processVimKey, handleScrollAction, mapSidebarResult, type AsyncUiMutationCallback } from "./vimhandler";
 import { handleSearchBarKey, jumpToSearchMatch, openCommandBar, openSearchBar } from "./search";
 import { theme } from "./theme";
 import { graphemeBoundaryAtOrAfter } from "./graphemes";
@@ -121,7 +121,11 @@ function focusSidebarShortcutTarget(state: RenderState, focus: () => boolean): K
   return focus() ? loadSelectedConversation(state) : { type: "handled" };
 }
 
-export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
+export function handleFocusedKey(
+  key: KeyEvent,
+  state: RenderState,
+  onAsyncUiMutation?: AsyncUiMutationCallback,
+): KeyResult {
   // Ctrl-C is always quit, regardless of focused panel, prompt/modal, or vim state.
   if (key.type === "ctrl-c") return { type: "quit" };
 
@@ -387,7 +391,7 @@ export function handleFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
   }
 
   // ── Vim processing ─────────────────────────────────────────────
-  const vimResult = processVimKey(key, state);
+  const vimResult = processVimKey(key, state, onAsyncUiMutation);
   if (vimResult) return vimResult;
 
   if (state.panelFocus === "sidebar" && state.sidebar.open) {

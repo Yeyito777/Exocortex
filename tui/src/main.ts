@@ -455,7 +455,7 @@ function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
 function handleKey(key: KeyEvent): void {
   if (voiceInput?.handleKey(key)) return;
 
-  const result = handleFocusedKey(key, state);
+  const result = handleFocusedKey(key, state, renderAfterLocalUiMutation);
 
   switch (result.type) {
     case "submit":

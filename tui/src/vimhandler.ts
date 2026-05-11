@@ -36,6 +36,8 @@ import {
 } from "./historycursor";
 import { handleMessageTextObject } from "./vim/message";
 
+export type AsyncUiMutationCallback = () => void;
+
 // ── Vim context resolver ──────────────────────────────────────────
 
 export function getVimContext(state: RenderState): VimContext {
@@ -49,7 +51,11 @@ export function getVimContext(state: RenderState): VimContext {
  * Run the key through the vim engine.
  * Returns a KeyResult if vim consumed the key, or null for passthrough.
  */
-export function processVimKey(key: KeyEvent, state: RenderState): KeyResult | null {
+export function processVimKey(
+  key: KeyEvent,
+  state: RenderState,
+  onAsyncUiMutation?: AsyncUiMutationCallback,
+): KeyResult | null {
   const context = getVimContext(state);
 
   // History-specific find handling: f/F/;/, operate on history lines, not prompt buffer
@@ -107,7 +113,7 @@ export function processVimKey(key: KeyEvent, state: RenderState): KeyResult | nu
       return { type: "handled" };
 
     case "paste":
-      handlePaste(result.position, state);
+      handlePaste(result.position, state, onAsyncUiMutation);
       return { type: "handled" };
 
     case "visual_edit":
@@ -259,7 +265,11 @@ function handleContextNavigation(dir: "up" | "down", state: RenderState): KeyRes
 // ── Paste handling ────────────────────────────────────────────────
 
 /** Async paste from clipboard. Reads clipboard, inserts into buffer. */
-function handlePaste(position: "after" | "before", state: RenderState): void {
+function handlePaste(
+  position: "after" | "before",
+  state: RenderState,
+  onAsyncUiMutation?: AsyncUiMutationCallback,
+): void {
   pasteFromClipboard().then((text) => {
     if (!text) return;
 
@@ -271,6 +281,7 @@ function handlePaste(position: "after" | "before", state: RenderState): void {
 
     state.inputBuffer = buf.slice(0, pos) + text + buf.slice(pos);
     state.cursorPos = clampNormal(state.inputBuffer, pos + text.length - 1);
+    onAsyncUiMutation?.();
   });
 }
 
