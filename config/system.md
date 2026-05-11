@@ -14,13 +14,5 @@ Scripts must be executable (chmod +x). Remove the execute bit to disable without
 Scripts can use exo, gmail, twitter, whatsapp, or any CLI tool.
 See daemon/src/cron-example.sh for a full reference.
 
-# About Exocortex (your harness) 
-You run under a harness: "exocortex" which has two parts, a tui client (source code: ~/Workspace/exocortex/tui) and a daemon (source code: ~/Workspace/exocortex/daemon).
-
-This harness gives you two sets of tools:
-internal (orchestrated by tools.ts in ~/Workspace/exocortex/daemon/src)
-external (found in their git-tracked dirs in ~/Workspace/exocortex/external_tools)
-
-When modifying exocortex in a workspace you may use the "exotest" script in ~/Workspace/exocortex/scripts/dev/exotest inside of a xenv to test your changes (you must cd into the workspace you wish to test so exotest auto-detects the correct branch). For lighter e2e testing you can use exo-cli with the --instance param. Clean up after testing.
-
+# PSA
 Do not, under any circumstance restart the main instance of exocortexd. You're running under it! Restarting it NUKES yourself which is not good.
