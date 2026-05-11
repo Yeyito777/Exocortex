@@ -161,7 +161,7 @@ const MACROS: MacroDef[] = [
   { name: "/questions", desc: "Any questions?", expansion: "Before we proceed, any questions?" },
   { name: "/thoughts", desc: "Tell me your thoughts", expansion: "Can you tell me your thoughts on this?" },
   { name: "/long", desc: "Work until complete", expansion: "This is a long running task, work tirelessly until you can verify that everything is complete and correct" },
-  { name: "/html", desc: "Respond with saved HTML", expansion: "Format your would-be response in HTML. Save it to a file in ~/Workspace/playground/ and give me the absolute file path." },
+  { name: "/html", desc: "Respond with saved HTML", expansion: "Format your would-be response in HTML use dark-mode for styling, user tables, graphs, interactive buttons, or whatever method you consider to be best for displaying the information you want to convey to the user. Save it to a file in ~/Workspace/playground/ and give me the absolute file path." },
   { name: "/xenv", desc: "Test in xenv until complete", expansion: "You're going to test this in a xenv and go into a loop: build → test in xenv → fix anything that's wrong → ... until it's complete" },
   {
     name: "/publish", desc: "Publish this", expansion: "Start git tracking this make a gitignore, MIT license it, make upstream repo with gh tool, make it public, give brief description, and commit and push",
