@@ -21,10 +21,11 @@ describe("openable target detection", () => {
   });
 
   test("detects relative and home-prefixed configured file paths", () => {
-    expect(findOpenableTargetMatches("./out/a.md ../b.py ~/notes/c.txt").map((m) => m.target)).toEqual([
+    expect(findOpenableTargetMatches("./out/a.md ../b.py ~/notes/c.txt ./page.html").map((m) => m.target)).toEqual([
       "./out/a.md",
       "../b.py",
       "~/notes/c.txt",
+      "./page.html",
     ]);
   });
 
@@ -54,6 +55,10 @@ describe("openable target command resolution", () => {
 
   test("opens links with xdg-open", () => {
     expect(resolveOpenCommand("https://example.com")).toEqual({ command: "xdg-open", args: ["https://example.com"] });
+  });
+
+  test("opens html paths with xdg-open", () => {
+    expect(resolveOpenCommand("/tmp/page.html")).toEqual({ command: "xdg-open", args: ["/tmp/page.html"] });
   });
 
   test("opens audio/video paths with audio-play inside an ephemeral st terminal", () => {

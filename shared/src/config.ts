@@ -101,6 +101,11 @@ export function defaultOpenersConfig(): OpenersConfig {
         args: ["-e", "zsh", "-ic", "exec audio-play {path:sh}"],
       },
       {
+        extensions: ["html"],
+        command: "xdg-open",
+        args: ["{path}"],
+      },
+      {
         extensions: ["md", "py", "txt"],
         command: "st",
         args: ["-e", "zsh", "-ic", "exec nvim {path:sh}"],
