@@ -14,7 +14,7 @@ export const GOAL_CONTINUATION_PROMPT = `You are continuing an active /goal obje
 
 Do the next useful unit of work toward the objective. Prefer concrete progress over status chatter. Use the goal tool to manage the goal lifecycle: set a revised/new goal when that is the right continuation, pause when user input is required, resume if you previously paused and can now continue, or complete when the objective is truly finished. Otherwise, stop after a coherent increment; the daemon will continue automatically while the goal remains active. Do not ask the user to continue unless you are blocked and pausing the goal.`;
 
-export const GOAL_TOOL_SYSTEM_HINT = "Use the goal tool to manage persistent conversation goals. It mirrors /goal: action=set creates/replaces an active goal, pause stops continuation when user input is required, resume reactivates a paused goal, and complete marks the objective done. Do not use goal for ordinary one-off planning; use it when the conversation should persist or change an ongoing objective.";
+export const GOAL_TOOL_SYSTEM_HINT = "When the user requests a hard or long-horizon task that you may not be able to single-shot use the goal tool to manage it as a goal. This will push you to keep working on it until you mark the goal as complete. Only mark a goal as complete when it has been genuinely achieved thoroughly and fully. Only pause a goal when you *require* user input to continue chasing your goal and don't see any other path forward.";
 
 export function formatGoalSummary(goal: ConversationGoal | null | undefined): string {
   if (!goal) return "No goal set. Usage: /goal <objective>";
