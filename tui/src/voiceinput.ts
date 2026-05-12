@@ -11,9 +11,22 @@ import type { RenderState } from "./state";
 import { pushSystemMessage } from "./state";
 import { theme } from "./theme";
 import { pushUndo } from "./undo";
-import { VoiceRecorder, VOICE_SPINNER_FRAMES, getRenderedVoicePrompt, insertVoiceTranscriptPreservingCursor, voicePlaceholderText, type RecordedVoiceClip, type VoicePromptState } from "./voice";
+import {
+  VoiceRecorder,
+  VOICE_SPINNER_FRAMES,
+  getRenderedVoicePrompt,
+  insertVoiceTranscriptPreservingCursor,
+  renderSubmittedVoicePrompt,
+  sortVoicePromptJobs,
+  type RecordedVoiceClip,
+  type VoicePromptState,
+} from "./voice";
 import type { EffortLevel, ImageAttachment, ModelId, ProviderId, UserMessage } from "./messages";
-import { graphemeAt, nextGraphemeEnd } from "./graphemes";
+import {
+  deriveVoicePrefixText,
+  deriveVoiceSuffixText,
+  resolveVoiceInsertionPos,
+} from "./voiceposition";
 
 const VOICE_RECORDING_REPEAT_INITIAL_GRACE_MS = 1000;
 const VOICE_RECORDING_REPEAT_IDLE_TIMEOUT_MS = 250;
@@ -50,7 +63,6 @@ export interface SubmittedVoiceTranscription {
 interface SubmittedVoiceSession {
   submission: SubmittedVoiceTranscription;
   buffer: string;
-  cursorPos: number;
   jobs: VoicePromptState[];
 }
 
@@ -136,43 +148,16 @@ export function createVoiceInputController(
     session.lastSpaceRepeatAt = 0;
   }
 
-  function hasEarlierVoiceJobAtInsertion(insertionPos: number, jobId?: number): boolean {
-    const jobs = [...state.voicePromptJobs, ...(state.voicePrompt ? [state.voicePrompt] : [])];
-    return jobs.some(job =>
-      job.insertionPos === insertionPos
-      && (jobId === undefined || (job.id ?? 0) < jobId)
-    );
+  function promptSpacingJobs(): VoicePromptState[] {
+    return [...state.voicePromptJobs, ...(state.voicePrompt ? [state.voicePrompt] : [])];
   }
 
-  function deriveVoicePrefixText(insertionPos: number, jobId?: number): string {
-    if (hasEarlierVoiceJobAtInsertion(insertionPos, jobId)) return " ";
-    if (insertionPos <= 0) return "";
-    const prevChar = state.inputBuffer[insertionPos - 1];
-    return /\s/.test(prevChar) ? "" : " ";
+  function voicePrefixText(insertionPos: number, jobId?: number): string {
+    return deriveVoicePrefixText(state.inputBuffer, insertionPos, promptSpacingJobs(), jobId);
   }
 
-  function deriveVoiceSuffixText(insertionPos: number): string {
-    if (insertionPos >= state.inputBuffer.length) return "";
-    const nextChar = graphemeAt(state.inputBuffer, insertionPos);
-    return nextChar && !/\s/.test(nextChar) ? " " : "";
-  }
-
-  function lineEndFrom(pos: number): number {
-    const newline = state.inputBuffer.indexOf("\n", pos);
-    return newline === -1 ? state.inputBuffer.length : newline;
-  }
-
-  function resolveVoiceInsertionPos(cursorPos: number): number {
-    const buffer = state.inputBuffer;
-    if (cursorPos < 0) return 0;
-    if (cursorPos >= buffer.length) return buffer.length;
-
-    const char = graphemeAt(buffer, cursorPos);
-    const charEnd = nextGraphemeEnd(buffer, cursorPos);
-    if (char && !/\s/.test(char) && charEnd === lineEndFrom(cursorPos)) {
-      return charEnd;
-    }
-    return cursorPos;
+  function voiceSuffixText(insertionPos: number): string {
+    return deriveVoiceSuffixText(state.inputBuffer, insertionPos);
   }
 
   function maybeStopVoiceRecordingFromIdle(): void {
@@ -213,48 +198,15 @@ export function createVoiceInputController(
     scheduleRender();
   }
 
-  function sortVoiceJobs(jobs: VoicePromptState[]): VoicePromptState[] {
-    return jobs
-      .map((job, index) => ({ job, index }))
-      .sort((a, b) => a.job.insertionPos - b.job.insertionPos || (a.job.id ?? a.index) - (b.job.id ?? b.index))
-      .map(({ job }) => job);
-  }
-
-  function includeJobSuffix(jobs: VoicePromptState[], index: number): boolean {
-    return jobs[index + 1]?.insertionPos !== jobs[index]?.insertionPos;
-  }
-
-  function submittedJobText(job: VoicePromptState, includeSuffix = true): string {
-    const suffixText = includeSuffix ? job.suffixText ?? "" : "";
-    if (job.completedText !== undefined) {
-      const normalized = job.completedText.trim();
-      return normalized ? `${job.prefixText ?? ""}${normalized}${suffixText}` : "";
-    }
-    return `${job.prefixText ?? ""}${voicePlaceholderText(job)}${suffixText}`;
-  }
-
-  function renderSubmittedVoiceText(submitted: SubmittedVoiceSession): string {
-    const jobs = sortVoiceJobs(submitted.jobs);
-    let rendered = "";
-    let cursor = 0;
-    for (let i = 0; i < jobs.length; i++) {
-      const job = jobs[i]!;
-      const insertionPos = Math.max(0, Math.min(submitted.buffer.length, job.insertionPos));
-      rendered += submitted.buffer.slice(cursor, insertionPos) + submittedJobText(job, includeJobSuffix(jobs, i));
-      cursor = insertionPos;
-    }
-    return (rendered + submitted.buffer.slice(cursor)).trim();
-  }
-
   function updateSubmittedMessageText(): void {
     if (!session.submitted) return;
-    session.submitted.submission.message.text = renderSubmittedVoiceText(session.submitted);
+    session.submitted.submission.message.text = renderSubmittedVoicePrompt(session.submitted.buffer, session.submitted.jobs);
   }
 
   function maybeCompleteSubmittedTranscription(): void {
     const submitted = session.submitted;
     if (!submitted || submitted.jobs.some(job => job.completedText === undefined)) return;
-    const finalText = renderSubmittedVoiceText(submitted);
+    const finalText = renderSubmittedVoicePrompt(submitted.buffer, submitted.jobs);
     deps.completePendingTranscription?.(submitted.submission, finalText);
     resetVoiceOverlay();
     scheduleRender();
@@ -294,10 +246,7 @@ export function createVoiceInputController(
   }
 
   function sortedPromptJobs(): VoicePromptState[] {
-    return state.voicePromptJobs
-      .map((job, index) => ({ job, index }))
-      .sort((a, b) => a.job.insertionPos - b.job.insertionPos || (a.job.id ?? a.index) - (b.job.id ?? b.index))
-      .map(({ job }) => job);
+    return sortVoicePromptJobs(state.voicePromptJobs);
   }
 
   function shiftPromptJobsAfter(insertionPos: number, delta: number): void {
@@ -329,7 +278,7 @@ export function createVoiceInputController(
       if (!normalized) {
         const nextSameInsertionJob = sortedPromptJobs().find(other => other.insertionPos === job.insertionPos);
         if (nextSameInsertionJob) {
-          nextSameInsertionJob.prefixText = deriveVoicePrefixText(nextSameInsertionJob.insertionPos, nextSameInsertionJob.id);
+          nextSameInsertionJob.prefixText = voicePrefixText(nextSameInsertionJob.insertionPos, nextSameInsertionJob.id);
         }
         flushed = true;
         continue;
@@ -408,8 +357,8 @@ export function createVoiceInputController(
 
     session.insertionPos = insertionPos;
     const jobId = session.nextPromptJobId++;
-    session.prefixText = deriveVoicePrefixText(insertionPos, jobId);
-    session.suffixText = deriveVoiceSuffixText(insertionPos);
+    session.prefixText = voicePrefixText(insertionPos, jobId);
+    session.suffixText = voiceSuffixText(insertionPos);
     session.recordingStartedAt = now();
     session.lastSpaceRepeatAt = session.recordingStartedAt;
     state.autocomplete = null;
@@ -479,7 +428,7 @@ export function createVoiceInputController(
     const submission = deps.submitPendingTranscription(pendingText);
     if (!submission) return false;
 
-    session.submitted = { submission, buffer, cursorPos, jobs };
+    session.submitted = { submission, buffer, jobs };
     state.voicePrompt = null;
     state.voicePromptJobs = [];
     if (!state.voiceMessage || state.voiceMessage.message !== submission.message) {
@@ -599,8 +548,8 @@ export function createVoiceInputController(
         voice.insertionPos = oldEditStart + newEditLength;
       }
       voice.insertionPos = Math.max(0, Math.min(nextBuffer.length, voice.insertionPos));
-      voice.prefixText = deriveVoicePrefixText(voice.insertionPos, voice.id);
-      voice.suffixText = deriveVoiceSuffixText(voice.insertionPos);
+      voice.prefixText = voicePrefixText(voice.insertionPos, voice.id);
+      voice.suffixText = voiceSuffixText(voice.insertionPos);
       if (state.voicePrompt === voice) {
         session.insertionPos = voice.insertionPos;
         session.prefixText = voice.prefixText;
@@ -637,7 +586,7 @@ export function createVoiceInputController(
     if (key.type !== "char" || key.char !== " ") return false;
     if (key.event === "release") return true;
 
-    void startVoiceRecording(resolveVoiceInsertionPos(state.cursorPos));
+    void startVoiceRecording(resolveVoiceInsertionPos(state.inputBuffer, state.cursorPos));
     return true;
   }
 

@@ -61,6 +61,8 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnecting = false;
 let terminalSetUp = false;
 let voiceInput: VoiceInputController | null = null;
+// Local-only user-message echoes whose audio jobs are still transcribing. They
+// are intentionally withheld from the daemon until the TUI has final text.
 const pendingVoiceSubmissions = new Set<SubmittedVoiceTranscription>();
 
 // ── Render scheduling ───────────────────────────────────────────────
