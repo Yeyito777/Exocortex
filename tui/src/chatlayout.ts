@@ -34,7 +34,11 @@ export interface BottomLayoutMetrics {
 export function computeBottomLayout(state: RenderState, chatW: number, rows: number): BottomLayoutMetrics {
   const maxInputWidth = chatW - PROMPT_PREFIX_WIDTH;
   const maxInputRows = Math.min(MAX_INPUT_ROWS, Math.floor((rows - NON_PROMPT_ROWS) / 2));
-  const renderedPrompt = getRenderedVoicePrompt(state.inputBuffer, state.cursorPos, state.voicePrompt);
+  const renderedPrompt = getRenderedVoicePrompt(
+    state.inputBuffer,
+    state.cursorPos,
+    [...state.voicePromptJobs, ...(state.voicePrompt ? [state.voicePrompt] : [])],
+  );
   const input = getInputLines(
     renderedPrompt.buffer,
     renderedPrompt.cursorPos,

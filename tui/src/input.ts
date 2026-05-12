@@ -22,6 +22,8 @@ export interface KeyEvent {
       | "paste"
       | "unknown";
   char?: string;
+  /** Kitty keyboard protocol event type when reported by the terminal. */
+  event?: "press" | "repeat" | "release";
   /** For paste events: the full pasted text. */
   text?: string;
 }
@@ -84,6 +86,87 @@ const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
   "111;6": "ctrl-shift-o",   // Ctrl+Shift+O (o=111)
   "13;2":  "shift-enter",    // Shift+Enter (CR=13, shift=2)
 };
+
+const KITTY_EVENT_TYPES: Record<string, NonNullable<KeyEvent["event"]>> = {
+  "1": "press",
+  "2": "repeat",
+  "3": "release",
+};
+
+function decodeCodepoints(textField: string | undefined): string | null {
+  if (!textField) return null;
+  const chars: string[] = [];
+  for (const part of textField.split(":")) {
+    const cp = parseInt(part, 10);
+    if (!Number.isFinite(cp)) return null;
+    try {
+      chars.push(String.fromCodePoint(cp));
+    } catch {
+      return null;
+    }
+  }
+  return chars.join("");
+}
+
+function csiUKeyType(keyCode: number, modifiers: number): KeyEvent["type"] | null {
+  if (keyCode === 13 && modifiers === 1) return "enter";
+  if (keyCode === 13 && modifiers === 2) return "shift-enter";
+  if (keyCode === 9 && modifiers === 1) return "tab";
+  if (keyCode === 9 && modifiers === 2) return "backtab";
+  if (keyCode === 127 && modifiers === 1) return "backspace";
+  if (keyCode === 27 && modifiers === 1) return "escape";
+  if (modifiers === 5) {
+    switch (keyCode) {
+      case 97: return "ctrl-a";
+      case 98: return "ctrl-b";
+      case 99: return "ctrl-c";
+      case 100: return "ctrl-d";
+      case 101: return "ctrl-e";
+      case 102: return "ctrl-f";
+      case 106: return "ctrl-j";
+      case 107: return "ctrl-k";
+      case 108: return "ctrl-l";
+      case 109: return "ctrl-m";
+      case 110: return "ctrl-n";
+      case 111: return "ctrl-o";
+      case 112: return "ctrl-p";
+      case 113: return "ctrl-q";
+      case 114: return "ctrl-r";
+      case 115: return "ctrl-s";
+      case 117: return "ctrl-u";
+      case 118: return "ctrl-v";
+      case 119: return "ctrl-w";
+      case 121: return "ctrl-y";
+    }
+  }
+  if (keyCode === 111 && modifiers === 6) return "ctrl-shift-o";
+  return null;
+}
+
+function parseCsiU(params: string): KeyEvent | null {
+  const legacyType = CSI_U_MAP[params];
+  if (legacyType) return { type: legacyType };
+
+  const fields = params.split(";");
+  const keyCode = parseInt((fields[0] ?? "").split(":")[0], 10);
+  if (!Number.isFinite(keyCode)) return null;
+
+  const modifierParts = (fields[1] ?? "1").split(":");
+  const modifiers = parseInt(modifierParts[0] || "1", 10);
+  if (!Number.isFinite(modifiers)) return null;
+  const event = KITTY_EVENT_TYPES[modifierParts[1] ?? "1"] ?? "press";
+
+  const keyType = csiUKeyType(keyCode, modifiers);
+  if (keyType) return { type: keyType, event };
+
+  // With "report all keys as escape codes" + "associated text", printable
+  // input arrives as CSI u rather than raw UTF-8. Prefer the associated text
+  // payload when present, and fall back to the key code for plain characters.
+  const text = decodeCodepoints(fields[2])
+    ?? (modifiers === 1 || modifiers === 2 ? String.fromCodePoint(keyCode) : null);
+  if (text) return { type: "char", char: text, event };
+  return null;
+}
 
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
@@ -260,8 +343,8 @@ export function parseInput(data: Buffer | string): InputEvent[] {
           // CSI u (kitty/st extended keys): ESC [ <keycode> ; <modifiers> u
           // Keycodes are lowercase codepoints. Shift is in the modifier bits.
           if (final === "u") {
-            const csiuType = CSI_U_MAP[params];
-            if (csiuType) { events.push({ type: csiuType }); i += seqLen; continue; }
+            const csiuEvent = parseCsiU(params);
+            if (csiuEvent) { events.push(csiuEvent); i += seqLen; continue; }
             // Unknown CSI u — skip
             i += seqLen;
             continue;

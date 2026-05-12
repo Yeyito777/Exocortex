@@ -30,6 +30,7 @@ import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
 import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
 import { padRightToWidth, termWidth } from "./textwidth";
+import { getVoicePromptRanges } from "./voice";
 import {
   appendPositionedPayload as appendFramePositionedPayload,
   appendRowWrite as appendFrameRowWrite,
@@ -48,6 +49,9 @@ interface HistoryRenderCacheEntry {
   queuedMessageCount: number;
   streamingTailRef: RenderState["streamingTailMessages"];
   streamingTailCount: number;
+  voiceMessageRef: RenderState["voiceMessage"];
+  voiceMessageFrameIndex: number | null;
+  voiceMessagePhase: string | null;
   showToolOutput: boolean;
   toolRegistryRef: RenderState["toolRegistry"];
   externalToolStylesRef: RenderState["externalToolStyles"];
@@ -66,6 +70,9 @@ function canReuseHistoryRender(cached: HistoryRenderCacheEntry, state: RenderSta
     && cached.queuedMessageCount === state.queuedMessages.length
     && cached.streamingTailRef === state.streamingTailMessages
     && cached.streamingTailCount === state.streamingTailMessages.length
+    && cached.voiceMessageRef === state.voiceMessage
+    && cached.voiceMessageFrameIndex === (state.voiceMessage?.frameIndex ?? null)
+    && cached.voiceMessagePhase === (state.voiceMessage?.phase ?? null)
     && cached.showToolOutput === state.showToolOutput
     && cached.toolRegistryRef === state.toolRegistry
     && cached.externalToolStylesRef === state.externalToolStyles
@@ -93,6 +100,9 @@ function getHistoryRender(state: RenderState, width: number): BuildMessageLinesR
     queuedMessageCount: state.queuedMessages.length,
     streamingTailRef: state.streamingTailMessages,
     streamingTailCount: state.streamingTailMessages.length,
+    voiceMessageRef: state.voiceMessage,
+    voiceMessageFrameIndex: state.voiceMessage?.frameIndex ?? null,
+    voiceMessagePhase: state.voiceMessage?.phase ?? null,
     showToolOutput: state.showToolOutput,
     toolRegistryRef: state.toolRegistry,
     externalToolStylesRef: state.externalToolStyles,
@@ -147,26 +157,35 @@ function highlightPromptLine(
   return line;
 }
 
-function colorPlainPromptRange(
+function colorPlainPromptRanges(
   line: string,
   wrappedLineIdx: number,
-  rangeStart: number,
-  rangeEndExclusive: number,
+  ranges: Array<{ start: number; end: number }>,
   offsets: number[],
   color: string,
 ): string {
   if (wrappedLineIdx >= offsets.length) return line;
   const lineStart = offsets[wrappedLineIdx];
   const lineEndExclusive = lineStart + line.length;
-  const overlapStart = Math.max(rangeStart, lineStart);
-  const overlapEndExclusive = Math.min(rangeEndExclusive, lineEndExclusive);
-  if (overlapStart >= overlapEndExclusive) return line;
+  const relRanges = ranges
+    .map(range => ({
+      start: Math.max(range.start, lineStart) - lineStart,
+      end: Math.min(range.end, lineEndExclusive) - lineStart,
+    }))
+    .filter(range => range.start < range.end)
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+  if (relRanges.length === 0) return line;
 
-  const relStart = overlapStart - lineStart;
-  const relEnd = overlapEndExclusive - lineStart;
-  return line.slice(0, relStart)
-    + color + line.slice(relStart, relEnd) + theme.reset
-    + line.slice(relEnd);
+  let out = "";
+  let cursor = 0;
+  for (const range of relRanges) {
+    const start = Math.max(cursor, range.start);
+    if (start >= range.end) continue;
+    out += line.slice(cursor, start);
+    out += color + line.slice(start, range.end) + theme.reset;
+    cursor = range.end;
+  }
+  return out + line.slice(cursor);
 }
 
 // ── Image indicator ────────────────────────────────────────────────
@@ -477,7 +496,7 @@ function buildCursorPayload(
     return out.join("");
   }
 
-  if (state.voicePrompt) {
+  if (state.voicePrompt?.phase === "recording") {
     out.push(hide_cursor);
     return out.join("");
   }
@@ -570,18 +589,15 @@ export function render(state: RenderState): void {
   // Syntax-highlight valid commands and macros in the input lines. When voice
   // input is active, keep the typed text plain and color only the inline voice
   // placeholder so the spinner stands out from surrounding prompt text.
-  const coloredInputLines = state.voicePrompt
+  const voicePrompts = [...state.voicePromptJobs, ...(state.voicePrompt ? [state.voicePrompt] : [])];
+  const coloredInputLines = voicePrompts.length > 0
     ? (() => {
-      const placeholder = renderedPrompt.buffer.slice(
-        state.voicePrompt.insertionPos,
-        renderedPrompt.cursorPos,
-      );
+      const ranges = getVoicePromptRanges(state.inputBuffer, voicePrompts);
       const offsets = wrappedLineOffsets(renderedPrompt.buffer, maxInputWidth);
-      return inputLines.map((line, idx) => colorPlainPromptRange(
+      return inputLines.map((line, idx) => colorPlainPromptRanges(
         line,
         newPromptScroll + idx,
-        state.voicePrompt!.insertionPos,
-        state.voicePrompt!.insertionPos + placeholder.length,
+        ranges,
         offsets,
         theme.accent,
       ));

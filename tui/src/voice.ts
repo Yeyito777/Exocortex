@@ -5,10 +5,22 @@ import { join } from "node:path";
 
 export type VoicePromptPhase = "recording" | "transcribing";
 
-export interface VoicePromptState {
+export interface VoiceSpinnerState {
   phase: VoicePromptPhase;
   frameIndex: number;
+}
+
+export interface VoicePromptState extends VoiceSpinnerState {
+  id?: number;
   insertionPos: number;
+  prefixText?: string;
+  suffixText?: string;
+  completedText?: string;
+}
+
+export interface VoiceChatMessageState extends VoiceSpinnerState {
+  /** The local user message currently standing in for a submitted transcription. */
+  message: import("./messages").UserMessage;
 }
 
 export interface RecordedVoiceClip {
@@ -23,31 +35,134 @@ interface RecorderCommand {
 
 export const VOICE_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
-export function voicePlaceholderText(voice: VoicePromptState): string {
+export function voicePlaceholderText(voice: VoiceSpinnerState): string {
   const frame = VOICE_SPINNER_FRAMES[voice.frameIndex % VOICE_SPINNER_FRAMES.length];
   return voice.phase === "recording"
     ? `${frame} Listening…`
     : `${frame} Transcribing…`;
 }
 
+export function voicePromptInsertionText(voice: VoicePromptState, includeSuffix = true): string {
+  return `${voice.prefixText ?? ""}${voicePlaceholderText(voice)}${includeSuffix ? voice.suffixText ?? "" : ""}`;
+}
+
+export function voicePromptSubmittedText(voice: VoicePromptState, includeSuffix = true): string {
+  const suffixText = includeSuffix ? voice.suffixText ?? "" : "";
+  if (voice.completedText !== undefined) {
+    const normalized = voice.completedText.trim();
+    return normalized ? `${voice.prefixText ?? ""}${normalized}${suffixText}` : "";
+  }
+  return `${voice.prefixText ?? ""}${voicePlaceholderText(voice)}${suffixText}`;
+}
+
+function normalizeVoicePrompts(voice: VoicePromptState | VoicePromptState[] | null): VoicePromptState[] {
+  if (!voice) return [];
+  return Array.isArray(voice) ? voice : [voice];
+}
+
+export function sortVoicePromptJobs(voice: VoicePromptState | VoicePromptState[] | null): VoicePromptState[] {
+  return normalizeVoicePrompts(voice)
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => a.item.insertionPos - b.item.insertionPos || (a.item.id ?? a.index) - (b.item.id ?? b.index))
+    .map(({ item }) => item);
+}
+
+/**
+ * Jobs at the same insertion point render as a run. Only the final job in that
+ * run owns the suffix separator, so adjacent jobs become "one two" instead of
+ * "one  two" while still separating from following prompt text.
+ */
+export function includeVoicePromptSuffix(jobs: VoicePromptState[], index: number): boolean {
+  return jobs[index + 1]?.insertionPos !== jobs[index]?.insertionPos;
+}
+
 export function applyVoicePlaceholder(
   buffer: string,
-  voice: VoicePromptState | null,
+  voice: VoicePromptState | VoicePromptState[] | null,
 ): string {
-  if (!voice) return buffer;
-  const placeholder = voicePlaceholderText(voice);
-  return buffer.slice(0, voice.insertionPos) + placeholder + buffer.slice(voice.insertionPos);
+  const voices = sortVoicePromptJobs(voice);
+  if (voices.length === 0) return buffer;
+  let rendered = "";
+  let cursor = 0;
+  for (let i = 0; i < voices.length; i++) {
+    const item = voices[i]!;
+    const includeSuffix = includeVoicePromptSuffix(voices, i);
+    const insertionPos = Math.max(0, Math.min(buffer.length, item.insertionPos));
+    rendered += buffer.slice(cursor, insertionPos) + voicePromptInsertionText(item, includeSuffix);
+    cursor = insertionPos;
+  }
+  return rendered + buffer.slice(cursor);
 }
 
 export function getRenderedVoicePrompt(
   buffer: string,
   cursorPos: number,
-  voice: VoicePromptState | null,
+  voice: VoicePromptState | VoicePromptState[] | null,
 ): { buffer: string; cursorPos: number } {
-  if (!voice) return { buffer, cursorPos };
+  const voices = sortVoicePromptJobs(voice);
+  if (voices.length === 0) return { buffer, cursorPos };
+  const renderedBuffer = applyVoicePlaceholder(buffer, voices);
+  const cursorShift = voices.reduce((shift, item, index) => {
+    if (cursorPos < item.insertionPos) return shift;
+    return shift + voicePromptInsertionText(item, includeVoicePromptSuffix(voices, index)).length;
+  }, 0);
   return {
-    buffer: applyVoicePlaceholder(buffer, voice),
-    cursorPos: voice.insertionPos + voicePlaceholderText(voice).length,
+    buffer: renderedBuffer,
+    cursorPos: cursorPos + cursorShift,
+  };
+}
+
+export function getVoicePromptRanges(
+  buffer: string,
+  voice: VoicePromptState | VoicePromptState[] | null,
+): Array<{ start: number; end: number }> {
+  const voices = sortVoicePromptJobs(voice);
+  const ranges: Array<{ start: number; end: number }> = [];
+  let renderedOffset = 0;
+  let cursor = 0;
+  for (let i = 0; i < voices.length; i++) {
+    const item = voices[i]!;
+    const insertionPos = Math.max(0, Math.min(buffer.length, item.insertionPos));
+    renderedOffset += insertionPos - cursor;
+    const placeholderLength = voicePromptInsertionText(item, includeVoicePromptSuffix(voices, i)).length;
+    ranges.push({ start: renderedOffset, end: renderedOffset + placeholderLength });
+    renderedOffset += placeholderLength;
+    cursor = insertionPos;
+  }
+  return ranges;
+}
+
+export function renderSubmittedVoicePrompt(
+  buffer: string,
+  voice: VoicePromptState | VoicePromptState[] | null,
+): string {
+  const voices = sortVoicePromptJobs(voice);
+  if (voices.length === 0) return buffer.trim();
+  let rendered = "";
+  let cursor = 0;
+  for (let i = 0; i < voices.length; i++) {
+    const item = voices[i]!;
+    const insertionPos = Math.max(0, Math.min(buffer.length, item.insertionPos));
+    rendered += buffer.slice(cursor, insertionPos) + voicePromptSubmittedText(item, includeVoicePromptSuffix(voices, i));
+    cursor = insertionPos;
+  }
+  return (rendered + buffer.slice(cursor)).trim();
+}
+
+export function insertVoiceTranscriptPreservingCursor(
+  buffer: string,
+  cursorPos: number,
+  insertionPos: number,
+  transcript: string,
+  prefixText = "",
+  suffixText = "",
+): { buffer: string; cursorPos: number } {
+  const normalized = transcript.trim();
+  if (!normalized) return { buffer, cursorPos };
+  const inserted = `${prefixText}${normalized}${suffixText}`;
+  return {
+    buffer: buffer.slice(0, insertionPos) + inserted + buffer.slice(insertionPos),
+    cursorPos: cursorPos < insertionPos ? cursorPos : cursorPos + inserted.length,
   };
 }
 
@@ -57,10 +172,11 @@ export function insertVoiceTranscript(
   insertionPos: number,
   transcript: string,
   prefixText = "",
+  suffixText = "",
 ): { buffer: string; cursorPos: number } {
   const normalized = transcript.trim();
   if (!normalized) return { buffer, cursorPos };
-  const inserted = `${prefixText}${normalized}`;
+  const inserted = `${prefixText}${normalized}${suffixText}`;
   return {
     buffer: buffer.slice(0, insertionPos) + inserted + buffer.slice(insertionPos),
     cursorPos: insertionPos + inserted.length,
