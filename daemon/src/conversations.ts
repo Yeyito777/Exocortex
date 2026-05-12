@@ -28,6 +28,7 @@ export {
   initStreamingState, getCurrentStreamingBlocks, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, getStreamingDisplayMessages,
   pushStreamingBlock, appendToStreamingBlock, clearCurrentStreamingBlocks,
   getQueuedMessages, pushQueuedMessage, drainQueuedMessages, clearQueuedMessages, removeQueuedMessage,
+  requestGoalContinuationAfterStream, consumeGoalContinuationAfterStream, clearGoalContinuationAfterStream,
 } from "./streaming";
 
 // ── State ───────────────────────────────────────────────────────────
@@ -386,6 +387,7 @@ export function remove(id: string): boolean {
     streaming.clearActiveJob(id);
     streaming.resetChunkCounter(id);
     streaming.clearQueuedMessages(id);
+    streaming.clearGoalContinuationAfterStream(id);
     persistence.trashFile(id);
     if (wasUnread) saveUnreadState();
     saveSummaryIndex();
@@ -594,6 +596,7 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   // Clear queued messages first — prevents the orchestrator's finally block
   // from draining the queue and starting a new stream after we abort.
   streaming.clearQueuedMessages(id);
+  streaming.clearGoalContinuationAfterStream(id);
 
   // Abort any active stream and wait for it to fully stop
   const ac = streaming.getActiveJob(id);
@@ -1048,6 +1051,7 @@ export function deleteFolder(folderId: string, mode: "recursive" | "unwrap" = "r
     streaming.clearActiveJob(convId);
     streaming.resetChunkCounter(convId);
     streaming.clearQueuedMessages(convId);
+    streaming.clearGoalContinuationAfterStream(convId);
   }
   for (const id of folderIds) folders.delete(id);
   saveFolderState();

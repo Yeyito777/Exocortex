@@ -946,17 +946,22 @@ async function orchestrateAssistantTurn(
       // Await to keep the chain in a single promise so errors propagate and
       // the conversation stays consistent (no orphaned background streams).
       await orchestrateSendMessage(server, null, undefined, convId, first.text, Date.now(), ext, first.images);
-    } else if (outcome?.ok && !outcome.aborted && conv.goal?.status === "active") {
-      queueMicrotask(() => {
-        const latest = convStore.get(convId);
-        if (!latest?.goal || latest.goal.status !== "active") return;
-        if (convStore.isStreaming(convId)) return;
-        if (convStore.getQueuedMessages(convId).length > 0) return;
-        log("info", `orchestrator: continuing active goal for ${convId}: "${latest.goal.objective.slice(0, 80)}"`);
-        void orchestrateGoalContinuation(server, convId, ext).catch((err) => {
-          log("error", `orchestrator: goal continuation failed for ${convId}: ${err instanceof Error ? err.message : String(err)}`);
+    } else {
+      const resumeRequestedAfterStream = convStore.consumeGoalContinuationAfterStream(convId);
+      const shouldContinueActiveGoal = conv.goal?.status === "active"
+        && (resumeRequestedAfterStream || (outcome?.ok && !outcome.aborted));
+      if (shouldContinueActiveGoal) {
+        queueMicrotask(() => {
+          const latest = convStore.get(convId);
+          if (!latest?.goal || latest.goal.status !== "active") return;
+          if (convStore.isStreaming(convId)) return;
+          if (convStore.getQueuedMessages(convId).length > 0) return;
+          log("info", `orchestrator: continuing active goal for ${convId}: "${latest.goal.objective.slice(0, 80)}"`);
+          void orchestrateGoalContinuation(server, convId, ext).catch((err) => {
+            log("error", `orchestrator: goal continuation failed for ${convId}: ${err instanceof Error ? err.message : String(err)}`);
+          });
         });
-      });
+      }
     }
   }
 
