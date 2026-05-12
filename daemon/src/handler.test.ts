@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { create, get, remove, replaceStreamingDisplayMessages } from "./conversations";
+import { consumeGoalContinuationAfterStream, create, get, remove, replaceStreamingDisplayMessages, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
 
@@ -120,6 +120,90 @@ describe("handler replay_conversation", () => {
       }),
     );
     expect(orchestrateSendMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("handler set_goal resume", () => {
+  beforeEach(() => {
+    orchestrateSendMessage.mockClear();
+    orchestrateReplayConversation.mockClear();
+    orchestrateGoalContinuation.mockClear();
+    cleanupIds();
+  });
+  afterEach(cleanupIds);
+
+  test("resumes a paused goal immediately when the conversation is idle", async () => {
+    const convId = mkId("resume-idle");
+    create(convId, "openai", "gpt-5.4");
+    setGoal(convId, "finish the refactor");
+    updateGoalStatus(convId, "paused");
+
+    const subscriberEvents: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock(() => {}),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock((_convId: string, event: Record<string, unknown>) => { subscriberEvents.push(event); }),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "set_goal", reqId: "req-resume", convId, action: "resume" });
+
+    expect(get(convId)?.goal).toMatchObject({ objective: "finish the refactor", status: "active" });
+    expect(subscriberEvents).toContainEqual(expect.objectContaining({
+      type: "goal_updated",
+      reqId: "req-resume",
+      convId,
+      message: "Goal resumed.",
+      goal: expect.objectContaining({ status: "active" }),
+    }));
+    expect(orchestrateGoalContinuation).toHaveBeenCalledTimes(1);
+    expect(orchestrateGoalContinuation).toHaveBeenCalledWith(
+      server,
+      convId,
+      expect.objectContaining({
+        onHeaders: expect.any(Function),
+        onComplete: expect.any(Function),
+      }),
+    );
+  });
+
+  test("resumes a paused goal while streaming without starting a second stream", async () => {
+    const convId = mkId("resume-streaming");
+    create(convId, "openai", "gpt-5.4");
+    setGoal(convId, "finish the refactor");
+    updateGoalStatus(convId, "paused");
+    setActiveJob(convId, new AbortController(), Date.now());
+
+    const sent: Array<Record<string, unknown>> = [];
+    const subscriberEvents: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock((_convId: string, event: Record<string, unknown>) => { subscriberEvents.push(event); }),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "set_goal", reqId: "req-resume-streaming", convId, action: "resume" });
+
+    expect(sent).not.toContainEqual(expect.objectContaining({ type: "error" }));
+    expect(get(convId)?.goal).toMatchObject({ objective: "finish the refactor", status: "active" });
+    expect(subscriberEvents).toContainEqual(expect.objectContaining({
+      type: "goal_updated",
+      reqId: "req-resume-streaming",
+      convId,
+      message: "Goal resumed.",
+      goal: expect.objectContaining({ status: "active" }),
+    }));
+    expect(consumeGoalContinuationAfterStream(convId)).toBe(true);
+    expect(orchestrateGoalContinuation).not.toHaveBeenCalled();
   });
 });
 

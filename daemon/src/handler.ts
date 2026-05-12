@@ -419,16 +419,15 @@ export function createHandler(server: DaemonServer) {
         }
 
         if (cmd.action === "resume") {
-          if (convStore.isStreaming(cmd.convId)) {
-            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot resume a goal while the conversation is streaming." });
-            break;
-          }
           const result = applyUserGoalAction(conv, "resume");
           const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
-          if (goal?.status === "active") {
+          if (goal?.status === "active" && !convStore.isStreaming(cmd.convId)) {
             void orchestrateGoalContinuation(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId)).catch((err) => {
               log("error", `handler: resumed goal continuation failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
             });
+          } else if (goal?.status === "active") {
+            convStore.requestGoalContinuationAfterStream(cmd.convId);
+            log("info", `handler: resumed goal for ${cmd.convId} while streaming; continuation will run after the active stream stops`);
           }
           break;
         }

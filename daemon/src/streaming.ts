@@ -37,6 +37,8 @@ const streamingTokens = new Map<string, number>();
 const streamSequences = new Map<string, number>();
 /** Messages queued for delivery during or after streaming. */
 const messageQueues = new Map<string, QueuedMessage[]>();
+/** Goal continuations requested while a stream was already active. */
+const pendingGoalContinuations = new Set<string>();
 /** Last meaningful activity timestamp per streaming job (for stale stream detection). */
 const lastActivityAt = new Map<string, number>();
 /** Streams paused from staleness tracking (e.g. during tool execution). */
@@ -312,4 +314,22 @@ export function removeQueuedMessage(convId: string, text: string): boolean {
 /** Clear all queued messages for a conversation. */
 export function clearQueuedMessages(convId: string): void {
   messageQueues.delete(convId);
+}
+
+// ── Goal continuation queue ───────────────────────────────────────────
+
+/** Remember that a resumed goal should continue once the active stream fully stops. */
+export function requestGoalContinuationAfterStream(convId: string): void {
+  pendingGoalContinuations.add(convId);
+}
+
+/** Consume a pending post-stream goal continuation request, if one exists. */
+export function consumeGoalContinuationAfterStream(convId: string): boolean {
+  const pending = pendingGoalContinuations.delete(convId);
+  return pending;
+}
+
+/** Clear any pending post-stream goal continuation request without consuming it. */
+export function clearGoalContinuationAfterStream(convId: string): void {
+  pendingGoalContinuations.delete(convId);
 }
