@@ -3,6 +3,7 @@ import { createPendingAI } from "./messages";
 import { render, invalidateHistoryRenderCache } from "./render";
 import { createInitialState, type RenderState } from "./state";
 import { invalidateFrame } from "./frame";
+import { theme } from "./theme";
 
 function captureRenderOutput(state: RenderState): string {
   let out = "";
@@ -144,5 +145,28 @@ describe("render caching and frame diffing", () => {
     const clearCount = (out.match(/\x1b\[2K/g) || []).length;
     expect(out).toMatch(/\x1b\[3;\d+r/);
     expect(clearCount).toBeLessThan(state.layout.messageAreaHeight);
+  });
+
+  test("keeps macro highlighting active while voice placeholders are rendered", () => {
+    const state = createInitialState();
+    state.cols = 100;
+    state.rows = 30;
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "normal";
+    state.inputBuffer = "/go";
+    state.cursorPos = state.inputBuffer.length;
+    state.voicePromptJobs = [{
+      id: 1,
+      phase: "transcribing",
+      frameIndex: 0,
+      insertionPos: 0,
+      suffixText: " ",
+    }];
+
+    const out = captureRenderOutput(state);
+
+    expect(out).toContain(theme.command + "/go" + theme.reset);
+    expect(stripAnsi(out)).toContain("Transcribing… /go");
   });
 });

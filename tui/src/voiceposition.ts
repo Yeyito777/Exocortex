@@ -44,5 +44,8 @@ export function deriveVoicePrefixText(
 export function deriveVoiceSuffixText(buffer: string, insertionPos: number): string {
   if (insertionPos >= buffer.length) return "";
   const nextChar = graphemeAt(buffer, insertionPos);
-  return nextChar && !/\s/.test(nextChar) ? " " : "";
+  if (!nextChar || /\s/.test(nextChar)) return "";
+  // Do not split natural punctuation from the transcribed phrase, but do keep
+  // word-like continuations and slash macros/commands at a real word boundary.
+  return /^[.,!?;:)\]\}'”]$/.test(nextChar) ? "" : " ";
 }

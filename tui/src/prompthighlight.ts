@@ -100,6 +100,10 @@ function findCommandSpans(
   return spans;
 }
 
+export function getPromptHighlightRanges(state: RenderState, buffer: string): Span[] {
+  return findCommandSpans(buffer, buildValidArgs(state), customModelProviders(state));
+}
+
 // ── Line highlighting ────────────────────────────────────────────
 
 /**
@@ -117,7 +121,7 @@ export function highlightPromptInput(
   maxWidth: number,
   scrollOffset: number,
 ): string[] {
-  const spans = findCommandSpans(buffer, buildValidArgs(state), customModelProviders(state));
+  const spans = getPromptHighlightRanges(state, buffer);
   if (spans.length === 0) return lines;
 
   const offsets = wrappedLineOffsets(buffer, maxWidth);

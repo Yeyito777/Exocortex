@@ -24,7 +24,7 @@ import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar, a
 import { theme } from "./theme";
 import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./historycursor";
 import { renderLineWithCursor, renderLineWithSearch, renderLineWithSelection } from "./cursorrender";
-import { highlightPromptInput } from "./prompthighlight";
+import { getPromptHighlightRanges, highlightPromptInput } from "./prompthighlight";
 import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
@@ -157,12 +157,11 @@ function highlightPromptLine(
   return line;
 }
 
-function colorPlainPromptRanges(
+function colorPlainPromptDecorations(
   line: string,
   wrappedLineIdx: number,
-  ranges: Array<{ start: number; end: number }>,
+  ranges: Array<{ start: number; end: number; color: string }>,
   offsets: number[],
-  color: string,
 ): string {
   if (wrappedLineIdx >= offsets.length) return line;
   const lineStart = offsets[wrappedLineIdx];
@@ -171,6 +170,7 @@ function colorPlainPromptRanges(
     .map(range => ({
       start: Math.max(range.start, lineStart) - lineStart,
       end: Math.min(range.end, lineEndExclusive) - lineStart,
+      color: range.color,
     }))
     .filter(range => range.start < range.end)
     .sort((a, b) => a.start - b.start || a.end - b.end);
@@ -182,7 +182,7 @@ function colorPlainPromptRanges(
     const start = Math.max(cursor, range.start);
     if (start >= range.end) continue;
     out += line.slice(cursor, start);
-    out += color + line.slice(start, range.end) + theme.reset;
+    out += range.color + line.slice(start, range.end) + theme.reset;
     cursor = range.end;
   }
   return out + line.slice(cursor);
@@ -586,20 +586,23 @@ export function render(state: RenderState): void {
   const { lines: inputLines, isNewLine, cursorLine, cursorCol, scrollOffset: newPromptScroll } = input;
   state.promptScrollOffset = newPromptScroll;
 
-  // Syntax-highlight valid commands and macros in the input lines. When voice
-  // input is active, keep the typed text plain and color only the inline voice
-  // placeholder so the spinner stands out from surrounding prompt text.
+  // Syntax-highlight valid commands/macros in the rendered prompt even while
+  // voice placeholders are present. Voice ranges are just another rendered
+  // decoration, so slash macros typed after a pending transcription still look
+  // and behave like normal prompt text.
   const voicePrompts = [...state.voicePromptJobs, ...(state.voicePrompt ? [state.voicePrompt] : [])];
   const coloredInputLines = voicePrompts.length > 0
     ? (() => {
-      const ranges = getVoicePromptRanges(state.inputBuffer, voicePrompts);
+      const commandRanges = getPromptHighlightRanges(state, renderedPrompt.buffer)
+        .map(range => ({ ...range, color: theme.command }));
+      const voiceRanges = getVoicePromptRanges(state.inputBuffer, voicePrompts)
+        .map(range => ({ ...range, color: theme.accent }));
       const offsets = wrappedLineOffsets(renderedPrompt.buffer, maxInputWidth);
-      return inputLines.map((line, idx) => colorPlainPromptRanges(
+      return inputLines.map((line, idx) => colorPlainPromptDecorations(
         line,
         newPromptScroll + idx,
-        ranges,
+        [...commandRanges, ...voiceRanges],
         offsets,
-        theme.accent,
       ));
     })()
     : highlightPromptInput(state, inputLines, state.inputBuffer, maxInputWidth, newPromptScroll);

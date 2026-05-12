@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createInitialState } from "./state";
 import { createVoiceInputController } from "./voiceinput";
 import type { UserMessage } from "./messages";
+import { expandMacros } from "./macros";
 
 describe("voice input controller", () => {
   test("only arms hold-to-talk in prompt normal mode", () => {
@@ -306,6 +307,76 @@ describe("voice input controller", () => {
     }
   });
 
+  test("enter expands macros immediately in a pending voice message preview", async () => {
+    const state = createInitialState();
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "normal";
+    state.inputBuffer = "/go";
+    state.cursorPos = 0;
+
+    let clock = 12_000;
+    let transcriptSuccess: ((text: string) => void) | null = null;
+    let completedText = "";
+    const controller = createVoiceInputController(
+      state,
+      {
+        transcribeAudio(_audioBase64, _mimeType, onSuccess) {
+          transcriptSuccess = onSuccess;
+        },
+      },
+      () => {},
+      {
+        startRecorder: () => ({
+          stop: async () => ({ bytes: Buffer.from([1, 2, 3]), mimeType: "audio/wav" }),
+          abort() {},
+        }),
+        now: () => clock,
+        submitPendingTranscription: (placeholderText) => {
+          const message: UserMessage = { role: "user", text: placeholderText, metadata: null };
+          state.messages.push(message);
+          return {
+            message,
+            startedAt: 124,
+            convId: state.convId,
+            provider: state.provider,
+            model: state.model,
+            effort: state.effort,
+            fastMode: state.fastMode,
+            folderId: state.sidebar.currentFolderId,
+            wasStreaming: false,
+          };
+        },
+        completePendingTranscription: (submission, finalText) => {
+          const expandedText = expandMacros(finalText);
+          completedText = expandedText;
+          submission.message.text = expandedText;
+          if (state.voiceMessage?.message === submission.message) state.voiceMessage = null;
+        },
+      },
+    );
+
+    try {
+      expect(controller.handleKey({ type: "char", char: " ", event: "press" })).toBe(true);
+      clock += 600;
+      expect(controller.handleKey({ type: "char", char: " ", event: "release" })).toBe(true);
+      await Promise.resolve();
+
+      expect(controller.handleKey({ type: "enter" })).toBe(true);
+      expect((state.messages[0] as UserMessage).text).toContain("Transcribing…");
+      expect((state.messages[0] as UserMessage).text).toContain("Go ahead and implement that");
+      expect((state.messages[0] as UserMessage).text).not.toContain("/go");
+
+      expect(transcriptSuccess).not.toBeNull();
+      transcriptSuccess!("context");
+
+      expect(completedText).toBe("context Go ahead and implement that");
+      expect((state.messages[0] as UserMessage).text).toBe("context Go ahead and implement that");
+    } finally {
+      controller.cleanup();
+    }
+  });
+
   test("prompt stays editable while inline transcription is pending", async () => {
     const state = createInitialState();
     state.panelFocus = "chat";
@@ -357,6 +428,99 @@ describe("voice input controller", () => {
       expect(state.inputBuffer).toBe("say there!");
       expect(state.cursorPos).toBe("say there!".length);
       expect(state.voicePrompt).toBeNull();
+    } finally {
+      controller.cleanup();
+    }
+  });
+
+  test("keeps slash macros typed after a pending transcription at a word boundary", async () => {
+    const state = createInitialState();
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "normal";
+
+    let clock = 25_000;
+    let transcriptSuccess: ((text: string) => void) | null = null;
+    const controller = createVoiceInputController(
+      state,
+      {
+        transcribeAudio(_audioBase64, _mimeType, onSuccess) {
+          transcriptSuccess = onSuccess;
+        },
+      },
+      () => {},
+      {
+        startRecorder: () => ({
+          stop: async () => ({ bytes: Buffer.from([1, 2, 3]), mimeType: "audio/wav" }),
+          abort() {},
+        }),
+        now: () => clock,
+      },
+    );
+
+    try {
+      expect(controller.handleKey({ type: "char", char: " ", event: "press" })).toBe(true);
+      clock += 600;
+      expect(controller.handleKey({ type: "char", char: " ", event: "release" })).toBe(true);
+      await Promise.resolve();
+
+      const previousBuffer = state.inputBuffer;
+      state.inputBuffer = "/go";
+      state.cursorPos = state.inputBuffer.length;
+      controller.syncPromptEdit(previousBuffer);
+
+      expect(state.voicePromptJobs[0]?.suffixText).toBe(" ");
+      expect(transcriptSuccess).not.toBeNull();
+      transcriptSuccess!("context");
+
+      expect(state.inputBuffer).toBe("context /go");
+      expect(expandMacros(state.inputBuffer)).toBe("context Go ahead and implement that");
+    } finally {
+      controller.cleanup();
+    }
+  });
+
+  test("backspace deletes a pending prompt transcription at the cursor", async () => {
+    const state = createInitialState();
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "normal";
+    state.inputBuffer = "hello";
+    state.cursorPos = state.inputBuffer.length;
+
+    let clock = 26_000;
+    let transcriptSuccess: ((text: string) => void) | null = null;
+    const controller = createVoiceInputController(
+      state,
+      {
+        transcribeAudio(_audioBase64, _mimeType, onSuccess) {
+          transcriptSuccess = onSuccess;
+        },
+      },
+      () => {},
+      {
+        startRecorder: () => ({
+          stop: async () => ({ bytes: Buffer.from([1, 2, 3]), mimeType: "audio/wav" }),
+          abort() {},
+        }),
+        now: () => clock,
+      },
+    );
+
+    try {
+      expect(controller.handleKey({ type: "char", char: " ", event: "press" })).toBe(true);
+      clock += 600;
+      expect(controller.handleKey({ type: "char", char: " ", event: "release" })).toBe(true);
+      await Promise.resolve();
+      expect(state.voicePromptJobs).toHaveLength(1);
+
+      state.vim.mode = "insert";
+      expect(controller.handleKey({ type: "backspace" })).toBe(true);
+      expect(state.voicePromptJobs).toHaveLength(0);
+
+      expect(transcriptSuccess).not.toBeNull();
+      transcriptSuccess!("ignored");
+      expect(state.inputBuffer).toBe("hello");
     } finally {
       controller.cleanup();
     }
@@ -526,7 +690,15 @@ describe("voice input controller", () => {
       expect(controller.handleKey({ type: "char", char: " ", event: "release" })).toBe(true);
       await Promise.resolve();
 
+      state.autocomplete = {
+        type: "macro",
+        selection: -1,
+        prefix: "/go",
+        tokenStart: 0,
+        matches: [{ name: "/go", desc: "Go ahead and implement" }],
+      };
       expect(controller.handleKey({ type: "enter" })).toBe(true);
+      expect(state.autocomplete).toBeNull();
       expect(state.voicePromptJobs).toHaveLength(0);
       expect(state.messages[0]?.role).toBe("user");
       expect((state.messages[0] as UserMessage).text).toContain("Transcribing…");
@@ -538,6 +710,71 @@ describe("voice input controller", () => {
       transcriptSuccesses[0]!("one");
       expect(completedText).toBe("say one two");
       expect((state.messages[0] as UserMessage).text).toBe("say one two");
+    } finally {
+      controller.cleanup();
+    }
+  });
+
+  test("enter opens the queue prompt instead of submitting while streaming", async () => {
+    const state = createInitialState();
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "normal";
+    state.inputBuffer = "while streaming";
+    state.cursorPos = state.inputBuffer.length;
+
+    let clock = 60_000;
+    let submitCalls = 0;
+    let submittedTiming: string | undefined;
+    const controller = createVoiceInputController(
+      state,
+      { transcribeAudio() {} },
+      () => {},
+      {
+        startRecorder: () => ({
+          stop: async () => ({ bytes: Buffer.from([1, 2, 3]), mimeType: "audio/wav" }),
+          abort() {},
+        }),
+        now: () => clock,
+        shouldQueuePendingTranscription: () => true,
+        openPendingTranscriptionQueuePrompt: (previewText) => {
+          state.queuePrompt = { text: previewText, selection: "message-end" };
+        },
+        submitPendingTranscription: (placeholderText, options) => {
+          submitCalls++;
+          submittedTiming = options?.queueTiming;
+          const message: UserMessage = { role: "user", text: placeholderText, metadata: null };
+          return {
+            message,
+            startedAt: 789,
+            convId: "conv-streaming",
+            provider: state.provider,
+            model: state.model,
+            effort: state.effort,
+            fastMode: state.fastMode,
+            folderId: state.sidebar.currentFolderId,
+            wasStreaming: true,
+          };
+        },
+      },
+    );
+
+    try {
+      expect(controller.handleKey({ type: "char", char: " ", event: "press" })).toBe(true);
+      clock += 600;
+      expect(controller.handleKey({ type: "char", char: " ", event: "release" })).toBe(true);
+      await Promise.resolve();
+
+      expect(controller.handleKey({ type: "enter" })).toBe(true);
+      expect(submitCalls).toBe(0);
+      expect(state.queuePrompt?.text).toContain("Transcribing…");
+      expect(state.voicePromptJobs).toHaveLength(1);
+
+      state.queuePrompt = null;
+      expect(controller.submitActiveTranscription({ queueTiming: "next-turn" })).toBe(true);
+      expect(submitCalls).toBe(1);
+      expect(submittedTiming).toBe("next-turn");
+      expect(state.voicePromptJobs).toHaveLength(0);
     } finally {
       controller.cleanup();
     }

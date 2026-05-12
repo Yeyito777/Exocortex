@@ -29,7 +29,7 @@ import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
 import { openTargetDetached } from "./openable";
 import { msUntilNextElapsedSecond } from "./time";
-import type { Event } from "./protocol";
+import type { Event, QueueTiming } from "./protocol";
 import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
 import { startReplayConversation } from "./replay";
 
@@ -61,6 +61,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnecting = false;
 let terminalSetUp = false;
 let voiceInput: VoiceInputController | null = null;
+let pendingVoiceQueuePrompt = false;
 // Local-only user-message echoes whose audio jobs are still transcribing. They
 // are intentionally withheld from the daemon until the TUI has final text.
 const pendingVoiceSubmissions = new Set<SubmittedVoiceTranscription>();
@@ -230,6 +231,10 @@ function isPendingVoiceVisible(submission: SubmittedVoiceTranscription): boolean
 function reattachVisiblePendingVoiceSubmissions(): void {
   for (const submission of pendingVoiceSubmissions) {
     if (!isPendingVoiceVisible(submission)) continue;
+    if (submission.queuedMessage) {
+      if (!state.queuedMessages.includes(submission.queuedMessage)) state.queuedMessages.push(submission.queuedMessage);
+      continue;
+    }
     if (!state.messages.includes(submission.message)) state.messages.push(submission.message);
     if (!state.voiceMessage || state.voiceMessage.message === submission.message) {
       state.voiceMessage = { message: submission.message, phase: "transcribing", frameIndex: 0 };
@@ -240,6 +245,10 @@ function reattachVisiblePendingVoiceSubmissions(): void {
 function removePendingVoiceEcho(submission: SubmittedVoiceTranscription): void {
   removeMessageByReference(submission.message);
   if (state.voiceMessage?.message === submission.message) state.voiceMessage = null;
+  if (submission.queuedMessage) {
+    const idx = state.queuedMessages.indexOf(submission.queuedMessage);
+    if (idx !== -1) state.queuedMessages.splice(idx, 1);
+  }
 }
 
 function removePendingAuthEcho(echoStartedAt: number): void {
@@ -440,6 +449,55 @@ function handleSubmit(): void {
   sendDirectly(messageText, images);
 }
 
+function openPendingVoiceQueuePrompt(previewText: string): void {
+  pendingVoiceQueuePrompt = true;
+  openQueuePrompt(state, previewText);
+}
+
+function confirmPendingVoiceQueuePrompt(): boolean {
+  if (!pendingVoiceQueuePrompt || !state.queuePrompt) return false;
+
+  const timing = state.queuePrompt.selection;
+  const images = state.queuePrompt.images;
+  state.queuePrompt = null;
+  pendingVoiceQueuePrompt = false;
+
+  if (voiceInput?.submitActiveTranscription({ queueTiming: timing })) {
+    scheduleRender();
+    return true;
+  }
+
+  // The transcription may have completed while the queue modal was open. In
+  // that case the prompt now contains plain text; confirm it through the normal
+  // queued-message path using the timing the user selected.
+  const messageText = expandMacros(state.inputBuffer.trim());
+  if (!messageText && !images?.length) {
+    scheduleRender();
+    return true;
+  }
+
+  if (state.convId && isStreaming(state)) {
+    state.queuedMessages.push({ convId: state.convId, text: messageText, timing, images });
+    clearPrompt(state);
+    state.pendingImages = [];
+    daemon.queueMessage(state.convId, messageText, timing, images);
+  } else {
+    clearPrompt(state);
+    state.pendingImages = [];
+    sendDirectly(messageText, images);
+  }
+  scheduleRender();
+  return true;
+}
+
+function cancelPendingVoiceQueuePrompt(): boolean {
+  if (!pendingVoiceQueuePrompt) return false;
+  state.queuePrompt = null;
+  pendingVoiceQueuePrompt = false;
+  scheduleRender();
+  return true;
+}
+
 interface SendDirectlyOptions {
   startedAt?: number;
   echoMessage?: UserMessage;
@@ -494,7 +552,10 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
   scheduleRender();
 }
 
-function submitPendingVoiceTranscription(placeholderText: string): SubmittedVoiceTranscription | null {
+function submitPendingVoiceTranscription(
+  placeholderText: string,
+  options: { queueTiming?: QueueTiming } = {},
+): SubmittedVoiceTranscription | null {
   const images = state.pendingImages.length > 0 ? [...state.pendingImages] : undefined;
   if (!canSendImages(images)) {
     scheduleRender();
@@ -508,13 +569,21 @@ function submitPendingVoiceTranscription(placeholderText: string): SubmittedVoic
     images,
     metadata: createMessageMetadata(startedAt, state.model),
   };
-  state.messages.push(message);
-  state.voiceMessage = { message, phase: "transcribing", frameIndex: 0 };
+  const queuedMessage = options.queueTiming && state.convId
+    ? { convId: state.convId, text: placeholderText, timing: options.queueTiming, images }
+    : undefined;
+  if (queuedMessage) {
+    state.queuedMessages.push(queuedMessage);
+  } else {
+    state.messages.push(message);
+    state.voiceMessage = { message, phase: "transcribing", frameIndex: 0 };
+  }
   clearPrompt(state);
   state.pendingImages = [];
   state.scrollOffset = 0;
   const submission: SubmittedVoiceTranscription = {
     message,
+    queuedMessage,
     startedAt,
     images,
     convId: state.convId,
@@ -548,6 +617,24 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
   submission.message.metadata = createMessageMetadata(submission.startedAt, submission.model, { endedAt: submission.startedAt });
   if (state.voiceMessage?.message === submission.message) state.voiceMessage = null;
   invalidateHistoryRenderCache(state);
+
+  if (submission.queuedMessage) {
+    submission.queuedMessage.text = messageText;
+    submission.queuedMessage.images = submission.images;
+    if (submission.convId) {
+      const visible = isPendingVoiceVisible(submission);
+      if (visible && !isStreaming(state)) {
+        removePendingVoiceEcho(submission);
+        state.messages.push(submission.message);
+        state.pendingAI = createPendingAI(submission.startedAt, submission.model);
+        daemon.sendMessage(submission.convId, messageText, submission.startedAt, submission.images);
+      } else {
+        daemon.queueMessage(submission.convId, messageText, submission.queuedMessage.timing, submission.images);
+      }
+    }
+    scheduleRender();
+    return;
+  }
 
   const visible = isPendingVoiceVisible(submission);
   const targetStreaming = submission.wasStreaming || (visible && isStreaming(state));
@@ -617,6 +704,7 @@ function handleKey(key: KeyEvent): void {
       handleSubmit();
       return;
     case "queue_confirm": {
+      if (confirmPendingVoiceQueuePrompt()) break;
       const qr = confirmQueueMessage(state);
       if (qr.action === "send_direct") {
         clearPrompt(state);
@@ -628,6 +716,7 @@ function handleKey(key: KeyEvent): void {
       break;
     }
     case "queue_cancel":
+      if (cancelPendingVoiceQueuePrompt()) break;
       cancelQueuePrompt(state);
       break;
     case "edit_message_confirm": {
@@ -868,6 +957,9 @@ async function main(): Promise<void> {
     submitPendingTranscription: submitPendingVoiceTranscription,
     completePendingTranscription: completePendingVoiceTranscription,
     failPendingTranscription: failPendingVoiceTranscription,
+    shouldQueuePendingTranscription: () => !!state.convId && isStreaming(state),
+    openPendingTranscriptionQueuePrompt: openPendingVoiceQueuePrompt,
+    invalidateHistory: () => invalidateHistoryRenderCache(state),
   });
   try {
     await daemon.connect();

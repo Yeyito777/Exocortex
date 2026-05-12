@@ -14,7 +14,6 @@ import { pushUndo } from "./undo";
 import {
   VoiceRecorder,
   VOICE_SPINNER_FRAMES,
-  getRenderedVoicePrompt,
   insertVoiceTranscriptPreservingCursor,
   renderSubmittedVoicePrompt,
   sortVoicePromptJobs,
@@ -22,11 +21,13 @@ import {
   type VoicePromptState,
 } from "./voice";
 import type { EffortLevel, ImageAttachment, ModelId, ProviderId, UserMessage } from "./messages";
+import type { QueueTiming } from "./protocol";
 import {
   deriveVoicePrefixText,
   deriveVoiceSuffixText,
   resolveVoiceInsertionPos,
 } from "./voiceposition";
+import { expandMacros } from "./macros";
 
 const VOICE_RECORDING_REPEAT_INITIAL_GRACE_MS = 1000;
 const VOICE_RECORDING_REPEAT_IDLE_TIMEOUT_MS = 250;
@@ -49,6 +50,7 @@ interface VoiceTranscribeClient {
 
 export interface SubmittedVoiceTranscription {
   message: UserMessage;
+  queuedMessage?: { convId: string; text: string; timing: QueueTiming; images?: ImageAttachment[] };
   startedAt: number;
   images?: ImageAttachment[];
   convId: string | null;
@@ -58,6 +60,10 @@ export interface SubmittedVoiceTranscription {
   fastMode: boolean;
   folderId: string | null;
   wasStreaming: boolean;
+}
+
+export interface SubmitVoiceTranscriptionOptions {
+  queueTiming?: QueueTiming;
 }
 
 interface SubmittedVoiceSession {
@@ -81,6 +87,7 @@ interface VoiceSession {
 
 export interface VoiceInputController {
   handleKey(key: KeyEvent): boolean;
+  submitActiveTranscription(options?: SubmitVoiceTranscriptionOptions): boolean;
   syncPromptEdit(previousBuffer: string): void;
   isBlockingMouse(): boolean;
   cleanup(): void;
@@ -89,9 +96,12 @@ export interface VoiceInputController {
 interface VoiceInputDeps {
   startRecorder?: () => VoiceRecorderLike;
   now?: () => number;
-  submitPendingTranscription?: (placeholderText: string) => SubmittedVoiceTranscription | null;
+  submitPendingTranscription?: (placeholderText: string, options?: SubmitVoiceTranscriptionOptions) => SubmittedVoiceTranscription | null;
   completePendingTranscription?: (submission: SubmittedVoiceTranscription, finalText: string) => void;
   failPendingTranscription?: (submission: SubmittedVoiceTranscription, message: string) => void;
+  shouldQueuePendingTranscription?: () => boolean;
+  openPendingTranscriptionQueuePrompt?: (previewText: string) => void;
+  invalidateHistory?: () => void;
 }
 
 export function createVoiceInputController(
@@ -115,13 +125,16 @@ export function createVoiceInputController(
     suffixText: "",
   };
 
-  function isVoicePromptFocused(): boolean {
+  function isVoicePromptContext(): boolean {
     return state.panelFocus === "chat"
       && state.chatFocus === "prompt"
-      && state.vim.mode === "normal"
       && !state.queuePrompt
       && !state.editMessagePrompt
       && !state.search?.barOpen;
+  }
+
+  function isVoicePromptFocused(): boolean {
+    return isVoicePromptContext() && state.vim.mode === "normal";
   }
 
   function isVoicePassthroughKey(key: KeyEvent): boolean {
@@ -158,6 +171,18 @@ export function createVoiceInputController(
 
   function voiceSuffixText(insertionPos: number): string {
     return deriveVoiceSuffixText(state.inputBuffer, insertionPos);
+  }
+
+  function refreshVoiceSpacingAt(insertionPos: number): void {
+    for (const voice of promptSpacingJobs()) {
+      if (voice.insertionPos !== insertionPos) continue;
+      voice.prefixText = voicePrefixText(voice.insertionPos, voice.id);
+      voice.suffixText = voiceSuffixText(voice.insertionPos);
+      if (state.voicePrompt === voice) {
+        session.prefixText = voice.prefixText;
+        session.suffixText = voice.suffixText;
+      }
+    }
   }
 
   function maybeStopVoiceRecordingFromIdle(): void {
@@ -200,7 +225,15 @@ export function createVoiceInputController(
 
   function updateSubmittedMessageText(): void {
     if (!session.submitted) return;
-    session.submitted.submission.message.text = renderSubmittedVoicePrompt(session.submitted.buffer, session.submitted.jobs);
+    const text = renderSubmittedPreview(
+      session.submitted.buffer,
+      session.submitted.jobs,
+    );
+    session.submitted.submission.message.text = text;
+    if (session.submitted.submission.queuedMessage) {
+      session.submitted.submission.queuedMessage.text = text;
+    }
+    deps.invalidateHistory?.();
   }
 
   function maybeCompleteSubmittedTranscription(): void {
@@ -210,6 +243,29 @@ export function createVoiceInputController(
     deps.completePendingTranscription?.(submitted.submission, finalText);
     resetVoiceOverlay();
     scheduleRender();
+  }
+
+  function renderSubmittedPreview(buffer: string, jobs: VoicePromptState[]): string {
+    return expandMacros(renderSubmittedVoicePrompt(buffer, jobs));
+  }
+
+  function activeTranscriptionPreviewText(): string {
+    const frameIndex = state.voicePrompt?.frameIndex ?? 0;
+    const activeJob: VoicePromptState | null = state.voicePrompt
+      ? {
+        ...state.voicePrompt,
+        phase: "transcribing",
+        frameIndex,
+        insertionPos: session.insertionPos,
+        prefixText: session.prefixText,
+        suffixText: session.suffixText,
+      }
+      : null;
+    const jobs = [
+      ...state.voicePromptJobs,
+      ...(activeJob ? [activeJob] : []),
+    ].map(job => ({ ...job }));
+    return renderSubmittedPreview(state.inputBuffer, jobs);
   }
 
   function applySubmittedJobTranscript(jobId: number | null, text: string): void {
@@ -276,10 +332,7 @@ export function createVoiceInputController(
       removePromptJob(job.id);
       const normalized = job.completedText?.trim() ?? "";
       if (!normalized) {
-        const nextSameInsertionJob = sortedPromptJobs().find(other => other.insertionPos === job.insertionPos);
-        if (nextSameInsertionJob) {
-          nextSameInsertionJob.prefixText = voicePrefixText(nextSameInsertionJob.insertionPos, nextSameInsertionJob.id);
-        }
+        refreshVoiceSpacingAt(job.insertionPos);
         flushed = true;
         continue;
       }
@@ -322,6 +375,18 @@ export function createVoiceInputController(
     }
     pushSystemMessage(state, `✗ ${message}`, theme.error);
     scheduleRender();
+  }
+
+  function deleteVoicePromptBeforeCursor(): boolean {
+    const jobsAtCursor = sortVoicePromptJobs(state.voicePromptJobs)
+      .filter(job => job.insertionPos === state.cursorPos);
+    const job = jobsAtCursor.at(-1);
+    if (!job?.id) return false;
+
+    removePromptJob(job.id);
+    refreshVoiceSpacingAt(job.insertionPos);
+    scheduleRender();
+    return true;
   }
 
   function updateSubmittedPlaceholderText(): void {
@@ -407,12 +472,11 @@ export function createVoiceInputController(
     }
   }
 
-  function submitActiveTranscription(): boolean {
+  function submitActiveTranscription(options: SubmitVoiceTranscriptionOptions = {}): boolean {
     if (session.submitted || !deps.submitPendingTranscription) return false;
     if (!state.voicePrompt && state.voicePromptJobs.length === 0) return false;
 
     const buffer = state.inputBuffer;
-    const cursorPos = state.cursorPos;
     const insertionPos = session.insertionPos;
     const prefixText = session.prefixText;
     const suffixText = session.suffixText;
@@ -424,11 +488,12 @@ export function createVoiceInputController(
       ...state.voicePromptJobs,
       ...(activeJob ? [activeJob] : []),
     ].map(job => ({ ...job }));
-    const pendingText = getRenderedVoicePrompt(buffer, cursorPos, jobs).buffer.trim();
-    const submission = deps.submitPendingTranscription(pendingText);
+    const pendingText = renderSubmittedPreview(buffer, jobs);
+    const submission = deps.submitPendingTranscription(pendingText, options);
     if (!submission) return false;
 
     session.submitted = { submission, buffer, jobs };
+    state.autocomplete = null;
     state.voicePrompt = null;
     state.voicePromptJobs = [];
     if (!state.voiceMessage || state.voiceMessage.message !== submission.message) {
@@ -541,7 +606,12 @@ export function createVoiceInputController(
     const newEditLength = nextBuffer.length - prefix - suffix;
 
     for (const voice of voices) {
-      if (oldEditStart >= voice.insertionPos) continue;
+      if (oldEditStart > voice.insertionPos) continue;
+      if (oldEditStart === voice.insertionPos) {
+        voice.suffixText = voiceSuffixText(voice.insertionPos);
+        if (state.voicePrompt === voice) session.suffixText = voice.suffixText;
+        continue;
+      }
       if (oldEditEnd <= voice.insertionPos) {
         voice.insertionPos += newEditLength - oldEditLength;
       } else {
@@ -578,8 +648,18 @@ export function createVoiceInputController(
       return true;
     }
 
-    if (key.type === "enter" && state.voicePromptJobs.length > 0) {
+    if (key.type === "enter" && state.voicePromptJobs.length > 0 && isVoicePromptContext()) {
+      if (deps.shouldQueuePendingTranscription?.() && deps.openPendingTranscriptionQueuePrompt) {
+        state.autocomplete = null;
+        deps.openPendingTranscriptionQueuePrompt(activeTranscriptionPreviewText());
+        scheduleRender();
+        return true;
+      }
       return submitActiveTranscription();
+    }
+
+    if (key.type === "backspace" && state.voicePromptJobs.length > 0 && isVoicePromptContext()) {
+      if (deleteVoicePromptBeforeCursor()) return true;
     }
 
     if (!isVoicePromptFocused()) return false;
@@ -596,6 +676,7 @@ export function createVoiceInputController(
 
   return {
     handleKey,
+    submitActiveTranscription,
     syncPromptEdit,
     isBlockingMouse,
     cleanup,
