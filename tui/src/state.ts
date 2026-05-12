@@ -26,7 +26,7 @@ import type { UndoState } from "./undo";
 import { createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
 import type { ConversationGoal, ProviderAuthInfo, QueueTiming } from "./protocol";
-import type { VoicePromptState } from "./voice";
+import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 
 // ── Queue types ────────────────────────────────────────────────────
 
@@ -219,6 +219,10 @@ export interface RenderState {
   pendingImages: ImageAttachment[];
   /** Active hold-to-talk placeholder rendered inline in the prompt, if any. */
   voicePrompt: VoicePromptState | null;
+  /** Completed recordings still being transcribed inline in the prompt. */
+  voicePromptJobs: VoicePromptState[];
+  /** Submitted voice transcription placeholder rendered as a local user message. */
+  voiceMessage: VoiceChatMessageState | null;
   /** Folder-level AGENTS.md document currently open instead of a conversation. */
   folderInstructionsDoc: FolderInstructionsDocumentState | null;
   /** Current mouse cursor shape — used to avoid redundant cursor shape OSC writes. */
@@ -335,6 +339,9 @@ export function resetDraftConversationState(state: RenderState): void {
   clearStreamingTailMessages(state);
   state.contextTokens = null;
   state.goal = null;
+  state.voicePrompt = null;
+  state.voicePromptJobs = [];
+  state.voiceMessage = null;
   resetToolOutputState(state);
   resetNewConversationDefaults(state);
   state.pendingSystemInstructions = null;
@@ -350,6 +357,9 @@ export function openFolderInstructionsDocument(state: RenderState, folderId: str
   state.convId = null;
   state.contextTokens = null;
   state.goal = null;
+  state.voicePrompt = null;
+  state.voicePromptJobs = [];
+  state.voiceMessage = null;
   clearPendingAI(state);
   state.messages = [];
   clearStreamingTailMessages(state);
@@ -483,6 +493,8 @@ export function createInitialState(): RenderState {
     editMessagePrompt: null,
     pendingImages: [],
     voicePrompt: null,
+    voicePromptJobs: [],
+    voiceMessage: null,
     folderInstructionsDoc: null,
     mouseCursor: "pointer",
   };

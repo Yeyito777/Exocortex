@@ -20,7 +20,7 @@ import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
 import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetNewConversationDefaults, resetToolOutputState } from "./state";
-import { createMessageMetadata, createPendingAI, type ImageAttachment } from "./messages";
+import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
 import { openQueuePrompt, confirmQueueMessage, cancelQueuePrompt, clearLocalQueue, removeLocalQueueEntry } from "./queue";
@@ -30,7 +30,7 @@ import { theme } from "./theme";
 import { openTargetDetached } from "./openable";
 import { msUntilNextElapsedSecond } from "./time";
 import type { Event } from "./protocol";
-import { createVoiceInputController, type VoiceInputController } from "./voiceinput";
+import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
 import { startReplayConversation } from "./replay";
 
 // ── State ───────────────────────────────────────────────────────────
@@ -61,6 +61,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnecting = false;
 let terminalSetUp = false;
 let voiceInput: VoiceInputController | null = null;
+const pendingVoiceSubmissions = new Set<SubmittedVoiceTranscription>();
 
 // ── Render scheduling ───────────────────────────────────────────────
 
@@ -171,6 +172,7 @@ function onDaemonEvent(event: Event): void {
 
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
+  reattachVisiblePendingVoiceSubmissions();
 
   if (event.type === "conversations_list") {
     startupProfileConversationCount = event.conversations.length;
@@ -204,8 +206,7 @@ function onDaemonEvent(event: Event): void {
 
 // ── Input handling ──────────────────────────────────────────────────
 
-function enqueuePendingAuthMessage(messageText: string, images?: ImageAttachment[]): void {
-  const echoStartedAt = Date.now();
+function enqueuePendingAuthMessage(messageText: string, images?: ImageAttachment[], echoStartedAt = Date.now()): void {
   state.pendingAuthQueue.push({ text: messageText, images, echoStartedAt });
   state.messages.push({
     role: "user",
@@ -213,6 +214,30 @@ function enqueuePendingAuthMessage(messageText: string, images?: ImageAttachment
     images,
     metadata: createMessageMetadata(echoStartedAt, state.model),
   });
+}
+
+function removeMessageByReference(message: UserMessage): void {
+  const idx = state.messages.indexOf(message);
+  if (idx !== -1) state.messages.splice(idx, 1);
+}
+
+function isPendingVoiceVisible(submission: SubmittedVoiceTranscription): boolean {
+  return submission.convId ? submission.convId === state.convId : state.convId === null;
+}
+
+function reattachVisiblePendingVoiceSubmissions(): void {
+  for (const submission of pendingVoiceSubmissions) {
+    if (!isPendingVoiceVisible(submission)) continue;
+    if (!state.messages.includes(submission.message)) state.messages.push(submission.message);
+    if (!state.voiceMessage || state.voiceMessage.message === submission.message) {
+      state.voiceMessage = { message: submission.message, phase: "transcribing", frameIndex: 0 };
+    }
+  }
+}
+
+function removePendingVoiceEcho(submission: SubmittedVoiceTranscription): void {
+  removeMessageByReference(submission.message);
+  if (state.voiceMessage?.message === submission.message) state.voiceMessage = null;
 }
 
 function removePendingAuthEcho(echoStartedAt: number): void {
@@ -413,26 +438,41 @@ function handleSubmit(): void {
   sendDirectly(messageText, images);
 }
 
+interface SendDirectlyOptions {
+  startedAt?: number;
+  echoMessage?: UserMessage;
+}
+
 /** Send a message immediately (no streaming in progress). */
-function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
+function sendDirectly(messageText: string, images?: ImageAttachment[], options: SendDirectlyOptions = {}): void {
   if (!canSendImages(images)) {
     scheduleRender();
     return;
   }
   if (!state.authByProvider[state.provider]) {
-    enqueuePendingAuthMessage(messageText, images);
+    if (options.echoMessage && typeof options.startedAt === "number") {
+      state.pendingAuthQueue.push({ text: messageText, images, echoStartedAt: options.startedAt });
+    } else {
+      enqueuePendingAuthMessage(messageText, images);
+    }
     showLoginRequiredPrompt();
     scheduleRender();
     return;
   }
 
-  const startedAt = Date.now();
-  state.messages.push({
-    role: "user",
-    text: messageText,
-    images,
-    metadata: createMessageMetadata(startedAt, state.model, { endedAt: startedAt }),
-  });
+  const startedAt = options.startedAt ?? Date.now();
+  if (options.echoMessage) {
+    options.echoMessage.text = messageText;
+    options.echoMessage.images = images;
+    options.echoMessage.metadata = createMessageMetadata(startedAt, state.model, { endedAt: startedAt });
+  } else {
+    state.messages.push({
+      role: "user",
+      text: messageText,
+      images,
+      metadata: createMessageMetadata(startedAt, state.model, { endedAt: startedAt }),
+    });
+  }
   state.pendingAI = createPendingAI(startedAt, state.model);
 
   if (!state.convId) {
@@ -452,10 +492,123 @@ function sendDirectly(messageText: string, images?: ImageAttachment[]): void {
   scheduleRender();
 }
 
+function submitPendingVoiceTranscription(placeholderText: string): SubmittedVoiceTranscription | null {
+  const images = state.pendingImages.length > 0 ? [...state.pendingImages] : undefined;
+  if (!canSendImages(images)) {
+    scheduleRender();
+    return null;
+  }
+
+  const startedAt = Date.now();
+  const message: UserMessage = {
+    role: "user",
+    text: placeholderText,
+    images,
+    metadata: createMessageMetadata(startedAt, state.model),
+  };
+  state.messages.push(message);
+  state.voiceMessage = { message, phase: "transcribing", frameIndex: 0 };
+  clearPrompt(state);
+  state.pendingImages = [];
+  state.scrollOffset = 0;
+  const submission: SubmittedVoiceTranscription = {
+    message,
+    startedAt,
+    images,
+    convId: state.convId,
+    provider: state.provider,
+    model: state.model,
+    effort: state.effort,
+    fastMode: state.fastMode,
+    folderId: state.sidebar.currentFolderId,
+    wasStreaming: isStreaming(state),
+  };
+  pendingVoiceSubmissions.add(submission);
+  invalidateHistoryRenderCache(state);
+  scheduleRender();
+  return submission;
+}
+
+function completePendingVoiceTranscription(submission: SubmittedVoiceTranscription, finalText: string): void {
+  const messageText = expandMacros(finalText.trim());
+  const hasImages = !!submission.images?.length;
+  pendingVoiceSubmissions.delete(submission);
+
+  if (!messageText && !hasImages) {
+    removePendingVoiceEcho(submission);
+    invalidateHistoryRenderCache(state);
+    scheduleRender();
+    return;
+  }
+
+  submission.message.text = messageText;
+  submission.message.images = submission.images;
+  submission.message.metadata = createMessageMetadata(submission.startedAt, submission.model, { endedAt: submission.startedAt });
+  if (state.voiceMessage?.message === submission.message) state.voiceMessage = null;
+  invalidateHistoryRenderCache(state);
+
+  const visible = isPendingVoiceVisible(submission);
+  const targetStreaming = submission.wasStreaming || (visible && isStreaming(state));
+  if (submission.convId && targetStreaming) {
+    removePendingVoiceEcho(submission);
+    if (visible) {
+      state.queuedMessages.push({ convId: submission.convId, text: messageText, timing: "message-end", images: submission.images });
+    }
+    daemon.queueMessage(submission.convId, messageText, "message-end", submission.images);
+    scheduleRender();
+    return;
+  }
+
+  if (submission.convId) {
+    if (visible) {
+      state.pendingAI = createPendingAI(submission.startedAt, submission.model);
+    }
+    daemon.sendMessage(submission.convId, messageText, submission.startedAt, submission.images);
+    scheduleRender();
+    return;
+  }
+
+  if (state.convId === null) {
+    if (targetStreaming) {
+      removePendingVoiceEcho(submission);
+      sendDirectly(messageText, submission.images);
+    } else {
+      sendDirectly(messageText, submission.images, {
+        startedAt: submission.startedAt,
+        echoMessage: submission.message,
+      });
+    }
+    scheduleRender();
+    return;
+  }
+
+  daemon.createConversation(submission.provider, submission.model, PENDING_TITLE, submission.effort, submission.fastMode, {
+    text: messageText,
+    startedAt: submission.startedAt,
+    images: submission.images,
+  }, submission.folderId);
+  scheduleRender();
+}
+
+function failPendingVoiceTranscription(submission: SubmittedVoiceTranscription, message: string): void {
+  pendingVoiceSubmissions.delete(submission);
+  removePendingVoiceEcho(submission);
+  pushSystemMessage(state, `✗ ${message}`, theme.error);
+  invalidateHistoryRenderCache(state);
+  scheduleRender();
+}
+
 function handleKey(key: KeyEvent): void {
+  const voicePromptBufferBefore = state.voicePromptJobs.length > 0 || state.voicePrompt?.phase === "transcribing"
+    ? state.inputBuffer
+    : null;
   if (voiceInput?.handleKey(key)) return;
+  if (key.event === "release") return;
 
   const result = handleFocusedKey(key, state, renderAfterLocalUiMutation);
+  if (voicePromptBufferBefore !== null) {
+    voiceInput?.syncPromptEdit(voicePromptBufferBefore);
+  }
 
   switch (result.type) {
     case "submit":
@@ -709,7 +862,11 @@ async function main(): Promise<void> {
   startupProfileMark("main_begin");
   daemon = new DaemonClient(onDaemonEvent);
   daemon.onConnectionLost(handleDaemonConnectionLost);
-  voiceInput = createVoiceInputController(state, daemon, scheduleRender);
+  voiceInput = createVoiceInputController(state, daemon, scheduleRender, {
+    submitPendingTranscription: submitPendingVoiceTranscription,
+    completePendingTranscription: completePendingVoiceTranscription,
+    failPendingTranscription: failPendingVoiceTranscription,
+  });
   try {
     await daemon.connect();
     startupProfileMark("daemon_connected");
