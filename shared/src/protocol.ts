@@ -363,6 +363,10 @@ export interface LoginCommand {
   provider?: ProviderId;
   /** Provider-specific secret. DeepSeek uses this for `/login deepseek <api-key>`. */
   apiKey?: string;
+  /** Provider-specific subcommand. OpenAI supports list/add/remove. */
+  action?: "list" | "add" | "remove" | "switch";
+  /** Provider-specific subcommand target. OpenAI remove/switch use this as email/account number. */
+  target?: string;
 }
 
 export interface LogoutCommand {
@@ -703,6 +707,18 @@ export interface ProviderAuthInfo {
   expiresAt: number | null;
   updatedAt: string | null;
   source: string | null;
+  /** Connected accounts for providers that support multi-account auth. */
+  accounts?: ProviderAuthAccountInfo[];
+  /** The account currently selected/last used by the provider. */
+  currentAccount?: ProviderAuthAccountInfo | null;
+}
+
+export interface ProviderAuthAccountInfo {
+  email: string | null;
+  displayName: string | null;
+  subscriptionType: string | null;
+  accountId: string | null;
+  current: boolean;
 }
 
 export interface ToolsAvailableEvent {

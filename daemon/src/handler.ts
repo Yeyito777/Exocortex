@@ -21,7 +21,8 @@ import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen"
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command, ParentNotificationTarget } from "./protocol";
-import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials } from "./auth";
+import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials, invalidateCredentialsCache } from "./auth";
+import { addAccount as addOpenAIAccount, listAccounts as listOpenAIAccounts, removeAccount as removeOpenAIAccount, switchAccount as switchOpenAIAccount } from "./providers/openai/auth";
 import { getTokenStatsSnapshot } from "./token-stats";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
@@ -46,6 +47,22 @@ export function createHandler(server: DaemonServer) {
   const unknownModelMessage = (provider: import("./messages").ProviderId, model: string): string => {
     return `Unknown model for provider ${provider}: ${model}. Available models: ${describeAvailableModels(provider)}`;
   };
+  const formatOpenAIAccount = (account: ReturnType<typeof listOpenAIAccounts>[number]): string => {
+    const marker = account.current ? "*" : " ";
+    const label = account.email ?? account.displayName ?? account.accountId ?? `account-${account.index}`;
+    const plan = account.plan ?? "unknown";
+    return `${marker} ${account.index}. ${label} — ${plan}`;
+  };
+  const formatOpenAIAccountList = (): string => {
+    const accounts = listOpenAIAccounts();
+    if (accounts.length === 0) return "No OpenAI accounts are connected. Use /login openai to authenticate.";
+    return [
+      "OpenAI accounts:",
+      ...accounts.map(formatOpenAIAccount),
+      "",
+      "* = current account",
+    ].join("\n");
+  };
   // ── Outbound status/tool broadcasts ───────────────────────────────
 
   const broadcastToolsAvailable = () => {
@@ -62,6 +79,7 @@ export function createHandler(server: DaemonServer) {
   const buildOrchestrationCallbacks = (convId: string) => ({
     onHeaders: (h: Headers) => {
       const provider = convStore.get(convId)?.provider ?? getDefaultProvider().id;
+      if (provider === "openai") broadcastToolsAvailable();
       handleUsageHeaders(provider, h, (usage) => broadcastUsage(provider, usage));
     },
     onComplete: () => {
@@ -990,6 +1008,86 @@ export function createHandler(server: DaemonServer) {
         };
 
         const provider = cmd.provider ?? getDefaultProvider().id;
+
+        if (provider === "openai" && cmd.action) {
+          if (cmd.action === "list") {
+            server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: formatOpenAIAccountList() });
+            break;
+          }
+
+          if (cmd.action === "remove") {
+            Promise.resolve().then(() => removeOpenAIAccount(cmd.target)).then((removed) => {
+              invalidateCredentialsCache("openai");
+              const label = removed.email ?? removed.displayName ?? removed.accountId ?? `#${removed.index}`;
+              server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: `Removed OpenAI account ${label}.\n\n${formatOpenAIAccountList()}` });
+              broadcastToolsAvailable();
+              refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
+            }).catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              log("error", `handler: openai account remove failed: ${msg}`);
+              server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `OpenAI account remove failed: ${msg}` });
+            });
+            break;
+          }
+
+          if (cmd.action === "switch") {
+            Promise.resolve().then(() => switchOpenAIAccount(cmd.target)).then((switched) => {
+              invalidateCredentialsCache("openai");
+              const label = switched.email ?? switched.displayName ?? switched.accountId ?? `#${switched.index}`;
+              server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: `Switched OpenAI account to ${label}.\n\n${formatOpenAIAccountList()}` });
+              broadcastToolsAvailable();
+              refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
+            }).catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              log("error", `handler: openai account switch failed: ${msg}`);
+              server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `OpenAI account switch failed: ${msg}` });
+            });
+            break;
+          }
+
+          if (cmd.action === "add") {
+            addOpenAIAccount({
+              onProgress: (msg) => {
+                server.sendTo(client, {
+                  type: "auth_status",
+                  reqId: cmd.reqId,
+                  message: msg === "Opening browser for OpenAI authentication..."
+                    ? "Preparing OpenAI authentication link..."
+                    : msg,
+                });
+              },
+              onOpenUrl: (url) => {
+                server.sendTo(client, {
+                  type: "auth_status",
+                  reqId: cmd.reqId,
+                  message: `Paste this URL into a browser to add an OpenAI account:\n\n${url}`,
+                });
+                return true;
+              },
+            }).then((result) => {
+              invalidateCredentialsCache("openai");
+              const label = result.profile?.email ?? result.profile?.displayName ?? provider;
+              server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: `Added OpenAI account ${label}.\n\n${formatOpenAIAccountList()}` });
+              log("info", `handler: openai account added (${label})`);
+              broadcastToolsAvailable();
+              refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
+              void refreshProviders(true).then((changed) => {
+                if (changed) broadcastToolsAvailable();
+              }).catch((err) => {
+                log("warn", `handler: provider refresh after OpenAI account add failed: ${err instanceof Error ? err.message : err}`);
+              });
+            }).catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              log("error", `handler: openai account add failed: ${msg}`);
+              server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `OpenAI account add failed: ${msg}` });
+            });
+            break;
+          }
+
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Unsupported OpenAI login action: ${cmd.action}` });
+          break;
+        }
+
         ensureAuthenticated(provider, {
           onProgress: (msg) => {
             server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: msg });

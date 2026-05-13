@@ -3,9 +3,16 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { runtimeDir } from "@exocortex/shared/paths";
 import { log } from "../../log";
 import type { UsageData, UsageWindow } from "../../messages";
+import { getCurrentAccountKey } from "./auth";
 
 const USAGE_FILE = join(runtimeDir(), "usage-openai.json");
 const DEFAULT_LIMIT_PREFIX = "x-codex";
+const LEGACY_ACCOUNT_KEY = "__legacy__";
+
+interface UsageStore {
+  version: 2;
+  byAccount: Record<string, UsageData>;
+}
 
 const PRIMARY_PERCENT_HEADERS = [
   "primary-used-percent",
@@ -17,32 +24,43 @@ const SECONDARY_PERCENT_HEADERS = [
   "secondary-over-primary-limit-percent",
 ] as const;
 
-function loadFromDisk(): UsageData | null {
-  try {
-    if (!existsSync(USAGE_FILE)) return null;
-    return JSON.parse(readFileSync(USAGE_FILE, "utf-8")) as UsageData;
-  } catch {
-    return null;
-  }
+function isUsageData(value: unknown): value is UsageData {
+  return typeof value === "object" && value !== null && ("fiveHour" in value || "sevenDay" in value);
 }
 
-function saveToDisk(usage: UsageData): void {
+function loadFromDisk(): UsageStore {
   try {
-    writeFileSync(USAGE_FILE, JSON.stringify(usage));
+    if (!existsSync(USAGE_FILE)) return { version: 2, byAccount: {} };
+    const parsed = JSON.parse(readFileSync(USAGE_FILE, "utf-8")) as unknown;
+    if (typeof parsed === "object" && parsed !== null && "byAccount" in parsed) {
+      return parsed as UsageStore;
+    }
+    if (isUsageData(parsed)) {
+      return { version: 2, byAccount: { [LEGACY_ACCOUNT_KEY]: parsed } };
+    }
+  } catch {
+    // fall through
+  }
+  return { version: 2, byAccount: {} };
+}
+
+function saveToDisk(store: UsageStore): void {
+  try {
+    writeFileSync(USAGE_FILE, JSON.stringify(store));
   } catch {
     // best-effort
   }
 }
 
-let lastUsage: UsageData | null = loadFromDisk();
+let usageStore: UsageStore = loadFromDisk();
 let resetTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function getLastUsage(): UsageData | null {
-  return lastUsage;
+  return usageForCurrentAccount();
 }
 
 export function clearUsage(): void {
-  lastUsage = null;
+  usageStore = { version: 2, byAccount: {} };
   if (resetTimer) {
     clearTimeout(resetTimer);
     resetTimer = null;
@@ -54,9 +72,17 @@ export function clearUsage(): void {
   }
 }
 
+function currentAccountKey(): string {
+  return getCurrentAccountKey() ?? LEGACY_ACCOUNT_KEY;
+}
+
+function usageForCurrentAccount(): UsageData | null {
+  return usageStore.byAccount[currentAccountKey()] ?? null;
+}
+
 function commitUsage(usage: UsageData, onUpdate: (usage: UsageData) => void): void {
-  lastUsage = usage;
-  saveToDisk(usage);
+  usageStore.byAccount[currentAccountKey()] = usage;
+  saveToDisk(usageStore);
   onUpdate(usage);
   scheduleResetRefresh(onUpdate);
 }
@@ -65,6 +91,7 @@ function scheduleResetRefresh(onUpdate: (usage: UsageData) => void): void {
   if (resetTimer) clearTimeout(resetTimer);
 
   const now = Date.now();
+  const lastUsage = usageForCurrentAccount();
   const candidates = [lastUsage?.fiveHour?.resetsAt, lastUsage?.sevenDay?.resetsAt]
     .filter((timestamp): timestamp is number => timestamp != null && timestamp > now);
 
@@ -111,16 +138,17 @@ export function handleUsageHeaders(headers: Headers, onUpdate: (usage: UsageData
 
 function parseHeaders(headers: Headers): UsageData | null {
   const prefix = resolveLimitPrefix(headers);
+  const previous = usageForCurrentAccount();
 
   const fiveHour = parseWindow(
     getFirstPresentHeader(headers, headerCandidates(prefix, PRIMARY_PERCENT_HEADERS)),
     getFirstPresentHeader(headers, headerCandidates(prefix, ["primary-reset-at"])),
-    lastUsage?.fiveHour,
+    previous?.fiveHour,
   );
   const sevenDay = parseWindow(
     getFirstPresentHeader(headers, headerCandidates(prefix, SECONDARY_PERCENT_HEADERS)),
     getFirstPresentHeader(headers, headerCandidates(prefix, ["secondary-reset-at"])),
-    lastUsage?.sevenDay,
+    previous?.sevenDay,
   );
 
   if (!fiveHour && !sevenDay) return null;

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { tryCommand } from "./commands";
+import { getCommandArgs, tryCommand } from "./commands";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
 import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, type ProviderInfo, type TokenStatsSnapshot } from "./messages";
@@ -635,6 +635,44 @@ describe("/login", () => {
     expect(state.hasChosenProvider).toBe(true);
     expect(state.provider).toBe("deepseek");
     expect(state.model).toBe("deepseek-v4-pro");
+  });
+
+  test("returns OpenAI account-management login commands", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    expect(tryCommand("/login openai list", state)).toEqual({ type: "login", provider: "openai", action: "list" });
+    expect(tryCommand("/login openai add", state)).toEqual({ type: "login", provider: "openai", action: "add" });
+    expect(tryCommand("/login openai remove user@example.com", state)).toEqual({
+      type: "login",
+      provider: "openai",
+      action: "remove",
+      target: "user@example.com",
+    });
+    expect(tryCommand("/login openai switch user@example.com", state)).toEqual({
+      type: "login",
+      provider: "openai",
+      action: "switch",
+      target: "user@example.com",
+    });
+  });
+
+  test("autocompletes OpenAI account-management subcommands and remove targets", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.authInfoByProvider.openai = {
+      ...state.authInfoByProvider.openai,
+      accounts: [
+        { email: "one@example.com", displayName: null, subscriptionType: "plus", accountId: "acct_one", current: false },
+        { email: "two@example.com", displayName: null, subscriptionType: "pro", accountId: "acct_two", current: true },
+      ],
+      currentAccount: { email: "two@example.com", displayName: null, subscriptionType: "pro", accountId: "acct_two", current: true },
+    };
+
+    const args = getCommandArgs(state);
+    expect(args["/login openai"].map((item) => item.name)).toEqual(["list", "add", "switch", "remove"]);
+    expect(args["/login openai remove"].map((item) => item.name)).toEqual(["one@example.com", "two@example.com"]);
+    expect(args["/login openai switch"].map((item) => item.name)).toEqual(["one@example.com", "two@example.com"]);
   });
 
   test("instructs DeepSeek users to supply an API key", () => {

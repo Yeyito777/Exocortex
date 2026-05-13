@@ -143,7 +143,6 @@ export async function buildStoredAuth(
 }
 
 export async function enrichStoredAuth(auth: StoredOpenAIAuth): Promise<StoredOpenAIAuth> {
-  if (auth.accountId) return auth;
   return mergeAccountContext(auth, await fetchAccountContext(auth.tokens.accessToken));
 }
 

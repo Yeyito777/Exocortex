@@ -20,7 +20,7 @@ export type CommandResult =
   | { type: "goal"; action: GoalAction; objective?: string }
   | { type: "rename_conversation"; title: string }
   | { type: "generate_title" }
-  | { type: "login"; provider?: ProviderId; apiKey?: string }
+  | { type: "login"; provider?: ProviderId; apiKey?: string; action?: "list" | "add" | "remove" | "switch"; target?: string }
   | { type: "logout"; provider?: ProviderId }
   | { type: "theme_changed" }
   | { type: "get_system_prompt" }

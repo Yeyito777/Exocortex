@@ -43,11 +43,29 @@ function requestHeaders(accessToken: string): HeadersInit {
   return { Authorization: `Bearer ${accessToken}` };
 }
 
-function pickPrimaryAccount<T extends { id: string; organizationType: string | null; deactivated: boolean }>(accounts: T[]): T | null {
+function planRank(plan: string | null): number {
+  const normalized = plan?.toLowerCase() ?? "";
+  if (normalized.includes("enterprise")) return 50;
+  if (normalized.includes("business") || normalized.includes("team")) return 45;
+  if (normalized.includes("pro")) return 30;
+  if (normalized.includes("plus")) return 20;
+  if (normalized.includes("free")) return -10;
+  return 0;
+}
+
+function accountRank(account: { organizationType: string | null; subscriptionType?: string | null }): number {
+  const org = account.organizationType?.toLowerCase() ?? "";
+  // When OpenAI returns both personal and workspace contexts for the same user,
+  // prefer the workspace: that is the account id we must send in
+  // ChatGPT-Account-ID to use Business/Team/Enterprise quotas.
+  const workspaceRank = org && org !== "personal" ? 100 : 0;
+  return workspaceRank + planRank(account.subscriptionType ?? null);
+}
+
+function pickPrimaryAccount<T extends { id: string; organizationType: string | null; subscriptionType?: string | null; deactivated: boolean }>(accounts: T[]): T | null {
   const active = accounts.filter((candidate) => !candidate.deactivated);
   if (active.length === 0) return null;
-  const personal = active.find((candidate) => candidate.organizationType === "personal");
-  return personal ?? active[0];
+  return [...active].sort((a, b) => accountRank(b) - accountRank(a))[0] ?? null;
 }
 
 function toAccountContextFromCheck(data: OpenAIAccountCheckResponse): OpenAIAccountContext | null {

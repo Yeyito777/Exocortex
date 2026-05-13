@@ -221,23 +221,33 @@ export function renderUserMessage(text: string, cols: number, images?: ImageAtta
   return { lines, cont, join };
 }
 
-export function renderSystemMessage(text: string, availableWidth: number, color?: string): string[] {
+export function renderSystemMessage(text: string, availableWidth: number, color?: string): WrapResult {
   const sysWidth = availableWidth - 2; // 2-char indent
   const width = sysWidth > 0 ? sysWidth : 1;
-  const wrapped: string[] = [];
+  const lines: string[] = [];
+  const cont: boolean[] = [];
+  const join: string[] = [];
 
   for (const rawLine of text.split("\n")) {
     if (rawLine.includes("\x1b[")) {
       // Inline ANSI is used sparingly (for example /tokens heatmaps). Preserve
       // the authored line rather than letting the plain word wrapper split on
       // raw escape-sequence length instead of visible width.
-      wrapped.push(rawLine);
+      lines.push(rawLine);
+      cont.push(false);
+      join.push("");
       continue;
     }
     const lineWrap = wordWrap(rawLine, width);
-    wrapped.push(...lineWrap.lines);
+    lines.push(...lineWrap.lines);
+    cont.push(...lineWrap.cont);
+    join.push(...lineWrap.join);
   }
 
   const style = color || theme.dim;
-  return wrapped.map(sl => `  ${style}${sl}${theme.reset}`);
+  return {
+    lines: lines.map(sl => `  ${style}${sl}${theme.reset}`),
+    cont,
+    join,
+  };
 }

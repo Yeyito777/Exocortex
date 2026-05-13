@@ -63,4 +63,37 @@ describe("message text object", () => {
     expect(selection).toContain("echo tool");
     expect(selection).toContain("Final assistant answer");
   });
+
+  test("visual-line yank of a soft-wrapped system URL does not insert newlines", () => {
+    const url = "https://auth.openai.com/authorize?client_id=exocortex&redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fcallback&state=abcdefghijklmnopqrstuvwxyz&code_challenge=0123456789abcdefghijklmnopqrstuvwxyz";
+    const state = createInitialState();
+    state.chatFocus = "history";
+    state.messages = [{
+      role: "system",
+      text: `Paste this URL into a browser:\n\n${url}`,
+      metadata: null,
+    }];
+
+    const render = buildMessageLines(state, 48);
+    state.historyLines = render.lines;
+    state.historyWrapContinuation = render.wrapContinuation;
+    state.historyWrapJoiners = render.wrapJoiners;
+    state.historyCopyLines = render.copyLines;
+    state.historyMessageBounds = render.messageBounds;
+    state.historyLineAnchors = render.lineAnchors;
+    state.layout.totalLines = render.lines.length;
+    state.layout.messageAreaHeight = render.lines.length;
+
+    const urlRow = render.lines.findIndex((line) => line.includes("https://"));
+    expect(urlRow).toBeGreaterThanOrEqual(0);
+    expect(render.wrapContinuation[urlRow + 1]).toBe(true);
+
+    state.vim.mode = "visual-line";
+    state.historyVisualAnchor = { row: urlRow, col: 0 };
+    state.historyCursor = { row: urlRow, col: 0 };
+
+    const selection = getHistoryVisualSelection(state);
+    expect(selection).toBe(url);
+    expect(selection).not.toContain("\n");
+  });
 });

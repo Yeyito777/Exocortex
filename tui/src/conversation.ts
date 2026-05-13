@@ -200,10 +200,7 @@ export function buildMessageLines(
       pushLine(`${theme.accent}${bottomLine}${theme.reset}`, msg, "system_instructions_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else {
-      const sysLines = renderSystemMessage(msg.text, availableWidth, msg.color);
-      for (let i = 0; i < sysLines.length; i++) {
-        pushLine(sysLines[i], msg, "system_message", i);
-      }
+      pushBlock(msg, "system_message", renderSystemMessage(msg.text, availableWidth, msg.color));
       pushMessageBound(msg.role, start, start, lines.length);
     }
   }
@@ -235,10 +232,7 @@ export function buildMessageLines(
   // bottom instead of getting buried above a growing assistant message.
   for (const msg of state.streamingTailMessages ?? []) {
     const start = lines.length;
-    const sysLines = renderSystemMessage(msg.text, availableWidth, msg.color);
-    for (let i = 0; i < sysLines.length; i++) {
-      pushLine(sysLines[i], msg, "streaming_tail", i);
-    }
+    pushBlock(msg, "streaming_tail", renderSystemMessage(msg.text, availableWidth, msg.color));
     pushMessageBound(msg.role, start, start, lines.length);
   }
 

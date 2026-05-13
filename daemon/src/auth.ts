@@ -11,13 +11,37 @@ export type { LoginResult, LoginCallbacks, EnsureAuthResult };
 
 interface StoredAuthLike extends StoredAuth {
   source?: string | null;
+  accountId?: string | null;
+}
+
+interface StoredAuthPoolLike {
+  accounts?: StoredAuthLike[];
+  currentIndex?: number;
+}
+
+function isStoredAuthLike(value: unknown): value is StoredAuthLike {
+  return typeof value === "object" && value !== null && "tokens" in value;
+}
+
+function isStoredAuthPoolLike(value: unknown): value is StoredAuthPoolLike {
+  return typeof value === "object" && value !== null && Array.isArray((value as StoredAuthPoolLike).accounts);
+}
+
+function normalizeAuthRecords(stored: unknown): { accounts: StoredAuthLike[]; currentIndex: number } {
+  if (isStoredAuthPoolLike(stored)) {
+    const accounts = (stored.accounts ?? []).filter(isStoredAuthLike);
+    const rawIndex = typeof stored.currentIndex === "number" ? stored.currentIndex : 0;
+    return { accounts, currentIndex: accounts.length > 0 ? Math.max(0, Math.min(accounts.length - 1, rawIndex)) : -1 };
+  }
+  if (isStoredAuthLike(stored)) return { accounts: [stored], currentIndex: 0 };
+  return { accounts: [], currentIndex: -1 };
 }
 
 const CREDENTIALS_CACHE_TTL_MS = 5_000;
 
 const credentialsCache = new Map<ProviderId, { value: boolean; expiresAt: number }>();
 
-function invalidateCredentialsCache(provider?: ProviderId): void {
+export function invalidateCredentialsCache(provider?: ProviderId): void {
   if (provider) credentialsCache.delete(provider);
   else credentialsCache.clear();
 }
@@ -81,7 +105,8 @@ export function getAuthByProvider(): Record<ProviderId, boolean> {
 }
 
 export function getAuthInfo(provider: ProviderId): ProviderAuthInfo {
-  const stored = loadProviderAuth<StoredAuthLike>(provider);
+  const { accounts, currentIndex } = normalizeAuthRecords(loadProviderAuth<unknown>(provider));
+  const stored = currentIndex >= 0 ? accounts[currentIndex] : null;
   if (!stored?.tokens) return createEmptyProviderAuthInfo();
 
   const expired = isTokenExpired(stored.tokens);
@@ -89,6 +114,13 @@ export function getAuthInfo(provider: ProviderId): ProviderAuthInfo {
   const status: ProviderAuthInfo["status"] = expired
     ? (refreshable ? "refreshable" : "expired")
     : "logged_in";
+  const accountInfos = accounts.map((account, index) => ({
+    email: account.profile?.email ?? null,
+    displayName: account.profile?.displayName ?? null,
+    subscriptionType: account.tokens.subscriptionType,
+    accountId: account.accountId ?? account.profile?.accountUuid ?? null,
+    current: index === currentIndex,
+  }));
 
   return {
     configured: true,
@@ -106,6 +138,10 @@ export function getAuthInfo(provider: ProviderId): ProviderAuthInfo {
     expiresAt: stored.tokens.expiresAt ?? null,
     updatedAt: stored.updatedAt ?? null,
     source: stored.source ?? null,
+    ...(accountInfos.length > 0 ? {
+      accounts: accountInfos,
+      currentAccount: accountInfos[currentIndex] ?? null,
+    } : {}),
   };
 }
 

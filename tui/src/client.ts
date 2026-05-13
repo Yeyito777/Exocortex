@@ -260,8 +260,8 @@ export class DaemonClient {
     this.send({ type: "load_tool_outputs", convId });
   }
 
-  login(provider?: ProviderId, apiKey?: string): void {
-    this.send({ type: "login", provider, apiKey });
+  login(provider?: ProviderId, apiKey?: string, action?: "list" | "add" | "remove" | "switch", target?: string): void {
+    this.send({ type: "login", provider, apiKey, action, target });
   }
 
   logout(provider?: ProviderId): void {
