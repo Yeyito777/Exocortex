@@ -188,6 +188,7 @@ export function readActiveWindowId(): string | null {
 export interface StreamFinishedPingContext {
   completedConvId?: string | null;
   activeConvId?: string | null;
+  isCompletedConvStreaming?: boolean;
   windowId?: string | null;
   activeWindowReader?: ActiveWindowReader;
 }
@@ -203,6 +204,8 @@ export function isTerminalWindowFocused(
 }
 
 export function shouldSuppressStreamFinishedPing(context: StreamFinishedPingContext): boolean {
+  if (context.isCompletedConvStreaming) return true;
+
   return !!context.completedConvId
     && !!context.activeConvId
     && context.completedConvId === context.activeConvId

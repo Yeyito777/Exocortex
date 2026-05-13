@@ -58,6 +58,7 @@ let daemon: DaemonClient;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let renderDueAt = 0;
 let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
+let streamFinishedPingTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnecting = false;
 let terminalSetUp = false;
@@ -97,6 +98,29 @@ function clearStreamTick(): void {
   if (!streamTickTimer) return;
   clearTimeout(streamTickTimer);
   streamTickTimer = null;
+}
+
+function clearStreamFinishedPingTimer(): void {
+  if (!streamFinishedPingTimer) return;
+  clearTimeout(streamFinishedPingTimer);
+  streamFinishedPingTimer = null;
+}
+
+function isConversationStreaming(convId: string): boolean {
+  if (convId === state.convId) return isStreaming(state);
+  return state.sidebar.conversations.some((conversation) => conversation.id === convId && conversation.streaming);
+}
+
+function scheduleStreamFinishedPing(completedConvId: string): void {
+  clearStreamFinishedPingTimer();
+  streamFinishedPingTimer = setTimeout(() => {
+    streamFinishedPingTimer = null;
+    runStreamFinishedPing({
+      completedConvId,
+      activeConvId: state.convId,
+      isCompletedConvStreaming: isConversationStreaming(completedConvId),
+    });
+  }, 200);
 }
 
 function clearReconnectTimer(): void {
@@ -197,7 +221,7 @@ function onDaemonEvent(event: Event): void {
   // Clear stream tick on streaming_stopped
   if (event.type === "streaming_stopped") {
     clearStreamTick();
-    runStreamFinishedPing({ completedConvId: event.convId, activeConvId: state.convId });
+    scheduleStreamFinishedPing(event.convId);
     // Queue shadows are NOT cleared here — the daemon drains one queued
     // message at a time and re-queues the rest. Each consumed message
     // triggers a user_message event, whose handler in events.ts removes
@@ -215,7 +239,7 @@ function onDaemonEvent(event: Event): void {
     isStreaming: event.summary.streaming,
     activeConvIdBeforeUpdate: activeConvIdBeforeEvent,
   })) {
-    runStreamFinishedPing({ completedConvId: event.summary.id, activeConvId: state.convId });
+    scheduleStreamFinishedPing(event.summary.id);
   }
 
   if (maybeFlushPendingAuthQueue()) return;
@@ -945,6 +969,7 @@ function handleDaemonConnectionLost(): void {
   clearPendingAI(state);
   clearStreamingTailMessages(state);
   clearStreamTick();
+  clearStreamFinishedPingTimer();
   pushSystemMessage(state, "✗ Lost connection to daemon.", theme.error);
   scheduleRender();
   void reconnectToDaemon();
@@ -1041,6 +1066,7 @@ function cleanup(): void {
   running = false;
   clearRenderTimer();
   clearStreamTick();
+  clearStreamFinishedPingTimer();
   clearReconnectTimer();
   voiceInput?.cleanup();
   daemon?.disconnect();

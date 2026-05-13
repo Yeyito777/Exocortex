@@ -156,6 +156,14 @@ describe("ping config helpers", () => {
   test("suppresses ping only when the focused terminal is showing the completed conversation", () => {
     expect(shouldSuppressStreamFinishedPing({
       completedConvId: "conv-a",
+      activeConvId: "conv-b",
+      isCompletedConvStreaming: true,
+      windowId: "12345",
+      activeWindowReader: () => "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x9999",
+    })).toBe(true);
+
+    expect(shouldSuppressStreamFinishedPing({
+      completedConvId: "conv-a",
       activeConvId: "conv-a",
       windowId: "12345",
       activeWindowReader: () => "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x3039",
