@@ -7,8 +7,9 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
-import { configDir } from "./paths";
+import { homedir } from "os";
+import { isAbsolute, join, resolve } from "path";
+import { agentCwdDir, configDir, repoRoot } from "./paths";
 
 export type SafetyDenylistEntry = string | {
   /** Human-readable explanation shown when any pattern in this group matches. */
@@ -65,9 +66,16 @@ export interface ProvidersConfig {
   [provider: string]: unknown;
 }
 
+export interface AgentConfig {
+  /** Default working directory used by the daemon and agent tools. Relative paths resolve from the repo root. */
+  workingDirectory?: string;
+}
+
 export interface ExocortexConfig {
   /** Active TUI theme name. */
   theme?: string;
+  /** Agent/runtime behavior. */
+  agent?: AgentConfig;
   /** TUI open-on-enter commands for links and file paths. */
   openers?: OpenersConfig;
   /** Provider-specific behavior. */
@@ -115,7 +123,22 @@ export function defaultOpenersConfig(): OpenersConfig {
 }
 
 export function defaultExocortexConfig(): ExocortexConfig {
-  return { theme: "whale", openers: defaultOpenersConfig() };
+  return { theme: "whale", agent: { workingDirectory: ".exocortex-cwd" }, openers: defaultOpenersConfig() };
+}
+
+function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/")) return join(homedir(), path.slice(2));
+  return path;
+}
+
+export function agentWorkingDirectory(config: ExocortexConfig = readExocortexConfig()): string {
+  const configured = config.agent?.workingDirectory;
+  const raw = typeof configured === "string" && configured.trim()
+    ? configured.trim()
+    : agentCwdDir();
+  const expanded = expandHome(raw);
+  return isAbsolute(expanded) ? resolve(expanded) : resolve(repoRoot(), expanded);
 }
 
 export function exocortexConfigPath(): string {

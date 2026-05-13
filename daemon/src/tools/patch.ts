@@ -471,7 +471,7 @@ export const patch: Tool = {
     type: "object",
     properties: {
       input: { type: "string", description: "The entire contents of the patch, including *** Begin Patch and *** End Patch" },
-      cwd: { type: "string", description: "Absolute working directory used to resolve relative patch paths (defaults to the daemon working directory)" },
+      cwd: { type: "string", description: "Absolute working directory used to resolve relative patch paths (defaults to the agent working directory)" },
     },
     required: ["input"],
   },

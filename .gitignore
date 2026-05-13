@@ -10,6 +10,8 @@ tmp/
 
 # Worktrees and local runtime data
 .worktrees/
+.exocortex-cwd/*
+!.exocortex-cwd/.gitkeep
 .rsync-filter
 config/config.json
 config/data/

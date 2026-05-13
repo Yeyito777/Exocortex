@@ -15,6 +15,7 @@ loadEnvFile();
 
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync } from "fs";
 import { connect as netConnect } from "net";
+import { agentWorkingDirectory } from "@exocortex/shared/config";
 import { log } from "./log";
 import { getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials } from "./auth";
 import { DaemonServer } from "./server";
@@ -40,7 +41,15 @@ function profileMark(event: string, details: object = {}): void {
   console.error(`[startup-profile] ${JSON.stringify({ process: "daemon", event, elapsedMs: Math.round(performance.now() * 1000) / 1000, ...details })}`);
 }
 
-// ── Paths ───────────────────────────────────────────────────────────
+// ── Working directory / paths ───────────────────────────────────────
+
+function useDefaultWorkingDirectory(): void {
+  const cwd = agentWorkingDirectory();
+  mkdirSync(cwd, { recursive: true });
+  process.chdir(cwd);
+}
+
+useDefaultWorkingDirectory();
 
 mkdirSync(runtimeDir(), { recursive: true });
 

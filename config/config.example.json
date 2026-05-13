@@ -1,5 +1,8 @@
 {
   "theme": "whale",
+  "agent": {
+    "workingDirectory": ".exocortex-cwd"
+  },
   "providers": {
     "openai": {
       "retryOnUsageLimitReset": false

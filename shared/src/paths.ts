@@ -81,11 +81,13 @@ function detectWorktree(): string | null {
 
   try {
     const gitDir = execSync("git rev-parse --git-dir", {
+      cwd: REPO_ROOT,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
 
     const gitCommonDir = execSync("git rev-parse --git-common-dir", {
+      cwd: REPO_ROOT,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
@@ -128,6 +130,11 @@ export function configDir(): string {
 /** External tools directory (<repo>/external-tools). */
 export function externalToolsDir(): string {
   return join(REPO_ROOT, "external-tools");
+}
+
+/** Default process working directory for agent/tool execution. */
+export function agentCwdDir(): string {
+  return join(REPO_ROOT, ".exocortex-cwd");
 }
 
 /** Secrets directory — API keys, OAuth tokens. Shared across worktrees. */
