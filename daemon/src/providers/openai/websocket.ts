@@ -317,6 +317,10 @@ export class OpenAIWebSocketConnection {
     this.socket.destroy();
   }
 
+  isClosed(): boolean {
+    return this.closed || this.socket.destroyed;
+  }
+
   private tryReadMessage(): OpenAIWebSocketMessage | null {
     while (true) {
       const frame = decodeFrame(this.buffer);

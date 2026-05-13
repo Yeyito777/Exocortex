@@ -23,6 +23,7 @@ import { complete } from "./llm";
 import { getInnerLlmSummaryOptions } from "./tools/inner-llm";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { GOAL_CONTINUATION_PROMPT } from "./goals";
+import { createProviderTurnSession } from "./api";
 
 // ── Retry marker helpers ───────────────────────────────────────────
 
@@ -685,6 +686,7 @@ async function orchestrateAssistantTurn(
   // ── Run provider/agent loop ───────────────────────────────────────
 
   startStreamingSnapshotHeartbeat();
+  const providerTurnSession = createProviderTurnSession(conv.provider);
 
   try {
     const result = await runAgentLoop(apiMessages, conv.provider, conv.model, callbacks, {
@@ -702,6 +704,7 @@ async function orchestrateAssistantTurn(
       serviceTier: conv.fastMode ? "fast" : undefined,
       promptCacheKey: convId,
       tracking: { source: "conversation", conversationId: convId },
+      turnSession: providerTurnSession ?? undefined,
       state: agentState,
     });
 
@@ -890,6 +893,15 @@ async function orchestrateAssistantTurn(
       watchdog: isWatchdog,
     };
   } finally {
+    if (providerTurnSession) {
+      try {
+        if (outcome?.ok) await providerTurnSession.close();
+        else if (providerTurnSession.destroy) await providerTurnSession.destroy();
+        else await providerTurnSession.close();
+      } catch (err) {
+        log("warn", `orchestrator: provider turn-session cleanup failed for ${convId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     stopStreamingSnapshotHeartbeat();
     const stoppedStreamSeq = convStore.nextStreamSeq(convId);
     convStore.clearActiveJob(convId);

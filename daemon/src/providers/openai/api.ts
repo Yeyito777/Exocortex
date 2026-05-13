@@ -12,7 +12,7 @@ import { mergeReasoningSummaries } from "./reasoning";
 import { readOpenAIResponsesWebSocket } from "./responses-websocket";
 import { readOpenAIEventsForTest } from "./stream";
 import { connectOpenAIWebSocket, OpenAIWebSocketHttpError, type OpenAIWebSocketConnection } from "./websocket";
-import type { StreamCallbacks, StreamOptions, StreamResult } from "../types";
+import type { ProviderTurnSession, StreamCallbacks, StreamOptions, StreamResult } from "../types";
 
 export {
   AuthError,
@@ -32,6 +32,10 @@ export function shouldRetryOpenAIUsageLimitResetForTest(): boolean {
   return shouldRetryOpenAIUsageLimitReset();
 }
 
+export function createOpenAITurnSession(): OpenAITurnSession {
+  return new OpenAITurnSession();
+}
+
 const STREAM_STALL_TIMEOUT = 120_000;
 const MAX_RETRIES = 8;
 const USAGE_LIMIT_RESET_BUFFER_MS = 2_000;
@@ -42,6 +46,136 @@ interface OpenAIUsageLimitError {
   planType?: string;
   resetAt?: number;
   resetDelayMs?: number;
+}
+
+function isOpenAITurnSession(value: ProviderTurnSession | undefined): value is OpenAITurnSession {
+  return value instanceof OpenAITurnSession;
+}
+
+function cloneWithoutInput(body: Record<string, unknown>): Record<string, unknown> {
+  const { input: _input, ...rest } = body;
+  return rest;
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function valuesEqual(left: unknown, right: unknown): boolean {
+  return stableJson(left) === stableJson(right);
+}
+
+function inputStartsWith(input: unknown[], prefix: unknown[]): boolean {
+  if (input.length < prefix.length) return false;
+  for (let i = 0; i < prefix.length; i++) {
+    if (!valuesEqual(input[i], prefix[i])) return false;
+  }
+  return true;
+}
+
+function isKnownPreviousResponseOutputItem(item: unknown): boolean {
+  if (!isRecord(item)) return false;
+  if (item.type === "reasoning" || item.type === "function_call") return true;
+  return item.type === "message" && item.role === "assistant";
+}
+
+export class OpenAITurnSession implements ProviderTurnSession {
+  private socket: OpenAIWebSocketConnection | null = null;
+  private turnState: string | null = null;
+  private requestSession: OpenAIRequestSession | null = null;
+  private lastFullRequestBody: Record<string, unknown> | null = null;
+  private lastResponseId: string | null = null;
+
+  async getVerifiedRequestSession(
+    callbacks: StreamCallbacks,
+    signal?: AbortSignal,
+    opts: { forceRefresh?: boolean } = {},
+  ): Promise<OpenAIRequestSession> {
+    if (this.requestSession && !opts.forceRefresh) return this.requestSession;
+    this.requestSession = await getVerifiedSessionWithRetries(callbacks, signal, opts);
+    return this.requestSession;
+  }
+
+  async getSocket(
+    session: OpenAIRequestSession,
+    callbacks: StreamCallbacks,
+    options: StreamOptions,
+  ): Promise<OpenAIWebSocketConnection> {
+    if (this.socket && !this.socket.isClosed()) return this.socket;
+
+    const headers = {
+      ...buildOpenAIRequestHeaders(session, options),
+    };
+    if (this.turnState) {
+      headers["x-codex-turn-state"] = this.turnState;
+    }
+    const cookieHeader = buildCloudflareCookieHeader(OPENAI_CODEX_RESPONSES_WS_URL);
+    if (cookieHeader) {
+      headers.Cookie = cookieHeader;
+    }
+
+    const connection = await connectOpenAIWebSocket(OPENAI_CODEX_RESPONSES_WS_URL, headers, options.signal);
+    this.socket = connection.socket;
+    storeCloudflareCookiesFromHeaders(OPENAI_CODEX_RESPONSES_WS_URL, connection.headers);
+    callbacks.onHeaders?.(connection.headers);
+    const nextTurnState = connection.headers.get("x-codex-turn-state");
+    if (nextTurnState && !this.turnState) {
+      this.turnState = nextTurnState;
+    }
+    return this.socket;
+  }
+
+  prepareRequestBody(fullRequestBody: Record<string, unknown>): Record<string, unknown> {
+    if (!this.lastFullRequestBody || !this.lastResponseId) return fullRequestBody;
+    if (!valuesEqual(cloneWithoutInput(this.lastFullRequestBody), cloneWithoutInput(fullRequestBody))) {
+      return fullRequestBody;
+    }
+
+    const previousInput = this.lastFullRequestBody.input;
+    const currentInput = fullRequestBody.input;
+    if (!Array.isArray(previousInput) || !Array.isArray(currentInput)) return fullRequestBody;
+    if (!inputStartsWith(currentInput, previousInput)) return fullRequestBody;
+
+    let deltaStart = previousInput.length;
+    while (deltaStart < currentInput.length && isKnownPreviousResponseOutputItem(currentInput[deltaStart])) {
+      deltaStart += 1;
+    }
+    const incrementalInput = currentInput.slice(deltaStart);
+    if (incrementalInput.length === 0) return fullRequestBody;
+
+    return {
+      ...fullRequestBody,
+      previous_response_id: this.lastResponseId,
+      input: incrementalInput,
+    };
+  }
+
+  recordSuccessfulRequest(fullRequestBody: Record<string, unknown>, result: StreamResult): void {
+    const responseId = result.assistantProviderData?.openai?.responseId;
+    this.lastFullRequestBody = fullRequestBody;
+    this.lastResponseId = responseId || null;
+  }
+
+  resetIncrementalState(): void {
+    this.lastFullRequestBody = null;
+    this.lastResponseId = null;
+  }
+
+  resetConnection(): void {
+    this.socket?.destroy();
+    this.socket = null;
+    this.resetIncrementalState();
+  }
+
+  close(): void {
+    this.socket?.close();
+    this.socket = null;
+  }
+
+  destroy(): void {
+    this.socket?.destroy();
+    this.socket = null;
+  }
 }
 
 function isOpenAIAuthFailure(err: unknown): boolean {
@@ -220,34 +354,53 @@ export async function streamMessageWithSession(
   options: StreamOptions = {},
 ): Promise<StreamResult> {
   const { signal } = options;
+  const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
   let retryAttempt = 0;
-  const requestBody = buildRequestBody(messages, model, options);
+  let retriedWithoutIncremental = false;
+  const fullRequestBody = buildRequestBody(messages, model, options);
 
   while (true) {
     let socket: OpenAIWebSocketConnection | null = null;
+    let attemptedIncremental = false;
     try {
-      const headers = {
-        ...buildOpenAIRequestHeaders(session, options),
-      };
-      const cookieHeader = buildCloudflareCookieHeader(OPENAI_CODEX_RESPONSES_WS_URL);
-      if (cookieHeader) {
-        headers.Cookie = cookieHeader;
+      if (turnSession) {
+        socket = await turnSession.getSocket(session, callbacks, options);
+      } else {
+        const headers = {
+          ...buildOpenAIRequestHeaders(session, options),
+        };
+        const cookieHeader = buildCloudflareCookieHeader(OPENAI_CODEX_RESPONSES_WS_URL);
+        if (cookieHeader) {
+          headers.Cookie = cookieHeader;
+        }
+
+        const connection = await connectOpenAIWebSocket(OPENAI_CODEX_RESPONSES_WS_URL, headers, signal);
+        socket = connection.socket;
+        storeCloudflareCookiesFromHeaders(OPENAI_CODEX_RESPONSES_WS_URL, connection.headers);
+        callbacks.onHeaders?.(connection.headers);
       }
 
-      const connection = await connectOpenAIWebSocket(OPENAI_CODEX_RESPONSES_WS_URL, headers, signal);
-      socket = connection.socket;
-      storeCloudflareCookiesFromHeaders(OPENAI_CODEX_RESPONSES_WS_URL, connection.headers);
-      callbacks.onHeaders?.(connection.headers);
+      const requestBody = turnSession?.prepareRequestBody(fullRequestBody) ?? fullRequestBody;
+      attemptedIncremental = typeof requestBody.previous_response_id === "string";
       const result = await readOpenAIResponsesWebSocket(socket, requestBody, callbacks, {
         stallTimeoutMs: STREAM_STALL_TIMEOUT,
         signal,
       });
-      socket.close();
+      turnSession?.recordSuccessfulRequest(fullRequestBody, result);
+      if (!turnSession) socket.close();
       return result;
     } catch (err) {
-      socket?.destroy();
+      if (turnSession) turnSession.resetConnection();
+      else socket?.destroy();
       if (signal?.aborted || isAbortLikeError(err) || isNonRetryableProviderError(err)) throw err;
       if (err instanceof OpenAIWebSocketHttpError) {
+        if (turnSession && attemptedIncremental && !retriedWithoutIncremental && (err.status === 400 || err.status === 404)) {
+          log("warn", `openai api: incremental websocket request failed with HTTP ${err.status}; retrying once with full replay`);
+          retriedWithoutIncremental = true;
+          turnSession.resetIncrementalState();
+          continue;
+        }
+
         if (err.status === 401) {
           throw new AuthError("OpenAI authentication failed. Re-run `bun run src/main.ts login openai`.");
         }
@@ -320,13 +473,18 @@ export async function streamMessage(
   options: StreamOptions = {},
 ): Promise<StreamResult> {
   const { signal } = options;
-  const session = await getVerifiedSessionWithRetries(callbacks, signal);
+  const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
+  const session = turnSession
+    ? await turnSession.getVerifiedRequestSession(callbacks, signal)
+    : await getVerifiedSessionWithRetries(callbacks, signal);
   try {
     return await streamMessageWithSession(session, messages, model, callbacks, options);
   } catch (err) {
     if (!isOpenAIAuthFailure(err)) throw err;
 
-    const refreshed = await getVerifiedSessionWithRetries(callbacks, signal, { forceRefresh: true }).catch(() => null);
+    const refreshed = await (turnSession
+      ? turnSession.getVerifiedRequestSession(callbacks, signal, { forceRefresh: true })
+      : getVerifiedSessionWithRetries(callbacks, signal, { forceRefresh: true })).catch(() => null);
     if (!refreshed) throw err;
     if (refreshed.accessToken === session.accessToken && refreshed.accountId === session.accountId) {
       throw err;

@@ -4,6 +4,7 @@ import type { ApiMessage } from "../../messages";
 import {
   buildOpenAIInputForTest,
   buildRequestBodyForTest,
+  createOpenAITurnSession,
   isRetriableOpenAIStatusForTest,
   mergeReasoningSummariesForTest,
   parseOpenAIUsageLimitErrorForTest,
@@ -42,6 +43,7 @@ function mockOpenAIWebSocket(
     calls.push(call);
     if (config.error) throw config.error;
     const queued = [...(config.events ?? []).map((event) => ({ type: "text" as const, text: JSON.stringify(event) }))];
+    let closed = false;
     const socket = {
       async sendText(text: string) {
         call.sent.push(text);
@@ -50,8 +52,9 @@ function mockOpenAIWebSocket(
         if (config.nextMessage) return config.nextMessage(nextSignal ?? signal);
         return queued.shift() ?? { type: "close" as const };
       },
-      close() {},
-      destroy() {},
+      close() { closed = true; },
+      destroy() { closed = true; },
+      isClosed() { return closed; },
     } as unknown as OpenAIWebSocketConnection;
     return { socket, headers: new Headers(config.headers) };
   }));
@@ -465,6 +468,71 @@ describe("OpenAI replay input", () => {
 
     expect(new Headers(calls[0].headers).get("Cookie")).toBeNull();
     expect(new Headers(calls[1].headers).get("Cookie")).toBe("__cf_bm=abc123");
+  });
+
+  test("reuses a turn websocket and sends incremental tool-result follow-ups", async () => {
+    const calls = mockOpenAIWebSocket([{ events: [
+      { type: "response.created", response: { id: "resp_1" } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call_1", name: "bash" } },
+      { type: "response.function_call_arguments.delta", output_index: 0, delta: '{"cmd":"echo hi"}' },
+      { type: "response.output_item.done", output_index: 0, item: { type: "function_call", call_id: "call_1", name: "bash", arguments: '{"cmd":"echo hi"}' } },
+      { type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 10, output_tokens: 4 }, output: [{ type: "function_call", call_id: "call_1", name: "bash", arguments: '{"cmd":"echo hi"}' }] } },
+      { type: "response.created", response: { id: "resp_2" } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_2" } },
+      { type: "response.output_text.delta", item_id: "msg_2", output_index: 0, content_index: 0, delta: "done" },
+      { type: "response.completed", response: { id: "resp_2", usage: { input_tokens: 3, output_tokens: 1 }, output: [{ type: "message", id: "msg_2", content: [{ type: "output_text", text: "done" }] }] } },
+    ] }]);
+
+    const turnSession = createOpenAITurnSession();
+    const callbacks = {
+      onText: () => {},
+      onThinking: () => {},
+    };
+    const firstMessages: ApiMessage[] = [{ role: "user", content: "run echo" }];
+    const first = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      firstMessages,
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-1", turnSession },
+    );
+
+    expect(first.toolCalls).toEqual([{ id: "call_1", name: "bash", input: { cmd: "echo hi" } }]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sent).toHaveLength(1);
+
+    const secondMessages: ApiMessage[] = [
+      ...firstMessages,
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "call_1", name: "bash", input: { cmd: "echo hi" } }],
+        providerData: first.assistantProviderData,
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call_1", content: "hi", is_error: false }],
+      },
+    ];
+    const second = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      secondMessages,
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-1", turnSession },
+    );
+
+    expect(second.text).toBe("done");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sent).toHaveLength(2);
+    const firstBody = JSON.parse(calls[0].sent[0]);
+    const secondBody = JSON.parse(calls[0].sent[1]);
+    expect(firstBody.previous_response_id).toBeUndefined();
+    expect(firstBody.input).toHaveLength(1);
+    expect(secondBody.previous_response_id).toBe("resp_1");
+    expect(secondBody.input).toEqual([
+      { type: "function_call_output", call_id: "call_1", output: "hi" },
+    ]);
+    turnSession.close();
   });
 
   test("does not send previous_response_id to the codex backend", () => {

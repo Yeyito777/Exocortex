@@ -57,6 +57,19 @@ export interface StreamToolExecutionResult {
 
 export type StreamToolExecutor = (call: ApiToolCall, signal?: AbortSignal) => Promise<StreamToolExecutionResult>;
 
+/**
+ * Provider-owned state for one assistant turn.
+ *
+ * Agent turns can contain multiple provider requests when tools are used
+ * (model -> tool calls -> tool results -> model ...). Providers that benefit
+ * from keeping transport state alive across those requests can expose a turn
+ * session and receive it back via StreamOptions on each round.
+ */
+export interface ProviderTurnSession {
+  close(): void | Promise<void>;
+  destroy?(): void | Promise<void>;
+}
+
 export interface StreamOptions {
   system?: string;
   signal?: AbortSignal;
@@ -69,6 +82,8 @@ export interface StreamOptions {
   tracking?: TokenTrackingContext;
   /** Optional provider-native tool bridge. Anthropic uses this to expose Exocortex tools via MCP. */
   mcpToolExecutor?: StreamToolExecutor;
+  /** Provider-created state shared by all model rounds within one assistant turn. */
+  turnSession?: ProviderTurnSession;
 }
 
 export interface ProviderStreamMessage {
@@ -131,4 +146,5 @@ export interface ProviderAdapter {
   auth: ProviderAuthAdapter;
   usage: ProviderUsageAdapter;
   streamMessage: ProviderStreamMessage;
+  createTurnSession?: () => ProviderTurnSession;
 }

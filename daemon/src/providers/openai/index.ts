@@ -1,5 +1,5 @@
 import { DEFAULT_MODEL_BY_PROVIDER } from "@exocortex/shared/messages";
-import { streamMessage } from "./api";
+import { createOpenAITurnSession, streamMessage } from "./api";
 import { ensureAuthenticated, hasConfiguredCredentials, login, logout, refreshTokens, verifyAuth } from "./auth";
 import { FALLBACK_OPENAI_MODELS, fetchOpenAIModels } from "./models";
 import { clearUsage, getLastUsage, handleUsageHeaders, refreshUsage } from "./usage";
@@ -30,4 +30,5 @@ export const openaiProvider: ProviderAdapter = {
     clearUsage,
   },
   streamMessage,
+  createTurnSession: createOpenAITurnSession,
 };

@@ -9,7 +9,7 @@
  * response (pure conversation mode).
  */
 
-import { streamMessage, type ApiToolCall } from "./api";
+import { streamMessage, type ApiToolCall, type ProviderTurnSession } from "./api";
 import { log } from "./log";
 import { createModelVisibleSystemNotice, type ProviderId, type ModelId, type EffortLevel, type Block, type ToolCallBlock, type ToolResultBlock, type ApiMessage, type ApiContentBlock, type TokenTrackingContext } from "./messages";
 import type { ContentBlock as ProviderContentBlock, ServiceTier, StreamRetryMetadata } from "./providers/types";
@@ -239,6 +239,8 @@ export async function runAgentLoop(
     promptCacheKey?: string;
     /** Token-accounting metadata for each API round in this loop. */
     tracking?: TokenTrackingContext;
+    /** Provider-created state shared by all API rounds in this assistant turn. */
+    turnSession?: ProviderTurnSession;
     /** Mutable state for abort recovery — caller reads on catch. */
     state?: AgentState;
   } = {},
@@ -287,6 +289,7 @@ export async function runAgentLoop(
       serviceTier: options.serviceTier,
       promptCacheKey: options.promptCacheKey,
       tracking: options.tracking,
+      turnSession: options.turnSession,
       mcpToolExecutor: options.executor
         ? async (call, signal) => {
           const [result] = await options.executor!([call], signal);

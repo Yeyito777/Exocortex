@@ -276,9 +276,10 @@ export function buildRequestBody(
 ): Record<string, unknown> {
   const input = buildOpenAIInput(messages);
   const shape = buildRequestShape(model, options);
-  // The Codex-backed Responses endpoint has been more reliable when we replay
-  // the full serialized conversation instead of attempting stateful reuse via
-  // previous_response_id.
+  // Build the canonical full replay body. A turn-scoped websocket session may
+  // transform this into a Codex-style incremental request with
+  // previous_response_id at send time, while keeping this full body as the
+  // correctness fallback for reconnects, compaction, or mismatched history.
   return {
     ...shape,
     input,
