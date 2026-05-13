@@ -10,11 +10,11 @@ export interface GoalOperationResult {
   message: string;
 }
 
-export const GOAL_CONTINUATION_PROMPT = `You are continuing an active /goal objective for this conversation.
+export const GOAL_CONTINUATION_PROMPT = `You are continuing an active goal objective for this conversation.
 
-Do the next useful unit of work toward the objective. Prefer concrete progress over status chatter. Use the goal tool to manage the goal lifecycle: set a revised/new goal when that is the right continuation, pause when user input is required, resume if you previously paused and can now continue, or complete when the objective is truly finished. Otherwise, stop after a coherent increment; the daemon will continue automatically while the goal remains active. Do not ask the user to continue unless you are blocked and pausing the goal.`;
+Do the next useful unit of work toward the objective. Use the goal tool to manage the goal lifecycle: set a revised/new goal when that is the right continuation, pause when user input is required, resume if you previously paused and can now continue, or complete when the objective is truly finished. Do not ask the user to continue unless you are blocked and pausing the goal.`;
 
-export const GOAL_TOOL_SYSTEM_HINT = "When the user requests a hard or long-horizon task that you may not be able to single-shot use the goal tool to manage it as a goal. This will push you to keep working on it until you mark the goal as complete. Only mark a goal as complete when it has been genuinely achieved thoroughly and fully. Only pause a goal when you *require* user input to continue chasing your goal and don't see any other path forward.";
+export const GOAL_TOOL_SYSTEM_HINT = "When the user requests a hard or long-horizon task use the goal tool to manage it as a goal. Only mark a goal as complete when it has been genuinely achieved thoroughly and fully. Only pause a goal when you *require* user input to continue chasing your goal and don't see any other path forward. Again: only use this tool when the user requests a genuinely hard or long-horizon task";
 
 export function formatGoalSummary(goal: ConversationGoal | null | undefined): string {
   if (!goal) return "No goal set. Usage: /goal <objective>";
