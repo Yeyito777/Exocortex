@@ -36,10 +36,85 @@ export function createOpenAITurnSession(): OpenAITurnSession {
   return new OpenAITurnSession();
 }
 
+export function clearOpenAIWebSocketSessionCacheForTest(): void {
+  for (const state of reusableTurnSessions.values()) {
+    closeReusableTurnSession(state);
+  }
+  reusableTurnSessions.clear();
+}
+
+export function setOpenAIWebSocketIdleTimeoutMsForTest(timeoutMs: number | null): void {
+  websocketIdleTimeoutMsForTest = timeoutMs;
+}
+
 const STREAM_STALL_TIMEOUT = 120_000;
 const MAX_RETRIES = 8;
 const USAGE_LIMIT_RESET_BUFFER_MS = 2_000;
 const RETRIABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504, 507, 520, 521, 522, 523, 524]);
+const WEBSOCKET_IDLE_TIMEOUT_MS = 5 * 60_000;
+
+let websocketIdleTimeoutMsForTest: number | null = null;
+
+interface OpenAITurnSessionState {
+  key: string | null;
+  socket: OpenAIWebSocketConnection | null;
+  turnState: string | null;
+  requestSession: OpenAIRequestSession | null;
+  lastFullRequestBody: Record<string, unknown> | null;
+  lastResponseId: string | null;
+  idleTimer: ReturnType<typeof setTimeout> | null;
+  inUse: boolean;
+}
+
+const reusableTurnSessions = new Map<string, OpenAITurnSessionState>();
+
+function createTurnSessionState(key: string | null = null): OpenAITurnSessionState {
+  return {
+    key,
+    socket: null,
+    turnState: null,
+    requestSession: null,
+    lastFullRequestBody: null,
+    lastResponseId: null,
+    idleTimer: null,
+    inUse: false,
+  };
+}
+
+function currentWebSocketIdleTimeoutMs(): number {
+  return websocketIdleTimeoutMsForTest ?? WEBSOCKET_IDLE_TIMEOUT_MS;
+}
+
+function clearReusableTurnSessionTimer(state: OpenAITurnSessionState): void {
+  if (!state.idleTimer) return;
+  clearTimeout(state.idleTimer);
+  state.idleTimer = null;
+}
+
+function resetReusableTurnSessionState(state: OpenAITurnSessionState): void {
+  state.socket = null;
+  state.turnState = null;
+  state.requestSession = null;
+  state.lastFullRequestBody = null;
+  state.lastResponseId = null;
+  state.inUse = false;
+}
+
+function closeReusableTurnSession(state: OpenAITurnSessionState): void {
+  clearReusableTurnSessionTimer(state);
+  state.socket?.close();
+  resetReusableTurnSessionState(state);
+}
+
+function destroyReusableTurnSession(state: OpenAITurnSessionState): void {
+  clearReusableTurnSessionTimer(state);
+  state.socket?.destroy();
+  resetReusableTurnSessionState(state);
+}
+
+function sessionsHaveDifferentAccounts(left: OpenAIRequestSession | null, right: OpenAIRequestSession): boolean {
+  return left != null && left.accountId !== right.accountId;
+}
 
 interface OpenAIUsageLimitError {
   message: string;
@@ -85,7 +160,7 @@ function isKnownPreviousResponseOutputItem(item: unknown): boolean {
 }
 
 /**
- * OpenAI state for one Exocortex assistant message.
+ * OpenAI websocket state for one Exocortex conversation/session.
  *
  * IMPORTANT: do not close this websocket after an individual OpenAI
  * `response.completed` event when the model asked for tools.  A single
@@ -101,28 +176,64 @@ function isKnownPreviousResponseOutputItem(item: unknown): boolean {
  * follow-up tool-result request to be sent on the wrong transport/session.
  *
  * Lifecycle:
- * - `getSocketLease()` opens once and then reuses the socket across tool rounds.
+ * - `getSocketLease()` opens once and then reuses the socket across tool rounds
+ *   and follow-up user messages in the same conversation.
  * - `recordSuccessfulRequest()` records incremental replay state only; it must
  *   not close the socket.
- * - `close()` is called by the orchestrator only after the full assistant
- *   message completes successfully.
+ * - `close()` is called by the orchestrator after the full assistant message
+ *   completes successfully. With a conversation prompt-cache key it parks the
+ *   websocket in an idle cache for a short grace window instead of closing it
+ *   immediately, so a new user message can land on the same Codex session.
  * - `destroy()`/`resetConnection()` are for errors, aborts, or retries.
  */
 export class OpenAITurnSession implements ProviderTurnSession {
-  private socket: OpenAIWebSocketConnection | null = null;
-  private turnState: string | null = null;
-  private requestSession: OpenAIRequestSession | null = null;
-  private lastFullRequestBody: Record<string, unknown> | null = null;
-  private lastResponseId: string | null = null;
+  private state = createTurnSessionState();
+
+  private adoptReusableState(options: StreamOptions): OpenAIRequestSession | null {
+    const key = typeof options.promptCacheKey === "string" && options.promptCacheKey.length > 0
+      ? options.promptCacheKey
+      : null;
+    if (!key) return this.state.requestSession;
+
+    if (this.state.key === key) {
+      clearReusableTurnSessionTimer(this.state);
+      if (!reusableTurnSessions.has(key)) reusableTurnSessions.set(key, this.state);
+      this.state.inUse = true;
+      return this.state.requestSession;
+    }
+
+    let reusable = reusableTurnSessions.get(key);
+    if (!reusable) {
+      reusable = createTurnSessionState(key);
+      reusableTurnSessions.set(key, reusable);
+    }
+
+    const previousReusableRequestSession = reusable.requestSession;
+    clearReusableTurnSessionTimer(reusable);
+    reusable.inUse = true;
+    this.state = reusable;
+    return previousReusableRequestSession;
+  }
+
+  private resetIncrementalStateFields(): void {
+    this.state.lastFullRequestBody = null;
+    this.state.lastResponseId = null;
+  }
+
+  private removeReusableStateFromCache(): void {
+    if (this.state.key && reusableTurnSessions.get(this.state.key) === this.state) {
+      reusableTurnSessions.delete(this.state.key);
+    }
+  }
 
   async getVerifiedRequestSession(
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
     opts: { forceRefresh?: boolean } = {},
   ): Promise<OpenAIRequestSession> {
-    if (this.requestSession && !opts.forceRefresh) return this.requestSession;
-    this.requestSession = await getVerifiedSessionWithRetries(callbacks, signal, opts);
-    return this.requestSession;
+    if (this.state.requestSession && !opts.forceRefresh) return this.state.requestSession;
+    this.state.requestSession = await getVerifiedSessionWithRetries(callbacks, signal, opts);
+    return this.state.requestSession;
   }
 
   async getSocketLease(
@@ -130,22 +241,33 @@ export class OpenAITurnSession implements ProviderTurnSession {
     callbacks: StreamCallbacks,
     options: StreamOptions,
   ): Promise<OpenAIWebSocketLease> {
-    if (this.socket && !this.socket.isClosed()) return { socket: this.socket, reused: true };
-    if (this.socket?.isClosed()) {
+    const previousRequestSession = this.adoptReusableState(options);
+    if (sessionsHaveDifferentAccounts(previousRequestSession, session)) {
+      this.state.socket?.destroy();
+      resetReusableTurnSessionState(this.state);
+      this.state.inUse = true;
+      this.resetIncrementalStateFields();
+    }
+    this.state.requestSession = session;
+
+    if (this.state.socket && !this.state.socket.isClosed()) {
+      return { socket: this.state.socket, reused: true };
+    }
+    if (this.state.socket?.isClosed()) {
       // Match Codex's turn-session behavior: if the physical websocket died
       // between provider rounds, reconnect with the same turn-state header but
       // do not keep using `previous_response_id` on the fresh connection. The
       // safe fallback is a full replay on the new socket.
-      this.socket.destroy();
-      this.socket = null;
+      this.state.socket.destroy();
+      this.state.socket = null;
       this.resetIncrementalState();
     }
 
     const headers = {
       ...buildOpenAIRequestHeaders(session, options),
     };
-    if (this.turnState) {
-      headers["x-codex-turn-state"] = this.turnState;
+    if (this.state.turnState) {
+      headers["x-codex-turn-state"] = this.state.turnState;
     }
     const cookieHeader = buildCloudflareCookieHeader(OPENAI_CODEX_RESPONSES_WS_URL);
     if (cookieHeader) {
@@ -153,23 +275,23 @@ export class OpenAITurnSession implements ProviderTurnSession {
     }
 
     const connection = await connectOpenAIWebSocket(OPENAI_CODEX_RESPONSES_WS_URL, headers, options.signal);
-    this.socket = connection.socket;
+    this.state.socket = connection.socket;
     storeCloudflareCookiesFromHeaders(OPENAI_CODEX_RESPONSES_WS_URL, connection.headers);
     callbacks.onHeaders?.(connection.headers);
     const nextTurnState = connection.headers.get("x-codex-turn-state");
-    if (nextTurnState && !this.turnState) {
-      this.turnState = nextTurnState;
+    if (nextTurnState && !this.state.turnState) {
+      this.state.turnState = nextTurnState;
     }
-    return { socket: this.socket, reused: false };
+    return { socket: this.state.socket, reused: false };
   }
 
   prepareRequestBody(fullRequestBody: Record<string, unknown>): Record<string, unknown> {
-    if (!this.lastFullRequestBody || !this.lastResponseId) return fullRequestBody;
-    if (!valuesEqual(cloneWithoutInput(this.lastFullRequestBody), cloneWithoutInput(fullRequestBody))) {
+    if (!this.state.lastFullRequestBody || !this.state.lastResponseId) return fullRequestBody;
+    if (!valuesEqual(cloneWithoutInput(this.state.lastFullRequestBody), cloneWithoutInput(fullRequestBody))) {
       return fullRequestBody;
     }
 
-    const previousInput = this.lastFullRequestBody.input;
+    const previousInput = this.state.lastFullRequestBody.input;
     const currentInput = fullRequestBody.input;
     if (!Array.isArray(previousInput) || !Array.isArray(currentInput)) return fullRequestBody;
     if (!inputStartsWith(currentInput, previousInput)) return fullRequestBody;
@@ -183,40 +305,73 @@ export class OpenAITurnSession implements ProviderTurnSession {
 
     return {
       ...fullRequestBody,
-      previous_response_id: this.lastResponseId,
+      previous_response_id: this.state.lastResponseId,
       input: incrementalInput,
     };
   }
 
   recordSuccessfulRequest(fullRequestBody: Record<string, unknown>, result: StreamResult): void {
     const responseId = result.assistantProviderData?.openai?.responseId;
-    this.lastFullRequestBody = fullRequestBody;
-    this.lastResponseId = responseId || null;
-    // Deliberately DO NOT close `this.socket` here. `response.completed` marks
+    this.state.lastFullRequestBody = fullRequestBody;
+    this.state.lastResponseId = responseId || null;
+    // Deliberately DO NOT close the socket here. `response.completed` marks
     // the end of one provider round, not necessarily the end of the user's
     // assistant message: if tools were requested, the next round must reuse this
     // websocket and send the tool-result delta on the same Codex turn session.
   }
 
   resetIncrementalState(): void {
-    this.lastFullRequestBody = null;
-    this.lastResponseId = null;
+    this.resetIncrementalStateFields();
   }
 
   resetConnection(): void {
-    this.socket?.destroy();
-    this.socket = null;
+    clearReusableTurnSessionTimer(this.state);
+    this.state.socket?.destroy();
+    this.state.socket = null;
     this.resetIncrementalState();
   }
 
   close(): void {
-    this.socket?.close();
-    this.socket = null;
+    clearReusableTurnSessionTimer(this.state);
+    this.state.inUse = false;
+
+    if (!this.state.key) {
+      this.state.socket?.close();
+      this.state.socket = null;
+      return;
+    }
+
+    if (!this.state.socket || this.state.socket.isClosed()) {
+      this.removeReusableStateFromCache();
+      resetReusableTurnSessionState(this.state);
+      return;
+    }
+
+    reusableTurnSessions.set(this.state.key, this.state);
+    const timeoutMs = currentWebSocketIdleTimeoutMs();
+    if (timeoutMs <= 0) {
+      this.removeReusableStateFromCache();
+      closeReusableTurnSession(this.state);
+      return;
+    }
+
+    const state = this.state;
+    const timer = setTimeout(() => {
+      state.idleTimer = null;
+      if (state.inUse) return;
+      if (state.key && reusableTurnSessions.get(state.key) === state) {
+        reusableTurnSessions.delete(state.key);
+      }
+      state.socket?.close();
+      resetReusableTurnSessionState(state);
+    }, timeoutMs);
+    (timer as { unref?: () => void }).unref?.();
+    state.idleTimer = timer;
   }
 
   destroy(): void {
-    this.socket?.destroy();
-    this.socket = null;
+    this.removeReusableStateFromCache();
+    destroyReusableTurnSession(this.state);
   }
 }
 

@@ -4,11 +4,13 @@ import type { ApiMessage } from "../../messages";
 import {
   buildOpenAIInputForTest,
   buildRequestBodyForTest,
+  clearOpenAIWebSocketSessionCacheForTest,
   createOpenAITurnSession,
   isRetriableOpenAIStatusForTest,
   mergeReasoningSummariesForTest,
   parseOpenAIUsageLimitErrorForTest,
   readOpenAIEventsForTest,
+  setOpenAIWebSocketIdleTimeoutMsForTest,
   shouldRetryOpenAIUsageLimitResetForTest,
   streamMessage,
   streamMessageWithSession,
@@ -25,6 +27,7 @@ interface MockWebSocketCall {
   url: string;
   headers: Record<string, string>;
   sent: string[];
+  isClosed: () => boolean;
 }
 
 type MockWebSocketMessage =
@@ -43,11 +46,11 @@ function mockOpenAIWebSocket(
   setOpenAIWebSocketConnectorForTest(mock(async (url, headers, signal) => {
     const config = connections.shift();
     if (!config) throw new Error("unexpected websocket connection");
-    const call: MockWebSocketCall = { url, headers, sent: [] };
+    let closed = false;
+    const call: MockWebSocketCall = { url, headers, sent: [], isClosed: () => closed };
     calls.push(call);
     if (config.error) throw config.error;
     const queued = [...(config.events ?? []).map((event) => ({ type: "text" as const, text: JSON.stringify(event) }))];
-    let closed = false;
     const socket = {
       async sendText(text: string) {
         call.sent.push(text);
@@ -68,6 +71,8 @@ function mockOpenAIWebSocket(
 afterEach(() => {
   globalThis.fetch = originalFetch;
   setOpenAIWebSocketConnectorForTest(null);
+  clearOpenAIWebSocketSessionCacheForTest();
+  setOpenAIWebSocketIdleTimeoutMsForTest(null);
   clearCloudflareCookiesForTest();
   clearProviderAuth("openai");
   writeExocortexConfig(defaultExocortexConfig());
@@ -539,6 +544,7 @@ describe("OpenAI replay input", () => {
     turnSession.close();
   });
 
+
   test("silently reconnects a reused websocket that closes before the follow-up response starts", async () => {
     const retryCalls: unknown[][] = [];
     const onRetry = mock((...args: unknown[]) => { retryCalls.push(args); });
@@ -611,6 +617,90 @@ describe("OpenAI replay input", () => {
     expect(onRetry).not.toHaveBeenCalled();
     expect(retryCalls).toEqual([]);
     turnSession.close();
+  });
+
+  test("reuses a completed conversation websocket during the idle persistence window", async () => {
+    const calls = mockOpenAIWebSocket([{ events: [
+      { type: "response.created", response: { id: "resp_1" } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1" } },
+      { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, content_index: 0, delta: "hello" },
+      { type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 2, output_tokens: 1 }, output: [{ type: "message", id: "msg_1", content: [{ type: "output_text", text: "hello" }] }] } },
+      { type: "response.created", response: { id: "resp_2" } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_2" } },
+      { type: "response.output_text.delta", item_id: "msg_2", output_index: 0, content_index: 0, delta: "again" },
+      { type: "response.completed", response: { id: "resp_2", usage: { input_tokens: 1, output_tokens: 1 }, output: [{ type: "message", id: "msg_2", content: [{ type: "output_text", text: "again" }] }] } },
+    ] }]);
+
+    const callbacks = {
+      onText: () => {},
+      onThinking: () => {},
+    };
+    const firstMessages: ApiMessage[] = [{ role: "user", content: "hi" }];
+    const firstSession = createOpenAITurnSession();
+    const first = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      firstMessages,
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-1", turnSession: firstSession },
+    );
+
+    firstSession.close();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].isClosed()).toBe(false);
+
+    const secondSession = createOpenAITurnSession();
+    const secondMessages: ApiMessage[] = [
+      ...firstMessages,
+      {
+        role: "assistant",
+        content: [{ type: "text", text: first.text }],
+        providerData: first.assistantProviderData,
+      },
+      { role: "user", content: "and now?" },
+    ];
+    const second = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      secondMessages,
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-1", turnSession: secondSession },
+    );
+
+    expect(second.text).toBe("again");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sent).toHaveLength(2);
+    const secondBody = JSON.parse(calls[0].sent[1]);
+    expect(secondBody.previous_response_id).toBe("resp_1");
+    expect(secondBody.input).toEqual([
+      { type: "message", role: "user", content: [{ type: "input_text", text: "and now?" }] },
+    ]);
+    secondSession.destroy();
+  });
+
+  test("closes an idle reusable conversation websocket after the persistence timeout", async () => {
+    setOpenAIWebSocketIdleTimeoutMsForTest(10);
+    const calls = mockOpenAIWebSocket([{ events: [
+      { type: "response.created", response: { id: "resp_1" } },
+      { type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 1, output_tokens: 1 }, output: [] } },
+    ] }]);
+
+    const turnSession = createOpenAITurnSession();
+    await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [{ role: "user", content: "hello" }],
+      "gpt-5.4",
+      {
+        onText: () => {},
+        onThinking: () => {},
+      },
+      { promptCacheKey: "conv-1", turnSession },
+    );
+
+    turnSession.close();
+    expect(calls[0].isClosed()).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls[0].isClosed()).toBe(true);
   });
 
   test("does not send previous_response_id to the codex backend", () => {
