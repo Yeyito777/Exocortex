@@ -16,7 +16,7 @@ import { clearProviderAuth, saveProviderAuth } from "../../store";
 import { OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_TOKEN_URL } from "./constants";
 import { clearCloudflareCookiesForTest } from "./cookies";
 import type { StoredOpenAIAuth } from "./session";
-import { setOpenAIWebSocketConnectorForTest, type OpenAIWebSocketConnection } from "./websocket";
+import { OpenAIWebSocketHttpError, setOpenAIWebSocketConnectorForTest, type OpenAIWebSocketConnection } from "./websocket";
 
 const originalFetch = globalThis.fetch;
 
@@ -29,6 +29,7 @@ interface MockWebSocketCall {
 function mockOpenAIWebSocket(
   connections: Array<{
     events?: Array<Record<string, unknown>>;
+    error?: Error;
     headers?: HeadersInit;
     nextMessage?: (signal?: AbortSignal) => Promise<{ type: "text"; text: string } | { type: "close" }>;
   }>,
@@ -39,6 +40,7 @@ function mockOpenAIWebSocket(
     if (!config) throw new Error("unexpected websocket connection");
     const call: MockWebSocketCall = { url, headers, sent: [] };
     calls.push(call);
+    if (config.error) throw config.error;
     const queued = [...(config.events ?? []).map((event) => ({ type: "text" as const, text: JSON.stringify(event) }))];
     const socket = {
       async sendText(text: string) {
@@ -210,6 +212,59 @@ describe("OpenAI replay input", () => {
     )).rejects.toThrow(/usage limit/i);
     expect(onRetry).not.toHaveBeenCalled();
     expect(calls).toHaveLength(1);
+  });
+
+  test("retries empty-body OpenAI websocket 403 handshake errors", async () => {
+    const retryCalls: unknown[][] = [];
+    const onRetry = mock((...args: unknown[]) => { retryCalls.push(args); });
+    const calls = mockOpenAIWebSocket([
+      { error: new OpenAIWebSocketHttpError(403, new Headers(), "") },
+      { events: [
+        { type: "response.created", response: { id: "resp_1" } },
+        { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1" } },
+        { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, content_index: 0, delta: "ok" },
+        { type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 1, output_tokens: 1 }, output: [{ type: "message", id: "msg_1", content: [{ type: "output_text", text: "ok" }] }] } },
+      ] },
+    ]);
+
+    const result = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [{ role: "user", content: "hello" }],
+      "gpt-5.4",
+      {
+        onText: () => {},
+        onThinking: () => {},
+        onRetry,
+      },
+    );
+
+    expect(result.text).toBe("ok");
+    expect(calls).toHaveLength(2);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(retryCalls[0][0]).toBe(1);
+    expect(retryCalls[0][1]).toBe(8);
+    expect(retryCalls[0][2]).toBe("HTTP 403");
+    expect(retryCalls[0][4]).toEqual({ kind: "transient" });
+  });
+
+  test("does not retry descriptive OpenAI websocket 403 handshake errors", async () => {
+    const onRetry = mock(() => {});
+    const calls = mockOpenAIWebSocket([
+      { error: new OpenAIWebSocketHttpError(403, new Headers(), "Forbidden by policy") },
+    ]);
+
+    await expect(streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [{ role: "user", content: "hello" }],
+      "gpt-5.4",
+      {
+        onText: () => {},
+        onThinking: () => {},
+        onRetry,
+      },
+    )).rejects.toThrow(/Forbidden by policy/);
+    expect(calls).toHaveLength(1);
+    expect(onRetry).not.toHaveBeenCalled();
   });
 
   test("retries transient OpenAI session refresh connection errors", async () => {

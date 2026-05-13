@@ -48,6 +48,18 @@ function isOpenAIAuthFailure(err: unknown): boolean {
   return err instanceof AuthError || (err instanceof Error && err.name === "AuthError");
 }
 
+function isRetriableOpenAIHttpError(err: OpenAIWebSocketHttpError): boolean {
+  // OpenAI/Cloudflare occasionally rejects the Codex websocket handshake with a
+  // bare 403 and no response body. That has behaved like a transient edge
+  // refusal rather than an authorization error, while descriptive 403 bodies
+  // should still fail fast so the user sees the actual policy/auth message.
+  return RETRIABLE_STATUS_CODES.has(err.status) || (err.status === 403 && err.body.trim() === "");
+}
+
+function formatOpenAIErrorBody(body: string): string {
+  return body.trim() === "" ? "<empty body>" : body;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -258,15 +270,15 @@ export async function streamMessageWithSession(
           throw new Error(`OpenAI API error (429) after ${MAX_RETRIES} retries: ${err.body.slice(0, 200)}`);
         }
 
-        if (RETRIABLE_STATUS_CODES.has(err.status)) {
+        if (isRetriableOpenAIHttpError(err)) {
           if (retryAttempt < MAX_RETRIES) {
             await retryBackoff(retryAttempt++, `HTTP ${err.status}`, callbacks, signal);
             continue;
           }
-          throw new Error(`OpenAI API error (${err.status}) after ${MAX_RETRIES} retries: ${err.body.slice(0, 200)}`);
+          throw new Error(`OpenAI API error (${err.status}) after ${MAX_RETRIES} retries: ${formatOpenAIErrorBody(err.body).slice(0, 200)}`);
         }
 
-        throw new Error(`OpenAI API error (${err.status}): ${err.body}`);
+        throw new Error(`OpenAI API error (${err.status}): ${formatOpenAIErrorBody(err.body)}`);
       }
 
       if (retryAttempt < MAX_RETRIES) {
