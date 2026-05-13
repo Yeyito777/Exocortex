@@ -233,12 +233,22 @@ export class OpenAIWebSocketConnection {
   private closed = false;
   private fragmentedOpcode: number | null = null;
   private fragments: Buffer[] = [];
+  private readonly messages: OpenAIWebSocketMessage[] = [];
+  private pendingRead: {
+    resolve: (message: OpenAIWebSocketMessage) => void;
+    reject: (err: Error) => void;
+    cleanup: () => void;
+  } | null = null;
+  private terminalError: Error | null = null;
+  private closeQueued = false;
 
   constructor(private readonly socket: Socket, leftover: Buffer = Buffer.alloc(0)) {
     this.buffer = leftover;
-    this.socket.once("close", () => {
-      this.closed = true;
-    });
+    this.socket.on("data", this.onData);
+    this.socket.once("error", this.onError);
+    this.socket.once("close", this.onClose);
+    this.socket.resume?.();
+    this.processBuffer();
   }
 
   async sendText(text: string, signal?: AbortSignal): Promise<void> {
@@ -262,9 +272,11 @@ export class OpenAIWebSocketConnection {
 
   async nextMessage(timeoutMs: number, signal?: AbortSignal): Promise<OpenAIWebSocketMessage> {
     if (signal?.aborted) throw createAbortError();
-    const existing = this.tryReadMessage();
+    const existing = this.messages.shift();
     if (existing) return existing;
+    if (this.terminalError) throw this.terminalError;
     if (this.closed) return { type: "close" };
+    if (this.pendingRead) throw new Error("OpenAI websocket already has a pending read");
 
     return await new Promise((resolve, reject) => {
       let settled = false;
@@ -272,34 +284,25 @@ export class OpenAIWebSocketConnection {
       const cleanup = () => {
         clearTimeout(timer);
         signal?.removeEventListener("abort", onAbort);
-        this.socket.off("data", onData);
-        this.socket.off("error", fail);
-        this.socket.off("close", onClose);
       };
       const finish = (message: OpenAIWebSocketMessage) => {
         if (settled) return;
         settled = true;
+        this.pendingRead = null;
         cleanup();
         resolve(message);
       };
       const fail = (err: Error) => {
         if (settled) return;
         settled = true;
+        this.pendingRead = null;
         cleanup();
         reject(err);
       };
       const onAbort = () => fail(createAbortError());
-      const onClose = () => finish({ type: "close" });
-      const onData = (chunk: Buffer) => {
-        this.buffer = Buffer.concat([this.buffer, chunk]);
-        const message = this.tryReadMessage();
-        if (message) finish(message);
-      };
 
       signal?.addEventListener("abort", onAbort, { once: true });
-      this.socket.on("data", onData);
-      this.socket.once("error", fail);
-      this.socket.once("close", onClose);
+      this.pendingRead = { resolve: finish, reject: fail, cleanup };
     });
   }
 
@@ -314,11 +317,65 @@ export class OpenAIWebSocketConnection {
 
   destroy(): void {
     this.closed = true;
+    this.pendingRead?.reject(new Error("OpenAI websocket is closed"));
+    this.detachSocketListeners();
     this.socket.destroy();
   }
 
   isClosed(): boolean {
     return this.closed || this.socket.destroyed;
+  }
+
+  private readonly onData = (chunk: Buffer): void => {
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    this.processBuffer();
+  };
+
+  private readonly onError = (err: Error): void => {
+    this.terminalError = err;
+    this.closed = true;
+    this.pendingRead?.reject(err);
+  };
+
+  private readonly onClose = (): void => {
+    this.closed = true;
+    if (!this.closeQueued && !this.terminalError) {
+      this.queueMessage({ type: "close" });
+    }
+  };
+
+  private detachSocketListeners(): void {
+    this.socket.off("data", this.onData);
+    this.socket.off("error", this.onError);
+    this.socket.off("close", this.onClose);
+  }
+
+  private queueMessage(message: OpenAIWebSocketMessage): void {
+    if (message.type === "close") this.closeQueued = true;
+    if (this.pendingRead) {
+      this.pendingRead.resolve(message);
+      return;
+    }
+    this.messages.push(message);
+  }
+
+  private failReads(err: Error): void {
+    this.terminalError = err;
+    this.closed = true;
+    this.pendingRead?.reject(err);
+    this.socket.destroy();
+  }
+
+  private processBuffer(): void {
+    try {
+      while (!this.closed) {
+        const message = this.tryReadMessage();
+        if (!message) return;
+        this.queueMessage(message);
+      }
+    } catch (err) {
+      this.failReads(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   private tryReadMessage(): OpenAIWebSocketMessage | null {
@@ -349,9 +406,14 @@ export class OpenAIWebSocketConnection {
             ? { type: "text", text: frame.payload.toString("utf8") }
             : { type: "binary", data: frame.payload };
         case 0x8: {
-          this.closed = true;
           const code = frame.payload.length >= 2 ? frame.payload.readUInt16BE(0) : undefined;
           const reason = frame.payload.length > 2 ? frame.payload.subarray(2).toString("utf8") : undefined;
+          this.closed = true;
+          this.closeQueued = true;
+          try {
+            this.socket.write(encodeFrame(0x8, frame.payload));
+          } catch {}
+          this.socket.end();
           return { type: "close", code, reason };
         }
         case 0x9:
