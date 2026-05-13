@@ -47,6 +47,7 @@ import { handleSearchBarKey, jumpToSearchMatch, openCommandBar, openSearchBar } 
 import { theme } from "./theme";
 import { graphemeBoundaryAtOrAfter } from "./graphemes";
 import { sanitizePromptTextForInsertion } from "./prompttext";
+import { log } from "./log";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -280,6 +281,7 @@ export function handleFocusedKey(
       return { type: "load_tool_outputs", convId: state.convId };
     case "paste_image": {
       if (!modelSupportsImages(state)) {
+        log("warn", `tui: clipboard image paste failed: image inputs are not supported by ${state.provider}/${state.model}`);
         pushSystemMessage(state, `✗ Image inputs are not supported by ${state.provider}/${state.model}. Switch to a vision-capable model to paste images.`, theme.error);
         return { type: "handled" };
       }

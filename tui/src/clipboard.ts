@@ -7,10 +7,11 @@
  * Supports X11 (xclip), Wayland (wl-paste), and Windows (PowerShell).
  */
 
-import { spawnSync } from "child_process";
+import { spawnSync, type SpawnSyncReturns } from "child_process";
 import { readFileSync, unlinkSync } from "fs";
 import { isWindows } from "@exocortex/shared/paths";
 import type { ImageAttachment, ImageMediaType } from "./messages";
+import { log } from "./log";
 
 // ── Backend detection ────────────────────────────────────────────
 
@@ -40,6 +41,48 @@ function detectBackend(): ImageClipboardBackend {
 
   backend = null;
   return backend;
+}
+
+// ── Diagnostics ───────────────────────────────────────────────────
+
+const LOG_SNIPPET_CHARS = 240;
+
+function compactOneLine(text: string): string {
+  return text.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function snippet(text: string, maxChars = LOG_SNIPPET_CHARS): string {
+  const compact = compactOneLine(text);
+  return compact.length > maxChars ? `${compact.slice(0, maxChars)}…` : compact;
+}
+
+function decodeOutput(output: Buffer | string | null | undefined): string {
+  if (!output) return "";
+  return typeof output === "string" ? output : output.toString("utf8");
+}
+
+function targetList(available: string): string {
+  const targets = available
+    .split(/[\r\n]+/)
+    .map(t => t.trim())
+    .filter(Boolean);
+  if (targets.length === 0) return "<none>";
+  const shown = targets.slice(0, 20).join(", ");
+  return targets.length > 20 ? `${shown}, … (+${targets.length - 20} more)` : shown;
+}
+
+function spawnFailureSummary(result: SpawnSyncReturns<Buffer>): string {
+  const parts: string[] = [];
+  if (result.status !== null) parts.push(`status=${result.status}`);
+  if (result.signal) parts.push(`signal=${result.signal}`);
+  if (result.error) parts.push(`error=${result.error.message}`);
+  const stderr = snippet(decodeOutput(result.stderr));
+  if (stderr) parts.push(`stderr=${JSON.stringify(stderr)}`);
+  return parts.length > 0 ? parts.join(", ") : "no status/error/stderr reported";
+}
+
+function logImagePasteFailure(reason: string): void {
+  log("warn", `tui: clipboard image paste failed: ${reason}`);
 }
 
 // ── Image formats ────────────────────────────────────────────────
@@ -80,40 +123,100 @@ function buildImageAttachment(mediaType: ImageMediaType, buf: Buffer): ImageAtta
   };
 }
 
+function invalidImageReason(expected: ImageMediaType, buf: Buffer): string | null {
+  const actual = detectImageMediaType(buf);
+  if (actual === expected) return null;
+  return `target ${expected} returned ${buf.length} byte(s), but detected ${actual ?? "non-image/unknown"} bytes`;
+}
+
 // ── Backend implementations ──────────────────────────────────────
 
 function readImageXclip(): ImageAttachment | null {
   const targets = spawnSync("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], { timeout: 1000 });
-  if (targets.status !== 0 || !targets.stdout) return null;
+  if (targets.status !== 0) {
+    logImagePasteFailure(`xclip TARGETS query failed (${spawnFailureSummary(targets)})`);
+    return null;
+  }
+  if (!targets.stdout || targets.stdout.length === 0) {
+    logImagePasteFailure("xclip TARGETS query returned no clipboard targets");
+    return null;
+  }
   const available = targets.stdout.toString();
+  const attempted: string[] = [];
 
   for (const fmt of IMAGE_FORMATS) {
     if (!available.includes(fmt.target)) continue;
+    attempted.push(fmt.target);
     const result = spawnSync("xclip", ["-selection", "clipboard", "-t", fmt.target, "-o"], {
       timeout: 5000,
       maxBuffer: 50 * 1024 * 1024,  // 50 MB
     });
-    if (result.status !== 0 || !result.stdout || result.stdout.length === 0) continue;
-    const attachment = buildImageAttachment(fmt.mime, Buffer.from(result.stdout));
+    if (result.status !== 0) {
+      logImagePasteFailure(`xclip read for ${fmt.target} failed (${spawnFailureSummary(result)})`);
+      continue;
+    }
+    if (!result.stdout || result.stdout.length === 0) {
+      logImagePasteFailure(`xclip read for ${fmt.target} returned an empty payload`);
+      continue;
+    }
+    const buf = Buffer.from(result.stdout);
+    const invalidReason = invalidImageReason(fmt.mime, buf);
+    if (invalidReason) {
+      logImagePasteFailure(`xclip ${invalidReason}`);
+      continue;
+    }
+    const attachment = buildImageAttachment(fmt.mime, buf);
     if (attachment) return attachment;
+  }
+  if (attempted.length === 0) {
+    logImagePasteFailure(`xclip clipboard has no supported image target; available targets: ${targetList(available)}`);
+  } else {
+    logImagePasteFailure(`xclip found supported target(s) [${attempted.join(", ")}] but none produced a valid supported image; available targets: ${targetList(available)}`);
   }
   return null;
 }
 
 function readImageWayland(): ImageAttachment | null {
   const targets = spawnSync("wl-paste", ["--list-types"], { timeout: 1000 });
-  if (targets.status !== 0 || !targets.stdout) return null;
+  if (targets.status !== 0) {
+    logImagePasteFailure(`wl-paste --list-types failed (${spawnFailureSummary(targets)})`);
+    return null;
+  }
+  if (!targets.stdout || targets.stdout.length === 0) {
+    logImagePasteFailure("wl-paste --list-types returned no clipboard targets");
+    return null;
+  }
   const available = targets.stdout.toString();
+  const attempted: string[] = [];
 
   for (const fmt of IMAGE_FORMATS) {
     if (!available.includes(fmt.target)) continue;
+    attempted.push(fmt.target);
     const result = spawnSync("wl-paste", ["--type", fmt.target], {
       timeout: 5000,
       maxBuffer: 50 * 1024 * 1024,  // 50 MB
     });
-    if (result.status !== 0 || !result.stdout || result.stdout.length === 0) continue;
-    const attachment = buildImageAttachment(fmt.mime, Buffer.from(result.stdout));
+    if (result.status !== 0) {
+      logImagePasteFailure(`wl-paste read for ${fmt.target} failed (${spawnFailureSummary(result)})`);
+      continue;
+    }
+    if (!result.stdout || result.stdout.length === 0) {
+      logImagePasteFailure(`wl-paste read for ${fmt.target} returned an empty payload`);
+      continue;
+    }
+    const buf = Buffer.from(result.stdout);
+    const invalidReason = invalidImageReason(fmt.mime, buf);
+    if (invalidReason) {
+      logImagePasteFailure(`wl-paste ${invalidReason}`);
+      continue;
+    }
+    const attachment = buildImageAttachment(fmt.mime, buf);
     if (attachment) return attachment;
+  }
+  if (attempted.length === 0) {
+    logImagePasteFailure(`wl-paste clipboard has no supported image target; available targets: ${targetList(available)}`);
+  } else {
+    logImagePasteFailure(`wl-paste found supported target(s) [${attempted.join(", ")}] but none produced a valid supported image; available targets: ${targetList(available)}`);
   }
   return null;
 }
@@ -135,14 +238,32 @@ function readImagePowerShell(): ImageAttachment | null {
   ].join("\n");
 
   const result = spawnSync("powershell", ["-NoProfile", "-Command", script], { timeout: 5000 });
-  if (result.status !== 0 || !result.stdout) return null;
+  if (result.status !== 0) {
+    logImagePasteFailure(`PowerShell clipboard image extraction failed (${spawnFailureSummary(result)})`);
+    return null;
+  }
+  if (!result.stdout || result.stdout.length === 0) {
+    logImagePasteFailure("PowerShell clipboard image extraction returned no temp file path");
+    return null;
+  }
 
   const tmpPath = result.stdout.toString().trim();
-  if (!tmpPath) return null;
+  if (!tmpPath) {
+    logImagePasteFailure("PowerShell clipboard image extraction returned an empty temp file path");
+    return null;
+  }
 
   try {
     const buf = readFileSync(tmpPath);
-    if (buf.length === 0) return null;
+    if (buf.length === 0) {
+      logImagePasteFailure(`PowerShell clipboard image extraction wrote an empty temp file: ${tmpPath}`);
+      return null;
+    }
+    const invalidReason = invalidImageReason("image/png", buf);
+    if (invalidReason) {
+      logImagePasteFailure(`PowerShell ${invalidReason}`);
+      return null;
+    }
     return buildImageAttachment("image/png", buf);
   } finally {
     try { unlinkSync(tmpPath); } catch { /* already gone */ }
@@ -155,11 +276,14 @@ function readImagePowerShell(): ImageAttachment | null {
 export function readClipboardImage(): ImageAttachment | null {
   try {
     const be = detectBackend();
-    if (!be) return null;
+    if (!be) {
+      logImagePasteFailure("no clipboard image backend available (need xclip on X11, wl-paste on Wayland, or PowerShell on Windows)");
+      return null;
+    }
     if (be === "powershell") return readImagePowerShell();
     return be === "wl" ? readImageWayland() : readImageXclip();
-  } catch {
-    // Missing tool or unexpected error — degrade silently
+  } catch (err) {
+    logImagePasteFailure(`unexpected error while reading clipboard image: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
