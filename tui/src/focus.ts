@@ -46,6 +46,7 @@ import { processVimKey, handleScrollAction, mapSidebarResult, type AsyncUiMutati
 import { handleSearchBarKey, jumpToSearchMatch, openCommandBar, openSearchBar } from "./search";
 import { theme } from "./theme";
 import { graphemeBoundaryAtOrAfter } from "./graphemes";
+import { sanitizePromptTextForInsertion } from "./prompttext";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -170,8 +171,8 @@ export function handleFocusedKey(
 
   // Bracketed paste — insert directly into prompt buffer, newlines preserved
   if (key.type === "paste" && key.text) {
-    // Normalize line endings: \r\n → \n, stray \r → \n
-    const text = key.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const text = sanitizePromptTextForInsertion(key.text);
+    if (!text) return { type: "handled" };
     pushUndo(state.undo, state.inputBuffer, state.cursorPos);
     const buf = state.inputBuffer;
     const pos = graphemeBoundaryAtOrAfter(buf, state.cursorPos);

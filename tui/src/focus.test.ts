@@ -177,6 +177,29 @@ describe("image paste guard", () => {
   });
 });
 
+describe("prompt control-character sanitization", () => {
+  test("bracketed paste strips terminal controls before storing prompt text", () => {
+    const state = createInitialState();
+
+    const result = handleFocusedKey({ type: "paste", text: "E\x1b[31mred\x1b[0m\u009b32mgreen\x07\r\n\tok" }, state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("Eredgreen\n    ok");
+    expect(state.cursorPos).toBe(state.inputBuffer.length);
+    expect(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/.test(state.inputBuffer)).toBe(false);
+  });
+
+  test("typed character events cannot insert hidden terminal controls", () => {
+    const state = createInitialState();
+
+    const result = handleFocusedKey({ type: "char", char: "E\x1b[31m!\u009b32m" }, state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("E!");
+    expect(state.cursorPos).toBe(2);
+  });
+});
+
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
 }

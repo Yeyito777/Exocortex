@@ -13,6 +13,7 @@ import { updateAutocomplete, cycleAutocomplete, tryPathComplete } from "./autoco
 import { getSymbol } from "./symbols";
 import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./graphemes";
 import { sliceByWidth, termWidth } from "./textwidth";
+import { sanitizePromptTextForInsertion } from "./prompttext";
 
 export type PromptKeyResult =
   | { type: "handled" }
@@ -64,12 +65,14 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
   // chars in insert mode, so we don't gate on resolveAction.
   if (key.type === "char") {
     if (!key.char) return HANDLED;
+    const text = sanitizePromptTextForInsertion(key.char);
+    if (!text) return HANDLED;
     const pos = graphemeBoundaryAtOrAfter(state.inputBuffer, state.cursorPos);
     state.inputBuffer =
       state.inputBuffer.slice(0, pos) +
-      key.char +
+      text +
       state.inputBuffer.slice(pos);
-    state.cursorPos = pos + key.char.length;
+    state.cursorPos = pos + text.length;
     updateAutocomplete(state);
     return HANDLED;
   }

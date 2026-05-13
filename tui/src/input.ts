@@ -5,6 +5,7 @@
  * (keyboard, mouse, and bracketed paste).
  */
 
+import { StringDecoder } from "node:string_decoder";
 import { nextGraphemeEnd } from "./graphemes";
 
 export interface KeyEvent {
@@ -181,6 +182,7 @@ const PASTE_END = "\x1b[201~";
  * marker arrives, then releases the complete buffer for parsing.
  */
 export class PasteBuffer {
+  private decoder = new StringDecoder("utf8");
   private buf = "";
   private timer: ReturnType<typeof setTimeout> | null = null;
   /** Safety timeout (ms) — flush incomplete paste so the UI never locks up. */
@@ -198,7 +200,7 @@ export class PasteBuffer {
    * we're still accumulating a multi-chunk paste.
    */
   feed(data: Buffer): string | null {
-    this.buf += data.toString("utf-8");
+    this.buf += this.decoder.write(data);
 
     // Not inside a paste — return immediately
     const startIdx = this.buf.indexOf(PASTE_START);
@@ -213,7 +215,8 @@ export class PasteBuffer {
   }
 
   /** Clear the buffer and return its contents, or null if empty. */
-  private drain(): string | null {
+  private drain(flushDecoder = false): string | null {
+    if (flushDecoder) this.buf += this.decoder.end();
     if (!this.buf) return null;
     const out = this.buf;
     this.buf = "";
@@ -225,7 +228,7 @@ export class PasteBuffer {
     this.clearTimer();
     this.timer = setTimeout(() => {
       this.timer = null;
-      const data = this.drain();
+      const data = this.drain(true);
       if (data) this.onFlush(data);
     }, PasteBuffer.TIMEOUT);
   }
