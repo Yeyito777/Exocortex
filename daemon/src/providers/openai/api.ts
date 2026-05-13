@@ -79,6 +79,30 @@ function isKnownPreviousResponseOutputItem(item: unknown): boolean {
   return item.type === "message" && item.role === "assistant";
 }
 
+/**
+ * OpenAI state for one Exocortex assistant message.
+ *
+ * IMPORTANT: do not close this websocket after an individual OpenAI
+ * `response.completed` event when the model asked for tools.  A single
+ * Exocortex assistant message can require multiple OpenAI response rounds:
+ *
+ *   model -> tool calls -> tool results -> model -> ... -> final text
+ *
+ * Those rounds are one logical Codex websocket conversation. The server-issued
+ * `x-codex-turn-state` and incremental `previous_response_id` flow are tied to
+ * that conversation, so the same websocket must remain alive until the entire
+ * assistant message/response is finished (or the stream errors/aborts). Closing
+ * it at per-round `response.completed` breaks that contract and can cause the
+ * follow-up tool-result request to be sent on the wrong transport/session.
+ *
+ * Lifecycle:
+ * - `getSocket()` opens once and then reuses the socket across tool rounds.
+ * - `recordSuccessfulRequest()` records incremental replay state only; it must
+ *   not close the socket.
+ * - `close()` is called by the orchestrator only after the full assistant
+ *   message completes successfully.
+ * - `destroy()`/`resetConnection()` are for errors, aborts, or retries.
+ */
 export class OpenAITurnSession implements ProviderTurnSession {
   private socket: OpenAIWebSocketConnection | null = null;
   private turnState: string | null = null;
@@ -154,6 +178,10 @@ export class OpenAITurnSession implements ProviderTurnSession {
     const responseId = result.assistantProviderData?.openai?.responseId;
     this.lastFullRequestBody = fullRequestBody;
     this.lastResponseId = responseId || null;
+    // Deliberately DO NOT close `this.socket` here. `response.completed` marks
+    // the end of one provider round, not necessarily the end of the user's
+    // assistant message: if tools were requested, the next round must reuse this
+    // websocket and send the tool-result delta on the same Codex turn session.
   }
 
   resetIncrementalState(): void {
@@ -387,6 +415,10 @@ export async function streamMessageWithSession(
         signal,
       });
       turnSession?.recordSuccessfulRequest(fullRequestBody, result);
+      // Non-turn-session calls own exactly one websocket/request and can close
+      // immediately. Turn-session calls are different: the websocket is owned by
+      // OpenAITurnSession and must survive across tool-result follow-up rounds
+      // until the orchestrator closes the full assistant message session.
       if (!turnSession) socket.close();
       return result;
     } catch (err) {
