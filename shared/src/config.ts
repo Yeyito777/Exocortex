@@ -71,11 +71,24 @@ export interface AgentConfig {
   workingDirectory?: string;
 }
 
+export type PingMode = "sound" | "notif" | "both";
+
+export interface PingConfig {
+  /** What the TUI should do when an assistant stream finishes. */
+  mode?: PingMode | null;
+  /** Sound file used by mode "sound" or "both". */
+  sound?: string | null;
+}
+
 export interface ExocortexConfig {
   /** Active TUI theme name. */
   theme?: string;
   /** Agent/runtime behavior. */
   agent?: AgentConfig;
+  /** TUI ping behavior when an assistant stream finishes. */
+  ping?: PingConfig;
+  /** Legacy pre-/ping sound setting. Prefer ping.sound for new writes. */
+  sound?: string | null;
   /** TUI open-on-enter commands for links and file paths. */
   openers?: OpenersConfig;
   /** Provider-specific behavior. */
@@ -123,7 +136,12 @@ export function defaultOpenersConfig(): OpenersConfig {
 }
 
 export function defaultExocortexConfig(): ExocortexConfig {
-  return { theme: "whale", agent: { workingDirectory: ".exocortex-cwd" }, openers: defaultOpenersConfig() };
+  return {
+    theme: "whale",
+    agent: { workingDirectory: ".exocortex-cwd" },
+    ping: { mode: null, sound: null },
+    openers: defaultOpenersConfig(),
+  };
 }
 
 function expandHome(path: string): string {

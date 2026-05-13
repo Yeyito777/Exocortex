@@ -9,6 +9,7 @@ import { LOGIN_COMMAND } from "./commands/login";
 import { LOGOUT_COMMAND } from "./commands/logout";
 import { MODEL_COMMAND } from "./commands/model";
 import { NEW_COMMAND } from "./commands/new";
+import { PING_COMMAND } from "./commands/ping";
 import { QUIT_COMMAND, EXIT_COMMAND } from "./commands/quit";
 import { RENAME_COMMAND } from "./commands/rename";
 import { REPLAY_COMMAND } from "./commands/replay";
@@ -37,6 +38,7 @@ const commands: SlashCommand[] = [
   TOKENS_COMMAND,
   TIME_COMMAND,
   THEME_COMMAND,
+  PING_COMMAND,
   INSTRUCTIONS_COMMAND,
   SYSTEM_COMMAND,
   LOGIN_COMMAND,

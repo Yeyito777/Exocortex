@@ -3,6 +3,10 @@
   "agent": {
     "workingDirectory": ".exocortex-cwd"
   },
+  "ping": {
+    "mode": null,
+    "sound": null
+  },
   "providers": {
     "openai": {
       "retryOnUsageLimitReset": false

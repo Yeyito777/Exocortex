@@ -32,6 +32,7 @@ import { msUntilNextElapsedSecond } from "./time";
 import type { Event, QueueTiming } from "./protocol";
 import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
 import { startReplayConversation } from "./replay";
+import { runStreamFinishedPing, shouldPingForBackgroundStreamCompletion } from "./ping";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -173,6 +174,11 @@ function onDaemonEvent(event: Event): void {
     startupProfileMark("conversations_list_received", { conversationCount: event.conversations.length });
   }
 
+  const activeConvIdBeforeEvent = state.convId;
+  const wasUpdatedConversationStreaming = event.type === "conversation_updated"
+    ? state.sidebar.conversations.find((c) => c.id === event.summary.id)?.streaming ?? false
+    : false;
+
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
   reattachVisiblePendingVoiceSubmissions();
@@ -191,10 +197,25 @@ function onDaemonEvent(event: Event): void {
   // Clear stream tick on streaming_stopped
   if (event.type === "streaming_stopped") {
     clearStreamTick();
+    runStreamFinishedPing({ completedConvId: event.convId, activeConvId: state.convId });
     // Queue shadows are NOT cleared here — the daemon drains one queued
     // message at a time and re-queues the rest. Each consumed message
     // triggers a user_message event, whose handler in events.ts removes
     // the corresponding shadow individually.
+  }
+
+  // When the user navigates away from a streaming conversation, this TUI
+  // unsubscribes from that conversation and will not receive its scoped
+  // streaming_stopped event. The sidebar still receives conversation_updated;
+  // use its streaming true→false transition as the completion signal for
+  // background conversations.
+  if (event.type === "conversation_updated" && shouldPingForBackgroundStreamCompletion({
+    updatedConvId: event.summary.id,
+    wasStreaming: wasUpdatedConversationStreaming,
+    isStreaming: event.summary.streaming,
+    activeConvIdBeforeUpdate: activeConvIdBeforeEvent,
+  })) {
+    runStreamFinishedPing({ completedConvId: event.summary.id, activeConvId: state.convId });
   }
 
   if (maybeFlushPendingAuthQueue()) return;
