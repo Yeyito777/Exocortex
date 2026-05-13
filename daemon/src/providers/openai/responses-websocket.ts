@@ -5,7 +5,23 @@ import { OpenAIWebSocketHttpError, type OpenAIWebSocketConnection } from "./webs
 
 export interface ReadOpenAIResponsesWebSocketOptions {
   stallTimeoutMs: number;
+  connectionReused?: boolean;
   signal?: AbortSignal;
+}
+
+export class OpenAIWebSocketClosedBeforeResponseStartedError extends Error {
+  readonly code?: number;
+  readonly reason?: string;
+  readonly connectionReused: boolean;
+
+  constructor(args: { code?: number; reason?: string; connectionReused?: boolean; cause?: unknown } = {}) {
+    super(args.reason || "OpenAI websocket closed before response started");
+    this.name = "OpenAIWebSocketClosedBeforeResponseStartedError";
+    this.code = args.code;
+    this.reason = args.reason;
+    this.connectionReused = args.connectionReused === true;
+    if (args.cause !== undefined) this.cause = args.cause;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -76,12 +92,27 @@ export async function readOpenAIResponsesWebSocket(
   options: ReadOpenAIResponsesWebSocketOptions,
 ): Promise<StreamResult> {
   const requestText = JSON.stringify({ type: "response.create", ...requestBody });
-  await socket.sendText(requestText, options.signal);
+  try {
+    await socket.sendText(requestText, options.signal);
+  } catch (err) {
+    if (isWebSocketClosedTransportError(err)) {
+      throw new OpenAIWebSocketClosedBeforeResponseStartedError({ connectionReused: options.connectionReused, cause: err });
+    }
+    throw err;
+  }
 
   const accumulator = createOpenAIEventAccumulator(callbacks);
+  let responseStarted = false;
   while (true) {
     const message = await socket.nextMessage(options.stallTimeoutMs, options.signal);
     if (message.type === "close") {
+      if (!responseStarted) {
+        throw new OpenAIWebSocketClosedBeforeResponseStartedError({
+          code: message.code,
+          reason: message.reason,
+          connectionReused: options.connectionReused,
+        });
+      }
       log("warn", `openai api: websocket closed before completion (code=${message.code ?? "?"}, reason=${message.reason || ""})`);
       throw new Error(message.reason || "OpenAI websocket closed before response.completed");
     }
@@ -102,6 +133,10 @@ export async function readOpenAIResponsesWebSocket(
       continue;
     }
 
+    if (typeof event.type === "string" && event.type.startsWith("response.")) {
+      responseStarted = true;
+    }
+
     const rateLimitHeaders = maybeHeadersFromCodexRateLimits(event);
     if (rateLimitHeaders) callbacks.onHeaders?.(rateLimitHeaders);
 
@@ -110,4 +145,15 @@ export async function readOpenAIResponsesWebSocket(
       return accumulator.finalize();
     }
   }
+}
+
+function isWebSocketClosedTransportError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return msg.includes("websocket is closed")
+    || msg.includes("socket is closed")
+    || msg.includes("socket has been ended")
+    || msg.includes("connection closed")
+    || msg.includes("econnreset")
+    || msg.includes("epipe");
 }

@@ -9,7 +9,7 @@ import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "./cookies";
 import { buildOpenAIInput, buildRequestBody } from "./request";
 import { mergeReasoningSummaries } from "./reasoning";
-import { readOpenAIResponsesWebSocket } from "./responses-websocket";
+import { OpenAIWebSocketClosedBeforeResponseStartedError, readOpenAIResponsesWebSocket } from "./responses-websocket";
 import { readOpenAIEventsForTest } from "./stream";
 import { connectOpenAIWebSocket, OpenAIWebSocketHttpError, type OpenAIWebSocketConnection } from "./websocket";
 import type { ProviderTurnSession, StreamCallbacks, StreamOptions, StreamResult } from "../types";
@@ -46,6 +46,11 @@ interface OpenAIUsageLimitError {
   planType?: string;
   resetAt?: number;
   resetDelayMs?: number;
+}
+
+interface OpenAIWebSocketLease {
+  socket: OpenAIWebSocketConnection;
+  reused: boolean;
 }
 
 function isOpenAITurnSession(value: ProviderTurnSession | undefined): value is OpenAITurnSession {
@@ -96,7 +101,7 @@ function isKnownPreviousResponseOutputItem(item: unknown): boolean {
  * follow-up tool-result request to be sent on the wrong transport/session.
  *
  * Lifecycle:
- * - `getSocket()` opens once and then reuses the socket across tool rounds.
+ * - `getSocketLease()` opens once and then reuses the socket across tool rounds.
  * - `recordSuccessfulRequest()` records incremental replay state only; it must
  *   not close the socket.
  * - `close()` is called by the orchestrator only after the full assistant
@@ -120,12 +125,21 @@ export class OpenAITurnSession implements ProviderTurnSession {
     return this.requestSession;
   }
 
-  async getSocket(
+  async getSocketLease(
     session: OpenAIRequestSession,
     callbacks: StreamCallbacks,
     options: StreamOptions,
-  ): Promise<OpenAIWebSocketConnection> {
-    if (this.socket && !this.socket.isClosed()) return this.socket;
+  ): Promise<OpenAIWebSocketLease> {
+    if (this.socket && !this.socket.isClosed()) return { socket: this.socket, reused: true };
+    if (this.socket?.isClosed()) {
+      // Match Codex's turn-session behavior: if the physical websocket died
+      // between provider rounds, reconnect with the same turn-state header but
+      // do not keep using `previous_response_id` on the fresh connection. The
+      // safe fallback is a full replay on the new socket.
+      this.socket.destroy();
+      this.socket = null;
+      this.resetIncrementalState();
+    }
 
     const headers = {
       ...buildOpenAIRequestHeaders(session, options),
@@ -146,7 +160,7 @@ export class OpenAITurnSession implements ProviderTurnSession {
     if (nextTurnState && !this.turnState) {
       this.turnState = nextTurnState;
     }
-    return this.socket;
+    return { socket: this.socket, reused: false };
   }
 
   prepareRequestBody(fullRequestBody: Record<string, unknown>): Record<string, unknown> {
@@ -313,14 +327,17 @@ function retryBackoff(
   errMsg: string,
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
+  opts: { notify?: boolean; delayMs?: number } = {},
 ): Promise<void> {
   if (signal?.aborted) {
     return Promise.reject(createAbortError());
   }
 
-  const delay = Math.min(1000 * Math.pow(2, attempt), 30000) + Math.random() * 1000;
+  const delay = opts.delayMs ?? (Math.min(1000 * Math.pow(2, attempt), 30000) + Math.random() * 1000);
   const delaySec = Math.round(delay / 1000);
-  callbacks.onRetry?.(attempt + 1, MAX_RETRIES, errMsg, delaySec, { kind: "transient" });
+  if (opts.notify !== false) {
+    callbacks.onRetry?.(attempt + 1, MAX_RETRIES, errMsg, delaySec, { kind: "transient" });
+  }
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -384,15 +401,19 @@ export async function streamMessageWithSession(
   const { signal } = options;
   const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
   let retryAttempt = 0;
+  let silentStaleReconnects = 0;
   let retriedWithoutIncremental = false;
   const fullRequestBody = buildRequestBody(messages, model, options);
 
   while (true) {
     let socket: OpenAIWebSocketConnection | null = null;
+    let connectionReused = false;
     let attemptedIncremental = false;
     try {
       if (turnSession) {
-        socket = await turnSession.getSocket(session, callbacks, options);
+        const lease = await turnSession.getSocketLease(session, callbacks, options);
+        socket = lease.socket;
+        connectionReused = lease.reused;
       } else {
         const headers = {
           ...buildOpenAIRequestHeaders(session, options),
@@ -412,6 +433,7 @@ export async function streamMessageWithSession(
       attemptedIncremental = typeof requestBody.previous_response_id === "string";
       const result = await readOpenAIResponsesWebSocket(socket, requestBody, callbacks, {
         stallTimeoutMs: STREAM_STALL_TIMEOUT,
+        connectionReused,
         signal,
       });
       turnSession?.recordSuccessfulRequest(fullRequestBody, result);
@@ -425,6 +447,26 @@ export async function streamMessageWithSession(
       if (turnSession) turnSession.resetConnection();
       else socket?.destroy();
       if (signal?.aborted || isAbortLikeError(err) || isNonRetryableProviderError(err)) throw err;
+      if (turnSession && connectionReused && err instanceof OpenAIWebSocketClosedBeforeResponseStartedError) {
+        if (retryAttempt < MAX_RETRIES) {
+          const close = err.code != null ? `code=${err.code}` : "raw close";
+          const reason = err.reason ? `, reason=${err.reason}` : "";
+          const message = `stale reused OpenAI websocket closed before response started (${close}${reason})`;
+          const notify = silentStaleReconnects > 0;
+          log(notify ? "warn" : "info", `openai api: ${message}; reconnecting${notify ? ` (attempt ${retryAttempt + 1}/${MAX_RETRIES})` : " silently"}`);
+          silentStaleReconnects += 1;
+          // A stale close before response.created means this provider round did
+          // not start. Reconnect quickly and full-replay on the new socket; only
+          // surface UI retry markers if the supposedly one-off stale reconnect
+          // repeats.
+          await retryBackoff(retryAttempt++, message, callbacks, signal, {
+            notify,
+            delayMs: notify ? undefined : 250 + Math.random() * 250,
+          });
+          continue;
+        }
+        throw err;
+      }
       if (err instanceof OpenAIWebSocketHttpError) {
         if (turnSession && attemptedIncremental && !retriedWithoutIncremental && (err.status === 400 || err.status === 404)) {
           log("warn", `openai api: incremental websocket request failed with HTTP ${err.status}; retrying once with full replay`);
