@@ -30,12 +30,16 @@ interface MockWebSocketCall {
   isClosed: () => boolean;
 }
 
+type MockWebSocketMessage =
+  | { type: "text"; text: string }
+  | { type: "close"; code?: number; reason?: string };
+
 function mockOpenAIWebSocket(
   connections: Array<{
     events?: Array<Record<string, unknown>>;
     error?: Error;
     headers?: HeadersInit;
-    nextMessage?: (signal?: AbortSignal) => Promise<{ type: "text"; text: string } | { type: "close" }>;
+    nextMessage?: (signal?: AbortSignal) => Promise<MockWebSocketMessage>;
   }>,
 ): MockWebSocketCall[] {
   const calls: MockWebSocketCall[] = [];
@@ -537,6 +541,81 @@ describe("OpenAI replay input", () => {
     expect(secondBody.input).toEqual([
       { type: "function_call_output", call_id: "call_1", output: "hi" },
     ]);
+    turnSession.close();
+  });
+
+
+  test("silently reconnects a reused websocket that closes before the follow-up response starts", async () => {
+    const retryCalls: unknown[][] = [];
+    const onRetry = mock((...args: unknown[]) => { retryCalls.push(args); });
+    const firstConnectionMessages: MockWebSocketMessage[] = [
+      { type: "text", text: JSON.stringify({ type: "response.created", response: { id: "resp_1" } }) },
+      { type: "text", text: JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call_1", name: "bash" } }) },
+      { type: "text", text: JSON.stringify({ type: "response.function_call_arguments.delta", output_index: 0, delta: '{"cmd":"echo hi"}' }) },
+      { type: "text", text: JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { type: "function_call", call_id: "call_1", name: "bash", arguments: '{"cmd":"echo hi"}' } }) },
+      { type: "text", text: JSON.stringify({ type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 10, output_tokens: 4 }, output: [{ type: "function_call", call_id: "call_1", name: "bash", arguments: '{"cmd":"echo hi"}' }] } }) },
+      { type: "close", code: 1000 },
+    ];
+    const calls = mockOpenAIWebSocket([
+      {
+        headers: { "x-codex-turn-state": "turn-state-1" },
+        nextMessage: async () => firstConnectionMessages.shift() ?? { type: "close" },
+      },
+      { events: [
+        { type: "response.created", response: { id: "resp_2" } },
+        { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_2" } },
+        { type: "response.output_text.delta", item_id: "msg_2", output_index: 0, content_index: 0, delta: "done" },
+        { type: "response.completed", response: { id: "resp_2", usage: { input_tokens: 20, output_tokens: 1 }, output: [{ type: "message", id: "msg_2", content: [{ type: "output_text", text: "done" }] }] } },
+      ] },
+    ]);
+
+    const turnSession = createOpenAITurnSession();
+    const callbacks = {
+      onText: () => {},
+      onThinking: () => {},
+      onRetry,
+    };
+    const firstMessages: ApiMessage[] = [{ role: "user", content: "run echo" }];
+    const first = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      firstMessages,
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-1", turnSession },
+    );
+
+    const secondMessages: ApiMessage[] = [
+      ...firstMessages,
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "call_1", name: "bash", input: { cmd: "echo hi" } }],
+        providerData: first.assistantProviderData,
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call_1", content: "hi", is_error: false }],
+      },
+    ];
+    const second = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      secondMessages,
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-1", turnSession },
+    );
+
+    expect(second.text).toBe("done");
+    expect(calls).toHaveLength(2);
+    expect(calls[0].sent).toHaveLength(2);
+    const staleIncrementalBody = JSON.parse(calls[0].sent[1]);
+    expect(staleIncrementalBody.previous_response_id).toBe("resp_1");
+    const replayBody = JSON.parse(calls[1].sent[0]);
+    expect(new Headers(calls[1].headers).get("x-codex-turn-state")).toBe("turn-state-1");
+    expect(replayBody.previous_response_id).toBeUndefined();
+    expect(Array.isArray(replayBody.input)).toBe(true);
+    expect(replayBody.input.length).toBeGreaterThan(1);
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(retryCalls).toEqual([]);
     turnSession.close();
   });
 

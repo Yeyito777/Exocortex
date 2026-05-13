@@ -9,7 +9,7 @@ import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "./cookies";
 import { buildOpenAIInput, buildRequestBody } from "./request";
 import { mergeReasoningSummaries } from "./reasoning";
-import { readOpenAIResponsesWebSocket } from "./responses-websocket";
+import { OpenAIWebSocketClosedBeforeResponseStartedError, readOpenAIResponsesWebSocket } from "./responses-websocket";
 import { readOpenAIEventsForTest } from "./stream";
 import { connectOpenAIWebSocket, OpenAIWebSocketHttpError, type OpenAIWebSocketConnection } from "./websocket";
 import type { ProviderTurnSession, StreamCallbacks, StreamOptions, StreamResult } from "../types";
@@ -123,6 +123,11 @@ interface OpenAIUsageLimitError {
   resetDelayMs?: number;
 }
 
+interface OpenAIWebSocketLease {
+  socket: OpenAIWebSocketConnection;
+  reused: boolean;
+}
+
 function isOpenAITurnSession(value: ProviderTurnSession | undefined): value is OpenAITurnSession {
   return value instanceof OpenAITurnSession;
 }
@@ -154,6 +159,33 @@ function isKnownPreviousResponseOutputItem(item: unknown): boolean {
   return item.type === "message" && item.role === "assistant";
 }
 
+/**
+ * OpenAI websocket state for one Exocortex conversation/session.
+ *
+ * IMPORTANT: do not close this websocket after an individual OpenAI
+ * `response.completed` event when the model asked for tools.  A single
+ * Exocortex assistant message can require multiple OpenAI response rounds:
+ *
+ *   model -> tool calls -> tool results -> model -> ... -> final text
+ *
+ * Those rounds are one logical Codex websocket conversation. The server-issued
+ * `x-codex-turn-state` and incremental `previous_response_id` flow are tied to
+ * that conversation, so the same websocket must remain alive until the entire
+ * assistant message/response is finished (or the stream errors/aborts). Closing
+ * it at per-round `response.completed` breaks that contract and can cause the
+ * follow-up tool-result request to be sent on the wrong transport/session.
+ *
+ * Lifecycle:
+ * - `getSocketLease()` opens once and then reuses the socket across tool rounds
+ *   and follow-up user messages in the same conversation.
+ * - `recordSuccessfulRequest()` records incremental replay state only; it must
+ *   not close the socket.
+ * - `close()` is called by the orchestrator after the full assistant message
+ *   completes successfully. With a conversation prompt-cache key it parks the
+ *   websocket in an idle cache for a short grace window instead of closing it
+ *   immediately, so a new user message can land on the same Codex session.
+ * - `destroy()`/`resetConnection()` are for errors, aborts, or retries.
+ */
 export class OpenAITurnSession implements ProviderTurnSession {
   private state = createTurnSessionState();
 
@@ -204,11 +236,11 @@ export class OpenAITurnSession implements ProviderTurnSession {
     return this.state.requestSession;
   }
 
-  async getSocket(
+  async getSocketLease(
     session: OpenAIRequestSession,
     callbacks: StreamCallbacks,
     options: StreamOptions,
-  ): Promise<OpenAIWebSocketConnection> {
+  ): Promise<OpenAIWebSocketLease> {
     const previousRequestSession = this.adoptReusableState(options);
     if (sessionsHaveDifferentAccounts(previousRequestSession, session)) {
       this.state.socket?.destroy();
@@ -218,7 +250,18 @@ export class OpenAITurnSession implements ProviderTurnSession {
     }
     this.state.requestSession = session;
 
-    if (this.state.socket && !this.state.socket.isClosed()) return this.state.socket;
+    if (this.state.socket && !this.state.socket.isClosed()) {
+      return { socket: this.state.socket, reused: true };
+    }
+    if (this.state.socket?.isClosed()) {
+      // Match Codex's turn-session behavior: if the physical websocket died
+      // between provider rounds, reconnect with the same turn-state header but
+      // do not keep using `previous_response_id` on the fresh connection. The
+      // safe fallback is a full replay on the new socket.
+      this.state.socket.destroy();
+      this.state.socket = null;
+      this.resetIncrementalState();
+    }
 
     const headers = {
       ...buildOpenAIRequestHeaders(session, options),
@@ -239,7 +282,7 @@ export class OpenAITurnSession implements ProviderTurnSession {
     if (nextTurnState && !this.state.turnState) {
       this.state.turnState = nextTurnState;
     }
-    return this.state.socket;
+    return { socket: this.state.socket, reused: false };
   }
 
   prepareRequestBody(fullRequestBody: Record<string, unknown>): Record<string, unknown> {
@@ -271,6 +314,10 @@ export class OpenAITurnSession implements ProviderTurnSession {
     const responseId = result.assistantProviderData?.openai?.responseId;
     this.state.lastFullRequestBody = fullRequestBody;
     this.state.lastResponseId = responseId || null;
+    // Deliberately DO NOT close the socket here. `response.completed` marks
+    // the end of one provider round, not necessarily the end of the user's
+    // assistant message: if tools were requested, the next round must reuse this
+    // websocket and send the tool-result delta on the same Codex turn session.
   }
 
   resetIncrementalState(): void {
@@ -435,14 +482,17 @@ function retryBackoff(
   errMsg: string,
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
+  opts: { notify?: boolean; delayMs?: number } = {},
 ): Promise<void> {
   if (signal?.aborted) {
     return Promise.reject(createAbortError());
   }
 
-  const delay = Math.min(1000 * Math.pow(2, attempt), 30000) + Math.random() * 1000;
+  const delay = opts.delayMs ?? (Math.min(1000 * Math.pow(2, attempt), 30000) + Math.random() * 1000);
   const delaySec = Math.round(delay / 1000);
-  callbacks.onRetry?.(attempt + 1, MAX_RETRIES, errMsg, delaySec, { kind: "transient" });
+  if (opts.notify !== false) {
+    callbacks.onRetry?.(attempt + 1, MAX_RETRIES, errMsg, delaySec, { kind: "transient" });
+  }
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -506,15 +556,19 @@ export async function streamMessageWithSession(
   const { signal } = options;
   const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
   let retryAttempt = 0;
+  let silentStaleReconnects = 0;
   let retriedWithoutIncremental = false;
   const fullRequestBody = buildRequestBody(messages, model, options);
 
   while (true) {
     let socket: OpenAIWebSocketConnection | null = null;
+    let connectionReused = false;
     let attemptedIncremental = false;
     try {
       if (turnSession) {
-        socket = await turnSession.getSocket(session, callbacks, options);
+        const lease = await turnSession.getSocketLease(session, callbacks, options);
+        socket = lease.socket;
+        connectionReused = lease.reused;
       } else {
         const headers = {
           ...buildOpenAIRequestHeaders(session, options),
@@ -534,15 +588,40 @@ export async function streamMessageWithSession(
       attemptedIncremental = typeof requestBody.previous_response_id === "string";
       const result = await readOpenAIResponsesWebSocket(socket, requestBody, callbacks, {
         stallTimeoutMs: STREAM_STALL_TIMEOUT,
+        connectionReused,
         signal,
       });
       turnSession?.recordSuccessfulRequest(fullRequestBody, result);
+      // Non-turn-session calls own exactly one websocket/request and can close
+      // immediately. Turn-session calls are different: the websocket is owned by
+      // OpenAITurnSession and must survive across tool-result follow-up rounds
+      // until the orchestrator closes the full assistant message session.
       if (!turnSession) socket.close();
       return result;
     } catch (err) {
       if (turnSession) turnSession.resetConnection();
       else socket?.destroy();
       if (signal?.aborted || isAbortLikeError(err) || isNonRetryableProviderError(err)) throw err;
+      if (turnSession && connectionReused && err instanceof OpenAIWebSocketClosedBeforeResponseStartedError) {
+        if (retryAttempt < MAX_RETRIES) {
+          const close = err.code != null ? `code=${err.code}` : "raw close";
+          const reason = err.reason ? `, reason=${err.reason}` : "";
+          const message = `stale reused OpenAI websocket closed before response started (${close}${reason})`;
+          const notify = silentStaleReconnects > 0;
+          log(notify ? "warn" : "info", `openai api: ${message}; reconnecting${notify ? ` (attempt ${retryAttempt + 1}/${MAX_RETRIES})` : " silently"}`);
+          silentStaleReconnects += 1;
+          // A stale close before response.created means this provider round did
+          // not start. Reconnect quickly and full-replay on the new socket; only
+          // surface UI retry markers if the supposedly one-off stale reconnect
+          // repeats.
+          await retryBackoff(retryAttempt++, message, callbacks, signal, {
+            notify,
+            delayMs: notify ? undefined : 250 + Math.random() * 250,
+          });
+          continue;
+        }
+        throw err;
+      }
       if (err instanceof OpenAIWebSocketHttpError) {
         if (turnSession && attemptedIncremental && !retriedWithoutIncremental && (err.status === 400 || err.status === 404)) {
           log("warn", `openai api: incremental websocket request failed with HTTP ${err.status}; retrying once with full replay`);

@@ -686,6 +686,10 @@ async function orchestrateAssistantTurn(
   // ── Run provider/agent loop ───────────────────────────────────────
 
   startStreamingSnapshotHeartbeat();
+  // Provider turn sessions live for the whole Exocortex assistant message, not
+  // for a single provider round. OpenAI's Codex websocket in particular must be
+  // reused across model -> tool -> model follow-ups and closed only after the
+  // assistant message is fully complete (or destroyed on error/abort).
   const providerTurnSession = createProviderTurnSession(conv.provider);
 
   try {
