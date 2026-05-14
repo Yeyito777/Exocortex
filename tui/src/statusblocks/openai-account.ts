@@ -27,7 +27,7 @@ export function openAIAccountBlock(state: RenderState): StatusBlock | null {
 
   return {
     id: "openai-account",
-    priority: 2,
+    priority: 0,
     width,
     height: 2,
     rows: [
