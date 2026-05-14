@@ -322,11 +322,11 @@ describe("setModel", () => {
     const before = conv.updatedAt;
 
     await Bun.sleep(2);
-    expect(setModel(id, "anthropic", "claude-opus-4-6", "high", false)).toBe(true);
+    expect(setModel(id, "openai", "gpt-5.5", "high", false)).toBe(true);
 
     const after = get(id)!;
-    expect(after.provider).toBe("anthropic");
-    expect(after.model).toBe("claude-opus-4-6");
+    expect(after.provider).toBe("openai");
+    expect(after.model).toBe("gpt-5.5");
     expect(after.effort).toBe("high");
     expect(after.fastMode).toBe(false);
     expect(after.lastContextTokens).toBeNull();
@@ -358,7 +358,7 @@ describe("trimConversation", () => {
 
   test("expands message trimming to preserve assistant tool_use and user tool_result pairs", () => {
     const id = mkId("trim-messages-tool-pair");
-    create(id, "anthropic", "claude-opus-4-6");
+    create(id, "openai", "gpt-5.5");
     const conv = get(id)!;
     conv.messages.push({ role: "user", content: "before tool", metadata: null });
     conv.messages.push({
@@ -402,7 +402,7 @@ describe("trimConversation", () => {
 
   test("strips oldest tool result payloads first", () => {
     const id = mkId("trim-toolresults");
-    create(id, "anthropic", "claude-opus-4-6");
+    create(id, "openai", "gpt-5.5");
     const conv = get(id)!;
     conv.messages.push({
       role: "user",
@@ -428,7 +428,7 @@ describe("trimConversation", () => {
 describe("setSystemInstructions", () => {
   test("bumps updatedAt when instructions are added", async () => {
     const id = mkId("add");
-    const conv = create(id, "anthropic", "sonnet");
+    const conv = create(id, "openai", "gpt-5.5");
     const before = conv.updatedAt;
 
     await Bun.sleep(2);
@@ -441,7 +441,7 @@ describe("setSystemInstructions", () => {
 
   test("bumps updatedAt when instructions are changed or cleared, but not on no-op", async () => {
     const id = mkId("change-clear");
-    create(id, "anthropic", "sonnet");
+    create(id, "openai", "gpt-5.5");
 
     expect(setSystemInstructions(id, "Be terse.")).toBe(true);
     const afterSet = get(id)!;
@@ -468,12 +468,12 @@ describe("setSystemInstructions", () => {
 describe("getSummary", () => {
   test("messageCount excludes system_instructions and model-visible system notices", () => {
     const id = mkId("summary-count");
-    create(id, "anthropic", "sonnet");
+    create(id, "openai", "gpt-5.5");
     expect(setSystemInstructions(id, "Be terse.")).toBe(true);
 
     const conv = get(id)!;
     conv.messages.push({ role: "user", content: "hello", metadata: null });
-    conv.messages.push({ role: "user", content: "[Context: getting full]", metadata: { startedAt: 1, endedAt: 1, model: "sonnet", tokens: 0, system: true, kind: "context_warning" } });
+    conv.messages.push({ role: "user", content: "[Context: getting full]", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.5", tokens: 0, system: true, kind: "context_warning" } });
     conv.messages.push({ role: "assistant", content: "hi", metadata: null });
 
     const summary = getSummary(id)!;
@@ -506,8 +506,8 @@ describe("listRunningConversationIds", () => {
   test("returns only conversations with active streams", () => {
     const running = mkId("running");
     const idle = mkId("idle");
-    create(running, "anthropic", "sonnet");
-    create(idle, "anthropic", "sonnet");
+    create(running, "openai", "gpt-5.5");
+    create(idle, "openai", "gpt-5.5");
 
     setActiveJob(running, new AbortController(), Date.now());
 
@@ -518,7 +518,7 @@ describe("listRunningConversationIds", () => {
 describe("getDisplayData", () => {
   test("includes transient streaming messages for active conversations", () => {
     const id = mkId("display-transient");
-    create(id, "anthropic", "sonnet");
+    create(id, "openai", "gpt-5.5");
 
     const conv = get(id)!;
     conv.messages.push({ role: "user", content: "initial", metadata: null });
@@ -540,7 +540,7 @@ describe("getDisplayData", () => {
 
   test("can omit historical tool_result payloads while still exposing patch data", () => {
     const id = mkId("display-tool-outputs");
-    create(id, "anthropic", "sonnet");
+    create(id, "openai", "gpt-5.5");
     const conv = get(id)!;
     conv.messages.push({
       role: "assistant",

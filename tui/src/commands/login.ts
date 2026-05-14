@@ -9,7 +9,6 @@ import type { SlashCommand } from "./types";
 function loginDescription(provider: ProviderId): string {
   switch (provider) {
     case "openai": return "Sign in with OpenAI";
-    case "anthropic": return "Sign in with Anthropic";
     case "deepseek": return "Save a DeepSeek API key";
   }
 }

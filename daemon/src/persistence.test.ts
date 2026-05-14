@@ -63,7 +63,7 @@ afterAll(() => {
 //   V6→V7   title: null
 //   V7→V8   title: legacyPreview(messages)
 //   V8→V9   effort: DEFAULT_EFFORT
-//   V9→V10  provider: "anthropic"
+//   V9→V10  provider: "openai"
 //   V10→V11 fastMode: false
 
 describe("V1 migration", () => {
@@ -72,7 +72,7 @@ describe("V1 migration", () => {
     writeFixture(id, {
       version: 1,
       id,
-      model: "sonnet",
+      model: "gpt-5.5",
       messages: [
         { role: "user", content: "Hello from v1" },
         { role: "assistant", content: "Hi there" },
@@ -94,7 +94,7 @@ describe("V1 migration", () => {
     writeFixture(id, {
       version: 1,
       id,
-      model: "sonnet",
+      model: "gpt-5.5",
       messages: [{ role: "user", content: "Testing defaults" }],
       createdAt: 1_200_000,
       updatedAt: 1_200_001,
@@ -116,7 +116,7 @@ describe("V1 migration", () => {
     writeFixture(id, {
       // no version key
       id,
-      model: "haiku",
+      model: "gpt-5.4-mini",
       messages: [{ role: "user", content: "No version present" }],
       createdAt: 2_000_000,
       updatedAt: 2_000_001,
@@ -134,7 +134,7 @@ describe("V1 migration", () => {
     writeFixture(id, {
       version: 1,
       id,
-      model: "sonnet",
+      model: "gpt-5.5",
       messages: [{ role: "user", content: long }],
       createdAt: 3_000_000,
       updatedAt: 3_000_001,
@@ -152,7 +152,7 @@ describe("V2 migration", () => {
     writeFixture(id, {
       version: 2,
       id,
-      model: "sonnet",
+      model: "gpt-5.5",
       messages: [
         { role: "user", content: "Hello", metadata: null },
         { role: "assistant", content: "World", metadata: null },
@@ -176,12 +176,12 @@ describe("V2 migration", () => {
     writeFixture(id, {
       version: 2,
       id,
-      model: "opus",
+      model: "gpt-5.5",
       messages: [
         {
           role: "assistant",
           content: "Preserve me",
-          metadata: { startedAt: 111, endedAt: 222, model: "opus", tokens: 33 },
+          metadata: { startedAt: 111, endedAt: 222, model: "gpt-5.5", tokens: 33 },
         },
       ],
       createdAt: 5_000_000,
@@ -190,7 +190,7 @@ describe("V2 migration", () => {
 
     const conv = load(id);
     expect(conv).not.toBeNull();
-    expect(conv!.messages[0].metadata).toEqual({ startedAt: 111, endedAt: 222, model: "opus", tokens: 33 });
+    expect(conv!.messages[0].metadata).toEqual({ startedAt: 111, endedAt: 222, model: "gpt-5.5", tokens: 33 });
   });
 });
 
@@ -200,7 +200,7 @@ describe("V5 migration", () => {
     writeFixture(id, {
       version: 5,
       id,
-      model: "sonnet",
+      model: "gpt-5.5",
       messages: [],
       createdAt: 6_000_000,
       updatedAt: 6_123_456,
@@ -219,7 +219,7 @@ describe("V5 migration", () => {
     writeFixture(id, {
       version: 5,
       id,
-      model: "sonnet",
+      model: "gpt-5.5",
       messages: [],
       createdAt: 6_500_000,
       updatedAt: 6_500_001,
@@ -241,7 +241,7 @@ describe("V7 migration", () => {
     writeFixture(id, {
       version: 7,
       id,
-      model: "sonnet",
+      model: "gpt-5.5",
       messages: [
         { role: "assistant", content: "ignore", metadata: null },
         { role: "user", content: "First user text", metadata: null },
@@ -265,7 +265,7 @@ describe("V7 migration", () => {
     writeFixture(id, {
       version: 7,
       id,
-      model: "sonnet",
+      model: "gpt-5.5",
       messages: [
         {
           role: "user",
@@ -295,7 +295,7 @@ describe("V7 migration", () => {
     writeFixture(id, {
       version: 7,
       id,
-      model: "sonnet",
+      model: "gpt-5.5",
       messages: [
         {
           role: "user",
@@ -322,7 +322,7 @@ describe("V7 migration", () => {
     writeFixture(id, {
       version: 7,
       id,
-      model: "sonnet",
+      model: "gpt-5.5",
       messages: [{ role: "assistant", content: "Only assistant", metadata: null }],
       createdAt: 7_300_000,
       updatedAt: 7_300_001,
@@ -343,7 +343,7 @@ describe("V7 migration", () => {
     writeFixture(id, {
       version: 7,
       id,
-      model: "sonnet",
+      model: "gpt-5.5",
       messages: [{ role: "user", content: "ignored", metadata: null }],
       createdAt: 7_400_000,
       updatedAt: 7_400_001,
@@ -364,7 +364,7 @@ describe("V7 migration", () => {
     writeFixture(id, {
       version: 7,
       id,
-      model: "sonnet",
+      model: "gpt-5.5",
       messages: [
         { role: "assistant", content: "Assistant text", metadata: null },
         { role: "user", content: "User text wins", metadata: null },
@@ -389,7 +389,7 @@ describe("V7 migration", () => {
     writeFixture(id, {
       version: 7,
       id,
-      model: "sonnet",
+      model: "gpt-5.5",
       messages: [
         {
           role: "user",
@@ -418,7 +418,7 @@ describe("V8 migration", () => {
     writeFixture(id, {
       version: 8,
       id,
-      model: "opus",
+      model: "gpt-5.5",
       messages: [],
       createdAt: 8_000_000,
       updatedAt: 8_000_001,
@@ -439,7 +439,7 @@ describe("V8 migration", () => {
     writeFixture(id, {
       version: 8,
       id,
-      model: "haiku",
+      model: "gpt-5.4-mini",
       messages: [{ role: "user", content: "hello", metadata: null }],
       createdAt: 8_100_000,
       updatedAt: 8_100_123,
@@ -459,12 +459,12 @@ describe("V8 migration", () => {
 });
 
 describe("V9 migration", () => {
-  test("adds anthropic as the default provider while preserving existing fields", () => {
+  test("adds openai as the default provider while preserving existing fields", () => {
     const id = mkId("v9-provider-default");
     writeFixture(id, {
       version: 9,
       id,
-      model: "haiku",
+      model: "gpt-5.4-mini",
       effort: "low",
       messages: [{ role: "user", content: "hello", metadata: null }],
       createdAt: 9_000_000,
@@ -478,7 +478,7 @@ describe("V9 migration", () => {
 
     const conv = load(id);
     expect(conv).not.toBeNull();
-    expect(conv!.provider).toBe("anthropic");
+    expect(conv!.provider).toBe("openai");
     expect(conv!.effort).toBe("low");
   });
 });
@@ -565,8 +565,8 @@ describe("save / load round-trip", () => {
     const id = mkId("roundtrip-overwrite");
     const a: Conversation = {
       id,
-      provider: "anthropic",
-      model: "sonnet",
+      provider: "openai",
+      model: "gpt-5.5",
       effort: "high",
       fastMode: false,
       messages: [{ role: "user", content: "First", metadata: null }],
@@ -630,8 +630,8 @@ describe("loadAll()", () => {
     writeFixture(idOld, {
       version: 10,
       id: idOld,
-      provider: "anthropic",
-      model: "sonnet",
+      provider: "openai",
+      model: "gpt-5.5",
       effort: "high",
       messages: [{ role: "user", content: "old", metadata: null }],
       createdAt: 0,
@@ -660,8 +660,8 @@ describe("loadAll()", () => {
     writeFixture(idNew, {
       version: 10,
       id: idNew,
-      provider: "anthropic",
-      model: "opus",
+      provider: "openai",
+      model: "gpt-5.5",
       effort: "low",
       messages: [
         { role: "user", content: "new", metadata: null },
@@ -689,8 +689,8 @@ describe("loadAll()", () => {
     writeFixture(id, {
       version: 10,
       id,
-      provider: "anthropic",
-      model: "sonnet",
+      provider: "openai",
+      model: "gpt-5.5",
       effort: "high",
       messages: [
         { role: "system_instructions", content: "be terse", metadata: null },
@@ -720,8 +720,8 @@ describe("loadAll()", () => {
       writeFixture(ids[i], {
         version: 10,
         id: ids[i],
-        provider: "anthropic",
-        model: "sonnet",
+        provider: "openai",
+        model: "gpt-5.5",
         effort: "high",
         messages: [],
         createdAt: 0,
@@ -747,8 +747,8 @@ describe("loadAll()", () => {
     writeFixture(idPinned, {
       version: 10,
       id: idPinned,
-      provider: "anthropic",
-      model: "sonnet",
+      provider: "openai",
+      model: "gpt-5.5",
       effort: "high",
       messages: [],
       createdAt: 0,
@@ -762,8 +762,8 @@ describe("loadAll()", () => {
     writeFixture(idUnpinned, {
       version: 10,
       id: idUnpinned,
-      provider: "anthropic",
-      model: "sonnet",
+      provider: "openai",
+      model: "gpt-5.5",
       effort: "high",
       messages: [],
       createdAt: 0,
@@ -789,8 +789,8 @@ describe("loadAll()", () => {
     writeFixture(idGood, {
       version: 10,
       id: idGood,
-      provider: "anthropic",
-      model: "sonnet",
+      provider: "openai",
+      model: "gpt-5.5",
       effort: "high",
       messages: [],
       createdAt: 0,
@@ -815,7 +815,7 @@ describe("loadAll()", () => {
     writeFixture(id, {
       version: 8,
       id,
-      model: "opus",
+      model: "gpt-5.5",
       messages: [],
       createdAt: 0,
       updatedAt: 0,

@@ -70,14 +70,7 @@ function readStore(): CredentialsFileV2 {
     if (parsed && typeof parsed === "object" && "version" in parsed && parsed.version === 2 && "providers" in parsed) {
       return parsed;
     }
-    if (parsed && typeof parsed === "object" && "tokens" in parsed) {
-      const migrated: CredentialsFileV2 = {
-        version: 2,
-        providers: { anthropic: parsed },
-      };
-      writeStore(migrated);
-      return migrated;
-    }
+    if (parsed && typeof parsed === "object" && "tokens" in parsed) return { version: 2, providers: {} };
   } catch (err) {
     log("warn", `store: failed to parse ${CRED_FILE}: ${err}`);
   }

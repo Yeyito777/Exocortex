@@ -11,7 +11,7 @@ import { log } from "./log";
 import { refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { orchestrateGoalContinuation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
-import { buildAnthropicSystemPrompt, buildSystemPrompt } from "./system";
+import { buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
 import { EFFORT_LEVELS } from "./messages";
@@ -928,13 +928,10 @@ export function createHandler(server: DaemonServer) {
 
       case "get_system_prompt": {
         const instructions = cmd.convId ? convStore.getSystemInstructions(cmd.convId) : null;
-        const provider = cmd.convId ? convStore.get(cmd.convId)?.provider : null;
         server.sendTo(client, {
           type: "system_prompt",
           reqId: cmd.reqId,
-          systemPrompt: provider === "anthropic"
-            ? buildAnthropicSystemPrompt(instructions ?? undefined)
-            : buildSystemPrompt(instructions ?? undefined),
+          systemPrompt: buildSystemPrompt(instructions ?? undefined),
         });
         break;
       }

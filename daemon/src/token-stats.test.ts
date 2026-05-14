@@ -68,12 +68,12 @@ describe("token stats", () => {
     expect(snapshot.days).toHaveLength(1);
   });
 
-  test("canonicalizes anthropic alias models before aggregating", () => {
-    recordTokenUsage("anthropic", "opus", { inputTokens: 500, outputTokens: 100 }, { source: "conversation" });
+  test("canonicalizes provider alias models before aggregating", () => {
+    recordTokenUsage("deepseek", "pro", { inputTokens: 500, outputTokens: 100 }, { source: "conversation" });
 
     const snapshot = getTokenStatsSnapshot();
-    expect(snapshot.today.byModel.opus).toBeUndefined();
-    expect(snapshot.today.byModel["claude-opus-4-6"]).toEqual({
+    expect(snapshot.today.byModel.pro).toBeUndefined();
+    expect(snapshot.today.byModel["deepseek-v4-pro"]).toEqual({
       inputTokens: 500,
       outputTokens: 100,
       totalTokens: 600,
@@ -96,7 +96,7 @@ describe("token stats", () => {
           totalTokens: 30,
           requests: 1,
           byProvider: {
-            anthropic: {
+            deepseek: {
               inputTokens: 20,
               outputTokens: 10,
               totalTokens: 30,
@@ -104,7 +104,7 @@ describe("token stats", () => {
             },
           },
           byModel: {
-            "claude-sonnet-4-6": {
+            "deepseek-v4-pro": {
               inputTokens: 20,
               outputTokens: 10,
               totalTokens: 30,
@@ -127,7 +127,7 @@ describe("token stats", () => {
     expect(snapshot.today.totalTokens).toBe(45);
     expect(snapshot.today.requests).toBe(2);
     expect(snapshot.today.byProvider.openai?.totalTokens).toBe(15);
-    expect(snapshot.today.byProvider.anthropic?.totalTokens).toBe(30);
+    expect(snapshot.today.byProvider.deepseek?.totalTokens).toBe(30);
     expect(snapshot.lifetime.totalTokens).toBe(45);
   });
 });

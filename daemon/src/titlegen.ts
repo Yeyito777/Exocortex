@@ -39,8 +39,6 @@ function titleModelForProvider(provider: ProviderId): string {
       // Title generation was previously a mini-tier utility task; keep it on the
       // working GPT-5.4 mini model until a usable GPT-5.5 mini arrives.
       return "gpt-5.4-mini";
-    case "anthropic":
-      return "claude-haiku-4-5-20251001";
     case "deepseek":
     default:
       return "deepseek-v4-flash";

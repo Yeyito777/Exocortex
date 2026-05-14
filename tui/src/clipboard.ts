@@ -2,7 +2,7 @@
  * Clipboard image reading.
  *
  * Reads image data from the system clipboard and returns it
- * as a base64-encoded ImageAttachment for the Anthropic API.
+ * as a base64-encoded ImageAttachment for provider vision inputs.
  *
  * Supports X11 (xclip), Wayland (wl-paste), and Windows (PowerShell).
  */

@@ -11,7 +11,7 @@ export const MAX_OUTPUT_CHARS = 30_000;
  * the Basic Multilingual Plane (most emoji) are stored as two code units —
  * a high surrogate (D800–DBFF) followed by a low surrogate (DC00–DFFF).
  * Slicing between them produces a lone surrogate which is invalid in JSON
- * and will cause Anthropic API 400 errors.
+ * and can cause provider JSON validation errors.
  */
 export function safeSlice(str: string, end: number): string {
   if (str.length <= end) return str;

@@ -11,7 +11,7 @@
 
 // ── Providers / Models ──────────────────────────────────────────────
 
-export type ProviderId = "anthropic" | "openai" | "deepseek";
+export type ProviderId = "openai" | "deepseek";
 
 /** Provider-scoped model identifier. */
 export type ModelId = string;
@@ -46,11 +46,10 @@ export interface ProviderInfo {
 export const DEFAULT_PROVIDER_ID: ProviderId = "openai";
 
 /** Preferred provider ordering for UI fallbacks and provider registries. */
-export const DEFAULT_PROVIDER_ORDER: readonly ProviderId[] = [DEFAULT_PROVIDER_ID, "anthropic", "deepseek"];
+export const DEFAULT_PROVIDER_ORDER: readonly ProviderId[] = [DEFAULT_PROVIDER_ID, "deepseek"];
 
 /** Preferred default model per provider when the app needs a fallback selection. */
 export const DEFAULT_MODEL_BY_PROVIDER = {
-  anthropic: "claude-opus-4-6",
   openai: "gpt-5.5",
   deepseek: "deepseek-v4-pro",
 } as const satisfies Record<ProviderId, ModelId>;
@@ -80,12 +79,6 @@ export function supportsImageInputsForModel(
 
 /** Maximum context window size in tokens, keyed by model id. */
 export const MAX_CONTEXT: Record<string, number> = {
-  sonnet: 1_000_000,
-  haiku: 1_000_000,
-  opus: 1_000_000,
-  "claude-sonnet-4-6": 1_000_000,
-  "claude-haiku-4-5-20251001": 1_000_000,
-  "claude-opus-4-6": 1_000_000,
   "gpt-5": 400_000,
   "gpt-5.5": 272_000,
   "gpt-5.4": 272_000,

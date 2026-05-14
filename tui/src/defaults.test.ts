@@ -17,8 +17,8 @@ describe("tui defaults", () => {
 
   test("new-conversation reset ignores focused conversation settings", () => {
     const state = createInitialState();
-    state.provider = "anthropic";
-    state.model = "claude-opus-4-6";
+    state.provider = "deepseek";
+    state.model = "deepseek-v4-pro";
     state.effort = "max";
     state.fastMode = true;
 

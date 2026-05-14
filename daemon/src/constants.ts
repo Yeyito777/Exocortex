@@ -7,8 +7,6 @@
 
 export { MAX_CONTEXT } from "@exocortex/shared/messages";
 
-export const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
-
 /**
  * After this many seconds a bash tool call is "backgrounded": the process
  * keeps running but the tool result is returned immediately with the PID

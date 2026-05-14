@@ -5,8 +5,8 @@ import { executeContext, type ContextToolEnv } from "./context";
 function makeConversation(messages: StoredMessage[]): Conversation {
   return {
     id: "test-conv",
-    provider: "anthropic",
-    model: "claude-sonnet-4-6",
+    provider: "openai",
+    model: "gpt-5.5",
     effort: "high",
     fastMode: false,
     messages,

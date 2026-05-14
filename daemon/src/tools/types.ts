@@ -55,7 +55,7 @@ export interface Tool {
   /** Unique name matching the API tool_use name. */
   name: string;
 
-  /** Description Claude sees in the tool list. */
+  /** Description the model sees in the tool list. */
   description: string;
 
   /** JSON Schema for the tool's input parameters. */

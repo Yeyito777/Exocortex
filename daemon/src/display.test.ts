@@ -37,8 +37,8 @@ function build(
 ) {
   return buildDisplayData(
     opts?.convId ?? "conv-1",
-    "anthropic",
-    "sonnet",
+    "openai",
+    "gpt-5.5",
     "high",
     false,
     messages,
@@ -73,7 +73,7 @@ function systemInstructionsEntry(entry: ReturnType<typeof build>["entries"][numb
 const META: MessageMetadata = {
   startedAt: 1_000_000,
   endedAt: 1_001_000,
-  model: "sonnet",
+  model: "gpt-5.5",
   tokens: 42,
 };
 
@@ -81,10 +81,10 @@ const META: MessageMetadata = {
 
 describe("buildDisplayData — return shape", () => {
   test("passes through convId, model, effort, contextTokens", () => {
-    const result = buildDisplayData("my-conv", "anthropic", "haiku", "low", false, [], 77_000, summarizer);
+    const result = buildDisplayData("my-conv", "openai", "gpt-5.4-mini", "low", false, [], 77_000, summarizer);
     expect(result.convId).toBe("my-conv");
-    expect(result.provider).toBe("anthropic");
-    expect(result.model).toBe("haiku");
+    expect(result.provider).toBe("openai");
+    expect(result.model).toBe("gpt-5.4-mini");
     expect(result.effort).toBe("low");
     expect(result.contextTokens).toBe(77_000);
   });
@@ -109,7 +109,7 @@ describe("user messages", () => {
   });
 
   test("forwards user metadata when present", () => {
-    const meta = { startedAt: 1_000, endedAt: 1_000, model: "sonnet", tokens: 0 } as const;
+    const meta = { startedAt: 1_000, endedAt: 1_000, model: "gpt-5.5", tokens: 0 } as const;
     const { entries } = build([{ role: "user", content: "Hello!", metadata: meta }]);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toEqual({ type: "user", text: "Hello!", metadata: meta });
@@ -279,7 +279,7 @@ describe("assistant messages", () => {
   });
 
   test("consecutive assistant messages → merged into a single ai entry", () => {
-    const meta2: MessageMetadata = { startedAt: 2_000, endedAt: 3_000, model: "sonnet", tokens: 99 };
+    const meta2: MessageMetadata = { startedAt: 2_000, endedAt: 3_000, model: "gpt-5.5", tokens: 99 };
     const msgs: StoredMessage[] = [
       { role: "assistant", content: "Part A", metadata: META },
       { role: "assistant", content: "Part B", metadata: meta2 },
@@ -396,7 +396,7 @@ describe("tool-result folding", () => {
         metadata: null,
       },
     ];
-    const ai = aiEntry(buildDisplayData("conv-1", "anthropic", "sonnet", "high", false, msgs, null, summarizer, {
+    const ai = aiEntry(buildDisplayData("conv-1", "openai", "gpt-5.5", "high", false, msgs, null, summarizer, {
       includeToolOutputs: false,
     }).entries[0]);
     expect(ai.blocks[1]).toEqual({
@@ -498,7 +498,7 @@ describe("tool-result folding", () => {
     const metadata: MessageMetadata = {
       startedAt: 1_000,
       endedAt: 1_000,
-      model: "sonnet",
+      model: "gpt-5.5",
       tokens: 0,
       system: true,
       kind: "context_warning",
@@ -527,7 +527,7 @@ describe("tool-result folding", () => {
 
   test("subsequent assistant after tool round-trip → merged into same ai entry", () => {
     // user → assistant(tool_use) → user(tool_result) → assistant(text)
-    const meta: MessageMetadata = { startedAt: 1000, endedAt: 2000, model: "sonnet", tokens: 50 };
+    const meta: MessageMetadata = { startedAt: 1000, endedAt: 2000, model: "gpt-5.5", tokens: 50 };
     const msgs: StoredMessage[] = [
       { role: "user", content: "Run ls", metadata: null },
       {

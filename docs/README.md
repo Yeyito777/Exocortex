@@ -14,11 +14,11 @@ A daemon-driven AI assistant with a clean client/server architecture.
 │    (CLI)    │   Stateless req/response     │              │
 │   for AIs   │                              └──────┬───────┘
 └─────────────┘                                     │
-                                                    │  Anthropic
-                                                    │  Messages API
+                                                    │  Model provider
+                                                    │  API
                                                     ▼
                                               ┌──────────┐
-                                              │  Claude  │
+                                              │  Model   │
                                               └──────────┘
 ```
 
@@ -144,7 +144,7 @@ daemon/
     ├── handler.ts         Command routing (thin dispatcher)
     ├── orchestrator.ts    Wires agent loop to IPC event dispatch
     ├── agent.ts           Stream → tool call → execute loop
-    ├── api.ts             Anthropic Messages API + SSE parsing
+    ├── api.ts             Provider dispatch + token accounting
     ├── conversations.ts   In-memory conversation store + persistence
     ├── streaming.ts       In-flight stream tracking (runtime state)
     ├── persistence.ts     Versioned JSON file storage + migrations

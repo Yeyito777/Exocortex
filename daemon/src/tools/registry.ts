@@ -53,7 +53,7 @@ export function getRegisteredTools(): Tool[] {
   return [...getAvailableTools()];
 }
 
-// ── API tool definitions (sent to Anthropic/OpenAI) ─────────────────
+// ── API tool definitions (sent to model providers) ─────────────────
 
 export function getToolDefs(): { name: string; description: string; input_schema: Record<string, unknown> }[] {
   return getAvailableTools().map(t => ({

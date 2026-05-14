@@ -72,8 +72,6 @@ interface CostTotals {
 /**
  * Pricing references checked 2026-04-19:
  * - OpenAI API pricing + API docs pricing pages
- * - Claude pricing page
- *
  * OpenAI does not publish a numeric GPT-5.3-Codex-Spark token rate. We use the
  * published standard gpt-5.3-codex API rate as the closest available baseline.
  */
@@ -84,9 +82,6 @@ const MODEL_PRICING_USD_PER_MILLION: Record<ModelId, ModelPricing> = {
   "gpt-5.4": { provider: "openai", inputUsdPerMillion: 2.5, cachedInputUsdPerMillion: 0.25, outputUsdPerMillion: 15 },
   "gpt-5.4-mini": { provider: "openai", inputUsdPerMillion: 0.75, cachedInputUsdPerMillion: 0.075, outputUsdPerMillion: 4.5 },
   "gpt-5.3-codex-spark": { provider: "openai", inputUsdPerMillion: 1.75, cachedInputUsdPerMillion: 0.175, outputUsdPerMillion: 14 },
-  "claude-opus-4-6": { provider: "anthropic", inputUsdPerMillion: 5, cachedInputUsdPerMillion: 0.5, outputUsdPerMillion: 25 },
-  "claude-sonnet-4-6": { provider: "anthropic", inputUsdPerMillion: 3, cachedInputUsdPerMillion: 0.3, outputUsdPerMillion: 15 },
-  "claude-haiku-4-5-20251001": { provider: "anthropic", inputUsdPerMillion: 1, cachedInputUsdPerMillion: 0.1, outputUsdPerMillion: 5 },
   "deepseek-v4-pro": { provider: "deepseek", inputUsdPerMillion: 0.435, cachedInputUsdPerMillion: 0.003625, outputUsdPerMillion: 0.87 },
   "deepseek-v4-flash": { provider: "deepseek", inputUsdPerMillion: 0.14, cachedInputUsdPerMillion: 0.0028, outputUsdPerMillion: 0.28 },
 };
@@ -346,8 +341,6 @@ function formatProviderLabel(provider: ProviderId): string {
   switch (provider) {
     case "openai":
       return "OpenAI";
-    case "anthropic":
-      return "Anthropic";
     case "deepseek":
       return "DeepSeek";
   }
@@ -427,7 +420,7 @@ function buildCostBreakdownMessage(stats: TokenStatsSnapshot): string {
     grouped.set(row.provider, rows);
   }
 
-  const providerOrder: ProviderId[] = ["openai", "anthropic", "deepseek"];
+  const providerOrder: ProviderId[] = ["openai", "deepseek"];
   const sortedProviders = [...grouped.keys()].sort((a, b) => {
     const aIndex = providerOrder.indexOf(a);
     const bIndex = providerOrder.indexOf(b);

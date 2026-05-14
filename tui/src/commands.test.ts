@@ -8,22 +8,6 @@ import { theme } from "./theme";
 
 const providers: ProviderInfo[] = [
   {
-    id: "anthropic",
-    label: "Anthropic",
-    defaultModel: "claude-opus-4-6",
-    allowsCustomModels: false,
-    supportsFastMode: false,
-    models: [
-      {
-        id: "claude-opus-4-6",
-        label: "Opus-4.6",
-        maxContext: 1_000_000,
-        supportedEfforts: [{ effort: "high", description: "default" }],
-        defaultEffort: "high",
-      },
-    ],
-  },
-  {
     id: "openai",
     label: "OpenAI",
     defaultModel: "gpt-5.4",
@@ -93,7 +77,7 @@ const tokenStats: TokenStatsSnapshot = {
     },
     byModel: {
       "gpt-5.4": { inputTokens: 1_200, outputTokens: 400, totalTokens: 1_600, requests: 2 },
-      "claude-opus-4-6": { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+      "deepseek-v4-pro": { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
     },
     bySource: {
       conversation: { inputTokens: 1_200, outputTokens: 400, totalTokens: 1_600, requests: 2 },
@@ -107,11 +91,11 @@ const tokenStats: TokenStatsSnapshot = {
     requests: 5,
     byProvider: {
       openai: { inputTokens: 1_900, outputTokens: 700, totalTokens: 2_600, requests: 4 },
-      anthropic: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+      deepseek: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
     },
     byModel: {
       "gpt-5.4": { inputTokens: 1_600, outputTokens: 600, totalTokens: 2_200, requests: 3 },
-      "claude-opus-4-6": { inputTokens: 600, outputTokens: 200, totalTokens: 800, requests: 2 },
+      "deepseek-v4-pro": { inputTokens: 600, outputTokens: 200, totalTokens: 800, requests: 2 },
     },
     bySource: {
       conversation: { inputTokens: 1_900, outputTokens: 700, totalTokens: 2_600, requests: 4 },
@@ -130,7 +114,7 @@ const tokenStats: TokenStatsSnapshot = {
       },
       byModel: {
         "gpt-5.4": { inputTokens: 1_200, outputTokens: 400, totalTokens: 1_600, requests: 2 },
-        "claude-opus-4-6": { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+        "deepseek-v4-pro": { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
       },
       bySource: {
         conversation: { inputTokens: 1_200, outputTokens: 400, totalTokens: 1_600, requests: 2 },
@@ -145,11 +129,11 @@ const tokenStats: TokenStatsSnapshot = {
       requests: 2,
       byProvider: {
         openai: { inputTokens: 400, outputTokens: 200, totalTokens: 600, requests: 1 },
-        anthropic: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+        deepseek: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
       },
       byModel: {
         "gpt-5.4": { inputTokens: 400, outputTokens: 200, totalTokens: 600, requests: 1 },
-        "claude-opus-4-6": { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+        "deepseek-v4-pro": { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
       },
       bySource: {
         conversation: { inputTokens: 700, outputTokens: 300, totalTokens: 1_000, requests: 2 },
@@ -167,8 +151,8 @@ describe("/new", () => {
   test("resets pending conversation settings to product defaults", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
-    state.provider = "anthropic";
-    state.model = "claude-opus-4-6";
+    state.provider = "deepseek";
+    state.model = "deepseek-v4-pro";
     state.effort = "max";
     state.fastMode = true;
     state.hasChosenProvider = true;
@@ -207,15 +191,15 @@ describe("/fast command", () => {
   test("reports unsupported providers without mutating fast mode", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
-    state.provider = "anthropic";
-    state.model = "claude-opus-4-6";
+    state.provider = "deepseek";
+    state.model = "deepseek-v4-pro";
     state.fastMode = false;
 
     const result = tryCommand("/fast on", state);
 
     expect(result).toEqual({ type: "handled" });
     expect(state.fastMode).toBe(false);
-    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Fast mode is only available for anthropic conversations that support it.");
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Fast mode is only available for deepseek conversations that support it.");
   });
 
   test("toggles fast mode when called without arguments", () => {
@@ -317,24 +301,24 @@ describe("/model", () => {
     state.contextTokens = 12_345;
     state.convId = "conv-openai";
 
-    const result = tryCommand("/model anthropic claude-opus-4-6", state);
+    const result = tryCommand("/model deepseek deepseek-v4-pro", state);
 
-    expect(result).toEqual({ type: "model_changed", provider: "anthropic", model: "claude-opus-4-6" });
-    expect(String(state.provider)).toBe("anthropic");
-    expect(String(state.model)).toBe("claude-opus-4-6");
+    expect(result).toEqual({ type: "model_changed", provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(String(state.provider)).toBe("deepseek");
+    expect(String(state.model)).toBe("deepseek-v4-pro");
     expect(String(state.effort)).toBe("high");
     expect(state.fastMode).toBe(false);
     expect(state.contextTokens).toBeNull();
-    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Model set to anthropic/claude-opus-4-6 (effort high) (fast off)");
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Model set to deepseek/deepseek-v4-pro (effort high) (fast off)");
   });
 
   test("warns when switching to a model with a smaller known context window", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
-    state.provider = "anthropic";
-    state.model = "claude-opus-4-6";
+    state.provider = "deepseek";
+    state.model = "deepseek-v4-pro";
     state.contextTokens = 500_000;
-    state.convId = "conv-anthropic";
+    state.convId = "conv-deepseek";
 
     const result = tryCommand("/model openai gpt-5.4", state);
 
@@ -353,7 +337,7 @@ describe("/model", () => {
     state.convId = "conv-openai";
     state.pendingAI = { role: "assistant", blocks: [], metadata: null };
 
-    const result = tryCommand("/model anthropic claude-opus-4-6", state);
+    const result = tryCommand("/model deepseek deepseek-v4-pro", state);
 
     expect(result).toEqual({ type: "handled" });
     expect(state.provider).toBe("openai");
@@ -482,7 +466,7 @@ describe("/tokens", () => {
     expect(text).toContain("600");
     expect(text).toContain("req");
     expect(text).not.toContain("— all");
-    expect(text).toContain("Opus-4.6:");
+    expect(text).toContain("DeepSeek V4 Pro:");
     expect(text).toContain("Top model: \x1b[38;2;");
     expect(text).toContain("Top model tokens: \x1b[38;2;");
     expect(text).not.toContain("Total tokens:");
@@ -501,7 +485,7 @@ describe("/tokens", () => {
     expect(text).toContain("OpenAI:");
     expect(text).toContain("1,900");
     expect(text).toContain("700");
-    expect(text).toContain("Anthropic:");
+    expect(text).toContain("DeepSeek:");
     expect(text).not.toContain("req — all");
     expect(text).not.toContain("Top provider:");
     expect(text).not.toContain("Top provider tokens:");
@@ -535,21 +519,21 @@ describe("/tokens", () => {
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
     expect(text).toContain("Today:");
-    expect(text).toContain("$0.000855");
-    expect(text).toContain("$0.008500");
+    expect(text).toContain("$0.000584");
+    expect(text).toContain("$0.006087");
     expect(text).toContain("Week:");
-    expect(text).toContain("$0.001330");
-    expect(text).toContain("$0.0140");
+    expect(text).toContain("$0.000788");
+    expect(text).toContain("$0.009174");
     expect(text).toContain("Lifetime:");
     expect(text).not.toContain("Cost (");
     expect(text).toContain("OpenAI:");
     expect(text).toContain("    Gpt-5.4: ");
     expect(text).toContain("$0.000760");
     expect(text).toContain("$0.009000");
-    expect(text).toContain("Anthropic:");
-    expect(text).toContain("    Opus-4.6: ");
-    expect(text).toContain("$0.000570");
-    expect(text).toContain("$0.005000");
+    expect(text).toContain("DeepSeek:");
+    expect(text).toContain("    DeepSeek V4 Pro: ");
+    expect(text).toContain("$0.000028");
+    expect(text).toContain("$0.000174");
   });
 
   test("reports when stats are not available yet", () => {
@@ -619,12 +603,12 @@ describe("/login", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
 
-    const result = tryCommand("/login anthropic", state);
+    const result = tryCommand("/login openai", state);
 
-    expect(result).toEqual({ type: "login", provider: "anthropic" });
+    expect(result).toEqual({ type: "login", provider: "openai" });
     expect(state.hasChosenProvider).toBe(true);
-    expect(state.provider).toBe("anthropic");
-    expect(state.model).toBe("claude-opus-4-6");
+    expect(state.provider).toBe("openai");
+    expect(state.model).toBe("gpt-5.4");
   });
 
   test("returns an API-key login command for DeepSeek", () => {
@@ -722,7 +706,7 @@ describe("/login", () => {
       updatedAt: new Date().toISOString(),
       source: "oauth",
     };
-    state.authInfoByProvider.anthropic = {
+    state.authInfoByProvider.deepseek = {
       configured: false,
       authenticated: false,
       status: "not_logged_in",
@@ -746,7 +730,7 @@ describe("/login", () => {
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
     expect(text).toContain("Login status:");
     expect(text).toContain("✓ OpenAI — user@example.com");
-    expect(text).toContain("✗ Anthropic");
+    expect(text).toContain("✗ DeepSeek");
     expect(text).toContain("Use /login <provider> to authenticate.");
   });
 
@@ -813,16 +797,16 @@ describe("/logout", () => {
     state.provider = "openai";
     state.hasChosenProvider = true;
 
-    const result = tryCommand("/logout anthropic", state);
+    const result = tryCommand("/logout deepseek", state);
 
-    expect(result).toEqual({ type: "logout", provider: "anthropic" });
+    expect(result).toEqual({ type: "logout", provider: "deepseek" });
     expect(state.provider).toBe("openai");
   });
 
   test("requires an explicit provider even when one is currently selected", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
-    state.provider = "anthropic";
+    state.provider = "deepseek";
     state.hasChosenProvider = true;
 
     const result = tryCommand("/logout", state);
@@ -830,7 +814,7 @@ describe("/logout", () => {
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
     expect(text).toContain("/logout openai");
-    expect(text).toContain("/logout anthropic");
+    expect(text).toContain("/logout deepseek");
   });
 
   test("requires an explicit provider when none has been chosen yet", () => {
@@ -842,7 +826,7 @@ describe("/logout", () => {
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
     expect(text).toContain("/logout openai");
-    expect(text).toContain("/logout anthropic");
+    expect(text).toContain("/logout deepseek");
   });
 });
 

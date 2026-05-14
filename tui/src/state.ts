@@ -445,17 +445,14 @@ export function createInitialState(): RenderState {
     rows: process.stdout.rows || 24,
     scrollOffset: 0,
     authByProvider: {
-      anthropic: false,
       openai: false,
       deepseek: false,
     },
     authInfoByProvider: {
-      anthropic: createEmptyProviderAuthInfo(),
       openai: createEmptyProviderAuthInfo(),
       deepseek: createEmptyProviderAuthInfo(),
     },
     usageByProvider: {
-      anthropic: null,
       openai: null,
       deepseek: null,
     },

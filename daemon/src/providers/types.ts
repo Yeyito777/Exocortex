@@ -80,8 +80,6 @@ export interface StreamOptions {
   promptCacheKey?: string;
   /** Token-accounting metadata for this request. */
   tracking?: TokenTrackingContext;
-  /** Optional provider-native tool bridge. Anthropic uses this to expose Exocortex tools via MCP. */
-  mcpToolExecutor?: StreamToolExecutor;
   /** Provider-created state shared by all model rounds within one assistant turn. */
   turnSession?: ProviderTurnSession;
 }

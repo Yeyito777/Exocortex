@@ -99,7 +99,6 @@ export function hasConfiguredCredentials(provider: ProviderId): boolean {
 export function getAuthByProvider(): Record<ProviderId, boolean> {
   return {
     openai: hasConfiguredCredentials("openai"),
-    anthropic: hasConfiguredCredentials("anthropic"),
     deepseek: hasConfiguredCredentials("deepseek"),
   };
 }
@@ -148,7 +147,6 @@ export function getAuthInfo(provider: ProviderId): ProviderAuthInfo {
 export function getAuthInfoByProvider(): Record<ProviderId, ProviderAuthInfo> {
   return {
     openai: getAuthInfo("openai"),
-    anthropic: getAuthInfo("anthropic"),
     deepseek: getAuthInfo("deepseek"),
   };
 }

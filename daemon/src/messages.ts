@@ -16,7 +16,7 @@ import { DEFAULT_EFFORT, createMessageMetadata, type ProviderId, type ModelId, t
 import type { AssistantProviderData } from "./providers/provider-data";
 
 export type ApiContentBlock =
-  | { type: "text"; text: string; cache_control?: { type: "ephemeral" } }
+  | { type: "text"; text: string }
   | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
   | { type: "thinking"; thinking: string; signature: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }

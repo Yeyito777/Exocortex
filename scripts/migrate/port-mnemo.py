@@ -3,7 +3,7 @@
 Port conversations from mnemo format to Exocortex format.
 
 Mnemo stores flat messages with roles: user, assistant, tool_call, tool_result.
-Exocortex uses the Anthropic API message format where:
+Exocortex stores provider-neutral API-style messages where:
   - assistant messages contain tool_use blocks inline
   - tool_result blocks are grouped into user messages
   - each message has { role, content, metadata }
@@ -23,7 +23,9 @@ MNEMO_DIR = Path.home() / ".config" / "mnemo" / "conversations"
 MNEMO_INDEX = MNEMO_DIR / "index.json"
 EXOCORTEX_DIR = Path.home() / "Workspace" / "Exocortex" / "config" / "data" / "conversations"
 
-CURRENT_VERSION = 9
+CURRENT_VERSION = 13
+DEFAULT_PROVIDER = "openai"
+DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_EFFORT = "high"
 
 
@@ -131,10 +133,7 @@ def convert_messages(mnemo_messages):
             # Build metadata from assistant fields
             metadata = None
             if msg.get("model") or msg.get("tokens"):
-                model = msg.get("model", "opus")
-                # Map model names if needed
-                model_map = {"opus": "opus", "sonnet": "sonnet", "haiku": "haiku"}
-                model = model_map.get(model, model)
+                model = msg.get("model", DEFAULT_MODEL)
                 # Try to reconstruct startedAt/endedAt
                 duration_ms = msg.get("durationMs", 0)
                 # We don't have exact timestamps, so we leave them approximate
@@ -204,7 +203,7 @@ def convert_messages(mnemo_messages):
 
 def validate_messages(messages):
     """
-    Validate that the converted messages follow Anthropic API constraints:
+    Validate that the converted messages follow provider request constraints:
     - Alternating user/assistant roles
     - No two consecutive messages with the same role
     """
@@ -224,7 +223,7 @@ def convert_conversation(mnemo_conv, index_entry=None):
     """Convert a full mnemo conversation to Exocortex format."""
     conv_id = mnemo_conv["id"]
     title = mnemo_conv.get("title", "")
-    model = mnemo_conv.get("model", "opus")
+    model = mnemo_conv.get("model", DEFAULT_MODEL)
 
     # Get pinned/marked status from index if available
     pinned = False
@@ -259,8 +258,10 @@ def convert_conversation(mnemo_conv, index_entry=None):
     return {
         "version": CURRENT_VERSION,
         "id": conv_id,
+        "provider": DEFAULT_PROVIDER,
         "model": model,
         "effort": DEFAULT_EFFORT,
+        "fastMode": False,
         "messages": messages,
         "createdAt": created_at,
         "updatedAt": updated_at,
@@ -268,7 +269,9 @@ def convert_conversation(mnemo_conv, index_entry=None):
         "marked": marked,
         "pinned": pinned,
         "sortOrder": sort_order,
+        "folderId": None,
         "title": title,
+        "goal": None,
     }
 
 

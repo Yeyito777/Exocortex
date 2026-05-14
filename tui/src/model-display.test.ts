@@ -8,10 +8,9 @@ describe("formatModelDisplayName", () => {
     expect(formatModelDisplayName("gpt-5.3-codex-spark")).toBe("Gpt-5.3-codex-spark");
   });
 
-  test("formats Anthropic model ids into family-version labels", () => {
-    expect(formatModelDisplayName("claude-opus-4-6")).toBe("Opus-4.6");
-    expect(formatModelDisplayName("claude-sonnet-4-6")).toBe("Sonnet-4.6");
-    expect(formatModelDisplayName("claude-haiku-4-5-20251001")).toBe("Haiku-4.5");
+  test("formats DeepSeek model ids into provider-version labels", () => {
+    expect(formatModelDisplayName("deepseek-v4-pro")).toBe("DeepSeek V4 Pro");
+    expect(formatModelDisplayName("deepseek-v4-flash")).toBe("DeepSeek V4 Flash");
   });
 
   test("falls back to capitalizing the raw id when no special formatter applies", () => {

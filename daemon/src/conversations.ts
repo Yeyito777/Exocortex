@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus } from "./messages";
-import { DEFAULT_EFFORT, createConversation, createMessageMetadata, createStoredUserMessage, isRealUserMessage, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, createConversation, createMessageMetadata, createStoredUserMessage, isRealUserMessage, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
@@ -16,7 +16,7 @@ import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
 import * as streaming from "./streaming";
 import { log } from "./log";
-import { normalizeEffort } from "./providers/registry";
+import { getProvider, normalizeEffort } from "./providers/registry";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -656,6 +656,11 @@ export function loadFromDisk(): LoadFromDiskStats {
 
   let normalizedEffortCount = 0;
   for (const summary of index.summaries) {
+    if (!getProvider(summary.provider)) {
+      summary.provider = DEFAULT_PROVIDER_ID;
+      summary.model = DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID];
+      normalizedEffortCount++;
+    }
     const normalizedEffort = normalizeEffort(summary.provider, summary.model, summary.effort);
     if (normalizedEffort !== summary.effort) {
       summary.effort = normalizedEffort;

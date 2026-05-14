@@ -8,7 +8,6 @@ import type { SlashCommand } from "./types";
 function logoutDescription(provider: ProviderId): string {
   switch (provider) {
     case "openai": return "Log out from OpenAI";
-    case "anthropic": return "Log out from Anthropic";
     case "deepseek": return "Forget the saved DeepSeek API key";
   }
 }

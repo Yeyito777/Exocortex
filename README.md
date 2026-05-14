@@ -46,7 +46,7 @@ The `exo` CLI is maintained as a separate external tool and is not installed by 
 
 #### Authenticate
 
-Run the one-time login to connect your Anthropic account:
+Run the one-time login to connect a model provider account:
 
 ```bash
 exocortexd login

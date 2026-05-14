@@ -7,15 +7,15 @@ import { theme } from "./theme";
 
 const providers: ProviderInfo[] = [
   {
-    id: "anthropic",
-    label: "Anthropic",
-    defaultModel: "claude-opus-4-6",
+    id: "deepseek",
+    label: "DeepSeek",
+    defaultModel: "deepseek-v4-pro",
     allowsCustomModels: false,
     supportsFastMode: false,
     models: [
       {
-        id: "claude-opus-4-6",
-        label: "Opus-4.6",
+        id: "deepseek-v4-pro",
+        label: "DeepSeek V4 Pro",
         maxContext: 1_000_000,
         supportedEfforts: [{ effort: "high", description: "default" }],
         defaultEffort: "high",
@@ -76,9 +76,9 @@ describe("prompt highlighting", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
 
-    const input = "/model anthropic claude.future-preview";
+    const input = "/model deepseek deepseek.future-preview";
     const [line] = highlightPromptInput(state, [input], input, 120, 0);
 
-    expect(line).toBe(`${theme.command}/model anthropic${theme.reset} claude.future-preview`);
+    expect(line).toBe(`${theme.command}/model deepseek${theme.reset} deepseek.future-preview`);
   });
 });

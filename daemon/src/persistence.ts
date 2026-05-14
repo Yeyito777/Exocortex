@@ -14,7 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlink
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
 import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal } from "./messages";
-import { DEFAULT_EFFORT, countConversationMessages, sortConversations, summarizeConversation } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, countConversationMessages, sortConversations, summarizeConversation } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
@@ -204,6 +204,12 @@ interface ConversationFileV13 {
 
 type ConversationFile = ConversationFileV13;
 
+function normalizeProviderId(provider: unknown): ProviderId {
+  return typeof provider === "string" && (DEFAULT_PROVIDER_ORDER as readonly string[]).includes(provider)
+    ? provider as ProviderId
+    : DEFAULT_PROVIDER_ID;
+}
+
 // ── Migrations ──────────────────────────────────────────────────────
 
 /** v1 → v2: Add null metadata to all messages. */
@@ -311,10 +317,12 @@ function migrateV9toV10(data: ConversationFileV9): ConversationFileV10 {
 
 /** v10 → v11: Add provider and fastMode fields. */
 function migrateV10toV11(data: ConversationFileV10): ConversationFileV11 {
+  const provider = normalizeProviderId(data.provider);
   return {
     ...data,
     version: 11,
-    provider: data.provider ?? "anthropic",
+    provider,
+    model: data.provider && provider === data.provider ? data.model : DEFAULT_MODEL_BY_PROVIDER[provider],
     fastMode: false,
   };
 }
@@ -521,10 +529,11 @@ function toFile(conv: Conversation): ConversationFile {
 }
 
 function fromFile(file: ConversationFile): Conversation {
+  const provider = normalizeProviderId(file.provider);
   const conv: Conversation = {
     id: file.id,
-    provider: file.provider,
-    model: file.model,
+    provider,
+    model: provider === file.provider ? file.model : DEFAULT_MODEL_BY_PROVIDER[provider],
     effort: file.effort,
     fastMode: file.fastMode,
     messages: file.messages,

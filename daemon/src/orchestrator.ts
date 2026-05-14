@@ -10,7 +10,7 @@
 import { log } from "./log";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
-import { buildAnthropicSystemPrompt, buildSystemPrompt } from "./system";
+import { buildSystemPrompt } from "./system";
 import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "./tools/registry";
 import * as convStore from "./conversations";
@@ -125,9 +125,8 @@ function protectedTailCountForReplay(messages: StoredMessage[]): number {
 /**
  * Whether a partially streamed thinking block is safe to persist on abort/error.
  *
- * Anthropic requires a signature for replayable thinking blocks, so an empty
- * signature with empty thinking is junk. OpenAI reasoning summaries do not
- * carry signatures, so any non-empty thinking text is still worth preserving.
+ * Empty thinking blocks are junk on replay; non-empty reasoning summaries are
+ * worth preserving even when the provider does not attach transport metadata.
  */
 function isPersistableThinkingBlock(block: Extract<ApiContentBlock, { type: "thinking" }>): boolean {
   return Boolean(block.thinking && (block.signature || block.thinking.trim().length > 0));
@@ -694,9 +693,7 @@ async function orchestrateAssistantTurn(
 
   try {
     const result = await runAgentLoop(apiMessages, conv.provider, conv.model, callbacks, {
-      system: conv.provider === "anthropic"
-        ? buildAnthropicSystemPrompt(systemInstructionsText || undefined)
-        : buildSystemPrompt(systemInstructionsText || undefined),
+      system: buildSystemPrompt(systemInstructionsText || undefined),
       signal: ac.signal,
       tools: getToolDefs(),
       executor,
@@ -825,9 +822,8 @@ async function orchestrateAssistantTurn(
       conv.messages.push(...interleavedCompleted);
     }
 
-    // Persist the in-flight partial response (current round's streamed content).
-    // Strip only Anthropic-style empty-signature thinking blocks — OpenAI
-    // summaries don't carry signatures, so keep any non-empty thinking text.
+    // Persist the in-flight partial response (current round's streamed content),
+    // dropping empty thinking placeholders while keeping non-empty reasoning text.
     const safeContent = partialContent.filter(b => {
       if (b.type === "thinking") return isPersistableThinkingBlock(b);
       return true;

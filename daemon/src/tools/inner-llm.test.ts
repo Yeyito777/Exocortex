@@ -10,13 +10,6 @@ describe("getInnerLlmSummaryOptions", () => {
     expect(options.model).toBe("gpt-5.4-mini");
   });
 
-  test("uses Anthropic's summary model when the conversation provider is anthropic", () => {
-    expect(getInnerLlmSummaryOptions({ provider: "anthropic" })).toEqual({
-      provider: "anthropic",
-      model: "claude-sonnet-4-6",
-    });
-  });
-
   test("uses OpenAI's summary model when the conversation provider is openai", () => {
     expect(getInnerLlmSummaryOptions({ provider: "openai" })).toEqual({
       provider: "openai",
@@ -32,7 +25,7 @@ describe("getInnerLlmSummaryOptions", () => {
   });
 
   test("always chooses a model known to the selected provider", () => {
-    for (const provider of ["openai", "anthropic", "deepseek"] as const) {
+    for (const provider of ["openai", "deepseek"] as const) {
       const options = getInnerLlmSummaryOptions({ provider });
       expect(isKnownModel(provider, options.model)).toBe(true);
     }
