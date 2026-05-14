@@ -22,8 +22,6 @@ export interface StoredOpenAIAuthPool extends StoredOpenAIAuth {
   version?: 1;
   accounts: StoredOpenAIAuth[];
   currentIndex: number;
-  /** One-shot override set by `/login openai switch` so the next request uses the selected account. */
-  nextIndexOverride?: number | null;
 }
 
 export interface OpenAIAccountSummary {
@@ -61,9 +59,6 @@ function toAuthPool(value: StoredOpenAIAuth | StoredOpenAIAuthPool | null): Stor
       version: 1,
       accounts,
       currentIndex,
-      nextIndexOverride: typeof value.nextIndexOverride === "number"
-        ? normalizeCurrentIndex(value.nextIndexOverride, accounts.length)
-        : null,
       updatedAt: current?.updatedAt ?? (typeof value.updatedAt === "string" ? value.updatedAt : new Date().toISOString()),
     };
   }
@@ -74,7 +69,6 @@ function toAuthPool(value: StoredOpenAIAuth | StoredOpenAIAuthPool | null): Stor
       multiAccountVersion: 1,
       accounts: [value],
       currentIndex: 0,
-      nextIndexOverride: null,
       updatedAt: value.updatedAt ?? new Date().toISOString(),
     };
   }
@@ -95,7 +89,6 @@ function toAuthPool(value: StoredOpenAIAuth | StoredOpenAIAuthPool | null): Stor
     idToken: null,
     accounts: [],
     currentIndex: -1,
-    nextIndexOverride: null,
     updatedAt: new Date().toISOString(),
     multiAccountVersion: 1,
   };
@@ -120,7 +113,6 @@ function saveStoredAuthPool(pool: StoredOpenAIAuthPool): void {
     multiAccountVersion: 1,
     accounts,
     currentIndex,
-    nextIndexOverride: pool.nextIndexOverride == null ? null : normalizeCurrentIndex(pool.nextIndexOverride, accounts.length),
     updatedAt: new Date().toISOString(),
   } satisfies StoredOpenAIAuthPool);
 }
@@ -133,12 +125,11 @@ function getAccountKey(auth: StoredOpenAIAuth): string {
     || auth.tokens.accessToken;
 }
 
-function saveAccountAt(index: number, auth: StoredOpenAIAuth, opts: { clearNextOverride?: boolean } = {}): void {
+function saveAccountAt(index: number, auth: StoredOpenAIAuth): void {
   const pool = loadStoredAuthPool();
   if (index < 0 || index >= pool.accounts.length) return;
   pool.accounts[index] = auth;
   pool.currentIndex = index;
-  if (opts.clearNextOverride) pool.nextIndexOverride = null;
   saveStoredAuthPool(pool);
 }
 
@@ -303,9 +294,19 @@ function matchesAccountIdentifier(auth: StoredOpenAIAuth, index: number, identif
   if (/^#?\d+$/.test(normalized)) {
     return index + 1 === Number(normalized.replace(/^#/, ""));
   }
+  const email = auth.profile?.email?.trim().toLowerCase() ?? null;
   return auth.profile?.email?.toLowerCase() === normalized
+    || (email !== null && censorEmailForIdentifier(email) === normalized)
     || auth.accountId?.toLowerCase() === normalized
     || auth.profile?.accountUuid?.toLowerCase() === normalized;
+}
+
+function censorEmailForIdentifier(email: string): string {
+  const at = email.indexOf("@");
+  if (at <= 0) return "******";
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  return `${local[0]}${"*".repeat(Math.max(1, local.length - 1))}@${domain}`;
 }
 
 export function removeAccount(identifier?: string): OpenAIAccountSummary {
@@ -362,7 +363,6 @@ export function switchAccount(identifier?: string): OpenAIAccountSummary {
   }
 
   pool.currentIndex = switchIndex;
-  pool.nextIndexOverride = switchIndex;
   saveStoredAuthPool(pool);
 
   const switched = pool.accounts[switchIndex];
@@ -400,58 +400,38 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
     throw new AuthError("OpenAI is not authenticated. Run `/login openai`.");
   }
 
-  const currentIndex = normalizeCurrentIndex(pool.currentIndex, pool.accounts.length);
-  const overrideIndex = pool.nextIndexOverride == null ? null : normalizeCurrentIndex(pool.nextIndexOverride, pool.accounts.length);
-  const startIndex = overrideIndex != null
-    ? overrideIndex
-    : opts.forceRefresh || pool.accounts.length === 1
-    ? currentIndex
-    : (currentIndex + 1) % pool.accounts.length;
+  const index = normalizeCurrentIndex(pool.currentIndex, pool.accounts.length);
+  const stored = pool.accounts[index];
 
-  let lastErr: unknown = null;
-  for (let attempt = 0; attempt < pool.accounts.length; attempt++) {
-    const index = (startIndex + attempt) % pool.accounts.length;
-    const stored = pool.accounts[index];
-
-    if (
-      stored?.tokens?.accessToken
-      && !opts.forceRefresh
-      && !isTokenExpired(stored.tokens)
-      && await verifyStoredSession(stored.tokens.accessToken, stored.accountId)
-    ) {
-      const enriched = await enrichStoredAuth(stored);
-      saveAccountAt(index, enriched, { clearNextOverride: overrideIndex != null });
-      return { accessToken: enriched.tokens.accessToken, accountId: enriched.accountId };
-    }
-
-    if (stored?.tokens?.refreshToken) {
-      try {
-        const refreshed = await refreshStoredAuth(stored.tokens.refreshToken, {
-          source: stored.source,
-          accountId: stored.accountId,
-          authMode: stored.authMode,
-          fallbackIdToken: stored.idToken,
-        });
-        saveAccountAt(index, refreshed, { clearNextOverride: overrideIndex != null });
-        return { accessToken: refreshed.tokens.accessToken, accountId: refreshed.accountId };
-      } catch (err) {
-        if (!(err instanceof AuthError)) throw err;
-        lastErr = err;
-        continue;
-      }
-    }
-
-    if (stored?.tokens?.accessToken && await verifyStoredSession(stored.tokens.accessToken, stored.accountId)) {
-      const enriched = await enrichStoredAuth(stored);
-      saveAccountAt(index, enriched, { clearNextOverride: overrideIndex != null });
-      return { accessToken: enriched.tokens.accessToken, accountId: enriched.accountId };
-    }
-
-    lastErr = new AuthError("OpenAI account could not be verified.");
+  if (
+    stored?.tokens?.accessToken
+    && !opts.forceRefresh
+    && !isTokenExpired(stored.tokens)
+    && await verifyStoredSession(stored.tokens.accessToken, stored.accountId)
+  ) {
+    const enriched = await enrichStoredAuth(stored);
+    saveAccountAt(index, enriched);
+    return { accessToken: enriched.tokens.accessToken, accountId: enriched.accountId };
   }
 
-  if (lastErr instanceof AuthError) throw lastErr;
-  throw new AuthError("OpenAI is not authenticated. Run `/login openai`.");
+  if (stored?.tokens?.refreshToken) {
+    const refreshed = await refreshStoredAuth(stored.tokens.refreshToken, {
+      source: stored.source,
+      accountId: stored.accountId,
+      authMode: stored.authMode,
+      fallbackIdToken: stored.idToken,
+    });
+    saveAccountAt(index, refreshed);
+    return { accessToken: refreshed.tokens.accessToken, accountId: refreshed.accountId };
+  }
+
+  if (stored?.tokens?.accessToken && await verifyStoredSession(stored.tokens.accessToken, stored.accountId)) {
+    const enriched = await enrichStoredAuth(stored);
+    saveAccountAt(index, enriched);
+    return { accessToken: enriched.tokens.accessToken, accountId: enriched.accountId };
+  }
+
+  throw new AuthError("Current OpenAI account could not be verified. Use `/login openai switch <email-or-number>` or `/login openai add`.");
 }
 
 export function getCurrentAccountKey(): string | null {

@@ -5,6 +5,7 @@ import { setChosenProvider } from "../providerselection";
 import { DEFAULT_PROVIDER_ORDER, type ProviderId } from "../messages";
 import { availableProviders, defaultModelForProvider, normalizeStateEffort, providerCompletionItems, providerSupportsFastMode } from "./shared";
 import type { SlashCommand } from "./types";
+import { autocompleteAccountLabel } from "../privacy";
 
 function loginDescription(provider: ProviderId): string {
   switch (provider) {
@@ -43,7 +44,7 @@ const OPENAI_ACCOUNT_ACTIONS = [
 function openAIAccountRemovalItems(state: Parameters<NonNullable<SlashCommand["getArgs"]>>[0]) {
   const accounts = state.authInfoByProvider.openai.accounts ?? [];
   return accounts.map((account, index) => {
-    const label = account.email?.trim() || account.displayName?.trim() || account.accountId?.trim() || String(index + 1);
+    const label = autocompleteAccountLabel(state, account, index);
     const plan = account.subscriptionType ? ` · ${account.subscriptionType}` : "";
     const current = account.current ? " · current" : "";
     return {

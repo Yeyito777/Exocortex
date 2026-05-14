@@ -9,6 +9,7 @@
 import type { RenderState } from "./state";
 import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, renderFolderInstructionsDocument, setCurrentConversationToolOutputAvailability, setFolderInstructionsDocumentText } from "./state";
 import { theme } from "./theme";
+import { censorKnownAuthEmails } from "./privacy";
 import type { Event } from "./protocol";
 import {
   handleConversationCreated,
@@ -234,7 +235,7 @@ export function handleEvent(
 
     case "auth_status":
       if (event.message) {
-        pushSystemMessage(state, event.message, theme.muted);
+        pushSystemMessage(state, censorKnownAuthEmails(state, event.message), theme.muted);
       }
       if (event.openUrl) {
         try {

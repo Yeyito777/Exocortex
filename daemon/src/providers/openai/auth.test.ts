@@ -39,7 +39,7 @@ afterEach(() => {
 });
 
 describe("OpenAI multi-account auth", () => {
-  test("selects connected accounts in round-table order", async () => {
+  test("uses the app-wide selected account consistently", async () => {
     globalThis.fetch = mock(() => Promise.resolve(new Response("{}", { status: 200 }))) as unknown as typeof fetch;
 
     const accounts = [
@@ -54,11 +54,11 @@ describe("OpenAI multi-account auth", () => {
     };
     saveProviderAuth("openai", pool);
 
-    await expect(getVerifiedSession()).resolves.toEqual({ accessToken: "token-two", accountId: "acct_two" });
-    expect(loadProviderAuth<StoredOpenAIAuthPool>("openai")?.tokens.accessToken).toBe("token-two");
+    await expect(getVerifiedSession()).resolves.toEqual({ accessToken: "token-one", accountId: "acct_one" });
+    expect(loadProviderAuth<StoredOpenAIAuthPool>("openai")?.tokens.accessToken).toBe("token-one");
     expect(listAccounts().map((account) => ({ email: account.email, current: account.current }))).toEqual([
-      { email: "one@example.com", current: false },
-      { email: "two@example.com", current: true },
+      { email: "one@example.com", current: true },
+      { email: "two@example.com", current: false },
     ]);
 
     await expect(getVerifiedSession()).resolves.toEqual({ accessToken: "token-one", accountId: "acct_one" });
@@ -94,6 +94,25 @@ describe("OpenAI multi-account auth", () => {
     ]);
   });
 
+  test("switches the current account by censored email label", () => {
+    const accounts = [
+      makeAuth("one@example.com", "acct_one", "token-one"),
+      makeAuth("two@example.com", "acct_two", "token-two"),
+    ];
+    saveProviderAuth("openai", {
+      ...accounts[0],
+      multiAccountVersion: 1,
+      accounts,
+      currentIndex: 0,
+    } satisfies StoredOpenAIAuthPool);
+
+    expect(switchAccount("t**@example.com")).toMatchObject({
+      email: "two@example.com",
+      current: true,
+    });
+    expect(loadProviderAuth<StoredOpenAIAuthPool>("openai")?.currentIndex).toBe(1);
+  });
+
   test("uses a switched account on the next request instead of rotating past it", async () => {
     globalThis.fetch = mock(() => Promise.resolve(new Response("{}", { status: 200 }))) as unknown as typeof fetch;
 
@@ -111,6 +130,7 @@ describe("OpenAI multi-account auth", () => {
     switchAccount("two@example.com");
 
     await expect(getVerifiedSession()).resolves.toEqual({ accessToken: "token-two", accountId: "acct_two" });
-    expect(loadProviderAuth<StoredOpenAIAuthPool>("openai")?.nextIndexOverride).toBeNull();
+    await expect(getVerifiedSession()).resolves.toEqual({ accessToken: "token-two", accountId: "acct_two" });
+    expect(loadProviderAuth<StoredOpenAIAuthPool>("openai")?.currentIndex).toBe(1);
   });
 });

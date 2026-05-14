@@ -5,6 +5,7 @@
 import type { ProviderId } from "./messages";
 import type { RenderState } from "./state";
 import { availableProviders } from "./providerselection";
+import { maybeCensorEmail } from "./privacy";
 
 function providerLabel(state: RenderState, provider: ProviderId): string {
   return state.providerRegistry.find((candidate) => candidate.id === provider)?.label ?? provider;
@@ -12,7 +13,7 @@ function providerLabel(state: RenderState, provider: ProviderId): string {
 
 function providerSummary(state: RenderState, provider: ProviderId): string | null {
   const info = state.authInfoByProvider[provider];
-  return info.email?.trim() || info.displayName?.trim() || null;
+  return maybeCensorEmail(info.email, state.hideSensitiveInfo) || info.displayName?.trim() || null;
 }
 
 export function buildLoginInfoMessage(state: RenderState): string {

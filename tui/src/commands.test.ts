@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { defaultExocortexConfig, readExocortexConfig, writeExocortexConfig } from "@exocortex/shared/config";
 import { getCommandArgs, tryCommand } from "./commands";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
@@ -159,6 +160,7 @@ const tokenStats: TokenStatsSnapshot = {
 
 beforeEach(() => {
   clearPreferredProvider();
+  writeExocortexConfig(defaultExocortexConfig());
 });
 
 describe("/new", () => {
@@ -675,6 +677,25 @@ describe("/login", () => {
     expect(args["/login openai switch"].map((item) => item.name)).toEqual(["one@example.com", "two@example.com"]);
   });
 
+  test("censors OpenAI account emails in autocomplete when hide mode is enabled", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.hideSensitiveInfo = true;
+    state.authInfoByProvider.openai = {
+      ...state.authInfoByProvider.openai,
+      accounts: [
+        { email: "one@example.com", displayName: null, subscriptionType: "plus", accountId: "acct_one", current: false },
+        { email: "two@example.com", displayName: null, subscriptionType: "pro", accountId: "acct_two", current: true },
+      ],
+      currentAccount: { email: "two@example.com", displayName: null, subscriptionType: "pro", accountId: "acct_two", current: true },
+    };
+
+    const args = getCommandArgs(state);
+    expect(args["/login openai remove"].map((item) => item.name)).toEqual(["o**@example.com", "t**@example.com"]);
+    expect(args["/login openai switch"].map((item) => item.name)).toEqual(["o**@example.com", "t**@example.com"]);
+    expect(args["/login openai remove"].map((item) => item.desc).join("\n")).not.toContain("example.com");
+  });
+
   test("instructs DeepSeek users to supply an API key", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
@@ -734,6 +755,61 @@ describe("/login", () => {
     expect(text).toContain("✓ OpenAI — user@example.com");
     expect(text).toContain("✗ Anthropic");
     expect(text).toContain("Use /login <provider> to authenticate.");
+  });
+
+  test("censors emails in login status when hide mode is enabled", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.hideSensitiveInfo = true;
+    state.authInfoByProvider.openai = {
+      ...state.authInfoByProvider.openai,
+      configured: true,
+      authenticated: true,
+      status: "logged_in",
+      email: "user@example.com",
+      displayName: "Example User",
+    };
+
+    const result = tryCommand("/login", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("✓ OpenAI — u***@example.com");
+    expect(text).not.toContain("user@example.com");
+  });
+});
+
+describe("/hide", () => {
+  test("toggles email hiding", () => {
+    const state = createInitialState();
+
+    expect(tryCommand("/hide", state)).toEqual({ type: "handled" });
+    expect(state.hideSensitiveInfo).toBe(true);
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Email hiding enabled.");
+
+    expect(tryCommand("/hide", state)).toEqual({ type: "handled" });
+    expect(state.hideSensitiveInfo).toBe(false);
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Email hiding disabled.");
+  });
+
+  test("supports explicit on/off", () => {
+    const state = createInitialState();
+
+    expect(tryCommand("/hide on", state)).toEqual({ type: "handled" });
+    expect(state.hideSensitiveInfo).toBe(true);
+    expect(readExocortexConfig().tui?.hideSensitiveInfo).toBe(true);
+
+    expect(tryCommand("/hide off", state)).toEqual({ type: "handled" });
+    expect(state.hideSensitiveInfo).toBe(false);
+    expect(readExocortexConfig().tui?.hideSensitiveInfo).toBe(false);
+  });
+
+  test("loads the hide preference from config.json", () => {
+    writeExocortexConfig({ ...defaultExocortexConfig(), tui: { hideSensitiveInfo: true } });
+
+    const state = createInitialState();
+
+    expect(state.hideSensitiveInfo).toBe(true);
   });
 });
 

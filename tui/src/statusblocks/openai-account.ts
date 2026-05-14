@@ -5,10 +5,7 @@
 import type { RenderState } from "../state";
 import type { StatusBlock } from "../statusline";
 import { theme } from "../theme";
-
-function displayAccount(email: string | null | undefined, displayName: string | null | undefined): string {
-  return email?.trim() || displayName?.trim() || "unknown";
-}
+import { accountDisplayLabel } from "../privacy";
 
 function displayPlan(plan: string | null | undefined): string {
   return plan?.trim() || "unknown";
@@ -22,7 +19,7 @@ export function openAIAccountBlock(state: RenderState): StatusBlock | null {
   if (accounts.length <= 1) return null;
 
   const current = info.currentAccount ?? accounts.find((account) => account.current) ?? null;
-  const account = displayAccount(current?.email, current?.displayName);
+  const account = accountDisplayLabel(state, current);
   const plan = displayPlan(current?.subscriptionType);
   const accountLabel = "Account: ";
   const planLabel = "Plan: ";

@@ -80,6 +80,11 @@ export interface PingConfig {
   sound?: string | null;
 }
 
+export interface TuiConfig {
+  /** If true, the TUI censors account/email labels in status and auth UI. */
+  hideSensitiveInfo?: boolean;
+}
+
 export interface ExocortexConfig {
   /** Active TUI theme name. */
   theme?: string;
@@ -87,6 +92,8 @@ export interface ExocortexConfig {
   agent?: AgentConfig;
   /** TUI ping behavior when an assistant stream finishes. */
   ping?: PingConfig;
+  /** TUI display/privacy preferences. */
+  tui?: TuiConfig;
   /** Legacy pre-/ping sound setting. Prefer ping.sound for new writes. */
   sound?: string | null;
   /** TUI open-on-enter commands for links and file paths. */

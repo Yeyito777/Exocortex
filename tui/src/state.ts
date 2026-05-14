@@ -10,6 +10,7 @@ import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDis
 import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
 import { loadPreferredProvider } from "./preferences";
+import { loadHideSensitiveInfoPreference } from "./privacy";
 import { theme } from "./theme";
 import type { MessageBound, RenderLineAnchor } from "./conversation";
 import type { WrapCopyLine } from "./textwrap";
@@ -179,6 +180,8 @@ export interface RenderState {
   externalToolStyles: ExternalToolStyle[];
   /** Whether tool result output is visible. Toggled with Ctrl+O. */
   showToolOutput: boolean;
+  /** Whether user-identifying auth/account labels should be censored in the UI. */
+  hideSensitiveInfo: boolean;
   /** Whether the active conversation currently has historical tool outputs loaded. */
   toolOutputsLoaded: boolean;
   /** Whether a tool-output fetch is currently in flight for the active conversation. */
@@ -422,6 +425,7 @@ export function focusSidebar(state: RenderState): void {
 export function createInitialState(): RenderState {
   const preferredProvider = loadPreferredProvider();
   const provider = preferredProvider ?? DEFAULT_PROVIDER_ID;
+  const hideSensitiveInfo = loadHideSensitiveInfoPreference();
 
   const s: RenderState = {
     messages: [],
@@ -471,9 +475,10 @@ export function createInitialState(): RenderState {
     lastStreamSeqByConv: {},
     toolRegistry: [],
     providerRegistry: [],
-    externalToolStyles: [],
-    showToolOutput: false,
-    toolOutputsLoaded: false,
+	    externalToolStyles: [],
+	    showToolOutput: false,
+	    hideSensitiveInfo,
+	    toolOutputsLoaded: false,
     toolOutputsLoading: false,
     showToolOutputAfterLoad: false,
     historyCursor: createHistoryCursor(),

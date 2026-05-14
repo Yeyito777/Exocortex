@@ -4,6 +4,7 @@ import { EFFORT_COMMAND } from "./commands/effort";
 import { FAST_COMMAND } from "./commands/fast";
 import { GOAL_COMMAND } from "./commands/goal";
 import { createHelpCommand } from "./commands/help";
+import { HIDE_COMMAND } from "./commands/hide";
 import { INSTRUCTIONS_COMMAND } from "./commands/instructions";
 import { LOGIN_COMMAND } from "./commands/login";
 import { LOGOUT_COMMAND } from "./commands/logout";
@@ -38,6 +39,7 @@ const commands: SlashCommand[] = [
   TOKENS_COMMAND,
   TIME_COMMAND,
   THEME_COMMAND,
+  HIDE_COMMAND,
   PING_COMMAND,
   INSTRUCTIONS_COMMAND,
   SYSTEM_COMMAND,
