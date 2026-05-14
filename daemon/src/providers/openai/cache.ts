@@ -6,6 +6,8 @@ import type { StreamOptions } from "../types";
 export interface OpenAIRequestSession {
   accessToken: string;
   accountId: string | null;
+  /** Stable key for the OpenAI account whose token/account-id this request uses. */
+  accountKey?: string | null;
 }
 
 export function buildOpenAIRequestHeaders(

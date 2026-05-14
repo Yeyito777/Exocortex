@@ -131,7 +131,7 @@ export interface ProviderAuthAdapter {
 
 export interface ProviderUsageAdapter {
   getLastUsage(): UsageData | null;
-  refreshUsage(onUpdate: (usage: UsageData) => void): void;
+  refreshUsage(onUpdate: (usage: UsageData | null) => void): void;
   handleUsageHeaders(headers: Headers, onUpdate: (usage: UsageData) => void): void;
   clearUsage(): void;
 }

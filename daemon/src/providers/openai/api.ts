@@ -2,7 +2,7 @@ import type { ApiMessage, ModelId } from "../../messages";
 import { createAbortError, isAbortLikeError } from "../../abort";
 import { log } from "../../log";
 import { readExocortexConfig } from "@exocortex/shared/config";
-import { getVerifiedSession } from "./auth";
+import { getCurrentAccountKey, getVerifiedSession } from "./auth";
 import { AuthError, isNonRetryableProviderError } from "../errors";
 import { OPENAI_CODEX_RESPONSES_WS_URL } from "./constants";
 import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
@@ -12,6 +12,7 @@ import { mergeReasoningSummaries } from "./reasoning";
 import { OpenAIWebSocketClosedBeforeResponseStartedError, readOpenAIResponsesWebSocket } from "./responses-websocket";
 import { readOpenAIEventsForTest } from "./stream";
 import { connectOpenAIWebSocket, OpenAIWebSocketHttpError, type OpenAIWebSocketConnection } from "./websocket";
+import { OPENAI_USAGE_ACCOUNT_KEY_HEADER } from "./usage";
 import type { ProviderTurnSession, StreamCallbacks, StreamOptions, StreamResult } from "../types";
 
 export {
@@ -132,6 +133,18 @@ function isOpenAITurnSession(value: ProviderTurnSession | undefined): value is O
   return value instanceof OpenAITurnSession;
 }
 
+function callbacksForSession(callbacks: StreamCallbacks, session: OpenAIRequestSession): StreamCallbacks {
+  if (!session.accountKey) return callbacks;
+  return {
+    ...callbacks,
+    onHeaders: (headers) => {
+      const scopedHeaders = new Headers(headers);
+      scopedHeaders.set(OPENAI_USAGE_ACCOUNT_KEY_HEADER, session.accountKey ?? "");
+      callbacks.onHeaders?.(scopedHeaders);
+    },
+  };
+}
+
 function cloneWithoutInput(body: Record<string, unknown>): Record<string, unknown> {
   const { input: _input, ...rest } = body;
   return rest;
@@ -231,7 +244,18 @@ export class OpenAITurnSession implements ProviderTurnSession {
     signal?: AbortSignal,
     opts: { forceRefresh?: boolean } = {},
   ): Promise<OpenAIRequestSession> {
-    if (this.state.requestSession && !opts.forceRefresh) return this.state.requestSession;
+    const currentAccountKey = getCurrentAccountKey();
+    if (this.state.requestSession && !opts.forceRefresh) {
+      if (!currentAccountKey || this.state.requestSession.accountKey === currentAccountKey) {
+        return this.state.requestSession;
+      }
+
+      log("info", "openai api: selected account changed; resetting cached OpenAI turn session");
+      this.state.socket?.destroy();
+      resetReusableTurnSessionState(this.state);
+      this.state.inUse = true;
+      this.resetIncrementalStateFields();
+    }
     this.state.requestSession = await getVerifiedSessionWithRetries(callbacks, signal, opts);
     return this.state.requestSession;
   }
@@ -555,6 +579,7 @@ export async function streamMessageWithSession(
 ): Promise<StreamResult> {
   const { signal } = options;
   const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
+  const requestCallbacks = callbacksForSession(callbacks, session);
   let retryAttempt = 0;
   let silentStaleReconnects = 0;
   let retriedWithoutIncremental = false;
@@ -566,7 +591,7 @@ export async function streamMessageWithSession(
     let attemptedIncremental = false;
     try {
       if (turnSession) {
-        const lease = await turnSession.getSocketLease(session, callbacks, options);
+        const lease = await turnSession.getSocketLease(session, requestCallbacks, options);
         socket = lease.socket;
         connectionReused = lease.reused;
       } else {
@@ -581,12 +606,12 @@ export async function streamMessageWithSession(
         const connection = await connectOpenAIWebSocket(OPENAI_CODEX_RESPONSES_WS_URL, headers, signal);
         socket = connection.socket;
         storeCloudflareCookiesFromHeaders(OPENAI_CODEX_RESPONSES_WS_URL, connection.headers);
-        callbacks.onHeaders?.(connection.headers);
+        requestCallbacks.onHeaders?.(connection.headers);
       }
 
       const requestBody = turnSession?.prepareRequestBody(fullRequestBody) ?? fullRequestBody;
       attemptedIncremental = typeof requestBody.previous_response_id === "string";
-      const result = await readOpenAIResponsesWebSocket(socket, requestBody, callbacks, {
+      const result = await readOpenAIResponsesWebSocket(socket, requestBody, requestCallbacks, {
         stallTimeoutMs: STREAM_STALL_TIMEOUT,
         connectionReused,
         signal,
@@ -614,7 +639,7 @@ export async function streamMessageWithSession(
           // not start. Reconnect quickly and full-replay on the new socket; only
           // surface UI retry markers if the supposedly one-off stale reconnect
           // repeats.
-          await retryBackoff(retryAttempt++, message, callbacks, signal, {
+            await retryBackoff(retryAttempt++, message, requestCallbacks, signal, {
             notify,
             delayMs: notify ? undefined : 250 + Math.random() * 250,
           });
@@ -641,12 +666,12 @@ export async function streamMessageWithSession(
               const resetHint = usageLimit.resetAt != null ? ` Reset: ${formatResetTime(usageLimit.resetAt)}.` : "";
               throw new Error(`${usageLimit.message}.${resetHint} Enable providers.openai.retryOnUsageLimitReset in config/config.json to keep the stream open until reset.`);
             }
-            await waitForUsageLimitReset(usageLimit, callbacks, signal);
+            await waitForUsageLimitReset(usageLimit, requestCallbacks, signal);
             continue;
           }
 
           if (retryAttempt < MAX_RETRIES) {
-            await retryBackoff(retryAttempt++, "HTTP 429", callbacks, signal);
+            await retryBackoff(retryAttempt++, "HTTP 429", requestCallbacks, signal);
             continue;
           }
           throw new Error(`OpenAI API error (429) after ${MAX_RETRIES} retries: ${err.body.slice(0, 200)}`);
@@ -654,7 +679,7 @@ export async function streamMessageWithSession(
 
         if (isRetriableOpenAIHttpError(err)) {
           if (retryAttempt < MAX_RETRIES) {
-            await retryBackoff(retryAttempt++, `HTTP ${err.status}`, callbacks, signal);
+            await retryBackoff(retryAttempt++, `HTTP ${err.status}`, requestCallbacks, signal);
             continue;
           }
           throw new Error(`OpenAI API error (${err.status}) after ${MAX_RETRIES} retries: ${formatOpenAIErrorBody(err.body).slice(0, 200)}`);
@@ -666,7 +691,7 @@ export async function streamMessageWithSession(
       if (retryAttempt < MAX_RETRIES) {
         const message = err instanceof Error ? err.message : String(err);
         log("warn", `openai api: retrying websocket request after ${message} (attempt ${retryAttempt + 1}/${MAX_RETRIES})`);
-        await retryBackoff(retryAttempt++, message, callbacks, signal);
+        await retryBackoff(retryAttempt++, message, requestCallbacks, signal);
         continue;
       }
       throw err;

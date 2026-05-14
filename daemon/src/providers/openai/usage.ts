@@ -8,6 +8,7 @@ import { getCurrentAccountKey } from "./auth";
 const USAGE_FILE = join(runtimeDir(), "usage-openai.json");
 const DEFAULT_LIMIT_PREFIX = "x-codex";
 const LEGACY_ACCOUNT_KEY = "__legacy__";
+export const OPENAI_USAGE_ACCOUNT_KEY_HEADER = "x-exocortex-openai-account-key";
 
 interface UsageStore {
   version: 2;
@@ -76,22 +77,42 @@ function currentAccountKey(): string {
   return getCurrentAccountKey() ?? LEGACY_ACCOUNT_KEY;
 }
 
+function accountKeyFromHeaders(headers: Headers): string {
+  return headers.get(OPENAI_USAGE_ACCOUNT_KEY_HEADER)?.trim() || currentAccountKey();
+}
+
 function usageForCurrentAccount(): UsageData | null {
-  return usageStore.byAccount[currentAccountKey()] ?? null;
+  return usageForAccount(currentAccountKey());
 }
 
-function commitUsage(usage: UsageData, onUpdate: (usage: UsageData) => void): void {
-  usageStore.byAccount[currentAccountKey()] = usage;
+function usageForAccount(accountKey: string): UsageData | null {
+  return usageStore.byAccount[accountKey] ?? null;
+}
+
+function isCurrentAccount(accountKey: string): boolean {
+  return accountKey === currentAccountKey();
+}
+
+function clearResetTimer(): void {
+  if (!resetTimer) return;
+  clearTimeout(resetTimer);
+  resetTimer = null;
+}
+
+function commitUsageForAccount(accountKey: string, usage: UsageData, onUpdate: (usage: UsageData) => void): void {
+  usageStore.byAccount[accountKey] = usage;
   saveToDisk(usageStore);
-  onUpdate(usage);
-  scheduleResetRefresh(onUpdate);
+  if (isCurrentAccount(accountKey)) {
+    onUpdate(usage);
+    scheduleResetRefresh(accountKey, onUpdate);
+  }
 }
 
-function scheduleResetRefresh(onUpdate: (usage: UsageData) => void): void {
-  if (resetTimer) clearTimeout(resetTimer);
+function scheduleResetRefresh(accountKey: string, onUpdate: (usage: UsageData) => void): void {
+  clearResetTimer();
 
   const now = Date.now();
-  const lastUsage = usageForCurrentAccount();
+  const lastUsage = usageForAccount(accountKey);
   const candidates = [lastUsage?.fiveHour?.resetsAt, lastUsage?.sevenDay?.resetsAt]
     .filter((timestamp): timestamp is number => timestamp != null && timestamp > now);
 
@@ -107,11 +128,11 @@ function scheduleResetRefresh(onUpdate: (usage: UsageData) => void): void {
       sevenDay: normalizeExpiredWindow(lastUsage.sevenDay, Date.now()),
     };
     if (JSON.stringify(nextUsage) === JSON.stringify(lastUsage)) {
-      scheduleResetRefresh(onUpdate);
+      if (isCurrentAccount(accountKey)) scheduleResetRefresh(accountKey, onUpdate);
       return;
     }
     log("info", "openai usage: reset boundary reached, zeroing expired windows");
-    commitUsage(nextUsage, onUpdate);
+    commitUsageForAccount(accountKey, nextUsage, onUpdate);
   }, delay);
 }
 
@@ -126,19 +147,24 @@ function normalizeExpiredWindow(window: UsageWindow | null, now: number): UsageW
   return window;
 }
 
-export function refreshUsage(_onUpdate: (usage: UsageData) => void): void {
-  return;
+export function refreshUsage(onUpdate: (usage: UsageData | null) => void): void {
+  clearResetTimer();
+  const accountKey = currentAccountKey();
+  const usage = usageForAccount(accountKey);
+  onUpdate(usage);
+  if (usage) scheduleResetRefresh(accountKey, onUpdate);
 }
 
 export function handleUsageHeaders(headers: Headers, onUpdate: (usage: UsageData) => void): void {
-  const usage = parseHeaders(headers);
+  const accountKey = accountKeyFromHeaders(headers);
+  const usage = parseHeaders(headers, accountKey);
   if (!usage) return;
-  commitUsage(usage, onUpdate);
+  commitUsageForAccount(accountKey, usage, onUpdate);
 }
 
-function parseHeaders(headers: Headers): UsageData | null {
+function parseHeaders(headers: Headers, accountKey = currentAccountKey()): UsageData | null {
   const prefix = resolveLimitPrefix(headers);
-  const previous = usageForCurrentAccount();
+  const previous = usageForAccount(accountKey);
 
   const fiveHour = parseWindow(
     getFirstPresentHeader(headers, headerCandidates(prefix, PRIMARY_PERCENT_HEADERS)),

@@ -54,14 +54,14 @@ describe("OpenAI multi-account auth", () => {
     };
     saveProviderAuth("openai", pool);
 
-    await expect(getVerifiedSession()).resolves.toEqual({ accessToken: "token-one", accountId: "acct_one" });
+    await expect(getVerifiedSession()).resolves.toEqual({ accessToken: "token-one", accountId: "acct_one", accountKey: "acct_one" });
     expect(loadProviderAuth<StoredOpenAIAuthPool>("openai")?.tokens.accessToken).toBe("token-one");
     expect(listAccounts().map((account) => ({ email: account.email, current: account.current }))).toEqual([
       { email: "one@example.com", current: true },
       { email: "two@example.com", current: false },
     ]);
 
-    await expect(getVerifiedSession()).resolves.toEqual({ accessToken: "token-one", accountId: "acct_one" });
+    await expect(getVerifiedSession()).resolves.toEqual({ accessToken: "token-one", accountId: "acct_one", accountKey: "acct_one" });
     expect(loadProviderAuth<StoredOpenAIAuthPool>("openai")?.tokens.accessToken).toBe("token-one");
     expect(listAccounts().map((account) => ({ email: account.email, current: account.current }))).toEqual([
       { email: "one@example.com", current: true },
@@ -129,8 +129,8 @@ describe("OpenAI multi-account auth", () => {
 
     switchAccount("two@example.com");
 
-    await expect(getVerifiedSession()).resolves.toEqual({ accessToken: "token-two", accountId: "acct_two" });
-    await expect(getVerifiedSession()).resolves.toEqual({ accessToken: "token-two", accountId: "acct_two" });
+    await expect(getVerifiedSession()).resolves.toEqual({ accessToken: "token-two", accountId: "acct_two", accountKey: "acct_two" });
+    await expect(getVerifiedSession()).resolves.toEqual({ accessToken: "token-two", accountId: "acct_two", accountKey: "acct_two" });
     expect(loadProviderAuth<StoredOpenAIAuthPool>("openai")?.currentIndex).toBe(1);
   });
 });

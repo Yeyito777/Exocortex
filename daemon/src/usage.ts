@@ -5,7 +5,7 @@ export function getLastUsage(provider: ProviderId): UsageData | null {
   return getProviderAdapter(provider).usage.getLastUsage();
 }
 
-export function refreshUsage(provider: ProviderId, onUpdate: (usage: UsageData) => void): void {
+export function refreshUsage(provider: ProviderId, onUpdate: (usage: UsageData | null) => void): void {
   getProviderAdapter(provider).usage.refreshUsage(onUpdate);
 }
 

@@ -8,7 +8,7 @@ export function clearUsage(): void {
   return;
 }
 
-export function refreshUsage(_onUpdate: (usage: UsageData) => void): void {
+export function refreshUsage(_onUpdate: (usage: UsageData | null) => void): void {
   return;
 }
 

@@ -389,6 +389,7 @@ export async function getVerifiedAccessToken(): Promise<string> {
 export interface VerifiedOpenAISession {
   accessToken: string;
   accountId: string | null;
+  accountKey: string | null;
 }
 
 export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}): Promise<VerifiedOpenAISession> {
@@ -408,7 +409,7 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
   ) {
     const enriched = await enrichStoredAuth(stored);
     saveAccountAt(index, enriched);
-    return { accessToken: enriched.tokens.accessToken, accountId: enriched.accountId };
+    return { accessToken: enriched.tokens.accessToken, accountId: enriched.accountId, accountKey: getAccountKey(enriched) };
   }
 
   if (stored?.tokens?.refreshToken) {
@@ -419,13 +420,13 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
       fallbackIdToken: stored.idToken,
     });
     saveAccountAt(index, refreshed);
-    return { accessToken: refreshed.tokens.accessToken, accountId: refreshed.accountId };
+    return { accessToken: refreshed.tokens.accessToken, accountId: refreshed.accountId, accountKey: getAccountKey(refreshed) };
   }
 
   if (stored?.tokens?.accessToken && await verifyStoredSession(stored.tokens.accessToken, stored.accountId)) {
     const enriched = await enrichStoredAuth(stored);
     saveAccountAt(index, enriched);
-    return { accessToken: enriched.tokens.accessToken, accountId: enriched.accountId };
+    return { accessToken: enriched.tokens.accessToken, accountId: enriched.accountId, accountKey: getAccountKey(enriched) };
   }
 
   throw new AuthError("Current OpenAI account could not be verified. Use `/account <email>` or `/login openai add`.");
