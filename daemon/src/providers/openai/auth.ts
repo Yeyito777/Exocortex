@@ -291,9 +291,6 @@ export function listAccounts(): OpenAIAccountSummary[] {
 function matchesAccountIdentifier(auth: StoredOpenAIAuth, index: number, identifier: string): boolean {
   const normalized = identifier.trim().toLowerCase();
   if (!normalized) return false;
-  if (/^#?\d+$/.test(normalized)) {
-    return index + 1 === Number(normalized.replace(/^#/, ""));
-  }
   const email = auth.profile?.email?.trim().toLowerCase() ?? null;
   return auth.profile?.email?.toLowerCase() === normalized
     || (email !== null && censorEmailForIdentifier(email) === normalized)
@@ -315,7 +312,7 @@ export function removeAccount(identifier?: string): OpenAIAccountSummary {
     throw new AuthError("No OpenAI accounts are connected.");
   }
   if (!identifier?.trim() && pool.accounts.length > 1) {
-    throw new AuthError("Specify which OpenAI account to remove: `/login openai remove <email-or-number>`.");
+    throw new AuthError("Specify which OpenAI account to remove: `/login openai remove <email>`.");
   }
 
   const currentIndex = normalizeCurrentIndex(pool.currentIndex, pool.accounts.length);
@@ -354,7 +351,7 @@ export function switchAccount(identifier?: string): OpenAIAccountSummary {
     throw new AuthError("No OpenAI accounts are connected.");
   }
   if (!identifier?.trim()) {
-    throw new AuthError("Specify which OpenAI account to switch to: `/login openai switch <email-or-number>`.");
+    throw new AuthError("Specify which OpenAI account to switch to: `/account <email>`.");
   }
 
   const switchIndex = pool.accounts.findIndex((auth, i) => matchesAccountIdentifier(auth, i, identifier));
@@ -431,7 +428,7 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
     return { accessToken: enriched.tokens.accessToken, accountId: enriched.accountId };
   }
 
-  throw new AuthError("Current OpenAI account could not be verified. Use `/login openai switch <email-or-number>` or `/login openai add`.");
+  throw new AuthError("Current OpenAI account could not be verified. Use `/account <email>` or `/login openai add`.");
 }
 
 export function getCurrentAccountKey(): string | null {

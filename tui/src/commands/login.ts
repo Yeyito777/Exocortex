@@ -5,7 +5,6 @@ import { setChosenProvider } from "../providerselection";
 import { DEFAULT_PROVIDER_ORDER, type ProviderId } from "../messages";
 import { availableProviders, defaultModelForProvider, normalizeStateEffort, providerCompletionItems, providerSupportsFastMode } from "./shared";
 import type { SlashCommand } from "./types";
-import { autocompleteAccountLabel } from "../privacy";
 
 function loginDescription(provider: ProviderId): string {
   switch (provider) {
@@ -27,32 +26,17 @@ function openAILoginInstruction(): string {
   return [
     "OpenAI login commands:",
     "  /login openai        Authenticate if no OpenAI account is connected",
-    "  /login openai list   List connected OpenAI accounts",
     "  /login openai add    Connect another OpenAI account",
-    "  /login openai switch <email-or-number>",
-    "  /login openai remove <email-or-number>",
+    "  /login openai remove <email>",
+    "",
+    "Use /account to list or switch OpenAI accounts.",
   ].join("\n");
 }
 
 const OPENAI_ACCOUNT_ACTIONS = [
-  { name: "list", desc: "List connected OpenAI accounts" },
   { name: "add", desc: "Connect another OpenAI account" },
-  { name: "switch", desc: "Switch the current OpenAI account" },
   { name: "remove", desc: "Remove a connected OpenAI account" },
 ] as const;
-
-function openAIAccountRemovalItems(state: Parameters<NonNullable<SlashCommand["getArgs"]>>[0]) {
-  const accounts = state.authInfoByProvider.openai.accounts ?? [];
-  return accounts.map((account, index) => {
-    const label = autocompleteAccountLabel(state, account, index);
-    const plan = account.subscriptionType ? ` · ${account.subscriptionType}` : "";
-    const current = account.current ? " · current" : "";
-    return {
-      name: label,
-      desc: `OpenAI account #${index + 1}${plan}${current}`,
-    };
-  });
-}
 
 export const LOGIN_COMMAND: SlashCommand = {
   name: "/login",
@@ -64,8 +48,6 @@ export const LOGIN_COMMAND: SlashCommand = {
   getArgs: (state) => ({
     "/login": providerCompletionItems(state),
     "/login openai": [...OPENAI_ACCOUNT_ACTIONS],
-    "/login openai remove": openAIAccountRemovalItems(state),
-    "/login openai switch": openAIAccountRemovalItems(state),
   }),
   handler: (text, state) => {
     const parts = text.trim().split(/\s+/).filter(Boolean);
@@ -93,7 +75,7 @@ export const LOGIN_COMMAND: SlashCommand = {
     }
 
     let apiKey: string | undefined;
-    let action: "list" | "add" | "remove" | "switch" | undefined;
+    let action: "add" | "remove" | undefined;
     let target: string | undefined;
 
     if (provider === "deepseek") {
@@ -110,7 +92,7 @@ export const LOGIN_COMMAND: SlashCommand = {
       }
     } else if (provider === "openai") {
       if (arg) {
-        if (arg !== "list" && arg !== "add" && arg !== "remove" && arg !== "switch") {
+        if (arg !== "add" && arg !== "remove") {
           pushSystemMessage(state, openAILoginInstruction());
           clearPrompt(state);
           return { type: "handled" };
@@ -124,7 +106,7 @@ export const LOGIN_COMMAND: SlashCommand = {
       return { type: "handled" };
     }
 
-    if (!state.convId && action !== "list" && action !== "remove" && action !== "switch") {
+    if (!state.convId && action !== "remove") {
       setChosenProvider(state, provider);
       const nextModel = defaultModelForProvider(state, provider) ?? state.model;
       state.model = nextModel;

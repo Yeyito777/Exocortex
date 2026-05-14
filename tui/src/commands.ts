@@ -1,4 +1,5 @@
 import type { RenderState } from "./state";
+import { ACCOUNT_COMMAND } from "./commands/account";
 import { CONVO_COMMAND } from "./commands/convo";
 import { EFFORT_COMMAND } from "./commands/effort";
 import { FAST_COMMAND } from "./commands/fast";
@@ -28,6 +29,7 @@ const commands: SlashCommand[] = [
   QUIT_COMMAND,
   EXIT_COMMAND,
   NEW_COMMAND,
+  ACCOUNT_COMMAND,
   REPLAY_COMMAND,
   RENAME_COMMAND,
   MODEL_COMMAND,

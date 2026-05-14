@@ -643,7 +643,6 @@ describe("/login", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
 
-    expect(tryCommand("/login openai list", state)).toEqual({ type: "login", provider: "openai", action: "list" });
     expect(tryCommand("/login openai add", state)).toEqual({ type: "login", provider: "openai", action: "add" });
     expect(tryCommand("/login openai remove user@example.com", state)).toEqual({
       type: "login",
@@ -651,33 +650,28 @@ describe("/login", () => {
       action: "remove",
       target: "user@example.com",
     });
-    expect(tryCommand("/login openai switch user@example.com", state)).toEqual({
-      type: "login",
+  });
+
+  test("autocompletes OpenAI login lifecycle subcommands", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    const args = getCommandArgs(state);
+    expect(args["/login openai"].map((item) => item.name)).toEqual(["add", "remove"]);
+  });
+
+  test("returns OpenAI account commands", () => {
+    const state = createInitialState();
+
+    expect(tryCommand("/account", state)).toEqual({ type: "account", provider: "openai" });
+    expect(tryCommand("/account user@example.com", state)).toEqual({
+      type: "account",
       provider: "openai",
-      action: "switch",
       target: "user@example.com",
     });
   });
 
-  test("autocompletes OpenAI account-management subcommands and remove targets", () => {
-    const state = createInitialState();
-    state.providerRegistry = structuredClone(providers);
-    state.authInfoByProvider.openai = {
-      ...state.authInfoByProvider.openai,
-      accounts: [
-        { email: "one@example.com", displayName: null, subscriptionType: "plus", accountId: "acct_one", current: false },
-        { email: "two@example.com", displayName: null, subscriptionType: "pro", accountId: "acct_two", current: true },
-      ],
-      currentAccount: { email: "two@example.com", displayName: null, subscriptionType: "pro", accountId: "acct_two", current: true },
-    };
-
-    const args = getCommandArgs(state);
-    expect(args["/login openai"].map((item) => item.name)).toEqual(["list", "add", "switch", "remove"]);
-    expect(args["/login openai remove"].map((item) => item.name)).toEqual(["one@example.com", "two@example.com"]);
-    expect(args["/login openai switch"].map((item) => item.name)).toEqual(["one@example.com", "two@example.com"]);
-  });
-
-  test("censors OpenAI account emails in autocomplete when hide mode is enabled", () => {
+  test("autocompletes OpenAI account switching and censors emails when hide mode is enabled", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
     state.hideSensitiveInfo = true;
@@ -691,9 +685,8 @@ describe("/login", () => {
     };
 
     const args = getCommandArgs(state);
-    expect(args["/login openai remove"].map((item) => item.name)).toEqual(["o**@example.com", "t**@example.com"]);
-    expect(args["/login openai switch"].map((item) => item.name)).toEqual(["o**@example.com", "t**@example.com"]);
-    expect(args["/login openai remove"].map((item) => item.desc).join("\n")).not.toContain("example.com");
+    expect(args["/account"].map((item) => item.name)).toEqual(["o**@example.com", "t**@example.com"]);
+    expect(args["/account"].map((item) => item.desc).join("\n")).toContain("current");
   });
 
   test("instructs DeepSeek users to supply an API key", () => {

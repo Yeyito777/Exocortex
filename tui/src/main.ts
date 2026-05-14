@@ -449,6 +449,9 @@ function handleSubmit(): void {
         case "login":
           daemon.login(cmdResult.provider ?? state.provider, cmdResult.apiKey, cmdResult.action, cmdResult.target);
           break;
+        case "account":
+          daemon.account(cmdResult.provider ?? "openai", cmdResult.target);
+          break;
         case "logout":
           daemon.logout(cmdResult.provider ?? state.provider);
           break;

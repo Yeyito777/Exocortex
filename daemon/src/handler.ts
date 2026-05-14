@@ -1010,11 +1010,6 @@ export function createHandler(server: DaemonServer) {
         const provider = cmd.provider ?? getDefaultProvider().id;
 
         if (provider === "openai" && cmd.action) {
-          if (cmd.action === "list") {
-            server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: formatOpenAIAccountList() });
-            break;
-          }
-
           if (cmd.action === "remove") {
             Promise.resolve().then(() => removeOpenAIAccount(cmd.target)).then((removed) => {
               invalidateCredentialsCache("openai");
@@ -1026,21 +1021,6 @@ export function createHandler(server: DaemonServer) {
               const msg = err instanceof Error ? err.message : String(err);
               log("error", `handler: openai account remove failed: ${msg}`);
               server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `OpenAI account remove failed: ${msg}` });
-            });
-            break;
-          }
-
-          if (cmd.action === "switch") {
-            Promise.resolve().then(() => switchOpenAIAccount(cmd.target)).then((switched) => {
-              invalidateCredentialsCache("openai");
-              const label = switched.email ?? switched.displayName ?? switched.accountId ?? `#${switched.index}`;
-              server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: `Switched OpenAI account to ${label}.\n\n${formatOpenAIAccountList()}` });
-              broadcastToolsAvailable();
-              refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
-            }).catch((err) => {
-              const msg = err instanceof Error ? err.message : String(err);
-              log("error", `handler: openai account switch failed: ${msg}`);
-              server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `OpenAI account switch failed: ${msg}` });
             });
             break;
           }
@@ -1111,6 +1091,33 @@ export function createHandler(server: DaemonServer) {
           const msg = err instanceof Error ? err.message : String(err);
           log("error", `handler: login failed: ${msg}`);
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Login failed: ${msg}` });
+        });
+        break;
+      }
+
+      case "account": {
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+        const provider = cmd.provider ?? "openai";
+        if (provider !== "openai") {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Account switching is only supported for OpenAI.` });
+          break;
+        }
+
+        if (!cmd.target?.trim()) {
+          server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: formatOpenAIAccountList() });
+          break;
+        }
+
+        Promise.resolve().then(() => switchOpenAIAccount(cmd.target)).then((switched) => {
+          invalidateCredentialsCache("openai");
+          const label = switched.email ?? switched.displayName ?? switched.accountId ?? `account-${switched.index}`;
+          server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: `Switched OpenAI account to ${label}.\n\n${formatOpenAIAccountList()}` });
+          broadcastToolsAvailable();
+          refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
+        }).catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          log("error", `handler: openai account switch failed: ${msg}`);
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `OpenAI account switch failed: ${msg}` });
         });
         break;
       }

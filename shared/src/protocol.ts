@@ -363,9 +363,17 @@ export interface LoginCommand {
   provider?: ProviderId;
   /** Provider-specific secret. DeepSeek uses this for `/login deepseek <api-key>`. */
   apiKey?: string;
-  /** Provider-specific subcommand. OpenAI supports list/add/remove. */
-  action?: "list" | "add" | "remove" | "switch";
-  /** Provider-specific subcommand target. OpenAI remove/switch use this as email/account number. */
+  /** Provider-specific subcommand. OpenAI supports add/remove. */
+  action?: "add" | "remove";
+  /** Provider-specific subcommand target. OpenAI remove uses this as email/censored-email. */
+  target?: string;
+}
+
+export interface AccountCommand {
+  type: "account";
+  reqId?: string;
+  provider?: ProviderId;
+  /** Account selector, currently OpenAI email/censored-email. Omitted to list accounts. */
   target?: string;
 }
 
@@ -417,6 +425,7 @@ export type Command =
   | GetSystemPromptCommand
   | TranscribeAudioCommand
   | LoginCommand
+  | AccountCommand
   | LogoutCommand;
 
 // ── Events (daemon → client) ────────────────────────────────────────
