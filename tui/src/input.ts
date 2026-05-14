@@ -114,7 +114,7 @@ function csiUKeyType(keyCode: number, modifiers: number): KeyEvent["type"] | nul
   if (keyCode === 13 && modifiers === 2) return "shift-enter";
   if (keyCode === 9 && modifiers === 1) return "tab";
   if (keyCode === 9 && modifiers === 2) return "backtab";
-  if (keyCode === 127 && modifiers === 1) return "backspace";
+  if ((keyCode === 127 || keyCode === 8) && (modifiers === 1 || modifiers === 2)) return "backspace";
   if (keyCode === 27 && modifiers === 1) return "escape";
   if (modifiers === 5) {
     switch (keyCode) {

@@ -14,6 +14,12 @@ describe("kitty keyboard protocol parsing", () => {
   test("keeps legacy CSI u mappings working", () => {
     expect(parseInput("\x1b[13u")).toEqual([{ type: "enter" }]);
   });
+
+  test("treats shift+backspace like regular backspace", () => {
+    expect(parseInput("\x1b[127;2u")).toEqual([{ type: "backspace", event: "press" }]);
+    expect(parseInput("\x1b[127;2:2u")).toEqual([{ type: "backspace", event: "repeat" }]);
+    expect(parseInput("\x1b[8;2u")).toEqual([{ type: "backspace", event: "press" }]);
+  });
 });
 
 describe("PasteBuffer", () => {
