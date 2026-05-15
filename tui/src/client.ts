@@ -148,6 +148,10 @@ export class DaemonClient {
     this.send({ type: "background_tool", convId });
   }
 
+  prewarmConversation(convId: string): void {
+    this.send({ type: "prewarm_conversation", convId });
+  }
+
   setModel(convId: string, provider: ProviderId, model: ModelId): void {
     this.send({ type: "set_model", convId, provider, model });
   }

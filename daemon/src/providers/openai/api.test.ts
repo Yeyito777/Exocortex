@@ -678,6 +678,56 @@ describe("OpenAI replay input", () => {
     secondSession.destroy();
   });
 
+  test("full-replays instead of incremental when the exact previous output baseline differs", async () => {
+    const calls = mockOpenAIWebSocket([{ events: [
+      { type: "response.created", response: { id: "resp_1" } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1" } },
+      { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, content_index: 0, delta: "hello" },
+      { type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 2, output_tokens: 1 }, output: [{ type: "message", id: "msg_1", content: [{ type: "output_text", text: "hello" }] }] } },
+      { type: "response.created", response: { id: "resp_2" } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_2" } },
+      { type: "response.output_text.delta", item_id: "msg_2", output_index: 0, content_index: 0, delta: "again" },
+      { type: "response.completed", response: { id: "resp_2", usage: { input_tokens: 4, output_tokens: 1 }, output: [{ type: "message", id: "msg_2", content: [{ type: "output_text", text: "again" }] }] } },
+    ] }]);
+
+    const turnSession = createOpenAITurnSession();
+    const callbacks = {
+      onText: () => {},
+      onThinking: () => {},
+    };
+    const firstMessages: ApiMessage[] = [{ role: "user", content: "hi" }];
+    const first = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      firstMessages,
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-1", turnSession },
+    );
+    expect(first.text).toBe("hello");
+
+    await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [
+        ...firstMessages,
+        // Deliberately differ from the provider output item that was actually
+        // emitted for resp_1. The exact-output baseline should catch this and
+        // fall back to full replay instead of skipping by item shape alone.
+        { role: "assistant", content: [{ type: "text", text: "HELLO" }], providerData: first.assistantProviderData },
+        { role: "user", content: "again?" },
+      ],
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-1", turnSession },
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sent).toHaveLength(2);
+    const secondBody = JSON.parse(calls[0].sent[1]);
+    expect(secondBody.previous_response_id).toBeUndefined();
+    expect(secondBody.input).toHaveLength(3);
+    turnSession.destroy();
+  });
+
   test("closes an idle reusable conversation websocket after the persistence timeout", async () => {
     setOpenAIWebSocketIdleTimeoutMsForTest(10);
     const calls = mockOpenAIWebSocket([{ events: [
@@ -766,6 +816,36 @@ describe("OpenAI replay input", () => {
 });
 
 describe("OpenAI reasoning summaries", () => {
+  test("reads cached input token counts and exact replay output items", () => {
+    const result = readOpenAIEventsForTest([
+      { type: "response.created", response: { id: "resp_1" } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call_1", name: "bash" } },
+      { type: "response.function_call_arguments.delta", output_index: 0, delta: '{"cmd":"echo hi"}' },
+      { type: "response.output_item.done", output_index: 0, item: { type: "function_call", call_id: "call_1", name: "bash", arguments: '{"cmd":"echo hi"}' } },
+      {
+        type: "response.completed",
+        response: {
+          id: "resp_1",
+          usage: {
+            input_tokens: 123,
+            input_tokens_details: { cached_tokens: 100 },
+            output_tokens: 7,
+          },
+          output: [
+            { type: "function_call", call_id: "call_1", name: "bash", arguments: '{"cmd":"echo hi"}' },
+          ],
+        },
+      },
+    ]);
+
+    expect(result.inputTokens).toBe(123);
+    expect(result.cachedInputTokens).toBe(100);
+    expect(result.outputTokens).toBe(7);
+    expect(result.responseOutputItems).toEqual([
+      { type: "function_call", call_id: "call_1", name: "bash", arguments: '{"cmd":"echo hi"}' },
+    ]);
+  });
+
   test("merges completed summaries over partial streamed summaries", () => {
     expect(mergeReasoningSummariesForTest(
       ["first section"],

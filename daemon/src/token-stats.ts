@@ -47,6 +47,8 @@ function createEmptyFile(): TokenStatsFile {
 function cloneTotals(totals: TokenUsageTotals): TokenUsageTotals {
   return {
     inputTokens: totals.inputTokens,
+    cachedInputTokens: totals.cachedInputTokens,
+    uncachedInputTokens: totals.uncachedInputTokens,
     outputTokens: totals.outputTokens,
     totalTokens: totals.totalTokens,
     requests: totals.requests,
@@ -56,6 +58,8 @@ function cloneTotals(totals: TokenUsageTotals): TokenUsageTotals {
 function cloneBucket(bucket: TokenStatsBucket): TokenStatsBucket {
   return {
     inputTokens: bucket.inputTokens,
+    cachedInputTokens: bucket.cachedInputTokens,
+    uncachedInputTokens: bucket.uncachedInputTokens,
     outputTokens: bucket.outputTokens,
     totalTokens: bucket.totalTokens,
     requests: bucket.requests,
@@ -72,11 +76,15 @@ function normalizeNumber(value: unknown): number {
 function normalizeTotals(raw: unknown): TokenUsageTotals {
   const obj = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
   const inputTokens = normalizeNumber(obj.inputTokens);
+  const cachedInputTokens = Math.min(inputTokens, normalizeNumber(obj.cachedInputTokens));
+  const uncachedInputTokens = Math.min(inputTokens - cachedInputTokens, normalizeNumber(obj.uncachedInputTokens));
   const outputTokens = normalizeNumber(obj.outputTokens);
   const requests = normalizeNumber(obj.requests);
   const totalTokens = normalizeNumber(obj.totalTokens) || inputTokens + outputTokens;
   return {
     inputTokens,
+    cachedInputTokens,
+    uncachedInputTokens,
     outputTokens,
     totalTokens,
     requests,
@@ -155,15 +163,24 @@ function localDay(timestamp: number): string {
   return `${year}-${month}-${day}`;
 }
 
-function addTotals(target: TokenUsageTotals, inputTokens: number, outputTokens: number, requests: number): void {
+function addTotals(
+  target: TokenUsageTotals,
+  inputTokens: number,
+  cachedInputTokens: number,
+  uncachedInputTokens: number,
+  outputTokens: number,
+  requests: number,
+): void {
   target.inputTokens += inputTokens;
+  target.cachedInputTokens += cachedInputTokens;
+  target.uncachedInputTokens += uncachedInputTokens;
   target.outputTokens += outputTokens;
   target.totalTokens += inputTokens + outputTokens;
   target.requests += requests;
 }
 
 function addTotalsFromEntry(target: TokenUsageTotals, entry: TokenUsageTotals): void {
-  addTotals(target, entry.inputTokens, entry.outputTokens, entry.requests);
+  addTotals(target, entry.inputTokens, entry.cachedInputTokens, entry.uncachedInputTokens, entry.outputTokens, entry.requests);
 }
 
 function addMappedTotals(map: Record<string, TokenUsageTotals>, key: string, entry: TokenUsageTotals): void {
@@ -178,10 +195,14 @@ function addBucketEntry(
   model: ModelId,
   source: TokenUsageSource,
   inputTokens: number,
+  cachedInputTokens: number,
+  uncachedInputTokens: number,
   outputTokens: number,
 ): void {
   const entry: TokenUsageTotals = {
     inputTokens,
+    cachedInputTokens,
+    uncachedInputTokens,
     outputTokens,
     totalTokens: inputTokens + outputTokens,
     requests: 1,
@@ -259,10 +280,13 @@ export function getTokenStatsSnapshot(): TokenStatsSnapshot {
 export function recordTokenUsage(
   provider: ProviderId,
   model: ModelId,
-  usage: { inputTokens?: number; outputTokens?: number },
+  usage: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number },
   tracking: TokenTrackingContext,
 ): TokenStatsSnapshot | null {
   const inputTokens = normalizeNumber(usage.inputTokens);
+  const rawCachedInputTokens = usage.cachedInputTokens == null ? undefined : normalizeNumber(usage.cachedInputTokens);
+  const cachedInputTokens = rawCachedInputTokens == null ? 0 : Math.min(inputTokens, rawCachedInputTokens);
+  const uncachedInputTokens = rawCachedInputTokens == null ? 0 : Math.max(0, inputTokens - cachedInputTokens);
   const outputTokens = normalizeNumber(usage.outputTokens);
   if (inputTokens <= 0 && outputTokens <= 0) return null;
 
@@ -270,7 +294,7 @@ export function recordTokenUsage(
   const file = getCurrentFile();
   const day = localDay(Date.now());
   const bucket = file.days[day] ?? createTokenStatsBucket();
-  addBucketEntry(bucket, provider, canonicalModel, tracking.source, inputTokens, outputTokens);
+  addBucketEntry(bucket, provider, canonicalModel, tracking.source, inputTokens, cachedInputTokens, uncachedInputTokens, outputTokens);
   file.days[day] = bucket;
   file.updatedAt = Date.now();
   saveCurrentFile();

@@ -14,9 +14,11 @@ export interface OpenAIStreamToolState {
 interface OpenAIReadState {
   responseId?: string;
   inputTokens?: number;
+  cachedInputTokens?: number;
   outputTokens?: number;
   stopReason: string;
   toolCalls: ApiToolCall[];
+  toolCallsByOutputIndex: Map<number, ApiToolCall>;
   textStarted: Set<string>;
   textStates: Map<number, string[]>;
   textOutputIndexesById: Map<string, number>;
@@ -32,6 +34,7 @@ function createReadState(): OpenAIReadState {
   return {
     stopReason: "",
     toolCalls: [],
+    toolCallsByOutputIndex: new Map<number, ApiToolCall>(),
     textStarted: new Set<string>(),
     textStates: new Map<number, string[]>(),
     textOutputIndexesById: new Map<string, number>(),
@@ -447,11 +450,13 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
         } catch {
           log("warn", `openai api: failed to parse tool input for ${String(item.name ?? "unknown")}`);
         }
-        state.toolCalls.push({
+        const toolCall = {
           id: toolState?.id || String(item.call_id ?? ""),
           name: toolState?.name || String(item.name ?? ""),
           input,
-        });
+        };
+        state.toolCalls.push(toolCall);
+        state.toolCallsByOutputIndex.set(outputIndex, toolCall);
         state.toolStates.delete(outputIndex);
       } else if (item.type === "reasoning") {
         updateBlocks(state, cb, () => {
@@ -473,6 +478,7 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
       const response = event.response as {
         usage?: {
           input_tokens?: number;
+          input_tokens_details?: { cached_tokens?: number };
           output_tokens?: number;
         };
         incomplete_details?: { reason?: string };
@@ -481,7 +487,8 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
       updateBlocks(state, cb, () => {
         state.inputTokens = response?.usage?.input_tokens;
         state.outputTokens = response?.usage?.output_tokens;
-        for (const item of response?.output ?? []) {
+        state.cachedInputTokens = response?.usage?.input_tokens_details?.cached_tokens;
+        for (const [outputIndex, item] of (response?.output ?? []).entries()) {
           if (item.type === "reasoning") {
             handleCompletedReasoningItem(state, item);
           } else if (item.type === "function_call") {
@@ -490,11 +497,13 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
               try {
                 input = JSON.parse(String(item.arguments ?? "{}")) as Record<string, unknown>;
               } catch {}
-              state.toolCalls.push({
+              const toolCall = {
                 id: String(item.call_id ?? ""),
                 name: String(item.name ?? ""),
                 input,
-              });
+              };
+              state.toolCalls.push(toolCall);
+              state.toolCallsByOutputIndex.set(outputIndex, toolCall);
             }
           } else if (item.type === "message") {
             handleCompletedMessageItem(state, item);
@@ -517,6 +526,45 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
       throw buildOpenAIStreamError(error, "OpenAI stream error");
     }
   }
+}
+
+function buildResponseOutputItems(state: OpenAIReadState): unknown[] {
+  // Build the items exactly as the next full replay will serialize this
+  // assistant message via buildOpenAIInput(): reasoning provider data first,
+  // then one assistant message containing all rendered text blocks, then tool
+  // calls.  Matching the replay shape (rather than the raw provider output
+  // shape) is what lets OpenAITurnSession do a strict baseline comparison.
+  const items: unknown[] = [...state.reasoningStates.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, item]) => ({
+        type: "reasoning",
+        id: item.id,
+        ...(item.encryptedContent !== null ? { encrypted_content: item.encryptedContent } : {}),
+        summary: item.summaries.map((text) => ({ type: "summary_text", text })),
+    }));
+
+  const textParts = [...state.textStates.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, parts]) => joinedTextContent(parts))
+    .filter((text) => text.length > 0);
+  if (textParts.length > 0) {
+    items.push({
+      type: "message",
+      role: "assistant",
+      content: textParts.map((text) => ({ type: "output_text", text })),
+    });
+  }
+
+  items.push(...[...state.toolCallsByOutputIndex.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, toolCall]) => ({
+        type: "function_call",
+        call_id: toolCall.id,
+        name: toolCall.name,
+        arguments: JSON.stringify(toolCall.input),
+    })));
+
+  return items;
 }
 
 function finalizeReadState(state: OpenAIReadState): StreamResult {
@@ -544,7 +592,9 @@ function finalizeReadState(state: OpenAIReadState): StreamResult {
     blocks: orderedBlocks,
     toolCalls: state.toolCalls,
     inputTokens: state.inputTokens,
+    cachedInputTokens: state.cachedInputTokens,
     outputTokens: state.outputTokens,
+    responseOutputItems: buildResponseOutputItems(state),
     assistantProviderData: {
       openai: {
         ...(state.responseId ? { responseId: state.responseId } : {}),

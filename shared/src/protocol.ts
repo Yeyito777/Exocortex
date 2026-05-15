@@ -90,6 +90,12 @@ export interface BackgroundToolCommand {
   convId: string;
 }
 
+export interface PrewarmConversationCommand {
+  type: "prewarm_conversation";
+  reqId?: string;
+  convId: string;
+}
+
 export interface SubscribeCommand {
   type: "subscribe";
   reqId?: string;
@@ -396,6 +402,7 @@ export type Command =
   | TrimConversationCommand
   | AbortCommand
   | BackgroundToolCommand
+  | PrewarmConversationCommand
   | SubscribeCommand
   | UnsubscribeCommand
   | ListConversationsCommand

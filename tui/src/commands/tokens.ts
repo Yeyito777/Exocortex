@@ -67,6 +67,9 @@ interface CostTotals {
   inputUsd: number;
   outputUsd: number;
   totalUsd: number;
+  measuredCachedInputTokens: number;
+  measuredUncachedInputTokens: number;
+  unmeasuredInputTokens: number;
 }
 
 /**
@@ -86,7 +89,7 @@ const MODEL_PRICING_USD_PER_MILLION: Record<ModelId, ModelPricing> = {
   "deepseek-v4-flash": { provider: "deepseek", inputUsdPerMillion: 0.14, cachedInputUsdPerMillion: 0.0028, outputUsdPerMillion: 0.28 },
 };
 
-// Heuristic for /tokens cost until daemon-side cache usage accounting exists.
+// Fallback for legacy/provider records that do not report cache details.
 const TOKEN_COST_ASSUMED_CACHED_INPUT_RATIO = 0.9;
 
 function formatTokenCount(n: number): string {
@@ -190,6 +193,8 @@ export function defaultTokenHeatmapDayCount(now = new Date()): number {
 
 function addUsageTotals(target: TokenUsageTotals, source: TokenUsageTotals): void {
   target.inputTokens += source.inputTokens;
+  target.cachedInputTokens += source.cachedInputTokens;
+  target.uncachedInputTokens += source.uncachedInputTokens;
   target.outputTokens += source.outputTokens;
   target.totalTokens += source.totalTokens;
   target.requests += source.requests;
@@ -284,33 +289,49 @@ function aggregateByRange<T extends string>(
 }
 
 function estimateModelCost(usageTotals: TokenUsageTotals, pricing: ModelPricing): CostTotals {
-  const cachedInputTokens = usageTotals.inputTokens * TOKEN_COST_ASSUMED_CACHED_INPUT_RATIO;
-  const uncachedInputTokens = usageTotals.inputTokens - cachedInputTokens;
+  const measuredCachedInputTokens = Math.max(0, usageTotals.cachedInputTokens);
+  const measuredUncachedInputTokens = Math.max(0, usageTotals.uncachedInputTokens);
+  const measuredInputTokens = Math.min(usageTotals.inputTokens, measuredCachedInputTokens + measuredUncachedInputTokens);
+  const unmeasuredInputTokens = Math.max(0, usageTotals.inputTokens - measuredInputTokens);
+  const estimatedCachedInputTokens = unmeasuredInputTokens * TOKEN_COST_ASSUMED_CACHED_INPUT_RATIO;
+  const estimatedUncachedInputTokens = unmeasuredInputTokens - estimatedCachedInputTokens;
   const inputUsd =
-    uncachedInputTokens / 1_000_000 * pricing.inputUsdPerMillion
-    + cachedInputTokens / 1_000_000 * pricing.cachedInputUsdPerMillion;
+    (measuredUncachedInputTokens + estimatedUncachedInputTokens) / 1_000_000 * pricing.inputUsdPerMillion
+    + (measuredCachedInputTokens + estimatedCachedInputTokens) / 1_000_000 * pricing.cachedInputUsdPerMillion;
   const outputUsd = usageTotals.outputTokens / 1_000_000 * pricing.outputUsdPerMillion;
   return {
     inputUsd,
     outputUsd,
     totalUsd: inputUsd + outputUsd,
+    measuredCachedInputTokens,
+    measuredUncachedInputTokens,
+    unmeasuredInputTokens,
   };
 }
 
 function computeCostTotals(entries: Iterable<[ModelId, TokenUsageTotals]>): CostTotals {
   let inputUsd = 0;
   let outputUsd = 0;
+  let measuredCachedInputTokens = 0;
+  let measuredUncachedInputTokens = 0;
+  let unmeasuredInputTokens = 0;
   for (const [model, usageTotals] of entries) {
     const pricing = MODEL_PRICING_USD_PER_MILLION[model];
     if (!pricing) continue;
     const estimate = estimateModelCost(usageTotals, pricing);
     inputUsd += estimate.inputUsd;
     outputUsd += estimate.outputUsd;
+    measuredCachedInputTokens += estimate.measuredCachedInputTokens;
+    measuredUncachedInputTokens += estimate.measuredUncachedInputTokens;
+    unmeasuredInputTokens += estimate.unmeasuredInputTokens;
   }
   return {
     inputUsd,
     outputUsd,
     totalUsd: inputUsd + outputUsd,
+    measuredCachedInputTokens,
+    measuredUncachedInputTokens,
+    unmeasuredInputTokens,
   };
 }
 
@@ -405,9 +426,12 @@ function buildCostBreakdownMessage(stats: TokenStatsSnapshot): string {
         inputUsd: estimate.inputUsd,
         outputUsd: estimate.outputUsd,
         totalUsd: estimate.totalUsd,
+        measuredCachedInputTokens: estimate.measuredCachedInputTokens,
+        measuredUncachedInputTokens: estimate.measuredUncachedInputTokens,
+        unmeasuredInputTokens: estimate.unmeasuredInputTokens,
       };
     })
-    .filter((row): row is { provider: ProviderId; model: ModelId; inputUsd: number; outputUsd: number; totalUsd: number } => row !== null);
+    .filter((row): row is { provider: ProviderId; model: ModelId; inputUsd: number; outputUsd: number; totalUsd: number; measuredCachedInputTokens: number; measuredUncachedInputTokens: number; unmeasuredInputTokens: number } => row !== null);
 
   const todayCost = computeCostTotals(Object.entries(stats.today.byModel) as Array<[ModelId, TokenUsageTotals]>);
   const weekCost = computeCostTotals(aggregateByRange(stats, 7, (day) => day.byModel).totals.entries());
@@ -438,6 +462,8 @@ function buildCostBreakdownMessage(stats: TokenStatsSnapshot): string {
     `Today: ${accentUsd(todayCost.inputUsd)}/${accentUsd(todayCost.outputUsd)}`,
     `Week: ${accentUsd(weekCost.inputUsd)}/${accentUsd(weekCost.outputUsd)}`,
     `Lifetime: ${accentUsd(lifetimeCost.inputUsd)}/${accentUsd(lifetimeCost.outputUsd)}`,
+    `Measured input cache: ${accentTokenCount(lifetimeCost.measuredCachedInputTokens)} cached / ${accentTokenCount(lifetimeCost.measuredUncachedInputTokens)} uncached`,
+    `Unmeasured input: ${accentTokenCount(lifetimeCost.unmeasuredInputTokens)} (${Math.round(TOKEN_COST_ASSUMED_CACHED_INPUT_RATIO * 100)}% cached fallback for cost only)`,
   ];
 
   if (sortedProviders.length === 0) {
@@ -446,7 +472,7 @@ function buildCostBreakdownMessage(stats: TokenStatsSnapshot): string {
     for (const provider of sortedProviders) {
       lines.push("", `${formatProviderLabel(provider)}:`);
       for (const row of grouped.get(provider) ?? []) {
-        lines.push(`    ${formatModelDisplayName(row.model)}: ${accentUsd(row.inputUsd)}/${accentUsd(row.outputUsd)}`);
+        lines.push(`    ${formatModelDisplayName(row.model)}: ${accentUsd(row.inputUsd)}/${accentUsd(row.outputUsd)} • cache ${accentTokenCount(row.measuredCachedInputTokens)}/${accentTokenCount(row.measuredUncachedInputTokens)} measured`);
       }
     }
   }

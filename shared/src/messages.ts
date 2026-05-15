@@ -351,6 +351,10 @@ export interface TokenTrackingContext {
 
 export interface TokenUsageTotals {
   inputTokens: number;
+  /** Input tokens billed/served through provider prompt-cache discounts when known. */
+  cachedInputTokens: number;
+  /** Input tokens known not to be cached. Zero for legacy/provider records without cache details. */
+  uncachedInputTokens: number;
   outputTokens: number;
   totalTokens: number;
   requests: number;
@@ -381,6 +385,8 @@ export interface TokenStatsSnapshot {
 export function createTokenUsageTotals(): TokenUsageTotals {
   return {
     inputTokens: 0,
+    cachedInputTokens: 0,
+    uncachedInputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
     requests: 0,

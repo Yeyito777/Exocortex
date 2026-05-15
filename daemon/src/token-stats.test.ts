@@ -36,30 +36,40 @@ describe("token stats", () => {
     expect(snapshot.today.requests).toBe(2);
     expect(snapshot.today.byProvider.openai).toEqual({
       inputTokens: 160,
+      cachedInputTokens: 0,
+      uncachedInputTokens: 0,
       outputTokens: 40,
       totalTokens: 200,
       requests: 2,
     });
     expect(snapshot.today.byModel["gpt-5.4"]).toEqual({
       inputTokens: 120,
+      cachedInputTokens: 0,
+      uncachedInputTokens: 0,
       outputTokens: 30,
       totalTokens: 150,
       requests: 1,
     });
     expect(snapshot.today.byModel["gpt-5.4-mini"]).toEqual({
       inputTokens: 40,
+      cachedInputTokens: 0,
+      uncachedInputTokens: 0,
       outputTokens: 10,
       totalTokens: 50,
       requests: 1,
     });
     expect(snapshot.today.bySource.conversation).toEqual({
       inputTokens: 120,
+      cachedInputTokens: 0,
+      uncachedInputTokens: 0,
       outputTokens: 30,
       totalTokens: 150,
       requests: 1,
     });
     expect(snapshot.today.bySource.llm_complete).toEqual({
       inputTokens: 40,
+      cachedInputTokens: 0,
+      uncachedInputTokens: 0,
       outputTokens: 10,
       totalTokens: 50,
       requests: 1,
@@ -75,10 +85,22 @@ describe("token stats", () => {
     expect(snapshot.today.byModel.pro).toBeUndefined();
     expect(snapshot.today.byModel["deepseek-v4-pro"]).toEqual({
       inputTokens: 500,
+      cachedInputTokens: 0,
+      uncachedInputTokens: 0,
       outputTokens: 100,
       totalTokens: 600,
       requests: 1,
     });
+  });
+
+  test("records measured cached and uncached input tokens when providers report them", () => {
+    recordTokenUsage("openai", "gpt-5.4", { inputTokens: 120, cachedInputTokens: 90, outputTokens: 30 }, { source: "conversation" });
+
+    const snapshot = getTokenStatsSnapshot();
+    expect(snapshot.today.cachedInputTokens).toBe(90);
+    expect(snapshot.today.uncachedInputTokens).toBe(30);
+    expect(snapshot.today.byProvider.openai?.cachedInputTokens).toBe(90);
+    expect(snapshot.today.byModel["gpt-5.4"]?.uncachedInputTokens).toBe(30);
   });
 
   test("merges token stats from other instance files into the lifetime snapshot", () => {

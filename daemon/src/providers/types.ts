@@ -23,7 +23,10 @@ export interface StreamResult {
   blocks: ContentBlock[];
   toolCalls: ApiToolCall[];
   inputTokens?: number;
+  cachedInputTokens?: number;
   outputTokens?: number;
+  /** Provider-wire output items from this response, used for guarded incremental continuation. */
+  responseOutputItems?: unknown[];
   assistantProviderData?: AssistantProviderData;
 }
 
@@ -145,4 +148,5 @@ export interface ProviderAdapter {
   usage: ProviderUsageAdapter;
   streamMessage: ProviderStreamMessage;
   createTurnSession?: () => ProviderTurnSession;
+  prewarmConversation?: (promptCacheKey: string) => Promise<void>;
 }

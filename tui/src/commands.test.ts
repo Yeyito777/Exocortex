@@ -3,7 +3,7 @@ import { defaultExocortexConfig, readExocortexConfig, writeExocortexConfig } fro
 import { getCommandArgs, tryCommand } from "./commands";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, type ProviderInfo, type TokenStatsSnapshot } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, type ProviderInfo, type TokenStatsSnapshot, type TokenUsageTotals } from "./messages";
 import { theme } from "./theme";
 
 const providers: ProviderInfo[] = [
@@ -64,79 +64,78 @@ yesterdayDate.setDate(yesterdayDate.getDate() - 1);
 const todayKey = localDayKey(todayDate);
 const yesterdayKey = localDayKey(yesterdayDate);
 
+function totals(inputTokens: number, outputTokens: number, requests: number, cachedInputTokens = 0, uncachedInputTokens = 0): TokenUsageTotals {
+  return {
+    inputTokens,
+    cachedInputTokens,
+    uncachedInputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    requests,
+  };
+}
+
 const tokenStats: TokenStatsSnapshot = {
   updatedAt: Date.now(),
   today: {
     day: todayKey,
-    inputTokens: 1_500,
-    outputTokens: 500,
-    totalTokens: 2_000,
-    requests: 3,
+    ...totals(1_500, 500, 3, 1_000, 500),
     byProvider: {
-      openai: { inputTokens: 1_500, outputTokens: 500, totalTokens: 2_000, requests: 3 },
+      openai: totals(1_500, 500, 3, 1_000, 500),
     },
     byModel: {
-      "gpt-5.4": { inputTokens: 1_200, outputTokens: 400, totalTokens: 1_600, requests: 2 },
-      "deepseek-v4-pro": { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+      "gpt-5.4": totals(1_200, 400, 2, 1_000, 200),
+      "deepseek-v4-pro": totals(300, 100, 1),
     },
     bySource: {
-      conversation: { inputTokens: 1_200, outputTokens: 400, totalTokens: 1_600, requests: 2 },
-      title_generation: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+      conversation: totals(1_200, 400, 2, 1_000, 200),
+      title_generation: totals(300, 100, 1),
     },
   },
   lifetime: {
-    inputTokens: 2_200,
-    outputTokens: 800,
-    totalTokens: 3_000,
-    requests: 5,
+    ...totals(2_200, 800, 5, 1_200, 700),
     byProvider: {
-      openai: { inputTokens: 1_900, outputTokens: 700, totalTokens: 2_600, requests: 4 },
-      deepseek: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+      openai: totals(1_900, 700, 4, 1_200, 700),
+      deepseek: totals(300, 100, 1),
     },
     byModel: {
-      "gpt-5.4": { inputTokens: 1_600, outputTokens: 600, totalTokens: 2_200, requests: 3 },
-      "deepseek-v4-pro": { inputTokens: 600, outputTokens: 200, totalTokens: 800, requests: 2 },
+      "gpt-5.4": totals(1_600, 600, 3, 1_200, 400),
+      "deepseek-v4-pro": totals(600, 200, 2),
     },
     bySource: {
-      conversation: { inputTokens: 1_900, outputTokens: 700, totalTokens: 2_600, requests: 4 },
-      title_generation: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+      conversation: totals(1_900, 700, 4, 1_200, 700),
+      title_generation: totals(300, 100, 1),
     },
   },
   days: [
     {
       day: todayKey,
-      inputTokens: 1_500,
-      outputTokens: 500,
-      totalTokens: 2_000,
-      requests: 3,
+      ...totals(1_500, 500, 3, 1_000, 500),
       byProvider: {
-        openai: { inputTokens: 1_500, outputTokens: 500, totalTokens: 2_000, requests: 3 },
+        openai: totals(1_500, 500, 3, 1_000, 500),
       },
       byModel: {
-        "gpt-5.4": { inputTokens: 1_200, outputTokens: 400, totalTokens: 1_600, requests: 2 },
-        "deepseek-v4-pro": { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+        "gpt-5.4": totals(1_200, 400, 2, 1_000, 200),
+        "deepseek-v4-pro": totals(300, 100, 1),
       },
       bySource: {
-        conversation: { inputTokens: 1_200, outputTokens: 400, totalTokens: 1_600, requests: 2 },
-        title_generation: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+        conversation: totals(1_200, 400, 2, 1_000, 200),
+        title_generation: totals(300, 100, 1),
       },
     },
     {
       day: yesterdayKey,
-      inputTokens: 700,
-      outputTokens: 300,
-      totalTokens: 1_000,
-      requests: 2,
+      ...totals(700, 300, 2, 200, 200),
       byProvider: {
-        openai: { inputTokens: 400, outputTokens: 200, totalTokens: 600, requests: 1 },
-        deepseek: { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+        openai: totals(400, 200, 1, 200, 200),
+        deepseek: totals(300, 100, 1),
       },
       byModel: {
-        "gpt-5.4": { inputTokens: 400, outputTokens: 200, totalTokens: 600, requests: 1 },
-        "deepseek-v4-pro": { inputTokens: 300, outputTokens: 100, totalTokens: 400, requests: 1 },
+        "gpt-5.4": totals(400, 200, 1, 200, 200),
+        "deepseek-v4-pro": totals(300, 100, 1),
       },
       bySource: {
-        conversation: { inputTokens: 700, outputTokens: 300, totalTokens: 1_000, requests: 2 },
+        conversation: totals(700, 300, 2, 200, 200),
       },
     },
   ],
@@ -519,16 +518,20 @@ describe("/tokens", () => {
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
     expect(text).toContain("Today:");
-    expect(text).toContain("$0.000584");
+    expect(text).toContain("$0.000764");
     expect(text).toContain("$0.006087");
     expect(text).toContain("Week:");
-    expect(text).toContain("$0.000788");
+    expect(text).toContain("$0.001328");
     expect(text).toContain("$0.009174");
     expect(text).toContain("Lifetime:");
+    expect(text).toContain("Measured input cache:");
+    expect(text).toContain("1,200");
+    expect(text).toContain("Unmeasured input:");
+    expect(text).toContain("600");
     expect(text).not.toContain("Cost (");
     expect(text).toContain("OpenAI:");
     expect(text).toContain("    Gpt-5.4: ");
-    expect(text).toContain("$0.000760");
+    expect(text).toContain("$0.001300");
     expect(text).toContain("$0.009000");
     expect(text).toContain("DeepSeek:");
     expect(text).toContain("    DeepSeek V4 Pro: ");

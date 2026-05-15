@@ -23,6 +23,7 @@ import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command, ParentNotificationTarget } from "./protocol";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials, invalidateCredentialsCache } from "./auth";
 import { addAccount as addOpenAIAccount, listAccounts as listOpenAIAccounts, removeAccount as removeOpenAIAccount, switchAccount as switchOpenAIAccount } from "./providers/openai/auth";
+import { getProviderAdapter } from "./providers/catalog";
 import { getTokenStatsSnapshot } from "./token-stats";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
@@ -405,6 +406,14 @@ export function createHandler(server: DaemonServer) {
         }
         log("info", `handler: background_tool requested for ${cmd.convId}: ${result}`);
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        break;
+      }
+
+      case "prewarm_conversation": {
+        const conv = convStore.get(cmd.convId);
+        if (!conv || conv.provider !== "openai" || convStore.isStreaming(cmd.convId)) break;
+        void getProviderAdapter("openai").prewarmConversation?.(cmd.convId)
+          .catch((err) => log("debug", `openai prewarm failed for ${cmd.convId}: ${err instanceof Error ? err.message : err}`));
         break;
       }
 

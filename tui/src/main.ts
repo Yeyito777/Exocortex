@@ -59,6 +59,9 @@ let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let renderDueAt = 0;
 let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
 let streamFinishedPingTimer: ReturnType<typeof setTimeout> | null = null;
+let prewarmTimer: ReturnType<typeof setTimeout> | null = null;
+let lastPrewarmKey: string | null = null;
+let lastPrewarmAt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnecting = false;
 let terminalSetUp = false;
@@ -67,6 +70,8 @@ let pendingVoiceQueuePrompt = false;
 // Local-only user-message echoes whose audio jobs are still transcribing. They
 // are intentionally withheld from the daemon until the TUI has final text.
 const pendingVoiceSubmissions = new Set<SubmittedVoiceTranscription>();
+const PREWARM_DEBOUNCE_MS = 700;
+const PREWARM_COOLDOWN_MS = 30_000;
 
 // ── Render scheduling ───────────────────────────────────────────────
 
@@ -98,6 +103,12 @@ function clearStreamTick(): void {
   if (!streamTickTimer) return;
   clearTimeout(streamTickTimer);
   streamTickTimer = null;
+}
+
+function clearPrewarmTimer(): void {
+  if (!prewarmTimer) return;
+  clearTimeout(prewarmTimer);
+  prewarmTimer = null;
 }
 
 function clearStreamFinishedPingTimer(): void {
@@ -546,6 +557,30 @@ function cancelPendingVoiceQueuePrompt(): boolean {
   return true;
 }
 
+function maybeScheduleOpenAIPrewarm(inputBefore: string): void {
+  const convId = state.convId;
+  if (!convId || state.provider !== "openai" || isStreaming(state) || state.folderInstructionsDoc) return;
+  if (!daemon.connected || !state.authByProvider.openai) return;
+
+  const beforeWasEmpty = inputBefore.trim().length === 0;
+  const nowHasInput = state.inputBuffer.trim().length > 0 || state.pendingImages.length > 0;
+  if (!beforeWasEmpty || !nowHasInput) return;
+
+  const key = `${convId}:${state.model}:${state.effort}:${state.fastMode ? "fast" : "normal"}`;
+  const now = Date.now();
+  if (lastPrewarmKey === key && now - lastPrewarmAt < PREWARM_COOLDOWN_MS) return;
+
+  clearPrewarmTimer();
+  prewarmTimer = setTimeout(() => {
+    prewarmTimer = null;
+    if (!running || !daemon.connected || state.convId !== convId || state.provider !== "openai" || isStreaming(state)) return;
+    lastPrewarmKey = key;
+    lastPrewarmAt = Date.now();
+    daemon.prewarmConversation(convId);
+  }, PREWARM_DEBOUNCE_MS);
+  (prewarmTimer as { unref?: () => void }).unref?.();
+}
+
 interface SendDirectlyOptions {
   startedAt?: number;
   echoMessage?: UserMessage;
@@ -736,6 +771,7 @@ function failPendingVoiceTranscription(submission: SubmittedVoiceTranscription, 
 }
 
 function handleKey(key: KeyEvent): void {
+  const inputBefore = state.inputBuffer;
   const voicePromptBufferBefore = state.voicePromptJobs.length > 0 || state.voicePrompt?.phase === "transcribing"
     ? state.inputBuffer
     : null;
@@ -746,6 +782,7 @@ function handleKey(key: KeyEvent): void {
   if (voicePromptBufferBefore !== null) {
     voiceInput?.syncPromptEdit(voicePromptBufferBefore);
   }
+  maybeScheduleOpenAIPrewarm(inputBefore);
 
   switch (result.type) {
     case "submit":
@@ -973,6 +1010,7 @@ function handleDaemonConnectionLost(): void {
   clearStreamingTailMessages(state);
   clearStreamTick();
   clearStreamFinishedPingTimer();
+  clearPrewarmTimer();
   pushSystemMessage(state, "✗ Lost connection to daemon.", theme.error);
   scheduleRender();
   void reconnectToDaemon();
@@ -1070,6 +1108,7 @@ function cleanup(): void {
   clearRenderTimer();
   clearStreamTick();
   clearStreamFinishedPingTimer();
+  clearPrewarmTimer();
   clearReconnectTimer();
   voiceInput?.cleanup();
   daemon?.disconnect();

@@ -37,6 +37,22 @@ export function createOpenAITurnSession(): OpenAITurnSession {
   return new OpenAITurnSession();
 }
 
+export async function prewarmOpenAIConversation(promptCacheKey: string): Promise<void> {
+  const turnSession = new OpenAITurnSession();
+  const callbacks: StreamCallbacks = {
+    onText: () => {},
+    onThinking: () => {},
+  };
+  try {
+    const session = await turnSession.getVerifiedRequestSession(callbacks);
+    await turnSession.getSocketLease(session, callbacks, { promptCacheKey });
+    turnSession.close();
+  } catch (err) {
+    turnSession.destroy();
+    throw err;
+  }
+}
+
 export function clearOpenAIWebSocketSessionCacheForTest(): void {
   for (const state of reusableTurnSessions.values()) {
     closeReusableTurnSession(state);
@@ -63,6 +79,7 @@ interface OpenAITurnSessionState {
   requestSession: OpenAIRequestSession | null;
   lastFullRequestBody: Record<string, unknown> | null;
   lastResponseId: string | null;
+  lastResponseOutputItems: unknown[] | null;
   idleTimer: ReturnType<typeof setTimeout> | null;
   inUse: boolean;
 }
@@ -77,6 +94,7 @@ function createTurnSessionState(key: string | null = null): OpenAITurnSessionSta
     requestSession: null,
     lastFullRequestBody: null,
     lastResponseId: null,
+    lastResponseOutputItems: null,
     idleTimer: null,
     inUse: false,
   };
@@ -98,6 +116,7 @@ function resetReusableTurnSessionState(state: OpenAITurnSessionState): void {
   state.requestSession = null;
   state.lastFullRequestBody = null;
   state.lastResponseId = null;
+  state.lastResponseOutputItems = null;
   state.inUse = false;
 }
 
@@ -216,6 +235,15 @@ export class OpenAITurnSession implements ProviderTurnSession {
     }
 
     let reusable = reusableTurnSessions.get(key);
+    if (reusable?.inUse) {
+      // A prewarm can still be connecting when the user submits. Do not let a
+      // real turn and an in-flight prewarm share mutable websocket/request state.
+      // Detach the prewarm from the idle cache so its eventual close cannot
+      // overwrite the real turn's parked session.
+      reusable.key = null;
+      reusable = createTurnSessionState(key);
+      reusableTurnSessions.set(key, reusable);
+    }
     if (!reusable) {
       reusable = createTurnSessionState(key);
       reusableTurnSessions.set(key, reusable);
@@ -231,6 +259,7 @@ export class OpenAITurnSession implements ProviderTurnSession {
   private resetIncrementalStateFields(): void {
     this.state.lastFullRequestBody = null;
     this.state.lastResponseId = null;
+    this.state.lastResponseOutputItems = null;
   }
 
   private removeReusableStateFromCache(): void {
@@ -318,11 +347,18 @@ export class OpenAITurnSession implements ProviderTurnSession {
     const previousInput = this.state.lastFullRequestBody.input;
     const currentInput = fullRequestBody.input;
     if (!Array.isArray(previousInput) || !Array.isArray(currentInput)) return fullRequestBody;
-    if (!inputStartsWith(currentInput, previousInput)) return fullRequestBody;
-
-    let deltaStart = previousInput.length;
-    while (deltaStart < currentInput.length && isKnownPreviousResponseOutputItem(currentInput[deltaStart])) {
-      deltaStart += 1;
+    const previousResponseOutputItems = this.state.lastResponseOutputItems;
+    let deltaStart: number;
+    if (previousResponseOutputItems) {
+      const baseline = [...previousInput, ...previousResponseOutputItems];
+      if (!inputStartsWith(currentInput, baseline)) return fullRequestBody;
+      deltaStart = baseline.length;
+    } else {
+      if (!inputStartsWith(currentInput, previousInput)) return fullRequestBody;
+      deltaStart = previousInput.length;
+      while (deltaStart < currentInput.length && isKnownPreviousResponseOutputItem(currentInput[deltaStart])) {
+        deltaStart += 1;
+      }
     }
     const incrementalInput = currentInput.slice(deltaStart);
     if (incrementalInput.length === 0) return fullRequestBody;
@@ -338,6 +374,7 @@ export class OpenAITurnSession implements ProviderTurnSession {
     const responseId = result.assistantProviderData?.openai?.responseId;
     this.state.lastFullRequestBody = fullRequestBody;
     this.state.lastResponseId = responseId || null;
+    this.state.lastResponseOutputItems = result.responseOutputItems ?? null;
     // Deliberately DO NOT close the socket here. `response.completed` marks
     // the end of one provider round, not necessarily the end of the user's
     // assistant message: if tools were requested, the next round must reuse this

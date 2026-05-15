@@ -23,6 +23,7 @@ export async function streamMessage(
   if (options.tracking) {
     recordTokenUsage(provider, model, {
       inputTokens: result.inputTokens,
+      cachedInputTokens: result.cachedInputTokens,
       outputTokens: result.outputTokens,
     }, options.tracking);
   }
