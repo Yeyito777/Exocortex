@@ -57,4 +57,34 @@ describe("openai transcription", () => {
       "audio/wav",
     )).rejects.toThrow("empty result");
   });
+
+  test("retries temporary 429 transcription unavailability immediately", async () => {
+    const fetchCalls: number[] = [];
+    globalThis.fetch = mock(() => {
+      fetchCalls.push(Date.now());
+      if (fetchCalls.length === 1) {
+        return Promise.resolve(new Response(JSON.stringify({
+          detail: {
+            detail: "Transcription is temporarily unavailable. Please try again shortly.",
+            retry_after_seconds: 30,
+          },
+        }), {
+          status: 429,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ text: "retried ok" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }));
+    }) as unknown as typeof fetch;
+
+    await expect(transcribeAudioWithSession(
+      { accessToken: "token-123", accountId: null },
+      new Uint8Array([1, 2, 3]),
+      "audio/wav",
+    )).resolves.toBe("retried ok");
+
+    expect(fetchCalls).toHaveLength(2);
+  });
 });
