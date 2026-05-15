@@ -2,6 +2,7 @@ import type { ApiMessage, ModelId } from "../../messages";
 import { createAbortError, isAbortLikeError } from "../../abort";
 import { log } from "../../log";
 import { readExocortexConfig } from "@exocortex/shared/config";
+import { createHash } from "crypto";
 import { getCurrentAccountKey, getVerifiedSession } from "./auth";
 import { AuthError, isNonRetryableProviderError } from "../errors";
 import { OPENAI_CODEX_RESPONSES_WS_URL } from "./constants";
@@ -173,6 +174,10 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function hashValue(value: unknown): string {
+  return `sha256:${createHash("sha256").update(stableJson(value)).digest("hex")}`;
+}
+
 function valuesEqual(left: unknown, right: unknown): boolean {
   return stableJson(left) === stableJson(right);
 }
@@ -220,6 +225,7 @@ function isKnownPreviousResponseOutputItem(item: unknown): boolean {
  */
 export class OpenAITurnSession implements ProviderTurnSession {
   private state = createTurnSessionState();
+  private lastPrepareDiagnostics: StreamResult["requestDiagnostics"] | null = null;
 
   private adoptReusableState(options: StreamOptions): OpenAIRequestSession | null {
     const key = typeof options.promptCacheKey === "string" && options.promptCacheKey.length > 0
@@ -339,29 +345,56 @@ export class OpenAITurnSession implements ProviderTurnSession {
   }
 
   prepareRequestBody(fullRequestBody: Record<string, unknown>): Record<string, unknown> {
-    if (!this.state.lastFullRequestBody || !this.state.lastResponseId) return fullRequestBody;
-    if (!valuesEqual(cloneWithoutInput(this.state.lastFullRequestBody), cloneWithoutInput(fullRequestBody))) {
+    const fullInput = Array.isArray(fullRequestBody.input) ? fullRequestBody.input : [];
+    const fullInputItems = fullInput.length;
+    const baseDiagnostics = {
+      fullInputItems,
+      requestShapeHash: hashValue(cloneWithoutInput(fullRequestBody)),
+      inputPrefixHash: hashValue(fullInput.slice(0, Math.min(fullInput.length, 8))),
+    };
+
+    const fullReplay = (fallbackReason: string | null): Record<string, unknown> => {
+      this.lastPrepareDiagnostics = {
+        ...baseDiagnostics,
+        usedIncremental: false,
+        previousResponseIdUsed: false,
+        incrementalInputItems: fullInputItems,
+        fallbackReason,
+      };
       return fullRequestBody;
+    };
+
+    if (!this.state.lastFullRequestBody || !this.state.lastResponseId) return fullReplay("no_previous_response");
+    if (!valuesEqual(cloneWithoutInput(this.state.lastFullRequestBody), cloneWithoutInput(fullRequestBody))) {
+      return fullReplay("non_input_mismatch");
     }
 
     const previousInput = this.state.lastFullRequestBody.input;
     const currentInput = fullRequestBody.input;
-    if (!Array.isArray(previousInput) || !Array.isArray(currentInput)) return fullRequestBody;
+    if (!Array.isArray(previousInput) || !Array.isArray(currentInput)) return fullReplay("input_not_array");
     const previousResponseOutputItems = this.state.lastResponseOutputItems;
     let deltaStart: number;
     if (previousResponseOutputItems) {
       const baseline = [...previousInput, ...previousResponseOutputItems];
-      if (!inputStartsWith(currentInput, baseline)) return fullRequestBody;
+      if (!inputStartsWith(currentInput, baseline)) return fullReplay("previous_output_baseline_mismatch");
       deltaStart = baseline.length;
     } else {
-      if (!inputStartsWith(currentInput, previousInput)) return fullRequestBody;
+      if (!inputStartsWith(currentInput, previousInput)) return fullReplay("previous_input_mismatch");
       deltaStart = previousInput.length;
       while (deltaStart < currentInput.length && isKnownPreviousResponseOutputItem(currentInput[deltaStart])) {
         deltaStart += 1;
       }
     }
     const incrementalInput = currentInput.slice(deltaStart);
-    if (incrementalInput.length === 0) return fullRequestBody;
+    if (incrementalInput.length === 0) return fullReplay("empty_incremental_input");
+
+    this.lastPrepareDiagnostics = {
+      ...baseDiagnostics,
+      usedIncremental: true,
+      previousResponseIdUsed: true,
+      incrementalInputItems: incrementalInput.length,
+      fallbackReason: null,
+    };
 
     return {
       ...fullRequestBody,
@@ -375,6 +408,7 @@ export class OpenAITurnSession implements ProviderTurnSession {
     this.state.lastFullRequestBody = fullRequestBody;
     this.state.lastResponseId = responseId || null;
     this.state.lastResponseOutputItems = result.responseOutputItems ?? null;
+    if (this.lastPrepareDiagnostics) result.requestDiagnostics = this.lastPrepareDiagnostics;
     // Deliberately DO NOT close the socket here. `response.completed` marks
     // the end of one provider round, not necessarily the end of the user's
     // assistant message: if tools were requested, the next round must reuse this
@@ -383,6 +417,7 @@ export class OpenAITurnSession implements ProviderTurnSession {
 
   resetIncrementalState(): void {
     this.resetIncrementalStateFields();
+    this.lastPrepareDiagnostics = null;
   }
 
   resetConnection(): void {
@@ -653,7 +688,22 @@ export async function streamMessageWithSession(
         connectionReused,
         signal,
       });
-      turnSession?.recordSuccessfulRequest(fullRequestBody, result);
+      if (turnSession) {
+        turnSession.recordSuccessfulRequest(fullRequestBody, result);
+      } else {
+        const input = Array.isArray(requestBody.input) ? requestBody.input : [];
+        result.requestDiagnostics = {
+          usedIncremental: false,
+          previousResponseIdUsed: false,
+          incrementalInputItems: input.length,
+          fullInputItems: input.length,
+          connectionReused,
+          fallbackReason: null,
+          requestShapeHash: hashValue(cloneWithoutInput(requestBody)),
+          inputPrefixHash: hashValue(input.slice(0, Math.min(input.length, 8))),
+        };
+      }
+      if (result.requestDiagnostics) result.requestDiagnostics.connectionReused = connectionReused;
       // Non-turn-session calls own exactly one websocket/request and can close
       // immediately. Turn-session calls are different: the websocket is owned by
       // OpenAITurnSession and must survive across tool-result follow-up rounds

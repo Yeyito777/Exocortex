@@ -3,6 +3,7 @@ import { getProviderAdapter } from "./providers/catalog";
 import type { ApiToolCall, ContentBlock, ProviderTurnSession, StreamResult, StreamCallbacks, StreamOptions } from "./providers/types";
 import { AuthError } from "./providers/errors";
 import { recordTokenUsage } from "./token-stats";
+import { recordModelRequestDiagnostics } from "./diagnostics";
 
 export type { ApiMessage, ApiContentBlock };
 export type { ApiToolCall, ContentBlock, ProviderTurnSession, StreamResult, StreamCallbacks, StreamOptions };
@@ -27,5 +28,6 @@ export async function streamMessage(
       outputTokens: result.outputTokens,
     }, options.tracking);
   }
+  recordModelRequestDiagnostics(provider, model, messages, result, options.tracking);
   return result;
 }

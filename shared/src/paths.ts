@@ -165,6 +165,11 @@ export function tokenStatsDir(): string {
   return join(storageDir(), "token-stats");
 }
 
+/** Diagnostics directory — append-only JSONL performance/debug data. Shared across worktrees, file names are instance-scoped. */
+export function diagnosticsDir(): string {
+  return join(storageDir(), "diagnostics");
+}
+
 /** Runtime dir for socket, PID, logs, usage. Namespaced by worktree. */
 export function runtimeDir(): string {
   const wt = detectWorktree();

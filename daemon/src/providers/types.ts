@@ -27,7 +27,19 @@ export interface StreamResult {
   outputTokens?: number;
   /** Provider-wire output items from this response, used for guarded incremental continuation. */
   responseOutputItems?: unknown[];
+  requestDiagnostics?: ModelRequestDiagnostics;
   assistantProviderData?: AssistantProviderData;
+}
+
+export interface ModelRequestDiagnostics {
+  usedIncremental?: boolean;
+  previousResponseIdUsed?: boolean;
+  incrementalInputItems?: number;
+  fullInputItems?: number;
+  connectionReused?: boolean;
+  fallbackReason?: string | null;
+  requestShapeHash?: string;
+  inputPrefixHash?: string;
 }
 
 export interface StreamRetryMetadata {

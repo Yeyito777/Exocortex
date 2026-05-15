@@ -11,6 +11,7 @@
 
 import { streamMessage, type ApiToolCall, type ProviderTurnSession } from "./api";
 import { log } from "./log";
+import { recordToolCallDiagnostics } from "./diagnostics";
 import { createModelVisibleSystemNotice, type ProviderId, type ModelId, type EffortLevel, type Block, type ToolCallBlock, type ToolResultBlock, type ApiMessage, type ApiContentBlock, type TokenTrackingContext } from "./messages";
 import type { ContentBlock as ProviderContentBlock, ServiceTier, StreamRetryMetadata } from "./providers/types";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
@@ -384,7 +385,15 @@ export async function runAgentLoop(
       break;
     }
 
+    const toolExecStartedAt = Date.now();
     const execResults = await options.executor(result.toolCalls, options.signal);
+    recordToolCallDiagnostics({
+      conversationId: options.tracking?.conversationId,
+      round,
+      calls: result.toolCalls,
+      results: execResults,
+      batchDurationMs: Date.now() - toolExecStartedAt,
+    });
 
     // ── Emit tool result blocks + build API tool_result message ───
     const toolResultContent: ApiContentBlock[] = [];
