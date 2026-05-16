@@ -25,7 +25,7 @@ describe("diagnostics", () => {
       [
         { role: "user", content: "hello" },
         { role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "context", input: { action: "summarize" } }] },
-        { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "summary", is_error: false }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "context failed: missing reference", is_error: true }] },
       ],
       {
         text: "done",
@@ -49,7 +49,15 @@ describe("diagnostics", () => {
     expect(record.uncachedInputTokens).toBe(25);
     expect(record.cacheHitRatio).toBe(0.75);
     expect(record.toolCallsRequested).toEqual(["bash"]);
-    expect(record.toolResultsIncluded).toEqual([{ callId: "call_1", name: "context", outputChars: 7, outputBytes: 7, isError: false }]);
+    expect(record.toolResultsIncluded).toEqual([{
+      callId: "call_1",
+      name: "context",
+      outputChars: 33,
+      outputBytes: 33,
+      isError: true,
+      errorReason: "context failed: missing reference",
+      errorReasonTruncated: false,
+    }]);
     expect(record.usedIncremental).toBe(true);
   });
 
@@ -70,6 +78,22 @@ describe("diagnostics", () => {
     expect(record.batchDurationMs).toBe(42);
     expect(String(record.inputHash)).toStartWith("sha256:");
     expect(String(record.outputHash)).toStartWith("sha256:");
+    expect(record.errorReason).toBeUndefined();
+  });
+
+  test("stores bounded error reasons for failed tool-call diagnostics", () => {
+    const longReason = `failed: ${"x".repeat(2_500)}`;
+    recordToolCallDiagnostics({
+      conversationId: "conv-1",
+      round: 3,
+      calls: [{ id: "call_1", name: "bash", input: { command: "exit 1" } }],
+      results: [{ toolCallId: "call_1", toolName: "bash", output: longReason, isError: true }],
+      batchDurationMs: 7,
+    });
+
+    const [record] = readDiagnostics("tool-calls");
+    expect(record.isError).toBe(true);
+    expect(record.errorReason).toBe(longReason.slice(0, 2_000));
+    expect(record.errorReasonTruncated).toBe(true);
   });
 });
-

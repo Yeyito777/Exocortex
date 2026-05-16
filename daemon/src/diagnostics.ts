@@ -8,6 +8,7 @@ import { log } from "./log";
 
 const DIAGNOSTICS_VERSION = 1;
 const INSTANCE_ID = worktreeName() ?? "main";
+const ERROR_REASON_MAX_CHARS = 2_000;
 
 export interface ToolCallDiagnosticsInput {
   conversationId?: string;
@@ -64,9 +65,17 @@ function extractToolResultText(content: string | unknown[]): string {
     .join("\n");
 }
 
-function summarizeToolResults(messages: ApiMessage[]): Array<{ callId: string; name?: string; outputChars: number; outputBytes: number; isError: boolean }> {
+function buildErrorReason(output: string, isError: boolean): { errorReason?: string; errorReasonTruncated?: boolean } {
+  if (!isError) return {};
+  return {
+    errorReason: output.slice(0, ERROR_REASON_MAX_CHARS),
+    errorReasonTruncated: output.length > ERROR_REASON_MAX_CHARS,
+  };
+}
+
+function summarizeToolResults(messages: ApiMessage[]): Array<{ callId: string; name?: string; outputChars: number; outputBytes: number; isError: boolean; errorReason?: string; errorReasonTruncated?: boolean }> {
   const callNames = new Map<string, string>();
-  const results: Array<{ callId: string; name?: string; outputChars: number; outputBytes: number; isError: boolean }> = [];
+  const results: Array<{ callId: string; name?: string; outputChars: number; outputBytes: number; isError: boolean; errorReason?: string; errorReasonTruncated?: boolean }> = [];
 
   for (const message of messages) {
     if (!Array.isArray(message.content)) continue;
@@ -75,12 +84,14 @@ function summarizeToolResults(messages: ApiMessage[]): Array<{ callId: string; n
         callNames.set(block.id, block.name);
       } else if (block.type === "tool_result") {
         const output = extractToolResultText(block.content);
+        const isError = block.is_error === true;
         results.push({
           callId: block.tool_use_id,
           ...(callNames.has(block.tool_use_id) ? { name: callNames.get(block.tool_use_id) } : {}),
           outputChars: output.length,
           outputBytes: byteLength(output),
-          isError: block.is_error === true,
+          isError,
+          ...buildErrorReason(output, isError),
         });
       }
     }
@@ -166,6 +177,7 @@ export function recordToolCallDiagnostics(input: ToolCallDiagnosticsInput): void
       outputBytes: byteLength(result.output),
       outputHash: hashValue(result.output),
       isError: result.isError,
+      ...buildErrorReason(result.output, result.isError),
       batchDurationMs: input.batchDurationMs,
     });
   }
