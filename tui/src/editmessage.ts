@@ -17,9 +17,8 @@ import { EDIT_INDEX_INSTRUCTIONS, EDIT_INDEX_QUEUED, focusPrompt } from "./state
 
 /** Open the edit message modal. No-op if there are no user/queued messages. */
 export function openEditMessageModal(state: RenderState): void {
-  if (!state.convId) return;
-
   const items: EditMessageItem[] = [];
+  const includedMessages = new Set<object>();
 
   // Collect system instructions (shown first with special marker)
   for (const msg of state.messages) {
@@ -44,12 +43,31 @@ export function openEditMessageModal(state: RenderState): void {
         images: msg.images,
         message: msg,
       });
+      includedMessages.add(msg);
       userIdx++;
     }
   }
 
+  // A submitted voice transcription is a local user-message echo until the
+  // transcript resolves and the final text is sent to the daemon.  It may be
+  // outside canonical history (for example before a new conversation exists, or
+  // after a history refresh).  Keep it in Ctrl-W so selecting it can move the
+  // still-running transcription job back to the prompt.
+  const submittedVoiceMessage = state.voiceMessage?.message;
+  const submittedVoiceShownAsQueue = !!submittedVoiceMessage && !!state.convId
+    && state.queuedMessages.some(qm => qm.convId === state.convId && qm.text === submittedVoiceMessage.text);
+  if (submittedVoiceMessage && !includedMessages.has(submittedVoiceMessage) && !submittedVoiceShownAsQueue) {
+    items.push({
+      userMessageIndex: userIdx,
+      text: submittedVoiceMessage.text,
+      isQueued: false,
+      images: submittedVoiceMessage.images,
+      message: submittedVoiceMessage,
+    });
+  }
+
   // Collect queued messages
-  const queued = state.queuedMessages.filter(qm => qm.convId === state.convId);
+  const queued = state.convId ? state.queuedMessages.filter(qm => qm.convId === state.convId) : [];
   for (const qm of queued) {
     items.push({
       userMessageIndex: EDIT_INDEX_QUEUED,
