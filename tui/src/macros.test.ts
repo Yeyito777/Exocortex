@@ -26,6 +26,23 @@ describe("macro expansion", () => {
     expect(expandMacros("/exocortex tui-quality")).toContain("Once done, test end to end with xenv to make sure nothing broke.");
     expect(expandMacros("/exocortex daemon-quality")).toContain("Once done, test the daemon in the worktree end to end with exo-cli to make sure nothing broke. Check exo-cli -h first to see how to test in worktree.");
   });
+
+  test("/worktree exposes setup, ready, and merge helpers", () => {
+    expect(getMacroArgs()["/worktree"]?.map(arg => arg.name)).toEqual(["setup", "ready", "merge"]);
+  });
+
+  test("/worktree setup expands to a concise reference-based setup prompt", () => {
+    const expanded = expandMacros("/worktree setup ~/Workspace/example-project");
+
+    expect(expanded).toContain("If the project is not already a git repo, initialize git first.");
+    expect(expanded).toContain("~/Workspace/exocortex/scripts/dev/create-worktree");
+    expect(expanded).toContain("~/Workspace/exocortex/scripts/dev/worktree-common.sh");
+    expect(expanded).toContain("~/Workspace/exocortex/.githooks/post-checkout");
+    expect(expanded).toContain("~/Workspace/active-development/record/scripts/dev/create-worktree");
+    expect(expanded).toContain("make scripts executable");
+    expect(expanded).toContain("smoke-test create + clean");
+    expect(expanded).toEndWith("Project: ~/Workspace/example-project");
+  });
 });
 
 describe("tool macros", () => {
