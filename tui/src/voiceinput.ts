@@ -541,6 +541,7 @@ export function createVoiceInputController(
 
     state.inputBuffer = submitted.buffer;
     state.cursorPos = submitted.buffer.length;
+    state.pendingImages = submitted.submission.images ? [...submitted.submission.images] : [];
     state.voicePrompt = null;
     state.voicePromptJobs = submitted.jobs.map(job => ({ ...job }));
     state.voiceMessage = null;

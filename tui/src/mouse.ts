@@ -15,6 +15,7 @@ import { scrollBy, getViewStart } from "./chat";
 import { activateSidebarItem, sidebarHitTest, scrollSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { mouse_cursor_pointer, mouse_cursor_text, mouse_cursor_hand } from "./terminal";
 import { clampCol, ensureCursorVisible } from "./historycursor";
+import { editMessageItemIndexAtMouse } from "./editmessage";
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -97,8 +98,19 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
   // Always update cursor shape on any mouse event (motion, press, scroll)
   updateMouseCursor(ev.col, ev.row, state);
 
-  // Ignore mouse events when a modal overlay is showing
-  if (state.queuePrompt || state.editMessagePrompt) return { type: "handled" };
+  // Modal overlays intercept mouse events.  The edit-message modal is clickable:
+  // clicking a visible item selects it and confirms, matching Enter on that row.
+  if (state.editMessagePrompt) {
+    if (ev.button === 0 && ev.action === "press") {
+      const itemIndex = editMessageItemIndexAtMouse(state, ev.col, ev.row);
+      if (itemIndex !== null) {
+        state.editMessagePrompt.selection = itemIndex;
+        return { type: "edit_message_confirm" };
+      }
+    }
+    return { type: "handled" };
+  }
+  if (state.queuePrompt) return { type: "handled" };
 
   const { col, row, button, action } = ev;
   const { layout, sidebar } = state;

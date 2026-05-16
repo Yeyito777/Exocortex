@@ -770,6 +770,45 @@ function failPendingVoiceTranscription(submission: SubmittedVoiceTranscription, 
   scheduleRender();
 }
 
+function recallSelectedPendingVoiceTranscription(): boolean {
+  const selectedEditItem = state.editMessagePrompt?.items[state.editMessagePrompt.selection] ?? null;
+  const recalledVoiceSubmission = selectedEditItem?.queuedMessage
+    ? voiceInput?.recallSubmittedTranscription(selectedEditItem.queuedMessage) ?? null
+    : selectedEditItem?.message
+      ? voiceInput?.recallSubmittedTranscription(selectedEditItem.message) ?? null
+      : null;
+  if (!recalledVoiceSubmission) return false;
+
+  // This is a recall, not a historical edit/unwind.  The transcription job now
+  // belongs to the prompt again, so remove every chat/queue echo and prevent any
+  // daemon event from reattaching it while the transcript is still in flight.
+  state.editMessagePrompt = null;
+  pendingVoiceSubmissions.delete(recalledVoiceSubmission);
+  removePendingVoiceEcho(recalledVoiceSubmission);
+  invalidateHistoryRenderCache(state);
+  scheduleRender();
+  return true;
+}
+
+function confirmSelectedEditMessage(): void {
+  if (recallSelectedPendingVoiceTranscription()) return;
+
+  const er = confirmEditMessage(state);
+  if (er.action === "edit_queued") {
+    if (state.convId) {
+      removeLocalQueueEntry(state, state.convId, er.text);
+      daemon.unqueueMessage(state.convId, er.text);
+    }
+  } else if (er.action === "edit_sent" && state.convId) {
+    // The daemon's unwindTo handles abort internally if streaming,
+    // waits for the stream to stop, then truncates.
+    daemon.unwindConversation(state.convId, er.userMessageIndex);
+  } else if (er.action === "edit_instructions") {
+    // Text is placed in prompt as "/instructions <text>" — user edits and submits
+    // through the normal slash command flow. Nothing else to do here.
+  }
+}
+
 function handleKey(key: KeyEvent): void {
   const inputBefore = state.inputBuffer;
   const voicePromptBufferBefore = state.voicePromptJobs.length > 0 || state.voicePrompt?.phase === "transcribing"
@@ -805,33 +844,7 @@ function handleKey(key: KeyEvent): void {
       cancelQueuePrompt(state);
       break;
     case "edit_message_confirm": {
-      const selectedEditItem = state.editMessagePrompt?.items[state.editMessagePrompt.selection] ?? null;
-      const er = confirmEditMessage(state);
-      const recalledVoiceSubmission = selectedEditItem?.queuedMessage
-        ? voiceInput?.recallSubmittedTranscription(selectedEditItem.queuedMessage) ?? null
-        : selectedEditItem?.message
-          ? voiceInput?.recallSubmittedTranscription(selectedEditItem.message) ?? null
-          : null;
-      if (recalledVoiceSubmission) {
-        pendingVoiceSubmissions.delete(recalledVoiceSubmission);
-        removePendingVoiceEcho(recalledVoiceSubmission);
-        invalidateHistoryRenderCache(state);
-        scheduleRender();
-        break;
-      }
-      if (er.action === "edit_queued") {
-        if (state.convId) {
-          removeLocalQueueEntry(state, state.convId, er.text);
-          daemon.unqueueMessage(state.convId, er.text);
-        }
-      } else if (er.action === "edit_sent" && state.convId) {
-        // The daemon's unwindTo handles abort internally if streaming,
-        // waits for the stream to stop, then truncates.
-        daemon.unwindConversation(state.convId, er.userMessageIndex);
-      } else if (er.action === "edit_instructions") {
-        // Text is placed in prompt as "/instructions <text>" — user edits and submits
-        // through the normal slash command flow. Nothing else to do here.
-      }
+      confirmSelectedEditMessage();
       break;
     }
     case "edit_message_cancel":
@@ -964,6 +977,9 @@ function handleMouse(ev: MouseEvent): void {
       if (state.convId) daemon.unsubscribe(state.convId);
       openFolderInstructionsDocument(state, result.folderId);
       daemon.loadFolderInstructions(result.folderId);
+      break;
+    case "edit_message_confirm":
+      confirmSelectedEditMessage();
       break;
     case "handled":
       break;

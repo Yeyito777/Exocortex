@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { openEditMessageModal } from "./editmessage";
+import { editMessageItemIndexAtMouse, openEditMessageModal } from "./editmessage";
 import type { UserMessage } from "./messages";
 import { createInitialState } from "./state";
 
@@ -69,5 +69,26 @@ describe("edit message modal", () => {
       isQueued: true,
       queuedMessage,
     });
+  });
+
+  test("mouse hit testing selects visible Ctrl-W edit items", () => {
+    const state = createInitialState();
+    state.convId = "conv-click";
+    state.cols = 100;
+    state.layout.chatCol = 1;
+    state.layout.sepAbove = 20;
+    state.layout.messageAreaHeight = 17;
+    state.messages.push(
+      { role: "user", text: "first", metadata: null },
+      { role: "user", text: "second", metadata: null },
+      { role: "user", text: "third", metadata: null },
+    );
+
+    openEditMessageModal(state);
+
+    expect(editMessageItemIndexAtMouse(state, 50, 16)).toBe(0);
+    expect(editMessageItemIndexAtMouse(state, 50, 17)).toBe(1);
+    expect(editMessageItemIndexAtMouse(state, 50, 18)).toBe(2);
+    expect(editMessageItemIndexAtMouse(state, 50, 15)).toBeNull();
   });
 });
