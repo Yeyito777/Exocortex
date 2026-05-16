@@ -31,6 +31,7 @@ import { openTargetDetached } from "./openable";
 import { msUntilNextElapsedSecond } from "./time";
 import type { Event, QueueTiming } from "./protocol";
 import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
+import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
 import { startReplayConversation } from "./replay";
 import { runStreamFinishedPing, shouldPingForBackgroundStreamCompletion } from "./ping";
 
@@ -298,13 +299,26 @@ function reattachVisiblePendingVoiceSubmissions(): void {
   }
 }
 
-function removePendingVoiceEcho(submission: SubmittedVoiceTranscription): void {
-  removeMessageByReference(submission.message);
-  if (state.voiceMessage?.message === submission.message) state.voiceMessage = null;
-  if (submission.queuedMessage) {
-    const idx = state.queuedMessages.indexOf(submission.queuedMessage);
-    if (idx !== -1) state.queuedMessages.splice(idx, 1);
+function removePendingVoiceEcho(
+  submission: SubmittedVoiceTranscription,
+  aliases: Parameters<typeof removePendingVoiceEchoes>[2] = {},
+): void {
+  removePendingVoiceEchoes(state, submission, aliases);
+}
+
+function deletePendingVoiceSubmissionAliases(target: SubmittedVoiceTranscription): void {
+  for (const submission of [...pendingVoiceSubmissions]) {
+    if (pendingVoiceSubmissionsMatch(submission, target)) pendingVoiceSubmissions.delete(submission);
   }
+}
+
+function selectedEditItemLooksLikePendingVoice(): boolean {
+  const selectedEditItem = state.editMessagePrompt?.items[state.editMessagePrompt.selection] ?? null;
+  if (!selectedEditItem) return false;
+  for (const submission of pendingVoiceSubmissions) {
+    if (editItemLooksLikePendingVoiceSubmission(selectedEditItem, submission)) return true;
+  }
+  return pendingVoicePreviewTextsMatch(selectedEditItem.text, state.voiceMessage?.message.text);
 }
 
 function removePendingAuthEcho(echoStartedAt: number): void {
@@ -785,10 +799,17 @@ function recallSelectedPendingVoiceTranscription(): boolean {
   // belongs to the prompt again, so remove every chat/queue echo and prevent any
   // daemon event from reattaching it while the transcript is still in flight.
   state.editMessagePrompt = null;
-  pendingVoiceSubmissions.delete(recalledVoiceSubmission);
-  removePendingVoiceEcho(recalledVoiceSubmission);
+  deletePendingVoiceSubmissionAliases(recalledVoiceSubmission);
+  removePendingVoiceEcho(recalledVoiceSubmission, {
+    message: selectedEditItem?.message,
+    sourceMessage: selectedEditItem?.sourceMessage,
+    queuedMessage: selectedEditItem?.queuedMessage,
+  });
   if (selectedEditItem?.message && selectedEditItem.message !== recalledVoiceSubmission.message) {
     removeMessageByReference(selectedEditItem.message);
+  }
+  if (selectedEditItem?.sourceMessage && selectedEditItem.sourceMessage !== recalledVoiceSubmission.message) {
+    removeMessageByReference(selectedEditItem.sourceMessage);
   }
   if (selectedEditItem?.queuedMessage && selectedEditItem.queuedMessage !== recalledVoiceSubmission.queuedMessage) {
     const idx = state.queuedMessages.indexOf(selectedEditItem.queuedMessage);
@@ -801,6 +822,12 @@ function recallSelectedPendingVoiceTranscription(): boolean {
 
 function confirmSelectedEditMessage(): void {
   if (recallSelectedPendingVoiceTranscription()) return;
+  if (selectedEditItemLooksLikePendingVoice()) {
+    state.editMessagePrompt = null;
+    pushSystemMessage(state, "✗ Voice transcription is still running but could not be recalled. The pending message was left untouched.", theme.warning);
+    scheduleRender();
+    return;
+  }
 
   const er = confirmEditMessage(state);
   if (er.action === "edit_queued") {

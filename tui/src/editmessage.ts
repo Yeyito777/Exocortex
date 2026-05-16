@@ -59,6 +59,7 @@ export function openEditMessageModal(state: RenderState): void {
         isQueued: false,
         images: itemMessage.images,
         message: itemMessage,
+        sourceMessage: msg,
       });
       includedMessages.add(itemMessage);
       userIdx++;

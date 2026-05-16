@@ -65,6 +65,7 @@ describe("edit message modal", () => {
 
     expect(state.editMessagePrompt?.items).toHaveLength(1);
     expect(state.editMessagePrompt?.items[0]?.message).toBe(liveMessage);
+    expect(state.editMessagePrompt?.items[0]?.sourceMessage).toBe(staleEcho);
     expect(state.editMessagePrompt?.items[0]?.text).toBe(liveMessage.text);
   });
 

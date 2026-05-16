@@ -67,6 +67,8 @@ export interface EditMessageItem {
   images?: ImageAttachment[];
   /** Original local message object, when this item represents a rendered user message. */
   message?: UserMessage;
+  /** Actual object from state.messages before any canonicalization. */
+  sourceMessage?: UserMessage;
   /** Original local queue object, when this item represents a queued message. */
   queuedMessage?: QueuedMessage;
 }
