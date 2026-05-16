@@ -108,7 +108,7 @@ function primaryInputStrings(toolName: string, input: Record<string, unknown>): 
     edit: ["file_path", "old_string", "new_string"],
     patch: ["input", "cwd"],
     grep: ["pattern", "path", "glob", "type"],
-    glob: ["pattern", "path"],
+    glob: ["pattern", "patterns", "path", "exclude", "query"],
     browse: ["url", "prompt"],
   };
 
