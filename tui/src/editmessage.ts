@@ -13,7 +13,7 @@ import type { KeyEvent } from "./input";
 import type { UserMessage } from "./messages";
 import type { RenderState, EditMessageItem } from "./state";
 import { EDIT_INDEX_INSTRUCTIONS, EDIT_INDEX_QUEUED, focusPrompt } from "./state";
-import { termWidth, truncateToWidth } from "./textwidth";
+import { computeEditMessageOverlayLayout, type EditMessageOverlayLayout } from "./editmessage-layout";
 
 // ── Open modal ────────────────────────────────────────────────────
 
@@ -137,56 +137,17 @@ export function handleEditMessageKey(key: KeyEvent, state: RenderState): EditMes
   }
 }
 
-interface EditMessageOverlayLayout {
-  boxLeft: number;
-  boxWidth: number;
-  firstItemRow: number;
-  maxVisible: number;
-  scrollStart: number;
-}
-
-function getEditMessageOverlayLayout(
-  state: RenderState,
-): EditMessageOverlayLayout | null {
+function getEditMessageOverlayLayout(state: RenderState): EditMessageOverlayLayout | null {
   const em = state.editMessagePrompt;
-  if (!em || em.items.length === 0) return null;
-
+  if (!em) return null;
   const chatW = state.cols - state.layout.chatCol + 1;
-  const chatCol = state.layout.chatCol;
-  const sepRow = state.layout.sepAbove;
-  const messageAreaHeight = state.layout.messageAreaHeight;
-  if (chatW <= 0 || chatCol <= 0 || sepRow <= 0) return null;
-
-  const titleLine = "Edit message:";
-  const maxPreviewLen = Math.min(50, chatW - 12);
-  const previews = em.items.map((item) => {
-    const prefix = item.userMessageIndex === EDIT_INDEX_INSTRUCTIONS ? "📌 " : "";
-    return truncateToWidth(prefix + item.text.replace(/\n/g, " "), maxPreviewLen);
-  });
-  const maxContentLen = Math.max(
-    termWidth(titleLine),
-    ...previews.map((preview) => termWidth(preview) + 2),
+  return computeEditMessageOverlayLayout(
+    em,
+    chatW,
+    state.layout.chatCol,
+    state.layout.sepAbove,
+    state.layout.messageAreaHeight,
   );
-  const innerWidth = Math.min(maxContentLen + 4, chatW - 4);
-  const boxWidth = innerWidth + 2;
-  const boxLeft = chatCol + Math.floor((chatW - boxWidth) / 2);
-  const maxVisible = Math.min(em.items.length, Math.max(3, messageAreaHeight - 4));
-
-  let scrollStart = em.scrollOffset;
-  if (em.selection < scrollStart) scrollStart = em.selection;
-  if (em.selection >= scrollStart + maxVisible) scrollStart = em.selection - maxVisible + 1;
-  scrollStart = Math.max(0, Math.min(scrollStart, em.items.length - maxVisible));
-
-  const styledLineCount = 2 + maxVisible; // title, blank line, visible items
-  const boxTop = Math.max(3, sepRow - styledLineCount - 2);
-
-  return {
-    boxLeft,
-    boxWidth,
-    firstItemRow: boxTop + 3,
-    maxVisible,
-    scrollStart,
-  };
 }
 
 /**

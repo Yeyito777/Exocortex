@@ -9,10 +9,10 @@
  */
 
 import type { QueuePromptState, EditMessageState } from "./state";
-import { EDIT_INDEX_INSTRUCTIONS } from "./state";
 import { theme } from "./theme";
 import { formatSize, imageLabel } from "./clipboard";
 import { padVisibleRightToWidth, termWidth, truncateToWidth } from "./textwidth";
+import { computeEditMessageOverlayLayout, EDIT_MESSAGE_TITLE } from "./editmessage-layout";
 
 // ── ANSI positioning ──────────────────────────────────────────────
 
@@ -177,37 +177,16 @@ export function renderEditMessageOverlay(
   sepRow: number,
   messageAreaHeight: number,
 ): string {
-  const titleLine = "Edit message:";
-
-  // Build display lines: truncated previews of each item
-  const maxPreviewLen = Math.min(50, chatW - 12);
-  const previews = em.items.map((item) => {
-    const prefix = item.userMessageIndex === EDIT_INDEX_INSTRUCTIONS ? "📌 " : "";
-    const raw = prefix + item.text.replace(/\n/g, " ");
-    return truncateToWidth(raw, maxPreviewLen);
-  });
-  const maxContentLen = Math.max(
-    termWidth(titleLine),
-    ...previews.map((preview) => termWidth(preview) + 2), // +2 for marker "▸ "
-  );
-  const innerWidth = Math.min(maxContentLen + 4, chatW - 4);
-
-  // Max visible items (leave room for title, blank line, borders)
-  const maxVisible = Math.min(em.items.length, Math.max(3, messageAreaHeight - 4));
-
-  // Scroll window to keep selection visible
-  let scrollStart = em.scrollOffset;
-  if (em.selection < scrollStart) scrollStart = em.selection;
-  if (em.selection >= scrollStart + maxVisible) scrollStart = em.selection - maxVisible + 1;
-  scrollStart = Math.max(0, Math.min(scrollStart, em.items.length - maxVisible));
-  em.scrollOffset = scrollStart;
+  const layout = computeEditMessageOverlayLayout(em, chatW, chatCol, sepRow, messageAreaHeight);
+  if (!layout) return "";
+  em.scrollOffset = layout.scrollStart;
 
   // Build styled lines: title, blank, visible items
   const styledLines: BoxOverlayLine[] = [];
-  styledLines.push({ text: titleLine, fg: theme.text, bg: theme.sidebarBg });
+  styledLines.push({ text: EDIT_MESSAGE_TITLE, fg: theme.text, bg: theme.sidebarBg });
   styledLines.push({ text: "", fg: theme.text, bg: theme.sidebarBg });
-  for (let vi = 0; vi < maxVisible; vi++) {
-    const i = scrollStart + vi;
+  for (let vi = 0; vi < layout.maxVisible; vi++) {
+    const i = layout.scrollStart + vi;
     const marker = em.selection === i ? "▸ " : "  ";
     const isSelected = i === em.selection;
     const isQueued = em.items[i]?.isQueued;
@@ -220,27 +199,25 @@ export function renderEditMessageOverlay(
       bg = theme.sidebarBg;
       fg = isQueued ? theme.muted : theme.text;
     }
-    styledLines.push({ text: marker + previews[i], fg, bg });
+    styledLines.push({ text: marker + layout.previews[i], fg, bg });
   }
-
-  const boxTop = Math.max(3, sepRow - styledLines.length - 2);
 
   // Scroll indicators
   const scrollIndicators: { upRow?: number; downRow?: number } = {};
-  if (scrollStart > 0) {
-    scrollIndicators.upRow = boxTop + 3; // first item row
+  if (layout.scrollStart > 0) {
+    scrollIndicators.upRow = layout.firstItemRow;
   }
-  if (scrollStart + maxVisible < em.items.length) {
-    scrollIndicators.downRow = boxTop + 2 + maxVisible; // last item row
+  if (layout.scrollStart + layout.maxVisible < em.items.length) {
+    scrollIndicators.downRow = layout.firstItemRow + layout.maxVisible - 1;
   }
 
   return renderBoxOverlay({
     lines: styledLines,
-    innerWidth,
+    innerWidth: layout.innerWidth,
     chatCol,
     chatW,
     sepRow,
-    boxTop,
+    boxTop: layout.boxTop,
     scrollIndicators,
   });
 }
