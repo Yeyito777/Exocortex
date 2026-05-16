@@ -313,11 +313,6 @@ export const glob: Tool = {
       },
       metadata: { type: "boolean", description: "Return JSON lines with path, size, modified time, type, and fuzzy score when available instead of plain paths." },
     },
-    anyOf: [
-      { required: ["pattern"] },
-      { required: ["patterns"] },
-      { required: ["query"] },
-    ],
   },
   systemHint: "Prefer the glob tool over find/ls for finding files by name pattern.",
   display: {
