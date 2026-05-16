@@ -377,6 +377,144 @@ describe("voice input controller", () => {
     }
   });
 
+  test("recalling a pending voice message restores its transcribing job to the prompt", async () => {
+    const state = createInitialState();
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "normal";
+    state.inputBuffer = "hey";
+    state.cursorPos = 3;
+
+    let clock = 13_000;
+    let transcriptSuccess: ((text: string) => void) | null = null;
+    const controller = createVoiceInputController(
+      state,
+      {
+        transcribeAudio(_audioBase64, _mimeType, onSuccess) {
+          transcriptSuccess = onSuccess;
+        },
+      },
+      () => {},
+      {
+        startRecorder: () => ({
+          stop: async () => ({ bytes: Buffer.from([1, 2, 3]), mimeType: "audio/wav" }),
+          abort() {},
+        }),
+        now: () => clock,
+        submitPendingTranscription: (placeholderText) => {
+          const message: UserMessage = { role: "user", text: placeholderText, metadata: null };
+          state.messages.push(message);
+          return {
+            message,
+            startedAt: 125,
+            convId: state.convId,
+            provider: state.provider,
+            model: state.model,
+            effort: state.effort,
+            fastMode: state.fastMode,
+            folderId: state.sidebar.currentFolderId,
+            wasStreaming: false,
+          };
+        },
+      },
+    );
+
+    try {
+      expect(controller.handleKey({ type: "char", char: " ", event: "press" })).toBe(true);
+      clock += 600;
+      expect(controller.handleKey({ type: "enter" })).toBe(true);
+      const pendingMessage = state.messages[0] as UserMessage;
+      expect(pendingMessage.text).toContain("Transcribing…");
+
+      const recalled = controller.recallSubmittedTranscription(pendingMessage);
+      expect(recalled?.message).toBe(pendingMessage);
+      expect(state.inputBuffer).toBe("hey");
+      expect(state.voiceMessage).toBeNull();
+      expect(state.voicePromptJobs).toHaveLength(1);
+      expect(state.voicePromptJobs[0]?.phase).toBe("transcribing");
+
+      await Promise.resolve();
+      expect(transcriptSuccess).not.toBeNull();
+      transcriptSuccess!("there");
+
+      expect(state.inputBuffer).toBe("hey there");
+      expect(state.voicePromptJobs).toHaveLength(0);
+    } finally {
+      controller.cleanup();
+    }
+  });
+
+  test("recalling a queued pending voice message restores it to the prompt instead of orphaning the job", async () => {
+    const state = createInitialState();
+    state.convId = "conv-voice";
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "normal";
+    state.inputBuffer = "queue";
+    state.cursorPos = state.inputBuffer.length;
+
+    let clock = 14_000;
+    let transcriptSuccess: ((text: string) => void) | null = null;
+    const controller = createVoiceInputController(
+      state,
+      {
+        transcribeAudio(_audioBase64, _mimeType, onSuccess) {
+          transcriptSuccess = onSuccess;
+        },
+      },
+      () => {},
+      {
+        startRecorder: () => ({
+          stop: async () => ({ bytes: Buffer.from([1, 2, 3]), mimeType: "audio/wav" }),
+          abort() {},
+        }),
+        now: () => clock,
+        submitPendingTranscription: (placeholderText, options) => {
+          const message: UserMessage = { role: "user", text: placeholderText, metadata: null };
+          const queuedMessage = { convId: state.convId!, text: placeholderText, timing: options?.queueTiming ?? "message-end" as const };
+          state.queuedMessages.push(queuedMessage);
+          state.inputBuffer = "";
+          state.cursorPos = 0;
+          return {
+            message,
+            queuedMessage,
+            startedAt: 126,
+            convId: state.convId,
+            provider: state.provider,
+            model: state.model,
+            effort: state.effort,
+            fastMode: state.fastMode,
+            folderId: state.sidebar.currentFolderId,
+            wasStreaming: true,
+          };
+        },
+      },
+    );
+
+    try {
+      expect(controller.handleKey({ type: "char", char: " ", event: "press" })).toBe(true);
+      clock += 600;
+      expect(controller.handleKey({ type: "char", char: " ", event: "release" })).toBe(true);
+      await Promise.resolve();
+
+      expect(controller.submitActiveTranscription({ queueTiming: "next-turn" })).toBe(true);
+      const queued = state.queuedMessages[0]!;
+      expect(queued.text).toContain("Transcribing…");
+
+      const recalled = controller.recallSubmittedTranscription(queued);
+      expect(recalled?.queuedMessage).toBe(queued);
+      expect(state.inputBuffer).toBe("queue");
+      expect(state.voicePromptJobs).toHaveLength(1);
+
+      expect(transcriptSuccess).not.toBeNull();
+      transcriptSuccess!("later");
+      expect(state.inputBuffer).toBe("queue later");
+      expect(state.voicePromptJobs).toHaveLength(0);
+    } finally {
+      controller.cleanup();
+    }
+  });
+
   test("prompt stays editable while inline transcription is pending", async () => {
     const state = createInitialState();
     state.panelFocus = "chat";

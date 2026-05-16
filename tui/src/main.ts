@@ -805,7 +805,20 @@ function handleKey(key: KeyEvent): void {
       cancelQueuePrompt(state);
       break;
     case "edit_message_confirm": {
+      const selectedEditItem = state.editMessagePrompt?.items[state.editMessagePrompt.selection] ?? null;
       const er = confirmEditMessage(state);
+      const recalledVoiceSubmission = selectedEditItem?.queuedMessage
+        ? voiceInput?.recallSubmittedTranscription(selectedEditItem.queuedMessage) ?? null
+        : selectedEditItem?.message
+          ? voiceInput?.recallSubmittedTranscription(selectedEditItem.message) ?? null
+          : null;
+      if (recalledVoiceSubmission) {
+        pendingVoiceSubmissions.delete(recalledVoiceSubmission);
+        removePendingVoiceEcho(recalledVoiceSubmission);
+        invalidateHistoryRenderCache(state);
+        scheduleRender();
+        break;
+      }
       if (er.action === "edit_queued") {
         if (state.convId) {
           removeLocalQueueEntry(state, state.convId, er.text);

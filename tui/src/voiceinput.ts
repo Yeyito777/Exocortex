@@ -7,8 +7,8 @@
  */
 
 import type { KeyEvent } from "./input";
-import type { RenderState } from "./state";
-import { pushSystemMessage } from "./state";
+import type { QueuedMessage, RenderState } from "./state";
+import { focusPrompt, pushSystemMessage } from "./state";
 import { theme } from "./theme";
 import { pushUndo } from "./undo";
 import {
@@ -88,6 +88,7 @@ interface VoiceSession {
 export interface VoiceInputController {
   handleKey(key: KeyEvent): boolean;
   submitActiveTranscription(options?: SubmitVoiceTranscriptionOptions): boolean;
+  recallSubmittedTranscription(target: UserMessage | QueuedMessage): SubmittedVoiceTranscription | null;
   syncPromptEdit(previousBuffer: string): void;
   isBlockingMouse(): boolean;
   cleanup(): void;
@@ -196,7 +197,8 @@ export function createVoiceInputController(
   function startVoiceAnimation(): void {
     if (session.animationTimer) return;
     session.animationTimer = setInterval(() => {
-      if (!state.voicePrompt && state.voicePromptJobs.length === 0 && !state.voiceMessage) {
+      const hasSubmittedJobs = !!session.submitted?.jobs.some(job => job.completedText === undefined);
+      if (!state.voicePrompt && state.voicePromptJobs.length === 0 && !state.voiceMessage && !hasSubmittedJobs) {
         stopVoiceAnimation();
         return;
       }
@@ -208,8 +210,8 @@ export function createVoiceInputController(
       }
       if (state.voiceMessage) {
         state.voiceMessage.frameIndex = (state.voiceMessage.frameIndex + 1) % VOICE_SPINNER_FRAMES.length;
-        updateSubmittedPlaceholderText();
       }
+      updateSubmittedPlaceholderText();
       maybeStopVoiceRecordingFromIdle();
       scheduleRender();
     }, VOICE_SPINNER_INTERVAL_MS);
@@ -279,6 +281,16 @@ export function createVoiceInputController(
     scheduleRender();
   }
 
+  function applyTranscriptionResult(jobId: number | null, text: string): void {
+    if (jobId === null) return;
+    const submitted = session.submitted;
+    if (submitted?.jobs.some(item => item.id === jobId)) {
+      applySubmittedJobTranscript(jobId, text);
+      return;
+    }
+    applyPromptTranscript(jobId, text);
+  }
+
   function failSubmittedJob(jobId: number | null, message: string): void {
     const submitted = session.submitted;
     if (!submitted || jobId === null) return;
@@ -292,6 +304,16 @@ export function createVoiceInputController(
       scheduleRender();
     }
     pushSystemMessage(state, `✗ ${message}`, theme.error);
+  }
+
+  function failTranscriptionJob(jobId: number | null, message: string): void {
+    if (jobId === null) return;
+    const submitted = session.submitted;
+    if (submitted?.jobs.some(item => item.id === jobId)) {
+      failSubmittedJob(jobId, message);
+      return;
+    }
+    failPromptJob(jobId, message);
   }
 
   function removePromptJob(jobId: number): VoicePromptState | null {
@@ -391,12 +413,14 @@ export function createVoiceInputController(
 
   function updateSubmittedPlaceholderText(): void {
     if (!session.submitted) return;
+    let changed = false;
     for (const job of session.submitted.jobs) {
       if (job.completedText === undefined) {
         job.frameIndex = (job.frameIndex + 1) % VOICE_SPINNER_FRAMES.length;
+        changed = true;
       }
     }
-    updateSubmittedMessageText();
+    if (changed) updateSubmittedMessageText();
   }
 
   function showVoiceError(prefix: string, err: unknown): void {
@@ -508,6 +532,31 @@ export function createVoiceInputController(
     return true;
   }
 
+  function recallSubmittedTranscription(target: UserMessage | QueuedMessage): SubmittedVoiceTranscription | null {
+    const submitted = session.submitted;
+    if (!submitted) return null;
+    const matchesMessage = submitted.submission.message === target;
+    const matchesQueued = !!submitted.submission.queuedMessage && submitted.submission.queuedMessage === target;
+    if (!matchesMessage && !matchesQueued) return null;
+
+    state.inputBuffer = submitted.buffer;
+    state.cursorPos = submitted.buffer.length;
+    state.voicePrompt = null;
+    state.voicePromptJobs = submitted.jobs.map(job => ({ ...job }));
+    state.voiceMessage = null;
+    state.autocomplete = null;
+    session.submitted = null;
+    focusPrompt(state);
+    flushCompletedPromptJobs();
+    if (state.voicePromptJobs.length > 0) {
+      startVoiceAnimation();
+    } else {
+      stopVoiceAnimation();
+    }
+    scheduleRender();
+    return submitted.submission;
+  }
+
   async function stopVoiceRecordingAndTranscribe(): Promise<void> {
     const recorder = session.recorder;
     if (!recorder) return;
@@ -549,18 +598,10 @@ export function createVoiceInputController(
         clip.bytes.toString("base64"),
         clip.mimeType,
         (text) => {
-          if (session.submitted) {
-            applySubmittedJobTranscript(recordingJobId, text);
-          } else if (promptJobId !== null) {
-            applyPromptTranscript(promptJobId, text);
-          }
+          applyTranscriptionResult(recordingJobId ?? promptJobId, text);
         },
         (message) => {
-          if (session.submitted) {
-            failSubmittedJob(recordingJobId, message);
-          } else if (promptJobId !== null) {
-            failPromptJob(promptJobId, message);
-          }
+          failTranscriptionJob(recordingJobId ?? promptJobId, message);
         },
       );
     } catch (err) {
@@ -677,6 +718,7 @@ export function createVoiceInputController(
   return {
     handleKey,
     submitActiveTranscription,
+    recallSubmittedTranscription,
     syncPromptEdit,
     isBlockingMouse,
     cleanup,

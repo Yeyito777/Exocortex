@@ -6,7 +6,7 @@
  */
 
 import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot } from "./messages";
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage } from "./messages";
 import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
 import { loadPreferredProvider } from "./preferences";
@@ -65,6 +65,10 @@ export interface EditMessageItem {
   text: string;
   isQueued: boolean;
   images?: ImageAttachment[];
+  /** Original local message object, when this item represents a rendered user message. */
+  message?: UserMessage;
+  /** Original local queue object, when this item represents a queued message. */
+  queuedMessage?: QueuedMessage;
 }
 
 export interface EditMessageState {

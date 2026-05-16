@@ -42,6 +42,7 @@ export function openEditMessageModal(state: RenderState): void {
         text: msg.text,
         isQueued: false,
         images: msg.images,
+        message: msg,
       });
       userIdx++;
     }
@@ -55,6 +56,7 @@ export function openEditMessageModal(state: RenderState): void {
       text: qm.text,
       isQueued: true,
       images: qm.images,
+      queuedMessage: qm,
     });
   }
 
