@@ -22,6 +22,7 @@ import {
 } from "./voice";
 import type { EffortLevel, ImageAttachment, ModelId, ProviderId, UserMessage } from "./messages";
 import type { QueueTiming } from "./protocol";
+import { removePendingVoiceEchoes } from "./pendingvoice";
 import {
   deriveVoicePrefixText,
   deriveVoiceSuffixText,
@@ -100,6 +101,7 @@ interface VoiceInputDeps {
   submitPendingTranscription?: (placeholderText: string, options?: SubmitVoiceTranscriptionOptions) => SubmittedVoiceTranscription | null;
   completePendingTranscription?: (submission: SubmittedVoiceTranscription, finalText: string) => void;
   failPendingTranscription?: (submission: SubmittedVoiceTranscription, message: string) => void;
+  recallPendingTranscription?: (submission: SubmittedVoiceTranscription) => void;
   shouldQueuePendingTranscription?: () => boolean;
   openPendingTranscriptionQueuePrompt?: (previewText: string) => void;
   invalidateHistory?: () => void;
@@ -552,6 +554,9 @@ export function createVoiceInputController(
     );
     if (!matchesMessage && !matchesQueued) return null;
 
+    const targetMessage = target && "role" in target ? target : null;
+    const targetQueuedMessage = target && "convId" in target ? target : null;
+
     state.inputBuffer = submitted.buffer;
     state.cursorPos = submitted.buffer.length;
     state.pendingImages = submitted.submission.images ? [...submitted.submission.images] : [];
@@ -560,6 +565,12 @@ export function createVoiceInputController(
     state.voiceMessage = null;
     state.autocomplete = null;
     session.submitted = null;
+    removePendingVoiceEchoes(state, submitted.submission, {
+      message: targetMessage,
+      queuedMessage: targetQueuedMessage,
+    });
+    deps.recallPendingTranscription?.(submitted.submission);
+    deps.invalidateHistory?.();
     focusPrompt(state);
     flushCompletedPromptJobs();
     if (state.voicePromptJobs.length > 0) {

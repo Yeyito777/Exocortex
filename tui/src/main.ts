@@ -786,13 +786,13 @@ function failPendingVoiceTranscription(submission: SubmittedVoiceTranscription, 
 
 function recallSelectedPendingVoiceTranscription(): boolean {
   const selectedEditItem = state.editMessagePrompt?.items[state.editMessagePrompt.selection] ?? null;
+  if (!selectedEditItem) return false;
+  const selectedMessage = selectedEditItem?.sourceMessage ?? selectedEditItem?.message;
   const recalledVoiceSubmission = selectedEditItem?.queuedMessage
     ? voiceInput?.recallSubmittedTranscription(selectedEditItem.queuedMessage, selectedEditItem.text) ?? null
-    : selectedEditItem?.message
-      ? voiceInput?.recallSubmittedTranscription(selectedEditItem.message, selectedEditItem.text) ?? null
-      : selectedEditItem
-        ? voiceInput?.recallSubmittedTranscription(null, selectedEditItem.text) ?? null
-      : null;
+    : selectedMessage
+      ? voiceInput?.recallSubmittedTranscription(selectedMessage, selectedEditItem.text) ?? null
+      : voiceInput?.recallSubmittedTranscription(null, selectedEditItem.text) ?? null;
   if (!recalledVoiceSubmission) return false;
 
   // This is a recall, not a historical edit/unwind.  The transcription job now
@@ -1109,6 +1109,7 @@ async function main(): Promise<void> {
     submitPendingTranscription: submitPendingVoiceTranscription,
     completePendingTranscription: completePendingVoiceTranscription,
     failPendingTranscription: failPendingVoiceTranscription,
+    recallPendingTranscription: deletePendingVoiceSubmissionAliases,
     shouldQueuePendingTranscription: () => !!state.convId && isStreaming(state),
     openPendingTranscriptionQueuePrompt: openPendingVoiceQueuePrompt,
     invalidateHistory: () => invalidateHistoryRenderCache(state),
