@@ -584,6 +584,12 @@ describe("voice input controller", () => {
       // animation/render can make the job appear to jump back into history.
       expect(state.inputBuffer).toBe("draft");
       expect(state.voicePromptJobs).toHaveLength(1);
+
+      // Ctrl-W + Enter on terminals with kitty keyboard reporting produces an
+      // Enter press followed by an Enter release.  The press performs the recall;
+      // the release must not immediately submit the recalled transcribing job.
+      expect(controller.handleKey({ type: "enter", event: "release" })).toBe(false);
+
       expect(state.messages).not.toContain(pendingMessage);
       expect(state.messages.some(message => message.role === "user" && message.text.includes("Transcribing…"))).toBe(false);
 

@@ -695,6 +695,16 @@ export function createVoiceInputController(
   }
 
   function handleKey(key: KeyEvent): boolean {
+    // The main key dispatcher ignores release events, but voice input runs first
+    // so it can see the space release that ends hold-to-talk recording.  Do not
+    // let other key releases act as fresh commands: after Ctrl-W recalls a
+    // still-transcribing job to the prompt, a terminal-reported Enter release can
+    // otherwise immediately submit it back into chat history, producing the
+    // visible prompt→history flicker.
+    if (key.event === "release" && !(session.recorder && key.type === "char" && key.char === " ")) {
+      return false;
+    }
+
     if (session.recorder) {
       if (key.type === "char" && key.char === " ") {
         if (key.event === "release") {
