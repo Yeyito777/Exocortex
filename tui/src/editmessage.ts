@@ -10,6 +10,7 @@
  */
 
 import type { KeyEvent } from "./input";
+import type { UserMessage } from "./messages";
 import type { RenderState, EditMessageItem } from "./state";
 import { EDIT_INDEX_INSTRUCTIONS, EDIT_INDEX_QUEUED, focusPrompt } from "./state";
 import { termWidth, truncateToWidth } from "./textwidth";
@@ -20,6 +21,16 @@ import { termWidth, truncateToWidth } from "./textwidth";
 export function openEditMessageModal(state: RenderState): void {
   const items: EditMessageItem[] = [];
   const includedMessages = new Set<object>();
+  const submittedVoiceMessage = state.voiceMessage?.message;
+
+  function isSameSubmittedVoiceMessage(msg: UserMessage): boolean {
+    if (!submittedVoiceMessage) return false;
+    if (msg === submittedVoiceMessage) return true;
+    const msgStartedAt = msg.metadata?.startedAt;
+    const voiceStartedAt = submittedVoiceMessage.metadata?.startedAt;
+    if (msgStartedAt !== undefined && voiceStartedAt !== undefined && msgStartedAt === voiceStartedAt) return true;
+    return msg.text.includes("Transcribing…") && submittedVoiceMessage.text.includes("Transcribing…") && msg.text === submittedVoiceMessage.text;
+  }
 
   // Collect system instructions (shown first with special marker)
   for (const msg of state.messages) {
@@ -37,14 +48,19 @@ export function openEditMessageModal(state: RenderState): void {
   let userIdx = 0;
   for (const msg of state.messages) {
     if (msg.role === "user") {
+      const itemMessage = isSameSubmittedVoiceMessage(msg) ? submittedVoiceMessage! : msg;
+      if (includedMessages.has(itemMessage)) {
+        userIdx++;
+        continue;
+      }
       items.push({
         userMessageIndex: userIdx,
-        text: msg.text,
+        text: itemMessage.text,
         isQueued: false,
-        images: msg.images,
-        message: msg,
+        images: itemMessage.images,
+        message: itemMessage,
       });
-      includedMessages.add(msg);
+      includedMessages.add(itemMessage);
       userIdx++;
     }
   }
@@ -54,7 +70,6 @@ export function openEditMessageModal(state: RenderState): void {
   // outside canonical history (for example before a new conversation exists, or
   // after a history refresh).  Keep it in Ctrl-W so selecting it can move the
   // still-running transcription job back to the prompt.
-  const submittedVoiceMessage = state.voiceMessage?.message;
   const submittedVoiceShownAsQueue = !!submittedVoiceMessage && !!state.convId
     && state.queuedMessages.some(qm => qm.convId === state.convId && qm.text === submittedVoiceMessage.text);
   if (submittedVoiceMessage && !includedMessages.has(submittedVoiceMessage) && !submittedVoiceShownAsQueue) {

@@ -88,7 +88,7 @@ interface VoiceSession {
 export interface VoiceInputController {
   handleKey(key: KeyEvent): boolean;
   submitActiveTranscription(options?: SubmitVoiceTranscriptionOptions): boolean;
-  recallSubmittedTranscription(target: UserMessage | QueuedMessage): SubmittedVoiceTranscription | null;
+  recallSubmittedTranscription(target: UserMessage | QueuedMessage | null | undefined, fallbackText?: string): SubmittedVoiceTranscription | null;
   syncPromptEdit(previousBuffer: string): void;
   isBlockingMouse(): boolean;
   cleanup(): void;
@@ -532,11 +532,24 @@ export function createVoiceInputController(
     return true;
   }
 
-  function recallSubmittedTranscription(target: UserMessage | QueuedMessage): SubmittedVoiceTranscription | null {
+  function recallSubmittedTranscription(target: UserMessage | QueuedMessage | null | undefined, fallbackText?: string): SubmittedVoiceTranscription | null {
     const submitted = session.submitted;
     if (!submitted) return null;
-    const matchesMessage = submitted.submission.message === target;
-    const matchesQueued = !!submitted.submission.queuedMessage && submitted.submission.queuedMessage === target;
+    const submittedMessage = submitted.submission.message;
+    const submittedQueued = submitted.submission.queuedMessage;
+    const targetText = fallbackText ?? target?.text;
+    const targetStartedAt = "metadata" in (target ?? {})
+      ? (target as UserMessage).metadata?.startedAt
+      : undefined;
+    const bothLookLikePendingVoice = !!targetText?.includes("Transcribing…") && submittedMessage.text.includes("Transcribing…");
+    const matchesMessage = submittedMessage === target
+      || (targetStartedAt !== undefined && targetStartedAt === submitted.submission.startedAt)
+      || (targetText !== undefined && targetText === submittedMessage.text)
+      || bothLookLikePendingVoice;
+    const matchesQueued = !!submittedQueued && (
+      submittedQueued === target
+      || (targetText !== undefined && targetText === submittedQueued.text)
+    );
     if (!matchesMessage && !matchesQueued) return null;
 
     state.inputBuffer = submitted.buffer;

@@ -45,6 +45,29 @@ describe("edit message modal", () => {
     });
   });
 
+  test("Ctrl-W canonicalizes stale pending voice echo objects to the live voice message", () => {
+    const state = createInitialState();
+    state.convId = "conv-voice";
+    const liveMessage: UserMessage = {
+      role: "user",
+      text: "draft ⠙ Transcribing…",
+      metadata: { startedAt: 42, endedAt: null, tokens: 0, model: state.model },
+    };
+    const staleEcho: UserMessage = {
+      role: "user",
+      text: "draft ⠋ Transcribing…",
+      metadata: { startedAt: 42, endedAt: null, tokens: 0, model: state.model },
+    };
+    state.messages.push(staleEcho);
+    state.voiceMessage = { message: liveMessage, phase: "transcribing", frameIndex: 1 };
+
+    openEditMessageModal(state);
+
+    expect(state.editMessagePrompt?.items).toHaveLength(1);
+    expect(state.editMessagePrompt?.items[0]?.message).toBe(liveMessage);
+    expect(state.editMessagePrompt?.items[0]?.text).toBe(liveMessage.text);
+  });
+
   test("Ctrl-W does not duplicate a queued pending voice echo", () => {
     const state = createInitialState();
     state.convId = "conv-voice";

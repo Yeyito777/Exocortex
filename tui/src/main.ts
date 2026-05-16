@@ -773,9 +773,11 @@ function failPendingVoiceTranscription(submission: SubmittedVoiceTranscription, 
 function recallSelectedPendingVoiceTranscription(): boolean {
   const selectedEditItem = state.editMessagePrompt?.items[state.editMessagePrompt.selection] ?? null;
   const recalledVoiceSubmission = selectedEditItem?.queuedMessage
-    ? voiceInput?.recallSubmittedTranscription(selectedEditItem.queuedMessage) ?? null
+    ? voiceInput?.recallSubmittedTranscription(selectedEditItem.queuedMessage, selectedEditItem.text) ?? null
     : selectedEditItem?.message
-      ? voiceInput?.recallSubmittedTranscription(selectedEditItem.message) ?? null
+      ? voiceInput?.recallSubmittedTranscription(selectedEditItem.message, selectedEditItem.text) ?? null
+      : selectedEditItem
+        ? voiceInput?.recallSubmittedTranscription(null, selectedEditItem.text) ?? null
       : null;
   if (!recalledVoiceSubmission) return false;
 
@@ -785,6 +787,13 @@ function recallSelectedPendingVoiceTranscription(): boolean {
   state.editMessagePrompt = null;
   pendingVoiceSubmissions.delete(recalledVoiceSubmission);
   removePendingVoiceEcho(recalledVoiceSubmission);
+  if (selectedEditItem?.message && selectedEditItem.message !== recalledVoiceSubmission.message) {
+    removeMessageByReference(selectedEditItem.message);
+  }
+  if (selectedEditItem?.queuedMessage && selectedEditItem.queuedMessage !== recalledVoiceSubmission.queuedMessage) {
+    const idx = state.queuedMessages.indexOf(selectedEditItem.queuedMessage);
+    if (idx !== -1) state.queuedMessages.splice(idx, 1);
+  }
   invalidateHistoryRenderCache(state);
   scheduleRender();
   return true;

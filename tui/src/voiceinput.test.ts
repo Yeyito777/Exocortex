@@ -444,6 +444,78 @@ describe("voice input controller", () => {
     }
   });
 
+  test("recalls a pending voice message selected from a stale Ctrl-W snapshot", async () => {
+    const state = createInitialState();
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "normal";
+    state.inputBuffer = "hey";
+    state.cursorPos = 3;
+
+    let clock = 13_500;
+    let transcriptSuccess: ((text: string) => void) | null = null;
+    const controller = createVoiceInputController(
+      state,
+      {
+        transcribeAudio(_audioBase64, _mimeType, onSuccess) {
+          transcriptSuccess = onSuccess;
+        },
+      },
+      () => {},
+      {
+        startRecorder: () => ({
+          stop: async () => ({ bytes: Buffer.from([1, 2, 3]), mimeType: "audio/wav" }),
+          abort() {},
+        }),
+        now: () => clock,
+        submitPendingTranscription: (placeholderText) => {
+          const message: UserMessage = {
+            role: "user",
+            text: placeholderText,
+            metadata: { startedAt: 777, endedAt: null, tokens: 0, model: state.model },
+          };
+          state.messages.push(message);
+          return {
+            message,
+            startedAt: 777,
+            convId: state.convId,
+            provider: state.provider,
+            model: state.model,
+            effort: state.effort,
+            fastMode: state.fastMode,
+            folderId: state.sidebar.currentFolderId,
+            wasStreaming: false,
+          };
+        },
+      },
+    );
+
+    try {
+      expect(controller.handleKey({ type: "char", char: " ", event: "press" })).toBe(true);
+      clock += 600;
+      expect(controller.handleKey({ type: "enter" })).toBe(true);
+      const pendingMessage = state.messages[0] as UserMessage;
+      expect(pendingMessage.text).toContain("Transcribing…");
+
+      const staleSnapshot: UserMessage = {
+        ...pendingMessage,
+        text: pendingMessage.text.replace("⠋", "⠙"),
+      };
+      const recalled = controller.recallSubmittedTranscription(staleSnapshot, staleSnapshot.text);
+      expect(recalled?.message).toBe(pendingMessage);
+      expect(state.inputBuffer).toBe("hey");
+      expect(state.voiceMessage).toBeNull();
+      expect(state.voicePromptJobs).toHaveLength(1);
+
+      await Promise.resolve();
+      expect(transcriptSuccess).not.toBeNull();
+      transcriptSuccess!("there");
+      expect(state.inputBuffer).toBe("hey there");
+    } finally {
+      controller.cleanup();
+    }
+  });
+
   test("recalling a queued pending voice message restores it to the prompt instead of orphaning the job", async () => {
     const state = createInitialState();
     state.convId = "conv-voice";
