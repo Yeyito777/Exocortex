@@ -10,4 +10,15 @@ describe("tool availability", () => {
     expect(buildToolSystemHints()).not.toContain("Use image generation to create assets");
     expect(buildToolSystemHints()).not.toContain("Use audio transcription");
   });
+
+  test("tool schemas avoid OpenAI-rejected top-level JSON Schema composition keywords", () => {
+    const forbiddenTopLevelKeywords = ["oneOf", "anyOf", "allOf", "enum", "not"];
+
+    for (const tool of getToolDefs()) {
+      expect(tool.input_schema.type).toBe("object");
+      for (const keyword of forbiddenTopLevelKeywords) {
+        expect(tool.input_schema).not.toHaveProperty(keyword);
+      }
+    }
+  });
 });
