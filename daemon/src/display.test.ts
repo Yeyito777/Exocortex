@@ -515,14 +515,66 @@ describe("tool-result folding", () => {
     expect(entries[2].type).toBe("ai");
   });
 
-  test("orphaned tool_result (no preceding assistant) → falls through to user entry", () => {
+  test("orphaned tool_result (no preceding assistant) → renders as ai entry, not user JSON", () => {
     const content: ApiContentBlock[] = [
       { type: "tool_result", tool_use_id: "tu-orphan", content: "orphan", is_error: false },
     ];
     const { entries } = build([{ role: "user", content, metadata: null }]);
     expect(entries).toHaveLength(1);
-    // No currentAI → falls through to the final user entry path (JSON.stringify)
-    expect(userEntry(entries[0]).text).toBe(JSON.stringify(content));
+    const ai = aiEntry(entries[0]);
+    expect(ai.blocks).toEqual([{
+      type: "tool_result",
+      toolCallId: "tu-orphan",
+      toolName: "",
+      output: "orphan",
+      isError: false,
+    }]);
+  });
+
+  test("retry system notice between tool_use and tool_result does not expose tool_result as user", () => {
+    const msgs: StoredMessage[] = [
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tu-goal", name: "goal", input: { action: "complete" } }],
+        metadata: null,
+      },
+      {
+        role: "system",
+        content: "⟳ OpenAI websocket closed before response.completed — retrying in 2s (1/8)…",
+        metadata: null,
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tu-goal", content: "Goal complete.", is_error: false }],
+        metadata: null,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Done." }],
+        metadata: META,
+      },
+    ];
+
+    const { entries } = build(msgs);
+    expect(entries).toHaveLength(3);
+    expect(entries[0].type).toBe("ai");
+    expect(entries[1]).toEqual({
+      type: "system",
+      text: "⟳ OpenAI websocket closed before response.completed — retrying in 2s (1/8)…",
+      color: "warning",
+    });
+    const ai = aiEntry(entries[2]);
+    expect(ai.blocks).toEqual([
+      {
+        type: "tool_result",
+        toolCallId: "tu-goal",
+        toolName: "",
+        output: "Goal complete.",
+        isError: false,
+      },
+      { type: "text", text: "Done." },
+    ]);
+    expect(ai.metadata).toEqual(META);
   });
 
   test("subsequent assistant after tool round-trip → merged into same ai entry", () => {

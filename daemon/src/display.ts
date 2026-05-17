@@ -149,11 +149,18 @@ export function buildDisplayData(
       if (typeof msg.content !== "string") {
         const contentArr = msg.content as ApiContentBlock[];
         const hasToolResults = contentArr.some((c) => c.type === "tool_result");
-        if (hasToolResults && currentAI) {
-          // Pass all blocks through — tool_result blocks render as tool
-          // output, and any text blocks (context pressure hints injected
-          // by agent.ts) render inline in the AI message.
-          currentAI.blocks.push(...extractBlocks(contentArr));
+        if (hasToolResults) {
+          // Tool-result messages are API-internal containers, never
+          // user-authored prompts. Usually they directly follow an assistant
+          // tool_use and fold into the open AI entry, but retry/system notices
+          // can flush currentAI between tool_use and tool_result. In that case
+          // start a new AI entry instead of rendering raw JSON as a user bubble.
+          const blocks = extractBlocks(contentArr);
+          if (currentAI) {
+            currentAI.blocks.push(...blocks);
+          } else {
+            currentAI = { blocks, metadata: msg.metadata };
+          }
           continue;
         }
         // User message with image blocks — extract text and images separately
