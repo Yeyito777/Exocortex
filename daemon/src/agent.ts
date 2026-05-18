@@ -39,7 +39,7 @@ export interface AgentCallbacks {
   /** Accumulated output token count updated (fires after each API round). */
   onTokensUpdate(tokens: number): void;
   /** Input (context) token count from the latest API round. */
-  onContextUpdate(contextTokens: number): void;
+  onContextUpdate(contextTokens: number, inputMessages?: ApiMessage[]): void;
   /** Response headers received (fires once per API round, carries rate-limit info). */
   onHeaders(headers: Headers): void;
   /** A provider retry was scheduled. Reset any accumulated partial state. */
@@ -212,7 +212,7 @@ export function buildContextPressureWarning(inputTokens: number, contextLimit: n
   const usage = `${Math.round(inputTokens / 1000)}k/${formatTokenCountInThousands(contextLimit)} tokens (${pct}%)`;
   const freeAtLeast = `${Math.max(0, Math.round((inputTokens - targetTokens) / 1000))}k`;
   const target = formatTokenCountInThousands(targetTokens);
-  const hint = `[Context: ${usage} — context is getting full. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool now before you run out, then continue the task you were working on.]`;
+  const hint = `[Context: ${usage} — context is getting full. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool now before you run out: context list, then context stage all desired compaction operations with targetTokens=${targetTokens}, then context compact once. Avoid compacting far below the target unless explicitly asked. After compacting, continue the task you were working on.]`;
 
   return { usage, hint };
 }
@@ -300,7 +300,7 @@ export async function runAgentLoop(
 
     if (result.inputTokens) {
       lastInputTokens = result.inputTokens;
-      callbacks.onContextUpdate(result.inputTokens);
+      callbacks.onContextUpdate(result.inputTokens, messages);
     }
 
     // ── Collect content blocks (thinking + text) ──────────────────

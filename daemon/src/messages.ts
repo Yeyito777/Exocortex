@@ -15,6 +15,33 @@ export * from "@exocortex/shared/messages";
 import { DEFAULT_EFFORT, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
 
+export interface ContextTokenBreakdown {
+  userText: number;
+  userImage: number;
+  assistantText: number;
+  toolUse: number;
+  toolResultText: number;
+  toolResultImage: number;
+  thinking: number;
+  providerReasoning: number;
+  systemHint: number;
+}
+
+export interface MessageContextTokenAttribution {
+  version: 1;
+  provider: ProviderId;
+  model: ModelId;
+  /** Signature of the message content/provider replay state this attribution describes. */
+  signature: string;
+  /** Provider-reported total context tokens calibrated onto this message. */
+  totalTokens: number;
+  /** Provider-reported context tokens calibrated onto replay-relevant message categories. */
+  breakdown: ContextTokenBreakdown;
+  /** How this attribution was produced. */
+  source: "provider_calibrated" | "estimated";
+  updatedAt: number;
+}
+
 export type ApiContentBlock =
   | { type: "text"; text: string }
   | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
@@ -32,6 +59,7 @@ export interface ApiMessage {
    */
   metadata?: MessageMetadata | null;
   providerData?: AssistantProviderData;
+  contextTokens?: MessageContextTokenAttribution | null;
 }
 
 /** A message with optional metadata for persistence. */
@@ -40,6 +68,7 @@ export interface StoredMessage {
   content: string | ApiContentBlock[];
   metadata: MessageMetadata | null;
   providerData?: AssistantProviderData;
+  contextTokens?: MessageContextTokenAttribution | null;
 }
 
 // ── Conversation state ──────────────────────────────────────────────

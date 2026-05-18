@@ -15,15 +15,15 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { buildHistoryTurnMap, createStoredUserMessage, isHistoryMessage, isRealUserMessage, type StoredMessage, type ApiContentBlock, type Block } from "./messages";
+import { buildHistoryTurnMap, createStoredUserMessage, isHistoryMessage, isRealUserMessage, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ToolExecutionContext } from "./tools/types";
 import { complete } from "./llm";
-import { getInnerLlmSummaryOptions } from "./tools/inner-llm";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { GOAL_CONTINUATION_PROMPT } from "./goals";
 import { createProviderTurnSession } from "./api";
+import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
 
 // ── Retry marker helpers ───────────────────────────────────────────
 
@@ -93,6 +93,7 @@ function toStoredMessages(messages: import("./messages").ApiMessage[]): StoredMe
     content: m.content,
     metadata: m.metadata ?? null,
     providerData: m.providerData,
+    contextTokens: m.contextTokens ?? null,
   }));
 }
 
@@ -317,13 +318,14 @@ async function orchestrateAssistantTurn(
     .join("\n\n");
 
   // System messages and per-conversation instructions are persisted but never sent as API history messages.
-  const apiMessages = conv.messages
+  const apiMessages: ApiMessage[] = conv.messages
     .filter(isHistoryMessage)
     .map((m) => ({
       role: m.role,
       content: m.content,
       metadata: m.metadata,
       providerData: m.providerData,
+      contextTokens: m.contextTokens,
     }));
   if (goalContinuation && conv.goal) {
     apiMessages.push({
@@ -374,9 +376,9 @@ async function orchestrateAssistantTurn(
     protectedTailCount,
     contextLimit: getMaxContext(conv.provider, conv.model),
     summarizeWithInnerLlm: async (systemPrompt, userText, maxTokens, signal) => {
-      const llmOptions = getInnerLlmSummaryOptions(toolContext);
       const result = await complete(systemPrompt, userText, {
-        ...llmOptions,
+        provider: conv.provider,
+        model: conv.model,
         maxTokens,
         signal,
         tracking: { source: "context_summary", conversationId: convId },
@@ -565,8 +567,14 @@ async function orchestrateAssistantTurn(
       convStore.setStreamingTokens(convId, tokens);
       server.sendToSubscribers(convId, { type: "tokens_update", convId, streamSeq: convStore.nextStreamSeq(convId), tokens });
     },
-    onContextUpdate(contextTokens) {
+    onContextUpdate(contextTokens, inputMessages) {
       conv.lastContextTokens = contextTokens;
+      if (inputMessages) {
+        annotateApiMessagesContextTokens(inputMessages, contextTokens, conv.provider, conv.model);
+        const copied = copyContextTokenAttributionsToStoredHistory(conv.messages, inputMessages);
+        if (copied > 0) convStore.markDirty(convId);
+        log("info", `orchestrator: context token attribution updated for ${copied}/${buildHistoryTurnMap(conv.messages).length} persisted history turns (provider=${conv.provider}, model=${conv.model}, total=${contextTokens})`);
+      }
       server.sendToSubscribers(convId, { type: "context_update", convId, streamSeq: convStore.nextStreamSeq(convId), contextTokens });
     },
     onHeaders(headers) {
@@ -645,7 +653,7 @@ async function orchestrateAssistantTurn(
       // Rebuild from conv.messages (now trimmed) — the source of truth for historical state
       const rebuilt = conv.messages
         .filter(isHistoryMessage)
-        .map(m => ({ role: m.role, content: m.content, metadata: m.metadata, providerData: m.providerData }));
+        .map(m => ({ role: m.role, content: m.content, metadata: m.metadata, providerData: m.providerData, contextTokens: m.contextTokens }));
       // Persist immediately
       convStore.markDirty(convId);
       convStore.flush(convId);
@@ -726,6 +734,7 @@ async function orchestrateAssistantTurn(
       content: m.content,
       metadata: m.metadata ?? null,
       providerData: m.providerData,
+      contextTokens: m.contextTokens ?? null,
     }));
     const lastAssistant = [...storedMessages].reverse().find(m => m.role === "assistant");
     if (lastAssistant) {
@@ -802,6 +811,7 @@ async function orchestrateAssistantTurn(
       content: m.content,
       metadata: m.metadata ?? null,
       providerData: m.providerData,
+      contextTokens: m.contextTokens ?? null,
     }));
     if (completedStored.length > 0) {
       // Stamp metadata on the last completed assistant — mirrors the success path.

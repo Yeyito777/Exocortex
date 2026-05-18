@@ -11,6 +11,8 @@ describe("buildContextPressureWarning", () => {
     expect(warning).not.toBeNull();
     expect(warning?.hint).toContain("Free at least ~500k tokens");
     expect(warning?.hint).toContain("stable 400k");
+    expect(warning?.hint).toContain("context list, then context stage");
+    expect(warning?.hint).toContain("context compact once");
   });
 
   test("formats non-round dynamic targets", () => {
@@ -38,7 +40,7 @@ describe("shouldInjectContextPressureWarning", () => {
   test("returns false when context appears alongside other tools", () => {
     expect(shouldInjectContextPressureWarning([
       { id: "tool-1", name: "bash", input: { command: "pwd" } },
-      { id: "tool-2", name: "context", input: { action: "strip_thinking", start: 0, end: 5 } },
+      { id: "tool-2", name: "context", input: { action: "stage", operations: [{ op: "strip_thinking", start: 0, end: 5 }] } },
     ])).toBe(false);
   });
 });
