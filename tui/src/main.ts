@@ -34,12 +34,14 @@ import { createVoiceInputController, type SubmittedVoiceTranscription, type Voic
 import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
 import { startReplayConversation } from "./replay";
 import { runStreamFinishedPing, shouldPingForBackgroundStreamCompletion } from "./ping";
+import { stripStartupLaunchEcho } from "./startupinput";
 
 // ── State ───────────────────────────────────────────────────────────
 
 const state = createInitialState();
 const RECONNECT_DELAY_MS = 1000;
 const STARTUP_PROFILE = process.env.EXOCORTEX_PROFILE_STARTUP === "1" || process.argv.includes("--profile-startup");
+const STARTUP_INPUT_SANITIZE_MS = 1000;
 
 type StartupProfileMark = { event: string; elapsedMs: number } & Record<string, unknown>;
 const startupProfileMarks: StartupProfileMark[] = [];
@@ -1149,6 +1151,8 @@ async function main(): Promise<void> {
   // Buffer stdin across bracketed-paste chunk boundaries so large pastes
   // aren't split into individual keystrokes (which turns newlines into submits).
   const pasteBuffer = new PasteBuffer(processInput);
+  let shouldStripStartupLaunchEcho = true;
+  const startupInputSanitizeUntil = Date.now() + STARTUP_INPUT_SANITIZE_MS;
 
   function processInput(str: string): void {
     const events = parseInput(str);
@@ -1164,6 +1168,13 @@ async function main(): Promise<void> {
   }
 
   process.stdin.on("data", (data: Buffer) => {
+    if (shouldStripStartupLaunchEcho) {
+      shouldStripStartupLaunchEcho = false;
+      if (Date.now() <= startupInputSanitizeUntil) {
+        data = Buffer.from(stripStartupLaunchEcho(data.toString("utf8")), "utf8");
+        if (data.length === 0) return;
+      }
+    }
     const ready = pasteBuffer.feed(data);
     if (ready !== null) processInput(ready);
   });
