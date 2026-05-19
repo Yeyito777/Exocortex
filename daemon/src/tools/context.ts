@@ -14,7 +14,7 @@
 
 import type { Tool, ToolResult } from "./types";
 import type { Conversation, StoredMessage, ApiMessage, ApiContentBlock } from "../messages";
-import { buildHistoryTurnMap, createModelVisibleSystemNotice } from "../messages";
+import { buildHistoryTurnMap } from "../messages";
 import { log } from "../log";
 import { safeSlice } from "./util";
 import { createHash } from "crypto";
@@ -1093,6 +1093,64 @@ function stripResultsForPlan(op: PlannedCompactionOperation, env: ContextToolEnv
   return { count, removedChars };
 }
 
+interface OrphanToolResultPruneResult {
+  removedBlocks: number;
+  removedMessages: number;
+  mutatedScopes: Set<MutableScope>;
+}
+
+/**
+ * Structural compaction can replace an assistant tool_use with a summary while
+ * leaving a later in-progress tool_result outside the summarized range. OpenAI
+ * rejects such histories with "No tool call found for function call output".
+ * After compaction, prune tool_result blocks whose call id no longer has a
+ * preceding visible tool_use across persisted history + current turn.
+ */
+function pruneOrphanToolResultsAfterCompaction(env: ContextToolEnv): OrphanToolResultPruneResult {
+  const seenToolUseIds = new Set<string>();
+  const mutatedScopes = new Set<MutableScope>();
+  let removedBlocks = 0;
+  let removedMessages = 0;
+
+  const processMessages = (messages: StoredMessage[], scope: MutableScope): void => {
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      if (msg.role === "assistant" && Array.isArray(msg.content)) {
+        for (const block of msg.content as ApiContentBlock[]) {
+          if (block.type === "tool_use") seenToolUseIds.add(block.id);
+        }
+        continue;
+      }
+
+      if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
+      const blocks = msg.content as ApiContentBlock[];
+      let removedFromMessage = 0;
+      const kept = blocks.filter((block) => {
+        if (block.type !== "tool_result") return true;
+        if (seenToolUseIds.has(block.tool_use_id)) return true;
+        removedFromMessage++;
+        return false;
+      });
+      if (removedFromMessage === 0) continue;
+
+      removedBlocks += removedFromMessage;
+      mutatedScopes.add(scope);
+      clearMessageContextTokenAttribution(msg);
+      if (kept.length === 0) {
+        messages.splice(i, 1);
+        i--;
+        removedMessages++;
+      } else {
+        msg.content = kept;
+      }
+    }
+  };
+
+  processMessages(env.conv.messages, "history");
+  processMessages(currentTurnStoredMessages(env), "current");
+  return { removedBlocks, removedMessages, mutatedScopes };
+}
+
 async function prepareSummarizeMutation(
   op: PlannedCompactionOperation,
   allOps: PlannedCompactionOperation[],
@@ -1130,17 +1188,12 @@ Output plain text, not markdown.`;
   );
   const insertIdx = turnMap[op.start];
   const deleteCount = turnMap[op.end] + 1 - insertIdx;
-  const replacement = op.scope === "current"
-    ? [createModelVisibleSystemNotice(
-        `[Summary of in-progress assistant message turns ${op.globalStart}–${op.globalEnd}]\n${summaryText}`,
-        env.conv.model,
-        "current_turn_summary",
-      )]
-    : [
-        { role: "user" as const, content: `[Summary of turns ${op.globalStart}–${op.globalEnd}]`, metadata: null },
-        { role: "assistant" as const, content: summaryText, metadata: null },
-      ];
-  const summaryTokens = Math.round(summaryText.length / 4);
+  const header = op.scope === "current"
+    ? `[Summary of in-progress turns ${op.globalStart}–${op.globalEnd}]`
+    : `[Summary of turns ${op.globalStart}–${op.globalEnd}]`;
+  const summaryContent = `${header}\n${summaryText}`;
+  const replacement = [{ role: "assistant" as const, content: summaryContent, metadata: null }];
+  const summaryTokens = Math.round(summaryContent.length / 4);
   return {
     op: "summarize",
     scope: op.scope,
@@ -1150,7 +1203,7 @@ Output plain text, not markdown.`;
     globalStart: op.globalStart,
     globalEnd: op.globalEnd,
     replacement,
-    resultLine: `summarized ${op.globalStart}–${op.globalEnd} into ${op.scope === "current" ? "1 model-visible summary notice" : "2 turns"} (~${fmt(op.estimatedTokens)} → ~${fmt(summaryTokens)} tok)`,
+    resultLine: `summarized ${op.globalStart}–${op.globalEnd} into 1 assistant summary turn (~${fmt(op.estimatedTokens)} → ~${fmt(summaryTokens)} tok)`,
   };
 }
 
@@ -1232,6 +1285,12 @@ async function actionCompact(input: Record<string, unknown>, env: ContextToolEnv
     mutation.messages.splice(mutation.insertIdx, mutation.deleteCount, ...mutation.replacement);
     mutatedScopes.add(mutation.scope);
     lines.push(mutation.resultLine);
+  }
+
+  const prunedOrphans = pruneOrphanToolResultsAfterCompaction(env);
+  if (prunedOrphans.removedBlocks > 0) {
+    for (const scope of prunedOrphans.mutatedScopes) mutatedScopes.add(scope);
+    lines.push(`removed ${prunedOrphans.removedBlocks} orphan tool result${prunedOrphans.removedBlocks !== 1 ? "s" : ""} whose tool calls were compacted away${prunedOrphans.removedMessages > 0 ? ` (${prunedOrphans.removedMessages} empty turn${prunedOrphans.removedMessages !== 1 ? "s" : ""} removed)` : ""}`);
   }
 
   for (const scope of mutatedScopes) markRangeMutated(env, scope);

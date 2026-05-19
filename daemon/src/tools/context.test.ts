@@ -271,10 +271,8 @@ describe("context tool staged compaction", () => {
     expect(started).toBe(2);
     expect(maxConcurrent).toBe(2);
     expect(conv.messages).toEqual([
-      { role: "user", content: "[Summary of turns 0–1]", metadata: null },
-      { role: "assistant", content: "summary one", metadata: null },
-      { role: "user", content: "[Summary of turns 2–3]", metadata: null },
-      { role: "assistant", content: "summary two", metadata: null },
+      { role: "assistant", content: "[Summary of turns 0–1]\nsummary one", metadata: null },
+      { role: "assistant", content: "[Summary of turns 2–3]\nsummary two", metadata: null },
     ]);
   });
 
@@ -304,14 +302,45 @@ describe("context tool staged compaction", () => {
     const compacted = await executeContext({ action: "compact", snapshot }, env);
 
     expect(compacted.isError).toBe(false);
-    expect(compacted.output).toContain("summarized 0–1 into 2 turns");
-    expect(compacted.output).toContain("summarized 2–3 into 1 model-visible summary notice");
-    expect(conv.messages[1]).toMatchObject({ role: "assistant", content: "history summary" });
+    expect(compacted.output).toContain("summarized 0–1 into 1 assistant summary turn");
+    expect(compacted.output).toContain("summarized 2–3 into 1 assistant summary turn");
+    expect(conv.messages[0]).toMatchObject({ role: "assistant", content: "[Summary of turns 0–1]\nhistory summary" });
     expect(current[0]).toMatchObject({
-      role: "user",
-      content: "[Summary of in-progress assistant message turns 2–3]\ncurrent summary",
-      metadata: { system: true, kind: "current_turn_summary" },
+      role: "assistant",
+      content: "[Summary of in-progress turns 2–3]\ncurrent summary",
+      metadata: null,
     });
+  });
+
+  test("compact prunes in-progress tool results whose tool_use was summarized away", async () => {
+    const toolUse = makeToolUseAssistantMessage("late-tool");
+    (toolUse.content as ApiContentBlock[]).unshift({ type: "text", text: "large context " + "x".repeat(3_000) });
+    const conv = makeConversation([
+      { role: "user", content: "prompt", metadata: null },
+      { role: "assistant", content: "prior answer", metadata: null },
+      toolUse,
+    ]);
+    conv.lastContextTokens = 4_000;
+    const current: ApiMessage[] = [makeToolResultUserMessage("late output", "late-tool")];
+    const { env } = makeEnv(conv);
+    env.currentTurnMessages = current;
+    env.summarizeWithInnerLlm = async () => "summary";
+
+    const snapshot = snapshotFrom((await executeContext({ action: "list" }, env)).output);
+    const staged = await executeContext({
+      action: "stage",
+      snapshot,
+      operations: [{ op: "summarize", start: 2, end: 2 }],
+    }, env);
+    expect(staged.isError).toBe(false);
+
+    const compacted = await executeContext({ action: "compact", snapshot }, env);
+
+    expect(compacted.isError).toBe(false);
+    expect(compacted.output).toContain("summarized 2–2 into 1 assistant summary turn");
+    expect(compacted.output).toContain("removed 1 orphan tool result whose tool calls were compacted away");
+    expect(conv.messages[2]).toMatchObject({ role: "assistant", content: "[Summary of turns 2–2]\nsummary" });
+    expect(current).toEqual([]);
   });
 
   test("compact can forget in-progress modifiable turns", async () => {
@@ -604,8 +633,7 @@ describe("context tool staged compaction", () => {
     expect(summarizedInput).toContain("[Output removed by context tool]");
     expect(summarizedInput).not.toContain("very large raw tool output");
     expect(conv.messages).toEqual([
-      { role: "user", content: "[Summary of turns 0–3]", metadata: null },
-      { role: "assistant", content: "summary without raw output", metadata: null },
+      { role: "assistant", content: "[Summary of turns 0–3]\nsummary without raw output", metadata: null },
     ]);
   });
 
