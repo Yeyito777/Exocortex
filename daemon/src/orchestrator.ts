@@ -15,7 +15,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { buildHistoryTurnMap, createStoredUserMessage, isHistoryMessage, isRealUserMessage, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
+import { buildHistoryTurnMap, createStoredUserMessage, isHistoryMessage, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ToolExecutionContext } from "./tools/types";
@@ -99,28 +99,6 @@ function toStoredMessages(messages: import("./messages").ApiMessage[]): StoredMe
 
 function hasReplayableHistory(messages: StoredMessage[]): boolean {
   return messages.some(isHistoryMessage);
-}
-
-/**
- * Protect the entire in-progress turn when replaying after a failed stream.
- *
- * We walk backward to the most recent real user prompt (ignoring tool_result
- * containers) and protect every history turn from there to the end, so the
- * context tool can't trim away the prompt/partial reply that the replay is
- * currently continuing.
- */
-function protectedTailCountForReplay(messages: StoredMessage[]): number {
-  const turnMap = buildHistoryTurnMap(messages);
-  if (turnMap.length === 0) return 0;
-
-  for (let turn = turnMap.length - 1; turn >= 0; turn--) {
-    const msg = messages[turnMap[turn]];
-    if (isRealUserMessage(msg)) {
-      return turnMap.length - turn;
-    }
-  }
-
-  return turnMap.length;
 }
 
 /**
@@ -351,10 +329,11 @@ async function orchestrateAssistantTurn(
   // the correct spot in conv.messages on the success/error path.
   const retryMarkers: Array<{ afterIndex: number; text: string }> = [];
 
-  // While sending a fresh message, protect the just-appended user turn.
-  // While replaying after an interrupted stream, protect the full in-progress
-  // tail (last real user prompt plus any partial assistant/tool messages).
-  const protectedTailCount = userMessage ? 1 : protectedTailCountForReplay(conv.messages);
+  // Keep context management from touching only the most recent persisted turns.
+  // Older completed assistant/tool rounds must stay compactable even during
+  // replay recovery; otherwise a long autonomous turn can become impossible to
+  // trim and fall into repeated context-warning loops.
+  const protectedTailCount = Math.min(5, buildHistoryTurnMap(conv.messages).length);
 
   const toolContext: ToolExecutionContext = {
     provider: conv.provider,

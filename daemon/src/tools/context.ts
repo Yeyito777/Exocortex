@@ -38,9 +38,7 @@ export interface ContextToolEnv {
   onContextModified: () => void;
   /** Tool summarizer for labeling tool_use blocks in the listing. */
   summarizer: (name: string, input: Record<string, unknown>) => string;
-  /** Number of messages in conv.messages that are off-limits (current turn).
-   *  The modifiable range is turnMap[0] through
-   *  turnMap[turnMap.length - 1 - protectedTailCount]. */
+  /** Number of most-recent persisted history turns that are off-limits. */
   protectedTailCount: number;
   /** Max context window for the active model, if known. */
   contextLimit?: number | null;

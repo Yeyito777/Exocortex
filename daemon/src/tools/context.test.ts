@@ -105,7 +105,7 @@ describe("context tool staged compaction", () => {
     expect(result.output).toContain("Flow: list → stage all desired operations");
   });
 
-  test("list stays compact for large conversations and omits protected turns", async () => {
+  test("list stays compact for large conversations and omits only the configured protected tail", async () => {
     const messages: StoredMessage[] = [];
     for (let i = 0; i < 520; i++) {
       messages.push({
@@ -125,6 +125,25 @@ describe("context tool staged compaction", () => {
     expect(result.output).toContain("Card format");
     expect(result.output).toContain("499 assistant");
     expect(result.output).not.toContain("500 user");
+  });
+
+  test("history protection is just a small tail, not everything since the last real user prompt", async () => {
+    const messages: StoredMessage[] = [
+      { role: "user", content: "original prompt", metadata: null },
+    ];
+    for (let i = 0; i < 12; i++) {
+      messages.push(makeToolUseAssistantMessage(`tool-${i}`));
+      messages.push(makeToolResultUserMessage(`completed output ${i}`, `tool-${i}`));
+    }
+    const conv = makeConversation(messages);
+    conv.lastContextTokens = 20_000;
+    const { env } = makeEnv(conv, 5);
+
+    const result = await executeContext({ action: "list" }, env);
+
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("stage summarize/forget/strip_thinking/strip_results: 0–19");
+    expect(result.output).toContain("protected/unmodifiable: 20–24");
   });
 
   test("list preview rows include tool name, input preview, and output preview", async () => {
