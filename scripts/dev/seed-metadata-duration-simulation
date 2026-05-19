@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Seed a local conversation that demonstrates long AI message metadata durations.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+GIT_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-dir)"
+GIT_COMMON_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)"
+
+if [[ "$(readlink -f "$GIT_DIR")" != "$(readlink -f "$GIT_COMMON_DIR")" ]]; then
+  WT_NAME="$(basename "$GIT_DIR")"
+  DATA_DIR="$REPO_ROOT/config/data/instances/$WT_NAME"
+else
+  DATA_DIR="$REPO_ROOT/config/data"
+fi
+
+CONV_DIR="$DATA_DIR/conversations"
+mkdir -p "$CONV_DIR"
+
+python - <<'PY' "$CONV_DIR/metadata-duration-simulation.json"
+import json
+import sys
+
+dest = sys.argv[1]
+
+def metadata(started_at, duration_seconds, tokens=42, model="gpt-5.4"):
+    return {
+        "startedAt": started_at,
+        "endedAt": started_at + duration_seconds * 1000,
+        "model": model,
+        "tokens": tokens,
+    }
+
+base = 1_800_000_000_000
+minute_duration = 23 * 60 + 2
+hour_duration = 1 * 60 * 60 + 2 * 60 + 3
+day_duration = 1 * 24 * 60 * 60 + 2 * 60 * 60 + 3 * 60 + 4
+week_duration = 2 * 7 * 24 * 60 * 60 + 1 * 24 * 60 * 60 + 23 * 60 * 60 + 23 * 60 + 2
+
+conversation = {
+    "version": 13,
+    "id": "metadata-duration-simulation",
+    "provider": "openai",
+    "model": "gpt-5.4",
+    "effort": "high",
+    "fastMode": False,
+    "messages": [
+        {
+            "role": "user",
+            "content": "Simulation: show AI message metadata elapsed duration formatting.",
+            "metadata": None,
+        },
+        {
+            "role": "assistant",
+            "content": "Existing minute-level behavior still displays minutes and seconds.",
+            "metadata": metadata(base, minute_duration, tokens=1024),
+        },
+        {
+            "role": "user",
+            "content": "What about hours?",
+            "metadata": None,
+        },
+        {
+            "role": "assistant",
+            "content": "Hour-level durations now include h before m and s.",
+            "metadata": metadata(base + 10_000_000, hour_duration, tokens=2048),
+        },
+        {
+            "role": "user",
+            "content": "What about days?",
+            "metadata": None,
+        },
+        {
+            "role": "assistant",
+            "content": "Day-level durations now include d before h, m, and s.",
+            "metadata": metadata(base + 20_000_000, day_duration, tokens=4096),
+        },
+        {
+            "role": "user",
+            "content": "Show the full weeks/days/hours/minutes/seconds case.",
+            "metadata": None,
+        },
+        {
+            "role": "assistant",
+            "content": "This simulated long-running AI message should show the metadata duration as: 2w 1d 23h 23m 2s",
+            "metadata": metadata(base + 30_000_000, week_duration, tokens=8192),
+        },
+    ],
+    "createdAt": base,
+    "updatedAt": base + 30_000_000 + week_duration * 1000,
+    "lastContextTokens": None,
+    "marked": False,
+    "pinned": True,
+    "sortOrder": -1000000,
+    "folderId": None,
+    "title": "Duration metadata simulation",
+    "goal": None,
+}
+
+with open(dest, "w", encoding="utf-8") as f:
+    json.dump(conversation, f, indent=2)
+    f.write("\n")
+
+print(dest)
+PY
+
+echo "Seeded metadata duration simulation."
+echo "Open this worktree with ./scripts/dev/exotest $(basename "$REPO_ROOT") and select: Duration metadata simulation"

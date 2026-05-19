@@ -34,4 +34,48 @@ describe("renderMetadata", () => {
 
     expect(line).toContain("DeepSeek V4 Pro | 42 tokens | 2s");
   });
+
+  test("renders minutes and seconds", () => {
+    const [line] = renderMetadata({
+      startedAt: 0,
+      endedAt: (23 * 60 + 2) * 1000,
+      model: "gpt-5.4",
+      tokens: 42,
+    });
+
+    expect(line).toContain("Gpt-5.4 | 42 tokens | 23m 2s");
+  });
+
+  test("renders hours", () => {
+    const [line] = renderMetadata({
+      startedAt: 0,
+      endedAt: (1 * 60 * 60 + 2 * 60 + 3) * 1000,
+      model: "gpt-5.4",
+      tokens: 42,
+    });
+
+    expect(line).toContain("Gpt-5.4 | 42 tokens | 1h 2m 3s");
+  });
+
+  test("renders days", () => {
+    const [line] = renderMetadata({
+      startedAt: 0,
+      endedAt: (1 * 24 * 60 * 60 + 2 * 60 * 60 + 3 * 60 + 4) * 1000,
+      model: "gpt-5.4",
+      tokens: 42,
+    });
+
+    expect(line).toContain("Gpt-5.4 | 42 tokens | 1d 2h 3m 4s");
+  });
+
+  test("renders weeks", () => {
+    const [line] = renderMetadata({
+      startedAt: 0,
+      endedAt: (2 * 7 * 24 * 60 * 60 + 1 * 24 * 60 * 60 + 23 * 60 * 60 + 23 * 60 + 2) * 1000,
+      model: "gpt-5.4",
+      tokens: 42,
+    });
+
+    expect(line).toContain("Gpt-5.4 | 42 tokens | 2w 1d 23h 23m 2s");
+  });
 });
