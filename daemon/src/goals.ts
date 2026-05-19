@@ -10,7 +10,7 @@ export interface GoalOperationResult {
   message: string;
 }
 
-export const GOAL_CONTINUATION_PROMPT = `[this is an automated message!]\nYou are continuing an active goal objective for this conversation this is because: you didn't pause it and the goal is not completed. Pause the goal if you require me to check something, complete if it's done. Otherwise, continue working.`;
+export const GOAL_CONTINUATION_PROMPT = `This is an automated message you're seeing because the user isn't present and you didn't pause / complete the goal you've been working on. Ask yourself: Should you pause it? Are you stuck and need human review? Perhaps you're addressing a tangent rn bc of user request and should also pause? If so pause. Also ask yourself: Should you complete it? is the goal done? Have you completed it thoroughly, accurately, and to a level of satisfaction that when the user comes back he'll most likely say "good job!"? If so, complete it. Else, if you don't need to pause or complete your goal, continue working.`;
 
 export const GOAL_TOOL_SYSTEM_HINT = "When the user requests a hard or long-horizon task use the goal tool to manage it as a goal. Only mark a goal as complete when it has been genuinely achieved thoroughly and fully. Only pause a goal when you *require* user input to continue chasing your goal and don't see any other path forward. Again: only use this tool when the user requests a genuinely hard or long-horizon task";
 
