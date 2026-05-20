@@ -278,20 +278,31 @@ describe("assistant messages", () => {
     expect(aiEntry(entries[0]).metadata).toBeNull();
   });
 
-  test("consecutive assistant messages → merged into a single ai entry", () => {
-    const meta2: MessageMetadata = { startedAt: 2_000, endedAt: 3_000, model: "gpt-5.5", tokens: 99 };
+  test("direct consecutive assistant messages stay separate in display entries", () => {
+    const meta2: MessageMetadata = { startedAt: 1_002_000, endedAt: 1_003_000, model: "gpt-5.5", tokens: 99 };
     const msgs: StoredMessage[] = [
       { role: "assistant", content: "Part A", metadata: META },
       { role: "assistant", content: "Part B", metadata: meta2 },
     ];
     const { entries } = build(msgs);
-    expect(entries).toHaveLength(1);
-    const ai = aiEntry(entries[0]);
-    expect(ai.blocks).toHaveLength(2);
-    expect(ai.blocks[0]).toEqual({ type: "text", text: "Part A" });
-    expect(ai.blocks[1]).toEqual({ type: "text", text: "Part B" });
-    // Last metadata wins
-    expect(ai.metadata).toEqual(meta2);
+    expect(entries).toHaveLength(2);
+    expect(aiEntry(entries[0]).blocks).toEqual([{ type: "text", text: "Part A" }]);
+    expect(aiEntry(entries[0]).metadata).toEqual(META);
+    expect(aiEntry(entries[1]).blocks).toEqual([{ type: "text", text: "Part B" }]);
+    expect(aiEntry(entries[1]).metadata).toEqual(meta2);
+  });
+
+  test("consecutive goal-continuation assistant messages remain separate display entries", () => {
+    const first: MessageMetadata = { startedAt: 0, endedAt: 1_000, model: "gpt-5.5", tokens: 10 };
+    const afterHours: MessageMetadata = { startedAt: 3_600_000, endedAt: 7_200_000, model: "gpt-5.5", tokens: 25 };
+    const msgs: StoredMessage[] = [
+      { role: "assistant", content: "Initial progress", metadata: first },
+      { role: "assistant", content: "Final result", metadata: afterHours },
+    ];
+    const { entries } = build(msgs);
+    expect(entries).toHaveLength(2);
+    expect(aiEntry(entries[0]).metadata).toEqual(first);
+    expect(aiEntry(entries[1]).metadata).toEqual(afterHours);
   });
 
   test("assistant message flushes ai entry when a user message follows", () => {

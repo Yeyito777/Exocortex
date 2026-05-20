@@ -6,7 +6,7 @@
  * reach into the tool layer.
  */
 
-import type { Block, MessageMetadata, ImageAttachment } from "./messages";
+import { combineMessageMetadata, type Block, type MessageMetadata, type ImageAttachment } from "./messages";
 import { isModelVisibleSystemNotice, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { ProviderId, ModelId, EffortLevel } from "./messages";
 import type { DisplayEntry, ToolOutputInfo } from "@exocortex/shared/protocol";
@@ -78,7 +78,7 @@ export function buildDisplayData(
   const includeToolOutputs = options?.includeToolOutputs ?? true;
   const entries: DisplayEntry[] = [];
 
-  let currentAI: { blocks: Block[]; metadata: MessageMetadata | null } | null = null;
+  let currentAI: { blocks: Block[]; metadata: MessageMetadata | null; canMergeNextAssistant: boolean } | null = null;
 
   function flushAI(): void {
     if (currentAI) {
@@ -158,8 +158,9 @@ export function buildDisplayData(
           const blocks = extractBlocks(contentArr);
           if (currentAI) {
             currentAI.blocks.push(...blocks);
+            currentAI.canMergeNextAssistant = true;
           } else {
-            currentAI = { blocks, metadata: msg.metadata };
+            currentAI = { blocks, metadata: msg.metadata, canMergeNextAssistant: true };
           }
           continue;
         }
@@ -195,11 +196,13 @@ export function buildDisplayData(
         ...(msg.metadata ? { metadata: msg.metadata } : {}),
       });
     } else if (msg.role === "assistant") {
-      if (currentAI) {
+      if (currentAI?.canMergeNextAssistant) {
         currentAI.blocks.push(...extractBlocks(msg.content));
-        currentAI.metadata = msg.metadata;
+        currentAI.metadata = combineMessageMetadata(currentAI.metadata, msg.metadata);
+        currentAI.canMergeNextAssistant = false;
       } else {
-        currentAI = { blocks: extractBlocks(msg.content), metadata: msg.metadata };
+        flushAI();
+        currentAI = { blocks: extractBlocks(msg.content), metadata: msg.metadata, canMergeNextAssistant: false };
       }
     }
   }

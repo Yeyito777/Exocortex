@@ -207,6 +207,51 @@ describe("handler set_goal resume", () => {
   });
 });
 
+describe("handler abort", () => {
+  beforeEach(() => {
+    orchestrateSendMessage.mockClear();
+    orchestrateReplayConversation.mockClear();
+    orchestrateGoalContinuation.mockClear();
+    cleanupIds();
+  });
+  afterEach(cleanupIds);
+
+  test("pauses an active goal on interrupt without showing an extra pause message", async () => {
+    const convId = mkId("abort-active-goal");
+    create(convId, "openai", "gpt-5.4");
+    setGoal(convId, "finish the long task");
+    const ac = new AbortController();
+    setActiveJob(convId, ac, Date.now());
+
+    const subscriberEvents: Array<Record<string, unknown>> = [];
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock((_convId: string, event: Record<string, unknown>) => { subscriberEvents.push(event); }),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "abort", reqId: "req-abort", convId });
+
+    expect(ac.signal.aborted).toBe(true);
+    expect(get(convId)?.goal).toMatchObject({ status: "paused" });
+    expect(subscriberEvents).toContainEqual(expect.objectContaining({
+      type: "goal_updated",
+      convId,
+      goal: expect.objectContaining({ status: "paused" }),
+    }));
+    expect(subscriberEvents).not.toContainEqual(expect.objectContaining({
+      message: "Goal paused after interrupt.",
+    }));
+    expect(sent).toContainEqual(expect.objectContaining({ type: "ack", reqId: "req-abort", convId }));
+  });
+});
+
 describe("handler load_conversation late-join streaming snapshots", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();

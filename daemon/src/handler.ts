@@ -384,7 +384,7 @@ export function createHandler(server: DaemonServer) {
           const goal = convStore.get(cmd.convId)?.goal;
           if (cmd.reason !== "daemon-restart" && goal?.status === "active") {
             const result = applyUserGoalAction(convStore.get(cmd.convId)!, "pause");
-            server.sendToSubscribers(cmd.convId, { type: "goal_updated", convId: cmd.convId, goal: result.goal, message: "Goal paused after interrupt." });
+            server.sendToSubscribers(cmd.convId, { type: "goal_updated", convId: cmd.convId, goal: result.goal });
           }
           ac.abort(cmd.reason === "daemon-restart" ? "daemon-restart" : undefined);
           log("info", `handler: abort requested for ${cmd.convId}${cmd.reason ? ` (${cmd.reason})` : ""}`);

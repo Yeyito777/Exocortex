@@ -628,6 +628,61 @@ describe("assistant metadata spacing", () => {
       "  Gpt-5.4 | 42 tokens | 5s",
     ]);
   });
+
+  test("aggregates metadata for adjacent committed assistant messages without merging messages", () => {
+    const state = {
+      messages: [
+        {
+          role: "assistant",
+          blocks: [{ type: "text", text: "Initial progress" }],
+          metadata: { startedAt: 0, endedAt: 1_000, model: "gpt-5.4", tokens: 10 },
+        },
+        {
+          role: "assistant",
+          blocks: [{ type: "text", text: "Final result" }],
+          metadata: { startedAt: 3_600_000, endedAt: 7_200_000, model: "gpt-5.4", tokens: 25 },
+        },
+      ],
+      pendingAI: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([
+      "  Initial progress",
+      "  Final result",
+      "  Gpt-5.4 | 35 tokens | 2h 0m 0s",
+    ]);
+  });
+
+  test("aggregates metadata across committed assistant messages and live pending assistant", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{ type: "text", text: "Initial progress" }],
+        metadata: { startedAt: 0, endedAt: 1_000, model: "gpt-5.4", tokens: 10 },
+      }],
+      pendingAI: {
+        role: "assistant",
+        blocks: [{ type: "text", text: "Still working" }],
+        metadata: { startedAt: 3_600_000, endedAt: 7_200_000, model: "gpt-5.4", tokens: 25 },
+      },
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([
+      "  Initial progress",
+      "  Still working",
+      "  Gpt-5.4 | 35 tokens | 2h 0m 0s",
+    ]);
+  });
 });
 
 describe("system message rendering", () => {

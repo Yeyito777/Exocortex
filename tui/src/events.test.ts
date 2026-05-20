@@ -326,6 +326,46 @@ describe("disk sync assistant diagnostics", () => {
   });
 });
 
+describe("streaming assistant metadata", () => {
+  test("message_complete keeps adjacent goal-continuation assistant messages separate", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    state.messages.push({
+      role: "assistant",
+      blocks: [{ type: "text", text: "Initial progress" }],
+      metadata: { startedAt: 0, endedAt: 1_000, model: "gpt-5.5", tokens: 10 },
+    });
+    state.pendingAI = {
+      role: "assistant",
+      blocks: [{ type: "text", text: "Final result" }],
+      metadata: { startedAt: 3_600_000, endedAt: null, model: "gpt-5.5", tokens: 0 },
+    };
+
+    handleEvent({
+      type: "message_complete",
+      convId: "conv-1",
+      blocks: [{ type: "text", text: "Final result" }],
+      endedAt: 7_200_000,
+      tokens: 25,
+    }, state, daemon);
+
+    expect(state.messages).toEqual([
+      {
+        role: "assistant",
+        blocks: [{ type: "text", text: "Initial progress" }],
+        metadata: { startedAt: 0, endedAt: 1_000, model: "gpt-5.5", tokens: 10 },
+      },
+      {
+        role: "assistant",
+        blocks: [{ type: "text", text: "Final result" }],
+        metadata: { startedAt: 3_600_000, endedAt: 7_200_000, model: "gpt-5.5", tokens: 25 },
+      },
+    ]);
+    expect(state.pendingAI).toBeNull();
+  });
+});
+
 describe("conversation_updated", () => {
   test("ignores a null summary from a malformed daemon event", () => {
     const state = createInitialState();

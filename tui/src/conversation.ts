@@ -6,7 +6,7 @@
  * in blockrenderer.ts.
  */
 
-import type { Message } from "./messages";
+import { combineMessageMetadata, type Message, type MessageMetadata } from "./messages";
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { theme } from "./theme";
@@ -19,6 +19,28 @@ export { wordWrap, type WrapResult } from "./textwrap";
 
 function isTerminalStreamNotice(msg: Message | undefined): boolean {
   return msg?.role === "system" && (msg.text.startsWith("✗") || msg.color === theme.error);
+}
+
+function assistantRunMetadata(messages: Message[], endIndex: number): MessageMetadata | null {
+  let startIndex = endIndex;
+  while (startIndex > 0 && messages[startIndex - 1]?.role === "assistant") startIndex--;
+
+  let metadata: MessageMetadata | null = null;
+  for (let i = startIndex; i <= endIndex; i++) {
+    const msg = messages[i];
+    if (msg?.role === "assistant") metadata = combineMessageMetadata(metadata, msg.metadata);
+  }
+  return metadata;
+}
+
+function pendingAssistantRunMetadata(state: RenderState): MessageMetadata | null {
+  let metadata = state.pendingAI?.metadata ? { ...state.pendingAI.metadata } : null;
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    const msg = state.messages[i];
+    if (msg.role !== "assistant") break;
+    metadata = combineMessageMetadata(msg.metadata, metadata);
+  }
+  return metadata;
 }
 
 // ── Message boundary tracking ───────────────────────────────────────
@@ -153,7 +175,8 @@ export function buildMessageLines(
   };
 
   let firstUser = true;
-  for (const msg of state.messages) {
+  for (let messageIndex = 0; messageIndex < state.messages.length; messageIndex++) {
+    const msg = state.messages[messageIndex];
     const start = lines.length;
     if (msg.role === "user") {
       if (!firstUser) pushLine("", msg, "user_margin_top");  // top margin (skip for first)
@@ -169,7 +192,9 @@ export function buildMessageLines(
       for (const block of msg.blocks) {
         pushBlock(block, "assistant_block", renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
       }
-      const metadataLines = renderMetadata(msg.metadata);
+      const nextIsAssistant = state.messages[messageIndex + 1]?.role === "assistant"
+        || (messageIndex === state.messages.length - 1 && state.pendingAI?.role === "assistant");
+      const metadataLines = nextIsAssistant ? [] : renderMetadata(assistantRunMetadata(state.messages, messageIndex));
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
       const contentEnd = lines.length;
       for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], msg, "assistant_metadata", i);
@@ -220,7 +245,7 @@ export function buildMessageLines(
     const shouldRenderPendingMetadata = state.pendingAI.blocks.length > 0 || (
       state.pendingAICommittedIndex === null && !terminalNoticePendingStop
     );
-    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(state.pendingAI.metadata) : [];
+    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(pendingAssistantRunMetadata(state)) : [];
     if (metadataLines.length > 0) trimTrailingBlankAssistantContent(start);
     const contentEnd = lines.length;
     for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], state.pendingAI, "assistant_metadata", i);

@@ -166,6 +166,37 @@ export function createMessageMetadata(
   };
 }
 
+/**
+ * Combine metadata from adjacent assistant fragments that render as one AI
+ * message. This preserves the visible span across goal-continuation turns:
+ * the rendered entry starts when the first fragment started, ends when the
+ * last finished. Token counts are summed across distinct continuation turns;
+ * fragments from the same turn keep the cumulative token count instead.
+ */
+export function combineMessageMetadata(
+  current: MessageMetadata | null | undefined,
+  next: MessageMetadata | null | undefined,
+): MessageMetadata | null {
+  if (!current && !next) return null;
+  if (!current) return next ? { ...next } : null;
+  if (!next) return { ...current };
+
+  const sameAssistantTurn = current.startedAt === next.startedAt;
+
+  return {
+    ...next,
+    startedAt: Math.min(current.startedAt, next.startedAt),
+    endedAt: current.endedAt == null || next.endedAt == null
+      ? null
+      : Math.max(current.endedAt, next.endedAt),
+    model: next.model,
+    // Fragments with the same startedAt are pieces of one assistant turn (for
+    // example tool-round salvage on abort), so their token counts are already
+    // cumulative. Distinct starts are separate continuation turns and should add.
+    tokens: sameAssistantTurn ? Math.max(current.tokens, next.tokens) : current.tokens + next.tokens,
+  };
+}
+
 // ── Messages ────────────────────────────────────────────────────────
 
 export interface UserMessage {
