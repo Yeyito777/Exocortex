@@ -24,6 +24,7 @@ import { broadcastConversationUpdated } from "./conversation-events";
 import { GOAL_CONTINUATION_PROMPT } from "./goals";
 import { createProviderTurnSession } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
+import type { StreamingStopReason } from "./protocol";
 
 // ── Retry marker helpers ───────────────────────────────────────────
 
@@ -893,6 +894,9 @@ async function orchestrateAssistantTurn(
     }
     stopStreamingSnapshotHeartbeat();
     const stoppedStreamSeq = convStore.nextStreamSeq(convId);
+    const streamStopReason: StreamingStopReason | undefined = ac.signal.aborted && ac.signal.reason === "daemon-restart"
+      ? "daemon-restart"
+      : undefined;
     convStore.clearActiveJob(convId);
     convStore.clearCurrentStreamingBlocks(convId);
     convStore.resetChunkCounter(convId);
@@ -902,10 +906,11 @@ async function orchestrateAssistantTurn(
       type: "streaming_stopped",
       convId,
       streamSeq: stoppedStreamSeq,
+      ...(streamStopReason ? { reason: streamStopReason } : {}),
       persistedBlocks: abortPersistedBlocks,
     });
     // Broadcast updated summary (streaming=false, possibly unread=true)
-    broadcastConversationUpdated(server, convId);
+    broadcastConversationUpdated(server, convId, streamStopReason);
 
     // When the active stream built up any transient display-only history
     // (completed rounds for late joiners, retries, or next-turn injections),

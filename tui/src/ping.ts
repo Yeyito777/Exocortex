@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { resolve } from "path";
 import { readExocortexConfig, updateExocortexConfig, type ExocortexConfig, type PingMode } from "@exocortex/shared/config";
 import { log } from "./log";
+import type { StreamingStopReason } from "./protocol";
 
 type SpawnedProcess = { exited?: Promise<number>; unref?: () => void; kill?: () => void };
 type SpawnFn = (command: string[], options?: { detached?: boolean }) => SpawnedProcess;
@@ -217,12 +218,18 @@ export interface BackgroundStreamCompletionUpdate {
   wasStreaming: boolean;
   isStreaming: boolean;
   activeConvIdBeforeUpdate?: string | null;
+  streamStopReason?: StreamingStopReason;
 }
 
 export function shouldPingForBackgroundStreamCompletion(update: BackgroundStreamCompletionUpdate): boolean {
-  return update.wasStreaming
+  return update.streamStopReason !== "daemon-restart"
+    && update.wasStreaming
     && !update.isStreaming
     && update.updatedConvId !== update.activeConvIdBeforeUpdate;
+}
+
+export function shouldPingForStreamStopped(reason?: StreamingStopReason): boolean {
+  return reason !== "daemon-restart";
 }
 
 export function runStreamFinishedPing(context: StreamFinishedPingContext = {}): void {
