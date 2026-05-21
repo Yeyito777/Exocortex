@@ -962,6 +962,12 @@ function handleKey(key: KeyEvent): void {
     case "pin_folder":
       daemon.pinFolder(result.folderId, result.pinned);
       break;
+    case "pin_sidebar_items":
+      for (const pin of result.pins) {
+        if (pin.item.type === "conversation") daemon.pinConversation(pin.item.id, pin.pinned);
+        else daemon.pinFolder(pin.item.id, pin.pinned);
+      }
+      break;
     case "move_conversation":
       daemon.moveConversation(result.convId, result.direction);
       break;
