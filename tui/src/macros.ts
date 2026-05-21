@@ -170,6 +170,18 @@ const MACROS: MacroDef[] = [
     ],
   },
   { name: "/diagnose", desc: "Pinpoint the cause", expansion: "Can you pinpoint the exact cause and tell me your diagnosis?" },
+  {
+    name: "/improve",
+    desc: "Improve Exocortex from friction",
+    expansion: "Run an Exocortex self-improvement pass: analyze this conversation for mistakes/friction, especially around internal tools, external tools, and the tooling system; inspect the relevant Exocortex/tool code; check recent conversations for recurring patterns; then pick one high-confidence fix and implement it in an Exocortex git worktree using ./scripts/dev/create-worktree <name>. Test it appropriately and report the worktree, changes, tests, and follow-up ideas.",
+    args: [
+      {
+        name: "plan",
+        desc: "Analyze only",
+        expansion: "Run an Exocortex self-improvement pass: analyze this conversation for mistakes/friction, especially around internal tools, external tools, and the tooling system; inspect the relevant Exocortex/tool code; and check recent conversations for recurring patterns. Then report the best improvement candidates, but don't edit files yet.",
+      },
+    ],
+  },
   { name: "/quality", desc: "Code quality assessment", expansion: "Give the changes a code quality assesment. Is there anything that should be split off into other files, de-duplicated, or made more clear? If so, do it." },
   {
     name: "/exocortex",
