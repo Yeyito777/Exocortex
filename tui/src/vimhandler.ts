@@ -236,7 +236,7 @@ export function mapSidebarResult(result: SidebarKeyResult): KeyResult {
       return { type: "handled" };
     default:
       // Remaining variants (delete_conversation, undo_delete, mark_conversation,
-      // rename_conversation, pin_conversation, move_conversation,
+      // rename_conversation, pin_conversation, pin_sidebar_items, move_conversation,
       // clone_conversation) are directly valid KeyResult types — forward as-is.
       return result;
   }

@@ -58,6 +58,7 @@ export type { SidebarKeyResult } from "./sidebar/types";
 export { syncSelectedIndex, updateConversation, updateConversationList } from "./sidebar/updates";
 
 type PlacementEntry = { id: string; pinned: boolean; sortOrder: number };
+type PinSidebarItemMutation = { item: SidebarItemRef; pinned: boolean };
 
 function sidebarPlacementEntries(sidebar: SidebarState, parentId: string | null): PlacementEntry[] {
   return [
@@ -78,6 +79,44 @@ function optimisticSortOrderAfterPin(sidebar: SidebarState, item: SidebarItemRef
   return pinned
     ? bottomPinnedOrder(entries, item.id)
     : topUnpinnedOrder(entries, item.id);
+}
+
+function getItemPinned(sidebar: SidebarState, item: SidebarItemRef): boolean | null {
+  if (item.type === "folder") return sidebar.folders.find(folder => folder.id === item.id)?.pinned ?? null;
+  return sidebar.conversations.find(conv => conv.id === item.id)?.pinned ?? null;
+}
+
+function applyPinToItem(sidebar: SidebarState, item: SidebarItemRef, pinned: boolean): PinSidebarItemMutation | null {
+  if (item.type === "folder") {
+    const folder = sidebar.folders.find(f => f.id === item.id);
+    if (!folder || folder.pinned === pinned) return null;
+    folder.sortOrder = optimisticSortOrderAfterPin(sidebar, item, pinned);
+    folder.pinned = pinned;
+    return { item, pinned };
+  }
+
+  const conv = sidebar.conversations.find(c => c.id === item.id);
+  if (!conv || conv.pinned === pinned) return null;
+  conv.sortOrder = optimisticSortOrderAfterPin(sidebar, item, pinned);
+  conv.pinned = pinned;
+  return { item, pinned };
+}
+
+function pinSelectedVisualItems(sidebar: SidebarState, items: SidebarItemRef[]): PinSidebarItemMutation[] {
+  const existingItems = items.filter(item => getItemPinned(sidebar, item) !== null);
+  const allPinned = existingItems.length > 0 && existingItems.every(item => getItemPinned(sidebar, item) === true);
+  const pinned = !allPinned;
+
+  // Pinning appends to the bottom of the pinned section. Unpinning prepends to
+  // the top of the unpinned section, so apply those mutations in reverse to keep
+  // the selected visual block in its original top-to-bottom order.
+  const applyOrder = pinned ? existingItems : [...existingItems].reverse();
+  const pins: PinSidebarItemMutation[] = [];
+  for (const selected of applyOrder) {
+    const mutation = applyPinToItem(sidebar, selected, pinned);
+    if (mutation) pins.push(mutation);
+  }
+  return pins;
 }
 
 export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarKeyResult {
@@ -201,19 +240,29 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
     case "pin": {
       const item = getSelectedSidebarItem(sidebar);
       if (!item || item.type === "up" || item.type === "folder_instructions") return { type: "handled" };
+      if (sidebar.visualAnchor) {
+        const selectedItems = selectedVisualItems(sidebar);
+        if (selectedItems.length > 1) {
+          const pins = pinSelectedVisualItems(sidebar, selectedItems);
+          sidebar.visualAnchor = null;
+          return pins.length > 0 ? { type: "pin_sidebar_items", pins } : { type: "handled" };
+        }
+      }
       if (item.type === "folder") {
+        const pinned = getItemPinned(sidebar, item);
+        if (pinned === null) return { type: "handled" };
+        const newPinned = !pinned;
+        applyPinToItem(sidebar, item, newPinned);
         const folder = sidebar.folders.find(f => f.id === item.id);
         if (!folder) return { type: "handled" };
-        const newPinned = !folder.pinned;
-        folder.sortOrder = optimisticSortOrderAfterPin(sidebar, item, newPinned);
-        folder.pinned = newPinned;
         return { type: "pin_folder", folderId: folder.id, pinned: folder.pinned };
       }
+      const pinned = getItemPinned(sidebar, item);
+      if (pinned === null) return { type: "handled" };
+      const newPinned = !pinned;
+      applyPinToItem(sidebar, item, newPinned);
       const conv = sidebar.conversations.find(c => c.id === item.id);
       if (!conv) return { type: "handled" };
-      const newPinned = !conv.pinned;
-      conv.sortOrder = optimisticSortOrderAfterPin(sidebar, item, newPinned);
-      conv.pinned = newPinned;
       return { type: "pin_conversation", convId: conv.id, pinned: newPinned };
     }
 

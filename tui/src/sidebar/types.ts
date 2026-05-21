@@ -13,6 +13,7 @@ export type SidebarKeyResult =
   | { type: "rename_conversation"; convId: string; title: string }
   | { type: "pin_conversation"; convId: string; pinned: boolean }
   | { type: "pin_folder"; folderId: string; pinned: boolean }
+  | { type: "pin_sidebar_items"; pins: { item: SidebarItemRef; pinned: boolean }[] }
   | { type: "move_conversation"; convId: string; direction: "up" | "down" }
   | { type: "move_sidebar_item"; item: SidebarItemRef; direction: "up" | "down" }
   | ({ type: "move_sidebar_items"; items: SidebarItemRef[]; parentId: string | null; before?: SidebarItemRef } & MoveSidebarItemsOptions)

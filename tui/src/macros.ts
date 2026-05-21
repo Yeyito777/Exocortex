@@ -164,9 +164,9 @@ const MACROS: MacroDef[] = [
   { name: "/html", desc: "Respond with saved HTML", expansion: "Format your would-be response in HTML use dark-mode for styling, user tables, graphs, interactive buttons, or whatever method you consider to be best for displaying the information you want to convey to the user. Save it to a file in ~/Workspace/playground/ and give me the absolute file path." },
   { name: "/xenv", desc: "Test in xenv until complete", expansion: "You're going to test this in a xenv and go into a loop: build → test in xenv → fix anything that's wrong → ... until it's complete" },
   {
-    name: "/publish", desc: "Publish this", expansion: "Start git tracking this make a gitignore, MIT license it, make upstream repo with gh tool, make it public, give brief description, and commit and push",
+    name: "/publish", desc: "Publish this", expansion: "Start git tracking this, first checking for secrets/private artifacts/history that should not be published. Make a gitignore, MIT license it if appropriate, make upstream repo with gh tool, make it public, give brief description, and commit and push",
     args: [
-      { name: "closed", desc: "Publish privately", expansion: "Start git tracking this make a gitignore, make upstream repo with gh tool, make it private, give brief description, and commit and push" },
+      { name: "closed", desc: "Publish privately", expansion: "Start git tracking this, first checking for secrets/private artifacts/history that should not be committed. Make a gitignore, make upstream repo with gh tool, make it private, give brief description, and commit and push" },
     ],
   },
   { name: "/diagnose", desc: "Pinpoint the cause", expansion: "Can you pinpoint the exact cause and tell me your diagnosis?" },

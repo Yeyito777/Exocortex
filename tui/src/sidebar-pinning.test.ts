@@ -85,4 +85,64 @@ describe("sidebar optimistic pinning", () => {
       "conversation:target",
     ]);
   });
+
+  test("pinning a visual selection pins all selected conversations", () => {
+    const sidebar = createSidebarState();
+    sidebar.conversations = [
+      conversation("pinned", 0, { pinned: true }),
+      conversation("conv-a", 1),
+      conversation("conv-b", 2),
+      conversation("conv-c", 3),
+    ];
+    sidebar.visualAnchor = { type: "conversation", id: "conv-a" };
+    sidebar.selectedItem = { type: "conversation", id: "conv-b" };
+
+    expect(handleSidebarAction("pin", sidebar)).toEqual({
+      type: "pin_sidebar_items",
+      pins: [
+        { item: { type: "conversation", id: "conv-a" }, pinned: true },
+        { item: { type: "conversation", id: "conv-b" }, pinned: true },
+      ],
+    });
+
+    expect(sidebar.visualAnchor).toBeNull();
+    expect(sidebar.conversations.find(conv => conv.id === "conv-a")).toMatchObject({ pinned: true, sortOrder: 1 });
+    expect(sidebar.conversations.find(conv => conv.id === "conv-b")).toMatchObject({ pinned: true, sortOrder: 2 });
+    expect(entryIds(sidebar)).toEqual([
+      "conversation:pinned",
+      "conversation:conv-a",
+      "conversation:conv-b",
+      "conversation:conv-c",
+    ]);
+  });
+
+  test("unpinning a visual selection preserves the selected conversation order at the top of unpinned", () => {
+    const sidebar = createSidebarState();
+    sidebar.conversations = [
+      conversation("pinned", 0, { pinned: true }),
+      conversation("conv-a", 1, { pinned: true }),
+      conversation("conv-b", 2, { pinned: true }),
+      conversation("unpinned", 3),
+    ];
+    sidebar.visualAnchor = { type: "conversation", id: "conv-a" };
+    sidebar.selectedItem = { type: "conversation", id: "conv-b" };
+
+    expect(handleSidebarAction("pin", sidebar)).toEqual({
+      type: "pin_sidebar_items",
+      pins: [
+        { item: { type: "conversation", id: "conv-b" }, pinned: false },
+        { item: { type: "conversation", id: "conv-a" }, pinned: false },
+      ],
+    });
+
+    expect(sidebar.visualAnchor).toBeNull();
+    expect(sidebar.conversations.find(conv => conv.id === "conv-a")).toMatchObject({ pinned: false, sortOrder: -2 });
+    expect(sidebar.conversations.find(conv => conv.id === "conv-b")).toMatchObject({ pinned: false, sortOrder: -1 });
+    expect(entryIds(sidebar)).toEqual([
+      "conversation:pinned",
+      "conversation:conv-a",
+      "conversation:conv-b",
+      "conversation:unpinned",
+    ]);
+  });
 });

@@ -3,7 +3,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { glob } from "./glob";
@@ -100,5 +100,89 @@ describe("glob tool enhancements", () => {
     expect(entry.size).toBe(5);
     expect(entry.type).toBe("file");
     expect(typeof entry.modified).toBe("string");
+  });
+
+  test("does not follow symlink loops by default, even with no_ignore", async () => {
+    const root = await makeTempDir();
+    await writeFixture(root, "real/file.txt");
+    await symlink(root, join(root, "real/loop"), "dir");
+
+    const result = await glob.execute({
+      path: root,
+      no_ignore: true,
+      pattern: "**/*.txt",
+      sort: "path",
+    });
+
+    expect(result.isError).toBe(false);
+    expect(lines(result.output)).toEqual(["real/file.txt"]);
+  });
+
+  test("skips unreadable descendant directories instead of failing the whole scan", async () => {
+    if (process.getuid?.() === 0) return;
+    const root = await makeTempDir();
+    await writeFixture(root, "visible.txt");
+    await writeFixture(root, "blocked/secret.txt");
+    await chmod(join(root, "blocked"), 0o000);
+
+    try {
+      const result = await glob.execute({
+        path: root,
+        no_ignore: true,
+        pattern: "**/*.txt",
+        sort: "path",
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.output).toContain("visible.txt");
+      expect(result.output).not.toContain("secret.txt");
+      expect(result.output).toContain("[glob skipped 1 inaccessible/looping path");
+    } finally {
+      await chmod(join(root, "blocked"), 0o700).catch(() => {});
+    }
+  });
+
+  test("explicit excludes prune directories before traversal", async () => {
+    if (process.getuid?.() === 0) return;
+    const root = await makeTempDir();
+    await writeFixture(root, "visible.txt");
+    await writeFixture(root, "blocked/secret.txt");
+    await chmod(join(root, "blocked"), 0o000);
+
+    try {
+      const result = await glob.execute({
+        path: root,
+        no_ignore: true,
+        pattern: "**/*.txt",
+        exclude: ["blocked/**"],
+        sort: "path",
+      });
+
+      expect(result.isError).toBe(false);
+      expect(lines(result.output)).toEqual(["visible.txt"]);
+      expect(result.output).not.toContain("glob skipped");
+    } finally {
+      await chmod(join(root, "blocked"), 0o700).catch(() => {});
+    }
+  });
+
+  test("errors when the requested root itself is not a directory", async () => {
+    const root = await makeTempDir();
+    await writeFixture(root, "not-a-directory.txt");
+
+    const result = await glob.execute({
+      path: join(root, "not-a-directory.txt"),
+      no_ignore: true,
+      pattern: "**/*",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("path is not a directory");
+  });
+
+  test("schema exposes symlink and sudo traversal controls", () => {
+    const properties = glob.inputSchema.properties as Record<string, unknown>;
+    expect(properties.follow_symlinks).toMatchObject({ type: "boolean" });
+    expect(properties.sudo).toMatchObject({ type: "boolean" });
   });
 });
