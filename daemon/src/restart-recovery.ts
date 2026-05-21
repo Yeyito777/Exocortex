@@ -18,6 +18,15 @@ interface InterruptedStreamsFile {
   convIds: string[];
 }
 
+export interface PrepareShutdownReplayResult {
+  convIds: string[];
+  stillStreaming: string[];
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function interruptedStreamsPath(): string {
   return join(runtimeDir(), "interrupted-streams.json");
 }
@@ -70,6 +79,61 @@ export function writeInterruptedStreamIds(convIds: Iterable<string>): string[] {
 
 export function clearInterruptedStreamIds(): void {
   try { unlinkSync(interruptedStreamsPath()); } catch { /* absent */ }
+}
+
+/**
+ * Preserve active stream progress before this daemon exits because of a
+ * catchable shutdown signal.
+ *
+ * This is the in-process sibling of the `prepare-restart` control command: it
+ * records running conversations in the restart-recovery file, aborts their
+ * active jobs with the daemon-restart reason so orchestrators persist
+ * salvageable partial turns, and waits briefly for those orchestrators to run
+ * their normal cleanup path. If a stream refuses to stop before the deadline,
+ * the recovery file is still enough for the next daemon to replay from the
+ * persisted history.
+ */
+export async function prepareCatchableShutdownForReplay(timeoutMs = 30_000): Promise<PrepareShutdownReplayResult> {
+  const interrupted = new Set<string>();
+  try {
+    for (const id of readInterruptedStreamIds()) interrupted.add(id);
+  } catch {
+    // If the file is corrupt, overwrite it below with the currently observed streams.
+  }
+
+  const record = (ids: string[]): void => {
+    if (ids.length === 0) return;
+    for (const id of ids) interrupted.add(id);
+    writeInterruptedStreamIds(interrupted);
+  };
+
+  const abortRunning = (ids: string[]): void => {
+    for (const id of ids) {
+      const ac = convStore.getActiveJob(id);
+      if (!ac || ac.signal.aborted) continue;
+      ac.abort("daemon-restart");
+    }
+  };
+
+  let stillStreaming = convStore.listRunningConversationIds();
+  record(stillStreaming);
+  abortRunning(stillStreaming);
+
+  const deadline = Date.now() + timeoutMs;
+  while (stillStreaming.length > 0 && Date.now() < deadline) {
+    const delayMs = Math.min(250, Math.max(0, deadline - Date.now()));
+    if (delayMs > 0) await sleep(delayMs);
+    stillStreaming = convStore.listRunningConversationIds();
+    record(stillStreaming);
+    abortRunning(stillStreaming);
+  }
+
+  if (interrupted.size > 0) writeInterruptedStreamIds(interrupted);
+
+  return {
+    convIds: [...interrupted],
+    stillStreaming,
+  };
 }
 
 function buildRecoveryCallbacks(server: DaemonServer, convId: string) {

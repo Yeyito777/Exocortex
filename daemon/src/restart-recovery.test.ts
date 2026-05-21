@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, readFileSync } from "fs";
-import { create, get, remove, setGoal, updateGoalStatus } from "./conversations";
+import { clearActiveJob, create, get, remove, setActiveJob, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_EFFORT } from "./messages";
 
 const orchestrateReplayConversation = mock(async () => ({ ok: true }));
@@ -13,6 +13,7 @@ mock.module("./orchestrator", () => ({
 
 import {
   clearInterruptedStreamIds,
+  prepareCatchableShutdownForReplay,
   recoverActiveGoals,
   recoverInterruptedStreams,
   interruptedStreamsPath,
@@ -82,6 +83,21 @@ describe("restart recovery file", () => {
     expect((orchestrateGoalContinuation.mock.calls[0] as unknown[] | undefined)?.[1]).toBe(goalConvId);
     expect(orchestrateReplayConversation).toHaveBeenCalledTimes(1);
     expect((orchestrateReplayConversation.mock.calls[0] as unknown[] | undefined)?.[3]).toBe(normalConvId);
+  });
+
+  test("catchable shutdown records and aborts active streams for replay", async () => {
+    const convId = makeConversation("shutdown");
+    const ac = new AbortController();
+    setActiveJob(convId, ac, Date.now());
+
+    setTimeout(() => clearActiveJob(convId), 5);
+    const result = await prepareCatchableShutdownForReplay(1_000);
+
+    expect(result.convIds).toEqual([convId]);
+    expect(result.stillStreaming).toEqual([]);
+    expect(ac.signal.aborted).toBe(true);
+    expect(ac.signal.reason).toBe("daemon-restart");
+    expect(readInterruptedStreamIds()).toEqual([convId]);
   });
 
   test("daemon boot resumes active goals that were not in interrupted-stream recovery", () => {

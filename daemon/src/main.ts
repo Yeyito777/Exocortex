@@ -23,7 +23,7 @@ import { createHandler } from "./handler";
 import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
 import { getRunningConversationIds, prepareRestartForReplay } from "./control";
-import { recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
+import { prepareCatchableShutdownForReplay, recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
 import { startScheduler, stopScheduler, getCronDir, getJobs } from "./scheduler";
 import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
@@ -122,8 +122,17 @@ async function startDaemon(): Promise<void> {
     shutdownPromise = (async () => {
       log("info", `exocortexd: shutting down (${reason})`);
       stopWatchdog();
+      if (!isWindows) stopScheduler();
+
+      const replayPrep = await prepareCatchableShutdownForReplay();
+      if (replayPrep.convIds.length > 0) {
+        log("info", `exocortexd: scheduled ${replayPrep.convIds.length} interrupted conversation(s) for replay on next start: ${replayPrep.convIds.join(", ")}`);
+      }
+      if (replayPrep.stillStreaming.length > 0) {
+        log("warn", `exocortexd: ${replayPrep.stillStreaming.length} conversation(s) still streaming after graceful interrupt timeout: ${replayPrep.stillStreaming.join(", ")}; next start will replay from saved history`);
+      }
+
       if (!isWindows) {
-        stopScheduler();
         await stopExternalToolsAsync();
       }
       convStore.flushAll();
@@ -141,6 +150,12 @@ async function startDaemon(): Promise<void> {
 
   process.on("SIGINT", () => { void shutdown(0, "SIGINT"); });
   process.on("SIGTERM", () => { void shutdown(0, "SIGTERM"); });
+  if (!isWindows) {
+    process.on("SIGHUP", () => { void shutdown(0, "SIGHUP"); });
+    process.on("SIGQUIT", () => { void shutdown(0, "SIGQUIT"); });
+    process.on("SIGUSR1", () => { void shutdown(0, "SIGUSR1"); });
+    process.on("SIGUSR2", () => { void shutdown(0, "SIGUSR2"); });
+  }
   process.on("uncaughtException", (err) => {
     log("error", `exocortexd: uncaught exception: ${formatFatal(err)}`);
     console.error(`\n  ✗ Uncaught exception: ${err instanceof Error ? err.message : String(err)}\n`);
