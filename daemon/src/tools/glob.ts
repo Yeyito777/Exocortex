@@ -5,10 +5,11 @@
  * `git ls-files` to obtain the set of tracked + untracked-but-not-ignored
  * files, then filters that list with Bun.Glob.match().
  *
- * Falls back to Bun.Glob.scan() with a hardcoded exclusion list when
+ * Falls back to a safe filesystem walker with a hardcoded exclusion list when
  * git is unavailable or the directory is outside a repo.
  *
- * Pass `no_ignore: true` to bypass all filtering and scan the raw filesystem.
+ * Pass `no_ignore: true` to bypass gitignore/git-ls-files filtering and scan
+ * the filesystem directly. Explicit excludes and symlink controls still apply.
  *
  * Supports output limiting, excludes, multiple include patterns, fuzzy path
  * queries, configurable sorting, and optional metadata output.
@@ -17,12 +18,23 @@
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
 import { cap, getString, getBoolean, summarizeParams } from "./util";
 import { log } from "../log";
-import { basename, join } from "node:path";
+import { lstat, opendir, realpath, stat as fsStat } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 
 // ── Constants ─────────────────────────────────────────────────────
 
 /** Directories to skip in the non-git fallback path (mirrors grep tool). */
-const EXCLUDED_DIRS = [".git", ".svn", ".hg", ".bzr", "node_modules"];
+const EXCLUDED_DIRS = [
+  ".git",
+  ".svn",
+  ".hg",
+  ".bzr",
+  "node_modules",
+  "dosdevices",
+  "pfx",
+  "wineprefix",
+  "lost+found",
+];
 
 type SortMode = "mtime_desc" | "mtime_asc" | "name" | "path" | "size_desc" | "size_asc" | "score_desc";
 
@@ -32,6 +44,16 @@ interface GlobEntry {
   size: number;
   type: string;
   score?: number;
+}
+
+interface SkippedPath {
+  path: string;
+  reason: string;
+}
+
+interface ScanResult {
+  files: string[];
+  skipped: SkippedPath[];
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -179,6 +201,187 @@ function formatMetadataEntry(entry: GlobEntry): string {
   });
 }
 
+function errorReason(err: unknown): string {
+  if (err && typeof err === "object" && "code" in err && typeof (err as { code?: unknown }).code === "string") {
+    return (err as { code: string }).code;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+function excludedByDefault(rel: string): boolean {
+  const parts = rel.split("/").filter(Boolean);
+  return parts.some(part => EXCLUDED_DIRS.includes(part));
+}
+
+function matchesExclude(rel: string, excludeGlobs: Bun.Glob[], isDirectory = false): boolean {
+  if (excludeGlobs.length === 0) return false;
+  if (anyGlobMatch(rel, excludeGlobs)) return true;
+  // Directory excludes are commonly written as "foo/**"; test a virtual child
+  // so we can prune before entering that directory instead of filtering after.
+  if (isDirectory && anyGlobMatch(`${rel}/__glob_prune_probe__`, excludeGlobs)) return true;
+  return false;
+}
+
+function shouldPruneDirectory(rel: string, noIgnore: boolean, excludeGlobs: Bun.Glob[]): boolean {
+  if (rel.length === 0) return false;
+  if (!noIgnore && excludedByDefault(rel)) return true;
+  return matchesExclude(rel, excludeGlobs, true);
+}
+
+function appendWarning(output: string, skipped: SkippedPath[], metadata = false): string {
+  if (skipped.length === 0) return output;
+  if (metadata) {
+    const warningLines = skipped.slice(0, 20).map(item => JSON.stringify({ warning: "glob skipped inaccessible/looping path", path: item.path, reason: item.reason }));
+    const more = skipped.length > warningLines.length
+      ? [JSON.stringify({ warning: "glob skipped additional inaccessible/looping paths", count: skipped.length - warningLines.length })]
+      : [];
+    return `${output}\n${[...warningLines, ...more].join("\n")}`;
+  }
+  const first = skipped.slice(0, 5).map(item => `- ${item.path}: ${item.reason}`).join("\n");
+  const more = skipped.length > 5 ? `\n- ... ${skipped.length - 5} more` : "";
+  return `${output}\n\n[glob skipped ${skipped.length} inaccessible/looping path${skipped.length === 1 ? "" : "s"}:\n${first}${more}\n]`;
+}
+
+async function safeFilesystemScan(
+  cwd: string,
+  noIgnore: boolean,
+  excludeGlobs: Bun.Glob[],
+  followSymlinks: boolean,
+  signal?: AbortSignal,
+): Promise<ScanResult> {
+  const root = resolve(cwd);
+  const files: string[] = [];
+  const skipped: SkippedPath[] = [];
+  const seenDirectories = new Set<string>();
+
+  const rootStat = await lstat(root);
+  if (!rootStat.isDirectory()) throw new Error(`path is not a directory: ${cwd}`);
+  seenDirectories.add(await realpath(root));
+
+  const walk = async (abs: string, rel: string): Promise<void> => {
+    signal?.throwIfAborted?.();
+    if (shouldPruneDirectory(rel, noIgnore, excludeGlobs)) return;
+
+    let dir;
+    try {
+      dir = await opendir(abs);
+    } catch (err) {
+      if (rel === "") throw new Error(`cannot read directory ${cwd}: ${errorReason(err)}`);
+      skipped.push({ path: rel || ".", reason: errorReason(err) });
+      return;
+    }
+
+    try {
+      for await (const dirent of dir) {
+        signal?.throwIfAborted?.();
+        const childRel = rel ? `${rel}/${dirent.name}` : dirent.name;
+        const childAbs = join(abs, dirent.name);
+        if (matchesExclude(childRel, excludeGlobs, dirent.isDirectory())) continue;
+        if (!noIgnore && excludedByDefault(childRel)) continue;
+
+        if (dirent.isDirectory()) {
+          await walk(childAbs, childRel);
+          continue;
+        }
+
+        if (dirent.isSymbolicLink()) {
+          if (!followSymlinks) {
+            files.push(childRel);
+            continue;
+          }
+          try {
+            const targetStat = await fsStat(childAbs);
+            if (targetStat.isDirectory()) {
+              const targetReal = await realpath(childAbs);
+              if (seenDirectories.has(targetReal)) {
+                skipped.push({ path: childRel, reason: "symlink cycle" });
+                continue;
+              }
+              seenDirectories.add(targetReal);
+              await walk(childAbs, childRel);
+            } else if (targetStat.isFile() || targetStat.isSymbolicLink()) {
+              files.push(childRel);
+            }
+          } catch (err) {
+            skipped.push({ path: childRel, reason: errorReason(err) });
+          }
+          continue;
+        }
+
+        if (dirent.isFile()) files.push(childRel);
+      }
+    } catch (err) {
+      skipped.push({ path: rel || ".", reason: errorReason(err) });
+    }
+  };
+
+  await walk(root, "");
+  return { files, skipped };
+}
+
+function findPruneArgs(root: string, noIgnore: boolean, excludePatterns: string[]): string[] {
+  const args: string[] = ["("];
+  let clauses = 0;
+  const addOr = () => { if (clauses++ > 0) args.push("-o"); };
+
+  EXCLUDED_DIRS.forEach((dir, index) => {
+    if (noIgnore) return;
+    addOr();
+    args.push("-name", dir);
+  });
+
+  for (const pattern of excludePatterns) {
+    const normalized = pattern.replace(/^\.\//, "");
+    const withoutTrailingChildren = normalized.replace(/\/\*\*$/, "").replace(/\/\*$/, "");
+    const candidates = unique([
+      normalized,
+      withoutTrailingChildren,
+    ]).filter(Boolean);
+    for (const candidate of candidates) {
+      addOr();
+      args.push("-path", `${root}/${candidate.replace(/\*\*/g, "*")}`);
+    }
+  }
+
+  if (clauses === 0) return [];
+  args.push(")", "-prune", "-o");
+  return args;
+}
+
+async function sudoFilesystemScan(
+  cwd: string,
+  noIgnore: boolean,
+  excludePatterns: string[],
+  followSymlinks: boolean,
+  signal?: AbortSignal,
+): Promise<ScanResult> {
+  const root = resolve(cwd);
+  const args = ["-n", "find", ...(followSymlinks ? ["-L"] : []), root, ...findPruneArgs(root, noIgnore, excludePatterns), "-type", "f", "-printf", "%P\\0"];
+  const proc = Bun.spawn(["sudo", ...args], { stdout: "pipe", stderr: "pipe" });
+  if (signal) {
+    const onAbort = () => proc.kill();
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  }
+
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+
+  if (code !== 0) {
+    const msg = stderr.trim() || `sudo find exited with code ${code}`;
+    throw new Error(`sudo glob scan failed: ${msg}`);
+  }
+
+  const files = stdout.split("\0").filter(Boolean);
+  const skipped = stderr.trim()
+    ? stderr.trim().split("\n").slice(0, 20).map(line => ({ path: "sudo find", reason: line }))
+    : [];
+  return { files, skipped };
+}
+
 // ── Execution ─────────────────────────────────────────────────────
 
 async function executeGlob(input: Record<string, unknown>, _context?: ToolExecutionContext, signal?: AbortSignal): Promise<ToolResult> {
@@ -188,6 +391,8 @@ async function executeGlob(input: Record<string, unknown>, _context?: ToolExecut
 
   const cwd = getString(input, "path") ?? process.cwd();
   const noIgnore = getBoolean(input, "no_ignore") ?? false;
+  const followSymlinks = getBoolean(input, "follow_symlinks") ?? false;
+  const useSudo = getBoolean(input, "sudo") ?? false;
   const excludePatterns = getStringArray(input, "exclude");
   const excludeGlobs = excludePatterns.map(pattern => new Bun.Glob(pattern));
   const limitInput = getNumber(input, "limit");
@@ -203,32 +408,30 @@ async function executeGlob(input: Record<string, unknown>, _context?: ToolExecut
     // --- Collect candidate paths --------------------------------
 
     let matched: string[];
+    let skipped: SkippedPath[] = [];
 
-    if (noIgnore) {
-      // Raw filesystem scan — no filtering at all.
-      const matches = new Set<string>();
-      for (const glob of globs) {
-        for await (const entry of glob.scan({ cwd, onlyFiles: true, followSymlinks: true })) {
-          if (!anyGlobMatch(entry, excludeGlobs)) matches.add(entry);
-        }
-      }
-      matched = [...matches];
-    } else {
+    if (!noIgnore) {
       const gitFiles = await getGitFiles(cwd, signal);
       if (gitFiles) {
         // Fast path: filter the git-known file list with the glob patterns.
         matched = gitFiles.filter(f => anyGlobMatch(f, globs) && !anyGlobMatch(f, excludeGlobs));
       } else {
-        // Fallback: full scan, skipping common junk directories.
-        const matches = new Set<string>();
-        for (const glob of globs) {
-          for await (const entry of glob.scan({ cwd, onlyFiles: true, followSymlinks: true })) {
-            const skip = EXCLUDED_DIRS.some(d => entry === d || entry.startsWith(d + "/"));
-            if (!skip && !anyGlobMatch(entry, excludeGlobs)) matches.add(entry);
-          }
-        }
-        matched = [...matches];
+        // Fallback: safe full scan, pruning common junk directories before
+        // entering them and skipping unreadable/looping descendants.
+        const scan = useSudo
+          ? await sudoFilesystemScan(cwd, noIgnore, excludePatterns, followSymlinks, signal)
+          : await safeFilesystemScan(cwd, noIgnore, excludeGlobs, followSymlinks, signal);
+        skipped = scan.skipped;
+        matched = scan.files.filter(f => anyGlobMatch(f, globs) && !matchesExclude(f, excludeGlobs));
       }
+    } else {
+      // Raw filesystem scan. no_ignore bypasses gitignore/git-ls-files only;
+      // symlink recursion is controlled solely by follow_symlinks.
+      const scan = useSudo
+        ? await sudoFilesystemScan(cwd, noIgnore, excludePatterns, followSymlinks, signal)
+        : await safeFilesystemScan(cwd, noIgnore, excludeGlobs, followSymlinks, signal);
+      skipped = scan.skipped;
+      matched = scan.files.filter(f => anyGlobMatch(f, globs) && !matchesExclude(f, excludeGlobs));
     }
 
     if (query) {
@@ -265,11 +468,11 @@ async function executeGlob(input: Record<string, unknown>, _context?: ToolExecut
     if (limit !== undefined) entries = entries.slice(0, limit);
 
     if (entries.length === 0) {
-      return { output: query ? "No files matched the pattern/query." : "No files matched the pattern.", isError: false };
+      return { output: appendWarning(query ? "No files matched the pattern/query." : "No files matched the pattern.", skipped, metadata), isError: false };
     }
 
     const content = entries.map(e => metadata ? formatMetadataEntry(e) : e.path).join("\n");
-    return { output: cap(content), isError: false };
+    return { output: cap(appendWarning(content, skipped, metadata)), isError: false };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log("error", `globFiles: ${patterns.join(", ")}: ${msg}`);
@@ -302,7 +505,9 @@ export const glob: Tool = {
       pattern: { type: "string", description: "The glob pattern to match files against" },
       patterns: { type: "array", items: { type: "string" }, description: "Additional glob patterns to include. Use this instead of or alongside pattern for multiple includes." },
       path: { type: "string", description: "Directory to search in. Defaults to working directory." },
-      no_ignore: { type: "boolean", description: "Bypass .gitignore filtering and scan all files (default false)." },
+      no_ignore: { type: "boolean", description: "Bypass .gitignore/git-ls-files filtering and scan the filesystem directly (default false). Does not change symlink behavior." },
+      follow_symlinks: { type: "boolean", description: "Follow symlinked directories during filesystem scans (default false). Leave false to avoid recursive loops." },
+      sudo: { type: "boolean", description: "Use non-interactive sudo (-n) for filesystem scans when elevated traversal is required (default false)." },
       exclude: { type: "array", items: { type: "string" }, description: "Glob patterns to exclude from results (e.g. [\"**/node_modules/**\", \"**/*.d.ts\"])." },
       query: { type: "string", description: "Fuzzy path query. If supplied, candidates are filtered/scored by fuzzy match; omit pattern(s) to search all files." },
       limit: { type: "number", description: "Return at most this many results after filtering and sorting." },
