@@ -276,6 +276,42 @@ describe("context tool staged compaction", () => {
     ]);
   });
 
+  test("summarize preserves assistant metadata span on the replacement summary", async () => {
+    const firstMeta = { startedAt: 1_000, endedAt: 2_000, model: "gpt-5.5", tokens: 10 };
+    const secondMeta = { startedAt: 10_000, endedAt: 30_000, model: "gpt-5.5", tokens: 25 };
+    const conv = makeConversation([
+      { role: "user", content: "history one " + "x".repeat(3_000), metadata: null },
+      { role: "assistant", content: "assistant one " + "y".repeat(3_000), metadata: firstMeta },
+      { role: "user", content: "history two " + "a".repeat(3_000), metadata: null },
+      { role: "assistant", content: "assistant two " + "b".repeat(3_000), metadata: secondMeta },
+    ]);
+    conv.lastContextTokens = 8_000;
+    const { env } = makeEnv(conv);
+
+    const snapshot = snapshotFrom((await executeContext({ action: "list" }, env)).output);
+    const staged = await executeContext({
+      action: "stage",
+      snapshot,
+      operations: [{ op: "summarize", start: 0, end: 3 }],
+    }, env);
+    expect(staged.isError).toBe(false);
+
+    const compacted = await executeContext({ action: "compact", snapshot }, env);
+
+    expect(compacted.isError).toBe(false);
+    expect(conv.messages).toHaveLength(1);
+    expect(conv.messages[0]).toMatchObject({
+      role: "assistant",
+      content: "[Summary of turns 0–3]\nsummary",
+      metadata: {
+        startedAt: firstMeta.startedAt,
+        endedAt: secondMeta.endedAt,
+        model: "gpt-5.5",
+        tokens: firstMeta.tokens + secondMeta.tokens,
+      },
+    });
+  });
+
   test("compact can summarize ranges split across persisted and in-progress turns", async () => {
     const conv = makeConversation([
       { role: "user", content: "persisted user " + "x".repeat(3_000), metadata: null },

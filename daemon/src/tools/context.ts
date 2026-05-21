@@ -14,7 +14,7 @@
 
 import type { Tool, ToolResult } from "./types";
 import type { Conversation, StoredMessage, ApiMessage, ApiContentBlock } from "../messages";
-import { buildHistoryTurnMap } from "../messages";
+import { buildHistoryTurnMap, combineMessageMetadata, type MessageMetadata } from "../messages";
 import { log } from "../log";
 import { safeSlice } from "./util";
 import { createHash } from "crypto";
@@ -642,6 +642,15 @@ function extractRangeTextForSummary(
   return textParts.join("\n\n");
 }
 
+function summarizeRangeMetadata(messages: StoredMessage[], insertIdx: number, deleteCount: number): MessageMetadata | null {
+  let metadata: MessageMetadata | null = null;
+  for (let i = insertIdx; i < insertIdx + deleteCount; i++) {
+    const msg = messages[i];
+    if (msg?.role === "assistant") metadata = combineMessageMetadata(metadata, msg.metadata);
+  }
+  return metadata;
+}
+
 const MIN_SUMMARIZE_TOKENS = 500;
 const STRIPPED_PLACEHOLDER = "[Output removed by context tool]";
 
@@ -1192,7 +1201,7 @@ Output plain text, not markdown.`;
     ? `[Summary of in-progress turns ${op.globalStart}–${op.globalEnd}]`
     : `[Summary of turns ${op.globalStart}–${op.globalEnd}]`;
   const summaryContent = `${header}\n${summaryText}`;
-  const replacement = [{ role: "assistant" as const, content: summaryContent, metadata: null }];
+  const replacement = [{ role: "assistant" as const, content: summaryContent, metadata: summarizeRangeMetadata(messages, insertIdx, deleteCount) }];
   const summaryTokens = Math.round(summaryContent.length / 4);
   return {
     op: "summarize",
