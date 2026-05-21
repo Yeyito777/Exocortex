@@ -1,8 +1,8 @@
 /**
  * Bash tool — execute shell commands.
  *
- * Output protection: when stdout+stderr exceeds ~30K characters, the full
- * output is saved to a temp file and a head+tail preview is returned.
+ * Output protection: when stdout+stderr exceeds the inline output budget,
+ * the full output is saved to a temp file and a head+tail preview is returned.
  * The agent can use the read tool to paginate through the full output.
  *
  * Backgrounding: when a command runs longer than TOOL_BACKGROUND_SECONDS,
@@ -16,7 +16,7 @@ import { writeFileSync, createWriteStream, type WriteStream } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
-import { MAX_OUTPUT_CHARS, getString, getNumber, safeSlice, summarizeParams } from "./util";
+import { getString, getNumber, safeSlice, summarizeParams } from "./util";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage } from "../abort";
 import { isWindows } from "@exocortex/shared/paths";
@@ -27,8 +27,10 @@ import { log } from "../log";
 
 const DEFAULT_TIMEOUT_MS = 3_600_000; // 1 hour
 const MAX_OUTPUT_BYTES = 1_000_000;   // 1MB process capture limit
-const HEAD_BUDGET = 20_000;           // chars for head preview
-const TAIL_BUDGET = 8_000;            // chars for tail preview
+const DEFAULT_INLINE_OUTPUT_CHARS = 12_000;
+const MIN_INLINE_OUTPUT_CHARS = 1_000;
+const MAX_INLINE_OUTPUT_CHARS = 30_000;
+const HEAD_PREVIEW_FRACTION = 0.7;
 
 // ── Output limiting ───────────────────────────────────────────────
 
@@ -41,38 +43,41 @@ function truncLine(line: string, budget: number): string {
 function buildSpillPreview(
   output: string,
   byteTruncated: boolean,
+  inlineBudget: number,
   spillPath?: string,
   spillError?: string,
 ): string {
   const lines = output.split("\n");
   const totalLines = lines.length;
+  const headBudget = Math.max(1, Math.floor(inlineBudget * HEAD_PREVIEW_FRACTION));
+  const tailBudget = Math.max(1, inlineBudget - headBudget);
 
-  // Head: lines from the start, up to HEAD_BUDGET chars.
-  // Individual lines longer than HEAD_BUDGET are truncated so a single
+  // Head: lines from the start, up to headBudget chars.
+  // Individual lines longer than headBudget are truncated so a single
   // minified line can never blow through the budget.
   let headEnd = 0;
   let headChars = 0;
   while (headEnd < totalLines) {
-    const lineCost = Math.min(lines[headEnd].length, HEAD_BUDGET) + 1;
-    if (headChars + lineCost > HEAD_BUDGET && headEnd > 0) break;
+    const lineCost = Math.min(lines[headEnd].length, headBudget) + 1;
+    if (headChars + lineCost > headBudget && headEnd > 0) break;
     headChars += lineCost;
     headEnd++;
   }
 
-  // Tail: lines from the end, up to TAIL_BUDGET chars
+  // Tail: lines from the end, up to tailBudget chars
   let tailStart = totalLines;
   let tailChars = 0;
   while (tailStart > headEnd) {
-    const lineCost = Math.min(lines[tailStart - 1].length, TAIL_BUDGET) + 1;
-    if (tailChars + lineCost > TAIL_BUDGET) break;
+    const lineCost = Math.min(lines[tailStart - 1].length, tailBudget) + 1;
+    if (tailChars + lineCost > tailBudget) break;
     tailStart--;
     tailChars += lineCost;
   }
 
   const omitted = tailStart - headEnd;
-  const head = lines.slice(0, headEnd).map(l => truncLine(l, HEAD_BUDGET)).join("\n");
+  const head = lines.slice(0, headEnd).map(l => truncLine(l, headBudget)).join("\n");
   const tail = tailStart < totalLines
-    ? lines.slice(tailStart).map(l => truncLine(l, TAIL_BUDGET)).join("\n")
+    ? lines.slice(tailStart).map(l => truncLine(l, tailBudget)).join("\n")
     : "";
 
   const truncNote = byteTruncated ? ", byte-truncated at 1MB" : "";
@@ -84,6 +89,18 @@ function buildSpillPreview(
   return tail ? head + separator + tail : head + separator;
 }
 
+function clampInlineOutputBudget(requested: number | undefined): number {
+  if (requested === undefined || !Number.isFinite(requested)) return DEFAULT_INLINE_OUTPUT_CHARS;
+  return Math.min(
+    MAX_INLINE_OUTPUT_CHARS,
+    Math.max(MIN_INLINE_OUTPUT_CHARS, Math.floor(requested)),
+  );
+}
+
+function inlineOutputBudget(input: Record<string, unknown>): number {
+  return clampInlineOutputBudget(getNumber(input, "max_output_chars"));
+}
+
 /**
  * When output is too large for the conversation context, save the full
  * text to a temp file and return a head+tail preview with the file path.
@@ -93,15 +110,17 @@ export function spillAndPreviewForTest(
   output: string,
   byteTruncated: boolean,
   writer: (spillPath: string, contents: string) => void = writeFileSync,
+  maxOutputChars = DEFAULT_INLINE_OUTPUT_CHARS,
 ): string {
+  const inlineBudget = clampInlineOutputBudget(maxOutputChars);
   const spillPath = join(tmpdir(), `exocortex-bash-${Date.now()}.txt`);
   try {
     writer(spillPath, output);
-    return buildSpillPreview(output, byteTruncated, spillPath);
+    return buildSpillPreview(output, byteTruncated, inlineBudget, spillPath);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log("warn", `bash: failed to spill oversized output to temp file: ${message}`);
-    return buildSpillPreview(output, byteTruncated, undefined, message);
+    return buildSpillPreview(output, byteTruncated, inlineBudget, undefined, message);
   }
 }
 
@@ -181,6 +200,7 @@ async function executeBashImpl(
 ): Promise<ToolResult> {
   const command = getString(input, "command");
   if (!command) return { output: "Error: missing 'command' parameter", isError: true };
+  const maxOutputChars = inlineOutputBudget(input);
 
   let rewrittenCommand: string;
   try {
@@ -221,6 +241,7 @@ async function executeBashImpl(
     // When backgrounded, output is redirected to this write stream.
     let bgStream: WriteStream | undefined;
     let bgStreamFailed = false;
+    let bgStreamError: string | undefined;
     let backgrounderCleared = false;
 
     function clearRegisteredBackgrounder(): void {
@@ -233,6 +254,7 @@ async function executeBashImpl(
       const message = err instanceof Error ? err.message : String(err);
       log("warn", `bash: background output stream failed: ${message}`);
       bgStreamFailed = true;
+      bgStreamError = message;
       if (bgStream) {
         bgStream.destroy();
         bgStream = undefined;
@@ -285,7 +307,16 @@ async function executeBashImpl(
         markBgStreamFailed(err);
       }
 
-      const preview = partial.trimEnd();
+      let preview = partial.trimEnd();
+      if (preview.length > maxOutputChars) {
+        preview = buildSpillPreview(
+          preview,
+          byteTruncated,
+          maxOutputChars,
+          bgStreamFailed ? undefined : spillPath,
+          bgStreamError,
+        );
+      }
       let output = preview ? `${preview}\n\n` : "";
       const checkCmd = isWindows
         ? `bash "if (Get-Process -Id ${proc.pid} -ErrorAction SilentlyContinue) { 'running' } else { 'exited' }"`
@@ -334,7 +365,10 @@ async function executeBashImpl(
         if (settled) return;
         settled = true;
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        const partial = Buffer.concat(chunks).toString("utf8").trimEnd();
+        let partial = Buffer.concat(chunks).toString("utf8").trimEnd();
+        if (partial.length > maxOutputChars) {
+          partial = spillAndPreviewForTest(partial, byteTruncated, writeFileSync, maxOutputChars);
+        }
         const reason = formatToolAbortMessage(signal, elapsed);
         let output = reason;
         if (partial) output += ` Partial output captured:\n${partial}`;
@@ -391,9 +425,9 @@ async function executeBashImpl(
 
       let output = Buffer.concat(chunks).toString("utf8");
 
-      // If output exceeds context budget, spill to file and return preview
-      if (output.length > MAX_OUTPUT_CHARS) {
-        output = spillAndPreviewForTest(output, byteTruncated);
+      // If output exceeds the inline budget, spill to file and return a compact preview.
+      if (output.length > maxOutputChars) {
+        output = spillAndPreviewForTest(output, byteTruncated, writeFileSync, maxOutputChars);
       } else if (byteTruncated) {
         output += "\n... (output byte-truncated at 1MB)";
       }
@@ -428,10 +462,11 @@ export const bash: Tool = {
       command: { type: "string", description: `The ${shellName} command to execute` },
       timeout: { type: "number", description: "Timeout in milliseconds (default 3600000)" },
       await: { type: "number", description: "Seconds to wait before backgrounding this command. Use when you expect a command to take longer than the default threshold (e.g. builds, installs, watching a backgrounded process)." },
+      max_output_chars: { type: "number", description: `Maximum command-output characters to include inline before spilling full output to a temp file (default ${DEFAULT_INLINE_OUTPUT_CHARS}, min ${MIN_INLINE_OUTPUT_CHARS}, max ${MAX_INLINE_OUTPUT_CHARS}).` },
     },
     required: ["command"],
   },
-  systemHint: `${shellName} commands that run longer than ${TOOL_BACKGROUND_SECONDS}s are automatically backgrounded: the process keeps running but control returns to you with the PID and a temp file where output accumulates. Pass the "await" parameter (seconds) to suppress backgrounding when you expect a command to take longer (builds, installs, sleeps, tailing a backgrounded process).`,
+  systemHint: `${shellName} commands that run longer than ${TOOL_BACKGROUND_SECONDS}s are automatically backgrounded: the process keeps running but control returns to you with the PID and a temp file where output accumulates. Pass the "await" parameter (seconds) to suppress backgrounding when you expect a command to take longer (builds, installs, sleeps, tailing a backgrounded process). Pass "max_output_chars" to limit inline output; larger output is saved to a temp file with a compact preview.`,
   display: {
     label: "$",
     color: "#d19a66",  // muted amber
