@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "fs";
 import { executeBashBackgroundable, spillAndPreviewForTest } from "./bash";
 
 function makeLargeOutput(): string {
@@ -100,9 +101,16 @@ describe("bash manual backgrounding", () => {
 
     const result = await promise;
     expect(result.isError).toBe(false);
-    expect(result.output).toContain("start");
     expect(result.output).toContain("Command backgrounded on user request");
     expect(result.output).toContain("Output is being written to:");
     expect(background).toBeNull();
+
+    const spillPath = result.output.match(/Output is being written to: (\S+)/)?.[1];
+    expect(spillPath).toBeTruthy();
+
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const spilled = readFileSync(spillPath!, "utf8");
+    expect(spilled).toContain("start");
+    expect(spilled).toContain("done");
   });
 });
