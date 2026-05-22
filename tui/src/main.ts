@@ -33,7 +33,7 @@ import type { Event, QueueTiming } from "./protocol";
 import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
 import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
 import { startReplayConversation } from "./replay";
-import { runStreamFinishedPing, shouldPingForBackgroundStreamCompletion } from "./ping";
+import { runStreamFinishedPing, shouldPingForBackgroundStreamCompletion, shouldPingForStreamStopped } from "./ping";
 import { stripStartupLaunchEcho } from "./startupinput";
 
 // ── State ───────────────────────────────────────────────────────────
@@ -293,7 +293,7 @@ function onDaemonEvent(event: Event): void {
   if (event.type === "streaming_stopped") {
     clearStreamTick();
     if (event.convId === pendingLocalInterruptConvId) pendingLocalInterruptConvId = null;
-    scheduleStreamFinishedPing(event.convId);
+    if (shouldPingForStreamStopped(event.reason)) scheduleStreamFinishedPing(event.convId);
     // Queue shadows are NOT cleared here — the daemon drains one queued
     // message at a time and re-queues the rest. Each consumed message
     // triggers a user_message event, whose handler in events.ts removes
@@ -310,6 +310,7 @@ function onDaemonEvent(event: Event): void {
     wasStreaming: wasUpdatedConversationStreaming,
     isStreaming: event.summary.streaming,
     activeConvIdBeforeUpdate: activeConvIdBeforeEvent,
+    streamStopReason: event.streamStopReason,
   })) {
     scheduleStreamFinishedPing(event.summary.id);
   }

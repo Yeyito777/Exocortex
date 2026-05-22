@@ -14,6 +14,7 @@ import {
   runStreamFinishedPing,
   sendStreamFinishedNotification,
   shouldPingForBackgroundStreamCompletion,
+  shouldPingForStreamStopped,
   shouldSuppressStreamFinishedPing,
   streamFinishedSoundCommand,
 } from "./ping";
@@ -225,6 +226,19 @@ describe("ping config helpers", () => {
       wasStreaming: true,
       isStreaming: true,
       activeConvIdBeforeUpdate: "conv-b",
+    })).toBe(false);
+  });
+
+  test("daemon-restart stopped streams do not trigger /ping", () => {
+    expect(shouldPingForStreamStopped()).toBe(true);
+    expect(shouldPingForStreamStopped("daemon-restart")).toBe(false);
+
+    expect(shouldPingForBackgroundStreamCompletion({
+      updatedConvId: "conv-a",
+      wasStreaming: true,
+      isStreaming: false,
+      activeConvIdBeforeUpdate: "conv-b",
+      streamStopReason: "daemon-restart",
     })).toBe(false);
   });
 

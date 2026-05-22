@@ -44,4 +44,14 @@ describe("broadcastConversationUpdated", () => {
 
     expect(events).toMatchObject([{ type: "conversation_updated", summary: { id } }]);
   });
+
+  test("includes special stream stop reason when provided", () => {
+    const id = mkId("stop-reason");
+    create(id, "openai", "gpt-5.5");
+    const { server, events } = captureServer();
+
+    expect(broadcastConversationUpdated(server, id, "daemon-restart")).toBe(true);
+
+    expect(events).toMatchObject([{ type: "conversation_updated", summary: { id }, streamStopReason: "daemon-restart" }]);
+  });
 });

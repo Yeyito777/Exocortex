@@ -480,11 +480,15 @@ export interface StreamingStartedEvent {
   tokens?: number;
 }
 
+export type StreamingStopReason = "daemon-restart";
+
 export interface StreamingStoppedEvent {
   type: "streaming_stopped";
   convId: string;
   /** Monotonic daemon event sequence for the active stream (diagnostics). */
   streamSeq?: number;
+  /** Machine-readable reason for non-normal stops that clients must handle specially. */
+  reason?: StreamingStopReason;
   /** On abort/error: the blocks that were safe to persist. TUI replaces its pending blocks with these. */
   persistedBlocks?: Block[];
 }
@@ -644,6 +648,8 @@ export interface GoalUpdatedEvent {
 export interface ConversationUpdatedEvent {
   type: "conversation_updated";
   summary: ConversationSummary;
+  /** Set when this update represents a stream transitioning to stopped for a special reason. */
+  streamStopReason?: StreamingStopReason;
 }
 
 export interface ConversationDeletedEvent {

@@ -9,15 +9,20 @@
 import * as convStore from "./conversations";
 import { log } from "./log";
 import type { DaemonServer } from "./server";
+import type { StreamingStopReason } from "./protocol";
 
 /** Broadcast a sidebar summary update if the conversation still exists. */
-export function broadcastConversationUpdated(server: DaemonServer, convId: string): boolean {
+export function broadcastConversationUpdated(server: DaemonServer, convId: string, streamStopReason?: StreamingStopReason): boolean {
   const summary = convStore.getSummary(convId);
   if (!summary) {
     log("warn", `conversation-events: skipped conversation_updated for missing conversation ${convId}`);
     return false;
   }
 
-  server.broadcast({ type: "conversation_updated", summary });
+  server.broadcast({
+    type: "conversation_updated",
+    summary,
+    ...(streamStopReason ? { streamStopReason } : {}),
+  });
   return true;
 }
