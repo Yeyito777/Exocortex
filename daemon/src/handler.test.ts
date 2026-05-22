@@ -89,7 +89,8 @@ describe("handler new_conversation defaults", () => {
       hasSubscribers: mock(() => false),
     };
     const handle = createHandler(server as never);
-    const convId = mkId("client-supplied");
+    const convId = `${Date.now()}-abc123`;
+    IDS.push(convId);
 
     await handle({} as never, { type: "new_conversation", reqId: "req-client-id", convId });
 
@@ -99,6 +100,29 @@ describe("handler new_conversation defaults", () => {
       convId,
     }));
     expect(get(convId)?.id).toBe(convId);
+  });
+
+  test("rejects unsafe client-supplied conversation ids", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "new_conversation", reqId: "req-bad-id", convId: "../bad" });
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "error",
+      reqId: "req-bad-id",
+      convId: "../bad",
+      message: "Invalid or duplicate client-supplied conversation id",
+    }));
   });
 });
 

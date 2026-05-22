@@ -231,6 +231,8 @@ export function createHandler(server: DaemonServer) {
     return goal;
   };
 
+  const isSafeClientConversationId = (id: string): boolean => /^\d+-[a-z0-9]{6}$/.test(id);
+
   return async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
     switch (cmd.type) {
 
@@ -269,6 +271,10 @@ export function createHandler(server: DaemonServer) {
 
       case "new_conversation": {
         const id = cmd.convId ?? convStore.generateId();
+        if (cmd.convId && (!isSafeClientConversationId(cmd.convId) || convStore.get(cmd.convId))) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid or duplicate client-supplied conversation id" });
+          break;
+        }
         const provider = cmd.provider ?? getDefaultProvider().id;
         const providerInfo = getProvider(provider);
         if (!providerInfo) {
