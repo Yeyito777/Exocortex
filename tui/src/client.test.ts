@@ -69,6 +69,22 @@ describe("DaemonClient commands", () => {
       initialMessage: { text: "hello", startedAt: 456 },
     }]);
   });
+
+  test("can include a client-generated conversation id for early follow-up commands", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.createConversation("openai", "gpt-5.4", "pending", "high", false, {
+      text: "hello",
+      startedAt: 456,
+    }, null, undefined, "client-conv-1");
+
+    expect(internal.pendingCommands[0]).toMatchObject({
+      type: "new_conversation",
+      convId: "client-conv-1",
+      initialMessage: { text: "hello", startedAt: 456 },
+    });
+  });
 });
 
 describe("DaemonClient reconnect behavior", () => {

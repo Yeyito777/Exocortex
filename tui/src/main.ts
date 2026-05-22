@@ -70,11 +70,57 @@ let reconnecting = false;
 let terminalSetUp = false;
 let voiceInput: VoiceInputController | null = null;
 let pendingVoiceQueuePrompt = false;
+let pendingNewConversationConvId: string | null = null;
+let pendingLocalInterruptConvId: string | null = null;
 // Local-only user-message echoes whose audio jobs are still transcribing. They
 // are intentionally withheld from the daemon until the TUI has final text.
 const pendingVoiceSubmissions = new Set<SubmittedVoiceTranscription>();
 const PREWARM_DEBOUNCE_MS = 700;
 const PREWARM_COOLDOWN_MS = 30_000;
+
+function generateClientConversationId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function pendingAIHasVisibleContent(): boolean {
+  return state.pendingAI?.blocks.some((block) => {
+    if (block.type === "text" || block.type === "thinking") return block.text.trim().length > 0;
+    return true;
+  }) ?? false;
+}
+
+function showLocalPreContentInterrupt(convId: string): void {
+  // If Ctrl+Q lands before any visible assistant content arrives, the daemon may
+  // still be opening a websocket or waiting for the first provider event. Show
+  // the terminal state immediately instead of leaving a metadata-only pending AI
+  // bubble/spinner until the abort propagates through the transport.
+  if (!state.pendingAI || pendingAIHasVisibleContent()) return;
+  pendingLocalInterruptConvId = convId;
+  clearStreamTick();
+  clearPendingAI(state);
+  clearStreamingTailMessages(state);
+  pushSystemMessage(state, "✗ Interrupted", theme.error);
+}
+
+function shouldIgnoreEventAfterLocalPreContentInterrupt(event: Event): boolean {
+  if (pendingLocalInterruptConvId === null || !("convId" in event) || event.convId !== pendingLocalInterruptConvId) return false;
+  switch (event.type) {
+    case "streaming_started":
+    case "block_start":
+    case "text_chunk":
+    case "thinking_chunk":
+    case "streaming_sync":
+    case "tool_call":
+    case "tool_result":
+    case "tokens_update":
+    case "context_update":
+    case "message_complete":
+    case "stream_retry":
+      return true;
+    default:
+      return false;
+  }
+}
 
 // ── Render scheduling ───────────────────────────────────────────────
 
@@ -208,6 +254,17 @@ function resetStreamTick(): void {
 // ── Event handler (daemon → TUI) ───────────────────────────────────
 
 function onDaemonEvent(event: Event): void {
+  if (event.type === "conversation_created" && event.convId === pendingNewConversationConvId) {
+    pendingNewConversationConvId = null;
+  } else if (event.type === "error" && event.convId === pendingNewConversationConvId) {
+    pendingNewConversationConvId = null;
+  }
+
+  if (event.type === "system_message" && event.convId === pendingLocalInterruptConvId && event.text === "✗ Interrupted") {
+    return;
+  }
+  if (shouldIgnoreEventAfterLocalPreContentInterrupt(event)) return;
+
   if (event.type === "conversations_list") {
     startupProfileMark("conversations_list_received", { conversationCount: event.conversations.length });
   }
@@ -235,6 +292,7 @@ function onDaemonEvent(event: Event): void {
   // Clear stream tick on streaming_stopped
   if (event.type === "streaming_stopped") {
     clearStreamTick();
+    if (event.convId === pendingLocalInterruptConvId) pendingLocalInterruptConvId = null;
     scheduleStreamFinishedPing(event.convId);
     // Queue shadows are NOT cleared here — the daemon drains one queued
     // message at a time and re-queues the rest. Each consumed message
@@ -365,6 +423,7 @@ function canSendImages(images?: ImageAttachment[]): boolean {
 
 function startNewConversation(): void {
   const wasFolderInstructionsDoc = state.folderInstructionsDoc !== null;
+  pendingNewConversationConvId = null;
   if (state.convId) {
     daemon.unsubscribe(state.convId);
     clearLocalQueue(state, state.convId);
@@ -635,6 +694,8 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
   state.pendingAI = createPendingAI(startedAt, state.model);
 
   if (!state.convId) {
+    const convId = generateClientConversationId();
+    pendingNewConversationConvId = convId;
     state.pendingSend.active = false;
     state.pendingSend.text = "";
     state.pendingSend.images = undefined;
@@ -643,7 +704,7 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
       text: messageText,
       startedAt,
       images,
-    }, state.sidebar.currentFolderId);
+    }, state.sidebar.currentFolderId, undefined, convId);
   } else {
     daemon.sendMessage(state.convId, messageText, startedAt, images);
   }
@@ -895,7 +956,13 @@ function handleKey(key: KeyEvent): void {
       running = false;
       break;
     case "abort":
-      if (isStreaming(state) && state.convId) daemon.abort(state.convId);
+      if (isStreaming(state)) {
+        const convId = state.convId ?? pendingNewConversationConvId;
+        if (convId) {
+          showLocalPreContentInterrupt(convId);
+          daemon.abort(convId);
+        }
+      }
       break;
     case "background_tool":
       if (isStreaming(state) && state.convId) daemon.backgroundTool(state.convId);

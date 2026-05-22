@@ -268,17 +268,18 @@ export function createHandler(server: DaemonServer) {
       // ── Conversation lifecycle commands ───────────────────────────
 
       case "new_conversation": {
-        const id = convStore.generateId();
+        const id = cmd.convId ?? convStore.generateId();
         const provider = cmd.provider ?? getDefaultProvider().id;
         const providerInfo = getProvider(provider);
         if (!providerInfo) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Unknown provider: ${provider}` });
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Unknown provider: ${provider}` });
           break;
         }
         if (cmd.model && !isKnownModel(provider, cmd.model) && !allowsCustomModels(provider)) {
           server.sendTo(client, {
             type: "error",
             reqId: cmd.reqId,
+            convId: id,
             message: unknownModelMessage(provider, cmd.model),
           });
           break;
@@ -287,22 +288,22 @@ export function createHandler(server: DaemonServer) {
         const effort = normalizeEffort(provider, model, cmd.effort);
         const fastMode = cmd.fastMode === true;
         if (fastMode && !supportsFastMode(provider)) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Fast mode is only available for ${provider} conversations that support it.` });
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Fast mode is only available for ${provider} conversations that support it.` });
           break;
         }
         const initialMessage = cmd.initialMessage;
         const goalObjective = cmd.goalObjective?.trim();
         if (goalObjective && !hasConfiguredCredentials(provider)) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Not authenticated for provider ${provider}. Run: bun run src/main.ts login ${provider}` });
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Not authenticated for provider ${provider}. Run: bun run src/main.ts login ${provider}` });
           break;
         }
         if (initialMessage) {
           if (!hasConfiguredCredentials(provider)) {
-            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Not authenticated for provider ${provider}. Run: bun run src/main.ts login ${provider}` });
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Not authenticated for provider ${provider}. Run: bun run src/main.ts login ${provider}` });
             break;
           }
           if (initialMessage.images?.length && !supportsImageInputs(provider, model)) {
-            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Image inputs are not supported by ${provider}/${model}. Remove the attachment or switch to a vision-capable model.` });
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Image inputs are not supported by ${provider}/${model}. Remove the attachment or switch to a vision-capable model.` });
             break;
           }
         }

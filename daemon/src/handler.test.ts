@@ -76,6 +76,30 @@ describe("handler new_conversation defaults", () => {
       });
     }
   });
+
+  test("honors a client-supplied conversation id", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const convId = mkId("client-supplied");
+
+    await handle({} as never, { type: "new_conversation", reqId: "req-client-id", convId });
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "conversation_created",
+      reqId: "req-client-id",
+      convId,
+    }));
+    expect(get(convId)?.id).toBe(convId);
+  });
 });
 
 describe("handler replay_conversation", () => {

@@ -21,6 +21,8 @@ export interface PingCommand {
 export interface NewConversationCommand {
   type: "new_conversation";
   reqId?: string;
+  /** Optional client-generated id so follow-up commands (notably early abort) can target the conversation before the create ack arrives. */
+  convId?: string;
   provider?: ProviderId;
   model?: ModelId;
   effort?: EffortLevel;

@@ -116,8 +116,9 @@ export class DaemonClient {
     initialMessage?: { text: string; startedAt: number; images?: ImageAttachment[] },
     folderId?: string | null,
     goalObjective?: string,
+    convId?: string,
   ): void {
-    this.send({ type: "new_conversation", provider, model, title, effort, fastMode, initialMessage, folderId, goalObjective });
+    this.send({ type: "new_conversation", ...(convId ? { convId } : {}), provider, model, title, effort, fastMode, initialMessage, folderId, goalObjective });
   }
 
   subscribe(convId: string): void {
