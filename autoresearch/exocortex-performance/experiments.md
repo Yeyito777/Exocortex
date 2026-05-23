@@ -1618,3 +1618,23 @@ Validation:
 - The gains were not broad enough and direct huge cold regressions exceeded tolerance.
 
 Action: reverted `tui/src/markdown/formatting.ts`; kept only this failure log and result artifact.
+
+## 068 — Avoid duplicate width measurement in `padRightToWidth`
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `padRightToWidth` called `truncateToWidth`, which first measured the whole string, then measured the returned string again for padding. For non-truncated sidebar rows this duplicates terminal-width work. Measuring once and returning early when the text already fits should preserve output and improve sidebar rendering.
+
+Validation:
+
+- Relevant tests passed: `bun test src/textwidth.test.ts src/sidebar*.test.ts src/render.test.ts` gave 33 pass, 0 fail.
+- Result saved to `results/068-pad-right-avoid-double-width.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `sidebar_render/small_root.root` median ratio 0.872
+  - `sidebar_search_filter/large_root.performance_query` median ratio 0.949
+  - `sidebar_render/large_root.visual_selection` median ratio 0.954
+  - `sidebar_navigation/small_root.nav_down` median ratio 1.278
+  - `sidebar_list_update/large_root.replace_and_sync` median ratio 1.453
+  - direct conversation build axes also regressed above tolerance.
+
+Action: reverted `tui/src/textwidth.ts`; kept only this failure log and result artifact.
