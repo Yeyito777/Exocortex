@@ -243,3 +243,36 @@ Validation:
 
 Decision: keep. The change is behavior-preserving for Unicode/control cases covered by tests and gives repeatable cold conversation-opening/build-lines wins.
 
+## 008 — Single-pass sidebar selection movement
+
+Status: success — kept and committed after replacing the first variant.
+
+Hypothesis: `moveSelection` built a filtered `entries` array on every up/down sidebar keypress. It should be able to find the next/previous entry in one scan over `buildDisplayRows` without allocating the filtered array, preserving the same clamped movement semantics.
+
+Failed first variant:
+
+- First attempt removed the filtered array but used two scans/index counting. Relevant tests passed, but benchmark showed a large direct regression on `sidebar_navigation/large_root.nav_down`: 0.391ms → 0.499ms, ratio 1.276. Deleted that code.
+- Result artifact kept at `results/008-avoid-sidebar-navigation-filter.json`.
+
+Kept second variant:
+
+- Replaced the two-scan/index-counting version with a one-scan implementation that tracks the first, previous, last, and current entries.
+- Preserves behavior for no entries, missing current selection, top clamp, and bottom clamp.
+
+Validation:
+
+- `bun test src/sidebar-navigation.test.ts src/focus.test.ts src/sidebarsearch.test.ts`: 63 pass, 0 fail.
+- `bun run typecheck`: pass.
+- `bun test`: 370 pass, 0 fail.
+- Result saved to `results/008-single-pass-sidebar-navigation.json`.
+- Interleaved control/treatment p95s for navigation axes:
+  - `sidebar_navigation/small_root.nav_down`: 0.017ms → 0.014ms, ratio 0.824
+  - `sidebar_navigation/large_root.nav_down`: 0.501ms → 0.383ms, ratio 0.764
+  - `sidebar_navigation/huge_foldered.nav_down`: 1.444ms → 1.002ms, ratio 0.694
+
+Notes:
+
+- Non-navigation sidebar render/search axes varied in both directions during the same benchmark run, but `moveSelection` is not called by those axes. I treated those as benchmark noise and kept the targeted deterministic navigation improvement with behavior tests passing.
+
+Decision: keep. Direct sidebar navigation p95s improved across small, large, and huge workloads with no UX-visible change.
+

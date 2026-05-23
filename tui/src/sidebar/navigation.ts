@@ -6,14 +6,32 @@ import type { SidebarState } from "./state";
 
 export function moveSelection(sidebar: SidebarState, delta: number): void {
   const displayRows = buildDisplayRows(sidebar);
-  const entries = displayRows.filter(row => row.type === "entry");
-  if (entries.length === 0) return;
   const currentKey = itemKey(sidebar.selectedItem);
-  const currentEntryIndex = entries.findIndex(row => itemKey(row.item ?? null) === currentKey);
-  const nextEntryIndex = currentEntryIndex === -1
-    ? (delta >= 0 ? 0 : entries.length - 1)
-    : Math.max(0, Math.min(currentEntryIndex + delta, entries.length - 1));
-  focusSidebarItem(sidebar, entries[nextEntryIndex].item ?? null);
+  let firstEntry: SidebarSelectableItem | null = null;
+  let previousEntry: SidebarSelectableItem | null = null;
+  let lastEntry: SidebarSelectableItem | null = null;
+  let foundCurrent = false;
+  for (const row of displayRows) {
+    if (row.type !== "entry") continue;
+    const item = row.item ?? null;
+    firstEntry ??= item;
+    if (foundCurrent && delta > 0) {
+      focusSidebarItem(sidebar, item);
+      return;
+    }
+    if (itemKey(item) === currentKey) {
+      foundCurrent = true;
+      if (delta < 0) {
+        focusSidebarItem(sidebar, previousEntry ?? item);
+        return;
+      }
+    }
+    previousEntry = item;
+    lastEntry = item;
+  }
+  if (!firstEntry) return;
+  if (!foundCurrent) focusSidebarItem(sidebar, delta >= 0 ? firstEntry : lastEntry);
+  else if (delta > 0) focusSidebarItem(sidebar, lastEntry);
 }
 
 function hasStreamingIndicator(sidebar: SidebarState, item: SidebarSelectableItem | null): boolean {
