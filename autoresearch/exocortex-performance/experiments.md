@@ -1275,3 +1275,25 @@ Validation:
 - The direct conversation-axis regressions exceeded tolerance.
 
 Action: reverted `tui/src/terminaltext.ts`; kept only this failure log and result artifact.
+
+## 053 — Split sidebar visible-conversation query/no-query branches
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `getVisibleConversationIndicesForQuery` checked query/current-folder conditions inside each conversation loop iteration. Splitting the no-query current-folder path from the active-query path should reduce regular sidebar render/navigation overhead without changing search semantics.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebarsearch.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/053-split-sidebar-visible-query-branches.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_build_lines_cold/small_chat` median ratio 0.879
+  - `sidebar_navigation/small_root.nav_down` median ratio 0.814
+  - `sidebar_render/large_root.root` median ratio 0.942
+  - `conversation_open_cold/small_chat` median ratio 1.090
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 1.100
+  - `sidebar_render/small_root.root` median ratio 1.149
+  - `sidebar_search_filter/small_root.performance_query` median ratio 1.103
+- The regular render/navigation improvements were not consistent and regressions exceeded tolerance.
+
+Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
