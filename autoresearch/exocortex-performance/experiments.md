@@ -922,3 +922,24 @@ Validation:
 - This is a visible markdown rendering change, so the experiment failed before benchmarking.
 
 Action: reverted `tui/src/markdown/wordwrap.ts`; no benchmark artifact kept because behavior tests failed before measurement.
+
+## 038 — Safe short ASCII markdown paragraph fast path
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: after experiment 037 failed on indented list-continuation lines, a stricter fast path for short printable ASCII paragraphs with no leading/trailing whitespace and no repeated whitespace should avoid word splitting/cache setup while preserving markdown normalization.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- Result saved to `results/038-safe-short-ascii-markdown-paragraph-fast-path.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/medium_markdown` ratios: 0.847, 0.898; median 0.872
+  - `conversation_open_cold/huge_markdown_collapsed_tools` ratios: 0.929, 0.981; median 0.955
+  - `conversation_open_warm/medium_markdown` ratios: 0.913, 1.380; median 1.147
+  - `sidebar_list_update/small_root.replace_and_sync` median ratio 1.305
+  - `sidebar_search_filter/huge_foldered.performance_query` median ratio 1.058
+  - `sidebar_render/large_root.visual_selection` median ratio 1.455
+- The cold-open improvement was not clean enough to satisfy no-regression constraints.
+
+Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
