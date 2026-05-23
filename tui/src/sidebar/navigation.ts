@@ -88,10 +88,10 @@ export function moveToStreaming(sidebar: SidebarState, delta: 1 | -1): void {
 
 /** Jump to the next (delta=1) or previous (delta=-1) boolean-marked conversation, wrapping around. */
 export function moveToMarked(sidebar: SidebarState, delta: 1 | -1): void {
-  const indices = sidebar.conversations
-    .map((conv, index) => ({ conv, index }))
-    .filter(({ conv }) => (conv.folderId ?? null) === sidebar.currentFolderId)
-    .map(({ index }) => index);
+  const indices: number[] = [];
+  for (let index = 0; index < sidebar.conversations.length; index++) {
+    if ((sidebar.conversations[index].folderId ?? null) === sidebar.currentFolderId) indices.push(index);
+  }
   const len = indices.length;
   if (len === 0) return;
   const current = Math.max(0, indices.indexOf(sidebar.selectedIndex));

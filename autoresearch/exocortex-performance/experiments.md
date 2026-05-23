@@ -1954,3 +1954,33 @@ Validation:
   - `sidebar_navigation/huge_foldered.next_marked_folder`: 0.516ms
 
 Decision: keep. This broadens sidebar navigation coverage and creates a direct measurement target for marked-conversation navigation without changing production behavior.
+
+## 081 — Direct-loop marked-navigation index build
+
+Status: success — kept and committed.
+
+Hypothesis: `moveToMarked` built folder-scoped conversation indices with `map(...).filter(...).map(...)`, allocating an intermediate object array and a second mapped array every time the user jumped to the next/previous marked conversation. A direct loop that pushes matching conversation indices should preserve behavior while reducing marked-navigation allocation and overhead.
+
+Change:
+
+- Replaced the chained `map/filter/map` construction in `moveToMarked` with a direct `for` loop over `sidebar.conversations`.
+- Kept the rest of the existing navigation semantics unchanged, including the current index lookup and wraparound scan.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar-navigation.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Full TUI test suite passed: `bun test` gave 370 pass, 0 fail.
+- Treatment result saved to `results/081-direct-marked-navigation-index-build.json`.
+- Interleaved comparison saved to `results/081-direct-marked-navigation-index-build-compare.json`.
+- Three interleaved control/treatment runs showed large targeted marked-navigation wins:
+  - `sidebar_navigation/small_root.next_marked_root` median ratio 0.200
+  - `sidebar_navigation/small_root.next_marked_folder` median ratio 0.600
+  - `sidebar_navigation/large_root.next_marked_root` median ratio 0.410
+  - `sidebar_navigation/large_root.next_marked_folder` median ratio 0.320
+  - `sidebar_navigation/huge_foldered.next_marked_root` median ratio 0.371
+  - `sidebar_navigation/huge_foldered.next_marked_folder` median ratio 0.273
+- The interleaved geomean median ratio was 0.836.
+- The compare helper still flagged unrelated median regressions (for example `conversation_open_cold/medium_markdown`, `conversation_open_warm/medium_markdown`, and streaming-navigation metrics). These are not on the changed code path and are consistent with the control-level volatility documented in experiments 075–076.
+
+Decision: keep. The change is behavior-preserving, simple, covered by marked-navigation tests, and produces repeated direct wins on the newly measured marked-navigation axes.

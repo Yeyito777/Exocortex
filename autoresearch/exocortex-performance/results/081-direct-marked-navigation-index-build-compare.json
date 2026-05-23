@@ -1,0 +1,1008 @@
+{
+  "pairs": 3,
+  "passed": false,
+  "p95GeomeanMedianRatio": 0.836,
+  "comparisons": [
+    {
+      "key": "conversation_open_cold/small_chat",
+      "ratios": [
+        0.969,
+        0.941,
+        0.936
+      ],
+      "medianRatio": 0.941,
+      "minRatio": 0.936,
+      "maxRatio": 0.969,
+      "controlMedianP95Ms": 2.437,
+      "treatmentMedianP95Ms": 2.362,
+      "percent": -5.944
+    },
+    {
+      "key": "conversation_open_warm/small_chat",
+      "ratios": [
+        0.867,
+        0.925,
+        0.921
+      ],
+      "medianRatio": 0.921,
+      "minRatio": 0.867,
+      "maxRatio": 0.925,
+      "controlMedianP95Ms": 0.253,
+      "treatmentMedianP95Ms": 0.234,
+      "percent": -7.874
+    },
+    {
+      "key": "conversation_build_lines_cold/small_chat",
+      "ratios": [
+        0.87,
+        1.121,
+        0.925
+      ],
+      "medianRatio": 0.925,
+      "minRatio": 0.87,
+      "maxRatio": 1.121,
+      "controlMedianP95Ms": 1.163,
+      "treatmentMedianP95Ms": 1.076,
+      "percent": -7.481
+    },
+    {
+      "key": "conversation_open_cold/medium_markdown",
+      "ratios": [
+        1.169,
+        0.989,
+        1.071
+      ],
+      "medianRatio": 1.071,
+      "minRatio": 0.989,
+      "maxRatio": 1.169,
+      "controlMedianP95Ms": 20.262,
+      "treatmentMedianP95Ms": 20.04,
+      "percent": 7.116
+    },
+    {
+      "key": "conversation_open_warm/medium_markdown",
+      "ratios": [
+        1.154,
+        1.098,
+        1.037
+      ],
+      "medianRatio": 1.098,
+      "minRatio": 1.037,
+      "maxRatio": 1.154,
+      "controlMedianP95Ms": 0.183,
+      "treatmentMedianP95Ms": 0.201,
+      "percent": 9.836
+    },
+    {
+      "key": "conversation_build_lines_cold/medium_markdown",
+      "ratios": [
+        1.062,
+        0.949,
+        0.919
+      ],
+      "medianRatio": 0.949,
+      "minRatio": 0.919,
+      "maxRatio": 1.062,
+      "controlMedianP95Ms": 19.931,
+      "treatmentMedianP95Ms": 18.315,
+      "percent": -5.063
+    },
+    {
+      "key": "conversation_open_cold/huge_markdown_collapsed_tools",
+      "ratios": [
+        0.945,
+        1.01,
+        0.989
+      ],
+      "medianRatio": 0.989,
+      "minRatio": 0.945,
+      "maxRatio": 1.01,
+      "controlMedianP95Ms": 113.443,
+      "treatmentMedianP95Ms": 113.995,
+      "percent": -1.128
+    },
+    {
+      "key": "conversation_open_warm/huge_markdown_collapsed_tools",
+      "ratios": [
+        0.929,
+        0.921,
+        0.882
+      ],
+      "medianRatio": 0.921,
+      "minRatio": 0.882,
+      "maxRatio": 0.929,
+      "controlMedianP95Ms": 0.21,
+      "treatmentMedianP95Ms": 0.187,
+      "percent": -7.921
+    },
+    {
+      "key": "conversation_build_lines_cold/huge_markdown_collapsed_tools",
+      "ratios": [
+        1.012,
+        1.014,
+        0.955
+      ],
+      "medianRatio": 1.012,
+      "minRatio": 0.955,
+      "maxRatio": 1.014,
+      "controlMedianP95Ms": 111.538,
+      "treatmentMedianP95Ms": 110.902,
+      "percent": 1.195
+    },
+    {
+      "key": "conversation_open_cold/huge_expanded_tools",
+      "ratios": [
+        0.958,
+        0.972,
+        0.968
+      ],
+      "medianRatio": 0.968,
+      "minRatio": 0.958,
+      "maxRatio": 0.972,
+      "controlMedianP95Ms": 38.402,
+      "treatmentMedianP95Ms": 37.319,
+      "percent": -3.173
+    },
+    {
+      "key": "conversation_open_warm/huge_expanded_tools",
+      "ratios": [
+        1.043,
+        1.054,
+        0.946
+      ],
+      "medianRatio": 1.043,
+      "minRatio": 0.946,
+      "maxRatio": 1.054,
+      "controlMedianP95Ms": 0.186,
+      "treatmentMedianP95Ms": 0.196,
+      "percent": 4.348
+    },
+    {
+      "key": "conversation_build_lines_cold/huge_expanded_tools",
+      "ratios": [
+        0.944,
+        1.461,
+        0.969
+      ],
+      "medianRatio": 0.969,
+      "minRatio": 0.944,
+      "maxRatio": 1.461,
+      "controlMedianP95Ms": 39.618,
+      "treatmentMedianP95Ms": 37.781,
+      "percent": -3.113
+    },
+    {
+      "key": "sidebar_render/small_root.root",
+      "ratios": [
+        0.828,
+        1.486,
+        0.946
+      ],
+      "medianRatio": 0.946,
+      "minRatio": 0.828,
+      "maxRatio": 1.486,
+      "controlMedianP95Ms": 0.163,
+      "treatmentMedianP95Ms": 0.158,
+      "percent": -5.389
+    },
+    {
+      "key": "sidebar_render/small_root.folder_view",
+      "ratios": [
+        0.99,
+        0.702,
+        1.272
+      ],
+      "medianRatio": 0.99,
+      "minRatio": 0.702,
+      "maxRatio": 1.272,
+      "controlMedianP95Ms": 0.097,
+      "treatmentMedianP95Ms": 0.096,
+      "percent": -1.031
+    },
+    {
+      "key": "sidebar_navigation/small_root.nav_down",
+      "ratios": [
+        0.917,
+        0.692,
+        1.111
+      ],
+      "medianRatio": 0.917,
+      "minRatio": 0.692,
+      "maxRatio": 1.111,
+      "controlMedianP95Ms": 0.012,
+      "treatmentMedianP95Ms": 0.01,
+      "percent": -8.333
+    },
+    {
+      "key": "sidebar_navigation/small_root.folder_nav_down",
+      "ratios": [
+        1,
+        1,
+        1
+      ],
+      "medianRatio": 1,
+      "minRatio": 1,
+      "maxRatio": 1,
+      "controlMedianP95Ms": 0.006,
+      "treatmentMedianP95Ms": 0.006,
+      "percent": 0
+    },
+    {
+      "key": "sidebar_navigation/small_root.next_streaming_root",
+      "ratios": [
+        1,
+        1.125,
+        1
+      ],
+      "medianRatio": 1,
+      "minRatio": 1,
+      "maxRatio": 1.125,
+      "controlMedianP95Ms": 0.014,
+      "treatmentMedianP95Ms": 0.014,
+      "percent": 0
+    },
+    {
+      "key": "sidebar_navigation/small_root.next_streaming_folder",
+      "ratios": [
+        1,
+        1,
+        1
+      ],
+      "medianRatio": 1,
+      "minRatio": 1,
+      "maxRatio": 1,
+      "controlMedianP95Ms": 0.01,
+      "treatmentMedianP95Ms": 0.01,
+      "percent": 0
+    },
+    {
+      "key": "sidebar_navigation/small_root.next_marked_root",
+      "ratios": [
+        0.2,
+        0.2,
+        0.2
+      ],
+      "medianRatio": 0.2,
+      "minRatio": 0.2,
+      "maxRatio": 0.2,
+      "controlMedianP95Ms": 0.005,
+      "treatmentMedianP95Ms": 0.001,
+      "percent": -80
+    },
+    {
+      "key": "sidebar_navigation/small_root.next_marked_folder",
+      "ratios": [
+        0.6,
+        0.5,
+        0.75
+      ],
+      "medianRatio": 0.6,
+      "minRatio": 0.5,
+      "maxRatio": 0.75,
+      "controlMedianP95Ms": 0.005,
+      "treatmentMedianP95Ms": 0.003,
+      "percent": -40
+    },
+    {
+      "key": "sidebar_search_filter/small_root.performance_query",
+      "ratios": [
+        0.975,
+        0.715,
+        1
+      ],
+      "medianRatio": 0.975,
+      "minRatio": 0.715,
+      "maxRatio": 1,
+      "controlMedianP95Ms": 0.376,
+      "treatmentMedianP95Ms": 0.309,
+      "percent": -2.524
+    },
+    {
+      "key": "sidebar_list_update/small_root.replace_and_sync",
+      "ratios": [
+        0.818,
+        0.902,
+        1.156
+      ],
+      "medianRatio": 0.902,
+      "minRatio": 0.818,
+      "maxRatio": 1.156,
+      "controlMedianP95Ms": 0.033,
+      "treatmentMedianP95Ms": 0.037,
+      "percent": -9.756
+    },
+    {
+      "key": "sidebar_render/large_root.root",
+      "ratios": [
+        0.843,
+        0.904,
+        0.919
+      ],
+      "medianRatio": 0.904,
+      "minRatio": 0.843,
+      "maxRatio": 0.919,
+      "controlMedianP95Ms": 1.318,
+      "treatmentMedianP95Ms": 1.16,
+      "percent": -9.646
+    },
+    {
+      "key": "sidebar_render/large_root.folder_view",
+      "ratios": [
+        0.955,
+        0.972,
+        0.973
+      ],
+      "medianRatio": 0.972,
+      "minRatio": 0.955,
+      "maxRatio": 0.973,
+      "controlMedianP95Ms": 0.911,
+      "treatmentMedianP95Ms": 0.87,
+      "percent": -2.753
+    },
+    {
+      "key": "sidebar_navigation/large_root.nav_down",
+      "ratios": [
+        1.007,
+        1.018,
+        0.942
+      ],
+      "medianRatio": 1.007,
+      "minRatio": 0.942,
+      "maxRatio": 1.018,
+      "controlMedianP95Ms": 0.396,
+      "treatmentMedianP95Ms": 0.403,
+      "percent": 0.733
+    },
+    {
+      "key": "sidebar_navigation/large_root.folder_nav_down",
+      "ratios": [
+        1.074,
+        1.011,
+        1.085
+      ],
+      "medianRatio": 1.074,
+      "minRatio": 1.011,
+      "maxRatio": 1.085,
+      "controlMedianP95Ms": 0.094,
+      "treatmentMedianP95Ms": 0.101,
+      "percent": 7.447
+    },
+    {
+      "key": "sidebar_navigation/large_root.next_streaming_root",
+      "ratios": [
+        0.882,
+        1.028,
+        1.199
+      ],
+      "medianRatio": 1.028,
+      "minRatio": 0.882,
+      "maxRatio": 1.199,
+      "controlMedianP95Ms": 0.6,
+      "treatmentMedianP95Ms": 0.617,
+      "percent": 2.833
+    },
+    {
+      "key": "sidebar_navigation/large_root.next_streaming_folder",
+      "ratios": [
+        0.817,
+        0.619,
+        1.548
+      ],
+      "medianRatio": 0.817,
+      "minRatio": 0.619,
+      "maxRatio": 1.548,
+      "controlMedianP95Ms": 0.186,
+      "treatmentMedianP95Ms": 0.152,
+      "percent": -18.28
+    },
+    {
+      "key": "sidebar_navigation/large_root.next_marked_root",
+      "ratios": [
+        0.366,
+        0.41,
+        0.42
+      ],
+      "medianRatio": 0.41,
+      "minRatio": 0.366,
+      "maxRatio": 0.42,
+      "controlMedianP95Ms": 0.145,
+      "treatmentMedianP95Ms": 0.059,
+      "percent": -59.028
+    },
+    {
+      "key": "sidebar_navigation/large_root.next_marked_folder",
+      "ratios": [
+        0.279,
+        0.355,
+        0.32
+      ],
+      "medianRatio": 0.32,
+      "minRatio": 0.279,
+      "maxRatio": 0.355,
+      "controlMedianP95Ms": 0.14,
+      "treatmentMedianP95Ms": 0.048,
+      "percent": -68
+    },
+    {
+      "key": "sidebar_search_filter/large_root.performance_query",
+      "ratios": [
+        0.938,
+        1.026,
+        1.007
+      ],
+      "medianRatio": 1.007,
+      "minRatio": 0.938,
+      "maxRatio": 1.026,
+      "controlMedianP95Ms": 10.582,
+      "treatmentMedianP95Ms": 9.981,
+      "percent": 0.652
+    },
+    {
+      "key": "sidebar_list_update/large_root.replace_and_sync",
+      "ratios": [
+        1.107,
+        0.769,
+        0.548
+      ],
+      "medianRatio": 0.769,
+      "minRatio": 0.548,
+      "maxRatio": 1.107,
+      "controlMedianP95Ms": 0.823,
+      "treatmentMedianP95Ms": 0.649,
+      "percent": -23.086
+    },
+    {
+      "key": "sidebar_render/huge_foldered.root",
+      "ratios": [
+        0.969,
+        0.667,
+        0.855
+      ],
+      "medianRatio": 0.855,
+      "minRatio": 0.667,
+      "maxRatio": 0.969,
+      "controlMedianP95Ms": 4.53,
+      "treatmentMedianP95Ms": 4.021,
+      "percent": -14.459
+    },
+    {
+      "key": "sidebar_render/huge_foldered.folder_view",
+      "ratios": [
+        0.995,
+        1.07,
+        1.154
+      ],
+      "medianRatio": 1.07,
+      "minRatio": 0.995,
+      "maxRatio": 1.154,
+      "controlMedianP95Ms": 2.748,
+      "treatmentMedianP95Ms": 3.026,
+      "percent": 6.956
+    },
+    {
+      "key": "sidebar_navigation/huge_foldered.nav_down",
+      "ratios": [
+        1.112,
+        0.962,
+        0.847
+      ],
+      "medianRatio": 0.962,
+      "minRatio": 0.847,
+      "maxRatio": 1.112,
+      "controlMedianP95Ms": 1.388,
+      "treatmentMedianP95Ms": 1.335,
+      "percent": -3.818
+    },
+    {
+      "key": "sidebar_navigation/huge_foldered.folder_nav_down",
+      "ratios": [
+        0.963,
+        0.926,
+        1.04
+      ],
+      "medianRatio": 0.963,
+      "minRatio": 0.926,
+      "maxRatio": 1.04,
+      "controlMedianP95Ms": 0.35,
+      "treatmentMedianP95Ms": 0.363,
+      "percent": -3.714
+    },
+    {
+      "key": "sidebar_navigation/huge_foldered.next_streaming_root",
+      "ratios": [
+        1.058,
+        0.99,
+        1.07
+      ],
+      "medianRatio": 1.058,
+      "minRatio": 0.99,
+      "maxRatio": 1.07,
+      "controlMedianP95Ms": 2.298,
+      "treatmentMedianP95Ms": 2.306,
+      "percent": 5.78
+    },
+    {
+      "key": "sidebar_navigation/huge_foldered.next_streaming_folder",
+      "ratios": [
+        0.978,
+        1.629,
+        1.13
+      ],
+      "medianRatio": 1.13,
+      "minRatio": 0.978,
+      "maxRatio": 1.629,
+      "controlMedianP95Ms": 0.5,
+      "treatmentMedianP95Ms": 0.565,
+      "percent": 13
+    },
+    {
+      "key": "sidebar_navigation/huge_foldered.next_marked_root",
+      "ratios": [
+        0.461,
+        0.368,
+        0.371
+      ],
+      "medianRatio": 0.371,
+      "minRatio": 0.368,
+      "maxRatio": 0.461,
+      "controlMedianP95Ms": 0.533,
+      "treatmentMedianP95Ms": 0.198,
+      "percent": -62.852
+    },
+    {
+      "key": "sidebar_navigation/huge_foldered.next_marked_folder",
+      "ratios": [
+        0.378,
+        0.263,
+        0.273
+      ],
+      "medianRatio": 0.273,
+      "minRatio": 0.263,
+      "maxRatio": 0.378,
+      "controlMedianP95Ms": 0.51,
+      "treatmentMedianP95Ms": 0.144,
+      "percent": -72.745
+    },
+    {
+      "key": "sidebar_search_filter/huge_foldered.performance_query",
+      "ratios": [
+        0.945,
+        0.96,
+        0.996
+      ],
+      "medianRatio": 0.96,
+      "minRatio": 0.945,
+      "maxRatio": 0.996,
+      "controlMedianP95Ms": 38.834,
+      "treatmentMedianP95Ms": 37.263,
+      "percent": -4.045
+    },
+    {
+      "key": "sidebar_list_update/huge_foldered.replace_and_sync",
+      "ratios": [
+        0.843,
+        0.753,
+        0.88
+      ],
+      "medianRatio": 0.843,
+      "minRatio": 0.753,
+      "maxRatio": 0.88,
+      "controlMedianP95Ms": 3.743,
+      "treatmentMedianP95Ms": 2.913,
+      "percent": -15.687
+    },
+    {
+      "key": "sidebar_render/large_root.visual_selection",
+      "ratios": [
+        0.895,
+        0.716,
+        0.915
+      ],
+      "medianRatio": 0.895,
+      "minRatio": 0.716,
+      "maxRatio": 0.915,
+      "controlMedianP95Ms": 1.597,
+      "treatmentMedianP95Ms": 1.391,
+      "percent": -10.457
+    }
+  ],
+  "regressions": [
+    {
+      "key": "sidebar_navigation/huge_foldered.next_streaming_folder",
+      "ratios": [
+        0.978,
+        1.629,
+        1.13
+      ],
+      "medianRatio": 1.13,
+      "minRatio": 0.978,
+      "maxRatio": 1.629,
+      "controlMedianP95Ms": 0.5,
+      "treatmentMedianP95Ms": 0.565,
+      "percent": 13
+    },
+    {
+      "key": "conversation_open_warm/medium_markdown",
+      "ratios": [
+        1.154,
+        1.098,
+        1.037
+      ],
+      "medianRatio": 1.098,
+      "minRatio": 1.037,
+      "maxRatio": 1.154,
+      "controlMedianP95Ms": 0.183,
+      "treatmentMedianP95Ms": 0.201,
+      "percent": 9.836
+    },
+    {
+      "key": "sidebar_navigation/large_root.folder_nav_down",
+      "ratios": [
+        1.074,
+        1.011,
+        1.085
+      ],
+      "medianRatio": 1.074,
+      "minRatio": 1.011,
+      "maxRatio": 1.085,
+      "controlMedianP95Ms": 0.094,
+      "treatmentMedianP95Ms": 0.101,
+      "percent": 7.447
+    },
+    {
+      "key": "conversation_open_cold/medium_markdown",
+      "ratios": [
+        1.169,
+        0.989,
+        1.071
+      ],
+      "medianRatio": 1.071,
+      "minRatio": 0.989,
+      "maxRatio": 1.169,
+      "controlMedianP95Ms": 20.262,
+      "treatmentMedianP95Ms": 20.04,
+      "percent": 7.116
+    },
+    {
+      "key": "sidebar_render/huge_foldered.folder_view",
+      "ratios": [
+        0.995,
+        1.07,
+        1.154
+      ],
+      "medianRatio": 1.07,
+      "minRatio": 0.995,
+      "maxRatio": 1.154,
+      "controlMedianP95Ms": 2.748,
+      "treatmentMedianP95Ms": 3.026,
+      "percent": 6.956
+    },
+    {
+      "key": "sidebar_navigation/huge_foldered.next_streaming_root",
+      "ratios": [
+        1.058,
+        0.99,
+        1.07
+      ],
+      "medianRatio": 1.058,
+      "minRatio": 0.99,
+      "maxRatio": 1.07,
+      "controlMedianP95Ms": 2.298,
+      "treatmentMedianP95Ms": 2.306,
+      "percent": 5.78
+    },
+    {
+      "key": "conversation_open_warm/huge_expanded_tools",
+      "ratios": [
+        1.043,
+        1.054,
+        0.946
+      ],
+      "medianRatio": 1.043,
+      "minRatio": 0.946,
+      "maxRatio": 1.054,
+      "controlMedianP95Ms": 0.186,
+      "treatmentMedianP95Ms": 0.196,
+      "percent": 4.348
+    },
+    {
+      "key": "sidebar_navigation/large_root.next_streaming_root",
+      "ratios": [
+        0.882,
+        1.028,
+        1.199
+      ],
+      "medianRatio": 1.028,
+      "minRatio": 0.882,
+      "maxRatio": 1.199,
+      "controlMedianP95Ms": 0.6,
+      "treatmentMedianP95Ms": 0.617,
+      "percent": 2.833
+    }
+  ],
+  "improvements": [
+    {
+      "key": "sidebar_navigation/small_root.next_marked_root",
+      "ratios": [
+        0.2,
+        0.2,
+        0.2
+      ],
+      "medianRatio": 0.2,
+      "minRatio": 0.2,
+      "maxRatio": 0.2,
+      "controlMedianP95Ms": 0.005,
+      "treatmentMedianP95Ms": 0.001,
+      "percent": -80
+    },
+    {
+      "key": "sidebar_navigation/huge_foldered.next_marked_folder",
+      "ratios": [
+        0.378,
+        0.263,
+        0.273
+      ],
+      "medianRatio": 0.273,
+      "minRatio": 0.263,
+      "maxRatio": 0.378,
+      "controlMedianP95Ms": 0.51,
+      "treatmentMedianP95Ms": 0.144,
+      "percent": -72.745
+    },
+    {
+      "key": "sidebar_navigation/large_root.next_marked_folder",
+      "ratios": [
+        0.279,
+        0.355,
+        0.32
+      ],
+      "medianRatio": 0.32,
+      "minRatio": 0.279,
+      "maxRatio": 0.355,
+      "controlMedianP95Ms": 0.14,
+      "treatmentMedianP95Ms": 0.048,
+      "percent": -68
+    },
+    {
+      "key": "sidebar_navigation/huge_foldered.next_marked_root",
+      "ratios": [
+        0.461,
+        0.368,
+        0.371
+      ],
+      "medianRatio": 0.371,
+      "minRatio": 0.368,
+      "maxRatio": 0.461,
+      "controlMedianP95Ms": 0.533,
+      "treatmentMedianP95Ms": 0.198,
+      "percent": -62.852
+    },
+    {
+      "key": "sidebar_navigation/large_root.next_marked_root",
+      "ratios": [
+        0.366,
+        0.41,
+        0.42
+      ],
+      "medianRatio": 0.41,
+      "minRatio": 0.366,
+      "maxRatio": 0.42,
+      "controlMedianP95Ms": 0.145,
+      "treatmentMedianP95Ms": 0.059,
+      "percent": -59.028
+    },
+    {
+      "key": "sidebar_navigation/small_root.next_marked_folder",
+      "ratios": [
+        0.6,
+        0.5,
+        0.75
+      ],
+      "medianRatio": 0.6,
+      "minRatio": 0.5,
+      "maxRatio": 0.75,
+      "controlMedianP95Ms": 0.005,
+      "treatmentMedianP95Ms": 0.003,
+      "percent": -40
+    },
+    {
+      "key": "sidebar_list_update/large_root.replace_and_sync",
+      "ratios": [
+        1.107,
+        0.769,
+        0.548
+      ],
+      "medianRatio": 0.769,
+      "minRatio": 0.548,
+      "maxRatio": 1.107,
+      "controlMedianP95Ms": 0.823,
+      "treatmentMedianP95Ms": 0.649,
+      "percent": -23.086
+    },
+    {
+      "key": "sidebar_navigation/large_root.next_streaming_folder",
+      "ratios": [
+        0.817,
+        0.619,
+        1.548
+      ],
+      "medianRatio": 0.817,
+      "minRatio": 0.619,
+      "maxRatio": 1.548,
+      "controlMedianP95Ms": 0.186,
+      "treatmentMedianP95Ms": 0.152,
+      "percent": -18.28
+    },
+    {
+      "key": "sidebar_list_update/huge_foldered.replace_and_sync",
+      "ratios": [
+        0.843,
+        0.753,
+        0.88
+      ],
+      "medianRatio": 0.843,
+      "minRatio": 0.753,
+      "maxRatio": 0.88,
+      "controlMedianP95Ms": 3.743,
+      "treatmentMedianP95Ms": 2.913,
+      "percent": -15.687
+    },
+    {
+      "key": "sidebar_render/huge_foldered.root",
+      "ratios": [
+        0.969,
+        0.667,
+        0.855
+      ],
+      "medianRatio": 0.855,
+      "minRatio": 0.667,
+      "maxRatio": 0.969,
+      "controlMedianP95Ms": 4.53,
+      "treatmentMedianP95Ms": 4.021,
+      "percent": -14.459
+    },
+    {
+      "key": "sidebar_render/large_root.visual_selection",
+      "ratios": [
+        0.895,
+        0.716,
+        0.915
+      ],
+      "medianRatio": 0.895,
+      "minRatio": 0.716,
+      "maxRatio": 0.915,
+      "controlMedianP95Ms": 1.597,
+      "treatmentMedianP95Ms": 1.391,
+      "percent": -10.457
+    },
+    {
+      "key": "sidebar_list_update/small_root.replace_and_sync",
+      "ratios": [
+        0.818,
+        0.902,
+        1.156
+      ],
+      "medianRatio": 0.902,
+      "minRatio": 0.818,
+      "maxRatio": 1.156,
+      "controlMedianP95Ms": 0.033,
+      "treatmentMedianP95Ms": 0.037,
+      "percent": -9.756
+    },
+    {
+      "key": "sidebar_render/large_root.root",
+      "ratios": [
+        0.843,
+        0.904,
+        0.919
+      ],
+      "medianRatio": 0.904,
+      "minRatio": 0.843,
+      "maxRatio": 0.919,
+      "controlMedianP95Ms": 1.318,
+      "treatmentMedianP95Ms": 1.16,
+      "percent": -9.646
+    },
+    {
+      "key": "sidebar_navigation/small_root.nav_down",
+      "ratios": [
+        0.917,
+        0.692,
+        1.111
+      ],
+      "medianRatio": 0.917,
+      "minRatio": 0.692,
+      "maxRatio": 1.111,
+      "controlMedianP95Ms": 0.012,
+      "treatmentMedianP95Ms": 0.01,
+      "percent": -8.333
+    },
+    {
+      "key": "conversation_open_warm/small_chat",
+      "ratios": [
+        0.867,
+        0.925,
+        0.921
+      ],
+      "medianRatio": 0.921,
+      "minRatio": 0.867,
+      "maxRatio": 0.925,
+      "controlMedianP95Ms": 0.253,
+      "treatmentMedianP95Ms": 0.234,
+      "percent": -7.874
+    },
+    {
+      "key": "conversation_open_warm/huge_markdown_collapsed_tools",
+      "ratios": [
+        0.929,
+        0.921,
+        0.882
+      ],
+      "medianRatio": 0.921,
+      "minRatio": 0.882,
+      "maxRatio": 0.929,
+      "controlMedianP95Ms": 0.21,
+      "treatmentMedianP95Ms": 0.187,
+      "percent": -7.921
+    },
+    {
+      "key": "conversation_build_lines_cold/small_chat",
+      "ratios": [
+        0.87,
+        1.121,
+        0.925
+      ],
+      "medianRatio": 0.925,
+      "minRatio": 0.87,
+      "maxRatio": 1.121,
+      "controlMedianP95Ms": 1.163,
+      "treatmentMedianP95Ms": 1.076,
+      "percent": -7.481
+    },
+    {
+      "key": "conversation_open_cold/small_chat",
+      "ratios": [
+        0.969,
+        0.941,
+        0.936
+      ],
+      "medianRatio": 0.941,
+      "minRatio": 0.936,
+      "maxRatio": 0.969,
+      "controlMedianP95Ms": 2.437,
+      "treatmentMedianP95Ms": 2.362,
+      "percent": -5.944
+    },
+    {
+      "key": "sidebar_render/small_root.root",
+      "ratios": [
+        0.828,
+        1.486,
+        0.946
+      ],
+      "medianRatio": 0.946,
+      "minRatio": 0.828,
+      "maxRatio": 1.486,
+      "controlMedianP95Ms": 0.163,
+      "treatmentMedianP95Ms": 0.158,
+      "percent": -5.389
+    },
+    {
+      "key": "conversation_build_lines_cold/medium_markdown",
+      "ratios": [
+        1.062,
+        0.949,
+        0.919
+      ],
+      "medianRatio": 0.949,
+      "minRatio": 0.919,
+      "maxRatio": 1.062,
+      "controlMedianP95Ms": 19.931,
+      "treatmentMedianP95Ms": 18.315,
+      "percent": -5.063
+    }
+  ],
+  "notes": [
+    "8 median p95 regression(s) exceed 2%."
+  ]
+}
