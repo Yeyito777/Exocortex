@@ -2152,3 +2152,25 @@ Validation:
   - several unrelated navigation/list-update axes also regressed above tolerance.
 
 Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact. The narrower search-filter title fast path from experiment 087 remains kept.
+
+## 089 — Generation map for sidebar folder aggregate ancestor cycle checks
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: sidebar folder aggregate rendering allocates a fresh `Set` while walking each conversation's folder ancestors to prevent cycles. Replacing the per-conversation set with a generation-mark map should preserve cycle protection while reducing allocation in root/folder sidebar rendering.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts src/render.test.ts` gave 76 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/089-folder-aggregate-seen-generation-v9.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `sidebar_render/small_root.root` median ratio 0.819
+  - `sidebar_render/large_root.root` median ratio 0.901
+  - `sidebar_render/large_root.folder_view` median ratio 0.834
+  - but `sidebar_render/small_root.folder_view` median ratio 1.481
+  - `sidebar_render/huge_foldered.root` median ratio 1.292
+  - `sidebar_navigation/huge_foldered.folder_nav_down` median ratio 1.217
+  - several unrelated conversation/list-update axes also regressed above tolerance.
+
+Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
