@@ -1,6 +1,5 @@
-import { folderDescendantConversations } from "./folders";
 import { sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
-import { buildDisplayRows } from "./rows";
+import { buildDisplayRows, type DisplayRow } from "./rows";
 import { focusConversationAt, focusSidebarItem } from "./selection";
 import type { SidebarState } from "./state";
 
@@ -34,13 +33,35 @@ export function moveSelection(sidebar: SidebarState, delta: number): void {
   else if (delta > 0) focusSidebarItem(sidebar, lastEntry);
 }
 
-function hasStreamingIndicator(sidebar: SidebarState, item: SidebarSelectableItem | null): boolean {
+function foldersWithStreamingIndicator(sidebar: SidebarState): Set<string> {
+  const ids = new Set<string>();
+  if (sidebar.folders.length === 0) return ids;
+
+  const parentById = new Map<string, string | null>();
+  for (const folder of sidebar.folders) parentById.set(folder.id, folder.parentId ?? null);
+
+  for (const conv of sidebar.conversations) {
+    if (!conv.streaming && !conv.unread) continue;
+    let folderId = conv.folderId ?? null;
+    const seen = new Set<string>();
+    while (folderId && parentById.has(folderId) && !seen.has(folderId)) {
+      seen.add(folderId);
+      ids.add(folderId);
+      folderId = parentById.get(folderId) ?? null;
+    }
+  }
+
+  return ids;
+}
+
+function hasStreamingIndicator(sidebar: SidebarState, row: DisplayRow, streamingFolderIds: Set<string>): boolean {
+  const item = row.item ?? null;
   if (item?.type === "conversation") {
-    const conv = sidebar.conversations.find(c => c.id === item.id);
+    const conv = row.convIdx === undefined ? sidebar.conversations.find(c => c.id === item.id) : sidebar.conversations[row.convIdx];
     return Boolean(conv?.streaming || conv?.unread);
   }
   if (item?.type === "folder") {
-    return folderDescendantConversations(sidebar, item.id).some(conv => conv.streaming || conv.unread);
+    return streamingFolderIds.has(item.id);
   }
   return false;
 }
@@ -50,7 +71,8 @@ export function moveToStreaming(sidebar: SidebarState, delta: 1 | -1): void {
   const entries = buildDisplayRows(sidebar)
     .map((row, rowIndex) => ({ row, rowIndex }))
     .filter(({ row }) => row.type === "entry" && row.item);
-  const targets = entries.filter(({ row }) => hasStreamingIndicator(sidebar, row.item ?? null));
+  const streamingFolderIds = foldersWithStreamingIndicator(sidebar);
+  const targets = entries.filter(({ row }) => hasStreamingIndicator(sidebar, row, streamingFolderIds));
   if (targets.length === 0) return;
 
   const selectedKey = itemKey(sidebar.selectedItem);

@@ -1862,3 +1862,36 @@ Validation:
   - `sidebar_navigation/huge_foldered.next_streaming_folder`: 1.591ms
 
 Decision: keep. This exposes a previously unmeasured severe root-sidebar streaming navigation cost and provides a direct target for future optimization.
+
+## 078 — Precompute folder streaming indicators for sidebar streaming navigation
+
+Status: success — kept and committed.
+
+Hypothesis: `moveToStreaming` checked folder entries by calling `folderDescendantConversations(sidebar, folderId).some(...)` for every visible folder candidate. On large root sidebars this repeatedly rescanned folders/conversations and was exposed by experiment 077 as a severe hot path (`huge_foldered.next_streaming_root` p95 around 343ms). Precomputing the set of folder ids with streaming/unread descendants once per navigation action should preserve behavior and collapse the repeated descendant scan.
+
+Change:
+
+- Removed the per-folder `folderDescendantConversations(...).some(...)` call from `moveToStreaming`.
+- Added a per-action `foldersWithStreamingIndicator` helper that walks all streaming/unread conversations once, propagating their folder ids up the folder parent chain.
+- `hasStreamingIndicator` now checks folder membership in that precomputed set and uses `DisplayRow.convIdx` for conversation rows when available.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar-navigation.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Full TUI test suite passed: `bun test` gave 370 pass, 0 fail.
+- Treatment result saved to `results/078-precompute-streaming-folder-indicators.json`.
+- Interleaved comparison saved to `results/078-precompute-streaming-folder-indicators-compare.json`.
+- Three interleaved control/treatment runs showed very large targeted wins:
+  - `sidebar_navigation/small_root.next_streaming_root` median ratio 0.290
+  - `sidebar_navigation/small_root.next_streaming_folder` median ratio 0.450
+  - `sidebar_navigation/large_root.next_streaming_root` median ratio 0.022
+  - `sidebar_navigation/large_root.next_streaming_folder` median ratio 0.519
+  - `sidebar_navigation/huge_foldered.next_streaming_root` median ratio 0.005
+  - `sidebar_navigation/huge_foldered.next_streaming_folder` median ratio 0.402
+- The interleaved geomean median ratio was 0.638.
+- The helper reported two median regressions:
+  - `sidebar_navigation/small_root.nav_down` median ratio 1.091, but this is a ~0.001ms p95 delta on a sub-0.02ms axis and unrelated to the changed streaming-navigation path.
+  - `conversation_open_cold/huge_expanded_tools` median ratio 1.022, just over the threshold and unrelated to sidebar navigation; experiment 075 showed this class of unrelated self-noise occurs in clean control runs.
+
+Decision: keep. The change is behavior-preserving, covered by sidebar streaming-navigation tests, and fixes an extreme measured root-sidebar streaming navigation cost with orders-of-magnitude targeted improvements. The remaining flagged regressions are unrelated/control-level noise under the interleaved methodology documented in experiments 075–076.
