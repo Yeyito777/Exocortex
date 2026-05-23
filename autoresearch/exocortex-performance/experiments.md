@@ -943,3 +943,23 @@ Validation:
 - The cold-open improvement was not clean enough to satisfy no-regression constraints.
 
 Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
+
+## 039 — Skip folder aggregate construction when no folder rows render
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `renderSidebar` built descendant folder aggregates whenever any folders existed, even when the current filtered display rows contained no folder entries. Checking `displayRows.some(row => row.folderIdx !== undefined)` before aggregating should avoid wasted work during conversation-only search results while preserving folder counts/icons whenever folders are visible.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts src/render.test.ts` gave 82 pass, 0 fail.
+- Result saved to `results/039-skip-folder-aggregates-without-folder-rows.json`.
+- Two interleaved control/treatment runs showed targeted search/filter wins but violated no-regression criteria:
+  - `sidebar_search_filter/small_root.performance_query` ratios: 0.748, 0.738; median 0.743
+  - `sidebar_search_filter/huge_foldered.performance_query` ratios: 0.906, 0.879; median 0.893
+  - `sidebar_list_update/small_root.replace_and_sync` median ratio 1.249
+  - `sidebar_render/huge_foldered.root` median ratio 1.056
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 1.027
+- The direct sidebar search gains were not enough to satisfy the strict all-axis/no-regression rule.
+
+Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
