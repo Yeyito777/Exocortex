@@ -1,0 +1,729 @@
+{
+  "pairs": 2,
+  "passed": false,
+  "p95GeomeanMedianRatio": 0.897,
+  "comparisons": [
+    {
+      "key": "conversation_open_cold/small_chat",
+      "ratios": [
+        1.31,
+        0.932
+      ],
+      "medianRatio": 1.121,
+      "minRatio": 0.932,
+      "maxRatio": 1.31,
+      "controlMedianP95Ms": 2.218,
+      "treatmentMedianP95Ms": 2.466,
+      "percent": 12.135
+    },
+    {
+      "key": "conversation_open_warm/small_chat",
+      "ratios": [
+        1.023,
+        0.88
+      ],
+      "medianRatio": 0.951,
+      "minRatio": 0.88,
+      "maxRatio": 1.023,
+      "controlMedianP95Ms": 0.231,
+      "treatmentMedianP95Ms": 0.218,
+      "percent": -4.85
+    },
+    {
+      "key": "conversation_build_lines_cold/small_chat",
+      "ratios": [
+        0.829,
+        0.728
+      ],
+      "medianRatio": 0.778,
+      "minRatio": 0.728,
+      "maxRatio": 0.829,
+      "controlMedianP95Ms": 1.086,
+      "treatmentMedianP95Ms": 0.846,
+      "percent": -22.169
+    },
+    {
+      "key": "conversation_open_cold/medium_markdown",
+      "ratios": [
+        1.014,
+        1.067
+      ],
+      "medianRatio": 1.04,
+      "minRatio": 1.014,
+      "maxRatio": 1.067,
+      "controlMedianP95Ms": 20.297,
+      "treatmentMedianP95Ms": 21.081,
+      "percent": 4.05
+    },
+    {
+      "key": "conversation_open_warm/medium_markdown",
+      "ratios": [
+        1.056,
+        0.829
+      ],
+      "medianRatio": 0.943,
+      "minRatio": 0.829,
+      "maxRatio": 1.056,
+      "controlMedianP95Ms": 0.192,
+      "treatmentMedianP95Ms": 0.179,
+      "percent": -5.743
+    },
+    {
+      "key": "conversation_build_lines_cold/medium_markdown",
+      "ratios": [
+        0.821,
+        0.798
+      ],
+      "medianRatio": 0.809,
+      "minRatio": 0.798,
+      "maxRatio": 0.821,
+      "controlMedianP95Ms": 21.223,
+      "treatmentMedianP95Ms": 17.17,
+      "percent": -19.065
+    },
+    {
+      "key": "conversation_open_cold/huge_markdown_collapsed_tools",
+      "ratios": [
+        0.977,
+        1.04
+      ],
+      "medianRatio": 1.009,
+      "minRatio": 0.977,
+      "maxRatio": 1.04,
+      "controlMedianP95Ms": 107.111,
+      "treatmentMedianP95Ms": 107.989,
+      "percent": 0.87
+    },
+    {
+      "key": "conversation_open_warm/huge_markdown_collapsed_tools",
+      "ratios": [
+        0.923,
+        0.93
+      ],
+      "medianRatio": 0.927,
+      "minRatio": 0.923,
+      "maxRatio": 0.93,
+      "controlMedianP95Ms": 0.217,
+      "treatmentMedianP95Ms": 0.202,
+      "percent": -7.35
+    },
+    {
+      "key": "conversation_build_lines_cold/huge_markdown_collapsed_tools",
+      "ratios": [
+        0.932,
+        0.985
+      ],
+      "medianRatio": 0.958,
+      "minRatio": 0.932,
+      "maxRatio": 0.985,
+      "controlMedianP95Ms": 109.936,
+      "treatmentMedianP95Ms": 105.328,
+      "percent": -4.165
+    },
+    {
+      "key": "conversation_open_cold/huge_expanded_tools",
+      "ratios": [
+        0.92,
+        1.084
+      ],
+      "medianRatio": 1.002,
+      "minRatio": 0.92,
+      "maxRatio": 1.084,
+      "controlMedianP95Ms": 37.18,
+      "treatmentMedianP95Ms": 37.193,
+      "percent": 0.228
+    },
+    {
+      "key": "conversation_open_warm/huge_expanded_tools",
+      "ratios": [
+        0.759,
+        0.994
+      ],
+      "medianRatio": 0.877,
+      "minRatio": 0.759,
+      "maxRatio": 0.994,
+      "controlMedianP95Ms": 0.2,
+      "treatmentMedianP95Ms": 0.172,
+      "percent": -12.339
+    },
+    {
+      "key": "conversation_build_lines_cold/huge_expanded_tools",
+      "ratios": [
+        1.049,
+        1.016
+      ],
+      "medianRatio": 1.032,
+      "minRatio": 1.016,
+      "maxRatio": 1.049,
+      "controlMedianP95Ms": 38.038,
+      "treatmentMedianP95Ms": 39.294,
+      "percent": 3.249
+    },
+    {
+      "key": "sidebar_render/small_root.root",
+      "ratios": [
+        0.803,
+        1.189
+      ],
+      "medianRatio": 0.996,
+      "minRatio": 0.803,
+      "maxRatio": 1.189,
+      "controlMedianP95Ms": 0.175,
+      "treatmentMedianP95Ms": 0.166,
+      "percent": -0.393
+    },
+    {
+      "key": "sidebar_render/small_root.folder_view",
+      "ratios": [
+        0.835,
+        0.932
+      ],
+      "medianRatio": 0.883,
+      "minRatio": 0.835,
+      "maxRatio": 0.932,
+      "controlMedianP95Ms": 0.099,
+      "treatmentMedianP95Ms": 0.086,
+      "percent": -11.666
+    },
+    {
+      "key": "sidebar_navigation/small_root.nav_down",
+      "ratios": [
+        0.846,
+        1
+      ],
+      "medianRatio": 0.923,
+      "minRatio": 0.846,
+      "maxRatio": 1,
+      "controlMedianP95Ms": 0.011,
+      "treatmentMedianP95Ms": 0.01,
+      "percent": -7.692
+    },
+    {
+      "key": "sidebar_navigation/small_root.folder_nav_down",
+      "ratios": [
+        0.625,
+        1
+      ],
+      "medianRatio": 0.813,
+      "minRatio": 0.625,
+      "maxRatio": 1,
+      "controlMedianP95Ms": 0.007,
+      "treatmentMedianP95Ms": 0.005,
+      "percent": -18.75
+    },
+    {
+      "key": "sidebar_search_filter/small_root.performance_query",
+      "ratios": [
+        0.781,
+        1.041
+      ],
+      "medianRatio": 0.911,
+      "minRatio": 0.781,
+      "maxRatio": 1.041,
+      "controlMedianP95Ms": 0.341,
+      "treatmentMedianP95Ms": 0.304,
+      "percent": -8.913
+    },
+    {
+      "key": "sidebar_list_update/small_root.replace_and_sync",
+      "ratios": [
+        1.125,
+        1.226
+      ],
+      "medianRatio": 1.175,
+      "minRatio": 1.125,
+      "maxRatio": 1.226,
+      "controlMedianP95Ms": 0.032,
+      "treatmentMedianP95Ms": 0.037,
+      "percent": 17.54
+    },
+    {
+      "key": "sidebar_render/large_root.root",
+      "ratios": [
+        0.916,
+        0.926
+      ],
+      "medianRatio": 0.921,
+      "minRatio": 0.916,
+      "maxRatio": 0.926,
+      "controlMedianP95Ms": 1.13,
+      "treatmentMedianP95Ms": 1.041,
+      "percent": -7.874
+    },
+    {
+      "key": "sidebar_render/large_root.folder_view",
+      "ratios": [
+        1.087,
+        0.727
+      ],
+      "medianRatio": 0.907,
+      "minRatio": 0.727,
+      "maxRatio": 1.087,
+      "controlMedianP95Ms": 1.048,
+      "treatmentMedianP95Ms": 0.945,
+      "percent": -9.31
+    },
+    {
+      "key": "sidebar_navigation/large_root.nav_down",
+      "ratios": [
+        0.973,
+        0.848
+      ],
+      "medianRatio": 0.911,
+      "minRatio": 0.848,
+      "maxRatio": 0.973,
+      "controlMedianP95Ms": 0.39,
+      "treatmentMedianP95Ms": 0.354,
+      "percent": -8.924
+    },
+    {
+      "key": "sidebar_navigation/large_root.folder_nav_down",
+      "ratios": [
+        0.642,
+        0.426
+      ],
+      "medianRatio": 0.534,
+      "minRatio": 0.426,
+      "maxRatio": 0.642,
+      "controlMedianP95Ms": 0.098,
+      "treatmentMedianP95Ms": 0.052,
+      "percent": -46.608
+    },
+    {
+      "key": "sidebar_search_filter/large_root.performance_query",
+      "ratios": [
+        0.971,
+        0.992
+      ],
+      "medianRatio": 0.981,
+      "minRatio": 0.971,
+      "maxRatio": 0.992,
+      "controlMedianP95Ms": 9.593,
+      "treatmentMedianP95Ms": 9.412,
+      "percent": -1.874
+    },
+    {
+      "key": "sidebar_list_update/large_root.replace_and_sync",
+      "ratios": [
+        0.912,
+        1.052
+      ],
+      "medianRatio": 0.982,
+      "minRatio": 0.912,
+      "maxRatio": 1.052,
+      "controlMedianP95Ms": 0.68,
+      "treatmentMedianP95Ms": 0.669,
+      "percent": -1.829
+    },
+    {
+      "key": "sidebar_render/huge_foldered.root",
+      "ratios": [
+        1.41,
+        0.938
+      ],
+      "medianRatio": 1.174,
+      "minRatio": 0.938,
+      "maxRatio": 1.41,
+      "controlMedianP95Ms": 4.18,
+      "treatmentMedianP95Ms": 4.854,
+      "percent": 17.393
+    },
+    {
+      "key": "sidebar_render/huge_foldered.folder_view",
+      "ratios": [
+        1.087,
+        0.648
+      ],
+      "medianRatio": 0.868,
+      "minRatio": 0.648,
+      "maxRatio": 1.087,
+      "controlMedianP95Ms": 3.296,
+      "treatmentMedianP95Ms": 2.675,
+      "percent": -13.235
+    },
+    {
+      "key": "sidebar_navigation/huge_foldered.nav_down",
+      "ratios": [
+        0.929,
+        0.829
+      ],
+      "medianRatio": 0.879,
+      "minRatio": 0.829,
+      "maxRatio": 0.929,
+      "controlMedianP95Ms": 1.277,
+      "treatmentMedianP95Ms": 1.121,
+      "percent": -12.118
+    },
+    {
+      "key": "sidebar_navigation/huge_foldered.folder_nav_down",
+      "ratios": [
+        0.388,
+        0.364
+      ],
+      "medianRatio": 0.376,
+      "minRatio": 0.364,
+      "maxRatio": 0.388,
+      "controlMedianP95Ms": 0.31,
+      "treatmentMedianP95Ms": 0.116,
+      "percent": -62.354
+    },
+    {
+      "key": "sidebar_search_filter/huge_foldered.performance_query",
+      "ratios": [
+        0.899,
+        0.915
+      ],
+      "medianRatio": 0.907,
+      "minRatio": 0.899,
+      "maxRatio": 0.915,
+      "controlMedianP95Ms": 38.833,
+      "treatmentMedianP95Ms": 35.187,
+      "percent": -9.325
+    },
+    {
+      "key": "sidebar_list_update/huge_foldered.replace_and_sync",
+      "ratios": [
+        0.862,
+        0.939
+      ],
+      "medianRatio": 0.9,
+      "minRatio": 0.862,
+      "maxRatio": 0.939,
+      "controlMedianP95Ms": 3.101,
+      "treatmentMedianP95Ms": 2.779,
+      "percent": -9.973
+    },
+    {
+      "key": "sidebar_render/large_root.visual_selection",
+      "ratios": [
+        0.871,
+        0.815
+      ],
+      "medianRatio": 0.843,
+      "minRatio": 0.815,
+      "maxRatio": 0.871,
+      "controlMedianP95Ms": 1.56,
+      "treatmentMedianP95Ms": 1.314,
+      "percent": -15.703
+    }
+  ],
+  "regressions": [
+    {
+      "key": "sidebar_list_update/small_root.replace_and_sync",
+      "ratios": [
+        1.125,
+        1.226
+      ],
+      "medianRatio": 1.175,
+      "minRatio": 1.125,
+      "maxRatio": 1.226,
+      "controlMedianP95Ms": 0.032,
+      "treatmentMedianP95Ms": 0.037,
+      "percent": 17.54
+    },
+    {
+      "key": "sidebar_render/huge_foldered.root",
+      "ratios": [
+        1.41,
+        0.938
+      ],
+      "medianRatio": 1.174,
+      "minRatio": 0.938,
+      "maxRatio": 1.41,
+      "controlMedianP95Ms": 4.18,
+      "treatmentMedianP95Ms": 4.854,
+      "percent": 17.393
+    },
+    {
+      "key": "conversation_open_cold/small_chat",
+      "ratios": [
+        1.31,
+        0.932
+      ],
+      "medianRatio": 1.121,
+      "minRatio": 0.932,
+      "maxRatio": 1.31,
+      "controlMedianP95Ms": 2.218,
+      "treatmentMedianP95Ms": 2.466,
+      "percent": 12.135
+    },
+    {
+      "key": "conversation_open_cold/medium_markdown",
+      "ratios": [
+        1.014,
+        1.067
+      ],
+      "medianRatio": 1.04,
+      "minRatio": 1.014,
+      "maxRatio": 1.067,
+      "controlMedianP95Ms": 20.297,
+      "treatmentMedianP95Ms": 21.081,
+      "percent": 4.05
+    },
+    {
+      "key": "conversation_build_lines_cold/huge_expanded_tools",
+      "ratios": [
+        1.049,
+        1.016
+      ],
+      "medianRatio": 1.032,
+      "minRatio": 1.016,
+      "maxRatio": 1.049,
+      "controlMedianP95Ms": 38.038,
+      "treatmentMedianP95Ms": 39.294,
+      "percent": 3.249
+    }
+  ],
+  "improvements": [
+    {
+      "key": "sidebar_navigation/huge_foldered.folder_nav_down",
+      "ratios": [
+        0.388,
+        0.364
+      ],
+      "medianRatio": 0.376,
+      "minRatio": 0.364,
+      "maxRatio": 0.388,
+      "controlMedianP95Ms": 0.31,
+      "treatmentMedianP95Ms": 0.116,
+      "percent": -62.354
+    },
+    {
+      "key": "sidebar_navigation/large_root.folder_nav_down",
+      "ratios": [
+        0.642,
+        0.426
+      ],
+      "medianRatio": 0.534,
+      "minRatio": 0.426,
+      "maxRatio": 0.642,
+      "controlMedianP95Ms": 0.098,
+      "treatmentMedianP95Ms": 0.052,
+      "percent": -46.608
+    },
+    {
+      "key": "conversation_build_lines_cold/small_chat",
+      "ratios": [
+        0.829,
+        0.728
+      ],
+      "medianRatio": 0.778,
+      "minRatio": 0.728,
+      "maxRatio": 0.829,
+      "controlMedianP95Ms": 1.086,
+      "treatmentMedianP95Ms": 0.846,
+      "percent": -22.169
+    },
+    {
+      "key": "conversation_build_lines_cold/medium_markdown",
+      "ratios": [
+        0.821,
+        0.798
+      ],
+      "medianRatio": 0.809,
+      "minRatio": 0.798,
+      "maxRatio": 0.821,
+      "controlMedianP95Ms": 21.223,
+      "treatmentMedianP95Ms": 17.17,
+      "percent": -19.065
+    },
+    {
+      "key": "sidebar_navigation/small_root.folder_nav_down",
+      "ratios": [
+        0.625,
+        1
+      ],
+      "medianRatio": 0.813,
+      "minRatio": 0.625,
+      "maxRatio": 1,
+      "controlMedianP95Ms": 0.007,
+      "treatmentMedianP95Ms": 0.005,
+      "percent": -18.75
+    },
+    {
+      "key": "sidebar_render/large_root.visual_selection",
+      "ratios": [
+        0.871,
+        0.815
+      ],
+      "medianRatio": 0.843,
+      "minRatio": 0.815,
+      "maxRatio": 0.871,
+      "controlMedianP95Ms": 1.56,
+      "treatmentMedianP95Ms": 1.314,
+      "percent": -15.703
+    },
+    {
+      "key": "sidebar_render/huge_foldered.folder_view",
+      "ratios": [
+        1.087,
+        0.648
+      ],
+      "medianRatio": 0.868,
+      "minRatio": 0.648,
+      "maxRatio": 1.087,
+      "controlMedianP95Ms": 3.296,
+      "treatmentMedianP95Ms": 2.675,
+      "percent": -13.235
+    },
+    {
+      "key": "conversation_open_warm/huge_expanded_tools",
+      "ratios": [
+        0.759,
+        0.994
+      ],
+      "medianRatio": 0.877,
+      "minRatio": 0.759,
+      "maxRatio": 0.994,
+      "controlMedianP95Ms": 0.2,
+      "treatmentMedianP95Ms": 0.172,
+      "percent": -12.339
+    },
+    {
+      "key": "sidebar_navigation/huge_foldered.nav_down",
+      "ratios": [
+        0.929,
+        0.829
+      ],
+      "medianRatio": 0.879,
+      "minRatio": 0.829,
+      "maxRatio": 0.929,
+      "controlMedianP95Ms": 1.277,
+      "treatmentMedianP95Ms": 1.121,
+      "percent": -12.118
+    },
+    {
+      "key": "sidebar_render/small_root.folder_view",
+      "ratios": [
+        0.835,
+        0.932
+      ],
+      "medianRatio": 0.883,
+      "minRatio": 0.835,
+      "maxRatio": 0.932,
+      "controlMedianP95Ms": 0.099,
+      "treatmentMedianP95Ms": 0.086,
+      "percent": -11.666
+    },
+    {
+      "key": "sidebar_list_update/huge_foldered.replace_and_sync",
+      "ratios": [
+        0.862,
+        0.939
+      ],
+      "medianRatio": 0.9,
+      "minRatio": 0.862,
+      "maxRatio": 0.939,
+      "controlMedianP95Ms": 3.101,
+      "treatmentMedianP95Ms": 2.779,
+      "percent": -9.973
+    },
+    {
+      "key": "sidebar_render/large_root.folder_view",
+      "ratios": [
+        1.087,
+        0.727
+      ],
+      "medianRatio": 0.907,
+      "minRatio": 0.727,
+      "maxRatio": 1.087,
+      "controlMedianP95Ms": 1.048,
+      "treatmentMedianP95Ms": 0.945,
+      "percent": -9.31
+    },
+    {
+      "key": "sidebar_search_filter/huge_foldered.performance_query",
+      "ratios": [
+        0.899,
+        0.915
+      ],
+      "medianRatio": 0.907,
+      "minRatio": 0.899,
+      "maxRatio": 0.915,
+      "controlMedianP95Ms": 38.833,
+      "treatmentMedianP95Ms": 35.187,
+      "percent": -9.325
+    },
+    {
+      "key": "sidebar_search_filter/small_root.performance_query",
+      "ratios": [
+        0.781,
+        1.041
+      ],
+      "medianRatio": 0.911,
+      "minRatio": 0.781,
+      "maxRatio": 1.041,
+      "controlMedianP95Ms": 0.341,
+      "treatmentMedianP95Ms": 0.304,
+      "percent": -8.913
+    },
+    {
+      "key": "sidebar_navigation/large_root.nav_down",
+      "ratios": [
+        0.973,
+        0.848
+      ],
+      "medianRatio": 0.911,
+      "minRatio": 0.848,
+      "maxRatio": 0.973,
+      "controlMedianP95Ms": 0.39,
+      "treatmentMedianP95Ms": 0.354,
+      "percent": -8.924
+    },
+    {
+      "key": "sidebar_render/large_root.root",
+      "ratios": [
+        0.916,
+        0.926
+      ],
+      "medianRatio": 0.921,
+      "minRatio": 0.916,
+      "maxRatio": 0.926,
+      "controlMedianP95Ms": 1.13,
+      "treatmentMedianP95Ms": 1.041,
+      "percent": -7.874
+    },
+    {
+      "key": "sidebar_navigation/small_root.nav_down",
+      "ratios": [
+        0.846,
+        1
+      ],
+      "medianRatio": 0.923,
+      "minRatio": 0.846,
+      "maxRatio": 1,
+      "controlMedianP95Ms": 0.011,
+      "treatmentMedianP95Ms": 0.01,
+      "percent": -7.692
+    },
+    {
+      "key": "conversation_open_warm/huge_markdown_collapsed_tools",
+      "ratios": [
+        0.923,
+        0.93
+      ],
+      "medianRatio": 0.927,
+      "minRatio": 0.923,
+      "maxRatio": 0.93,
+      "controlMedianP95Ms": 0.217,
+      "treatmentMedianP95Ms": 0.202,
+      "percent": -7.35
+    },
+    {
+      "key": "conversation_open_warm/medium_markdown",
+      "ratios": [
+        1.056,
+        0.829
+      ],
+      "medianRatio": 0.943,
+      "minRatio": 0.829,
+      "maxRatio": 1.056,
+      "controlMedianP95Ms": 0.192,
+      "treatmentMedianP95Ms": 0.179,
+      "percent": -5.743
+    }
+  ],
+  "notes": [
+    "5 median p95 regression(s) exceed 2%."
+  ]
+}

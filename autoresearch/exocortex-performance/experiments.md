@@ -1816,3 +1816,23 @@ Validation:
   - `sidebar_list_update/huge_foldered.replace_and_sync`: ratio 0.863
 
 Decision: keep this as a benchmark calibration finding. A single baseline/current p95 compare is too noisy to be the only acceptance signal, especially for sub-millisecond axes. Future production experiments should continue using interleaved control/treatment runs and should distinguish targeted repeated wins from unrelated control-level volatility.
+
+## 076 — Add interleaved benchmark comparison helper
+
+Status: success — kept and committed (research tooling only; no UX/UI code changed).
+
+Problem: experiment 075 showed that a single `--compare` run against a baseline can fail due control-level p95 self-noise even when no code changed. Most production experiments in this worktree therefore used interleaved control/treatment pairs and manually inspected median ratios.
+
+Change:
+
+- Added `compare-interleaved.ts`, a small helper that accepts alternating control/treatment benchmark JSON files.
+- It reports per-axis p95 ratios, median ratios across pairs, median control/treatment p95s, regressions, improvements, and a pass/fail decision.
+- Updated the README to recommend this helper for production-code decisions when multiple control/treatment pairs are available.
+- Saved a smoke result to `results/076-interleaved-compare-helper-smoke.json` using the existing experiment 073 control/treatment JSONs from `/tmp`.
+
+Validation:
+
+- `bun run autoresearch/exocortex-performance/compare-interleaved.ts --json /tmp/073-control-1.json /tmp/073-treatment-1.json /tmp/073-control-2.json /tmp/073-treatment-2.json`: ran and produced structured JSON. The sample correctly failed because experiment 073 had median regressions.
+- `bun run typecheck`: pass.
+
+Decision: keep. This makes the benchmark decision process more reproducible and documents the interleaved methodology already used throughout the autoresearch.

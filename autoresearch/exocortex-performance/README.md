@@ -32,7 +32,7 @@ For each experiment:
 3. On success: record the result in `experiments.md` and commit.
 4. On failure: record the failure in `experiments.md`, then stash/delete the code change so only the log remains.
 
-Use `--compare` for an automated pass/fail check against a prior JSON result.
+Use `--compare` for a single-run automated pass/fail check against a prior JSON result. Because experiment 075 showed substantial control-vs-baseline p95 self-noise, prefer `compare-interleaved.ts` for production-code decisions when multiple control/treatment pairs are available.
 
 ## Commands
 
@@ -41,4 +41,5 @@ From the repo root in this worktree:
 ```bash
 bun run autoresearch/exocortex-performance/benchmark.ts --json > autoresearch/exocortex-performance/results/baseline.json
 bun run autoresearch/exocortex-performance/benchmark.ts --json --compare autoresearch/exocortex-performance/results/baseline.json
+bun run autoresearch/exocortex-performance/compare-interleaved.ts control-1.json treatment-1.json control-2.json treatment-2.json
 ```
