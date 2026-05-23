@@ -1254,3 +1254,24 @@ Validation:
 - The direct cold/build regressions exceeded tolerance.
 
 Action: reverted `tui/src/conversation.ts`; kept only this failure log and result artifact.
+
+## 052 — Fast path terminal sanitizer for already-safe text
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: most user/assistant/tool text in the benchmark contains no terminal control characters other than ordinary newlines. Scanning once and returning the original string when no sanitization is needed should avoid five regex replacement passes during cold conversation rendering.
+
+Validation:
+
+- Relevant tests passed: `bun test src/conversation.test.ts src/render.test.ts src/focus.test.ts` gave 86 pass, 0 fail.
+- Result saved to `results/052-sanitize-untrusted-text-fast-path.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/huge_expanded_tools` median ratio 0.967
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 0.970
+  - `conversation_open_cold/small_chat` median ratio 1.031
+  - `conversation_open_warm/small_chat` median ratio 1.141
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.150
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 1.184
+- The direct conversation-axis regressions exceeded tolerance.
+
+Action: reverted `tui/src/terminaltext.ts`; kept only this failure log and result artifact.
