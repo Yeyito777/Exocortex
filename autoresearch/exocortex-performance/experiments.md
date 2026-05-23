@@ -865,3 +865,24 @@ Validation:
   - cold/warm conversation axes also had noise/regressions in the same runs.
 
 Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact. Even with the improved benchmark, strict all-axis criteria still rejected it.
+
+## 035 — Constant-width sidebar icon measurements
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: sidebar row rendering measured the widths of fixed icon strings (`▸ `, `◉ `, `★ `, mark emoji plus space) on every visible row. Replacing those with known constants and the mark metadata width should preserve layout while reducing sidebar render/search cost.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts src/render.test.ts` gave 82 pass, 0 fail.
+- Result saved to `results/035-constant-sidebar-icon-widths.json`.
+- Two interleaved control/treatment runs were too mixed for the no-regression criterion:
+  - `sidebar_render/small_root.root` ratios: 0.976, 0.729; median 0.852
+  - `sidebar_render/large_root.root` ratios: 0.798, 0.997; median 0.897
+  - `sidebar_render/huge_foldered.root` ratios: 1.178, 0.560; median 0.869
+  - `sidebar_navigation/huge_foldered.nav_down` ratios: 0.848, 1.502; median 1.175
+  - `sidebar_search_filter/huge_foldered.performance_query` ratios: 1.161, 0.950; median 1.055
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.048
+- Despite median render wins, there were direct/indirect regressions above tolerance and inconsistent run-to-run behavior.
+
+Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
