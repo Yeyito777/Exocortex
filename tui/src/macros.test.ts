@@ -43,6 +43,30 @@ describe("macro expansion", () => {
     expect(expanded).toContain("smoke-test create + clean");
     expect(expanded).toEndWith("Project: ~/Workspace/example-project");
   });
+
+  test("/autoresearch expands to the autoresearch workflow prompt and preserves topic", () => {
+    const expanded = expandMacros("/autoresearch improve benchmark quality");
+
+    expect(expanded).toContain("You're going to autoresearch.");
+    expect(expanded).toContain("Set yourself a goal in accordance with the topic.");
+    expect(expanded).toContain("not allowed to pause it");
+    expect(expanded).toContain("autoresearch/<topic>");
+    expect(expanded).toContain("you must create a benchmark first");
+    expect(expanded).toContain("Make sure to not use subagents.");
+    expect(expanded).toContain("ask him 5 questions before you actually start");
+    expect(expanded).toEndWith("improve benchmark quality");
+  });
+
+  test("/autoresearch exposes and expands stop helper", () => {
+    expect(getMacroArgs()["/autoresearch"]?.map(arg => arg.name)).toEqual(["stop"]);
+
+    const expanded = expandMacros("/autoresearch stop");
+
+    expect(expanded).toContain("You're going to stop autoresearching.");
+    expect(expanded).toContain("wrap up your last experiment");
+    expect(expanded).toContain("create an html report of the autoresearch");
+    expect(expanded).toContain("Save it to a file in ~/Workspace/playground/");
+  });
 });
 
 describe("tool macros", () => {

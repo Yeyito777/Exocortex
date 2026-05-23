@@ -133,6 +133,10 @@ function dynamicToolUninstallArgs(): MacroArg[] {
 
 const EXOCORTEX_QUALITY_WORKTREE_PROMPT = "Work in a git worktree for this task. Find the repo root first (the directory containing .git/; don't assume CWD is it). From there, create the worktree with `./scripts/dev/create-worktree <name>`. Work inside that worktree. When I say I'm satisfied, merge back to main and clean up with `./scripts/dev/clean-worktree <name-or-path>`.";
 
+const AUTORESEARCH_PROMPT = "You're going to autoresearch. Set yourself a goal in accordance with the topic. Explicitly state in the goal that you're not allowed to pause it. You're going to make a dir in the project where you're autoresearching called \"autoresearch/<topic>\" where you're going to log all experiment failures and successes. On success you commit, on failure you stash / delete the failure. Such that over long enough time compunding experiments better the benchmark. To know which experiments to keep / trash you must create a benchmark first to measure what it is we're trying to autoresearch. Performance? Quality? etc... etc... such that all experiments are deterministic to this benchmark, and you can choose which to keep and which to trash objectively, the benchmark must be the first thing you make before delving into experiments. Make sure to not use subagents. With all that said, this is the user request to autoresearch, you choose how to interpret this as a benchmark and how to start going into the research direction. Make sure to ask him 5 questions before you actually start:";
+
+const AUTORESEARCH_STOP_PROMPT = "You're going to stop autoresearching. Make sure to wrap up your last experiment and tidy everything up. Finally create an html report of the autoresearch Format your would-be response in HTML use dark-mode for styling, user tables, graphs, interactive buttons, or whatever method you consider to be best for displaying the information you want to convey to the user. Save it to a file in ~/Workspace/playground/ and give me the absolute file path.";
+
 function exocortexQualityPrompt(component: "tui" | "daemon"): string {
   const testingPrompt = component === "tui"
     ? "Once done, test end to end with xenv to make sure nothing broke."
@@ -162,6 +166,14 @@ const MACROS: MacroDef[] = [
   { name: "/thoughts", desc: "Tell me your thoughts", expansion: "Can you tell me your thoughts on this?" },
   { name: "/long", desc: "Work until complete", expansion: "This is a long running task, work tirelessly until you can verify that everything is complete and correct" },
   { name: "/html", desc: "Respond with saved HTML", expansion: "Format your would-be response in HTML use dark-mode for styling, user tables, graphs, interactive buttons, or whatever method you consider to be best for displaying the information you want to convey to the user. Save it to a file in ~/Workspace/playground/ and give me the absolute file path." },
+  {
+    name: "/autoresearch",
+    desc: "Start autoresearch",
+    expansion: AUTORESEARCH_PROMPT,
+    args: [
+      { name: "stop", desc: "Stop autoresearching", expansion: AUTORESEARCH_STOP_PROMPT },
+    ],
+  },
   { name: "/xenv", desc: "Test in xenv until complete", expansion: "You're going to test this in a xenv and go into a loop: build → test in xenv → fix anything that's wrong → ... until it's complete" },
   {
     name: "/publish", desc: "Publish this", expansion: "Start git tracking this, first checking for secrets/private artifacts/history that should not be published. Make a gitignore, MIT license it if appropriate, make upstream repo with gh tool, make it public, give brief description, and commit and push",
