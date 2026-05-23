@@ -1735,3 +1735,35 @@ Validation:
   - sidebar folder/root axes also regressed above tolerance.
 
 Action: reverted `tui/src/markdown/formatting.ts`; kept only this failure log and result artifact.
+
+## 073 — Cache visible conversation indices by folder
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: root and folder sidebar render/navigation repeatedly scan every conversation to find visible conversations for the current folder when there is no active search. Caching conversation indices by `folderId` on the sidebar state should speed folder-scoped render/navigation, especially after experiments 070–071 added realistic folder-view axes.
+
+Change tested:
+
+- Added a lazy `conversationIndicesByFolder` cache to `SidebarState`.
+- `getVisibleConversationIndicesForQuery` returned cached indices directly for no-query folder/root views.
+- `sortSidebarCollections` invalidated the cache after sidebar list updates.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/073-cache-visible-conversation-folder-indices.json`.
+- Three interleaved control/treatment runs showed strong targeted folder/navigation wins:
+  - `sidebar_navigation/large_root.folder_nav_down` median ratio 0.637
+  - `sidebar_navigation/huge_foldered.folder_nav_down` median ratio 0.388
+  - `sidebar_render/small_root.root` median ratio 0.898
+  - `sidebar_render/huge_foldered.root` median ratio 0.938
+  - `sidebar_render/large_root.visual_selection` median ratio 0.865
+- Still rejected by strict no-regression criteria:
+  - `sidebar_list_update/small_root.replace_and_sync` median ratio 1.226
+  - `sidebar_render/large_root.folder_view` median ratio 1.087
+  - `sidebar_render/huge_foldered.folder_view` median ratio 1.087
+  - `conversation_open_cold/huge_expanded_tools` median ratio 1.042
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 1.027
+
+Action: reverted `tui/src/sidebarsearch.ts`, `tui/src/sidebar/state.ts`, and `tui/src/sidebar/updates.ts`; kept only this failure log and result artifact.
