@@ -2072,3 +2072,26 @@ Validation:
 - The targeted collapsed-tool benefit was too small/inconsistent, and multiple unrelated axes regressed above tolerance.
 
 Action: reverted `tui/src/blockrenderer.ts`; kept only this failure log and result artifact.
+
+## 086 — Searchable-title ASCII fast path against v9 benchmark
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `getSearchableConversationTitle` can skip `stripMark` when the display title is empty or begins with ASCII, because mark prefixes are known emoji prefixes. This repeatedly produced large search-filter wins in earlier experiments, and the v9 benchmark now has better navigation/search coverage plus interleaved comparison tooling.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebarsearch.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/086-searchable-title-ascii-fast-path-v9.json`.
+- Three interleaved control/treatment runs again showed very large targeted search-filter wins:
+  - `sidebar_search_filter/small_root.performance_query` median ratio 0.575
+  - `sidebar_search_filter/large_root.performance_query` median ratio 0.383
+  - `sidebar_search_filter/huge_foldered.performance_query` median ratio 0.433
+- Still rejected because the change also affects visible sidebar row rendering and direct sidebar render/navigation axes regressed above tolerance:
+  - `sidebar_render/huge_foldered.root` median ratio 1.419
+  - `sidebar_render/huge_foldered.folder_view` median ratio 1.211
+  - `sidebar_navigation/huge_foldered.folder_nav_down` median ratio 1.201
+  - marked-navigation and warm conversation axes also showed regressions.
+
+Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact. A narrower search-only variant is the next better candidate.
