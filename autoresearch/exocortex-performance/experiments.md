@@ -575,3 +575,23 @@ Validation:
 - The direct medium markdown build regression exceeded tolerance.
 
 Action: reverted `tui/src/textwrap.ts`; kept only this failure log and result artifact.
+
+## 022 — Single Map lookup in folder aggregate loop
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `buildFolderAggregates` checked `aggregates.has(folderId)` and then immediately did `aggregates.get(folderId)`. Replacing the double lookup with a single `get`/break should preserve semantics and reduce folder-heavy sidebar render cost.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts src/render.test.ts` gave 82 pass, 0 fail.
+- Result saved to `results/022-folder-aggregate-single-map-lookup.json`.
+- Interleaved sidebar p95s violated the no-regression criterion:
+  - `sidebar_render/small_root.root`: 0.242ms → 0.310ms, ratio 1.281
+  - `sidebar_render/large_root.root`: 3.916ms → 4.753ms, ratio 1.214
+  - `sidebar_render/huge_foldered.root`: 9.854ms → 11.340ms, ratio 1.151
+  - `sidebar_navigation/large_root.nav_down`: 0.419ms → 0.348ms, ratio 0.831
+  - `sidebar_search_filter/small_root.performance_query`: 0.556ms → 0.466ms, ratio 0.838
+- The directly targeted sidebar render axes regressed substantially.
+
+Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
