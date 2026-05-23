@@ -1,5 +1,5 @@
 import { getMarkFromTitle } from "../marks";
-import { currentFolder, folderDescendantConversations } from "./folders";
+import { currentFolder } from "./folders";
 import { sameSidebarItem as sameItem, sidebarItemKey as itemKey } from "./items";
 import { SIDEBAR_WIDTH } from "./layout";
 import {
@@ -16,6 +16,36 @@ import {
 } from "../sidebarsearch";
 import { theme } from "../theme";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
+
+interface FolderAggregate {
+  count: number;
+  streaming: boolean;
+  unread: boolean;
+}
+
+function buildFolderAggregates(sidebar: SidebarState): Map<string, FolderAggregate> {
+  const aggregates = new Map<string, FolderAggregate>();
+  const parentById = new Map<string, string | null>();
+  for (const folder of sidebar.folders) {
+    aggregates.set(folder.id, { count: 0, streaming: false, unread: false });
+    parentById.set(folder.id, folder.parentId ?? null);
+  }
+
+  for (const conv of sidebar.conversations) {
+    let folderId = conv.folderId ?? null;
+    const seen = new Set<string>();
+    while (folderId && aggregates.has(folderId) && !seen.has(folderId)) {
+      seen.add(folderId);
+      const aggregate = aggregates.get(folderId)!;
+      aggregate.count++;
+      aggregate.streaming ||= conv.streaming;
+      aggregate.unread ||= conv.unread;
+      folderId = parentById.get(folderId) ?? null;
+    }
+  }
+
+  return aggregates;
+}
 
 function truncateSidebarTitle(text: string, maxWidth: number): string {
   return truncateToWidth(text, maxWidth);
@@ -54,6 +84,7 @@ export function renderSidebar(
   // Build display rows: section labels + delimiter + sidebar entries
   const convs = sidebar.conversations;
   const displayRows = buildDisplayRows(sidebar);
+  const folderAggregates = sidebar.folders.length > 0 ? buildFolderAggregates(sidebar) : null;
   // Compute visual selection once per render. Calling selectedVisualItems() per
   // row rebuilds displayRows each time; with an active /? filter this made `v`
   // feel very laggy on large conversation lists.
@@ -140,10 +171,10 @@ export function renderSidebar(
       itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "folder") {
       const folder = sidebar.folders[dr.folderIdx ?? -1];
-      const childConvs = folder ? folderDescendantConversations(sidebar, folder.id) : [];
-      rawTitle = folder ? `📁 ${folder.name}/ ${childConvs.length}` : "📁 folder/";
-      const hasStreaming = childConvs.some(c => c.streaming);
-      const hasUnread = childConvs.some(c => c.unread);
+      const aggregate = folder ? folderAggregates?.get(folder.id) : null;
+      rawTitle = folder ? `📁 ${folder.name}/ ${aggregate?.count ?? 0}` : "📁 folder/";
+      const hasStreaming = aggregate?.streaming ?? false;
+      const hasUnread = aggregate?.unread ?? false;
       streamIcon = hasStreaming ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = hasStreaming ? theme.accent : hasUnread ? theme.success : "";
       itemFg = isSelected ? theme.text : theme.muted;
