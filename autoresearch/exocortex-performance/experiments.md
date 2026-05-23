@@ -886,3 +886,23 @@ Validation:
 - Despite median render wins, there were direct/indirect regressions above tolerance and inconsistent run-to-run behavior.
 
 Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
+
+## 036 — Direct-loop sidebar entry construction
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `buildDisplayRows` used `map`/`filter` plus array spread to build folder and conversation entries before sorting. Direct loops should reduce allocation while preserving display row semantics.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/036-direct-sidebar-entry-build.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `sidebar_render/large_root.root` ratios: 0.953, 0.923; median 0.938
+  - `sidebar_search_filter/small_root.performance_query` ratios: 0.818, 1.063; median 0.941
+  - `sidebar_render/huge_foldered.root` ratios: 1.315, 1.238; median 1.276
+  - `sidebar_list_update/large_root.replace_and_sync` ratios: 1.247, 1.564; median 1.405
+  - `sidebar_navigation/huge_foldered.nav_down` median ratio 1.110
+- The large/huge sidebar regressions exceeded tolerance despite some smaller workload wins.
+
+Action: reverted `tui/src/sidebar/rows.ts`; kept only this failure log and result artifact.
