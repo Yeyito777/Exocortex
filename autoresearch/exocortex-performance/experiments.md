@@ -129,3 +129,26 @@ Notes:
 
 Decision: keep. This is a large cold conversation-opening/build-lines win with no visible rendering change for marker-free paragraphs and full tests passing.
 
+## 005 — Merge already-sorted sidebar row inputs instead of sorting concatenated entries
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: sidebar conversations/folders are usually maintained in sidebar order already, so `buildDisplayRows` could merge filtered folder and conversation entries instead of concatenating and sorting every call. This should reduce sidebar render/navigation/search costs on large lists while preserving stable folder-before-conversation tie ordering.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/005-merge-sorted-sidebar-rows.json`.
+- Interleaved sidebar p95s:
+  - `sidebar_render/small_root.root`: 0.310ms → 0.409ms, ratio 1.319
+  - `sidebar_navigation/small_root.nav_down`: 0.021ms → 0.014ms, ratio 0.667
+  - `sidebar_search_filter/small_root.performance_query`: 0.509ms → 0.502ms, ratio 0.986
+  - `sidebar_render/large_root.root`: 3.548ms → 3.663ms, ratio 1.032
+  - `sidebar_search_filter/large_root.performance_query`: 12.615ms → 13.379ms, ratio 1.061
+  - `sidebar_render/huge_foldered.root`: 10.363ms → 8.635ms, ratio 0.833
+  - `sidebar_navigation/huge_foldered.nav_down`: 1.541ms → 1.068ms, ratio 0.693
+  - `sidebar_render/large_root.visual_selection`: 3.708ms → 3.136ms, ratio 0.846
+- The benchmark workload can provide unsorted sidebar arrays, forcing fallback sort after extra sortedness checks; this produced regressions above the 2% tolerance on small/large render and large search.
+
+Action: reverted `tui/src/sidebar/rows.ts`; kept only this failure log and result artifact.
+
