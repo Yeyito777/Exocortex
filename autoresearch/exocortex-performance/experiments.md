@@ -376,3 +376,23 @@ Notes:
 - Some non-update sidebar render/search/navigation microbench axes varied during runs; this code is not on their render/search hot paths. The targeted list-update axis improved repeatedly and behavior tests cover sidebar focus/refresh semantics.
 
 Decision: keep. Deterministic sidebar list-update improvement with no visible UX change and full validation passing.
+
+## 013 — Plain table cell markdown-width fast path
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: table rendering calls `stripMarkdown` while measuring cells even when cells contain no inline markdown markers. Skipping markdown stripping for marker-free cells should reduce cold markdown conversation rendering cost without visible changes.
+
+Validation:
+
+- Relevant markdown/conversation/render tests passed: `bun test src/markdown/wordwrap.test.ts src/markdown/formatting.test.ts src/conversation.test.ts src/render.test.ts` gave 42 pass, 0 fail.
+- Result saved to `results/013-plain-table-width-fast-path.json`.
+- Interleaved conversation p95s were mixed:
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 167.107ms → 151.402ms, ratio 0.906
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 166.845ms → 152.356ms, ratio 0.913
+  - `conversation_build_lines_cold/medium_markdown`: 32.995ms → 31.154ms, ratio 0.944
+  - `conversation_build_lines_cold/small_chat`: 1.735ms → 1.971ms, ratio 1.136
+  - `conversation_open_cold/medium_markdown`: 32.805ms → 34.341ms, ratio 1.047
+- Regressions above 2% on small/medium cold/build axes violated the keep criterion.
+
+Action: reverted `tui/src/markdown/tables.ts`; kept only this failure log and result artifact.
