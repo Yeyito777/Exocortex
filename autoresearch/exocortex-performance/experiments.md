@@ -2174,3 +2174,25 @@ Validation:
   - several unrelated conversation/list-update axes also regressed above tolerance.
 
 Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
+
+## 090 — Skip streaming folder-index precompute when no folder entries are visible
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: after experiment 078, `moveToStreaming` always builds the set of folders with streaming/unread descendants. In folder views with only conversations visible, folder indicators are unnecessary. Skipping the folder-index precompute when the current display rows contain no folder entries should improve folder-scoped streaming navigation.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar-navigation.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/090-skip-streaming-folder-index-without-folder-entries.json`.
+- Three interleaved control/treatment runs did not show a clean targeted win and violated no-regression criteria:
+  - `sidebar_navigation/large_root.next_streaming_root` median ratio 0.900
+  - `sidebar_navigation/huge_foldered.next_streaming_root` median ratio 0.920
+  - but `sidebar_navigation/large_root.next_streaming_folder` median ratio 1.090
+  - `sidebar_navigation/huge_foldered.next_streaming_folder` median ratio 1.236
+  - `sidebar_render/small_root.root` median ratio 1.222
+  - `sidebar_render/huge_foldered.folder_view` median ratio 1.209
+  - several unrelated conversation/list-update axes also regressed above tolerance; geomean median ratio was 1.009.
+
+Action: reverted `tui/src/sidebar/navigation.ts`; kept only this failure log and result artifact.
