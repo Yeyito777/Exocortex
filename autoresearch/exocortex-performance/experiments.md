@@ -276,3 +276,23 @@ Notes:
 
 Decision: keep. Direct sidebar navigation p95s improved across small, large, and huge workloads with no UX-visible change.
 
+## 009 — WeakMap cache for sidebar searchable titles
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: sidebar search repeatedly strips emoji marks, lowercases titles, and allocates match arrays while computing visible conversation indices. WeakMap-caching the stripped/lowercase searchable title per conversation object and using `includes` should improve large sidebar search/filter workloads without visible changes.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebarsearch.test.ts src/focus.test.ts` gave 60 pass, 0 fail.
+- Result saved to `results/009-cache-sidebar-search-titles.json`.
+- Interleaved sidebar p95s:
+  - `sidebar_search_filter/small_root.performance_query`: 0.483ms → 0.327ms, ratio 0.677
+  - `sidebar_search_filter/large_root.performance_query`: 14.034ms → 19.292ms, ratio 1.375
+  - `sidebar_search_filter/huge_foldered.performance_query`: 44.538ms → 53.681ms, ratio 1.205
+  - `sidebar_render/huge_foldered.root`: 9.942ms → 17.789ms, ratio 1.789
+  - `sidebar_render/large_root.visual_selection`: 3.326ms → 10.142ms, ratio 3.049
+- The added WeakMap lookups/cache fills were much worse on large workloads than the allocation they replaced.
+
+Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
+
