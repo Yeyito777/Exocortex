@@ -2124,3 +2124,11 @@ Validation:
 - `sidebar_render/small_root.root` also showed a median regression (1.117), but normal render code still uses the unchanged exported `getSearchableConversationTitle`; larger render workloads were neutral/improved (`large_root.root` 0.876, `huge_foldered.root` 0.909, `huge_foldered.folder_view` 0.886), so this was treated as benchmark noise rather than a product regression.
 
 Decision: keep. The change is narrow to active sidebar filtering, covered by sidebar search tests, and gives repeated direct wins on all search-filter workloads with no intended visible UX change.
+
+## Smoke test — xenv + exotest after sidebar search-filter optimization
+
+Status: success.
+
+- Ran `/home/yeyito/Workspace/exocortex/scripts/dev/exotest autoresearch-performance` inside an `xenv` `st` terminal from the worktree after experiment 087.
+- Result: TUI launched successfully in the nested X11 environment and rendered the Exocortex prompt.
+- Screenshot saved outside the repo at `/tmp/exo-autoresearch-perf-after-087.png`.
