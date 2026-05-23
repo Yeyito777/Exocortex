@@ -1461,3 +1461,24 @@ Validation:
 - Direct conversation regressions exceeded tolerance and the targeted win was inconsistent.
 
 Action: reverted `tui/src/markdown/highlight.ts`; kept only this failure log and result artifact.
+
+## 061 — Precompute syntax-highlight rule colors
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: syntax highlighting looked up `TOKEN_COLORS[rule.type]` for every matched token. Precomputing `rule.color` once at module load should preserve output and reduce code-block highlighting overhead.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- Result saved to `results/061-precompute-highlight-rule-colors.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/medium_markdown` median ratio 0.967
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 0.967
+  - `conversation_build_lines_cold/small_chat` median ratio 1.108
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.159
+  - `conversation_open_cold/huge_expanded_tools` median ratio 1.057
+  - `sidebar_search_filter/large_root.performance_query` median ratio 1.124
+- Direct conversation regressions exceeded tolerance and the targeted code-block wins were inconsistent.
+
+Action: reverted `tui/src/markdown/highlight.ts`; kept only this failure log and result artifact.
