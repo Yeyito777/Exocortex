@@ -1920,3 +1920,11 @@ Validation:
   - several conversation warm/cold axes also regressed above tolerance.
 
 Action: reverted `tui/src/sidebar/navigation.ts`; kept only this failure log and result artifact.
+
+## Smoke test — xenv + exotest after streaming-navigation optimization
+
+Status: success.
+
+- Ran `/home/yeyito/Workspace/exocortex/scripts/dev/exotest autoresearch-performance` inside an `xenv` `st` terminal from the worktree after experiment 078.
+- Result: TUI launched successfully in the nested X11 environment and rendered the Exocortex prompt.
+- Screenshot saved outside the repo at `/tmp/exo-autoresearch-perf-after-078.png`.
