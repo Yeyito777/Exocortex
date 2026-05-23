@@ -2023,3 +2023,23 @@ Validation:
   - Broad unrelated regressions also appeared: `conversation_open_cold/small_chat` median ratio 1.186, `sidebar_render/large_root.root` 1.300, `sidebar_render/huge_foldered.root` 1.170.
 
 Action: reverted `tui/src/sidebar/navigation.ts`; kept only this failure log and result artifact. The original per-conversation `Set` from experiment 078 remains the kept streaming-navigation optimization.
+
+## 084 — Focus streaming-navigation target by display-row index
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: after experiment 078, `moveToStreaming` still focuses a target conversation by id through `focusSidebarItem`, causing a conversation-list search. Since streaming target rows already carry `convIdx`, focusing conversation targets directly from the display row should reduce streaming-navigation overhead.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar-navigation.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/084-focus-streaming-target-by-display-row.json`.
+- Three interleaved control/treatment runs did not show a reliable targeted win and violated no-regression criteria:
+  - `sidebar_navigation/small_root.next_streaming_root` median ratio 1.333
+  - `sidebar_navigation/large_root.next_streaming_root` median ratio 1.000
+  - `sidebar_navigation/huge_foldered.next_streaming_root` median ratio 0.863
+  - `sidebar_navigation/huge_foldered.next_streaming_folder` median ratio 1.187
+  - unrelated list update/conversation axes also regressed above tolerance.
+
+Action: reverted `tui/src/sidebar/navigation.ts`; kept only this failure log and result artifact.
