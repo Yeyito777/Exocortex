@@ -2051,3 +2051,24 @@ Status: success.
 - Ran `/home/yeyito/Workspace/exocortex/scripts/dev/exotest autoresearch-performance` inside an `xenv` `st` terminal from the worktree after experiment 081.
 - Result: TUI launched successfully in the nested X11 environment and rendered the Exocortex prompt.
 - Screenshot saved outside the repo at `/tmp/exo-autoresearch-perf-after-081.png`.
+
+## 085 — Hidden tool-result empty wrap fast path
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: collapsed tool-result blocks do not render visible lines, but `renderBlockCached` still computed a content key from the full tool output before discovering that `showToolOutput` was false. Returning a shared empty `WrapResult` for hidden `tool_result` blocks should avoid touching huge hidden outputs and improve collapsed-tool cold conversation axes.
+
+Validation:
+
+- Relevant tests passed: `bun test src/conversation.test.ts src/render.test.ts src/focus.test.ts` gave 86 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/085-hidden-tool-result-empty-wrap-fast-path.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 0.960
+  - `conversation_open_cold/huge_markdown_collapsed_tools` median ratio 1.042
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.228
+  - `conversation_build_lines_cold/small_chat` median ratio 1.253
+  - `sidebar_list_update/huge_foldered.replace_and_sync` median ratio 1.353
+- The targeted collapsed-tool benefit was too small/inconsistent, and multiple unrelated axes regressed above tolerance.
+
+Action: reverted `tui/src/blockrenderer.ts`; kept only this failure log and result artifact.
