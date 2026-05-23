@@ -1036,3 +1036,29 @@ Validation:
   - several sidebar axes also regressed above tolerance.
 
 Action: reverted `shared/src/model-display.ts`; kept only this failure log and result artifact.
+
+## 043 — Benchmark: force GC before each metric sample series
+
+Status: success — kept and committed (benchmark infrastructure only; no UX/UI code changed).
+
+Problem: after experiments 033 and 040, fast axes were less noisy, but interleaved experiments still saw unrelated regressions that looked like cross-metric allocation/GC contamination. Running each metric after previous workloads left different heap pressure depending on the experiment order.
+
+Change:
+
+- Added `Bun.gc(true)` before warmups and again before measured samples in `measureMetric`.
+- This keeps each metric's measured sample series less affected by allocations from the previous metric.
+- Saved the updated benchmark run to `results/043-gc-before-benchmark-metrics.json` and copied it to `results/baseline-v4.json` for future experiments.
+
+Validation:
+
+- `bun run autoresearch/exocortex-performance/benchmark.ts --json`: pass.
+- `bun run typecheck`: pass.
+- Representative v4 p95s:
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 130.765ms
+  - `conversation_open_warm/huge_markdown_collapsed_tools`: 0.185ms
+  - `sidebar_render/large_root.root`: 1.193ms
+  - `sidebar_search_filter/large_root.performance_query`: 8.447ms
+  - `sidebar_search_filter/huge_foldered.performance_query`: 35.264ms
+  - `sidebar_list_update/huge_foldered.replace_and_sync`: 7.024ms
+
+Decision: keep. This improves benchmark determinism/objectivity with no production UX change and gives future experiments a cleaner pass/fail signal.

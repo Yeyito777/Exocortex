@@ -137,9 +137,11 @@ function measureMetric(
   fn: (iteration: number) => number,
   batch = 1,
 ): MetricReport {
+  Bun.gc(true);
   for (let i = 0; i < warmups; i++) {
     for (let b = 0; b < batch; b++) blackhole ^= fn((-warmups + i) * batch + b) | 0;
   }
+  Bun.gc(true);
   const samples: number[] = [];
   let digest = 0;
   for (let i = 0; i < iterations; i++) {
