@@ -515,3 +515,23 @@ Validation:
 - Some warm/sidebar axes improved, but the direct cold/build regressions exceeded tolerance.
 
 Action: reverted `tui/src/markdown/codeblocks.ts`; kept only this failure log and result artifact.
+
+## 019 — ASCII fast path for truncation
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: sidebar titles and many message strings passed to `truncateToWidth` are printable ASCII. For fully ASCII strings, truncation by terminal width is equivalent to string length/slice, so a fast path should improve sidebar render/search without changing Unicode behavior.
+
+Validation:
+
+- Relevant tests passed: `bun test src/textwidth.test.ts src/sidebar*.test.ts src/render.test.ts` gave 33 pass, 0 fail.
+- Result saved to `results/019-ascii-truncate-fast-path.json`.
+- Interleaved p95s were mixed and violated the no-regression criterion:
+  - `sidebar_render/large_root.root`: 3.392ms → 3.770ms, ratio 1.111
+  - `sidebar_navigation/small_root.nav_down`: 0.015ms → 0.019ms, ratio 1.267
+  - `conversation_open_warm/small_chat`: 0.233ms → 0.302ms, ratio 1.296
+  - `conversation_build_lines_cold/huge_expanded_tools`: 47.742ms → 44.034ms, ratio 0.922
+  - `sidebar_navigation/huge_foldered.nav_down`: 1.632ms → 0.994ms, ratio 0.609
+- The targeted sidebar render regression exceeded tolerance despite some wins elsewhere.
+
+Action: reverted `tui/src/textwidth.ts`; kept only this failure log and result artifact.
