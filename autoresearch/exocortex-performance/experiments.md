@@ -339,3 +339,40 @@ Validation:
   - `sidebar_list_update/huge_foldered.replace_and_sync`: 9.280ms → 10.045ms, ratio 1.082
 
 Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
+
+## 012 — Replace sidebar refresh display-row scans with direct visibility checks
+
+Status: success — kept and committed.
+
+Hypothesis: `updateConversationList`/`syncSelectedIndex` used `buildDisplayRows` to answer simple questions during sidebar refreshes: whether the pending/current item is visible and what the first visible item is. Building full display rows sorts and allocates much more than needed. Direct visibility checks should reduce sidebar list-update cost without changing visible ordering or focus semantics.
+
+Change:
+
+- Added direct visibility predicates in `tui/src/sidebar/updates.ts` for conversations, folders, `..`, and folder instructions.
+- Added a direct first-visible-item resolver that preserves root ordering using `compareSidebarOrder` and preserves folder behavior where `..` is the first entry inside folders.
+- Removed `buildDisplayRows` calls from refresh selection synchronization.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- `bun test`: 370 pass, 0 fail.
+- Result saved to `results/012-sidebar-update-visibility-checks.json`.
+- Interleaved control/treatment p95s for targeted list-update axis, first run:
+  - `sidebar_list_update/small_root.replace_and_sync`: 0.053ms → 0.045ms, ratio 0.849
+  - `sidebar_list_update/large_root.replace_and_sync`: 2.477ms → 1.370ms, ratio 0.553
+  - `sidebar_list_update/huge_foldered.replace_and_sync`: 11.847ms → 8.759ms, ratio 0.739
+- Repeated interleaved run confirmed targeted list-update improvements:
+  - `sidebar_list_update/small_root.replace_and_sync`: 0.058ms → 0.042ms, ratio 0.724
+  - `sidebar_list_update/large_root.replace_and_sync`: 2.691ms → 1.606ms, ratio 0.597
+  - `sidebar_list_update/huge_foldered.replace_and_sync`: 9.029ms → 7.104ms, ratio 0.787
+- Final re-run after fixing the typecheck-only narrowing issue still improved the targeted axis:
+  - `sidebar_list_update/small_root.replace_and_sync`: 0.060ms → 0.039ms, ratio 0.650
+  - `sidebar_list_update/large_root.replace_and_sync`: 2.202ms → 1.896ms, ratio 0.861
+  - `sidebar_list_update/huge_foldered.replace_and_sync`: 8.191ms → 7.856ms, ratio 0.959
+
+Notes:
+
+- Some non-update sidebar render/search/navigation microbench axes varied during runs; this code is not on their render/search hot paths. The targeted list-update axis improved repeatedly and behavior tests cover sidebar focus/refresh semantics.
+
+Decision: keep. Deterministic sidebar list-update improvement with no visible UX change and full validation passing.

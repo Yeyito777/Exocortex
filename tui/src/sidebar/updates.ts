@@ -1,7 +1,10 @@
 import type { ConversationSummary, FolderSummary } from "../messages";
-import { sameSidebarItem as sameItem } from "./items";
+import { type SidebarSelectableItem } from "./items";
 import { compareSidebarOrder } from "./order";
-import { buildDisplayRows } from "./rows";
+import {
+  getActiveSidebarSearchQuery,
+  getSearchableConversationTitle,
+} from "../sidebarsearch";
 import { focusSidebarItem } from "./selection";
 import type { SidebarState } from "./state";
 
@@ -14,6 +17,62 @@ function sortSidebarCollections(sidebar: SidebarState): void {
   sidebarSort(sidebar.folders);
 }
 
+function activeLowerQuery(sidebar: SidebarState): string | null {
+  return getActiveSidebarSearchQuery(sidebar)?.toLowerCase() ?? null;
+}
+
+function conversationMatchesQuery(conv: ConversationSummary, lowerQuery: string): boolean {
+  return getSearchableConversationTitle(conv).toLowerCase().includes(lowerQuery);
+}
+
+function isSidebarItemVisible(sidebar: SidebarState, item: SidebarSelectableItem): boolean {
+  if (item.type === "up") return sidebar.currentFolderId !== null;
+  if (item.type === "folder_instructions") return item.folderId === sidebar.currentFolderId;
+
+  const lowerQuery = activeLowerQuery(sidebar);
+  if (item.type === "folder") {
+    const folder = sidebar.folders.find(f => f.id === item.id);
+    return Boolean(folder)
+      && (folder!.parentId ?? null) === sidebar.currentFolderId
+      && (!lowerQuery || folder!.name.toLowerCase().includes(lowerQuery));
+  }
+
+  const conv = sidebar.conversations.find(c => c.id === item.id);
+  if (!conv) return false;
+  if (!lowerQuery) return (conv.folderId ?? null) === sidebar.currentFolderId;
+  return conversationMatchesQuery(conv, lowerQuery);
+}
+
+function firstVisibleSidebarItem(sidebar: SidebarState): SidebarSelectableItem | null {
+  if (sidebar.currentFolderId) return { type: "up" };
+
+  const lowerQuery = activeLowerQuery(sidebar);
+  let bestPinned = false;
+  let bestSortOrder = 0;
+  let bestItem: SidebarSelectableItem | null = null;
+  const consider = (pinned: boolean, sortOrder: number, item: SidebarSelectableItem) => {
+    if (!bestItem || compareSidebarOrder({ pinned, sortOrder }, { pinned: bestPinned, sortOrder: bestSortOrder }) < 0) {
+      bestPinned = pinned;
+      bestSortOrder = sortOrder;
+      bestItem = item;
+    }
+  };
+
+  for (const folder of sidebar.folders) {
+    if ((folder.parentId ?? null) !== sidebar.currentFolderId) continue;
+    if (lowerQuery && !folder.name.toLowerCase().includes(lowerQuery)) continue;
+    consider(folder.pinned, folder.sortOrder, { type: "folder", id: folder.id });
+  }
+
+  for (const conv of sidebar.conversations) {
+    if (!lowerQuery && (conv.folderId ?? null) !== sidebar.currentFolderId) continue;
+    if (lowerQuery && !conversationMatchesQuery(conv, lowerQuery)) continue;
+    consider(conv.pinned, conv.sortOrder, { type: "conversation", id: conv.id });
+  }
+
+  return bestItem;
+}
+
 export function updateConversationList(sidebar: SidebarState, conversations: ConversationSummary[], folders: FolderSummary[] = sidebar.folders): void {
   sidebar.conversations = conversations;
   sidebar.folders = folders;
@@ -23,7 +82,7 @@ export function updateConversationList(sidebar: SidebarState, conversations: Con
   const pendingFocusItem = sidebar.pendingFocusItem;
   if (pendingFocusItem) {
     sidebar.pendingFocusItem = null;
-    if (buildDisplayRows(sidebar).some(row => row.type === "entry" && sameItem(row.item ?? null, pendingFocusItem))) {
+    if (isSidebarItemVisible(sidebar, pendingFocusItem)) {
       focusSidebarItem(sidebar, pendingFocusItem);
       return;
     }
@@ -64,19 +123,18 @@ export function syncSelectedIndex(sidebar: SidebarState): void {
     if (idx !== -1) {
       sidebar.selectedIndex = idx;
       sidebar.selectedId = item.id;
-      if (buildDisplayRows(sidebar).some(row => row.type === "entry" && sameItem(row.item ?? null, item))) return;
+      if (isSidebarItemVisible(sidebar, item)) return;
     }
   }
   if (item?.type === "folder" && sidebar.folders.some(f => f.id === item.id)
-      && buildDisplayRows(sidebar).some(row => row.type === "entry" && sameItem(row.item ?? null, item))) {
+      && isSidebarItemVisible(sidebar, item)) {
     sidebar.selectedId = null;
     return;
   }
   if (item?.type === "folder_instructions" && item.folderId === sidebar.currentFolderId
-      && buildDisplayRows(sidebar).some(row => row.type === "entry" && sameItem(row.item ?? null, item))) {
+      && isSidebarItemVisible(sidebar, item)) {
     sidebar.selectedId = null;
     return;
   }
-  const first = buildDisplayRows(sidebar).find(row => row.type === "entry");
-  focusSidebarItem(sidebar, first?.item ?? null);
+  focusSidebarItem(sidebar, firstVisibleSidebarItem(sidebar));
 }
