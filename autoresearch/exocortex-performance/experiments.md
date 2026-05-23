@@ -729,3 +729,22 @@ Validation:
 - The directly targeted list-update axis regressed for small/large workloads.
 
 Action: reverted `tui/src/sidebar/updates.ts`; kept only this failure log and result artifact.
+
+## 029 — Loop push standalone markdown lines instead of map/spread
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `pushStandaloneLines` allocated three `lines.map(...)` arrays for table/horizontal-rule blocks. A direct loop should preserve output and reduce cold markdown rendering allocation.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- Result saved to `results/029-standalone-markdown-line-push-loop.json`.
+- Interleaved p95s violated the no-regression criterion:
+  - `conversation_open_cold/small_chat`: 2.677ms → 2.763ms, ratio 1.032
+  - `conversation_open_warm/medium_markdown`: 0.211ms → 0.305ms, ratio 1.445
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 127.169ms → 136.658ms, ratio 1.075
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 129.307ms → 119.793ms, ratio 0.926
+- The directly affected cold/build axes were mixed, with regressions above tolerance.
+
+Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
