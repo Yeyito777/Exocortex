@@ -1836,3 +1836,29 @@ Validation:
 - `bun run typecheck`: pass.
 
 Decision: keep. This makes the benchmark decision process more reproducible and documents the interleaved methodology already used throughout the autoresearch.
+
+## 077 — Benchmark: add sidebar streaming-navigation axes
+
+Status: success — kept and committed (benchmark infrastructure only; no UX/UI code changed).
+
+Problem: sidebar navigation benchmarks measured ordinary `nav_down` movement, but did not measure `nav_next_streaming` / `nav_prev_streaming`, which jump to conversations or folders with streaming/unread indicators. That path can be much more expensive because folder entries need descendant streaming/unread checks.
+
+Change:
+
+- Added `sidebar_navigation/<workload>.next_streaming_root`.
+- Added `sidebar_navigation/<workload>.next_streaming_folder`.
+- Saved the updated benchmark run to `results/077-sidebar-streaming-navigation-benchmark-axes.json` and copied it to `results/baseline-v8.json` for future experiments.
+
+Validation:
+
+- `bun run autoresearch/exocortex-performance/benchmark.ts --json`: pass.
+- `bun run typecheck`: pass.
+- Representative v8 streaming-navigation p95s:
+  - `sidebar_navigation/small_root.next_streaming_root`: 0.065ms
+  - `sidebar_navigation/small_root.next_streaming_folder`: 0.015ms
+  - `sidebar_navigation/large_root.next_streaming_root`: 25.012ms
+  - `sidebar_navigation/large_root.next_streaming_folder`: 0.389ms
+  - `sidebar_navigation/huge_foldered.next_streaming_root`: 342.765ms
+  - `sidebar_navigation/huge_foldered.next_streaming_folder`: 1.591ms
+
+Decision: keep. This exposes a previously unmeasured severe root-sidebar streaming navigation cost and provides a direct target for future optimization.

@@ -469,6 +469,36 @@ function runSidebarBenchmarks(): MetricReport[] {
     ));
 
     reports.push(measureMetric(
+      "sidebar_navigation",
+      `${workload.name}.next_streaming_root`,
+      workload.name === "huge_foldered" ? 25 : workload.name === "large_root" ? 50 : 120,
+      3,
+      (() => {
+        const sidebar = makeSidebar(workload.conversations, workload.folders, "root");
+        return () => {
+          handleSidebarAction("nav_next_streaming", sidebar);
+          return sidebar.selectedIndex + (sidebar.selectedId?.length ?? 0) + (sidebar.selectedItem?.type === "folder" ? 7 : 0);
+        };
+      })(),
+      workload.name === "huge_foldered" ? 2 : 5,
+    ));
+
+    reports.push(measureMetric(
+      "sidebar_navigation",
+      `${workload.name}.next_streaming_folder`,
+      workload.name === "huge_foldered" ? 25 : workload.name === "large_root" ? 50 : 120,
+      3,
+      (() => {
+        const sidebar = makeSidebar(workload.conversations, workload.folders, "folder");
+        return () => {
+          handleSidebarAction("nav_next_streaming", sidebar);
+          return sidebar.selectedIndex + (sidebar.selectedId?.length ?? 0) + (sidebar.selectedItem?.type === "folder" ? 7 : 0);
+        };
+      })(),
+      workload.name === "huge_foldered" ? 2 : 5,
+    ));
+
+    reports.push(measureMetric(
       "sidebar_search_filter",
       `${workload.name}.performance_query`,
       workload.name === "huge_foldered" ? 18 : workload.name === "large_root" ? 35 : 80,
