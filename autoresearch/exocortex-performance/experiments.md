@@ -1895,3 +1895,28 @@ Validation:
   - `conversation_open_cold/huge_expanded_tools` median ratio 1.022, just over the threshold and unrelated to sidebar navigation; experiment 075 showed this class of unrelated self-noise occurs in clean control runs.
 
 Decision: keep. The change is behavior-preserving, covered by sidebar streaming-navigation tests, and fixes an extreme measured root-sidebar streaming navigation cost with orders-of-magnitude targeted improvements. The remaining flagged regressions are unrelated/control-level noise under the interleaved methodology documented in experiments 075–076.
+
+## 079 — Single-pass streaming-navigation target selection
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: after experiment 078 removed repeated descendant scans, `moveToStreaming` still allocated intermediate `entries` and `targets` arrays and searched them separately. Selecting first/previous/next/last streaming targets in one pass over display rows should reduce remaining streaming-navigation overhead.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar-navigation.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/079-single-pass-streaming-target-selection.json`.
+- Two interleaved control/treatment runs showed some targeted wins:
+  - `sidebar_navigation/small_root.next_streaming_root` median ratio 0.765
+  - `sidebar_navigation/large_root.next_streaming_root` median ratio 0.845
+  - `sidebar_navigation/large_root.next_streaming_folder` median ratio 0.856
+  - `sidebar_navigation/huge_foldered.next_streaming_root` median ratio 0.885
+- But the change was not a clean follow-up to experiment 078 and violated no-regression criteria:
+  - `sidebar_list_update/small_root.replace_and_sync` median ratio 1.308
+  - `sidebar_render/large_root.root` median ratio 1.109
+  - `sidebar_render/huge_foldered.folder_view` median ratio 1.157
+  - `sidebar_render/large_root.visual_selection` median ratio 1.198
+  - several conversation warm/cold axes also regressed above tolerance.
+
+Action: reverted `tui/src/sidebar/navigation.ts`; kept only this failure log and result artifact.
