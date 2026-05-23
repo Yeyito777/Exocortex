@@ -1397,3 +1397,25 @@ Validation:
 - Direct conversation regressions and unrelated sidebar regressions exceeded tolerance.
 
 Action: reverted `tui/src/markdown/codeblocks.ts`; kept only this failure log and result artifact.
+
+## 058 — Search match query-length guard
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `findAllCaseInsensitiveMatchStarts` lowercased text and query even when the query was longer than the text and could never match. A simple length guard should preserve behavior and improve search-heavy axes.
+
+Validation:
+
+- Relevant tests passed: `bun test src/search.test.ts src/sidebarsearch.test.ts src/focus.test.ts` gave 65 pass, 0 fail.
+- Result saved to `results/058-search-query-length-guard.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_build_lines_cold/small_chat` median ratio 0.811
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 0.849
+  - `sidebar_search_filter/large_root.performance_query` median ratio 0.995
+  - `sidebar_search_filter/huge_foldered.performance_query` median ratio 0.963
+  - `sidebar_render/small_root.root` median ratio 1.259
+  - `sidebar_navigation/huge_foldered.nav_down` median ratio 1.149
+  - `sidebar_list_update/huge_foldered.replace_and_sync` median ratio 1.080
+- The targeted search improvements were negligible and unrelated sidebar regressions exceeded tolerance.
+
+Action: reverted `tui/src/searchutil.ts`; kept only this failure log and result artifact.
