@@ -1638,3 +1638,27 @@ Validation:
   - direct conversation build axes also regressed above tolerance.
 
 Action: reverted `tui/src/textwidth.ts`; kept only this failure log and result artifact.
+
+## 069 — Fast path first visible sidebar item without active search
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `firstVisibleSidebarItem` scanned every folder and conversation to find the best visible item even when there was no active sidebar search. Because `syncSelectedIndex` sorts folders/conversations first, the no-query case can stop at the first visible folder and first visible conversation, then compare those two. This should improve sidebar list-update sync without changing ordering.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/069-first-visible-sidebar-item-fast-path.json`.
+- Two interleaved control/treatment runs showed several sidebar wins:
+  - `sidebar_list_update/small_root.replace_and_sync` median ratio 0.754
+  - `sidebar_list_update/large_root.replace_and_sync` median ratio 0.875
+  - `sidebar_list_update/huge_foldered.replace_and_sync` median ratio 0.918
+  - `sidebar_render/large_root.root` median ratio 0.933
+  - `sidebar_search_filter/large_root.performance_query` median ratio 0.943
+- Still rejected by strict no-regression criteria:
+  - `sidebar_render/huge_foldered.root` median ratio 1.238
+  - `sidebar_render/large_root.visual_selection` median ratio 1.110
+  - `sidebar_search_filter/huge_foldered.performance_query` median ratio 1.054
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.045
+
+Action: reverted `tui/src/sidebar/updates.ts`; kept only this failure log and result artifact.
