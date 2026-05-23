@@ -767,3 +767,29 @@ Validation:
 - The targeted collapsed-tool huge build axis regressed above tolerance.
 
 Action: reverted `tui/src/blockrenderer.ts`; kept only this failure log and result artifact.
+
+## 031 — Retake searchable-title ASCII fast path with triple interleaved benchmark
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: Previous searchable-title ASCII fast-path attempts showed very large sidebar search/filter wins but were rejected for noisy unrelated regressions. Retesting the same semantics-preserving optimization over three interleaved control/treatment benchmark pairs should make the decision more stable.
+
+Change tested:
+
+- In `getSearchableConversationTitle`, skip `stripMark` when the title is empty or starts with printable ASCII, because all mark prefixes are emoji/non-ASCII.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebarsearch.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/031-searchable-title-ascii-fast-path-retake.json`.
+- Three interleaved control/treatment runs confirmed search/filter wins:
+  - `sidebar_search_filter/small_root.performance_query` ratios: 0.470, 0.661, 0.572; median 0.572
+  - `sidebar_search_filter/large_root.performance_query` ratios: 0.560, 0.498, 0.591; median 0.560
+  - `sidebar_search_filter/huge_foldered.performance_query` ratios: 0.501, 0.507, 0.520; median 0.507
+- However, the triple-run medians still violated the no-regression criterion on measured sidebar axes:
+  - `sidebar_render/large_root.root` median ratio 1.107
+  - `sidebar_navigation/huge_foldered.nav_down` median ratio 1.233
+  - `sidebar_render/large_root.visual_selection` median ratio 1.063
+  - `conversation_open_warm/huge_expanded_tools` median ratio 1.222
+
+Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact. Despite consistent search wins, strict all-axis/no-regression criteria rejected it.
