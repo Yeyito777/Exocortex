@@ -709,3 +709,23 @@ Validation:
   - unrelated conversation axes also showed noise/regressions.
 
 Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact. The search win is real-looking, but the strict benchmark no-regression rule rejected it.
+
+## 028 — Partition pre-sorted sidebar updates instead of full sort
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: incoming sidebar conversation/folder lists are often already ordered by `sortOrder` within pinned and unpinned groups. Detecting that shape and stable-partitioning pinned before unpinned could avoid `Array.sort` during list refreshes while preserving `compareSidebarOrder` behavior; fallback sort handles unsorted inputs.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/028-partition-presorted-sidebar-updates.json`.
+- Interleaved p95s violated the no-regression criterion:
+  - `sidebar_list_update/small_root.replace_and_sync`: 0.042ms → 0.064ms, ratio 1.524
+  - `sidebar_list_update/large_root.replace_and_sync`: 1.787ms → 2.435ms, ratio 1.363
+  - `sidebar_render/large_root.visual_selection`: 3.002ms → 3.893ms, ratio 1.297
+  - `sidebar_render/large_root.root`: 4.173ms → 3.510ms, ratio 0.841
+  - `sidebar_render/huge_foldered.root`: 12.032ms → 9.988ms, ratio 0.830
+- The directly targeted list-update axis regressed for small/large workloads.
+
+Action: reverted `tui/src/sidebar/updates.ts`; kept only this failure log and result artifact.
