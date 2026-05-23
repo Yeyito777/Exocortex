@@ -1331,3 +1331,25 @@ Notes:
 - Warm conversation and sidebar microbench axes varied in both directions across the same runs. This change is only on the markdown width/render path, and warm history render caching/sidebar operations should not execute it during their hot paths. I treated those as benchmark noise rather than product regressions.
 
 Decision: keep. The change is behavior-preserving for marker-free markdown text, covered by markdown/conversation/render tests, and gives large repeated cold conversation-opening/build-lines wins.
+
+## 055 — Fast path `formatMarkdownChunks` when no inline markers are present
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: after experiment 054 sped up `stripMarkdown`, the related `formatMarkdownChunks` scanner could also skip work when every chunk contains no `*` or backticks. Returning the chunks unchanged should preserve rendering while avoiding scanner/token allocation.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/formatting.test.ts src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 42 pass, 0 fail.
+- Result saved to `results/055-format-markdown-chunks-no-marker-fast-path.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/small_chat` median ratio 0.845
+  - `conversation_open_warm/small_chat` median ratio 0.869
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 0.930
+  - `conversation_build_lines_cold/small_chat` median ratio 1.065
+  - `conversation_open_warm/medium_markdown` median ratio 1.161
+  - `sidebar_render/small_root.root` median ratio 1.186
+  - `sidebar_navigation/small_root.nav_down` median ratio 1.439
+- The direct conversation wins were not broad/stable enough, and unrelated fast sidebar axes regressed above tolerance.
+
+Action: reverted `tui/src/markdown/formatting.ts`; kept only this failure log and result artifact.
