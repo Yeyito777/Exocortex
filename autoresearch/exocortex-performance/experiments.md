@@ -1482,3 +1482,24 @@ Validation:
 - Direct conversation regressions exceeded tolerance and the targeted code-block wins were inconsistent.
 
 Action: reverted `tui/src/markdown/highlight.ts`; kept only this failure log and result artifact.
+
+## 062 — Sidebar search uses boolean includes instead of match-offset array
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: sidebar filtering only needs to know whether a title matches the query, not all match start offsets. Lowercasing the query once and using `title.toLowerCase().includes(lowerQuery)` should reduce sidebar search/filter work while preserving visible search results and leaving highlight navigation code unchanged.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebarsearch.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/062-sidebar-search-includes-no-match-array.json`.
+- Two interleaved control/treatment runs showed no reliable targeted win and violated no-regression criteria:
+  - `sidebar_search_filter/small_root.performance_query` median ratio 0.992
+  - `sidebar_search_filter/large_root.performance_query` median ratio 0.987
+  - `sidebar_search_filter/huge_foldered.performance_query` median ratio 0.986
+  - `sidebar_render/large_root.root` median ratio 1.308
+  - `sidebar_list_update/large_root.replace_and_sync` median ratio 1.376
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.077
+- The search wins were negligible after prior benchmark/code changes, and unrelated regressions exceeded tolerance.
+
+Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
