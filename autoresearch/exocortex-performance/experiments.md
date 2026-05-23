@@ -1714,3 +1714,24 @@ Validation:
   - `sidebar_navigation/huge_foldered.folder_nav_down`: 0.304ms
 
 Decision: keep. This corrects the new folder-view benchmark so it measures real folder-scoped rows rather than empty-folder overhead, with no production behavior change.
+
+## 072 — Avoid copying markdown inline style state during rendering
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `renderStyledTokens` copied inline style objects at initialization and on every style transition. Since style objects are immutable in practice, reusing references should preserve output and reduce cold markdown formatting allocation.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/formatting.test.ts src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 42 pass, 0 fail.
+- Result saved to `results/072-avoid-markdown-style-copy.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_build_lines_cold/small_chat` median ratio 0.590
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 0.821
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 0.826
+  - `conversation_open_cold/medium_markdown` median ratio 1.179
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.246
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 1.561
+  - sidebar folder/root axes also regressed above tolerance.
+
+Action: reverted `tui/src/markdown/formatting.ts`; kept only this failure log and result artifact.
