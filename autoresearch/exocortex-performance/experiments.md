@@ -459,3 +459,22 @@ Notes:
 - Warm-render microbench p95s varied in both directions despite history render caching bypassing metadata rendering after warm-up. I treated those as noise and kept the repeated cold/build wins on the code path this change actually affects.
 
 Decision: keep. Repeated deterministic cold conversation-opening/build-lines improvement with exact metadata output preserved and full validation passing.
+
+## 016 — Cache metadata model display names
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `renderMetadata` formats the same model id for many assistant turns. A small module-level cache around `formatModelDisplayName` should reduce repeated string work while preserving exact metadata output.
+
+Validation:
+
+- Relevant tests passed before benchmarking: `bun test src/metadata.test.ts src/conversation.test.ts src/render.test.ts` gave 40 pass, 0 fail.
+- Result saved to `results/016-cache-metadata-model-display.json`.
+- Interleaved p95s were mixed and violated the no-regression criterion:
+  - `conversation_open_cold/small_chat`: 2.600ms → 3.376ms, ratio 1.298
+  - `conversation_open_warm/medium_markdown`: 0.255ms → 0.331ms, ratio 1.298
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 126.838ms → 120.561ms, ratio 0.951
+  - `conversation_open_cold/huge_expanded_tools`: 46.875ms → 43.941ms, ratio 0.937
+- The large small/warm regressions exceeded the 2% tolerance despite some huge-workload wins.
+
+Action: reverted `tui/src/metadata.ts`; kept only this failure log and result artifact.
