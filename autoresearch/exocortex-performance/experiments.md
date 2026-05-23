@@ -2196,3 +2196,25 @@ Validation:
   - several unrelated conversation/list-update axes also regressed above tolerance; geomean median ratio was 1.009.
 
 Action: reverted `tui/src/sidebar/navigation.ts`; kept only this failure log and result artifact.
+
+## 091 — ASCII fast path for `sliceByWidth`
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `sliceByWidth` walks graphemes even for pure ASCII strings. Adding an all-ASCII fast path should speed truncation/hard-break paths used by markdown/code/sidebar rendering.
+
+Validation:
+
+- Relevant tests passed: `bun test src/textwidth.test.ts src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 43 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/091-ascii-slice-by-width-fast-path.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/huge_markdown_collapsed_tools` median ratio 0.980
+  - `conversation_open_cold/huge_expanded_tools` median ratio 0.977
+  - but `conversation_open_cold/small_chat` median ratio 1.080
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.054
+  - `sidebar_render/small_root.root` median ratio 1.264
+  - `sidebar_list_update/large_root.replace_and_sync` median ratio 1.248
+  - geomean median ratio was 1.010.
+
+Action: reverted `tui/src/textwidth.ts`; kept only this failure log and result artifact.
