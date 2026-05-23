@@ -793,3 +793,22 @@ Validation:
   - `conversation_open_warm/huge_expanded_tools` median ratio 1.222
 
 Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact. Despite consistent search wins, strict all-axis/no-regression criteria rejected it.
+
+## 032 — Skip ANSI stripping in message-area render without search/visual mode
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `renderMessageArea` stripped ANSI from every visible history row even when there was no history search and no visual selection. Deferring `stripAnsi` until search/visual paths need it should reduce warm conversation rendering cost without changing visible output.
+
+Validation:
+
+- Relevant tests passed: `bun test src/render.test.ts src/search.test.ts src/focus.test.ts` gave 66 pass, 0 fail.
+- Result saved to `results/032-skip-plain-line-work-without-search-visual.json`.
+- Two interleaved control/treatment runs did not confirm a deterministic win and violated no-regression criteria:
+  - `conversation_open_warm/small_chat` ratios: 1.182, 1.281; median 1.232
+  - `conversation_open_cold/medium_markdown` ratios: 1.071, 1.077; median 1.074
+  - `sidebar_render/small_root.root` ratios: 1.490, 1.496; median 1.493
+  - `sidebar_render/huge_foldered.root` ratios: 1.137, 1.025; median 1.081
+  - Some huge warm/build axes improved, but regressions were too large.
+
+Action: reverted `tui/src/render.ts`; kept only this failure log and result artifact.
