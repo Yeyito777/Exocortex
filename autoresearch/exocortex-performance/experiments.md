@@ -203,3 +203,43 @@ Notes:
 
 Decision: keep. Large deterministic cold conversation-opening/build-lines improvement with no visible wrapping change and full validation passing.
 
+## 007 — ASCII fast path for terminal-width measurement
+
+Status: success — kept and committed.
+
+Hypothesis: most benchmarked conversation/sidebar strings are ASCII. `termWidth` still walked each ASCII character through the full grapheme-width path (`codePointAt`, zero-width checks, wide-range binary search, trailing combining scan). Fast-returning all-ASCII strings and starting the full grapheme loop after any ASCII prefix should preserve all Unicode/ANSI behavior while reducing cold conversation open/build and ASCII-heavy sidebar costs.
+
+Change:
+
+- In `tui/src/textwidth.ts`, scan an initial printable ASCII prefix with `charCodeAt`.
+- If the whole string is printable ASCII, return `s.length` immediately.
+- Otherwise seed `w` and `i` from the ASCII prefix and continue with the existing `nextGrapheme` logic, so wide Unicode, emoji, ANSI escapes, controls, and combining characters keep the previous behavior.
+
+Validation:
+
+- `bun test src/textwidth.test.ts src/emoji-graphemes.test.ts src/conversation.test.ts src/render.test.ts`: 41 pass, 0 fail. This initially caught a bug where I forgot to seed `w` with the ASCII prefix length; fixed before benchmarking/keeping.
+- `bun run typecheck`: pass.
+- `bun test`: 370 pass, 0 fail.
+- Result saved to `results/007-ascii-termwidth-fast-path.json`.
+- Interleaved control/treatment p95s, first run:
+  - `conversation_open_cold/small_chat`: 3.595ms → 3.075ms, ratio 0.855
+  - `conversation_build_lines_cold/small_chat`: 2.005ms → 1.868ms, ratio 0.932
+  - `conversation_open_cold/medium_markdown`: 38.597ms → 33.881ms, ratio 0.878
+  - `conversation_build_lines_cold/medium_markdown`: 37.436ms → 32.462ms, ratio 0.867
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 184.953ms → 166.044ms, ratio 0.898
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 184.737ms → 158.841ms, ratio 0.860
+  - `conversation_open_cold/huge_expanded_tools`: 87.404ms → 63.470ms, ratio 0.726
+  - `conversation_build_lines_cold/huge_expanded_tools`: 85.918ms → 60.290ms, ratio 0.702
+- Repeated interleaved control/treatment run confirmed cold/build improvements:
+  - `conversation_open_cold/small_chat`: 3.490ms → 2.976ms, ratio 0.853
+  - `conversation_build_lines_cold/small_chat`: 2.182ms → 1.701ms, ratio 0.780
+  - `conversation_open_cold/medium_markdown`: 37.161ms → 33.105ms, ratio 0.891
+  - `conversation_build_lines_cold/medium_markdown`: 36.694ms → 33.341ms, ratio 0.909
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 185.510ms → 162.182ms, ratio 0.874
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 187.759ms → 169.069ms, ratio 0.900
+  - `conversation_open_cold/huge_expanded_tools`: 89.242ms → 58.775ms, ratio 0.659
+  - `conversation_build_lines_cold/huge_expanded_tools`: 88.271ms → 60.365ms, ratio 0.684
+- Sidebar axes were mixed/noisy in the first run and mostly neutral-to-positive in the repeat for large render/search; no UI-visible behavior changed and Unicode regression tests pass.
+
+Decision: keep. The change is behavior-preserving for Unicode/control cases covered by tests and gives repeatable cold conversation-opening/build-lines wins.
+

@@ -178,8 +178,16 @@ function nextGrapheme(s: string, i: number): [width: number, end: number] {
 }
 
 export function termWidth(s: string): number {
-  let w = 0;
-  let i = 0;
+  let asciiWidth = 0;
+  while (asciiWidth < s.length) {
+    const code = s.charCodeAt(asciiWidth);
+    if (code < 0x20 || code > 0x7E) break;
+    asciiWidth++;
+  }
+  if (asciiWidth === s.length) return asciiWidth;
+
+  let w = asciiWidth;
+  let i = asciiWidth;
   while (i < s.length) {
     const [cw, end] = nextGrapheme(s, i);
     w += cw;
