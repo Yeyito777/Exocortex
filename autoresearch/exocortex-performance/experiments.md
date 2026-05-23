@@ -478,3 +478,22 @@ Validation:
 - The large small/warm regressions exceeded the 2% tolerance despite some huge-workload wins.
 
 Action: reverted `tui/src/metadata.ts`; kept only this failure log and result artifact.
+
+## 017 — Inline metadata line formatting without temporary parts array
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `renderMetadata` builds a temporary `parts` array and joins it for every assistant run. Replacing this with one template string should reduce cold metadata rendering allocation while preserving exact output.
+
+Validation:
+
+- Relevant tests passed: `bun test src/metadata.test.ts src/conversation.test.ts src/render.test.ts` gave 40 pass, 0 fail.
+- Result saved to `results/017-inline-metadata-line-format.json`.
+- Interleaved p95s violated the no-regression criterion:
+  - `conversation_open_cold/small_chat`: 2.545ms → 3.073ms, ratio 1.207
+  - `conversation_build_lines_cold/small_chat`: 1.301ms → 1.423ms, ratio 1.094
+  - `conversation_open_cold/medium_markdown`: 23.996ms → 24.943ms, ratio 1.039
+  - `conversation_open_warm/medium_markdown`: 0.210ms → 0.295ms, ratio 1.405
+- Huge cold/build axes were essentially neutral, not enough to offset the regressions.
+
+Action: reverted `tui/src/metadata.ts`; kept only this failure log and result artifact.
