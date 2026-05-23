@@ -1503,3 +1503,22 @@ Validation:
 - The search wins were negligible after prior benchmark/code changes, and unrelated regressions exceeded tolerance.
 
 Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
+
+## 063 — Hoist `WrapResult.copy` reference in conversation block push
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `pushBlock` accessed `br.copy?.[i]` for every rendered line. Hoisting `br.copy` outside the loop should avoid repeated optional-chain/property lookup overhead while preserving line anchors and copy metadata.
+
+Validation:
+
+- Relevant tests passed: `bun test src/conversation.test.ts src/render.test.ts src/vim/message.test.ts` gave 36 pass, 0 fail.
+- Result saved to `results/063-hoist-wrap-copy-reference.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_build_lines_cold/small_chat` median ratio 0.932
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 0.962
+  - `conversation_open_warm/huge_expanded_tools` median ratio 1.077
+  - multiple sidebar axes regressed above tolerance, including `sidebar_list_update/small_root.replace_and_sync` median ratio 1.426
+- Direct conversation-axis improvements were not broad/stable enough and regressions exceeded tolerance.
+
+Action: reverted `tui/src/conversation.ts`; kept only this failure log and result artifact.
