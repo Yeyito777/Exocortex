@@ -1375,3 +1375,25 @@ Validation:
 - Direct markdown build regressions exceeded tolerance.
 
 Action: reverted `tui/src/markdown/tables.ts`; kept only this failure log and result artifact.
+
+## 057 — Code-line length fast path before terminal-width measurement
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: if a code-block line's UTF-16 length is already within the available width, it cannot exceed terminal width for ASCII and most non-wide code text. Returning early before `termWidth` should reduce cold code-block rendering cost without changing wrapping for lines that might overflow.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- Result saved to `results/057-code-line-length-width-fast-path.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/small_chat` median ratio 0.811
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 0.937
+  - `conversation_open_cold/medium_markdown` median ratio 1.031
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.056
+  - `sidebar_render/small_root.root` median ratio 1.128
+  - `sidebar_navigation/small_root.nav_down` median ratio 1.333
+  - `sidebar_render/large_root.root` median ratio 1.119
+- Direct conversation regressions and unrelated sidebar regressions exceeded tolerance.
+
+Action: reverted `tui/src/markdown/codeblocks.ts`; kept only this failure log and result artifact.
