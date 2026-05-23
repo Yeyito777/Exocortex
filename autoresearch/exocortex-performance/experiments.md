@@ -317,3 +317,25 @@ Validation:
 
 Action: reverted `tui/src/sidebar/rows.ts`; kept only this failure log and result artifact.
 
+
+## 011 — Restrict sidebar folder aggregates to visible folder rows
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: after experiment 002, `renderSidebar` precomputed descendant counts/statuses for every folder even though a frame only renders the visible sidebar rows. Restricting aggregation to visible folder ids should reduce folder-heavy render/search costs without changing rendered counts/icons.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts src/render.test.ts` gave 82 pass, 0 fail.
+- Result saved to `results/011-visible-folder-aggregates.json`.
+- First interleaved run looked promising for search/filter but had direct regressions:
+  - `sidebar_search_filter/large_root.performance_query`: 13.417ms → 11.250ms, ratio 0.838
+  - `sidebar_search_filter/huge_foldered.performance_query`: 45.836ms → 40.113ms, ratio 0.875
+  - `sidebar_list_update/large_root.replace_and_sync`: 1.980ms → 2.457ms, ratio 1.241
+  - `sidebar_render/large_root.visual_selection`: 3.022ms → 3.324ms, ratio 1.100
+- Repeated interleaved run failed to confirm safety:
+  - `sidebar_render/large_root.root`: 3.008ms → 4.172ms, ratio 1.387
+  - `sidebar_search_filter/large_root.performance_query`: 12.913ms → 13.390ms, ratio 1.037
+  - `sidebar_list_update/huge_foldered.replace_and_sync`: 9.280ms → 10.045ms, ratio 1.082
+
+Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
