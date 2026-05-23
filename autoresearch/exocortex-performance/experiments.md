@@ -1440,3 +1440,24 @@ Validation:
   - several sidebar axes regressed above tolerance.
 
 Action: reverted `tui/src/markdown/formatting.ts` and `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
+
+## 060 — Direct syntax-highlight language lookup before lowercasing
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: code fences commonly use already-lowercase language ids such as `ts`. Looking up `LANGUAGE_MAP[language]` before falling back to `language.toLowerCase()` should avoid repeated lowercase allocation while preserving uppercase/mixed-case support.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- Result saved to `results/060-highlight-language-direct-lookup.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/huge_markdown_collapsed_tools` median ratio 0.957
+  - `sidebar_search_filter/small_root.performance_query` median ratio 0.939
+  - `conversation_open_cold/small_chat` median ratio 1.173
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 1.140
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 1.104
+  - `sidebar_navigation/small_root.nav_down` median ratio 1.389
+- Direct conversation regressions exceeded tolerance and the targeted win was inconsistent.
+
+Action: reverted `tui/src/markdown/highlight.ts`; kept only this failure log and result artifact.
