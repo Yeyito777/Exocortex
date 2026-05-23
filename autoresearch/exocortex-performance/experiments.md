@@ -1522,3 +1522,11 @@ Validation:
 - Direct conversation-axis improvements were not broad/stable enough and regressions exceeded tolerance.
 
 Action: reverted `tui/src/conversation.ts`; kept only this failure log and result artifact.
+
+## Smoke test — xenv + exotest after kept production changes
+
+Status: success.
+
+- Ran `/home/yeyito/Workspace/exocortex/scripts/dev/exotest autoresearch-performance` inside an `xenv` `st` terminal from the worktree.
+- Result: TUI launched successfully in the nested X11 environment and rendered the Exocortex prompt.
+- Screenshot saved outside the repo at `/tmp/exo-autoresearch-perf-after-054.png`.
