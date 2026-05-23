@@ -1090,3 +1090,26 @@ Validation:
   - `sidebar_navigation/large_root.nav_down` median ratio 1.053
 
 Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
+
+## 045 — Benchmark: isolate sidebar list-update fixture object generation
+
+Status: success — kept and committed (benchmark infrastructure only; no UX/UI code changed).
+
+Problem: the `sidebar_list_update` axis still generated all synthetic conversation/folder objects inside the timed callback. That measured fixture object construction more than `updateConversationList` itself and made unrelated experiments appear to regress list-update axes through allocation noise.
+
+Change:
+
+- Prebuild the synthetic conversation/folder object dataset once per sidebar list-update workload.
+- Inside each measured sample, copy the arrays with `.slice()` and call `updateConversationList`, preserving array-copy/sort/selection-sync work while removing object generation from the timed region.
+- Saved the updated benchmark run to `results/045-sidebar-list-update-fixture-isolation.json` and copied it to `results/baseline-v5.json` for future experiments.
+
+Validation:
+
+- `bun run autoresearch/exocortex-performance/benchmark.ts --json`: pass.
+- `bun run typecheck`: pass.
+- Representative v5 list-update p95s:
+  - `sidebar_list_update/small_root.replace_and_sync`: 0.036ms
+  - `sidebar_list_update/large_root.replace_and_sync`: 0.658ms
+  - `sidebar_list_update/huge_foldered.replace_and_sync`: 2.615ms
+
+Decision: keep. This makes the independent list-update axis more objective and less dominated by benchmark fixture construction, with no production UX change.

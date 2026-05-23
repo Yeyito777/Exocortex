@@ -447,13 +447,17 @@ function runSidebarBenchmarks(): MetricReport[] {
       `${workload.name}.replace_and_sync`,
       workload.name === "huge_foldered" ? 10 : workload.name === "large_root" ? 20 : 60,
       2,
-      (iteration) => {
-        const sidebar = makeSidebar(0, 0, "root");
+      (() => {
         const data = makeConversations(workload.conversations, workload.folders);
-        if (iteration % 2 === 0 && data.conversations[10]) sidebar.pendingFocusItem = { type: "conversation", id: data.conversations[10].id };
-        updateConversationList(sidebar, data.conversations, data.folders);
-        return sidebar.conversations.length + sidebar.folders.length + (sidebar.selectedId?.length ?? 0);
-      },
+        return (iteration: number) => {
+          const sidebar = makeSidebar(0, 0, "root");
+          const conversations = data.conversations.slice();
+          const folders = data.folders.slice();
+          if (iteration % 2 === 0 && conversations[10]) sidebar.pendingFocusItem = { type: "conversation", id: conversations[10].id };
+          updateConversationList(sidebar, conversations, folders);
+          return sidebar.conversations.length + sidebar.folders.length + (sidebar.selectedId?.length ?? 0);
+        };
+      })(),
     ));
   }
 
