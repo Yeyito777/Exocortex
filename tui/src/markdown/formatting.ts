@@ -282,5 +282,6 @@ export function formatMarkdownChunks(chunks: string[], joins: string[], bgRestor
 // Strip markdown markers to get visible text.  Reuses the same scanner
 // as formatMarkdown so width calculations always agree with rendering.
 export function stripMarkdown(s: string): string {
+  if (!/[*`]/.test(s)) return s;
   return formatMarkdown(s, "").plain;
 }

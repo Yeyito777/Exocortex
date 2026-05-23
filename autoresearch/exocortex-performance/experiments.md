@@ -1297,3 +1297,37 @@ Validation:
 - The regular render/navigation improvements were not consistent and regressions exceeded tolerance.
 
 Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
+
+## 054 — Fast path `stripMarkdown` when no inline markers are present
+
+Status: success — kept and committed.
+
+Hypothesis: many table cells and markdown width-measurement inputs contain no inline markdown markers. `stripMarkdown` still routed every string through the full markdown scanner via `formatMarkdown(s, "").plain`. Returning the input unchanged when it contains neither `*` nor backticks should preserve exact visible output while reducing cold conversation render/build work.
+
+Change:
+
+- Added a no-marker fast path to `tui/src/markdown/formatting.ts`:
+  - if a string contains no `*` and no `` ` ``, return it directly from `stripMarkdown`;
+  - otherwise preserve the existing scanner path.
+
+Validation:
+
+- `bun test src/markdown/formatting.test.ts src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts`: 42 pass, 0 fail.
+- `bun run typecheck`: pass.
+- `bun test`: 370 pass, 0 fail.
+- Result saved to `results/054-strip-markdown-no-marker-fast-path.json`.
+- Three interleaved control/treatment runs showed repeated direct cold conversation open/build wins:
+  - `conversation_open_cold/small_chat` median ratio 0.793
+  - `conversation_build_lines_cold/small_chat` median ratio 0.752
+  - `conversation_open_cold/medium_markdown` median ratio 0.779
+  - `conversation_build_lines_cold/medium_markdown` median ratio 0.784
+  - `conversation_open_cold/huge_markdown_collapsed_tools` median ratio 0.821
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 0.804
+  - `conversation_open_cold/huge_expanded_tools` median ratio 0.804
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 0.749
+
+Notes:
+
+- Warm conversation and sidebar microbench axes varied in both directions across the same runs. This change is only on the markdown width/render path, and warm history render caching/sidebar operations should not execute it during their hot paths. I treated those as benchmark noise rather than product regressions.
+
+Decision: keep. The change is behavior-preserving for marker-free markdown text, covered by markdown/conversation/render tests, and gives large repeated cold conversation-opening/build-lines wins.
