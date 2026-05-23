@@ -661,3 +661,27 @@ Validation:
 - The direct cold-open regressions exceeded tolerance.
 
 Action: reverted `tui/src/blockrenderer.ts`; kept only this failure log and result artifact.
+
+## 026 — ASCII fast path for mark-prefix detection
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: most conversation titles start with ASCII. Since all mark prefixes are emoji, `getMarkPrefix` can return null immediately for empty/ASCII-leading titles, avoiding checks against all known mark emojis during sidebar render/search.
+
+Validation:
+
+- Relevant tests passed: `bun test src/marks.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/026-ascii-mark-prefix-fast-path.json`.
+- Both interleaved runs showed very large search/filter wins:
+  - First run `sidebar_search_filter/small_root.performance_query`: 0.623ms → 0.257ms, ratio 0.413
+  - First run `sidebar_search_filter/large_root.performance_query`: 15.715ms → 7.704ms, ratio 0.490
+  - First run `sidebar_search_filter/huge_foldered.performance_query`: 48.009ms → 24.302ms, ratio 0.506
+  - Repeat `sidebar_search_filter/large_root.performance_query`: 13.053ms → 7.429ms, ratio 0.569
+  - Repeat `sidebar_search_filter/huge_foldered.performance_query`: 45.734ms → 25.856ms, ratio 0.565
+- However, the repeated run still had direct sidebar regressions above tolerance:
+  - `sidebar_render/huge_foldered.root`: 10.977ms → 11.534ms, ratio 1.051
+  - `sidebar_navigation/huge_foldered.nav_down`: 1.246ms → 1.651ms, ratio 1.325
+  - `sidebar_list_update/huge_foldered.replace_and_sync`: 6.808ms → 8.129ms, ratio 1.194
+  - `sidebar_render/large_root.visual_selection`: 3.228ms → 3.533ms, ratio 1.094
+
+Action: reverted `tui/src/marks.ts`; kept only this failure log and result artifact. This was tempting, but the no-regression rule rejected it.
