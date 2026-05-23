@@ -1984,3 +1984,24 @@ Validation:
 - The compare helper still flagged unrelated median regressions (for example `conversation_open_cold/medium_markdown`, `conversation_open_warm/medium_markdown`, and streaming-navigation metrics). These are not on the changed code path and are consistent with the control-level volatility documented in experiments 075–076.
 
 Decision: keep. The change is behavior-preserving, simple, covered by marked-navigation tests, and produces repeated direct wins on the newly measured marked-navigation axes.
+
+## 082 — Single-pass marked-navigation target selection
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: after experiment 081 removed the `map/filter/map` allocation, `moveToMarked` still built a full visible-index array and then searched it. Tracking marked positions/indices directly in one pass should reduce marked-navigation work further.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar-navigation.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/082-single-pass-marked-navigation-targets.json`.
+- Three interleaved control/treatment runs were noisy and violated no-regression criteria:
+  - `sidebar_navigation/large_root.next_marked_root` median ratio 0.826
+  - `sidebar_navigation/huge_foldered.next_marked_root` median ratio 0.828
+  - but `sidebar_navigation/small_root.next_marked_root` median ratio 2.000
+  - `sidebar_navigation/large_root.next_marked_folder` median ratio 1.122
+  - `sidebar_navigation/huge_foldered.next_marked_folder` median ratio 1.048
+  - many unrelated sidebar/conversation axes also regressed; geomean median ratio was 1.096.
+
+Action: reverted `tui/src/sidebar/navigation.ts`; kept only this failure log and result artifact. The simpler direct-loop index build from experiment 081 remains the kept marked-navigation optimization.
