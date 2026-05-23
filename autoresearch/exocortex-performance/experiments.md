@@ -1184,3 +1184,24 @@ Validation:
 - Cold conversation wins were not clean enough under the all-axis/no-regression rule.
 
 Action: reverted `tui/src/markdown/tables.ts`; kept only this failure log and result artifact.
+
+## 049 — Avoid `rendered.map(() => null)` in markdown paragraph copy metadata
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `wrapParagraphBlock` allocated a temporary `rendered.map(() => null)` array solely to append null copy-line metadata. A simple loop should preserve output and reduce cold markdown rendering allocation.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- Result saved to `results/049-avoid-copy-null-map-in-markdown-paragraphs.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 0.916
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 0.904
+  - `conversation_build_lines_cold/small_chat` median ratio 1.149
+  - `conversation_open_cold/medium_markdown` median ratio 1.052
+  - `conversation_open_warm/medium_markdown` median ratio 1.077
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 1.091
+- The direct cold/build regressions exceeded tolerance despite some huge collapsed-tool wins.
+
+Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
