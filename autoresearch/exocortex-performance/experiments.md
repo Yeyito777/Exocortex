@@ -685,3 +685,27 @@ Validation:
   - `sidebar_render/large_root.visual_selection`: 3.228ms → 3.533ms, ratio 1.094
 
 Action: reverted `tui/src/marks.ts`; kept only this failure log and result artifact. This was tempting, but the no-regression rule rejected it.
+
+## 027 — ASCII fast path for searchable conversation titles
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `getSearchableConversationTitle` can skip `stripMark` for titles beginning with ASCII because mark prefixes are emoji. Restricting the fast path to searchable-title derivation should preserve exact title display/search semantics while improving sidebar search/filter without touching global mark handling.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebarsearch.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/027-searchable-title-ascii-fast-path.json`.
+- Both interleaved runs showed strong sidebar search/filter wins:
+  - First run `sidebar_search_filter/small_root.performance_query`: 0.454ms → 0.322ms, ratio 0.709
+  - First run `sidebar_search_filter/large_root.performance_query`: 14.203ms → 7.534ms, ratio 0.530
+  - First run `sidebar_search_filter/huge_foldered.performance_query`: 44.091ms → 26.460ms, ratio 0.600
+  - Repeat `sidebar_search_filter/large_root.performance_query`: 12.756ms → 6.807ms, ratio 0.534
+  - Repeat `sidebar_search_filter/huge_foldered.performance_query`: 45.070ms → 24.610ms, ratio 0.546
+- Repeated run still had benchmark regressions above tolerance:
+  - `sidebar_list_update/huge_foldered.replace_and_sync`: 6.998ms → 7.977ms, ratio 1.140
+  - `sidebar_list_update/large_root.replace_and_sync`: 1.741ms → 1.789ms, ratio 1.028
+  - `sidebar_render/large_root.visual_selection`: 2.983ms → 3.051ms, ratio 1.023
+  - unrelated conversation axes also showed noise/regressions.
+
+Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact. The search win is real-looking, but the strict benchmark no-regression rule rejected it.
