@@ -81,4 +81,13 @@ describe("prompt highlighting", () => {
 
     expect(line).toBe(`${theme.command}/model deepseek${theme.reset} deepseek.future-preview`);
   });
+
+  test("highlights subsequent macros in the same message", () => {
+    const state = createInitialState();
+
+    const input = "Use /xenv then /tool install xenv please";
+    const [line] = highlightPromptInput(state, [input], input, 120, 0);
+
+    expect(line).toBe(`Use ${theme.command}/xenv${theme.reset} then ${theme.command}/tool install xenv${theme.reset} please`);
+  });
 });

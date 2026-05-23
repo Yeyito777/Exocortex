@@ -44,8 +44,7 @@ function customModelProviders(state: RenderState): Set<string> {
 
 interface Span { start: number; end: number }
 
-/** Captures a slash command followed by any number of trailing whitespace-delimited tokens. */
-const COMMAND_SPAN_RE = /(^|[ \t\n])(\/\S+(?:[ \t]+\S+)*)/gm;
+interface WordPosition { word: string; start: number; end: number }
 
 /**
  * Find buffer ranges that contain valid command/macro tokens.
@@ -58,43 +57,37 @@ function findCommandSpans(
   providersWithCustomModels: Set<string>,
 ): Span[] {
   const spans: Span[] = [];
-  COMMAND_SPAN_RE.lastIndex = 0;
-
+  const words: WordPosition[] = [];
+  const wordRe = /\S+/g;
   let match;
-  while ((match = COMMAND_SPAN_RE.exec(buffer)) !== null) {
-    const boundary = match[1];
-    const full = match[2]; // e.g. "/tool install discord"
-    const cmdStart = match.index + boundary.length;
+  while ((match = wordRe.exec(buffer)) !== null) {
+    words.push({ word: match[0], start: match.index, end: match.index + match[0].length });
+  }
 
-    // Parse whitespace-delimited token positions within the captured group
-    const wordRe = /\S+/g;
-    const wordPositions: { word: string; end: number }[] = [];
-    let wm;
-    while ((wm = wordRe.exec(full)) !== null) {
-      wordPositions.push({ word: wm[0], end: wm.index + wm[0].length });
-    }
-    if (wordPositions.length === 0) continue;
+  for (let wordIndex = 0; wordIndex < words.length; wordIndex++) {
+    const firstWord = words[wordIndex];
+    if (!firstWord.word.startsWith("/")) continue;
 
     // First word (with /) must be a known command or macro
-    const baseCmd = full.slice(0, wordPositions[0].end);
+    const baseCmd = firstWord.word;
     if (!VALID_NAMES.has(baseCmd)) continue;
-    let spanEnd = cmdStart + wordPositions[0].end;
+    let spanEnd = firstWord.end;
 
     // Walk through subsequent words, extending highlight while args are valid
     let key = baseCmd;
-    for (let i = 1; i < wordPositions.length; i++) {
-      if (validArgs[key]?.has(wordPositions[i].word)) {
-        spanEnd = cmdStart + wordPositions[i].end;
-        key = key + " " + wordPositions[i].word;
+    for (let i = wordIndex + 1; i < words.length; i++) {
+      if (validArgs[key]?.has(words[i].word)) {
+        spanEnd = words[i].end;
+        key = key + " " + words[i].word;
       } else if (key.startsWith("/model ") && providersWithCustomModels.has(key.slice("/model ".length))) {
-        spanEnd = cmdStart + wordPositions[i].end;
+        spanEnd = words[i].end;
         break;
       } else {
         break;
       }
     }
 
-    spans.push({ start: cmdStart, end: spanEnd });
+    spans.push({ start: firstWord.start, end: spanEnd });
   }
 
   return spans;
