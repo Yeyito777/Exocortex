@@ -411,12 +411,43 @@ function runSidebarBenchmarks(): MetricReport[] {
     ));
 
     reports.push(measureMetric(
+      "sidebar_render",
+      `${workload.name}.folder_view`,
+      workload.name === "huge_foldered" ? 12 : workload.name === "large_root" ? 28 : 80,
+      3,
+      (() => {
+        const sidebar = makeSidebar(workload.conversations, workload.folders, "folder");
+        return (iteration: number) => {
+          sidebar.scrollOffset = Math.max(0, iteration % Math.max(1, workload.conversations - workload.rows));
+          const rows = renderSidebar(sidebar, workload.rows, iteration % 2 === 0, sidebar.conversations[iteration % sidebar.conversations.length]?.id ?? null);
+          return rows.length + rows.join("\n").length;
+        };
+      })(),
+      workload.name === "huge_foldered" ? 2 : 4,
+    ));
+
+    reports.push(measureMetric(
       "sidebar_navigation",
       `${workload.name}.nav_down`,
       workload.name === "huge_foldered" ? 80 : workload.name === "large_root" ? 160 : 300,
       5,
       (() => {
         const sidebar = makeSidebar(workload.conversations, workload.folders, "root");
+        return () => {
+          handleSidebarAction("nav_down", sidebar);
+          return sidebar.selectedIndex + (sidebar.selectedId?.length ?? 0);
+        };
+      })(),
+      workload.name === "huge_foldered" ? 5 : 10,
+    ));
+
+    reports.push(measureMetric(
+      "sidebar_navigation",
+      `${workload.name}.folder_nav_down`,
+      workload.name === "huge_foldered" ? 80 : workload.name === "large_root" ? 160 : 300,
+      5,
+      (() => {
+        const sidebar = makeSidebar(workload.conversations, workload.folders, "folder");
         return () => {
           handleSidebarAction("nav_down", sidebar);
           return sidebar.selectedIndex + (sidebar.selectedId?.length ?? 0);

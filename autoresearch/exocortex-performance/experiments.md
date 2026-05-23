@@ -1662,3 +1662,29 @@ Validation:
   - `conversation_build_lines_cold/medium_markdown` median ratio 1.045
 
 Action: reverted `tui/src/sidebar/updates.ts`; kept only this failure log and result artifact.
+
+## 070 — Benchmark: add sidebar folder-view render/navigation axes
+
+Status: success — kept and committed (benchmark infrastructure only; no UX/UI code changed).
+
+Problem: the sidebar benchmark covered root render/navigation, search filtering, visual selection, and list-update sync, but it did not independently measure the common in-folder view. Several sidebar optimizations can affect folder-scoped rows differently from root rows because folder rows disappear and conversation filtering is scoped by `currentFolderId`.
+
+Change:
+
+- Added `sidebar_render/<workload>.folder_view`, using `makeSidebar(..., "folder")` and rendering from inside a folder.
+- Added `sidebar_navigation/<workload>.folder_nav_down`, using a folder-scoped sidebar and repeated `nav_down` actions.
+- Saved the updated benchmark run to `results/070-sidebar-folder-view-benchmark-axes.json` and copied it to `results/baseline-v6.json` for future experiments.
+
+Validation:
+
+- `bun run autoresearch/exocortex-performance/benchmark.ts --json`: pass.
+- `bun run typecheck`: pass.
+- Representative v6 p95s:
+  - `sidebar_render/small_root.folder_view`: 0.039ms
+  - `sidebar_render/large_root.folder_view`: 0.745ms
+  - `sidebar_render/huge_foldered.folder_view`: 2.543ms
+  - `sidebar_navigation/small_root.folder_nav_down`: 0.002ms
+  - `sidebar_navigation/large_root.folder_nav_down`: 0.053ms
+  - `sidebar_navigation/huge_foldered.folder_nav_down`: 0.206ms
+
+Decision: keep. This improves benchmark coverage/objectivity for sidebar operations across root and folder-scoped workloads without changing production behavior.
