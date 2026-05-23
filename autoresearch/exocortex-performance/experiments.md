@@ -963,3 +963,29 @@ Validation:
 - The direct sidebar search gains were not enough to satisfy the strict all-axis/no-regression rule.
 
 Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
+
+## 040 — Benchmark: batch repeated micro-samples for lower timing noise
+
+Status: success — kept and committed (benchmark infrastructure only; no UX/UI code changed).
+
+Problem: several fast axes, especially warm conversation render and small/sidebar operations, had sub-millisecond p95s. Single-operation samples amplified timer, GC, and event-loop noise, causing promising targeted optimizations to be rejected due unrelated noisy axes.
+
+Change:
+
+- Added a `batch` field to benchmark metric reports.
+- `measureMetric` now supports running each timed sample as multiple repeated operations and records per-operation time.
+- Batched warm conversation render samples and fast sidebar render/search/navigation samples while leaving cold conversation open/build and sidebar list-update semantics intact.
+- Saved the updated benchmark to `results/040-batched-benchmark-samples.json` and copied it to `results/baseline-v3.json` for future experiments.
+
+Validation:
+
+- `bun run autoresearch/exocortex-performance/benchmark.ts --json`: pass.
+- `bun run typecheck`: pass.
+- Representative v3 p95s include:
+  - `conversation_open_warm/small_chat`: 0.213ms, batch 10
+  - `conversation_open_warm/huge_markdown_collapsed_tools`: 0.194ms, batch 10
+  - `sidebar_render/large_root.root`: 1.731ms, batch 4
+  - `sidebar_search_filter/huge_foldered.performance_query`: 39.664ms, batch 2
+  - `sidebar_navigation/huge_foldered.nav_down`: 1.075ms, batch 5
+
+Decision: keep. This improves benchmark determinism/objectivity with no production UX change and gives future experiments a cleaner pass/fail signal.
