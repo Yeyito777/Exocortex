@@ -1,0 +1,593 @@
+{
+  "benchmark": "exocortex-performance-autoresearch",
+  "version": 1,
+  "generatedAt": "2026-05-23T23:22:03.429Z",
+  "runtime": {
+    "bun": "1.3.6",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "criteria": {
+    "maxAllowedP95RegressionRatio": 1.02,
+    "minTargetP95ImprovementRatio": 0.95,
+    "minGeomeanP95ImprovementRatio": 0.98
+  },
+  "metrics": [
+    {
+      "axis": "conversation_open_cold",
+      "workload": "small_chat",
+      "iterations": 45,
+      "warmups": 1,
+      "batch": 1,
+      "minMs": 1.014,
+      "avgMs": 1.51,
+      "p50Ms": 1.477,
+      "p95Ms": 2.128,
+      "maxMs": 2.857,
+      "digest": 293850
+    },
+    {
+      "axis": "conversation_open_warm",
+      "workload": "small_chat",
+      "iterations": 90,
+      "warmups": 3,
+      "batch": 10,
+      "minMs": 0.154,
+      "avgMs": 0.186,
+      "p50Ms": 0.182,
+      "p95Ms": 0.224,
+      "maxMs": 0.276,
+      "digest": 424350
+    },
+    {
+      "axis": "conversation_build_lines_cold",
+      "workload": "small_chat",
+      "iterations": 45,
+      "warmups": 1,
+      "batch": 1,
+      "minMs": 0.68,
+      "avgMs": 0.821,
+      "p50Ms": 0.722,
+      "p95Ms": 1.066,
+      "maxMs": 1.709,
+      "digest": 15300
+    },
+    {
+      "axis": "conversation_open_cold",
+      "workload": "medium_markdown",
+      "iterations": 12,
+      "warmups": 1,
+      "batch": 1,
+      "minMs": 16.235,
+      "avgMs": 18.392,
+      "p50Ms": 17.955,
+      "p95Ms": 23.978,
+      "maxMs": 23.978,
+      "digest": 173496
+    },
+    {
+      "axis": "conversation_open_warm",
+      "workload": "medium_markdown",
+      "iterations": 45,
+      "warmups": 3,
+      "batch": 10,
+      "minMs": 0.152,
+      "avgMs": 0.162,
+      "p50Ms": 0.157,
+      "p95Ms": 0.18,
+      "maxMs": 0.23,
+      "digest": 3687075
+    },
+    {
+      "axis": "conversation_build_lines_cold",
+      "workload": "medium_markdown",
+      "iterations": 12,
+      "warmups": 1,
+      "batch": 1,
+      "minMs": 15.288,
+      "avgMs": 16.523,
+      "p50Ms": 16.645,
+      "p95Ms": 17.329,
+      "maxMs": 17.329,
+      "digest": 100872
+    },
+    {
+      "axis": "conversation_open_cold",
+      "workload": "huge_markdown_collapsed_tools",
+      "iterations": 4,
+      "warmups": 1,
+      "batch": 1,
+      "minMs": 94.772,
+      "avgMs": 104.148,
+      "p50Ms": 106.143,
+      "p95Ms": 108.753,
+      "maxMs": 108.753,
+      "digest": 195264
+    },
+    {
+      "axis": "conversation_open_warm",
+      "workload": "huge_markdown_collapsed_tools",
+      "iterations": 20,
+      "warmups": 3,
+      "batch": 10,
+      "minMs": 0.159,
+      "avgMs": 0.173,
+      "p50Ms": 0.171,
+      "p95Ms": 0.186,
+      "maxMs": 0.194,
+      "digest": 8453900
+    },
+    {
+      "axis": "conversation_build_lines_cold",
+      "workload": "huge_markdown_collapsed_tools",
+      "iterations": 4,
+      "warmups": 1,
+      "batch": 1,
+      "minMs": 91.776,
+      "avgMs": 101.497,
+      "p50Ms": 97.877,
+      "p95Ms": 111.354,
+      "maxMs": 111.354,
+      "digest": 175688
+    },
+    {
+      "axis": "conversation_open_cold",
+      "workload": "huge_expanded_tools",
+      "iterations": 3,
+      "warmups": 1,
+      "batch": 1,
+      "minMs": 35.325,
+      "avgMs": 36.446,
+      "p50Ms": 36.553,
+      "p95Ms": 37.46,
+      "maxMs": 37.46,
+      "digest": 106182
+    },
+    {
+      "axis": "conversation_open_warm",
+      "workload": "huge_expanded_tools",
+      "iterations": 12,
+      "warmups": 3,
+      "batch": 10,
+      "minMs": 0.145,
+      "avgMs": 0.156,
+      "p50Ms": 0.156,
+      "p95Ms": 0.169,
+      "maxMs": 0.169,
+      "digest": 3342900
+    },
+    {
+      "axis": "conversation_build_lines_cold",
+      "workload": "huge_expanded_tools",
+      "iterations": 3,
+      "warmups": 1,
+      "batch": 1,
+      "minMs": 38.299,
+      "avgMs": 40.623,
+      "p50Ms": 40.638,
+      "p95Ms": 42.931,
+      "maxMs": 42.931,
+      "digest": 84810
+    },
+    {
+      "axis": "sidebar_render",
+      "workload": "small_root.root",
+      "iterations": 80,
+      "warmups": 3,
+      "batch": 4,
+      "minMs": 0.09,
+      "avgMs": 0.109,
+      "p50Ms": 0.101,
+      "p95Ms": 0.123,
+      "maxMs": 0.51,
+      "digest": 1175966
+    },
+    {
+      "axis": "sidebar_render",
+      "workload": "small_root.folder_view",
+      "iterations": 80,
+      "warmups": 3,
+      "batch": 4,
+      "minMs": 0.069,
+      "avgMs": 0.082,
+      "p50Ms": 0.073,
+      "p95Ms": 0.105,
+      "maxMs": 0.376,
+      "digest": 1054440
+    },
+    {
+      "axis": "sidebar_navigation",
+      "workload": "small_root.nav_down",
+      "iterations": 300,
+      "warmups": 5,
+      "batch": 10,
+      "minMs": 0.006,
+      "avgMs": 0.008,
+      "p50Ms": 0.007,
+      "p95Ms": 0.009,
+      "maxMs": 0.082,
+      "digest": 360000
+    },
+    {
+      "axis": "sidebar_navigation",
+      "workload": "small_root.folder_nav_down",
+      "iterations": 300,
+      "warmups": 5,
+      "batch": 10,
+      "minMs": 0.003,
+      "avgMs": 0.004,
+      "p50Ms": 0.004,
+      "p95Ms": 0.004,
+      "maxMs": 0.006,
+      "digest": 363000
+    },
+    {
+      "axis": "sidebar_search_filter",
+      "workload": "small_root.performance_query",
+      "iterations": 80,
+      "warmups": 3,
+      "batch": 3,
+      "minMs": 0.212,
+      "avgMs": 0.248,
+      "p50Ms": 0.244,
+      "p95Ms": 0.283,
+      "maxMs": 0.468,
+      "digest": 23280
+    },
+    {
+      "axis": "sidebar_list_update",
+      "workload": "small_root.replace_and_sync",
+      "iterations": 60,
+      "warmups": 2,
+      "batch": 1,
+      "minMs": 0.011,
+      "avgMs": 0.016,
+      "p50Ms": 0.014,
+      "p95Ms": 0.04,
+      "maxMs": 0.054,
+      "digest": 7680
+    },
+    {
+      "axis": "sidebar_render",
+      "workload": "large_root.root",
+      "iterations": 28,
+      "warmups": 3,
+      "batch": 4,
+      "minMs": 0.742,
+      "avgMs": 0.827,
+      "p50Ms": 0.776,
+      "p95Ms": 1.037,
+      "maxMs": 1.098,
+      "digest": 531635
+    },
+    {
+      "axis": "sidebar_render",
+      "workload": "large_root.folder_view",
+      "iterations": 28,
+      "warmups": 3,
+      "batch": 4,
+      "minMs": 0.564,
+      "avgMs": 0.636,
+      "p50Ms": 0.579,
+      "p95Ms": 0.899,
+      "maxMs": 0.908,
+      "digest": 448345
+    },
+    {
+      "axis": "sidebar_navigation",
+      "workload": "large_root.nav_down",
+      "iterations": 160,
+      "warmups": 5,
+      "batch": 10,
+      "minMs": 0.208,
+      "avgMs": 0.283,
+      "p50Ms": 0.267,
+      "p95Ms": 0.422,
+      "maxMs": 0.474,
+      "digest": 3943979
+    },
+    {
+      "axis": "sidebar_navigation",
+      "workload": "large_root.folder_nav_down",
+      "iterations": 160,
+      "warmups": 5,
+      "batch": 10,
+      "minMs": 0.076,
+      "avgMs": 0.086,
+      "p50Ms": 0.086,
+      "p95Ms": 0.097,
+      "maxMs": 0.157,
+      "digest": 7696000
+    },
+    {
+      "axis": "sidebar_search_filter",
+      "workload": "large_root.performance_query",
+      "iterations": 35,
+      "warmups": 3,
+      "batch": 3,
+      "minMs": 7.488,
+      "avgMs": 8.89,
+      "p50Ms": 8.869,
+      "p95Ms": 9.391,
+      "maxMs": 9.622,
+      "digest": 266739
+    },
+    {
+      "axis": "sidebar_list_update",
+      "workload": "large_root.replace_and_sync",
+      "iterations": 20,
+      "warmups": 2,
+      "batch": 1,
+      "minMs": 0.596,
+      "avgMs": 0.662,
+      "p50Ms": 0.617,
+      "p95Ms": 0.785,
+      "maxMs": 1.085,
+      "digest": 106000
+    },
+    {
+      "axis": "sidebar_render",
+      "workload": "huge_foldered.root",
+      "iterations": 12,
+      "warmups": 3,
+      "batch": 2,
+      "minMs": 2.802,
+      "avgMs": 3.269,
+      "p50Ms": 3.335,
+      "p95Ms": 3.882,
+      "maxMs": 3.882,
+      "digest": 137169
+    },
+    {
+      "axis": "sidebar_render",
+      "workload": "huge_foldered.folder_view",
+      "iterations": 12,
+      "warmups": 3,
+      "batch": 2,
+      "minMs": 2.003,
+      "avgMs": 2.151,
+      "p50Ms": 2.025,
+      "p95Ms": 2.403,
+      "maxMs": 2.403,
+      "digest": 106929
+    },
+    {
+      "axis": "sidebar_navigation",
+      "workload": "huge_foldered.nav_down",
+      "iterations": 80,
+      "warmups": 5,
+      "batch": 5,
+      "minMs": 0.806,
+      "avgMs": 0.969,
+      "p50Ms": 0.919,
+      "p95Ms": 1.244,
+      "maxMs": 1.492,
+      "digest": 1538358
+    },
+    {
+      "axis": "sidebar_navigation",
+      "workload": "huge_foldered.folder_nav_down",
+      "iterations": 80,
+      "warmups": 5,
+      "batch": 5,
+      "minMs": 0.243,
+      "avgMs": 0.259,
+      "p50Ms": 0.252,
+      "p95Ms": 0.287,
+      "maxMs": 0.311,
+      "digest": 6724400
+    },
+    {
+      "axis": "sidebar_search_filter",
+      "workload": "huge_foldered.performance_query",
+      "iterations": 18,
+      "warmups": 3,
+      "batch": 2,
+      "minMs": 32.86,
+      "avgMs": 34.334,
+      "p50Ms": 34.391,
+      "p95Ms": 35.638,
+      "maxMs": 35.638,
+      "digest": 328284
+    },
+    {
+      "axis": "sidebar_list_update",
+      "workload": "huge_foldered.replace_and_sync",
+      "iterations": 10,
+      "warmups": 2,
+      "batch": 1,
+      "minMs": 2.472,
+      "avgMs": 2.595,
+      "p50Ms": 2.599,
+      "p95Ms": 2.759,
+      "maxMs": 2.759,
+      "digest": 192000
+    },
+    {
+      "axis": "sidebar_render",
+      "workload": "large_root.visual_selection",
+      "iterations": 20,
+      "warmups": 3,
+      "batch": 3,
+      "minMs": 1.053,
+      "avgMs": 1.161,
+      "p50Ms": 1.081,
+      "p95Ms": 1.385,
+      "maxMs": 1.511,
+      "digest": 291993
+    }
+  ],
+  "compare": {
+    "baselinePath": "autoresearch/exocortex-performance/results/baseline-v7.json",
+    "passed": false,
+    "p95GeomeanRatio": 0.997,
+    "largestRegression": {
+      "key": "conversation_build_lines_cold/small_chat",
+      "baselineP95Ms": 0.774,
+      "currentP95Ms": 1.066,
+      "ratio": 1.377,
+      "percent": 37.726
+    },
+    "largestImprovement": {
+      "key": "sidebar_render/huge_foldered.folder_view",
+      "baselineP95Ms": 3.22,
+      "currentP95Ms": 2.403,
+      "ratio": 0.746,
+      "percent": -25.373
+    },
+    "regressions": [
+      {
+        "key": "conversation_build_lines_cold/small_chat",
+        "baselineP95Ms": 0.774,
+        "currentP95Ms": 1.066,
+        "ratio": 1.377,
+        "percent": 37.726
+      },
+      {
+        "key": "conversation_open_cold/medium_markdown",
+        "baselineP95Ms": 19.687,
+        "currentP95Ms": 23.978,
+        "ratio": 1.218,
+        "percent": 21.796
+      },
+      {
+        "key": "conversation_open_warm/medium_markdown",
+        "baselineP95Ms": 0.166,
+        "currentP95Ms": 0.18,
+        "ratio": 1.084,
+        "percent": 8.434
+      },
+      {
+        "key": "conversation_open_warm/huge_markdown_collapsed_tools",
+        "baselineP95Ms": 0.173,
+        "currentP95Ms": 0.186,
+        "ratio": 1.075,
+        "percent": 7.514
+      },
+      {
+        "key": "conversation_build_lines_cold/huge_expanded_tools",
+        "baselineP95Ms": 37.023,
+        "currentP95Ms": 42.931,
+        "ratio": 1.16,
+        "percent": 15.958
+      },
+      {
+        "key": "sidebar_render/small_root.folder_view",
+        "baselineP95Ms": 0.09,
+        "currentP95Ms": 0.105,
+        "ratio": 1.167,
+        "percent": 16.667
+      },
+      {
+        "key": "sidebar_list_update/small_root.replace_and_sync",
+        "baselineP95Ms": 0.032,
+        "currentP95Ms": 0.04,
+        "ratio": 1.25,
+        "percent": 25
+      },
+      {
+        "key": "sidebar_navigation/large_root.nav_down",
+        "baselineP95Ms": 0.395,
+        "currentP95Ms": 0.422,
+        "ratio": 1.068,
+        "percent": 6.835
+      },
+      {
+        "key": "sidebar_list_update/large_root.replace_and_sync",
+        "baselineP95Ms": 0.577,
+        "currentP95Ms": 0.785,
+        "ratio": 1.36,
+        "percent": 36.049
+      }
+    ],
+    "improvements": [
+      {
+        "key": "conversation_open_cold/small_chat",
+        "baselineP95Ms": 2.438,
+        "currentP95Ms": 2.128,
+        "ratio": 0.873,
+        "percent": -12.715
+      },
+      {
+        "key": "conversation_open_warm/huge_expanded_tools",
+        "baselineP95Ms": 0.181,
+        "currentP95Ms": 0.169,
+        "ratio": 0.934,
+        "percent": -6.63
+      },
+      {
+        "key": "sidebar_render/small_root.root",
+        "baselineP95Ms": 0.149,
+        "currentP95Ms": 0.123,
+        "ratio": 0.826,
+        "percent": -17.45
+      },
+      {
+        "key": "sidebar_navigation/small_root.nav_down",
+        "baselineP95Ms": 0.01,
+        "currentP95Ms": 0.009,
+        "ratio": 0.9,
+        "percent": -10
+      },
+      {
+        "key": "sidebar_navigation/small_root.folder_nav_down",
+        "baselineP95Ms": 0.005,
+        "currentP95Ms": 0.004,
+        "ratio": 0.8,
+        "percent": -20
+      },
+      {
+        "key": "sidebar_search_filter/small_root.performance_query",
+        "baselineP95Ms": 0.3,
+        "currentP95Ms": 0.283,
+        "ratio": 0.943,
+        "percent": -5.667
+      },
+      {
+        "key": "sidebar_render/large_root.root",
+        "baselineP95Ms": 1.101,
+        "currentP95Ms": 1.037,
+        "ratio": 0.942,
+        "percent": -5.813
+      },
+      {
+        "key": "sidebar_render/huge_foldered.folder_view",
+        "baselineP95Ms": 3.22,
+        "currentP95Ms": 2.403,
+        "ratio": 0.746,
+        "percent": -25.373
+      },
+      {
+        "key": "sidebar_navigation/huge_foldered.nav_down",
+        "baselineP95Ms": 1.43,
+        "currentP95Ms": 1.244,
+        "ratio": 0.87,
+        "percent": -13.007
+      },
+      {
+        "key": "sidebar_navigation/huge_foldered.folder_nav_down",
+        "baselineP95Ms": 0.304,
+        "currentP95Ms": 0.287,
+        "ratio": 0.944,
+        "percent": -5.592
+      },
+      {
+        "key": "sidebar_list_update/huge_foldered.replace_and_sync",
+        "baselineP95Ms": 3.196,
+        "currentP95Ms": 2.759,
+        "ratio": 0.863,
+        "percent": -13.673
+      },
+      {
+        "key": "sidebar_render/large_root.visual_selection",
+        "baselineP95Ms": 1.473,
+        "currentP95Ms": 1.385,
+        "ratio": 0.94,
+        "percent": -5.974
+      }
+    ],
+    "notes": [
+      "9 p95 regression(s) exceed 2.0000000000000018%"
+    ]
+  }
+}

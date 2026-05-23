@@ -1791,3 +1791,28 @@ Validation:
   - `conversation_build_lines_cold/medium_markdown` median ratio 1.157
 
 Action: reverted `tui/src/sidebar/navigation.ts`; kept only this failure log and result artifact.
+
+## 075 — Benchmark control: compare current code against baseline-v7
+
+Status: benchmark finding — no production code changed.
+
+Question: after the v7 benchmark fixture updates, how stable is a plain control run against the immediately previous baseline with no code changes?
+
+Validation:
+
+- Ran `bun run autoresearch/exocortex-performance/benchmark.ts --json --compare autoresearch/exocortex-performance/results/baseline-v7.json` with a clean worktree and no production changes.
+- Result saved to `results/075-control-compare-v7-self-noise.json`.
+- The compare command exited with status 2, meaning the current strict p95 compare failed even for control-vs-baseline.
+- The overall p95 geomean was essentially neutral: 0.997.
+- However, 9 individual p95 regressions exceeded the 2% threshold, including:
+  - `conversation_build_lines_cold/small_chat`: ratio 1.377
+  - `conversation_open_cold/medium_markdown`: ratio 1.218
+  - `conversation_build_lines_cold/huge_expanded_tools`: ratio 1.160
+  - `sidebar_list_update/small_root.replace_and_sync`: ratio 1.250
+  - `sidebar_list_update/large_root.replace_and_sync`: ratio 1.360
+- The same control run also showed large apparent improvements on unrelated axes, for example:
+  - `sidebar_render/huge_foldered.folder_view`: ratio 0.746
+  - `sidebar_render/small_root.root`: ratio 0.826
+  - `sidebar_list_update/huge_foldered.replace_and_sync`: ratio 0.863
+
+Decision: keep this as a benchmark calibration finding. A single baseline/current p95 compare is too noisy to be the only acceptance signal, especially for sub-millisecond axes. Future production experiments should continue using interleaved control/treatment runs and should distinguish targeted repeated wins from unrelated control-level volatility.
