@@ -989,3 +989,30 @@ Validation:
   - `sidebar_navigation/huge_foldered.nav_down`: 1.075ms, batch 5
 
 Decision: keep. This improves benchmark determinism/objectivity with no production UX change and gives future experiments a cleaner pass/fail signal.
+
+## 041 — Searchable-title ASCII fast path against batched v3 benchmark
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: after experiment 040 batched fast micro-samples to reduce timing noise, the repeatedly promising searchable-title ASCII fast path should show stable direct search/filter wins without unrelated benchmark volatility.
+
+Change tested:
+
+- In `getSearchableConversationTitle`, skip `stripMark` when a title is empty or begins with ASCII, because conversation marks are emoji prefixes.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebarsearch.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/041-searchable-title-ascii-fast-path-v3.json`.
+- Two interleaved control/treatment runs against the v3 batched benchmark again confirmed direct search/filter wins:
+  - `sidebar_search_filter/small_root.performance_query` ratios: 0.364, 0.628; median 0.496
+  - `sidebar_search_filter/large_root.performance_query` ratios: 0.399, 0.429; median 0.414
+  - `sidebar_search_filter/huge_foldered.performance_query` ratios: 0.471, 0.453; median 0.462
+- However, the strict no-regression criterion still failed due measured regressions:
+  - `conversation_build_lines_cold/small_chat` median ratio 1.342
+  - `conversation_open_warm/medium_markdown` median ratio 1.381
+  - `sidebar_render/large_root.root` median ratio 1.407
+  - `sidebar_navigation/large_root.nav_down` median ratio 1.182
+  - `sidebar_render/large_root.visual_selection` median ratio 1.292
+
+Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
