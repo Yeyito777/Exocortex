@@ -54,6 +54,7 @@ describe("macro expansion", () => {
     expect(expanded).toContain("you must create a benchmark first");
     expect(expanded).toContain("Make sure to not use subagents.");
     expect(expanded).toContain("ask him 5 questions before you actually start");
+    expect(expanded).toContain("set yourself the goal AFTER the user has answered the five questions");
     expect(expanded).toEndWith("improve benchmark quality");
   });
 
