@@ -1205,3 +1205,26 @@ Validation:
 - The direct cold/build regressions exceeded tolerance despite some huge collapsed-tool wins.
 
 Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
+
+## 050 — Search-filter-only ASCII title fast path
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: prior searchable-title ASCII fast paths affected both render and search because `getSearchableConversationTitle` is also used by visible sidebar row rendering. A private fast path used only by `getVisibleConversationIndicesForQuery` should keep the large search/filter wins without changing regular sidebar render behavior.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebarsearch.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/050-search-filter-title-ascii-fast-path.json`.
+- Two interleaved control/treatment runs confirmed direct search/filter wins:
+  - `sidebar_search_filter/small_root.performance_query` median ratio 0.744
+  - `sidebar_search_filter/large_root.performance_query` median ratio 0.478
+  - `sidebar_search_filter/huge_foldered.performance_query` median ratio 0.425
+- Still rejected by strict no-regression criteria:
+  - `sidebar_render/large_root.root` median ratio 1.114
+  - `sidebar_render/huge_foldered.root` median ratio 1.331
+  - `sidebar_list_update/large_root.replace_and_sync` median ratio 1.284
+  - `sidebar_list_update/huge_foldered.replace_and_sync` median ratio 1.119
+  - `sidebar_navigation/small_root.nav_down` median ratio 1.083
+
+Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
