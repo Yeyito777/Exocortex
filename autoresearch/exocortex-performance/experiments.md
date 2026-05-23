@@ -1596,3 +1596,25 @@ Validation:
   - `sidebar_list_update/large_root.replace_and_sync` median ratio 1.318
 
 Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
+
+## 067 — Use `indexOf` for `stripMarkdown` marker check only
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: experiment 059 changed multiple marker checks at once. Restricting the regex-to-`indexOf` change to `stripMarkdown` alone might keep cold markdown wins while reducing side effects.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/formatting.test.ts src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 42 pass, 0 fail.
+- Result saved to `results/067-indexof-strip-markdown-marker-check.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/small_chat` median ratio 0.909
+  - `conversation_build_lines_cold/small_chat` median ratio 0.818
+  - `conversation_build_lines_cold/medium_markdown` median ratio 0.947
+  - `conversation_open_cold/huge_markdown_collapsed_tools` median ratio 1.049
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 1.021
+  - `sidebar_navigation/small_root.nav_down` median ratio 1.299
+  - `sidebar_render/large_root.visual_selection` median ratio 1.144
+- The gains were not broad enough and direct huge cold regressions exceeded tolerance.
+
+Action: reverted `tui/src/markdown/formatting.ts`; kept only this failure log and result artifact.
