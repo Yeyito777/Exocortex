@@ -1767,3 +1767,27 @@ Validation:
   - `conversation_build_lines_cold/huge_expanded_tools` median ratio 1.027
 
 Action: reverted `tui/src/sidebarsearch.ts`, `tui/src/sidebar/state.ts`, and `tui/src/sidebar/updates.ts`; kept only this failure log and result artifact.
+
+## 074 — Focus sidebar navigation using display-row conversation indices
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `moveSelection` already has the destination `DisplayRow`, including `convIdx`, but calls `focusSidebarItem`, which searches conversations by id. Focusing conversation rows directly from `convIdx` should reduce sidebar navigation overhead, especially on large lists.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar-navigation.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/074-focus-sidebar-navigation-by-display-row.json`.
+- Two interleaved control/treatment runs showed targeted folder-navigation wins:
+  - `sidebar_navigation/large_root.folder_nav_down` median ratio 0.643
+  - `sidebar_navigation/huge_foldered.folder_nav_down` median ratio 0.733
+- Still rejected by strict no-regression criteria:
+  - `sidebar_render/small_root.root` median ratio 1.175
+  - `sidebar_render/small_root.folder_view` median ratio 1.194
+  - `sidebar_render/large_root.root` median ratio 1.260
+  - `sidebar_render/large_root.folder_view` median ratio 1.463
+  - `conversation_open_warm/medium_markdown` median ratio 1.263
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.157
+
+Action: reverted `tui/src/sidebar/navigation.ts`; kept only this failure log and result artifact.
