@@ -2005,3 +2005,21 @@ Validation:
   - many unrelated sidebar/conversation axes also regressed; geomean median ratio was 1.096.
 
 Action: reverted `tui/src/sidebar/navigation.ts`; kept only this failure log and result artifact. The simpler direct-loop index build from experiment 081 remains the kept marked-navigation optimization.
+
+## 083 — Generation map for streaming folder ancestor cycle checks
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: experiment 078's `foldersWithStreamingIndicator` allocates a fresh `Set` of seen folder ids for each streaming/unread conversation while walking folder ancestors. Replacing that per-conversation set with a generation-mark map should preserve cycle protection while reducing allocation.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar-navigation.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/083-streaming-folder-seen-generation.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `sidebar_navigation/large_root.next_marked_root` median ratio 0.745 and `huge_foldered.next_marked_folder` median ratio 0.778, but these are not the target path.
+  - Targeted streaming metrics were mostly neutral/regressive: `large_root.next_streaming_root` median ratio 1.169, `large_root.next_streaming_folder` 1.157, `small_root.next_streaming_root` 1.071.
+  - Broad unrelated regressions also appeared: `conversation_open_cold/small_chat` median ratio 1.186, `sidebar_render/large_root.root` 1.300, `sidebar_render/huge_foldered.root` 1.170.
+
+Action: reverted `tui/src/sidebar/navigation.ts`; kept only this failure log and result artifact. The original per-conversation `Set` from experiment 078 remains the kept streaming-navigation optimization.
