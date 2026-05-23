@@ -497,3 +497,21 @@ Validation:
 - Huge cold/build axes were essentially neutral, not enough to offset the regressions.
 
 Action: reverted `tui/src/metadata.ts`; kept only this failure log and result artifact.
+
+## 018 — ASCII fast path for code-line wrapping
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: fenced code block lines are commonly printable ASCII. Fast-splitting ASCII code lines by character count should avoid terminal-width/grapheme work while producing the same chunks as `hardBreak` for ASCII.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- Result saved to `results/018-ascii-code-line-break-fast-path.json`.
+- Interleaved p95s violated the no-regression criterion:
+  - `conversation_open_cold/small_chat`: 2.704ms → 3.185ms, ratio 1.178
+  - `conversation_open_cold/huge_expanded_tools`: 43.433ms → 47.280ms, ratio 1.089
+  - `conversation_build_lines_cold/huge_expanded_tools`: 44.949ms → 48.779ms, ratio 1.085
+- Some warm/sidebar axes improved, but the direct cold/build regressions exceeded tolerance.
+
+Action: reverted `tui/src/markdown/codeblocks.ts`; kept only this failure log and result artifact.
