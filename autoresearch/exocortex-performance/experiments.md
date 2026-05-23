@@ -555,3 +555,23 @@ Validation:
 - The medium/huge cold/build regressions exceeded tolerance despite wins on small/warm axes.
 
 Action: reverted `tui/src/conversation.ts`; kept only this failure log and result artifact.
+
+## 021 — ASCII fast path for plain word wrapping
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: plain user/system/tool text wrapping often receives printable ASCII lines. A dedicated ASCII wrapper can avoid repeated `termWidth` and `sliceByWidth` grapheme processing while preserving wrap/join behavior for ASCII.
+
+Validation:
+
+- Relevant tests passed: `bun test src/conversation.test.ts src/textwidth.test.ts src/render.test.ts` gave 37 pass, 0 fail.
+- Result saved to `results/021-ascii-plain-wordwrap-fast-path.json`.
+- Interleaved p95s were mixed and violated the no-regression criterion:
+  - `conversation_build_lines_cold/medium_markdown`: 23.821ms → 29.777ms, ratio 1.250
+  - `sidebar_list_update/large_root.replace_and_sync`: 1.915ms → 2.432ms, ratio 1.270
+  - `sidebar_render/large_root.root`: 3.561ms → 3.711ms, ratio 1.042
+  - `conversation_open_cold/small_chat`: 2.860ms → 2.688ms, ratio 0.940
+  - `conversation_open_warm/huge_markdown_collapsed_tools`: 0.246ms → 0.206ms, ratio 0.837
+- The direct medium markdown build regression exceeded tolerance.
+
+Action: reverted `tui/src/textwrap.ts`; kept only this failure log and result artifact.
