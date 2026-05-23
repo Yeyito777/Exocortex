@@ -169,17 +169,28 @@ function wrapParagraphRaw(paragraph: string, width: number, bgRestore?: string):
   const measure = hasInlineMarkdown
     ? (s: string) => termWidth(stripMarkdown(s))
     : termWidth;
+  const measuredWidths = new Map<string, number>();
+  const measureCached = (s: string): number => {
+    const cached = measuredWidths.get(s);
+    if (cached !== undefined) return cached;
+    const width = measure(s);
+    measuredWidths.set(s, width);
+    return width;
+  };
 
   const wrapped: string[] = [];
   const wrappedJoin: string[] = [];
   const words = paragraph.split(/\s+/);
   let line = "";
   let lineJoin = "";
+  let lineWidth = 0;
 
   const startLineWithWord = (word: string, firstJoin: string) => {
-    if (measure(word) <= width) {
+    const wordWidth = measureCached(word);
+    if (wordWidth <= width) {
       line = word;
       lineJoin = firstJoin;
+      lineWidth = wordWidth;
       return;
     }
     const seeded = seedLongWord(word, width, firstJoin);
@@ -187,17 +198,22 @@ function wrapParagraphRaw(paragraph: string, width: number, bgRestore?: string):
     wrappedJoin.push(...seeded.pushedJoins);
     line = seeded.line;
     lineJoin = seeded.lineJoin;
+    lineWidth = measureCached(line);
   };
 
   for (const word of words) {
     if (line === "") {
       startLineWithWord(word, wrapped.length > 0 ? " " : "");
-    } else if (measure(line) + 1 + measure(word) <= width) {
-      line += " " + word;
     } else {
-      wrapped.push(line);
-      wrappedJoin.push(lineJoin);
-      startLineWithWord(word, " ");
+      const wordWidth = measureCached(word);
+      if (lineWidth + 1 + wordWidth <= width) {
+        line += " " + word;
+        lineWidth += 1 + wordWidth;
+      } else {
+        wrapped.push(line);
+        wrappedJoin.push(lineJoin);
+        startLineWithWord(word, " ");
+      }
     }
   }
   if (line !== "") {

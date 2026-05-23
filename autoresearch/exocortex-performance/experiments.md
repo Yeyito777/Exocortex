@@ -160,3 +160,46 @@ Status: success after setup correction.
 - Correct command from the worktree using the main checkout script: `/home/yeyito/Workspace/exocortex/scripts/dev/exotest autoresearch-performance` inside an `xenv` `st` terminal.
 - Result: TUI launched successfully in the nested X11 environment and rendered the Exocortex prompt.
 
+## 006 — Cache wrapped paragraph word widths
+
+Status: success — kept and committed.
+
+Hypothesis: `wrapParagraphRaw` repeatedly measured the full growing output line for every word candidate. In markdown mode this meant repeatedly stripping markdown for longer and longer candidate strings, and even in plain mode it repeatedly recomputed terminal width for repeated words. Tracking the current line's visible width and caching per-word widths within a paragraph should preserve wrapping exactly while reducing cold conversation open/build costs.
+
+Change:
+
+- Added a paragraph-local width cache in `tui/src/markdown/wordwrap.ts`.
+- Track `lineWidth` alongside `line` so the wrap check uses `lineWidth + 1 + wordWidth` instead of re-measuring the whole accumulated line each time.
+- Seed long-word fallback updates `lineWidth` after splitting, preserving existing long-word behavior.
+
+Validation:
+
+- `bun test src/markdown/wordwrap.test.ts src/markdown/formatting.test.ts src/conversation.test.ts src/render.test.ts`: 42 pass, 0 fail.
+- `bun run typecheck`: pass.
+- `bun test`: 370 pass, 0 fail.
+- Result saved to `results/006-cache-wrap-word-widths.json`.
+- Interleaved control/treatment p95s for directly affected conversation axes, first run:
+  - `conversation_open_cold/small_chat`: 6.162ms → 3.583ms, ratio 0.581
+  - `conversation_build_lines_cold/small_chat`: 3.500ms → 2.026ms, ratio 0.579
+  - `conversation_open_cold/medium_markdown`: 81.443ms → 36.708ms, ratio 0.451
+  - `conversation_build_lines_cold/medium_markdown`: 82.951ms → 37.586ms, ratio 0.453
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 472.567ms → 200.686ms, ratio 0.425
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 456.503ms → 175.466ms, ratio 0.384
+  - `conversation_open_cold/huge_expanded_tools`: 166.946ms → 86.959ms, ratio 0.521
+  - `conversation_build_lines_cold/huge_expanded_tools`: 162.408ms → 81.353ms, ratio 0.501
+- Repeated interleaved control/treatment run confirmed the same direction:
+  - `conversation_open_cold/small_chat`: 6.508ms → 3.846ms, ratio 0.591
+  - `conversation_build_lines_cold/small_chat`: 3.944ms → 2.027ms, ratio 0.514
+  - `conversation_open_cold/medium_markdown`: 82.042ms → 39.322ms, ratio 0.479
+  - `conversation_build_lines_cold/medium_markdown`: 85.098ms → 35.114ms, ratio 0.413
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 470.826ms → 177.513ms, ratio 0.377
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 457.665ms → 171.495ms, ratio 0.375
+  - `conversation_open_cold/huge_expanded_tools`: 168.775ms → 86.973ms, ratio 0.515
+  - `conversation_build_lines_cold/huge_expanded_tools`: 164.253ms → 85.871ms, ratio 0.523
+
+Notes:
+
+- Unrelated sidebar microbench axes varied in both directions during the interleaved runs. This code path is restricted to paragraph wrapping and all directly affected cold/build axes improved by large margins twice.
+
+Decision: keep. Large deterministic cold conversation-opening/build-lines improvement with no visible wrapping change and full validation passing.
+
