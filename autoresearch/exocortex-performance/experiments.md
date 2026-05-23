@@ -396,3 +396,25 @@ Validation:
 - Regressions above 2% on small/medium cold/build axes violated the keep criterion.
 
 Action: reverted `tui/src/markdown/tables.ts`; kept only this failure log and result artifact.
+
+## 014 — Cache syntax-highlighted code lines
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: many code fences contain repeated TypeScript lines across large generated/realistic conversations. Caching `highlightLine(language, line)` output should reduce repeated regex tokenization while preserving exact ANSI output.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- Result saved to `results/014-highlight-line-cache.json`.
+- First variant (global cache from first call) improved medium/huge cold/build axes but regressed small build and some sidebar axes:
+  - `conversation_open_cold/medium_markdown`: 31.954ms → 26.505ms, ratio 0.829
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 167.174ms → 143.834ms, ratio 0.860
+  - `conversation_build_lines_cold/small_chat`: 1.708ms → 1.831ms, ratio 1.072
+- Second variant delayed cache use until 128 highlight calls to avoid small-conversation overhead, but still regressed small cold/warm axes:
+  - `conversation_open_cold/small_chat`: 2.953ms → 3.062ms, ratio 1.037
+  - `conversation_open_warm/small_chat`: 0.235ms → 0.269ms, ratio 1.145
+  - `conversation_open_cold/medium_markdown`: 33.510ms → 27.536ms, ratio 0.822
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 164.436ms → 133.814ms, ratio 0.814
+
+Action: reverted `tui/src/markdown/highlight.ts`; kept only this failure log and result artifact.
