@@ -1688,3 +1688,29 @@ Validation:
   - `sidebar_navigation/huge_foldered.folder_nav_down`: 0.206ms
 
 Decision: keep. This improves benchmark coverage/objectivity for sidebar operations across root and folder-scoped workloads without changing production behavior.
+
+## 071 — Benchmark: make sidebar folder-view fixtures select an in-folder conversation
+
+Status: success — kept and committed (benchmark infrastructure only; no UX/UI code changed).
+
+Problem: experiment 070 added folder-view render/navigation axes, but the synthetic folder fixture entered `folder-0`. Due the deterministic data generator, `folder-0` received no conversations (`i % folderCount === 0` implies `i % 4 === 0`, and those conversations stay at root). The axis therefore measured a mostly empty folder instead of a realistic folder-scoped conversation list.
+
+Change:
+
+- Folder-mode sidebar fixtures now enter `folder-1` when available, falling back to `folder-0` only for single-folder workloads.
+- When a folder contains conversations, the fixture selects the first child conversation in that folder so folder-view navigation starts from a realistic in-folder row.
+- Saved the updated benchmark run to `results/071-sidebar-folder-fixture-selected-child.json` and copied it to `results/baseline-v7.json` for future experiments.
+
+Validation:
+
+- `bun run autoresearch/exocortex-performance/benchmark.ts --json`: pass.
+- `bun run typecheck`: pass.
+- Representative v7 folder-view p95s:
+  - `sidebar_render/small_root.folder_view`: 0.090ms
+  - `sidebar_render/large_root.folder_view`: 0.926ms
+  - `sidebar_render/huge_foldered.folder_view`: 3.220ms
+  - `sidebar_navigation/small_root.folder_nav_down`: 0.005ms
+  - `sidebar_navigation/large_root.folder_nav_down`: 0.101ms
+  - `sidebar_navigation/huge_foldered.folder_nav_down`: 0.304ms
+
+Decision: keep. This corrects the new folder-view benchmark so it measures real folder-scoped rows rather than empty-folder overhead, with no production behavior change.

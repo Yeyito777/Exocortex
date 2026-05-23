@@ -363,7 +363,19 @@ function makeSidebar(conversationCount: number, folderCount: number, mode: "root
   sidebar.selectedItem = { type: "conversation", id: sidebar.conversations[0]?.id ?? "" };
   sidebar.selectedId = sidebar.conversations[0]?.id ?? null;
   sidebar.selectedIndex = 0;
-  if (mode === "folder" && folderCount > 0) sidebar.currentFolderId = "folder-0";
+  if (mode === "folder" && folderCount > 0) {
+    sidebar.currentFolderId = folderCount > 1 ? "folder-1" : "folder-0";
+    const folderConvIndex = sidebar.conversations.findIndex(conv => (conv.folderId ?? null) === sidebar.currentFolderId);
+    if (folderConvIndex >= 0) {
+      sidebar.selectedItem = { type: "conversation", id: sidebar.conversations[folderConvIndex].id };
+      sidebar.selectedId = sidebar.conversations[folderConvIndex].id;
+      sidebar.selectedIndex = folderConvIndex;
+    } else {
+      sidebar.selectedItem = { type: "up" };
+      sidebar.selectedId = null;
+      sidebar.selectedIndex = 0;
+    }
+  }
   if (mode === "search") {
     sidebar.search = {
       barOpen: true,
