@@ -1353,3 +1353,25 @@ Validation:
 - The direct conversation wins were not broad/stable enough, and unrelated fast sidebar axes regressed above tolerance.
 
 Action: reverted `tui/src/markdown/formatting.ts`; kept only this failure log and result artifact.
+
+## 056 — Loop table row-height calculation instead of map/spread
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: table rendering used `Math.max(1, ...wrapped.map(wc => wc.lines.length))`, allocating a temporary array per table row. A simple loop should preserve output and reduce cold markdown rendering allocation.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- Result saved to `results/056-table-row-height-loop.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 0.951
+  - `sidebar_render/large_root.root` median ratio 0.946
+  - `sidebar_render/huge_foldered.root` median ratio 0.812
+  - `conversation_open_warm/small_chat` median ratio 1.091
+  - `conversation_build_lines_cold/small_chat` median ratio 1.071
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.411
+  - `sidebar_list_update/huge_foldered.replace_and_sync` median ratio 1.530
+- Direct markdown build regressions exceeded tolerance.
+
+Action: reverted `tui/src/markdown/tables.ts`; kept only this failure log and result artifact.
