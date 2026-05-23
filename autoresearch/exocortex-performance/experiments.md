@@ -1228,3 +1228,29 @@ Validation:
   - `sidebar_navigation/small_root.nav_down` median ratio 1.083
 
 Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
+
+## 051 — Single-assistant metadata fast path against v5 benchmark
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: after benchmark stabilization, the simple `assistantRunMetadata` fast path for the common single assistant message run might show deterministic cold/build wins by avoiding metadata clone/combine work.
+
+Change tested:
+
+- If an assistant run contains only the current message, return `messages[endIndex]?.metadata ?? null` directly from `assistantRunMetadata`.
+
+Validation:
+
+- Relevant tests passed: `bun test src/conversation.test.ts src/metadata.test.ts src/render.test.ts` gave 40 pass, 0 fail.
+- Result saved to `results/051-single-assistant-metadata-fast-path-v5.json`.
+- Two interleaved control/treatment runs were mixed:
+  - `conversation_open_cold/small_chat` median ratio 0.943
+  - `conversation_build_lines_cold/medium_markdown` median ratio 0.920
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 0.941
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 0.944
+  - `conversation_build_lines_cold/small_chat` median ratio 1.101
+  - `conversation_open_cold/medium_markdown` median ratio 1.028
+  - `conversation_open_warm/medium_markdown` median ratio 1.048
+- The direct cold/build regressions exceeded tolerance.
+
+Action: reverted `tui/src/conversation.ts`; kept only this failure log and result artifact.
