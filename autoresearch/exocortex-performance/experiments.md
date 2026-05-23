@@ -2132,3 +2132,23 @@ Status: success.
 - Ran `/home/yeyito/Workspace/exocortex/scripts/dev/exotest autoresearch-performance` inside an `xenv` `st` terminal from the worktree after experiment 087.
 - Result: TUI launched successfully in the nested X11 environment and rendered the Exocortex prompt.
 - Screenshot saved outside the repo at `/tmp/exo-autoresearch-perf-after-087.png`.
+
+## 088 — Sidebar search `includes` check after search-title fast path
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: after experiment 087 introduced a search-filter-only title fast path, sidebar filtering might also benefit from avoiding `findAllCaseInsensitiveMatchStarts` array allocation. Lowercasing the query once and checking `getSearchFilterConversationTitle(conv).toLowerCase().includes(lowerQuery)` should preserve filter visibility while avoiding match-offset arrays that filtering does not need.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebarsearch.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass after removing the now-unused `findAllCaseInsensitiveMatchStarts` import.
+- Result saved to `results/088-sidebar-search-includes-after-title-fast-path.json`.
+- Three interleaved control/treatment runs did not show reliable targeted improvement and violated no-regression criteria:
+  - `sidebar_search_filter/small_root.performance_query` median ratio 1.245
+  - `sidebar_search_filter/large_root.performance_query` median ratio 0.975
+  - `sidebar_search_filter/huge_foldered.performance_query` median ratio 0.885
+  - `sidebar_render/small_root.folder_view` median ratio 1.283
+  - several unrelated navigation/list-update axes also regressed above tolerance.
+
+Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact. The narrower search-filter title fast path from experiment 087 remains kept.
