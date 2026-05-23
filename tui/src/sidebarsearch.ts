@@ -76,6 +76,11 @@ export function getSearchableConversationTitle(conv: Pick<ConversationSummary, "
   return stripMark(convDisplayName(conv, ""));
 }
 
+function getSearchFilterConversationTitle(conv: Pick<ConversationSummary, "title">): string {
+  const title = convDisplayName(conv, "");
+  return title.length === 0 || title.charCodeAt(0) < 0x80 ? title : stripMark(title);
+}
+
 export function getVisibleConversationIndicesForQuery(
   sidebar: Pick<SidebarSearchableState, "conversations"> & { currentFolderId?: string | null },
   query: string | null,
@@ -85,7 +90,7 @@ export function getVisibleConversationIndicesForQuery(
   for (let i = 0; i < sidebar.conversations.length; i++) {
     const conv = sidebar.conversations[i];
     if (scopedToCurrentFolder && "currentFolderId" in sidebar && (conv.folderId ?? null) !== (sidebar.currentFolderId ?? null)) continue;
-    if (!query || findAllCaseInsensitiveMatchStarts(getSearchableConversationTitle(conv), query).length > 0) {
+    if (!query || findAllCaseInsensitiveMatchStarts(getSearchFilterConversationTitle(conv), query).length > 0) {
       visible.push(i);
     }
   }

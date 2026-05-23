@@ -2095,3 +2095,32 @@ Validation:
   - marked-navigation and warm conversation axes also showed regressions.
 
 Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact. A narrower search-only variant is the next better candidate.
+
+## 087 — Search-filter-only ASCII title fast path against v9 benchmark
+
+Status: success — kept and committed.
+
+Hypothesis: experiment 086 showed the global searchable-title fast path still gives very large search wins, but it also changes normal visible-row rendering because `getSearchableConversationTitle` is shared by sidebar render code. A private fast path used only by `getVisibleConversationIndicesForQuery` should keep the large sidebar search/filter improvement while avoiding changes to normal row rendering.
+
+Change:
+
+- Added private `getSearchFilterConversationTitle` in `tui/src/sidebarsearch.ts`.
+- For search filtering only, it computes the display title and skips `stripMark` when the title is empty or starts with ASCII, because conversation marks are known emoji prefixes at the start of the title.
+- Left exported `getSearchableConversationTitle` unchanged for visible row rendering and other callers.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebarsearch.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Full TUI test suite passed: `bun test` gave 370 pass, 0 fail.
+- Treatment result saved to `results/087-search-filter-title-ascii-fast-path-v9.json`.
+- Interleaved comparison saved to `results/087-search-filter-title-ascii-fast-path-v9-compare.json`.
+- Three interleaved control/treatment runs showed large targeted search-filter wins:
+  - `sidebar_search_filter/small_root.performance_query` median ratio 0.610
+  - `sidebar_search_filter/large_root.performance_query` median ratio 0.398
+  - `sidebar_search_filter/huge_foldered.performance_query` median ratio 0.477
+- The interleaved geomean median ratio was 0.945.
+- The compare helper still flagged unrelated median regressions such as `conversation_open_cold/small_chat`, `conversation_open_cold/medium_markdown`, `sidebar_list_update/large_root.replace_and_sync`, and some navigation metrics. These code paths do not use the new private search-filter helper and are consistent with the control-level volatility documented in experiments 075–076.
+- `sidebar_render/small_root.root` also showed a median regression (1.117), but normal render code still uses the unchanged exported `getSearchableConversationTitle`; larger render workloads were neutral/improved (`large_root.root` 0.876, `huge_foldered.root` 0.909, `huge_foldered.folder_view` 0.886), so this was treated as benchmark noise rather than a product regression.
+
+Decision: keep. The change is narrow to active sidebar filtering, covered by sidebar search tests, and gives repeated direct wins on all search-filter workloads with no intended visible UX change.
