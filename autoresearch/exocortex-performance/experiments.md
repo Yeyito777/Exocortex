@@ -1928,3 +1928,29 @@ Status: success.
 - Ran `/home/yeyito/Workspace/exocortex/scripts/dev/exotest autoresearch-performance` inside an `xenv` `st` terminal from the worktree after experiment 078.
 - Result: TUI launched successfully in the nested X11 environment and rendered the Exocortex prompt.
 - Screenshot saved outside the repo at `/tmp/exo-autoresearch-perf-after-078.png`.
+
+## 080 — Benchmark: add sidebar marked-navigation axes
+
+Status: success — kept and committed (benchmark infrastructure only; no UX/UI code changed).
+
+Problem: after adding streaming-navigation axes in experiment 077, the benchmark still did not measure `nav_next_marked` / `nav_prev_marked`. Marked navigation has a separate implementation that scans folder-scoped conversation indices and can behave differently from ordinary `nav_down` or streaming/unread navigation.
+
+Change:
+
+- Added `sidebar_navigation/<workload>.next_marked_root`.
+- Added `sidebar_navigation/<workload>.next_marked_folder`.
+- Saved the updated benchmark run to `results/080-sidebar-marked-navigation-benchmark-axes.json` and copied it to `results/baseline-v9.json` for future experiments.
+
+Validation:
+
+- `bun run autoresearch/exocortex-performance/benchmark.ts --json`: pass.
+- `bun run typecheck`: pass.
+- Representative v9 marked-navigation p95s:
+  - `sidebar_navigation/small_root.next_marked_root`: 0.004ms
+  - `sidebar_navigation/small_root.next_marked_folder`: 0.004ms
+  - `sidebar_navigation/large_root.next_marked_root`: 0.153ms
+  - `sidebar_navigation/large_root.next_marked_folder`: 0.160ms
+  - `sidebar_navigation/huge_foldered.next_marked_root`: 0.640ms
+  - `sidebar_navigation/huge_foldered.next_marked_folder`: 0.516ms
+
+Decision: keep. This broadens sidebar navigation coverage and creates a direct measurement target for marked-conversation navigation without changing production behavior.
