@@ -389,12 +389,14 @@ function runSidebarBenchmarks(): MetricReport[] {
       `${workload.name}.root`,
       workload.name === "huge_foldered" ? 12 : workload.name === "large_root" ? 28 : 80,
       3,
-      (iteration) => {
+      (() => {
         const sidebar = makeSidebar(workload.conversations, workload.folders, "root");
-        sidebar.scrollOffset = Math.max(0, iteration % Math.max(1, workload.conversations - workload.rows));
-        const rows = renderSidebar(sidebar, workload.rows, iteration % 2 === 0, sidebar.conversations[iteration % sidebar.conversations.length]?.id ?? null);
-        return rows.length + rows.join("\n").length;
-      },
+        return (iteration: number) => {
+          sidebar.scrollOffset = Math.max(0, iteration % Math.max(1, workload.conversations - workload.rows));
+          const rows = renderSidebar(sidebar, workload.rows, iteration % 2 === 0, sidebar.conversations[iteration % sidebar.conversations.length]?.id ?? null);
+          return rows.length + rows.join("\n").length;
+        };
+      })(),
     ));
 
     reports.push(measureMetric(
@@ -416,13 +418,15 @@ function runSidebarBenchmarks(): MetricReport[] {
       `${workload.name}.performance_query`,
       workload.name === "huge_foldered" ? 18 : workload.name === "large_root" ? 35 : 80,
       3,
-      (iteration) => {
+      (() => {
         const sidebar = makeSidebar(workload.conversations, workload.folders, "search");
-        sidebar.search!.barInput = iteration % 2 === 0 ? "performance" : "conversation";
-        const displayRows = buildDisplayRows(sidebar);
-        const rows = renderSidebar(sidebar, workload.rows, true, null);
-        return displayRows.length + rows.length;
-      },
+        return (iteration: number) => {
+          sidebar.search!.barInput = iteration % 2 === 0 ? "performance" : "conversation";
+          const displayRows = buildDisplayRows(sidebar);
+          const rows = renderSidebar(sidebar, workload.rows, true, null);
+          return displayRows.length + rows.length;
+        };
+      })(),
     ));
 
     reports.push(measureMetric(
@@ -445,12 +449,14 @@ function runSidebarBenchmarks(): MetricReport[] {
     "large_root.visual_selection",
     20,
     3,
-    (iteration) => {
+    (() => {
       const sidebar = makeSidebar(5_000, 300, "visual");
-      sidebar.scrollOffset = iteration * 3;
-      const rows = renderSidebar(sidebar, 42, true, "conv-42");
-      return rows.length + rows.join("\n").length;
-    },
+      return (iteration: number) => {
+        sidebar.scrollOffset = iteration * 3;
+        const rows = renderSidebar(sidebar, 42, true, "conv-42");
+        return rows.length + rows.join("\n").length;
+      };
+    })(),
   ));
 
   return reports;

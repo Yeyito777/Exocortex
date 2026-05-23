@@ -812,3 +812,30 @@ Validation:
   - Some huge warm/build axes improved, but regressions were too large.
 
 Action: reverted `tui/src/render.ts`; kept only this failure log and result artifact.
+
+## 033 — Benchmark: isolate sidebar render/search operations from fixture construction
+
+Status: success — kept and committed (benchmark infrastructure only; no UX/UI code changed).
+
+Problem: the original `sidebar_render`, `sidebar_search_filter`, and visual-selection render axes constructed the full synthetic sidebar fixture inside the measured callback. For large/huge workloads this mixed data generation with the operation under test, making unrelated experiments appear to regress sidebar axes through allocation/JIT noise rather than actual sidebar behavior.
+
+Change:
+
+- Prebuild the sidebar fixture once per measured sidebar render/search workload closure.
+- Keep `sidebar_list_update` constructing fresh lists inside the timed region because that axis intentionally measures list replacement/sync behavior.
+- Leave conversation cold/open axes unchanged because their definition intentionally includes fresh message/block objects and first-frame render work.
+- Saved the updated benchmark result to `results/033-sidebar-benchmark-isolate-operations.json` and copied it to `results/baseline-v2.json` for future post-benchmark experiments.
+
+Validation:
+
+- `bun run autoresearch/exocortex-performance/benchmark.ts --json`: pass.
+- `bun run typecheck`: pass.
+- Representative v2 sidebar p95s after isolating fixture setup:
+  - `sidebar_render/small_root.root`: 0.197ms
+  - `sidebar_render/large_root.root`: 1.813ms
+  - `sidebar_render/huge_foldered.root`: 4.500ms
+  - `sidebar_search_filter/large_root.performance_query`: 11.309ms
+  - `sidebar_search_filter/huge_foldered.performance_query`: 39.666ms
+  - `sidebar_render/large_root.visual_selection`: 2.052ms
+
+Decision: keep. This improves benchmark determinism/objectivity with no user-visible app change and preserves the independent benchmark axes.
