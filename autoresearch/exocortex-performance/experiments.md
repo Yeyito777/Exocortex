@@ -906,3 +906,19 @@ Validation:
 - The large/huge sidebar regressions exceeded tolerance despite some smaller workload wins.
 
 Action: reverted `tui/src/sidebar/rows.ts`; kept only this failure log and result artifact.
+
+## 037 — Short ASCII markdown paragraph early return
+
+Status: failure — production code reverted/deleted before benchmarking.
+
+Hypothesis: many markdown physical paragraph lines are short printable ASCII and already fit the available width. Returning them directly from `wrapParagraphRaw` should avoid word splitting and per-word width-cache setup while preserving rendered output.
+
+Validation:
+
+- Relevant tests failed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts`.
+- Failure: `markdown fenced code block wrapping > renders fenced code blocks nested under list items` expected list-item indentation before nested fenced code to be normalized away. The early return preserved leading indentation on short list-continuation lines:
+  - expected `- Probably at:`
+  - got `   - Probably at:`
+- This is a visible markdown rendering change, so the experiment failed before benchmarking.
+
+Action: reverted `tui/src/markdown/wordwrap.ts`; no benchmark artifact kept because behavior tests failed before measurement.
