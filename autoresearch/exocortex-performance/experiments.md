@@ -1530,3 +1530,23 @@ Status: success.
 - Ran `/home/yeyito/Workspace/exocortex/scripts/dev/exotest autoresearch-performance` inside an `xenv` `st` terminal from the worktree.
 - Result: TUI launched successfully in the nested X11 environment and rendered the Exocortex prompt.
 - Screenshot saved outside the repo at `/tmp/exo-autoresearch-perf-after-054.png`.
+
+## 064 — Object cache for paragraph word widths
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `wrapParagraphRaw` creates a `Map` per paragraph to cache word widths. Replacing it with a null-prototype object should reduce per-paragraph cache overhead while preserving behavior for arbitrary string words.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- Result saved to `results/064-object-cache-paragraph-word-widths.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/small_chat` median ratio 0.983
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 0.973
+  - `conversation_open_cold/medium_markdown` median ratio 1.157
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.204
+  - `conversation_build_lines_cold/small_chat` median ratio 1.225
+  - several sidebar axes also regressed above tolerance.
+
+Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
