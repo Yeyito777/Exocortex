@@ -1550,3 +1550,24 @@ Validation:
   - several sidebar axes also regressed above tolerance.
 
 Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
+
+## 065 — Fast path `visibleLength` when no ANSI escape is present
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `visibleLength` always ran an ANSI-stripping regex before measuring terminal width. Checking for `\x1b` first should avoid regex work for plain strings while preserving ANSI behavior.
+
+Validation:
+
+- Relevant tests passed: `bun test src/textwidth.test.ts src/markdown/formatting.test.ts src/markdown/wordwrap.test.ts src/render.test.ts` gave 21 pass, 0 fail.
+- Result saved to `results/065-visible-length-no-ansi-fast-path.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/medium_markdown` median ratio 0.928
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 0.983
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.126
+  - `conversation_open_warm/small_chat` median ratio 1.106
+  - `sidebar_render/huge_foldered.root` median ratio 1.128
+  - `sidebar_list_update/huge_foldered.replace_and_sync` median ratio 1.358
+- Direct conversation/sidebar regressions exceeded tolerance.
+
+Action: reverted `tui/src/textwidth.ts`; kept only this failure log and result artifact.
