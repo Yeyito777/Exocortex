@@ -595,3 +595,27 @@ Validation:
 - The directly targeted sidebar render axes regressed substantially.
 
 Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
+
+## 023 — Reuse generation map instead of per-conversation Set in folder aggregation
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `buildFolderAggregates` allocated a fresh `Set` for every conversation to prevent folder-cycle double-counting. Reusing one `Map<folderId, generation>` across conversations should preserve cycle behavior while reducing folder-heavy sidebar render allocation.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts src/render.test.ts` gave 82 pass, 0 fail.
+- Result saved to `results/023-folder-aggregate-seen-generation.json`.
+- First interleaved run showed promising sidebar render wins but direct regressions:
+  - `sidebar_render/small_root.root`: 0.317ms → 0.251ms, ratio 0.792
+  - `sidebar_render/large_root.root`: 3.909ms → 3.100ms, ratio 0.793
+  - `sidebar_render/huge_foldered.root`: 12.193ms → 9.707ms, ratio 0.796
+  - `sidebar_search_filter/huge_foldered.performance_query`: 49.188ms → 51.137ms, ratio 1.040
+  - `sidebar_navigation/small_root.nav_down`: 0.016ms → 0.022ms, ratio 1.375
+- Repeated interleaved run did not confirm safety:
+  - `sidebar_render/large_root.root`: 3.593ms → 3.708ms, ratio 1.032
+  - `sidebar_render/huge_foldered.root`: 10.021ms → 10.825ms, ratio 1.080
+  - `sidebar_search_filter/small_root.performance_query`: 0.448ms → 0.465ms, ratio 1.038
+  - `sidebar_list_update/large_root.replace_and_sync`: 1.495ms → 1.608ms, ratio 1.076
+
+Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
