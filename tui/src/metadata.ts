@@ -11,21 +11,27 @@ import { theme } from "./theme";
 // ── Formatting ──────────────────────────────────────────────────────
 
 function formatDuration(ms: number): string {
+  if (ms < 1000) return "0s";
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
   const seconds = totalSeconds % 60;
   const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m ${seconds}s`;
   const minutes = totalMinutes % 60;
   const totalHours = Math.floor(totalMinutes / 60);
+  if (totalHours < 24) return `${totalHours}h ${minutes}m ${seconds}s`;
   const hours = totalHours % 24;
   const totalDays = Math.floor(totalHours / 24);
+  if (totalDays < 7) return `${totalDays}d ${hours}h ${minutes}m ${seconds}s`;
   const days = totalDays % 7;
   const weeks = Math.floor(totalDays / 7);
 
-  if (weeks > 0) return `${weeks}w ${days}d ${hours}h ${minutes}m ${seconds}s`;
-  if (days > 0) return `${days}d ${hours}h ${minutes}m ${seconds}s`;
-  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
-  if (minutes > 0) return `${minutes}m ${seconds}s`;
-  return `${seconds}s`;
+  return `${weeks}w ${days}d ${hours}h ${minutes}m ${seconds}s`;
+}
+
+function formatTokenCount(tokens: number): string {
+  if (Number.isInteger(tokens) && tokens > -1000 && tokens < 1000) return `${tokens}`;
+  return tokens.toLocaleString("en-US");
 }
 
 // ── Renderer ────────────────────────────────────────────────────────
@@ -47,7 +53,7 @@ export function renderMetadata(metadata: MessageMetadata | null): string[] {
   parts.push(formatModelDisplayName(metadata.model));
 
   // Tokens
-  parts.push(`${metadata.tokens.toLocaleString("en-US")} tokens`);
+  parts.push(`${formatTokenCount(metadata.tokens)} tokens`);
 
   // Duration
   const elapsed = (metadata.endedAt ?? Date.now()) - metadata.startedAt;

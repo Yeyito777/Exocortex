@@ -418,3 +418,44 @@ Validation:
   - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 164.436ms → 133.814ms, ratio 0.814
 
 Action: reverted `tui/src/markdown/highlight.ts`; kept only this failure log and result artifact.
+
+## 015 — Fast paths for metadata token/duration formatting
+
+Status: success — kept and committed.
+
+Hypothesis: cold conversation rendering calls `renderMetadata` once per assistant turn. Benchmark metadata uses short durations and mostly sub-1000 token counts, but the renderer always did full duration decomposition and `toLocaleString("en-US")`. Fast paths for common token/duration cases should preserve exact output while reducing cold conversation open/build costs.
+
+Change:
+
+- In `tui/src/metadata.ts`, return early from `formatDuration` for sub-second, seconds-only, minutes-only, hours-only, and days-only durations before computing larger units.
+- Added `formatTokenCount` that returns `String(tokens)` for integer counts between -999 and 999 and keeps `toLocaleString("en-US")` for larger/non-integer values.
+
+Validation:
+
+- `bun test src/metadata.test.ts src/conversation.test.ts src/render.test.ts`: 40 pass, 0 fail.
+- `bun run typecheck`: pass.
+- `bun test`: 370 pass, 0 fail.
+- Result saved to `results/015-metadata-format-fast-paths.json`.
+- First interleaved control/treatment p95s for directly affected cold/build conversation axes:
+  - `conversation_build_lines_cold/small_chat`: 1.707ms → 1.441ms, ratio 0.844
+  - `conversation_open_cold/medium_markdown`: 32.873ms → 26.515ms, ratio 0.807
+  - `conversation_build_lines_cold/medium_markdown`: 33.154ms → 24.226ms, ratio 0.731
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 165.259ms → 131.823ms, ratio 0.798
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 168.560ms → 130.592ms, ratio 0.775
+  - `conversation_open_cold/huge_expanded_tools`: 59.535ms → 49.980ms, ratio 0.840
+  - `conversation_build_lines_cold/huge_expanded_tools`: 63.458ms → 48.766ms, ratio 0.768
+- Repeated interleaved control/treatment confirmed cold/build wins:
+  - `conversation_open_cold/small_chat`: 3.002ms → 2.595ms, ratio 0.864
+  - `conversation_build_lines_cold/small_chat`: 1.718ms → 1.299ms, ratio 0.756
+  - `conversation_open_cold/medium_markdown`: 33.671ms → 23.414ms, ratio 0.695
+  - `conversation_build_lines_cold/medium_markdown`: 32.430ms → 24.469ms, ratio 0.755
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 165.078ms → 134.031ms, ratio 0.812
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 161.752ms → 130.406ms, ratio 0.806
+  - `conversation_open_cold/huge_expanded_tools`: 62.748ms → 47.901ms, ratio 0.763
+  - `conversation_build_lines_cold/huge_expanded_tools`: 60.039ms → 45.365ms, ratio 0.756
+
+Notes:
+
+- Warm-render microbench p95s varied in both directions despite history render caching bypassing metadata rendering after warm-up. I treated those as noise and kept the repeated cold/build wins on the code path this change actually affects.
+
+Decision: keep. Repeated deterministic cold conversation-opening/build-lines improvement with exact metadata output preserved and full validation passing.
