@@ -152,3 +152,11 @@ Validation:
 
 Action: reverted `tui/src/sidebar/rows.ts`; kept only this failure log and result artifact.
 
+## Smoke test — xenv + exotest
+
+Status: success after setup correction.
+
+- Initial attempt to run `./scripts/dev/exotest` from inside the worktree resolved the worktree root as itself and created a self-referential `node_modules/.bun` symlink, causing Bun `ELOOP` dependency-link errors. Deleted the broken `node_modules` and reinstalled dependencies.
+- Correct command from the worktree using the main checkout script: `/home/yeyito/Workspace/exocortex/scripts/dev/exotest autoresearch-performance` inside an `xenv` `st` terminal.
+- Result: TUI launched successfully in the nested X11 environment and rendered the Exocortex prompt.
+
