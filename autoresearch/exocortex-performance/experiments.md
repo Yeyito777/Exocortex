@@ -90,3 +90,42 @@ Validation:
 
 Decision: keep. Directly affected render/filter axes improved or stayed within tolerance; tests and typecheck passed.
 
+## 004 — Fast path plain assistant markdown paragraphs
+
+Status: success — kept and committed.
+
+Hypothesis: assistant markdown wrapping treated every markdown-mode paragraph as if it contained inline markdown markers. For plain paragraphs without `*` or backticks, it repeatedly stripped markdown while measuring candidate wraps and then ran the inline formatter anyway. Skipping markdown stripping/formatting for marker-free paragraphs should preserve exact rendered output and significantly improve cold conversation opening/building for large chats.
+
+Change:
+
+- In `tui/src/markdown/wordwrap.ts`, detect paragraph text that contains no inline markdown markers handled by the formatter (`*` or `` ` ``).
+- Use raw terminal width measurement for those plain paragraphs.
+- Return raw wrapped lines instead of calling `formatMarkdownChunks` when every paragraph line in the block is marker-free.
+
+Validation:
+
+- `bun test src/markdown/wordwrap.test.ts src/markdown/formatting.test.ts src/conversation.test.ts src/render.test.ts`: 42 pass, 0 fail.
+- `bun run typecheck`: pass, after deleting a transient self-referential `node_modules/.bun` symlink caused by the xenv `exotest` dependency sync and reinstalling dependencies.
+- `bun test`: 370 pass, 0 fail.
+- Result saved to `results/004-plain-markdown-fast-path.json`.
+- Interleaved control/treatment p95s for directly affected conversation cold/build axes, first run:
+  - `conversation_open_cold/small_chat`: 7.665ms → 6.655ms, ratio 0.868
+  - `conversation_build_lines_cold/small_chat`: 4.342ms → 3.318ms, ratio 0.764
+  - `conversation_open_cold/medium_markdown`: 147.894ms → 86.347ms, ratio 0.584
+  - `conversation_build_lines_cold/medium_markdown`: 145.138ms → 83.720ms, ratio 0.577
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 972.974ms → 476.338ms, ratio 0.490
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 965.762ms → 464.914ms, ratio 0.481
+  - `conversation_open_cold/huge_expanded_tools`: 269.092ms → 168.928ms, ratio 0.628
+  - `conversation_build_lines_cold/huge_expanded_tools`: 279.673ms → 179.835ms, ratio 0.643
+- Repeated interleaved control/treatment run confirmed the same cold/build direction:
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 984.886ms → 488.883ms, ratio 0.496
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 1113.074ms → 537.423ms, ratio 0.483
+  - `conversation_open_cold/huge_expanded_tools`: 267.684ms → 170.789ms, ratio 0.638
+  - `conversation_build_lines_cold/huge_expanded_tools`: 301.245ms → 161.386ms, ratio 0.536
+
+Notes:
+
+- Some warm/sidebar microbench p95s varied across runs even though this change is not on their measured hot path after history render caching. I treated those as benchmark noise, not product regressions, because the code path is restricted to cold markdown wrapping and the repeated directly affected axes improved dramatically.
+
+Decision: keep. This is a large cold conversation-opening/build-lines win with no visible rendering change for marker-free paragraphs and full tests passing.
+

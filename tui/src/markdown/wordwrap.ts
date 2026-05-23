@@ -165,7 +165,8 @@ function wrapParagraphRaw(paragraph: string, width: number, bgRestore?: string):
 
   // In markdown mode, measure visible width excluding markers.
   // In plain mode, measure raw terminal width.
-  const measure = bgRestore != null
+  const hasInlineMarkdown = bgRestore != null && /[*`]/.test(paragraph);
+  const measure = hasInlineMarkdown
     ? (s: string) => termWidth(stripMarkdown(s))
     : termWidth;
 
@@ -231,7 +232,8 @@ function wrapParagraphBlock(
     }
   }
 
-  const rendered = bgRestore
+  const shouldFormatMarkdown = bgRestore != null && paragraphs.some(paragraph => /[*`]/.test(paragraph));
+  const rendered = shouldFormatMarkdown
     ? formatMarkdownChunks(rawLines, parseJoin, bgRestore)
     : rawLines;
 
