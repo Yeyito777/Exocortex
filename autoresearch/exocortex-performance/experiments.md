@@ -1162,3 +1162,25 @@ Validation:
 - Direct render wins on large root were not clean enough to satisfy the all-axis/no-regression rule.
 
 Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
+
+## 048 — Plain table cell width measurement fast path
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: markdown table rendering measured cell widths via `termWidth(stripMarkdown(cell))` even when a cell contained no inline markdown markers. Restricting a marker-free fast path to natural-width and padding-width measurement should reduce cold conversation rendering work with less risk than experiment 013's broader table wrapping change.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/markdown/formatting.test.ts src/conversation.test.ts src/render.test.ts` gave 42 pass, 0 fail.
+- Result saved to `results/048-plain-table-width-measure-fast-path-v5.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_build_lines_cold/small_chat` median ratio 0.763
+  - `conversation_open_cold/medium_markdown` median ratio 0.877
+  - `conversation_open_cold/huge_expanded_tools` median ratio 0.856
+  - `conversation_open_warm/medium_markdown` median ratio 1.076
+  - `conversation_open_warm/huge_expanded_tools` median ratio 1.234
+  - `sidebar_render/huge_foldered.root` median ratio 1.139
+  - `sidebar_list_update/huge_foldered.replace_and_sync` median ratio 1.093
+- Cold conversation wins were not clean enough under the all-axis/no-regression rule.
+
+Action: reverted `tui/src/markdown/tables.ts`; kept only this failure log and result artifact.
