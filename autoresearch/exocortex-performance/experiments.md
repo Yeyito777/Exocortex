@@ -1113,3 +1113,31 @@ Validation:
   - `sidebar_list_update/huge_foldered.replace_and_sync`: 2.615ms
 
 Decision: keep. This makes the independent list-update axis more objective and less dominated by benchmark fixture construction, with no production UX change.
+
+## 046 — Searchable-title ASCII fast path against v5 benchmark
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: after experiment 045 isolated list-update fixture object generation, the searchable-title ASCII fast path might finally pass all-axis checks while keeping its repeated sidebar search/filter wins.
+
+Change tested:
+
+- In `getSearchableConversationTitle`, skip `stripMark` when a title is empty or begins with ASCII, because conversation marks are emoji prefixes.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebarsearch.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/046-searchable-title-ascii-fast-path-v5.json`.
+- Two interleaved control/treatment runs confirmed direct sidebar search/filter wins:
+  - `sidebar_search_filter/small_root.performance_query` ratios: 0.727, 0.538; median 0.632
+  - `sidebar_search_filter/large_root.performance_query` ratios: 0.449, 0.509; median 0.479
+  - `sidebar_search_filter/huge_foldered.performance_query` ratios: 0.413, 0.484; median 0.448
+  - `sidebar_render/small_root.root` median ratio 0.824 and `sidebar_navigation/small_root.nav_down` median ratio 0.899 also improved.
+- Still rejected by strict no-regression criteria:
+  - `conversation_build_lines_cold/small_chat` median ratio 1.049
+  - `conversation_open_warm/medium_markdown` median ratio 1.086
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 1.062
+  - `sidebar_render/huge_foldered.root` median ratio 1.092
+  - `sidebar_render/large_root.visual_selection` median ratio 1.024
+
+Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
