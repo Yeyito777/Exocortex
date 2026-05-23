@@ -748,3 +748,22 @@ Validation:
 - The directly affected cold/build axes were mixed, with regressions above tolerance.
 
 Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
+
+## 030 — Skip content-key/cache work for collapsed tool results
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: collapsed tool result blocks render no lines, but `renderBlockCached` still reads the full tool output as a cache key before discovering `showToolOutput` is false. Returning a shared empty wrap result before computing the key should reduce cold conversation opening for collapsed-tool workloads without changing output.
+
+Validation:
+
+- Relevant tests passed: `bun test src/conversation.test.ts src/render.test.ts` gave 33 pass, 0 fail.
+- Result saved to `results/030-skip-collapsed-tool-result-cache-key.json`.
+- Interleaved p95s were mixed and violated the no-regression criterion:
+  - `conversation_build_lines_cold/small_chat`: 1.565ms → 1.326ms, ratio 0.847
+  - `conversation_build_lines_cold/huge_expanded_tools`: 46.491ms → 43.896ms, ratio 0.944
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 129.219ms → 132.471ms, ratio 1.025
+  - `conversation_open_warm/huge_markdown_collapsed_tools`: 0.229ms → 0.240ms, ratio 1.048
+- The targeted collapsed-tool huge build axis regressed above tolerance.
+
+Action: reverted `tui/src/blockrenderer.ts`; kept only this failure log and result artifact.
