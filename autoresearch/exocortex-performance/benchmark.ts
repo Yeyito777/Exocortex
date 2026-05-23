@@ -20,6 +20,7 @@ interface MetricReport extends SampleSummary {
   workload: string;
   iterations: number;
   warmups: number;
+  batch: number;
   digest: number;
 }
 
@@ -111,13 +112,14 @@ function round(value: number): number {
   return Number(value.toFixed(3));
 }
 
-function finalizeMetric(axis: string, workload: string, iterations: number, warmups: number, samples: number[], digest: number): MetricReport {
+function finalizeMetric(axis: string, workload: string, iterations: number, warmups: number, batch: number, samples: number[], digest: number): MetricReport {
   const s = summarize(samples);
   return {
     axis,
     workload,
     iterations,
     warmups,
+    batch,
     minMs: round(s.minMs),
     avgMs: round(s.avgMs),
     p50Ms: round(s.p50Ms),
@@ -133,18 +135,23 @@ function measureMetric(
   iterations: number,
   warmups: number,
   fn: (iteration: number) => number,
+  batch = 1,
 ): MetricReport {
-  for (let i = 0; i < warmups; i++) blackhole ^= fn(-warmups + i) | 0;
+  for (let i = 0; i < warmups; i++) {
+    for (let b = 0; b < batch; b++) blackhole ^= fn((-warmups + i) * batch + b) | 0;
+  }
   const samples: number[] = [];
   let digest = 0;
   for (let i = 0; i < iterations; i++) {
     const t0 = performance.now();
-    digest = (digest + fn(i)) | 0;
+    for (let b = 0; b < batch; b++) {
+      digest = (digest + fn(i * batch + b)) | 0;
+    }
     const t1 = performance.now();
-    samples.push(t1 - t0);
+    samples.push((t1 - t0) / batch);
   }
   blackhole ^= digest;
-  return finalizeMetric(axis, workload, iterations, warmups, samples, digest);
+  return finalizeMetric(axis, workload, iterations, warmups, batch, samples, digest);
 }
 
 function withCapturedStdout<T>(fn: () => T): { value: T; bytes: number } {
@@ -285,6 +292,7 @@ function runConversationBenchmarks(): MetricReport[] {
         warmState.cursorPos = warmState.inputBuffer.length;
         return renderFrameDigest(warmState);
       },
+      10,
     ));
 
     reports.push(measureMetric(
@@ -397,6 +405,7 @@ function runSidebarBenchmarks(): MetricReport[] {
           return rows.length + rows.join("\n").length;
         };
       })(),
+      workload.name === "huge_foldered" ? 2 : 4,
     ));
 
     reports.push(measureMetric(
@@ -411,6 +420,7 @@ function runSidebarBenchmarks(): MetricReport[] {
           return sidebar.selectedIndex + (sidebar.selectedId?.length ?? 0);
         };
       })(),
+      workload.name === "huge_foldered" ? 5 : 10,
     ));
 
     reports.push(measureMetric(
@@ -427,6 +437,7 @@ function runSidebarBenchmarks(): MetricReport[] {
           return displayRows.length + rows.length;
         };
       })(),
+      workload.name === "huge_foldered" ? 2 : 3,
     ));
 
     reports.push(measureMetric(
@@ -457,6 +468,7 @@ function runSidebarBenchmarks(): MetricReport[] {
         return rows.length + rows.join("\n").length;
       };
     })(),
+    3,
   ));
 
   return reports;
