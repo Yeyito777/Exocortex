@@ -88,7 +88,8 @@ export function renderSidebar(
   // Compute visual selection once per render. Calling selectedVisualItems() per
   // row rebuilds displayRows each time; with an active /? filter this made `v`
   // feel very laggy on large conversation lists.
-  const visualItemKeys = new Set(selectedVisualItems(sidebar).map((item) => itemKey(item)));
+  const visualItems = sidebar.visualAnchor ? selectedVisualItems(sidebar) : [];
+  const visualItemKeys = new Set(visualItems.map((item) => itemKey(item)));
   const pendingDeleteKeys = new Set<string>();
   const pendingDeleteKey = itemKey(sidebar.pendingDeleteItem);
   if (pendingDeleteKey) {

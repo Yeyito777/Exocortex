@@ -63,3 +63,30 @@ Validation:
 
 Decision: keep. The optimized production code is isolated to sidebar rendering and all behavior tests passed; directly affected benchmark axes show large p95 wins or remain within tolerance.
 
+## 003 — Skip visual-selection lookup when no visual anchor exists
+
+Status: success — kept and committed.
+
+Hypothesis: normal sidebar rendering computed `selectedVisualItems(sidebar)` even when visual mode was inactive. With no `visualAnchor`, this still performs selected-item validation and a conversation lookup, yet the result is only the current item and does not affect visible output because selected styling wins over visual styling. Avoiding that work should improve regular sidebar render paths without changing visual-mode behavior.
+
+Change:
+
+- In `renderSidebar`, call `selectedVisualItems(sidebar)` only when `sidebar.visualAnchor` is set.
+- Keep the visual-item key set empty outside visual mode; pending-delete styling still uses `pendingDeleteItem` directly, so UX remains unchanged.
+
+Validation:
+
+- `bun test src/focus.test.ts src/sidebar*.test.ts src/render.test.ts`: 82 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/003-skip-visual-items-without-anchor.json`.
+- Interleaved control/treatment p95s for directly affected sidebar axes:
+  - `sidebar_render/small_root.root`: 0.300ms → 0.286ms, ratio 0.953
+  - `sidebar_render/large_root.root`: 4.669ms → 2.846ms, ratio 0.610
+  - `sidebar_render/huge_foldered.root`: 9.647ms → 9.147ms, ratio 0.948
+  - `sidebar_render/large_root.visual_selection`: 3.237ms → 3.149ms, ratio 0.973
+  - `sidebar_search_filter/small_root.performance_query`: 0.621ms → 0.501ms, ratio 0.807
+  - `sidebar_search_filter/large_root.performance_query`: 14.133ms → 12.475ms, ratio 0.883
+  - `sidebar_search_filter/huge_foldered.performance_query`: 48.078ms → 48.347ms, ratio 1.006 (within 2% tolerance)
+
+Decision: keep. Directly affected render/filter axes improved or stayed within tolerance; tests and typecheck passed.
+
