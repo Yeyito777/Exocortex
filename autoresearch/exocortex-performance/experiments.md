@@ -1016,3 +1016,23 @@ Validation:
   - `sidebar_render/large_root.visual_selection` median ratio 1.292
 
 Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
+
+## 042 — Skip DeepSeek regex for non-DeepSeek model ids
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `formatModelDisplayName` ran the DeepSeek regex for every model id. Since benchmark metadata uses OpenAI ids, checking the `deepseek-` prefix first should avoid regex work while preserving output.
+
+Validation:
+
+- Relevant tests passed: `bun test shared/src/model-display.test.ts tui/src/metadata.test.ts tui/src/conversation.test.ts tui/src/render.test.ts` gave 40 pass, 0 fail.
+- Result saved to `results/042-skip-deepseek-regex-for-other-models.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/huge_markdown_collapsed_tools` median ratio 0.943
+  - `conversation_build_lines_cold/medium_markdown` median ratio 0.962
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 1.265
+  - `conversation_open_cold/huge_expanded_tools` median ratio 1.063
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 1.086
+  - several sidebar axes also regressed above tolerance.
+
+Action: reverted `shared/src/model-display.ts`; kept only this failure log and result artifact.
