@@ -1141,3 +1141,24 @@ Validation:
   - `sidebar_render/large_root.visual_selection` median ratio 1.024
 
 Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
+
+## 047 — Avoid stripMark on visible sidebar rows after mark detection
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `renderSidebar` already calls `getMarkFromTitle` for each visible conversation row. Calling `getSearchableConversationTitle` immediately after repeats mark-prefix detection. Reusing the detected mark and slicing the display title locally should reduce visible sidebar row render cost without changing rendered titles/icons.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts src/render.test.ts` gave 82 pass, 0 fail.
+- Result saved to `results/047-avoid-visible-row-stripmark-after-mark-detection.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `sidebar_render/large_root.root` median ratio 0.840
+  - `sidebar_list_update/small_root.replace_and_sync` median ratio 0.935
+  - `sidebar_render/small_root.root` median ratio 1.027
+  - `sidebar_search_filter/large_root.performance_query` median ratio 1.068
+  - `sidebar_render/huge_foldered.root` median ratio 1.063
+  - `conversation_open_cold/huge_expanded_tools` median ratio 1.102
+- Direct render wins on large root were not clean enough to satisfy the all-axis/no-regression rule.
+
+Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
