@@ -619,3 +619,26 @@ Validation:
   - `sidebar_list_update/large_root.replace_and_sync`: 1.495ms → 1.608ms, ratio 1.076
 
 Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
+
+## 024 — Lowercase sidebar folder search query once
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `buildDisplayRows` lowercased the active search query separately for every folder. Computing `activeQuery.toLowerCase()` once should preserve search behavior and reduce sidebar search/filter overhead.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/024-folder-query-lowercase-once.json`.
+- First interleaved run looked promising on many sidebar axes:
+  - `sidebar_search_filter/small_root.performance_query`: 0.608ms → 0.425ms, ratio 0.699
+  - `sidebar_render/large_root.root`: 4.112ms → 3.670ms, ratio 0.893
+  - `sidebar_navigation/huge_foldered.nav_down`: 1.995ms → 1.429ms, ratio 0.716
+  - only unrelated `conversation_open_warm/huge_markdown_collapsed_tools` regressed substantially.
+- Repeated interleaved run did not confirm safety and showed direct sidebar regressions:
+  - `sidebar_render/small_root.root`: 0.346ms → 0.376ms, ratio 1.087
+  - `sidebar_render/large_root.root`: 3.753ms → 4.626ms, ratio 1.233
+  - `sidebar_search_filter/large_root.performance_query`: 12.403ms → 14.027ms, ratio 1.131
+  - `sidebar_navigation/huge_foldered.nav_down`: 1.598ms → 1.936ms, ratio 1.212
+
+Action: reverted `tui/src/sidebar/rows.ts`; kept only this failure log and result artifact.
