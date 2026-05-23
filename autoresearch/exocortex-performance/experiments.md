@@ -1571,3 +1571,28 @@ Validation:
 - Direct conversation/sidebar regressions exceeded tolerance.
 
 Action: reverted `tui/src/textwidth.ts`; kept only this failure log and result artifact.
+
+## 066 — Split markdown paragraphs on plain space when whitespace is simple
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `wrapParagraphRaw` always used `/\s+/` to split paragraph words. Many markdown paragraphs use only single plain spaces. Falling back to `paragraph.split(" ")` when there are no repeated spaces and no tabs should preserve whitespace normalization while avoiding regex split overhead.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- Result saved to `results/066-space-split-markdown-paragraphs.json`.
+- Three interleaved control/treatment runs showed repeated cold-open/build wins on several workloads:
+  - `conversation_open_cold/small_chat` median ratio 0.928
+  - `conversation_open_cold/medium_markdown` median ratio 0.922
+  - `conversation_open_cold/huge_markdown_collapsed_tools` median ratio 0.902
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 0.908
+  - `conversation_open_cold/huge_expanded_tools` median ratio 0.937
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 0.942
+- Still rejected by strict no-regression criteria:
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.047
+  - `conversation_open_warm/medium_markdown` median ratio 1.269
+  - `sidebar_navigation/small_root.nav_down` median ratio 1.125
+  - `sidebar_list_update/large_root.replace_and_sync` median ratio 1.318
+
+Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
