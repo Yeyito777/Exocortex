@@ -6,7 +6,7 @@
  * in blockrenderer.ts.
  */
 
-import { combineMessageMetadata, type Message, type MessageMetadata } from "./messages";
+import { combineMessageMetadata, type ConversationGoal, type Message, type MessageMetadata } from "./messages";
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { theme } from "./theme";
@@ -41,6 +41,41 @@ function pendingAssistantRunMetadata(state: RenderState): MessageMetadata | null
     metadata = combineMessageMetadata(msg.metadata, metadata);
   }
   return metadata;
+}
+
+const GOAL_METADATA_BOUNDARY_TOLERANCE_MS = 2 * 60 * 1000;
+
+function metadataOverlapsGoal(metadata: MessageMetadata | null | undefined, goal: ConversationGoal): boolean {
+  if (!metadata) return false;
+  const goalEnd = goal.status === "active" ? Date.now() : goal.updatedAt;
+  const metadataEnd = metadata.endedAt ?? Date.now();
+  return metadataEnd >= goal.createdAt - GOAL_METADATA_BOUNDARY_TOLERANCE_MS
+    && metadata.startedAt <= goalEnd + GOAL_METADATA_BOUNDARY_TOLERANCE_MS;
+}
+
+function assistantGoalMetadata(messages: Message[], endIndex: number, goal: ConversationGoal): MessageMetadata | null {
+  const current = messages[endIndex];
+  if (current?.role !== "assistant" || !metadataOverlapsGoal(current.metadata, goal)) return null;
+
+  let metadata: MessageMetadata | null = null;
+  for (let i = 0; i <= endIndex; i++) {
+    const msg = messages[i];
+    if (msg.role === "assistant" && metadataOverlapsGoal(msg.metadata, goal)) {
+      metadata = combineMessageMetadata(metadata, msg.metadata);
+    }
+  }
+  return metadata;
+}
+
+function pendingAssistantGoalMetadata(state: RenderState): MessageMetadata | null {
+  if (!state.pendingAI || !state.goal || !metadataOverlapsGoal(state.pendingAI.metadata, state.goal)) return null;
+  let metadata: MessageMetadata | null = null;
+  for (const msg of state.messages) {
+    if (msg.role === "assistant" && metadataOverlapsGoal(msg.metadata, state.goal)) {
+      metadata = combineMessageMetadata(metadata, msg.metadata);
+    }
+  }
+  return combineMessageMetadata(metadata, state.pendingAI.metadata);
 }
 
 // ── Message boundary tracking ───────────────────────────────────────
@@ -194,7 +229,10 @@ export function buildMessageLines(
       }
       const nextIsAssistant = state.messages[messageIndex + 1]?.role === "assistant"
         || (messageIndex === state.messages.length - 1 && state.pendingAI?.role === "assistant");
-      const metadataLines = nextIsAssistant ? [] : renderMetadata(assistantRunMetadata(state.messages, messageIndex));
+      const metadata = state.goal
+        ? assistantGoalMetadata(state.messages, messageIndex, state.goal) ?? assistantRunMetadata(state.messages, messageIndex)
+        : assistantRunMetadata(state.messages, messageIndex);
+      const metadataLines = nextIsAssistant ? [] : renderMetadata(metadata);
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
       const contentEnd = lines.length;
       for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], msg, "assistant_metadata", i);
@@ -245,7 +283,8 @@ export function buildMessageLines(
     const shouldRenderPendingMetadata = state.pendingAI.blocks.length > 0 || (
       state.pendingAICommittedIndex === null && !terminalNoticePendingStop
     );
-    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(pendingAssistantRunMetadata(state)) : [];
+    const metadata = pendingAssistantGoalMetadata(state) ?? pendingAssistantRunMetadata(state);
+    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(metadata) : [];
     if (metadataLines.length > 0) trimTrailingBlankAssistantContent(start);
     const contentEnd = lines.length;
     for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], state.pendingAI, "assistant_metadata", i);

@@ -683,6 +683,89 @@ describe("assistant metadata spacing", () => {
       "  Gpt-5.4 | 35 tokens | 2h 0m 0s",
     ]);
   });
+
+  test("aggregates goal metadata across non-contiguous assistant entries through system notices", () => {
+    const state = {
+      messages: [
+        {
+          role: "assistant",
+          blocks: [{ type: "text", text: "Early compacted goal work" }],
+          metadata: { startedAt: 0, endedAt: 60 * 60_000, model: "gpt-5.5", tokens: 1000 },
+        },
+        { role: "system", text: "[Context warning]", color: undefined, metadata: null },
+        {
+          role: "assistant",
+          blocks: [{ type: "text", text: "Final goal result" }],
+          metadata: { startedAt: 85 * 60_000, endedAt: 90 * 60_000, model: "gpt-5.5", tokens: 250 },
+        },
+      ],
+      pendingAI: null,
+      goal: {
+        objective: "read-only benchmark goal",
+        status: "complete",
+        createdAt: 5 * 60_000,
+        updatedAt: 90 * 60_000,
+        turns: 2,
+      },
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([
+      "  Early compacted goal work",
+      "  Gpt-5.5 | 1,000 tokens | 1h 0m 0s",
+      "  [Context warning]",
+      "  Final goal result",
+      "  Gpt-5.5 | 1,250 tokens | 1h 30m 0s",
+    ]);
+  });
+
+  test("does not apply completed goal metadata to later unrelated assistant replies", () => {
+    const state = {
+      messages: [
+        {
+          role: "assistant",
+          blocks: [{ type: "text", text: "Final goal result" }],
+          metadata: { startedAt: 0, endedAt: 60 * 60_000, model: "gpt-5.5", tokens: 1000 },
+        },
+        {
+          role: "user",
+          text: "new unrelated question",
+          metadata: { startedAt: 3 * 60 * 60_000, endedAt: 3 * 60 * 60_000, model: "gpt-5.5", tokens: 0 },
+        },
+        {
+          role: "assistant",
+          blocks: [{ type: "text", text: "Unrelated reply" }],
+          metadata: { startedAt: 3 * 60 * 60_000, endedAt: 3 * 60 * 60_000 + 5_000, model: "gpt-5.5", tokens: 50 },
+        },
+      ],
+      pendingAI: null,
+      goal: {
+        objective: "old completed goal",
+        status: "complete",
+        createdAt: 0,
+        updatedAt: 60 * 60_000,
+        turns: 1,
+      },
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 120).lines.map(stripAnsi);
+    expect(rendered[0]).toBe("  Final goal result");
+    expect(rendered[1]).toBe("  Gpt-5.5 | 1,000 tokens | 1h 0m 0s");
+    expect(rendered.some((line) => line.includes("new unrelated question"))).toBe(true);
+    expect(rendered.slice(-2)).toEqual([
+      "  Unrelated reply",
+      "  Gpt-5.5 | 50 tokens | 5s",
+    ]);
+  });
 });
 
 describe("system message rendering", () => {
