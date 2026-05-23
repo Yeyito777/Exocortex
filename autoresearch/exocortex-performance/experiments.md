@@ -296,3 +296,24 @@ Validation:
 
 Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
 
+## 010 — Single-pass pinned/unpinned sidebar row emission
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: after `buildDisplayRows` sorts entries, pinned rows are already contiguous. Replacing separate `entries.filter(entry => entry.pinned)` and `entries.filter(entry => !entry.pinned)` passes with a single boundary lookup plus indexed loops should reduce allocation and improve sidebar render/search/navigation.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- Result saved to `results/010-single-pass-sidebar-pinned-rows.json`.
+- First interleaved run showed several wins but a direct large list-update regression:
+  - `sidebar_render/large_root.root`: 3.835ms → 3.305ms, ratio 0.862
+  - `sidebar_search_filter/large_root.performance_query`: 13.054ms → 12.308ms, ratio 0.943
+  - `sidebar_list_update/large_root.replace_and_sync`: 2.028ms → 2.247ms, ratio 1.108
+- Repeated interleaved run did not confirm safety on huge sidebar axes:
+  - `sidebar_render/huge_foldered.root`: 9.135ms → 10.502ms, ratio 1.150
+  - `sidebar_navigation/huge_foldered.nav_down`: 1.131ms → 1.218ms, ratio 1.077
+  - `sidebar_list_update/huge_foldered.replace_and_sync`: 9.001ms → 9.925ms, ratio 1.103
+
+Action: reverted `tui/src/sidebar/rows.ts`; kept only this failure log and result artifact.
+
