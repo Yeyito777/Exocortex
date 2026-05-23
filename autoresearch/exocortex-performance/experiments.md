@@ -642,3 +642,22 @@ Validation:
   - `sidebar_navigation/huge_foldered.nav_down`: 1.598ms → 1.936ms, ratio 1.212
 
 Action: reverted `tui/src/sidebar/rows.ts`; kept only this failure log and result artifact.
+
+## 025 — User bubble width loop without combined array/spread
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `renderUserMessage` allocated a combined `allContentLines` array and used `Math.max(...map(termWidth))` to size the user bubble. Replacing that with direct loops over wrapped text and image badge lines should reduce cold conversation rendering allocation without changing bubble width.
+
+Validation:
+
+- Relevant tests passed: `bun test src/conversation.test.ts src/render.test.ts src/clipboard.test.ts` gave 33 pass, 0 fail.
+- Result saved to `results/025-user-bubble-width-loop.json`.
+- Interleaved p95s violated the no-regression criterion:
+  - `conversation_open_cold/small_chat`: 2.579ms → 3.268ms, ratio 1.267
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 127.678ms → 138.612ms, ratio 1.086
+  - `sidebar_render/large_root.root`: 3.144ms → 4.626ms, ratio 1.471
+  - `conversation_open_cold/medium_markdown`: 24.023ms → 22.521ms, ratio 0.937
+- The direct cold-open regressions exceeded tolerance.
+
+Action: reverted `tui/src/blockrenderer.ts`; kept only this failure log and result artifact.
