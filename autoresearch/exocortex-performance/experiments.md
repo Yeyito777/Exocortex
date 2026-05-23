@@ -535,3 +535,23 @@ Validation:
 - The targeted sidebar render regression exceeded tolerance despite some wins elsewhere.
 
 Action: reverted `tui/src/textwidth.ts`; kept only this failure log and result artifact.
+
+## 020 — Single-assistant metadata fast path
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `assistantRunMetadata` clones/combines metadata even when an assistant message is not adjacent to other assistant fragments. Returning the existing metadata object directly for the common single-message run should avoid allocation and preserve output.
+
+Validation:
+
+- Relevant tests passed: `bun test src/conversation.test.ts src/metadata.test.ts src/render.test.ts` gave 40 pass, 0 fail.
+- Result saved to `results/020-single-assistant-metadata-fast-path.json`.
+- Interleaved p95s were mixed and violated the no-regression criterion:
+  - `conversation_build_lines_cold/medium_markdown`: 25.442ms → 28.756ms, ratio 1.130
+  - `conversation_open_cold/huge_expanded_tools`: 47.572ms → 49.906ms, ratio 1.049
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 128.536ms → 131.211ms, ratio 1.021
+  - `conversation_open_cold/small_chat`: 2.753ms → 2.540ms, ratio 0.923
+  - `conversation_build_lines_cold/small_chat`: 1.318ms → 1.129ms, ratio 0.857
+- The medium/huge cold/build regressions exceeded tolerance despite wins on small/warm axes.
+
+Action: reverted `tui/src/conversation.ts`; kept only this failure log and result artifact.
