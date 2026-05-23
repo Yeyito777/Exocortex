@@ -1419,3 +1419,24 @@ Validation:
 - The targeted search improvements were negligible and unrelated sidebar regressions exceeded tolerance.
 
 Action: reverted `tui/src/searchutil.ts`; kept only this failure log and result artifact.
+
+## 059 — Use `indexOf` instead of regex for markdown marker checks
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: hot marker-presence checks introduced by earlier markdown fast paths used `/[*`]/.test(...)`. Replacing them with `indexOf("*")` / `indexOf("`")` should avoid regex overhead while preserving behavior.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/formatting.test.ts src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 42 pass, 0 fail.
+- Result saved to `results/059-indexof-markdown-marker-checks.json`.
+- Two interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/small_chat` median ratio 0.969
+  - `conversation_build_lines_cold/medium_markdown` median ratio 0.956
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 0.951
+  - `conversation_open_cold/medium_markdown` median ratio 1.065
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 1.081
+  - `conversation_open_warm/huge_expanded_tools` median ratio 1.133
+  - several sidebar axes regressed above tolerance.
+
+Action: reverted `tui/src/markdown/formatting.ts` and `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
