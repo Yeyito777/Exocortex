@@ -21,6 +21,8 @@ import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen"
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command, ParentNotificationTarget } from "./protocol";
+import type { ConversationRenderSnapshot } from "./conversations";
+import type { ImageAttachment } from "./messages";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials, invalidateCredentialsCache } from "./auth";
 import { addAccount as addOpenAIAccount, listAccounts as listOpenAIAccounts, removeAccount as removeOpenAIAccount, switchAccount as switchOpenAIAccount } from "./providers/openai/auth";
 import { getProviderAdapter } from "./providers/catalog";
@@ -29,6 +31,7 @@ import { broadcastConversationUpdated } from "./conversation-events";
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
 
 const SUBAGENTS_FOLDER_NAME = "subagents";
+const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
 
 // ── Handler ─────────────────────────────────────────────────────────
 
@@ -188,15 +191,31 @@ export function createHandler(server: DaemonServer) {
 
   // ── Compact conversation payload helpers ─────────────────────────
 
+  const compactImageForHistory = (image: ImageAttachment): ImageAttachment => ({
+    mediaType: image.mediaType,
+    base64: "",
+    sizeBytes: image.sizeBytes,
+  });
+
+  const compactHistoryImages = (data: ConversationRenderSnapshot): ConversationRenderSnapshot => ({
+    ...data,
+    entries: data.entries.map((entry, index) => entry.type === "user"
+      && entry.images?.length
+      && index < data.entries.length - RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES
+      ? { ...entry, images: entry.images.map(compactImageForHistory) }
+      : entry),
+  });
+
   const sendCompactHistoryUpdated = (convId: string): boolean => {
     const data = getRenderSnapshot(convId);
     if (!data) return false;
+    const compactData = compactHistoryImages(data);
     server.sendToSubscribers(convId, {
       type: "history_updated",
       convId,
-      entries: data.entries,
-      contextTokens: data.contextTokens,
-      toolOutputsIncluded: data.toolOutputsIncluded,
+      entries: compactData.entries,
+      contextTokens: compactData.contextTokens,
+      toolOutputsIncluded: compactData.toolOutputsIncluded,
     });
     return true;
   };
@@ -204,20 +223,21 @@ export function createHandler(server: DaemonServer) {
   const sendCompactConversationLoaded = (target: ConnectedClient, convId: string, reqId?: string) => {
     const data = getRenderSnapshot(convId);
     if (!data) return null;
+    const compactData = compactHistoryImages(data);
     const queued = convStore.getQueuedMessages(data.convId);
     const conv = convStore.get(data.convId);
     server.sendTo(target, {
       type: "conversation_loaded",
       reqId,
-      convId: data.convId,
-      provider: data.provider,
-      model: data.model,
-      effort: data.effort,
-      fastMode: data.fastMode,
-      entries: data.entries,
-      ...(data.pendingAI ? { pendingAI: data.pendingAI } : {}),
-      contextTokens: data.contextTokens,
-      toolOutputsIncluded: data.toolOutputsIncluded,
+      convId: compactData.convId,
+      provider: compactData.provider,
+      model: compactData.model,
+      effort: compactData.effort,
+      fastMode: compactData.fastMode,
+      entries: compactData.entries,
+      ...(compactData.pendingAI ? { pendingAI: compactData.pendingAI } : {}),
+      contextTokens: compactData.contextTokens,
+      toolOutputsIncluded: compactData.toolOutputsIncluded,
       queuedMessages: queued.length > 0 ? queued : undefined,
       goal: conv?.goal ?? null,
     });
@@ -918,20 +938,22 @@ export function createHandler(server: DaemonServer) {
         // After subscribing, send a fresh streaming snapshot for late-join catch-up.
         // This covers any chunks emitted between the initial load snapshot and the
         // moment the new subscriber was attached.
-        const catchupData = getRenderSnapshot(cmd.convId) ?? data;
-        const pendingAI = catchupData.pendingAI;
-        if (pendingAI) {
-          server.sendTo(client, {
-            type: "streaming_started",
-            convId: catchupData.convId,
-            provider: catchupData.provider,
-            model: catchupData.model,
-            streamSeq: convStore.getStreamSeq(cmd.convId),
-            snapshotKind: "catchup",
-            startedAt: pendingAI.metadata?.startedAt ?? Date.now(),
-            blocks: pendingAI.blocks,
-            tokens: pendingAI.metadata?.tokens ?? 0,
-          });
+        if (convStore.isStreaming(cmd.convId)) {
+          const catchupData = getRenderSnapshot(cmd.convId) ?? data;
+          const pendingAI = catchupData.pendingAI;
+          if (pendingAI) {
+            server.sendTo(client, {
+              type: "streaming_started",
+              convId: catchupData.convId,
+              provider: catchupData.provider,
+              model: catchupData.model,
+              streamSeq: convStore.getStreamSeq(cmd.convId),
+              snapshotKind: "catchup",
+              startedAt: pendingAI.metadata?.startedAt ?? Date.now(),
+              blocks: pendingAI.blocks,
+              tokens: pendingAI.metadata?.tokens ?? 0,
+            });
+          }
         }
         // Clear unread when a client views the conversation
         if (convStore.clearUnread(data.convId)) {

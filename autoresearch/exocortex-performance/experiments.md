@@ -2626,3 +2626,43 @@ Validation:
   - several direct sidebar render/navigation/list-update axes also regressed above tolerance; geomean median ratio was 0.991.
 
 Action: reverted `tui/src/markdown/codeblocks.ts`; kept only this failure log and result artifact. This was the final experiment before stopping autoresearch at user request.
+
+## 110 — Compact old image payloads in conversation loads
+
+Status: success — kept and committed.
+
+Problem/diagnosis: after deferred TUI rendering, opening `galaxy tab a9 linux` was still slower than Lenovo conversations. Profiling showed the TUI first render was already tiny (~2.8ms), while daemon-to-event was ~71ms. The Galaxy conversation file is 5.43MiB, with 4.94MiB of historical base64 image data. The compact `conversation_loaded` payload was still ~5.10MiB because historical user image attachments included full base64 even though the chat history only needs media type and byte size for image badges.
+
+Reproducible benchmark:
+
+- Added `autoresearch/exocortex-performance/daemon-load-profile.ts` to profile disk read, JSON parse, display snapshot, and full-vs-compacted payload stringify size/time for the real Galaxy/Lenovo conversations.
+- Added `autoresearch/exocortex-performance/real-conversation-open-profile.ts` to reproduce first-chat-history-render timings through the real daemon/TUI event path.
+- Result saved to `results/110-daemon-load-profile-compact-images.json`.
+
+Change:
+
+- `daemon/src/handler.ts` now strips base64 from older historical user-image entries in compact `conversation_loaded` and `history_updated` payloads, preserving `mediaType` and `sizeBytes` so badges render unchanged.
+- The most recent 8 display entries keep full image base64 to preserve common recent-edit/resend behavior.
+- The non-streaming `load_conversation` catch-up path now skips an unnecessary second `getRenderSnapshot` when the conversation is not streaming.
+
+Profile result (`includeToolOutputs=false`):
+
+- `galaxy tab a9 linux`:
+  - file 5.43MiB; historical images 4.94MiB
+  - full compact-history payload before image stripping: 5.10MiB
+  - old-image-compacted payload: 0.16MiB
+  - stringify median: 6.38ms → 0.34ms
+- Lenovo conversations had no historical images, so payload size/time were unchanged.
+
+End-to-end first-paint validation at 120x40 after deferred rendering + old-image compaction, 30 opens:
+
+- `lenovo m10 improve run`: warm median 29.7ms, daemon/event median 4.9ms, first render median 8.1ms.
+- `lenovo m10 linux install`: warm median 25.5ms, daemon/event median 3.8ms, first render median 4.4ms.
+- `galaxy tab a9 linux`: warm median 23.8ms, p95 24.7ms, daemon/event median 3.4ms, first render median 2.8ms.
+
+Validation:
+
+- `bun test daemon/src/handler.test.ts`: pass, including tests for old-image base64 stripping and recent-image base64 preservation.
+- `bun run typecheck`: pass.
+
+Decision: keep. Galaxy now opens in the same near-instant range as the Lenovo conversations; the remaining latency is mostly the intentional 16ms scheduled render delay plus small daemon/render work.

@@ -353,6 +353,66 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     expect(sent[0]).not.toHaveProperty("pendingAI");
   });
 
+  test("omits old image base64 from compact conversation load payloads", async () => {
+    const convId = mkId("compact-old-images");
+    create(convId, "openai", "gpt-5.4");
+    const conv = get(convId)!;
+    const oldImageBase64 = "a".repeat(1024);
+    conv.messages.push({
+      role: "user",
+      content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: oldImageBase64 } }],
+      metadata: null,
+    });
+    for (let i = 0; i < 8; i++) conv.messages.push({ role: "assistant", content: `reply ${i}`, metadata: null });
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "load_conversation", convId });
+
+    const firstEntry = (sent[0] as { entries: Array<{ images?: Array<{ mediaType: string; base64: string; sizeBytes: number }> }> }).entries[0];
+    expect(firstEntry.images?.[0]).toEqual({ mediaType: "image/png", base64: "", sizeBytes: 768 });
+  });
+
+  test("keeps recent image base64 in compact conversation load payloads", async () => {
+    const convId = mkId("compact-recent-images");
+    create(convId, "openai", "gpt-5.4");
+    const conv = get(convId)!;
+    const recentImageBase64 = "b".repeat(1024);
+    conv.messages.push({ role: "assistant", content: "older reply", metadata: null });
+    conv.messages.push({
+      role: "user",
+      content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: recentImageBase64 } }],
+      metadata: null,
+    });
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "load_conversation", convId });
+
+    const userEntry = (sent[0] as { entries: Array<{ type: string; images?: Array<{ mediaType: string; base64: string; sizeBytes: number }> }> }).entries.find(entry => entry.type === "user");
+    expect(userEntry?.images?.[0]).toEqual({ mediaType: "image/png", base64: recentImageBase64, sizeBytes: 768 });
+  });
+
   test("includes the live assistant snapshot in conversation_loaded and still sends streaming_started for catch-up", async () => {
     const convId = mkId("live-window");
     create(convId, "openai", "gpt-5.4");

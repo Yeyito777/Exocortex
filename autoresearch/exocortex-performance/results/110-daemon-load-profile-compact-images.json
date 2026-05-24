@@ -1,0 +1,148 @@
+{
+  "runs": 30,
+  "recentImagePayloadEntries": 8,
+  "generatedAt": "2026-05-24T01:45:36.766Z",
+  "conversations": [
+    {
+      "title": "galaxy tab a9 linux",
+      "id": "1779235042748-uplq5r",
+      "fileBytes": 5691844,
+      "fileMiB": 5.428165435791016,
+      "messages": 155,
+      "imageChars": 5180952,
+      "imageMiB": 4.940940856933594,
+      "toolResultChars": 133062,
+      "toolResultMiB": 0.12689781188964844,
+      "diskReadMsMedian": 5.072558999999984,
+      "diskReadMsP95": 5.922857000000022,
+      "jsonParseMsMedian": 3.4393650000000093,
+      "jsonParseMsP95": 6.7003039999999885,
+      "snapshots": {
+        "true": {
+          "includeToolOutputs": true,
+          "entries": 32,
+          "blocks": 190,
+          "fullPayloadBytes": 5481608,
+          "fullPayloadMiB": 5.227668762207031,
+          "compactPayloadBytes": 300656,
+          "compactPayloadMiB": 0.2867279052734375,
+          "snapshotMsMedian": 2.9824899999999843,
+          "snapshotMsP95": 3.2560890000000313,
+          "stringifyFullMsMedian": 7.957014999999956,
+          "stringifyFullMsP95": 18.520596999999952,
+          "stringifyCompactMsMedian": 0.571438999999998,
+          "stringifyCompactMsP95": 1.3603050000000394
+        },
+        "false": {
+          "includeToolOutputs": false,
+          "entries": 32,
+          "blocks": 190,
+          "fullPayloadBytes": 5343736,
+          "fullPayloadMiB": 5.096183776855469,
+          "compactPayloadBytes": 162784,
+          "compactPayloadMiB": 0.155242919921875,
+          "snapshotMsMedian": 2.880765999999994,
+          "snapshotMsP95": 3.1637249999999995,
+          "stringifyFullMsMedian": 6.376663000000008,
+          "stringifyFullMsP95": 11.033038000000033,
+          "stringifyCompactMsMedian": 0.34126100000003134,
+          "stringifyCompactMsP95": 1.3214740000000802
+        }
+      }
+    },
+    {
+      "title": "lenovo m10 improve run",
+      "id": "1779400837687-nks3q1",
+      "fileBytes": 1325132,
+      "fileMiB": 1.2637443542480469,
+      "messages": 573,
+      "imageChars": 0,
+      "imageMiB": 0,
+      "toolResultChars": 328784,
+      "toolResultMiB": 0.3135528564453125,
+      "diskReadMsMedian": 0.33587099999999737,
+      "diskReadMsP95": 1.351566000000048,
+      "jsonParseMsMedian": 2.79443399999991,
+      "jsonParseMsP95": 3.52780800000005,
+      "snapshots": {
+        "true": {
+          "includeToolOutputs": true,
+          "entries": 73,
+          "blocks": 777,
+          "fullPayloadBytes": 924799,
+          "fullPayloadMiB": 0.8819570541381836,
+          "compactPayloadBytes": 924799,
+          "compactPayloadMiB": 0.8819570541381836,
+          "snapshotMsMedian": 0.5750600000001214,
+          "snapshotMsP95": 1.0006140000000414,
+          "stringifyFullMsMedian": 1.3490549999999075,
+          "stringifyFullMsP95": 1.9407850000000053,
+          "stringifyCompactMsMedian": 1.262271999999939,
+          "stringifyCompactMsP95": 1.9527649999999994
+        },
+        "false": {
+          "includeToolOutputs": false,
+          "entries": 73,
+          "blocks": 777,
+          "fullPayloadBytes": 578657,
+          "fullPayloadMiB": 0.5518503189086914,
+          "compactPayloadBytes": 578657,
+          "compactPayloadMiB": 0.5518503189086914,
+          "snapshotMsMedian": 0.49629699999991317,
+          "snapshotMsP95": 0.8162970000000769,
+          "stringifyFullMsMedian": 0.8482089999999971,
+          "stringifyFullMsP95": 1.143827999999985,
+          "stringifyCompactMsMedian": 0.7815459999999348,
+          "stringifyCompactMsP95": 0.9337610000000041
+        }
+      }
+    },
+    {
+      "title": "lenovo m10 linux install",
+      "id": "1778547786295-1ofps0",
+      "fileBytes": 910008,
+      "fileMiB": 0.8678512573242188,
+      "messages": 497,
+      "imageChars": 0,
+      "imageMiB": 0,
+      "toolResultChars": 87963,
+      "toolResultMiB": 0.08388805389404297,
+      "diskReadMsMedian": 0.21485699999993813,
+      "diskReadMsP95": 0.5462190000000646,
+      "jsonParseMsMedian": 1.9554749999999785,
+      "jsonParseMsP95": 3.1531350000000202,
+      "snapshots": {
+        "true": {
+          "includeToolOutputs": true,
+          "entries": 76,
+          "blocks": 614,
+          "fullPayloadBytes": 587569,
+          "fullPayloadMiB": 0.5603494644165039,
+          "compactPayloadBytes": 587569,
+          "compactPayloadMiB": 0.5603494644165039,
+          "snapshotMsMedian": 0.4395950000000539,
+          "snapshotMsP95": 0.51122700000019,
+          "stringifyFullMsMedian": 0.8858090000001084,
+          "stringifyFullMsP95": 1.0715059999999994,
+          "stringifyCompactMsMedian": 0.8265469999998913,
+          "stringifyCompactMsP95": 1.345974999999953
+        },
+        "false": {
+          "includeToolOutputs": false,
+          "entries": 76,
+          "blocks": 614,
+          "fullPayloadBytes": 493485,
+          "fullPayloadMiB": 0.4706239700317383,
+          "compactPayloadBytes": 493485,
+          "compactPayloadMiB": 0.4706239700317383,
+          "snapshotMsMedian": 0.3643520000000535,
+          "snapshotMsP95": 0.4486749999998665,
+          "stringifyFullMsMedian": 0.663242000000082,
+          "stringifyFullMsP95": 0.7847560000000158,
+          "stringifyCompactMsMedian": 0.6472519999999804,
+          "stringifyCompactMsP95": 0.670133000000078
+        }
+      }
+    }
+  ]
+}
