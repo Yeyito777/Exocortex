@@ -2444,3 +2444,25 @@ Validation:
   - several sidebar axes also regressed above tolerance.
 
 Action: reverted `tui/src/blockrenderer.ts`; kept only this failure log and result artifact.
+
+## 102 — Pipe-presence guard before markdown table-line regex
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `isTableLine` runs a trim plus table regex on every physical markdown line. Most lines are not table rows. Checking for `|` first should skip regex work on normal prose/code/heading lines while preserving table detection.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/102-table-line-pipe-presence-guard.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_warm/small_chat` median ratio 0.895
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 0.855
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 0.936
+  - but `conversation_open_cold/small_chat` median ratio 1.076
+  - `conversation_build_lines_cold/small_chat` median ratio 1.087
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.045
+  - several sidebar/search/navigation axes also regressed above tolerance; geomean median ratio was 1.011.
+
+Action: reverted `tui/src/markdown/tables.ts`; kept only this failure log and result artifact.
