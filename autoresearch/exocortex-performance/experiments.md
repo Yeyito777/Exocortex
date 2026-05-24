@@ -2466,3 +2466,25 @@ Validation:
   - several sidebar/search/navigation axes also regressed above tolerance; geomean median ratio was 1.011.
 
 Action: reverted `tui/src/markdown/tables.ts`; kept only this failure log and result artifact.
+
+## 103 — Direct `focusConversationAt` state update
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `focusConversationAt` already knows the target conversation index, but called `focusSidebarItem`, which searches by id with `findIndex`. Updating `selectedItem`, `selectedIndex`, and `selectedId` directly should reduce sidebar navigation/focus overhead while preserving behavior.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/103-direct-focus-conversation-at.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `sidebar_navigation/huge_foldered.next_marked_root` median ratio 0.474
+  - `sidebar_list_update/huge_foldered.replace_and_sync` median ratio 0.684
+  - `sidebar_render/huge_foldered.folder_view` median ratio 0.720
+  - but `sidebar_navigation/small_root.next_streaming_root` median ratio 1.357
+  - `sidebar_navigation/huge_foldered.next_streaming_folder` median ratio 1.366
+  - `sidebar_list_update/large_root.replace_and_sync` median ratio 1.632
+  - conversation cold/warm axes also regressed above tolerance.
+
+Action: reverted `tui/src/sidebar/selection.ts`; kept only this failure log and result artifact.
