@@ -2582,3 +2582,25 @@ Validation:
   - several sidebar axes also regressed above tolerance; geomean median ratio was 1.009.
 
 Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
+
+## 108 — Direct metadata line construction without parts array
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `renderMetadata` allocates a `parts` array and joins it for every assistant metadata line. Building the final string directly should preserve output while reducing metadata rendering overhead.
+
+Validation:
+
+- Relevant tests passed: `bun test src/metadata.test.ts src/conversation.test.ts src/render.test.ts` gave 40 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/108-direct-metadata-line-build.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_warm/small_chat` median ratio 0.917
+  - `conversation_open_cold/medium_markdown` median ratio 0.958
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 0.915
+  - but `conversation_open_cold/small_chat` median ratio 1.068
+  - `conversation_open_warm/medium_markdown` median ratio 1.102
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.117
+  - many sidebar axes also regressed above tolerance; geomean median ratio was 1.033.
+
+Action: reverted `tui/src/metadata.ts`; kept only this failure log and result artifact.
