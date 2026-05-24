@@ -2240,3 +2240,24 @@ Validation:
   - geomean median ratio was 1.022.
 
 Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact. The kept search-filter fast path from experiment 087 remains unchanged.
+
+## 093 — Avoid null-copy array allocation in markdown paragraph wrapping
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `wrapParagraphBlock` appended copy metadata with `copy.push(...rendered.map(() => null))`, allocating a temporary null array per paragraph block. Pushing nulls in a loop should preserve copy semantics while reducing cold markdown wrapping allocation.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/093-avoid-copy-null-map-allocation.json`.
+- Initial three interleaved runs had geomean median ratio 0.928 and broad conversation wins, but five interleaved runs regressed to geomean median ratio 0.990 and violated no-regression criteria:
+  - `conversation_open_cold/small_chat` median ratio 0.937
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 0.958
+  - but `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 1.123
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.047
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 1.040
+  - several sidebar navigation/list-update axes also regressed above tolerance.
+
+Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
