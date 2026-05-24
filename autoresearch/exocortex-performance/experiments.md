@@ -2488,3 +2488,25 @@ Validation:
   - conversation cold/warm axes also regressed above tolerance.
 
 Action: reverted `tui/src/sidebar/selection.ts`; kept only this failure log and result artifact.
+
+## 104 — Lower sidebar search query once while preserving match-array semantics
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: sidebar filtering calls `findAllCaseInsensitiveMatchStarts` once per conversation, and that helper lowercases the same query each time. A helper accepting a pre-lowercased query should preserve overlapping-match semantics while reducing search-filter overhead, narrower than the failed `includes` experiment 088.
+
+Validation:
+
+- Relevant tests passed: `bun test src/search.test.ts src/sidebarsearch.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 79 pass, 0 fail.
+- `bun run typecheck`: pass after removing an unused import from the candidate.
+- Result saved to `results/104-sidebar-search-lower-query-once.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `sidebar_search_filter/large_root.performance_query` median ratio 0.911
+  - but `sidebar_search_filter/small_root.performance_query` median ratio 1.096
+  - `sidebar_search_filter/huge_foldered.performance_query` median ratio 1.013
+  - `sidebar_render/large_root.root` median ratio 1.308
+  - `sidebar_render/huge_foldered.folder_view` median ratio 1.515
+  - `sidebar_list_update/large_root.replace_and_sync` median ratio 1.517
+  - conversation axes also regressed above tolerance.
+
+Action: reverted `tui/src/searchutil.ts` and `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
