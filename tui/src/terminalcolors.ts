@@ -80,7 +80,13 @@ export function rgbToXterm256(rIn: number, gIn: number, bIn: number): number {
   const cubeDist = distanceSq(r, g, b, cubeR, cubeG, cubeB);
 
   // xterm's grayscale ramp is often a better approximation for near-neutral
-  // colors than the 6x6x6 cube.
+  // colors than the 6x6x6 cube.  Do not use it for visibly chromatic dark
+  // colors, though: e.g. Whale's #090d35 user bubble is numerically closer to
+  // xterm gray 234 than xterm blue 17, but choosing gray loses the semantic
+  // blue tint and makes the UI look muddy in 256-color terminals.
+  const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+  if (chroma > 12) return cubeCode;
+
   const avg = (r + g + b) / 3;
   const grayIndex = avg <= 8 ? 0 : avg >= 248 ? 23 : Math.round((avg - 8) / 10);
   const grayValue = 8 + (grayIndex * 10);

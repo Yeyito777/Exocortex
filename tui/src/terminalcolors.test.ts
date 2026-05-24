@@ -42,6 +42,11 @@ describe("terminal color downsampling", () => {
     expect(hexToAnsiColor(38, "#ffffff", "256")).toBe(`\x1b[38;5;${rgbToXterm256(255, 255, 255)}m`);
   });
 
+  test("keeps dark chromatic backgrounds on the color cube instead of collapsing them to gray", () => {
+    expect(rgbToXterm256(9, 13, 53)).toBe(17); // Whale user/history background #090d35
+    expect(hexToAnsiColor(48, "#090d35", "256")).toBe("\x1b[48;5;17m");
+  });
+
   test("rewrites truecolor SGR spans inside existing ANSI strings", () => {
     const input = "a\x1b[38;2;29;155;240mb\x1b[48;2;0;5;15mc";
     const out = adaptAnsiTruecolor(input, "256");
