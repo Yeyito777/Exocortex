@@ -2334,3 +2334,24 @@ Validation:
   - unrelated conversation warm/cold axes also had regressions above tolerance.
 
 Action: reverted `tui/src/sidebar/rows.ts`; kept only this failure log and result artifact.
+
+## 097 — Skip leading-newline regex for normal assistant text blocks
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: assistant text block rendering always ran `.replace(/^\n+/, "")` after sanitization. Most blocks do not start with a newline, so checking the first character before using the regex should avoid unnecessary regex work on cold conversation rendering.
+
+Validation:
+
+- Relevant tests passed: `bun test src/conversation.test.ts src/render.test.ts src/markdown/wordwrap.test.ts` gave 39 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/097-skip-leading-newline-regex.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_build_lines_cold/small_chat` median ratio 0.739
+  - `conversation_build_lines_cold/medium_markdown` median ratio 0.910
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 0.952
+  - but `conversation_open_cold/small_chat` median ratio 1.068
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 1.074
+  - many sidebar axes also regressed above tolerance; geomean median ratio was 1.011.
+
+Action: reverted `tui/src/blockrenderer.ts`; kept only this failure log and result artifact.
