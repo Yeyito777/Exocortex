@@ -21,6 +21,47 @@ function isTerminalStreamNotice(msg: Message | undefined): boolean {
   return msg?.role === "system" && (msg.text.startsWith("✗") || msg.color === theme.error);
 }
 
+const MAX_SUMMARY_METADATA_SPAN_MS = 48 * 60 * 60 * 1000;
+const MAX_ASSISTANT_SEGMENT_IDLE_GAP_MS = 2 * 60 * 60 * 1000;
+
+function hasSummaryText(msg: Message): boolean {
+  return msg.role === "assistant"
+    && msg.blocks.some((block) => block.type === "text" && block.text.startsWith("[Summary"));
+}
+
+function metadataForDisplayAggregation(msg: Message): MessageMetadata | null {
+  if (msg.role !== "assistant" || !msg.metadata) return null;
+
+  // Older compaction code could collapse multiple real-user-bounded work
+  // sessions into a single summary metadata span. That makes idle days render as
+  // assistant work (for example a 4-day summary for a couple hours of activity).
+  // Future summaries preserve only the final user-bounded segment; defensively
+  // ignore already-persisted overbroad summary metadata until we have a richer
+  // multi-segment metadata model.
+  const spanMs = msg.metadata.endedAt == null ? 0 : msg.metadata.endedAt - msg.metadata.startedAt;
+  if (spanMs > MAX_SUMMARY_METADATA_SPAN_MS && hasSummaryText(msg)) return null;
+
+  return msg.metadata;
+}
+
+function combineSegmentMetadata(
+  current: MessageMetadata | null,
+  next: MessageMetadata | null | undefined,
+): MessageMetadata | null {
+  if (!current || !next) return combineMessageMetadata(current, next);
+
+  const currentEnd = current.endedAt ?? current.startedAt;
+  const nextEnd = next.endedAt ?? next.startedAt;
+  const gap = next.startedAt > currentEnd
+    ? next.startedAt - currentEnd
+    : current.startedAt > nextEnd
+      ? current.startedAt - nextEnd
+      : 0;
+  if (gap > MAX_ASSISTANT_SEGMENT_IDLE_GAP_MS) return { ...next };
+
+  return combineMessageMetadata(current, next);
+}
+
 function assistantRunMetadata(messages: Message[], endIndex: number): MessageMetadata | null {
   let startIndex = endIndex;
   while (startIndex > 0 && messages[startIndex - 1]?.role === "assistant") startIndex--;
@@ -28,7 +69,7 @@ function assistantRunMetadata(messages: Message[], endIndex: number): MessageMet
   let metadata: MessageMetadata | null = null;
   for (let i = startIndex; i <= endIndex; i++) {
     const msg = messages[i];
-    if (msg?.role === "assistant") metadata = combineMessageMetadata(metadata, msg.metadata);
+    if (msg?.role === "assistant") metadata = combineSegmentMetadata(metadata, metadataForDisplayAggregation(msg));
   }
   return metadata;
 }
@@ -38,7 +79,7 @@ function pendingAssistantRunMetadata(state: RenderState): MessageMetadata | null
   for (let i = state.messages.length - 1; i >= 0; i--) {
     const msg = state.messages[i];
     if (msg.role !== "assistant") break;
-    metadata = combineMessageMetadata(msg.metadata, metadata);
+      metadata = combineSegmentMetadata(metadataForDisplayAggregation(msg), metadata);
   }
   return metadata;
 }
@@ -57,7 +98,7 @@ function assistantSegmentMetadata(messages: Message[], endIndex: number): Messag
   let metadata: MessageMetadata | null = null;
   for (let i = startIndex; i <= endIndex; i++) {
     const msg = messages[i];
-    if (msg.role === "assistant") metadata = combineMessageMetadata(metadata, msg.metadata);
+    if (msg.role === "assistant") metadata = combineSegmentMetadata(metadata, metadataForDisplayAggregation(msg));
   }
   return metadata;
 }
@@ -71,9 +112,9 @@ function pendingAssistantSegmentMetadata(state: RenderState): MessageMetadata | 
   let metadata: MessageMetadata | null = null;
   for (let i = startIndex; i < state.messages.length; i++) {
     const msg = state.messages[i];
-    if (msg.role === "assistant") metadata = combineMessageMetadata(metadata, msg.metadata);
+    if (msg.role === "assistant") metadata = combineSegmentMetadata(metadata, metadataForDisplayAggregation(msg));
   }
-  return combineMessageMetadata(metadata, state.pendingAI.metadata);
+  return combineSegmentMetadata(metadata, state.pendingAI.metadata);
 }
 
 // ── Message boundary tracking ───────────────────────────────────────

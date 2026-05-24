@@ -14,7 +14,7 @@
 
 import type { Tool, ToolResult } from "./types";
 import type { Conversation, StoredMessage, ApiMessage, ApiContentBlock } from "../messages";
-import { buildHistoryTurnMap, combineMessageMetadata, type MessageMetadata } from "../messages";
+import { buildHistoryTurnMap, combineMessageMetadata, isRealUserMessage, type MessageMetadata } from "../messages";
 import { log } from "../log";
 import { safeSlice } from "./util";
 import { createHash } from "crypto";
@@ -643,8 +643,13 @@ function extractRangeTextForSummary(
 }
 
 function summarizeRangeMetadata(messages: StoredMessage[], insertIdx: number, deleteCount: number): MessageMetadata | null {
-  let metadata: MessageMetadata | null = null;
+  let segmentStart = insertIdx;
   for (let i = insertIdx; i < insertIdx + deleteCount; i++) {
+    if (isRealUserMessage(messages[i])) segmentStart = i + 1;
+  }
+
+  let metadata: MessageMetadata | null = null;
+  for (let i = segmentStart; i < insertIdx + deleteCount; i++) {
     const msg = messages[i];
     if (msg?.role === "assistant") metadata = combineMessageMetadata(metadata, msg.metadata);
   }

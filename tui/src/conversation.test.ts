@@ -814,6 +814,65 @@ describe("assistant metadata spacing", () => {
       "  Gpt-5.5 | 50 tokens | 5s",
     ]);
   });
+
+  test("ignores overbroad legacy summary metadata instead of rendering idle days", () => {
+    const state = {
+      messages: [
+        {
+          role: "assistant",
+          blocks: [{ type: "text", text: "[Summary of turns 10–100]\nLegacy summary" }],
+          metadata: { startedAt: 0, endedAt: 4 * 24 * 60 * 60_000, model: "gpt-5.5", tokens: 47_507 },
+        },
+        {
+          role: "assistant",
+          blocks: [{ type: "text", text: "Current work" }],
+          metadata: { startedAt: 4 * 24 * 60 * 60_000 + 2 * 60_000, endedAt: 4 * 24 * 60 * 60_000 + 10 * 60_000, model: "gpt-5.5", tokens: 12_788 },
+        },
+      ],
+      pendingAI: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([
+      "  [Summary of turns 10–100]",
+      "  Legacy summary",
+      "  Current work",
+      "  Gpt-5.5 | 12,788 tokens | 8m 0s",
+    ]);
+  });
+
+  test("does not aggregate assistant metadata across large idle gaps when compaction hid boundaries", () => {
+    const state = {
+      messages: [
+        {
+          role: "assistant",
+          blocks: [{ type: "text", text: "Old short reply" }],
+          metadata: { startedAt: 0, endedAt: 30_000, model: "gpt-5.5", tokens: 150 },
+        },
+        {
+          role: "assistant",
+          blocks: [{ type: "text", text: "Current work" }],
+          metadata: { startedAt: 4 * 24 * 60 * 60_000, endedAt: 4 * 24 * 60 * 60_000 + 8 * 60_000, model: "gpt-5.5", tokens: 12_788 },
+        },
+      ],
+      pendingAI: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([
+      "  Old short reply",
+      "  Current work",
+      "  Gpt-5.5 | 12,788 tokens | 8m 0s",
+    ]);
+  });
 });
 
 describe("system message rendering", () => {
