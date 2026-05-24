@@ -2400,3 +2400,25 @@ Validation:
   - several sidebar axes also regressed above tolerance.
 
 Action: reverted `tui/src/markdown/tables.ts`; kept only this failure log and result artifact.
+
+## 100 — Single-pass markdown table separator detection
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `renderTableBlock` first scanned table lines with `.some(isTableSeparator)`, then scanned them again to parse rows. Folding separator detection into the parse loop should remove one regex pass per table while preserving output.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/100-single-pass-table-separator-detection.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/small_chat` median ratio 0.868
+  - `conversation_build_lines_cold/medium_markdown` median ratio 0.922
+  - `conversation_open_cold/huge_markdown_collapsed_tools` median ratio 0.948
+  - but `conversation_build_lines_cold/small_chat` median ratio 1.185
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 1.091
+  - `conversation_open_cold/huge_expanded_tools` median ratio 1.059
+  - several sidebar axes also regressed above tolerance.
+
+Action: reverted `tui/src/markdown/tables.ts`; kept only this failure log and result artifact.
