@@ -12,6 +12,7 @@
 import { readExocortexConfig, updateExocortexConfig } from "@exocortex/shared/config";
 import { whale } from "./themes/whale";
 import { cerberus } from "./themes/cerberus";
+import { adaptAnsiTruecolor, detectTerminalColorLevel, hexToAnsiColor } from "./terminalcolors";
 
 // ── Theme interface ─────────────────────────────────────────────────
 
@@ -73,6 +74,7 @@ export const themes: Record<string, Theme> = {
 
 export const THEME_NAMES = Object.keys(themes) as ThemeName[];
 export type ThemeName = keyof typeof themes;
+export const terminalColorLevel = detectTerminalColorLevel();
 
 // ── Config persistence ─────────────────────────────────────────────
 
@@ -94,14 +96,25 @@ function persistThemeName(name: string): void {
 
 // ── Active theme ────────────────────────────────────────────────────
 
-// Start with whale, then immediately overwrite from persisted config.
+function adaptThemeForTerminal(base: Theme): Theme {
+  const adapted = { ...base };
+  for (const key of Object.keys(adapted) as Array<keyof Theme>) {
+    const value = adapted[key];
+    if (key === "name" || key === "cursorColor" || typeof value !== "string") continue;
+    (adapted as Record<keyof Theme, string | undefined>)[key] = adaptAnsiTruecolor(value, terminalColorLevel);
+  }
+  return adapted;
+}
+
+// Start with whale, adapted to the current terminal's color depth, then
+// immediately overwrite from persisted config.
 // We use Object.assign so the exported `theme` reference stays the same
 // object — every module that imported it sees mutations in-place.
-export const theme: Theme = { ...whale };
+export const theme: Theme = adaptThemeForTerminal(whale);
 
 const persisted = loadPersistedThemeName();
 if (persisted) {
-  Object.assign(theme, themes[persisted]);
+  Object.assign(theme, adaptThemeForTerminal(themes[persisted]));
 }
 
 /**
@@ -112,18 +125,19 @@ if (persisted) {
 export function setTheme(name: string): boolean {
   const t = themes[name];
   if (!t) return false;
-  Object.assign(theme, t);
+  Object.assign(theme, adaptThemeForTerminal(t));
   persistThemeName(name);
   return true;
 }
 
 // ── Utilities ──────────────────────────────────────────────────────
 
-/** Convert a hex color (#rrggbb) to an ANSI truecolor foreground escape. */
+/** Convert a hex color (#rrggbb) to an ANSI foreground escape for this terminal. */
 export function hexToAnsi(hex: string): string {
-  const h = hex.replace("#", "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return `\x1b[38;2;${r};${g};${b}m`;
+  return hexToAnsiColor(38, hex, terminalColorLevel);
+}
+
+/** Convert a hex color (#rrggbb) to an ANSI background escape for this terminal. */
+export function hexToAnsiBg(hex: string): string {
+  return hexToAnsiColor(48, hex, terminalColorLevel);
 }

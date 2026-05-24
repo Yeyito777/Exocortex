@@ -1,6 +1,7 @@
 import { clearPrompt } from "../promptstate";
 import { pushSystemMessage } from "../state";
-import { theme } from "../theme";
+import { terminalColorLevel, theme } from "../theme";
+import { ansiColorToRgb, rgbToAnsi as terminalRgbToAnsi } from "../terminalcolors";
 import {
   createTokenUsageTotals,
   formatModelDisplayName,
@@ -16,7 +17,6 @@ import type { CompletionItem, SlashCommand } from "./types";
 const TOKEN_HEATMAP_DEFAULT_MONTHS = 6;
 const TOKEN_HEATMAP_DAY_MS = 24 * 60 * 60 * 1000;
 const TOKEN_HEATMAP_WEEKDAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
-const ANSI_TRUECOLOR_RE = /\x1b\[38;2;(\d+);(\d+);(\d+)m/;
 
 interface RgbColor {
   r: number;
@@ -118,19 +118,13 @@ function accentUsd(amount: number): string {
   return accentText(formatUsd(amount));
 }
 
-function parseTruecolorAnsi(ansi: string): RgbColor | null {
-  const match = ANSI_TRUECOLOR_RE.exec(ansi);
-  if (!match) return null;
-  return {
-    r: Number(match[1]),
-    g: Number(match[2]),
-    b: Number(match[3]),
-  };
+function parseAnsiForeground(ansi: string): RgbColor | null {
+  const rgb = ansiColorToRgb(ansi, 38);
+  return rgb ? { r: rgb[0], g: rgb[1], b: rgb[2] } : null;
 }
 
 function rgbToAnsi(color: RgbColor): string {
-  const clamp = (value: number) => Math.max(0, Math.min(255, Math.round(value)));
-  return `\x1b[38;2;${clamp(color.r)};${clamp(color.g)};${clamp(color.b)}m`;
+  return terminalRgbToAnsi(38, color.r, color.g, color.b, terminalColorLevel);
 }
 
 function blendRgb(from: RgbColor, to: RgbColor, amount: number): RgbColor {
@@ -209,8 +203,8 @@ function buildHeatmapSquare(tokenCount: number, maxTokenCount: number): string {
     return `${theme.muted}■${theme.reset}${theme.dim}`;
   }
 
-  const accent = parseTruecolorAnsi(theme.accent);
-  const muted = parseTruecolorAnsi(theme.muted);
+  const accent = parseAnsiForeground(theme.accent);
+  const muted = parseAnsiForeground(theme.muted);
   if (!accent || !muted) {
     return `${theme.accent}■${theme.reset}${theme.dim}`;
   }

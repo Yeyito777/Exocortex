@@ -11,11 +11,11 @@
  * - renderLineWithSearch: highlight one or more search-match ranges
  */
 
-import { theme } from "./theme";
+import { hexToAnsi, theme } from "./theme";
 import { stripAnsi } from "./historycursor";
 import { nextGraphemeEnd } from "./graphemes";
 
-const CURSOR_FG = "\x1b[38;2;0;0;0m";  // black text on cursor
+const CURSOR_FG = hexToAnsi("#000000"); // black text on cursor
 const ANSI_OR_HYPERLINK = /^\x1b(?:\[[0-9;]*[A-Za-z]|\]8;[^;]*;[^\x1b]*\x1b\\)/;
 
 /**

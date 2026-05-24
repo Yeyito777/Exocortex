@@ -425,7 +425,7 @@ describe("/tokens", () => {
     expect(text).toContain("Less");
     expect(text).toContain("More");
     expect(text).toContain("■");
-    expect(text).toContain(`Tokens today: \x1b[38;2;`);
+    expect(text).toContain(`Tokens today: ${theme.accent}`);
     expect(text).toContain("2,000");
     expect(text).toContain("Maximum tokens:");
     expect(text).toContain("Average tokens:");
@@ -466,8 +466,8 @@ describe("/tokens", () => {
     expect(text).toContain("req");
     expect(text).not.toContain("— all");
     expect(text).toContain("DeepSeek V4 Pro:");
-    expect(text).toContain("Top model: \x1b[38;2;");
-    expect(text).toContain("Top model tokens: \x1b[38;2;");
+    expect(text).toContain(`Top model: ${theme.accent}`);
+    expect(text).toContain(`Top model tokens: ${theme.accent}`);
     expect(text).not.toContain("Total tokens:");
     expect(text).not.toContain("Models used:");
   });

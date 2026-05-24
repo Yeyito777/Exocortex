@@ -3,16 +3,18 @@
 // Designed for visual scanning in a TUI — not a full parser.
 // Ported from Mnemo project (https://github.com/yeyito/Mnemo)
 
+import { hexToAnsi } from "../theme";
+
 // --- ANSI Color Constants (Exocortex Whale Theme) ---
-export const FG_WHITE = "\x1b[38;2;255;255;255m";
-const FG_SYN_KEYWORD = "\x1b[38;2;199;146;234m";   // #c792ea soft purple
-const FG_SYN_STRING = "\x1b[38;2;195;232;141m";     // #c3e88d warm green
-const FG_SYN_COMMENT = "\x1b[38;2;95;105;120m";     // #5f6978 muted gray
-const FG_SYN_NUMBER = "\x1b[38;2;247;140;108m";     // #f78c6c warm orange
-const FG_SYN_TYPE = "\x1b[38;2;137;221;255m";       // #89ddff soft cyan
-const FG_SYN_FUNCTION = "\x1b[38;2;130;170;255m";   // #82aaff soft blue
-const FG_SYN_OPERATOR = "\x1b[38;2;137;221;255m";   // #89ddff cyan
-const FG_SYN_PUNCT = "\x1b[38;2;180;180;180m";      // #b4b4b4 light gray
+export const FG_WHITE = hexToAnsi("#ffffff");
+const FG_SYN_KEYWORD = hexToAnsi("#c792ea");  // soft purple
+const FG_SYN_STRING = hexToAnsi("#c3e88d");   // warm green
+const FG_SYN_COMMENT = hexToAnsi("#5f6978");  // muted gray
+const FG_SYN_NUMBER = hexToAnsi("#f78c6c");   // warm orange
+const FG_SYN_TYPE = hexToAnsi("#89ddff");     // soft cyan
+const FG_SYN_FUNCTION = hexToAnsi("#82aaff"); // soft blue
+const FG_SYN_OPERATOR = hexToAnsi("#89ddff"); // cyan
+const FG_SYN_PUNCT = hexToAnsi("#b4b4b4");    // light gray
 
 export type TokenType =
   | "keyword" | "string" | "comment" | "number"
