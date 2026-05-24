@@ -2355,3 +2355,27 @@ Validation:
   - many sidebar axes also regressed above tolerance; geomean median ratio was 1.011.
 
 Action: reverted `tui/src/blockrenderer.ts`; kept only this failure log and result artifact.
+
+## 098 — Direct sidebar entry build instead of folder map/filter/map spreads
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `buildDisplayRows` built folder entries with `map/filter`, conversation entries with `map`, then combined both arrays with spreads before sorting. A direct push loop should reduce temporary arrays and lower sidebar render/navigation/search overhead.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/098-direct-sidebar-entry-build-v10.json`.
+- Three interleaved runs had geomean median ratio 0.965, but five interleaved runs weakened to 0.988 and violated no-regression criteria:
+  - `sidebar_render/small_root.folder_view` median ratio 0.853
+  - `sidebar_render/large_root.folder_view` median ratio 0.873
+  - `sidebar_render/huge_foldered.root` median ratio 0.903
+  - `sidebar_search_filter/large_root.performance_query` median ratio 0.901
+  - but `sidebar_navigation/large_root.nav_down` median ratio 1.139
+  - `sidebar_navigation/large_root.next_streaming_folder` median ratio 1.226
+  - `sidebar_navigation/huge_foldered.next_marked_folder` median ratio 1.150
+  - `sidebar_list_update/large_root.replace_and_sync` median ratio 1.223
+  - conversation warm/cold axes also regressed above tolerance.
+
+Action: reverted `tui/src/sidebar/rows.ts`; kept only this failure log and result artifact.
