@@ -34,6 +34,7 @@ import {
   handleHistoryCursorAction,
   scrollHalfPageWithCursor, scrollFullPageWithCursor, scrollLineWithStickyCursor,
 } from "./historycursor";
+import { movePromptCursorVerticalWithCurswant } from "./promptline";
 import { handleMessageTextObject } from "./vim/message";
 
 export type AsyncUiMutationCallback = () => void;
@@ -57,6 +58,19 @@ export function processVimKey(
   onAsyncUiMutation?: AsyncUiMutationCallback,
 ): KeyResult | null {
   const context = getVimContext(state);
+  const prevMode = state.vim.mode;
+  const preCount = state.vim.count ?? 1;
+
+  const resetPromptCurswant = () => {
+    if (context === "prompt") state.promptCurswant = null;
+  };
+
+  const isPromptVerticalMotion = () => (
+    context === "prompt"
+    && key.type === "char"
+    && (key.char === "j" || key.char === "k")
+    && prevMode !== "insert"
+  );
 
   // History-specific find handling: f/F/;/, operate on history lines, not prompt buffer
   if (context === "history" && state.vim.mode !== "insert") {
@@ -74,7 +88,6 @@ export function processVimKey(
     if (htResult) return htResult;
   }
 
-  const prevMode = state.vim.mode;
   const result = processKey(key, state.vim, context, state.inputBuffer, state.cursorPos);
 
   switch (result.type) {
@@ -86,7 +99,12 @@ export function processVimKey(
       return { type: "handled" };
 
     case "cursor_move":
-      state.cursorPos = result.cursor;
+      if (isPromptVerticalMotion()) {
+        movePromptCursorVerticalWithCurswant(state, key.char === "k" ? -1 : 1, preCount, true);
+      } else {
+        state.cursorPos = result.cursor;
+        resetPromptCurswant();
+      }
       return { type: "handled" };
 
     case "buffer_edit":
@@ -101,6 +119,7 @@ export function processVimKey(
       }
       state.inputBuffer = result.buffer;
       state.cursorPos = result.cursor;
+      resetPromptCurswant();
       if (result.mode) {
         state.vim.mode = result.mode;
       } else {
@@ -126,6 +145,7 @@ export function processVimKey(
       }
       state.inputBuffer = result.buffer;
       state.cursorPos = result.cursor;
+      resetPromptCurswant();
       state.vim.mode = result.mode;
       return { type: "handled" };
 
@@ -134,6 +154,7 @@ export function processVimKey(
       if (snap) {
         state.inputBuffer = snap.buffer;
         state.cursorPos = clampNormal(snap.buffer, snap.cursor);
+        resetPromptCurswant();
       }
       return { type: "handled" };
     }
@@ -143,6 +164,7 @@ export function processVimKey(
       if (snap) {
         state.inputBuffer = snap.buffer;
         state.cursorPos = clampNormal(snap.buffer, snap.cursor);
+        resetPromptCurswant();
       }
       return { type: "handled" };
     }
@@ -154,7 +176,10 @@ export function processVimKey(
         commitInsertSession(state.undo, state.inputBuffer);
       }
       state.vim.mode = result.mode;
-      if (result.cursor !== undefined) state.cursorPos = result.cursor;
+      if (result.cursor !== undefined) {
+        state.cursorPos = result.cursor;
+        resetPromptCurswant();
+      }
       // Mark insert entry when entering insert mode
       if (result.mode === "insert") {
         markInsertEntry(state.undo, state.inputBuffer, state.cursorPos);
@@ -281,6 +306,7 @@ function handlePaste(
 
     state.inputBuffer = buf.slice(0, pos) + text + buf.slice(pos);
     state.cursorPos = clampNormal(state.inputBuffer, pos + text.length - 1);
+    state.promptCurswant = null;
     onAsyncUiMutation?.();
   });
 }

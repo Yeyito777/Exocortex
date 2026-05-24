@@ -80,16 +80,16 @@ export function charRight(cursor: HistoryCursor, lines: string[]): HistoryCursor
   return { row: cursor.row, col: Math.min(end, nextGraphemeEnd(plain, cursor.col)) };
 }
 
-export function lineUp(cursor: HistoryCursor, lines: string[]): HistoryCursor {
+export function lineUp(cursor: HistoryCursor, lines: string[], desiredCol: number = cursor.col): HistoryCursor {
   if (cursor.row <= 0) return cursor;
   const newRow = cursor.row - 1;
-  return { row: newRow, col: clampCol(cursor.col, lines, newRow) };
+  return { row: newRow, col: clampCol(desiredCol, lines, newRow) };
 }
 
-export function lineDown(cursor: HistoryCursor, lines: string[]): HistoryCursor {
+export function lineDown(cursor: HistoryCursor, lines: string[], desiredCol: number = cursor.col): HistoryCursor {
   if (cursor.row >= lines.length - 1) return cursor;
   const newRow = cursor.row + 1;
-  return { row: newRow, col: clampCol(cursor.col, lines, newRow) };
+  return { row: newRow, col: clampCol(desiredCol, lines, newRow) };
 }
 
 export function lineStart(cursor: HistoryCursor, lines: string[], wrapCont?: boolean[]): HistoryCursor {

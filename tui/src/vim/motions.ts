@@ -10,6 +10,12 @@ import { isWordChar, isBufferSpace as isSpace, isPunct } from "../chars";
 
 // ── Character motions ──────────────────────────────────────────────
 
+function normalLineEnd(buffer: string, pos: number): number {
+  const start = lineStartOf(buffer, pos);
+  const end = lineEndOf(buffer, pos);
+  return end > start ? previousGraphemeStart(buffer, end) : end;
+}
+
 export function charLeft(buffer: string, pos: number): number {
   if (pos <= 0) return 0;
   // Don't cross newline boundary
@@ -19,9 +25,9 @@ export function charLeft(buffer: string, pos: number): number {
 
 export function charRight(buffer: string, pos: number): number {
   if (pos >= buffer.length) return buffer.length;
-  // Don't cross newline boundary
-  if (buffer[pos] === "\n") return pos;
-  return nextGraphemeEnd(buffer, pos);
+  const next = nextGraphemeEnd(buffer, pos);
+  // Don't move onto the newline delimiter at the end of a non-empty line.
+  return next > normalLineEnd(buffer, pos) ? pos : next;
 }
 
 // ── Word motions ───────────────────────────────────────────────────

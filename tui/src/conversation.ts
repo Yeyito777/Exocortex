@@ -43,6 +43,39 @@ function pendingAssistantRunMetadata(state: RenderState): MessageMetadata | null
   return metadata;
 }
 
+function isRealUserMessage(msg: Message): boolean {
+  return msg.role === "user" && msg.metadata?.system !== true;
+}
+
+function assistantSegmentMetadata(messages: Message[], endIndex: number): MessageMetadata | null {
+  const current = messages[endIndex];
+  if (current?.role !== "assistant") return null;
+
+  let startIndex = endIndex;
+  while (startIndex > 0 && !isRealUserMessage(messages[startIndex - 1])) startIndex--;
+
+  let metadata: MessageMetadata | null = null;
+  for (let i = startIndex; i <= endIndex; i++) {
+    const msg = messages[i];
+    if (msg.role === "assistant") metadata = combineMessageMetadata(metadata, msg.metadata);
+  }
+  return metadata;
+}
+
+function pendingAssistantSegmentMetadata(state: RenderState): MessageMetadata | null {
+  if (!state.pendingAI) return null;
+
+  let startIndex = state.messages.length;
+  while (startIndex > 0 && !isRealUserMessage(state.messages[startIndex - 1])) startIndex--;
+
+  let metadata: MessageMetadata | null = null;
+  for (let i = startIndex; i < state.messages.length; i++) {
+    const msg = state.messages[i];
+    if (msg.role === "assistant") metadata = combineMessageMetadata(metadata, msg.metadata);
+  }
+  return combineMessageMetadata(metadata, state.pendingAI.metadata);
+}
+
 // ── Message boundary tracking ───────────────────────────────────────
 
 /** Row range for a single message in the rendered history lines. */
@@ -212,7 +245,8 @@ export function buildMessageLines(
       }
       const nextIsAssistant = state.messages[messageIndex + 1]?.role === "assistant"
         || (messageIndex === state.messages.length - 1 && state.pendingAI?.role === "assistant");
-      const metadataLines = nextIsAssistant ? [] : renderMetadata(assistantRunMetadata(state.messages, messageIndex));
+      const metadata = assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
+      const metadataLines = nextIsAssistant ? [] : renderMetadata(metadata);
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
       const contentEnd = lines.length;
       for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], msg, "assistant_metadata", i);
@@ -263,7 +297,8 @@ export function buildMessageLines(
     const shouldRenderPendingMetadata = state.pendingAI.blocks.length > 0 || (
       state.pendingAICommittedIndex === null && !terminalNoticePendingStop
     );
-    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(pendingAssistantRunMetadata(state)) : [];
+    const metadata = pendingAssistantSegmentMetadata(state) ?? pendingAssistantRunMetadata(state);
+    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(metadata) : [];
     if (metadataLines.length > 0) trimTrailingBlankAssistantContent(start);
     const contentEnd = lines.length;
     for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], state.pendingAI, "assistant_metadata", i);

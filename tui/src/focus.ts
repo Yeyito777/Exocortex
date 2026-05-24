@@ -180,6 +180,7 @@ export function handleFocusedKey(
     const pos = graphemeBoundaryAtOrAfter(buf, state.cursorPos);
     state.inputBuffer = buf.slice(0, pos) + text + buf.slice(pos);
     state.cursorPos = pos + text.length;
+    state.promptCurswant = null;
     state.autocomplete = null;
     // Ensure prompt is focused and in insert mode
     focusPrompt(state);
@@ -246,6 +247,7 @@ export function handleFocusedKey(
       } else {
         focusHistory(state);
         state.historyCursor = placeAtVisibleBottom(state);
+        state.historyCurswant = null;
       }
       return { type: "handled" };
     case "sidebar_next":
