@@ -2218,3 +2218,25 @@ Validation:
   - geomean median ratio was 1.010.
 
 Action: reverted `tui/src/textwidth.ts`; kept only this failure log and result artifact.
+
+## 092 — Inline display-title resolution in search-filter title helper
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: experiment 087's private search-filter title helper still called `convDisplayName`, which only performs title fallback and newline truncation. Inlining that tiny display-name logic inside the search-only helper should reduce sidebar search/filter overhead while keeping the exported rendering helper unchanged.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebarsearch.test.ts src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/092-inline-search-filter-title-display.json`.
+- Three interleaved control/treatment runs were noisy and violated no-regression criteria:
+  - `sidebar_search_filter/small_root.performance_query` median ratio 0.890
+  - `sidebar_search_filter/large_root.performance_query` median ratio 1.017
+  - `sidebar_search_filter/huge_foldered.performance_query` median ratio 0.978
+  - `sidebar_render/small_root.root` median ratio 1.722
+  - `sidebar_render/large_root.root` median ratio 1.076
+  - `sidebar_render/huge_foldered.folder_view` median ratio 1.169
+  - geomean median ratio was 1.022.
+
+Action: reverted `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact. The kept search-filter fast path from experiment 087 remains unchanged.
