@@ -2308,3 +2308,29 @@ Validation:
   - multiple sidebar axes also regressed above tolerance.
 
 Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
+
+## 096 — Avoid pinned/unpinned filter arrays in sidebar row build
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `buildDisplayRows` split sorted entries into pinned and unpinned arrays with two `filter` calls. Scanning the sorted entries directly for pinned/unpinned output should avoid temporary arrays and improve sidebar render/navigation/search axes.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts` gave 74 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/096-sidebar-rows-avoid-pinned-filter-arrays.json`.
+- Three interleaved runs looked promising on geomean; after five runs the geomean median ratio was 0.963 with broad wins:
+  - `sidebar_render/large_root.root` median ratio 0.840
+  - `sidebar_render/large_root.folder_view` median ratio 0.816
+  - `sidebar_search_filter/small_root.performance_query` median ratio 0.859
+  - `sidebar_search_filter/large_root.performance_query` median ratio 0.872
+  - `sidebar_list_update/large_root.replace_and_sync` median ratio 0.848
+  - several navigation axes also improved.
+- Still rejected by strict no-regression criteria because direct affected axes regressed above tolerance:
+  - `sidebar_render/huge_foldered.root` median ratio 1.230
+  - `sidebar_list_update/huge_foldered.replace_and_sync` median ratio 1.134
+  - `sidebar_navigation/huge_foldered.next_marked_root` median ratio 1.169
+  - unrelated conversation warm/cold axes also had regressions above tolerance.
+
+Action: reverted `tui/src/sidebar/rows.ts`; kept only this failure log and result artifact.
