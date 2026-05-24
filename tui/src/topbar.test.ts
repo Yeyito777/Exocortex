@@ -29,4 +29,24 @@ describe("topbar rendering", () => {
 
     expect(visibleLength(rendered)).toBe(40);
   });
+
+  test("hides goal permission restrictions", () => {
+    const state = createInitialState();
+    state.hasChosenProvider = true;
+    state.goal = {
+      objective: "finish it",
+      status: "active",
+      pausable: false,
+      completable: false,
+      createdAt: 1,
+      updatedAt: 1,
+      turns: 0,
+    };
+
+    const rendered = renderTopbar(state, 120);
+
+    expect(rendered).toContain("goal:active");
+    expect(rendered).not.toContain("--unpausable");
+    expect(rendered).not.toContain("--uncompletable");
+  });
 });

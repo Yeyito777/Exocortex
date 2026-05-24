@@ -331,14 +331,23 @@ export function get(id: string): Conversation | undefined {
   return loadConversation(id);
 }
 
-export function setGoal(id: string, objective: string): ConversationGoal | null {
+export interface SetGoalOptions {
+  pausable?: boolean;
+  completable?: boolean;
+}
+
+export function setGoal(id: string, objective: string, options: SetGoalOptions = {}): ConversationGoal | null {
   const conv = get(id);
   const trimmed = objective.trim();
   if (!conv || !trimmed) return null;
   const now = Date.now();
+  const completable = options.completable ?? true;
+  const pausable = completable ? options.pausable ?? true : false;
   conv.goal = {
     objective: trimmed,
     status: "active",
+    pausable,
+    completable,
     createdAt: now,
     updatedAt: now,
     turns: 0,

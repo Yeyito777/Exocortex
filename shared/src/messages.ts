@@ -243,6 +243,10 @@ export type ConversationGoalStatus = "active" | "paused" | "complete";
 export interface ConversationGoal {
   objective: string;
   status: ConversationGoalStatus;
+  /** Whether the model may pause this goal. Defaults to true for older saved goals. */
+  pausable?: boolean;
+  /** Whether the model may mark this goal complete. Defaults to true for older saved goals. */
+  completable?: boolean;
   createdAt: number;
   updatedAt: number;
   /** Number of automatic continuation turns since the goal was set/resumed. */

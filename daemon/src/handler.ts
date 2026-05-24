@@ -346,7 +346,8 @@ export function createHandler(server: DaemonServer) {
         } else {
           convStore.create(id, provider, model, title, effort, fastMode, folderId);
         }
-        const goal = goalObjective ? setConversationGoal(id, goalObjective).goal : null;
+        const goalResult = goalObjective ? setConversationGoal(id, goalObjective, { pausable: cmd.goalPausable, completable: cmd.goalCompletable }) : null;
+        const goal = goalResult?.goal ?? null;
         log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, fastMode=${fastMode}, title="${title ?? ""}", initialMessage=${Boolean(initialMessage)}, folderId=${folderId ?? "root"})`);
 
         server.sendTo(client, {
@@ -364,7 +365,7 @@ export function createHandler(server: DaemonServer) {
 
         if (goalObjective && !initialMessage) {
           server.subscribe(client, id);
-          server.sendToSubscribers(id, { type: "goal_updated", reqId: cmd.reqId, convId: id, goal, message: `Goal set: ${goalObjective}` });
+          server.sendToSubscribers(id, { type: "goal_updated", reqId: cmd.reqId, convId: id, goal, message: goalResult?.message ?? `Goal set: ${goalObjective}` });
           startTitleGeneration(server, id, { extraContext: goalObjective });
           void orchestrateGoalContinuation(server, id, buildOrchestrationCallbacks(id)).catch((err) => {
             log("error", `handler: initial new-conversation goal continuation failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
@@ -408,11 +409,6 @@ export function createHandler(server: DaemonServer) {
       case "abort": {
         const ac = convStore.getActiveJob(cmd.convId);
         if (ac) {
-          const goal = convStore.get(cmd.convId)?.goal;
-          if (cmd.reason !== "daemon-restart" && goal?.status === "active") {
-            const result = applyUserGoalAction(convStore.get(cmd.convId)!, "pause");
-            server.sendToSubscribers(cmd.convId, { type: "goal_updated", convId: cmd.convId, goal: result.goal });
-          }
           ac.abort(cmd.reason === "daemon-restart" ? "daemon-restart" : undefined);
           log("info", `handler: abort requested for ${cmd.convId}${cmd.reason ? ` (${cmd.reason})` : ""}`);
         }
@@ -461,7 +457,7 @@ export function createHandler(server: DaemonServer) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot set a goal while the conversation is streaming." });
             break;
           }
-          const result = applyUserGoalAction(conv, "set", objective);
+          const result = setConversationGoal(cmd.convId, objective, { pausable: cmd.pausable, completable: cmd.completable });
           const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
           log("info", `handler: set goal for ${cmd.convId}: "${objective.slice(0, 80)}"`);
           if (goal?.status === "active") {

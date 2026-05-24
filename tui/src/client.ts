@@ -117,8 +117,10 @@ export class DaemonClient {
     folderId?: string | null,
     goalObjective?: string,
     convId?: string,
+    goalPausable?: boolean,
+    goalCompletable?: boolean,
   ): void {
-    this.send({ type: "new_conversation", ...(convId ? { convId } : {}), provider, model, title, effort, fastMode, initialMessage, folderId, goalObjective });
+    this.send({ type: "new_conversation", ...(convId ? { convId } : {}), provider, model, title, effort, fastMode, initialMessage, folderId, goalObjective, goalPausable, goalCompletable });
   }
 
   subscribe(convId: string): void {
@@ -165,8 +167,8 @@ export class DaemonClient {
     this.send({ type: "set_fast_mode", convId, enabled });
   }
 
-  setGoal(convId: string, action: GoalAction, objective?: string): void {
-    this.send({ type: "set_goal", convId, action, objective });
+  setGoal(convId: string, action: GoalAction, objective?: string, pausable?: boolean, completable?: boolean): void {
+    this.send({ type: "set_goal", convId, action, objective, pausable, completable });
   }
 
   trimConversation(convId: string, mode: TrimMode, count: number): void {

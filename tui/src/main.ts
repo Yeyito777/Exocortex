@@ -517,7 +517,7 @@ function handleSubmit(): void {
           state.pendingImages = [];
           state.scrollOffset = 0;
           if (state.convId) {
-            daemon.setGoal(state.convId, cmdResult.action, cmdResult.objective);
+            daemon.setGoal(state.convId, cmdResult.action, cmdResult.objective, cmdResult.pausable, cmdResult.completable);
           } else if (cmdResult.action === "set" && cmdResult.objective?.trim()) {
             const objective = cmdResult.objective.trim();
             daemon.createConversation(
@@ -529,6 +529,9 @@ function handleSubmit(): void {
               undefined,
               state.sidebar.currentFolderId,
               objective,
+              undefined,
+              cmdResult.pausable,
+              cmdResult.completable,
             );
           } else {
             pushSystemMessage(state, "Create or open a conversation before using /goal.", theme.warning);

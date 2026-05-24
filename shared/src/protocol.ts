@@ -46,6 +46,10 @@ export interface NewConversationCommand {
   subagent?: boolean;
   /** Optional goal to set immediately after creating the conversation. */
   goalObjective?: string;
+  /** Optional goal permission. Defaults to true. If goalCompletable is false, this is forced false. */
+  goalPausable?: boolean;
+  /** Optional goal permission. Defaults to true. If false, goalPausable is also forced false. */
+  goalCompletable?: boolean;
 }
 
 export interface ParentNotificationTarget {
@@ -157,6 +161,8 @@ export interface SetGoalCommand {
   convId: string;
   action: GoalAction;
   objective?: string;
+  pausable?: boolean;
+  completable?: boolean;
 }
 
 export type TrimMode = "messages" | "thinking" | "toolresults";

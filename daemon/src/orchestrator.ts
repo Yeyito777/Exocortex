@@ -21,7 +21,7 @@ import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ToolExecutionContext } from "./tools/types";
 import { complete } from "./llm";
 import { broadcastConversationUpdated } from "./conversation-events";
-import { GOAL_CONTINUATION_PROMPT } from "./goals";
+import { goalContinuationSystemPrompt, goalContinuationUserMessage } from "./goals";
 import { createProviderTurnSession } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
 import type { StreamingStopReason } from "./protocol";
@@ -290,7 +290,10 @@ async function orchestrateAssistantTurn(
   // Extract effective folder + per-conversation system instructions (if present)
   const baseSystemInstructionsText = convStore.getEffectiveSystemInstructions(convId);
   const goalInstructionsText = goalContinuation && conv.goal
-    ? `${GOAL_CONTINUATION_PROMPT}\n\nActive goal objective:\n${conv.goal.objective}`
+    ? (() => {
+      const prompt = goalContinuationSystemPrompt(conv.goal!);
+      return prompt ? `${prompt}\n\nActive goal objective:\n${conv.goal!.objective}` : null;
+    })()
     : null;
   const systemInstructionsText = [baseSystemInstructionsText, goalInstructionsText]
     .filter((part): part is string => Boolean(part?.trim()))
@@ -309,7 +312,7 @@ async function orchestrateAssistantTurn(
   if (goalContinuation && conv.goal) {
     apiMessages.push({
       role: "user",
-      content: `Continue the active /goal objective now: ${conv.goal.objective}`,
+      content: goalContinuationUserMessage(conv.goal),
       metadata: null,
       providerData: undefined,
     });

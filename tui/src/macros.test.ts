@@ -48,8 +48,10 @@ describe("macro expansion", () => {
     const expanded = expandMacros("/autoresearch improve benchmark quality");
 
     expect(expanded).toContain("You're going to autoresearch.");
-    expect(expanded).toContain("Set yourself a goal in accordance with the topic.");
-    expect(expanded).toContain("not allowed to pause it");
+    expect(expanded).toContain("Set yourself a goal in accordance with the topic");
+    expect(expanded).toContain("pausable=false and completable=false");
+    expect(expanded).toContain("unpausable and uncompletable");
+    expect(expanded).not.toContain("not allowed to pause it");
     expect(expanded).toContain("autoresearch/<topic>");
     expect(expanded).toContain("you must create a benchmark first");
     expect(expanded).toContain("Make sure to not use subagents.");

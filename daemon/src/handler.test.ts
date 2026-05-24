@@ -264,7 +264,7 @@ describe("handler abort", () => {
   });
   afterEach(cleanupIds);
 
-  test("pauses an active goal on interrupt without showing an extra pause message", async () => {
+  test("interrupting an active goal leaves it active for implicit resume", async () => {
     const convId = mkId("abort-active-goal");
     create(convId, "openai", "gpt-5.4");
     setGoal(convId, "finish the long task");
@@ -287,14 +287,10 @@ describe("handler abort", () => {
     await handle({} as never, { type: "abort", reqId: "req-abort", convId });
 
     expect(ac.signal.aborted).toBe(true);
-    expect(get(convId)?.goal).toMatchObject({ status: "paused" });
-    expect(subscriberEvents).toContainEqual(expect.objectContaining({
+    expect(get(convId)?.goal).toMatchObject({ status: "active" });
+    expect(subscriberEvents).not.toContainEqual(expect.objectContaining({
       type: "goal_updated",
       convId,
-      goal: expect.objectContaining({ status: "paused" }),
-    }));
-    expect(subscriberEvents).not.toContainEqual(expect.objectContaining({
-      message: "Goal paused after interrupt.",
     }));
     expect(sent).toContainEqual(expect.objectContaining({ type: "ack", reqId: "req-abort", convId }));
   });
