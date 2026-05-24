@@ -2379,3 +2379,24 @@ Validation:
   - conversation warm/cold axes also regressed above tolerance.
 
 Action: reverted `tui/src/sidebar/rows.ts`; kept only this failure log and result artifact.
+
+## 099 — Precompute markdown table border strings
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `renderTableBlock` rebuilt the top/separator/bottom border strings with `colWidths.map(...).join(...)` each time a border row was emitted. Precomputing these strings once per table should reduce table-rendering work in markdown-heavy conversation workloads.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/099-precompute-table-borders.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_build_lines_cold/medium_markdown` median ratio 0.817
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 0.996
+  - but `conversation_build_lines_cold/small_chat` median ratio 1.289
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 1.158
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 1.084
+  - several sidebar axes also regressed above tolerance.
+
+Action: reverted `tui/src/markdown/tables.ts`; kept only this failure log and result artifact.
