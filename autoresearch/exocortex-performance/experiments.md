@@ -2422,3 +2422,25 @@ Validation:
   - several sidebar axes also regressed above tolerance.
 
 Action: reverted `tui/src/markdown/tables.ts`; kept only this failure log and result artifact.
+
+## 101 — Shared empty wrap result for hidden tool outputs after cache-key lookup
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: experiment 085 returned early before cache-key lookup for hidden `tool_result` blocks and was rejected. A narrower variant that preserves the existing cache-key path but returns a shared empty `WrapResult` inside `renderBlock` should avoid per-hidden-tool array allocation while minimizing cache behavior changes.
+
+Validation:
+
+- Relevant tests passed: `bun test src/conversation.test.ts src/render.test.ts src/focus.test.ts` gave 86 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/101-hidden-tool-result-shared-empty-wrap.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_build_lines_cold/small_chat` median ratio 0.756
+  - `conversation_open_warm/medium_markdown` median ratio 0.816
+  - `conversation_open_warm/huge_expanded_tools` median ratio 0.861
+  - but `conversation_open_cold/medium_markdown` median ratio 1.039
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 1.094
+  - targeted collapsed-tool cold axes were near neutral: open 1.002, build 1.015
+  - several sidebar axes also regressed above tolerance.
+
+Action: reverted `tui/src/blockrenderer.ts`; kept only this failure log and result artifact.
