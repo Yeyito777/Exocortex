@@ -15,7 +15,7 @@ import { handleMouseEvent } from "./mouse";
 import { clearPrompt } from "./promptstate";
 import { tryCommand } from "./commands";
 import { expandMacros } from "./macros";
-import { render, invalidateHistoryRenderCache } from "./render";
+import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
@@ -63,6 +63,7 @@ let renderDueAt = 0;
 let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
 let streamFinishedPingTimer: ReturnType<typeof setTimeout> | null = null;
 let prewarmTimer: ReturnType<typeof setTimeout> | null = null;
+let deferredHistoryRenderTimer: ReturnType<typeof setTimeout> | null = null;
 let lastPrewarmKey: string | null = null;
 let lastPrewarmAt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -160,6 +161,21 @@ function clearPrewarmTimer(): void {
   prewarmTimer = null;
 }
 
+function clearDeferredHistoryRenderTimer(): void {
+  if (!deferredHistoryRenderTimer) return;
+  clearTimeout(deferredHistoryRenderTimer);
+  deferredHistoryRenderTimer = null;
+}
+
+function scheduleDeferredHistoryRenderWork(): void {
+  if (!hasDeferredHistoryRenderWork(state) || deferredHistoryRenderTimer) return;
+  deferredHistoryRenderTimer = setTimeout(() => {
+    deferredHistoryRenderTimer = null;
+    if (!advanceDeferredHistoryRender(state)) return;
+    performRender();
+  }, 0);
+}
+
 function clearStreamFinishedPingTimer(): void {
   if (!streamFinishedPingTimer) return;
   clearTimeout(streamFinishedPingTimer);
@@ -198,6 +214,7 @@ function performRender(): void {
   const renderMs = performance.now() - renderStartedAt;
   resetStreamTick();
   maybeReportStartupProfile(renderMs);
+  scheduleDeferredHistoryRenderWork();
 }
 
 function renderImmediately(): void {
@@ -264,6 +281,8 @@ function onDaemonEvent(event: Event): void {
     return;
   }
   if (shouldIgnoreEventAfterLocalPreContentInterrupt(event)) return;
+
+  if (event.type === "conversation_loaded") clearDeferredHistoryRenderTimer();
 
   if (event.type === "conversations_list") {
     startupProfileMark("conversations_list_received", { conversationCount: event.conversations.length });

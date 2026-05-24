@@ -60,6 +60,10 @@ interface HistoryRenderCacheEntry {
 }
 
 const historyRenderCache = new WeakMap<RenderState, HistoryRenderCacheEntry>();
+const DEFERRED_HISTORY_MIN_MESSAGES = 24;
+const DEFERRED_HISTORY_INITIAL_MESSAGE_BATCH = 8;
+const DEFERRED_HISTORY_ADVANCE_MESSAGE_BATCH = 8;
+const DEFERRED_HISTORY_GRACE_LINES = 200;
 
 function canReuseHistoryRender(cached: HistoryRenderCacheEntry, state: RenderState, width: number): boolean {
   return cached.width === width
@@ -79,8 +83,45 @@ function canReuseHistoryRender(cached: HistoryRenderCacheEntry, state: RenderSta
     && cached.themeName === theme.name;
 }
 
-function getHistoryRender(state: RenderState, width: number): BuildMessageLinesResult {
+function shouldForceFullHistoryRender(state: RenderState): boolean {
+  return state.pendingAI !== null
+    || state.scrollOffset > 0
+    || state.showToolOutput
+    || state.toolOutputsLoaded
+    || state.search?.barOpen === true
+    || (state.panelFocus === "chat" && state.chatFocus === "history");
+}
+
+function canUseDeferredHistoryRender(state: RenderState, width: number): boolean {
+  return !shouldForceFullHistoryRender(state)
+    && state.convId !== null
+    && state.messages.length >= DEFERRED_HISTORY_MIN_MESSAGES
+    && width > 0;
+}
+
+function buildDeferredHistorySuffix(state: RenderState, width: number, targetLines: number): BuildMessageLinesResult {
+  let startMessageIndex = Math.max(0, state.messages.length - DEFERRED_HISTORY_INITIAL_MESSAGE_BATCH);
+  let result = buildMessageLines(state, width, { startMessageIndex, partial: startMessageIndex > 0 });
+
+  while (startMessageIndex > 0 && result.lines.length < targetLines) {
+    startMessageIndex = Math.max(0, startMessageIndex - DEFERRED_HISTORY_INITIAL_MESSAGE_BATCH);
+    result = buildMessageLines(state, width, { startMessageIndex, partial: startMessageIndex > 0 });
+  }
+
+  state.deferredHistoryRender = {
+    convId: state.convId,
+    width,
+    startMessageIndex,
+    generation: (state.deferredHistoryRender?.generation ?? 0) + 1,
+    complete: startMessageIndex === 0,
+  };
+
+  return result;
+}
+
+function getHistoryRender(state: RenderState, width: number, targetLines: number): BuildMessageLinesResult {
   if (state.pendingAI) {
+    state.deferredHistoryRender = null;
     historyRenderCache.delete(state);
     return buildMessageLines(state, width);
   }
@@ -90,7 +131,26 @@ function getHistoryRender(state: RenderState, width: number): BuildMessageLinesR
     return cached.result;
   }
 
-  const result = buildMessageLines(state, width);
+  const deferred = state.deferredHistoryRender;
+  let result: BuildMessageLinesResult;
+  if (deferred
+    && deferred.convId === state.convId
+    && deferred.width === width
+    && deferred.complete) {
+    result = buildMessageLines(state, width);
+  } else if (deferred
+    && deferred.convId === state.convId
+    && deferred.width === width
+    && !deferred.complete
+    && canUseDeferredHistoryRender(state, width)) {
+    result = buildMessageLines(state, width, { startMessageIndex: deferred.startMessageIndex, partial: deferred.startMessageIndex > 0 });
+  } else if (canUseDeferredHistoryRender(state, width)) {
+    result = buildDeferredHistorySuffix(state, width, targetLines);
+  } else {
+    state.deferredHistoryRender = null;
+    result = buildMessageLines(state, width);
+  }
+
   historyRenderCache.set(state, {
     width,
     convId: state.convId,
@@ -114,6 +174,22 @@ function getHistoryRender(state: RenderState, width: number): BuildMessageLinesR
 
 export function invalidateHistoryRenderCache(state: RenderState): void {
   historyRenderCache.delete(state);
+}
+
+export function hasDeferredHistoryRenderWork(state: RenderState): boolean {
+  const deferred = state.deferredHistoryRender;
+  return !!deferred && !deferred.complete && deferred.convId === state.convId;
+}
+
+export function advanceDeferredHistoryRender(state: RenderState): boolean {
+  const deferred = state.deferredHistoryRender;
+  if (!deferred || deferred.complete || deferred.convId !== state.convId) return false;
+  const nextStart = Math.max(0, deferred.startMessageIndex - DEFERRED_HISTORY_ADVANCE_MESSAGE_BATCH);
+  if (nextStart === deferred.startMessageIndex) return false;
+  deferred.startMessageIndex = nextStart;
+  deferred.complete = nextStart === 0;
+  historyRenderCache.delete(state);
+  return true;
 }
 
 // ── Main render ─────────────────────────────────────────────────────
@@ -616,7 +692,8 @@ export function render(state: RenderState): void {
 
   // ── Message area (rows 3 to bottomStartRow-1) ──────────────────
   const messageAreaStart = 3;
-  const { lines: allLines, messageBounds, wrapContinuation, wrapJoiners, copyLines, lineAnchors } = getHistoryRender(state, chatW);
+  const deferredTargetLines = messageAreaHeight + DEFERRED_HISTORY_GRACE_LINES;
+  const { lines: allLines, messageBounds, wrapContinuation, wrapJoiners, copyLines, lineAnchors } = getHistoryRender(state, chatW, deferredTargetLines);
   const totalLines = allLines.length;
 
   // Cache rendered lines and message bounds for history cursor navigation

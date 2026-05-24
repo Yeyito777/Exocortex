@@ -99,6 +99,15 @@ export interface BuildMessageLinesResult {
    * result expansion).
    */
   lineAnchors: RenderLineAnchor[];
+  /** True when this render intentionally contains only the newest suffix of history. */
+  partial?: boolean;
+  /** First state.messages index included when partial rendering is active. */
+  startMessageIndex?: number;
+}
+
+export interface BuildMessageLinesOptions {
+  startMessageIndex?: number;
+  partial?: boolean;
 }
 
 // ── Build all display lines ─────────────────────────────────────────
@@ -106,6 +115,7 @@ export interface BuildMessageLinesResult {
 export function buildMessageLines(
   state: RenderState,
   availableWidth: number,
+  options: BuildMessageLinesOptions = {},
 ): BuildMessageLinesResult {
   const contentWidth = availableWidth - 4;
   const lines: string[] = [];
@@ -174,8 +184,16 @@ export function buildMessageLines(
     messageBounds.push({ role, start, end: lines.length, contentStart, contentEnd });
   };
 
+  const startMessageIndex = Math.max(0, Math.min(options.startMessageIndex ?? 0, state.messages.length));
   let firstUser = true;
-  for (let messageIndex = 0; messageIndex < state.messages.length; messageIndex++) {
+  for (let i = 0; i < startMessageIndex; i++) {
+    if (state.messages[i]?.role === "user") {
+      firstUser = false;
+      break;
+    }
+  }
+
+  for (let messageIndex = startMessageIndex; messageIndex < state.messages.length; messageIndex++) {
     const msg = state.messages[messageIndex];
     const start = lines.length;
     if (msg.role === "user") {
@@ -278,5 +296,13 @@ export function buildMessageLines(
     }
   }
 
-  return { lines, messageBounds, wrapContinuation, wrapJoiners, copyLines, lineAnchors };
+  return {
+    lines,
+    messageBounds,
+    wrapContinuation,
+    wrapJoiners,
+    copyLines,
+    lineAnchors,
+    ...(options.partial ? { partial: true, startMessageIndex } : {}),
+  };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createPendingAI } from "./messages";
-import { render, invalidateHistoryRenderCache } from "./render";
+import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
 import { createInitialState, type RenderState } from "./state";
 import { invalidateFrame } from "./frame";
 import { theme } from "./theme";
@@ -168,5 +168,55 @@ describe("render caching and frame diffing", () => {
 
     expect(out).toContain(theme.command + "/go" + theme.reset);
     expect(stripAnsi(out)).toContain("Transcribing… /go");
+  });
+
+  test("defers older chat-history rendering for first paint, then fills it in", () => {
+    const state = createInitialState();
+    state.cols = 100;
+    state.rows = 30;
+    state.convId = "big-conversation";
+    state.panelFocus = "sidebar";
+    state.messages = Array.from({ length: 40 }, (_, i) => ({
+      role: "assistant" as const,
+      blocks: [{ type: "text" as const, text: `${i === 0 ? "oldest" : i === 39 ? "newest" : "middle"}-${i} ${"word ".repeat(260)}` }],
+      metadata: null,
+    }));
+
+    renderSilently(state);
+
+    expect(state.deferredHistoryRender).not.toBeNull();
+    expect(state.deferredHistoryRender!.complete).toBe(false);
+    expect(stripAnsi(state.historyLines.join("\n"))).not.toContain("oldest-0");
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("newest-39");
+
+    while (hasDeferredHistoryRenderWork(state)) {
+      expect(advanceDeferredHistoryRender(state)).toBe(true);
+      renderSilently(state);
+    }
+
+    expect(state.deferredHistoryRender?.complete).toBe(true);
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("oldest-0");
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("newest-39");
+  });
+
+  test("abandoned deferred history work does not advance after conversation switch", () => {
+    const state = createInitialState();
+    state.cols = 100;
+    state.rows = 30;
+    state.convId = "first-conversation";
+    state.panelFocus = "sidebar";
+    state.messages = Array.from({ length: 40 }, (_, i) => ({
+      role: "assistant" as const,
+      blocks: [{ type: "text" as const, text: `${i} ${"word ".repeat(260)}` }],
+      metadata: null,
+    }));
+
+    renderSilently(state);
+    expect(hasDeferredHistoryRenderWork(state)).toBe(true);
+
+    state.convId = "second-conversation";
+
+    expect(hasDeferredHistoryRenderWork(state)).toBe(false);
+    expect(advanceDeferredHistoryRender(state)).toBe(false);
   });
 });

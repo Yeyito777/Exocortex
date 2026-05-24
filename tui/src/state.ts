@@ -89,6 +89,17 @@ export interface LayoutCache {
   sepBelow: number;        // row number of separator below prompt
 }
 
+export interface DeferredHistoryRenderState {
+  convId: string | null;
+  width: number;
+  /** First message index currently included in the rendered suffix. */
+  startMessageIndex: number;
+  /** Incremented when a new deferred render generation starts. */
+  generation: number;
+  /** True once the full conversation has been rendered. */
+  complete: boolean;
+}
+
 export interface SearchState {
   barOpen: boolean;
   barMode: "search" | "command";
@@ -154,6 +165,8 @@ export interface RenderState {
   vim: VimState;
   /** Cached layout values — updated each render, read by scroll functions. */
   layout: LayoutCache;
+  /** Progressive chat-history render state used to paint large conversations quickly. */
+  deferredHistoryRender: DeferredHistoryRenderState | null;
   /** Pending message to send after conversation is created. */
   pendingSend: { active: boolean; text: string; images?: ImageAttachment[] };
   /** Messages blocked on login; auto-sent after successful authentication. */
@@ -469,6 +482,7 @@ export function createInitialState(): RenderState {
     sidebar: createSidebarState(),
     vim: createVimState(),
     layout: { totalLines: 0, messageAreaHeight: 0, chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
+    deferredHistoryRender: null,
     pendingSend: { active: false, text: "" },
     pendingAuthQueue: [],
     pendingSystemInstructions: null,
