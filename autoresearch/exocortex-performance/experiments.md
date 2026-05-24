@@ -2560,3 +2560,25 @@ Validation:
   - conversation warm/build axes also regressed above tolerance.
 
 Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
+
+## 107 — Guard paragraph fence regex with backtick presence check
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: while collecting normal markdown paragraph lines, `markdownWordWrap` checked every line against `FENCE_OPEN_RE`. Most paragraph lines do not contain code-fence backticks. Guarding the regex with `line.includes("```")` should avoid regex work without changing fenced-code detection.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/107-fence-regex-backtick-guard.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_build_lines_cold/small_chat` median ratio 0.929
+  - but `conversation_open_cold/medium_markdown` median ratio 1.049
+  - `conversation_build_lines_cold/medium_markdown` median ratio 1.098
+  - `conversation_open_cold/huge_markdown_collapsed_tools` median ratio 1.110
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools` median ratio 1.127
+  - `conversation_open_cold/huge_expanded_tools` median ratio 1.248
+  - several sidebar axes also regressed above tolerance; geomean median ratio was 1.009.
+
+Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
