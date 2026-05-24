@@ -131,6 +131,8 @@ export interface RenderState {
   convId: string | null;
   inputBuffer: string;
   cursorPos: number;
+  /** Preferred prompt column for repeated vertical movement (Vim curswant). */
+  promptCurswant: number | null;
   cols: number;
   rows: number;
   scrollOffset: number;
@@ -196,6 +198,8 @@ export interface RenderState {
   showToolOutputAfterLoad: boolean;
   /** Cursor position in chat history (active when chatFocus === "history"). */
   historyCursor: HistoryCursor;
+  /** Preferred history column for repeated j/k movement (Vim curswant). */
+  historyCurswant: number | null;
   /** Visual mode anchor in chat history (row, col). Set when entering visual. */
   historyVisualAnchor: HistoryCursor;
   /** Cached rendered lines for history cursor navigation (ANSI included). */
@@ -447,6 +451,7 @@ export function createInitialState(): RenderState {
     convId: null,
     inputBuffer: "",
     cursorPos: 0,
+    promptCurswant: null,
     cols: process.stdout.columns || 80,
     rows: process.stdout.rows || 24,
     scrollOffset: 0,
@@ -485,6 +490,7 @@ export function createInitialState(): RenderState {
     toolOutputsLoading: false,
     showToolOutputAfterLoad: false,
     historyCursor: createHistoryCursor(),
+    historyCurswant: null,
     historyVisualAnchor: createHistoryCursor(),
     historyLines: [],
     historyWrapContinuation: [],

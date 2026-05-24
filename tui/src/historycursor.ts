@@ -60,10 +60,23 @@ function getUserMessageBounds(state: RenderState): RenderedMessageBound[] {
 
 function jumpHistoryCursorToRow(state: RenderState, row: number): void {
   state.historyCursor = { row, col: clampCol(0, state.historyLines, row) };
+  state.historyCurswant = null;
 }
 
 function isRowWithinBound(row: number, bound: RenderedMessageBound): boolean {
   return row >= bound.start && row < bound.end;
+}
+
+function resetHistoryCurswant(state: RenderState): void {
+  state.historyCurswant = null;
+}
+
+function moveHistoryLine(state: RenderState, direction: -1 | 1): void {
+  const desiredCol = state.historyCurswant ?? state.historyCursor.col;
+  state.historyCursor = direction < 0
+    ? lineUp(state.historyCursor, state.historyLines, desiredCol)
+    : lineDown(state.historyCursor, state.historyLines, desiredCol);
+  state.historyCurswant = desiredCol;
 }
 
 // ── Dispatch ───────────────────────────────────────────────────────
@@ -81,20 +94,20 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
   const wrapCont = state.historyWrapContinuation;
 
   switch (action) {
-    case "history_left":    state.historyCursor = charLeft(cur, lines); break;
-    case "history_right":   state.historyCursor = charRight(cur, lines); break;
-    case "history_up":      state.historyCursor = lineUp(cur, lines); break;
-    case "history_down":    state.historyCursor = lineDown(cur, lines); break;
-    case "history_w":       state.historyCursor = wordForward(cur, lines); break;
-    case "history_b":       state.historyCursor = wordBackward(cur, lines); break;
-    case "history_e":       state.historyCursor = wordEnd(cur, lines); break;
-    case "history_W":       state.historyCursor = wordForwardBig(cur, lines); break;
-    case "history_B":       state.historyCursor = wordBackwardBig(cur, lines); break;
-    case "history_E":       state.historyCursor = wordEndBig(cur, lines); break;
-    case "history_0":       state.historyCursor = lineStart(cur, lines, wrapCont); break;
-    case "history_dollar":  state.historyCursor = lineEnd(cur, lines, wrapCont); break;
-    case "history_gg":      state.historyCursor = bufferStart(lines); break;
-    case "history_G":       state.historyCursor = bufferEnd(lines); break;
+    case "history_left":    state.historyCursor = charLeft(cur, lines); resetHistoryCurswant(state); break;
+    case "history_right":   state.historyCursor = charRight(cur, lines); resetHistoryCurswant(state); break;
+    case "history_up":      moveHistoryLine(state, -1); break;
+    case "history_down":    moveHistoryLine(state, 1); break;
+    case "history_w":       state.historyCursor = wordForward(cur, lines); resetHistoryCurswant(state); break;
+    case "history_b":       state.historyCursor = wordBackward(cur, lines); resetHistoryCurswant(state); break;
+    case "history_e":       state.historyCursor = wordEnd(cur, lines); resetHistoryCurswant(state); break;
+    case "history_W":       state.historyCursor = wordForwardBig(cur, lines); resetHistoryCurswant(state); break;
+    case "history_B":       state.historyCursor = wordBackwardBig(cur, lines); resetHistoryCurswant(state); break;
+    case "history_E":       state.historyCursor = wordEndBig(cur, lines); resetHistoryCurswant(state); break;
+    case "history_0":       state.historyCursor = lineStart(cur, lines, wrapCont); resetHistoryCurswant(state); break;
+    case "history_dollar":  state.historyCursor = lineEnd(cur, lines, wrapCont); resetHistoryCurswant(state); break;
+    case "history_gg":      state.historyCursor = bufferStart(lines); resetHistoryCurswant(state); break;
+    case "history_G":       state.historyCursor = bufferEnd(lines); resetHistoryCurswant(state); break;
     case "history_prev_message": {
       const bounds = getUserMessageBounds(state);
       if (bounds.length === 0) break;
@@ -122,7 +135,10 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
         jumpHistoryCursorToRow(state, bounds[target].contentStart);
       } else {
         const lastBound = bounds[bounds.length - 1];
-        if (isRowWithinBound(cur.row, lastBound)) state.historyCursor = bufferEnd(lines);
+        if (isRowWithinBound(cur.row, lastBound)) {
+          state.historyCursor = bufferEnd(lines);
+          resetHistoryCurswant(state);
+        }
       }
       break;
     }
@@ -224,6 +240,7 @@ export function handleHistoryFind(key: KeyEvent, state: RenderState): boolean {
     state.historyCursor = dir === "f"
       ? findForward(state.historyCursor, lines, key.char)
       : findBackward(state.historyCursor, lines, key.char);
+    resetHistoryCurswant(state);
     ensureCursorVisible(state);
     return true;
   }
@@ -243,6 +260,7 @@ export function handleHistoryFind(key: KeyEvent, state: RenderState): boolean {
     state.historyCursor = dir === "f"
       ? findForward(state.historyCursor, lines, vim.lastFind.char)
       : findBackward(state.historyCursor, lines, vim.lastFind.char);
+    resetHistoryCurswant(state);
     ensureCursorVisible(state);
     return true;
   }
@@ -301,6 +319,7 @@ export function handleHistoryTextObject(
     // Snap visual selection to the text object range
     state.historyVisualAnchor = { row, col: rangeStart };
     state.historyCursor = { row, col: rangeEnd - 1 }; // inclusive
+    resetHistoryCurswant(state);
     ensureCursorVisible(state);
     return { type: "handled" };
   }

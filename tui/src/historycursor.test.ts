@@ -113,6 +113,44 @@ describe("history brace navigation", () => {
   });
 });
 
+describe("history curswant", () => {
+  test("j/k preserve preferred column across short lines", () => {
+    const state = createInitialState();
+    state.historyLines = ["abcdef", "x", "123456789"];
+    state.layout.totalLines = state.historyLines.length;
+    state.layout.messageAreaHeight = state.historyLines.length;
+    state.historyCursor = { row: 0, col: 5 };
+
+    applyHistoryAction("history_down", state);
+    expect(state.historyCursor).toEqual({ row: 1, col: 0 });
+
+    applyHistoryAction("history_down", state);
+    expect(state.historyCursor).toEqual({ row: 2, col: 5 });
+    expect(state.historyCurswant).toBe(5);
+  });
+
+  test("non-vertical history motion resets the preferred column", () => {
+    const state = createInitialState();
+    state.historyLines = ["abcdef", "x", "123456789"];
+    state.layout.totalLines = state.historyLines.length;
+    state.layout.messageAreaHeight = state.historyLines.length;
+    state.historyCursor = { row: 0, col: 5 };
+
+    applyHistoryAction("history_down", state);
+    applyHistoryAction("history_down", state);
+    expect(state.historyCursor).toEqual({ row: 2, col: 5 });
+
+    applyHistoryAction("history_left", state);
+    expect(state.historyCursor).toEqual({ row: 2, col: 4 });
+    expect(state.historyCurswant).toBeNull();
+
+    applyHistoryAction("history_up", state);
+    expect(state.historyCursor).toEqual({ row: 1, col: 0 });
+    applyHistoryAction("history_down", state);
+    expect(state.historyCursor).toEqual({ row: 2, col: 4 });
+  });
+});
+
 describe("history visual selection", () => {
   test("charwise visual selection across wrapped user rows preserves soft wrap", () => {
     const state = setupRenderedHistory([

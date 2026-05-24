@@ -12,6 +12,7 @@ import { markInsertEntry } from "./undo";
 export function clearPrompt(state: RenderState): void {
   state.inputBuffer = "";
   state.cursorPos = 0;
+  state.promptCurswant = null;
   state.promptScrollOffset = 0;
   state.vim.mode = "insert";
   // Mark new insert session so subsequent typing is undoable

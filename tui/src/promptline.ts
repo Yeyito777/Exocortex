@@ -24,6 +24,100 @@ const SUBMIT: PromptKeyResult = { type: "submit" };
 const HANDLED: PromptKeyResult = { type: "handled" };
 const UNHANDLED: PromptKeyResult = { type: "unhandled" };
 
+function resetPromptCurswant(state: RenderState): void {
+  state.promptCurswant = null;
+}
+
+function lineStartOf(buffer: string, pos: number): number {
+  return buffer.lastIndexOf("\n", pos - 1) + 1;
+}
+
+function lineEndOf(buffer: string, pos: number): number {
+  const nextNl = buffer.indexOf("\n", pos);
+  return nextNl === -1 ? buffer.length : nextNl;
+}
+
+function promptCursorVCol(buffer: string, pos: number): number {
+  const lineStart = lineStartOf(buffer, pos);
+  return termWidth(buffer.slice(lineStart, pos));
+}
+
+function offsetForPromptVCol(line: string, desiredCol: number): number {
+  let offset = 0;
+  let col = 0;
+
+  while (offset < line.length) {
+    const end = nextGraphemeEnd(line, offset);
+    const cluster = line.slice(offset, end);
+    const width = termWidth(cluster);
+    if (col + width > desiredCol) return offset;
+    if (col + width === desiredCol) return end;
+    col += width;
+    offset = end;
+  }
+
+  return line.length;
+}
+
+/** Move prompt cursor vertically using Vim's curswant/preferred-column behavior. */
+export function movePromptCursorVertical(
+  buffer: string,
+  cursorPos: number,
+  direction: -1 | 1,
+  desiredCol: number,
+): number | null {
+  const currentLineStart = lineStartOf(buffer, cursorPos);
+  let targetLineStart: number;
+  let targetLineEnd: number;
+
+  if (direction < 0) {
+    if (currentLineStart === 0) return null;
+    targetLineEnd = currentLineStart - 1;
+    targetLineStart = lineStartOf(buffer, targetLineEnd);
+  } else {
+    const currentLineEnd = lineEndOf(buffer, cursorPos);
+    if (currentLineEnd >= buffer.length) return null;
+    targetLineStart = currentLineEnd + 1;
+    targetLineEnd = lineEndOf(buffer, targetLineStart);
+  }
+
+  const targetLine = buffer.slice(targetLineStart, targetLineEnd);
+  return graphemeBoundaryAtOrAfter(buffer, targetLineStart + offsetForPromptVCol(targetLine, desiredCol));
+}
+
+/** Apply one or more vertical prompt moves, preserving/setting `state.promptCurswant`. */
+export function movePromptCursorVerticalWithCurswant(
+  state: RenderState,
+  direction: -1 | 1,
+  count: number = 1,
+  normalMode: boolean = false,
+): boolean {
+  const desiredCol = state.promptCurswant ?? promptCursorVCol(state.inputBuffer, state.cursorPos);
+  let pos = state.cursorPos;
+  let moved = false;
+
+  for (let i = 0; i < Math.max(1, count); i++) {
+    const next = movePromptCursorVertical(state.inputBuffer, pos, direction, desiredCol);
+    if (next === null) break;
+    pos = next;
+    moved = true;
+  }
+
+  state.promptCurswant = desiredCol;
+  if (moved) {
+    if (normalMode) {
+      const lineStart = lineStartOf(state.inputBuffer, pos);
+      const lineEnd = lineEndOf(state.inputBuffer, pos);
+      state.cursorPos = lineEnd > lineStart && pos >= lineEnd
+        ? previousGraphemeStart(state.inputBuffer, lineEnd)
+        : pos;
+    } else {
+      state.cursorPos = pos;
+    }
+  }
+  return moved;
+}
+
 /** Handle a key event in the prompt. Returns a typed result object. */
 export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyResult {
   const action = resolveAction(key);
@@ -35,6 +129,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
     } else {
       tryPathComplete(state);
     }
+    resetPromptCurswant(state);
     return HANDLED;
   }
 
@@ -43,6 +138,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
     if (state.autocomplete) {
       cycleAutocomplete(state, -1);
     }
+    resetPromptCurswant(state);
     return HANDLED;
   }
 
@@ -55,6 +151,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
       sym +
       state.inputBuffer.slice(pos);
     state.cursorPos = pos + sym.length;
+    resetPromptCurswant(state);
     updateAutocomplete(state);
     return HANDLED;
   }
@@ -73,6 +170,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
       text +
       state.inputBuffer.slice(pos);
     state.cursorPos = pos + text.length;
+    resetPromptCurswant(state);
     updateAutocomplete(state);
     return HANDLED;
   }
@@ -89,6 +187,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
         "\n" +
         state.inputBuffer.slice(pos);
       state.cursorPos = pos + 1;
+      resetPromptCurswant(state);
       state.autocomplete = null;
       return HANDLED;
     }
@@ -105,6 +204,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
         // Backspace at position 0 pops the last pending image
         state.pendingImages.pop();
       }
+      resetPromptCurswant(state);
       updateAutocomplete(state);
       return HANDLED;
     }
@@ -118,57 +218,40 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
           state.inputBuffer.slice(end);
         state.cursorPos = pos;
       }
+      resetPromptCurswant(state);
       updateAutocomplete(state);
       return HANDLED;
     }
 
     case "cursor_left":
       state.cursorPos = previousGraphemeStart(state.inputBuffer, state.cursorPos);
+      resetPromptCurswant(state);
       return HANDLED;
 
     case "cursor_right":
       state.cursorPos = nextGraphemeEnd(state.inputBuffer, state.cursorPos);
+      resetPromptCurswant(state);
       return HANDLED;
 
     case "cursor_home": {
       const lineStart = state.inputBuffer.lastIndexOf("\n", state.cursorPos - 1) + 1;
       state.cursorPos = lineStart;
+      resetPromptCurswant(state);
       return HANDLED;
     }
 
     case "cursor_end": {
       const nextNl = state.inputBuffer.indexOf("\n", state.cursorPos);
       state.cursorPos = nextNl === -1 ? state.inputBuffer.length : nextNl;
+      resetPromptCurswant(state);
       return HANDLED;
     }
 
-    case "cursor_up": {
-      const buf = state.inputBuffer;
-      const currentLineStart = buf.lastIndexOf("\n", state.cursorPos - 1) + 1;
-      if (currentLineStart > 0) {
-        const colInLine = state.cursorPos - currentLineStart;
-        const prevLineStart = buf.lastIndexOf("\n", currentLineStart - 2) + 1;
-        const prevLineLen = currentLineStart - 1 - prevLineStart;
-        state.cursorPos = graphemeBoundaryAtOrAfter(buf, prevLineStart + Math.min(colInLine, prevLineLen));
-        return HANDLED;
-      }
-      return UNHANDLED;
-    }
+    case "cursor_up":
+      return movePromptCursorVerticalWithCurswant(state, -1) ? HANDLED : UNHANDLED;
 
-    case "cursor_down": {
-      const buf = state.inputBuffer;
-      const nextNl = buf.indexOf("\n", state.cursorPos);
-      if (nextNl !== -1) {
-        const currentLineStart = buf.lastIndexOf("\n", state.cursorPos - 1) + 1;
-        const colInLine = state.cursorPos - currentLineStart;
-        const nextLineStart = nextNl + 1;
-        const nextLineEnd = buf.indexOf("\n", nextLineStart);
-        const nextLineLen = (nextLineEnd === -1 ? buf.length : nextLineEnd) - nextLineStart;
-        state.cursorPos = graphemeBoundaryAtOrAfter(buf, nextLineStart + Math.min(colInLine, nextLineLen));
-        return HANDLED;
-      }
-      return UNHANDLED;
-    }
+    case "cursor_down":
+      return movePromptCursorVerticalWithCurswant(state, 1) ? HANDLED : UNHANDLED;
 
     default:
       return UNHANDLED;
