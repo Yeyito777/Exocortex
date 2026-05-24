@@ -2261,3 +2261,29 @@ Validation:
   - several sidebar navigation/list-update axes also regressed above tolerance.
 
 Action: reverted `tui/src/markdown/wordwrap.ts`; kept only this failure log and result artifact.
+
+## 094 — Refresh current optimized benchmark baseline v10
+
+Status: success — kept and committed (benchmark artifact only; no UX/UI code changed).
+
+Context: after the kept streaming-navigation, marked-navigation, and sidebar search-filter optimizations, the latest baseline artifact was still `baseline-v9`, created before experiments 081 and 087. Future experiments should compare/control against a baseline that includes the current kept production state.
+
+Change:
+
+- Ran the full benchmark on the clean current worktree.
+- Saved the result to `results/094-current-optimized-baseline-v10.json`.
+- Copied it to `results/baseline-v10.json` for future experiments.
+
+Validation:
+
+- `bun run autoresearch/exocortex-performance/benchmark.ts --json`: pass.
+- `bun run typecheck`: pass.
+- Representative v10 p95s:
+  - `conversation_open_cold/huge_markdown_collapsed_tools`: 113.907ms
+  - `conversation_build_lines_cold/huge_markdown_collapsed_tools`: 107.598ms
+  - `sidebar_search_filter/huge_foldered.performance_query`: 15.219ms
+  - `sidebar_render/huge_foldered.root`: 3.980ms
+  - `sidebar_navigation/huge_foldered.next_streaming_root`: 2.003ms
+  - `sidebar_navigation/huge_foldered.next_marked_root`: 0.166ms
+
+Decision: keep. This gives the next autoresearch iterations an up-to-date benchmark artifact reflecting all accepted optimizations so far.
