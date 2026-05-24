@@ -2535,3 +2535,28 @@ Validation:
   - several sidebar list/navigation axes also regressed above tolerance.
 
 Action: reverted `tui/src/blockrenderer.ts`; kept only this failure log and result artifact.
+
+## 106 — Skip folder aggregate build when no folder rows are displayed
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `renderSidebar` built folder aggregate counts/streaming state whenever folders existed, even if the current display rows contained only conversations/up/instructions. Skipping aggregate construction when no visible folder rows exist should improve folder-view render paths.
+
+Validation:
+
+- Relevant tests passed: `bun test src/sidebar*.test.ts src/focus.test.ts src/render.test.ts` gave 82 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/106-skip-folder-aggregates-without-folder-rows.json`.
+- Three interleaved control/treatment runs had geomean median ratio 0.974 and several wins:
+  - `sidebar_render/small_root.root` median ratio 0.871
+  - `sidebar_render/small_root.folder_view` median ratio 0.926
+  - `sidebar_render/huge_foldered.folder_view` median ratio 0.825
+  - `sidebar_search_filter/huge_foldered.performance_query` median ratio 0.909
+- Still rejected by strict no-regression criteria because direct render/navigation axes regressed above tolerance:
+  - `sidebar_render/large_root.root` median ratio 1.045
+  - `sidebar_render/huge_foldered.root` median ratio 1.033
+  - `sidebar_navigation/large_root.next_streaming_folder` median ratio 1.261
+  - `sidebar_navigation/huge_foldered.next_streaming_folder` median ratio 1.255
+  - conversation warm/build axes also regressed above tolerance.
+
+Action: reverted `tui/src/sidebar/render.ts`; kept only this failure log and result artifact.
