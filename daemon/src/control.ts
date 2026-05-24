@@ -2,7 +2,7 @@ import { existsSync } from "fs";
 import { connect as netConnect } from "net";
 import type { Event } from "./protocol";
 import { isWindows, socketPath } from "@exocortex/shared/paths";
-import { readInterruptedStreamIds, writeInterruptedStreamIds } from "./restart-recovery";
+import { readInterruptedStreamIds, writeActiveGoalRestartMarker, writeInterruptedStreamIds } from "./restart-recovery";
 
 function makeReqId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -174,9 +174,14 @@ export async function prepareRestartForReplay(timeoutMs = 30_000): Promise<Prepa
 
   const deadline = Date.now() + timeoutMs;
   let stillStreaming: string[] = [];
+  let restartMarkerWritten = false;
 
   while (Date.now() < deadline) {
     const running = await getRunningConversationIds();
+    if (!restartMarkerWritten) {
+      writeActiveGoalRestartMarker();
+      restartMarkerWritten = true;
+    }
     stillStreaming = running;
     if (running.length === 0) break;
 

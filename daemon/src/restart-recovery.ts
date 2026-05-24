@@ -10,12 +10,19 @@ import { getDefaultProvider } from "./providers/registry";
 import { getTokenStatsSnapshot } from "./token-stats";
 
 const INTERRUPTED_STREAMS_FILE_VERSION = 1;
+const ACTIVE_GOAL_RESTART_FILE_VERSION = 1;
 
 interface InterruptedStreamsFile {
   version: typeof INTERRUPTED_STREAMS_FILE_VERSION;
   createdAt: number;
   reason: "restart";
   convIds: string[];
+}
+
+interface ActiveGoalRestartFile {
+  version: typeof ACTIVE_GOAL_RESTART_FILE_VERSION;
+  createdAt: number;
+  reason: "daemon-restart";
 }
 
 export interface PrepareShutdownReplayResult {
@@ -29,6 +36,10 @@ function sleep(ms: number): Promise<void> {
 
 export function interruptedStreamsPath(): string {
   return join(runtimeDir(), "interrupted-streams.json");
+}
+
+export function activeGoalRestartPath(): string {
+  return join(runtimeDir(), "active-goal-restart.json");
 }
 
 function normalizeConvIds(convIds: Iterable<string>): string[] {
@@ -79,6 +90,39 @@ export function writeInterruptedStreamIds(convIds: Iterable<string>): string[] {
 
 export function clearInterruptedStreamIds(): void {
   try { unlinkSync(interruptedStreamsPath()); } catch { /* absent */ }
+}
+
+export function writeActiveGoalRestartMarker(): void {
+  const path = activeGoalRestartPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const payload: ActiveGoalRestartFile = {
+    version: ACTIVE_GOAL_RESTART_FILE_VERSION,
+    createdAt: Date.now(),
+    reason: "daemon-restart",
+  };
+  const tmpPath = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify(payload, null, 2) + "\n");
+  renameSync(tmpPath, path);
+}
+
+export function clearActiveGoalRestartMarker(): void {
+  try { unlinkSync(activeGoalRestartPath()); } catch { /* absent */ }
+}
+
+export function consumeActiveGoalRestartMarker(): boolean {
+  const path = activeGoalRestartPath();
+  if (!existsSync(path)) return false;
+
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<ActiveGoalRestartFile>;
+    return parsed.version === ACTIVE_GOAL_RESTART_FILE_VERSION && parsed.reason === "daemon-restart";
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log("warn", `restart-recovery: cannot read active-goal restart marker: ${message}`);
+    return false;
+  } finally {
+    clearActiveGoalRestartMarker();
+  }
 }
 
 /**
@@ -233,6 +277,8 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
 }
 
 export function recoverActiveGoals(server: DaemonServer, excludeConvIds: Iterable<string> = []): string[] {
+  if (!consumeActiveGoalRestartMarker()) return [];
+
   const excluded = new Set(excludeConvIds);
   const scheduled: string[] = [];
 

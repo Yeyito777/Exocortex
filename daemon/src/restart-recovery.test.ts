@@ -12,12 +12,15 @@ mock.module("./orchestrator", () => ({
 }));
 
 import {
+  activeGoalRestartPath,
+  clearActiveGoalRestartMarker,
   clearInterruptedStreamIds,
   prepareCatchableShutdownForReplay,
   recoverActiveGoals,
   recoverInterruptedStreams,
   interruptedStreamsPath,
   readInterruptedStreamIds,
+  writeActiveGoalRestartMarker,
   writeInterruptedStreamIds,
 } from "./restart-recovery";
 
@@ -25,6 +28,7 @@ const IDS: string[] = [];
 
 afterEach(() => {
   clearInterruptedStreamIds();
+  clearActiveGoalRestartMarker();
   orchestrateReplayConversation.mockClear();
   orchestrateGoalContinuation.mockClear();
   for (const id of IDS.splice(0)) remove(id);
@@ -108,12 +112,26 @@ describe("restart recovery file", () => {
     const pausedConvId = makeConversation("paused-goal");
     setGoal(pausedConvId, "do not resume");
     updateGoalStatus(pausedConvId, "paused");
+    writeActiveGoalRestartMarker();
+    expect(existsSync(activeGoalRestartPath())).toBe(true);
 
     const scheduled = recoverActiveGoals(makeServer(), [excludedConvId]);
 
     expect(scheduled).toEqual([activeConvId]);
+    expect(existsSync(activeGoalRestartPath())).toBe(false);
     expect(orchestrateGoalContinuation).toHaveBeenCalledTimes(1);
     expect((orchestrateGoalContinuation.mock.calls[0] as unknown[] | undefined)?.[1]).toBe(activeConvId);
+    expect(orchestrateReplayConversation).not.toHaveBeenCalled();
+  });
+
+  test("daemon boot does not resume copied active goals without a restart marker", () => {
+    const activeConvId = makeConversation("fresh-clone-active-goal");
+    setGoal(activeConvId, "do not auto-start from copied data");
+
+    const scheduled = recoverActiveGoals(makeServer());
+
+    expect(scheduled).toEqual([]);
+    expect(orchestrateGoalContinuation).not.toHaveBeenCalled();
     expect(orchestrateReplayConversation).not.toHaveBeenCalled();
   });
 });
