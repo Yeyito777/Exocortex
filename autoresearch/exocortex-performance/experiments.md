@@ -2510,3 +2510,28 @@ Validation:
   - conversation axes also regressed above tolerance.
 
 Action: reverted `tui/src/searchutil.ts` and `tui/src/sidebarsearch.ts`; kept only this failure log and result artifact.
+
+## 105 — Loop user bubble width calculation instead of spreading content arrays
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `renderUserMessage` built `allContentLines = [...badgeLines, ...w.lines]` and then `Math.max(...allContentLines.map(...))` to size the user bubble. A direct loop over wrapped text lines and image badges should avoid temporary arrays while preserving bubble layout.
+
+Validation:
+
+- Relevant tests passed: `bun test src/conversation.test.ts src/render.test.ts src/focus.test.ts` gave 86 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/105-user-bubble-width-loop.json`.
+- Three interleaved control/treatment runs had geomean median ratio 0.950 and several broad wins:
+  - `conversation_open_cold/small_chat` median ratio 0.901
+  - `conversation_build_lines_cold/medium_markdown` median ratio 0.943
+  - `conversation_open_cold/huge_expanded_tools` median ratio 0.965
+  - multiple sidebar axes also improved.
+- Still rejected by strict no-regression criteria because direct conversation axes regressed above tolerance:
+  - `conversation_build_lines_cold/small_chat` median ratio 1.184
+  - `conversation_open_warm/medium_markdown` median ratio 1.163
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 1.054
+  - `conversation_open_warm/huge_expanded_tools` median ratio 1.031
+  - several sidebar list/navigation axes also regressed above tolerance.
+
+Action: reverted `tui/src/blockrenderer.ts`; kept only this failure log and result artifact.
