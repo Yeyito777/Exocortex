@@ -2604,3 +2604,25 @@ Validation:
   - many sidebar axes also regressed above tolerance; geomean median ratio was 1.033.
 
 Action: reverted `tui/src/metadata.ts`; kept only this failure log and result artifact.
+
+## 109 — Guard code-fence close regex with backtick presence check
+
+Status: failure — production code reverted/deleted.
+
+Hypothesis: `isFenceClose` runs a closing-code-fence regex while rendering fenced code. Most code lines are not closing fences. Checking for the presence of triple backticks before running the regex should avoid regex work in markdown/code-heavy conversation rendering.
+
+Validation:
+
+- Relevant tests passed: `bun test src/markdown/wordwrap.test.ts src/conversation.test.ts src/render.test.ts` gave 39 pass, 0 fail.
+- `bun run typecheck`: pass.
+- Result saved to `results/109-fence-close-backtick-guard.json`.
+- Three interleaved control/treatment runs were mixed and violated no-regression criteria:
+  - `conversation_open_cold/small_chat` median ratio 0.896
+  - `conversation_build_lines_cold/medium_markdown` median ratio 0.867
+  - `conversation_build_lines_cold/huge_expanded_tools` median ratio 0.896
+  - but `conversation_build_lines_cold/small_chat` median ratio 1.149
+  - `conversation_open_cold/huge_markdown_collapsed_tools` median ratio 1.059
+  - `conversation_open_warm/huge_markdown_collapsed_tools` median ratio 1.151
+  - several direct sidebar render/navigation/list-update axes also regressed above tolerance; geomean median ratio was 0.991.
+
+Action: reverted `tui/src/markdown/codeblocks.ts`; kept only this failure log and result artifact. This was the final experiment before stopping autoresearch at user request.
