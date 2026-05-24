@@ -766,6 +766,54 @@ describe("assistant metadata spacing", () => {
       "  Gpt-5.5 | 50 tokens | 5s",
     ]);
   });
+
+  test("preserves prior goal-span display after a later user message starts a new goal", () => {
+    const state = {
+      messages: [
+        {
+          role: "assistant",
+          blocks: [{ type: "text", text: "Old goal early work" }],
+          metadata: { startedAt: 0, endedAt: 60 * 60_000, model: "gpt-5.5", tokens: 1000 },
+        },
+        { role: "system", text: "[Context warning]", color: undefined, metadata: null },
+        {
+          role: "assistant",
+          blocks: [{ type: "text", text: "Old goal final result" }],
+          metadata: { startedAt: 115 * 60_000, endedAt: 120 * 60_000, model: "gpt-5.5", tokens: 250 },
+        },
+        {
+          role: "user",
+          text: "why did you stop?",
+          metadata: { startedAt: 180 * 60_000, endedAt: 180 * 60_000, model: "gpt-5.5", tokens: 0 },
+        },
+        {
+          role: "assistant",
+          blocks: [{ type: "text", text: "New goal restarted" }],
+          metadata: { startedAt: 180 * 60_000, endedAt: 180 * 60_000 + 5_000, model: "gpt-5.5", tokens: 50 },
+        },
+      ],
+      pendingAI: null,
+      goal: {
+        objective: "new active goal that replaced the old completed goal record",
+        status: "active",
+        createdAt: 180 * 60_000,
+        updatedAt: 180 * 60_000 + 5_000,
+        turns: 1,
+      },
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 120).lines.map(stripAnsi);
+    expect(rendered).toContain("  Gpt-5.5 | 1,250 tokens | 2h 0m 0s");
+    expect(rendered.slice(-2)).toEqual([
+      "  New goal restarted",
+      "  Gpt-5.5 | 50 tokens | 5s",
+    ]);
+  });
 });
 
 describe("system message rendering", () => {
