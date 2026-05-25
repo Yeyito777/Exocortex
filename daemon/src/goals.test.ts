@@ -3,6 +3,7 @@ import { create, get, remove } from "./conversations";
 import { DEFAULT_EFFORT } from "./messages";
 import {
   applyModelGoalAction,
+  applyUserGoalAction,
   goalCanComplete,
   goalCanPause,
   goalContinuationSystemPrompt,
@@ -97,6 +98,27 @@ describe("goal permissions", () => {
     expect(applyModelGoalAction(completeLockedId, "complete")).toMatchObject({
       ok: false,
       message: "This goal cannot be completed.",
+    });
+  });
+
+  test("user goal actions can pause and complete regardless of AI permissions", () => {
+    const convId = makeConversation("user-override");
+    setGoal(convId, "user remains in control", { completable: false });
+
+    expect(applyUserGoalAction(get(convId)!, "pause")).toMatchObject({
+      ok: true,
+      message: "Goal paused.",
+      goal: expect.objectContaining({ status: "paused" }),
+    });
+    expect(applyUserGoalAction(get(convId)!, "resume")).toMatchObject({
+      ok: true,
+      message: "Goal resumed.",
+      goal: expect.objectContaining({ status: "active" }),
+    });
+    expect(applyUserGoalAction(get(convId)!, "complete")).toMatchObject({
+      ok: true,
+      message: "Goal complete.",
+      goal: expect.objectContaining({ status: "complete" }),
     });
   });
 

@@ -13,6 +13,22 @@ function parseSetArgs(rest: string): { objective: string; pausable?: boolean; co
   const objectiveParts: string[] = [];
 
   for (const part of parts) {
+    const normalizedPart = part.toLowerCase();
+    if (normalizedPart === "unpausable" || normalizedPart === "--unpausable") {
+      pausable = false;
+      continue;
+    }
+    if (normalizedPart === "unpausable/uncompletable" || normalizedPart === "--unpausable/--uncompletable") {
+      completable = false;
+      pausable = false;
+      continue;
+    }
+    if (normalizedPart === "uncompletable" || normalizedPart === "--uncompletable") {
+      completable = false;
+      pausable = false;
+      continue;
+    }
+
     const match = part.match(/^(pausable|completable)=(true|false|yes|no|on|off|1|0)$/i);
     if (!match) {
       objectiveParts.push(part);
@@ -37,15 +53,17 @@ export const GOAL_COMMAND: SlashCommand = {
   args: [
     { name: "pause", desc: "pause the active goal" },
     { name: "resume", desc: "resume the paused goal" },
+    { name: "complete", desc: "mark the active goal complete" },
     { name: "clear", desc: "clear the goal" },
-    { name: "pausable=false", desc: "set a goal that cannot be paused" },
-    { name: "completable=false", desc: "set a goal that cannot be completed or paused" },
+    { name: "unpausable", desc: "set a goal the AI cannot pause" },
+    { name: "uncompletable", desc: "set a goal the AI cannot complete or pause" },
   ],
   handler(text) {
     const rest = text.slice("/goal".length).trim();
     if (!rest) return { type: "goal", action: "show" };
     if (rest === "pause") return { type: "goal", action: "pause" };
     if (rest === "resume") return { type: "goal", action: "resume" };
+    if (rest === "complete") return { type: "goal", action: "complete" };
     if (rest === "clear") return { type: "goal", action: "clear" };
     const parsed = parseSetArgs(rest);
     return { type: "goal", action: "set", ...parsed };
