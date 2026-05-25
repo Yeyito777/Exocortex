@@ -14,6 +14,14 @@ describe("textwidth", () => {
     expect(termWidth("【the🦋chat】")).toBe(13);
   });
 
+  test("treats Unicode nonspacing marks outside common ranges as zero-width", () => {
+    // U+0A48 GURMUKHI VOWEL SIGN AI is Mn. It regressed in sidebar names by
+    // being counted as a visible column even though terminals render it as a
+    // combining mark.
+    expect(termWidth("ღ jättebög ੈ✩‧₊˚")).toBe(15);
+    expect(termWidth("ੈ")).toBe(0);
+  });
+
   test("truncates by terminal width instead of utf-16 length", () => {
     expect(truncateToWidth("【the🦋chat】", 8)).toBe("【the🦋…");
   });

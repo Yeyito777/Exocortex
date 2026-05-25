@@ -6,8 +6,10 @@
  */
 
 import type { KeyEvent } from "./input";
-import type { ConversationSummary, SidebarItemRef } from "./messages";
+import type { ConversationSummary, FolderSummary, SidebarItemRef } from "./messages";
 import type { SidebarSelectableItem } from "./sidebar/items";
+import { sidebarItemKey } from "./sidebar/items";
+import { compareSidebarOrder } from "./sidebar/order";
 import { convDisplayName } from "./messages";
 import { stripMark } from "./marks";
 import { theme } from "./theme";
@@ -40,11 +42,13 @@ export interface SidebarSearchState {
 
 export interface SidebarSearchableState {
   conversations: ConversationSummary[];
+  folders: FolderSummary[];
   selectedId: string | null;
   selectedIndex: number;
   scrollOffset: number;
   pendingDeleteId: string | null;
   pendingDeleteItem?: SidebarItemRef | null;
+  visualAnchor?: SidebarItemRef | null;
   currentFolderId?: string | null;
   selectedItem?: SidebarSelectableItem | null;
   search: SidebarSearchState | null;
@@ -65,6 +69,22 @@ export function focusConversationAt(sidebar: SidebarSearchableState, index: numb
   if ("selectedItem" in sidebar) sidebar.selectedItem = nextId ? { type: "conversation", id: nextId } : null;
 }
 
+export function focusSidebarItem(sidebar: SidebarSearchableState, item: SidebarSelectableItem | null): void {
+  const convItem = item?.type === "conversation" && "id" in item ? item : null;
+  if (convItem) {
+    const idx = sidebar.conversations.findIndex(c => c.id === convItem.id);
+    if (idx !== -1) {
+      focusConversationAt(sidebar, idx);
+      return;
+    }
+    item = null;
+  }
+
+  sidebar.selectedItem = item;
+  sidebar.selectedId = null;
+  sidebar.selectedIndex = Math.max(0, Math.min(sidebar.selectedIndex, Math.max(0, sidebar.conversations.length - 1)));
+}
+
 export function focusConversationById(sidebar: SidebarSearchableState, convId: string): boolean {
   const idx = sidebar.conversations.findIndex(c => c.id === convId);
   if (idx === -1) return false;
@@ -79,6 +99,26 @@ export function getSearchableConversationTitle(conv: Pick<ConversationSummary, "
 function getSearchFilterConversationTitle(conv: Pick<ConversationSummary, "title">): string {
   const title = convDisplayName(conv, "");
   return title.length === 0 || title.charCodeAt(0) < 0x80 ? title : stripMark(title);
+}
+
+function folderMatchesQuery(folder: Pick<FolderSummary, "name">, query: string): boolean {
+  return findAllCaseInsensitiveMatchStarts(folder.name || "Folder", query).length > 0;
+}
+
+export function getVisibleFolderIndicesForQuery(
+  sidebar: Pick<SidebarSearchableState, "folders"> & { currentFolderId?: string | null },
+  query: string | null,
+): number[] {
+  const visible: number[] = [];
+  for (let i = 0; i < sidebar.folders.length; i++) {
+    const folder = sidebar.folders[i];
+    if (query) {
+      if (folderMatchesQuery(folder, query)) visible.push(i);
+      continue;
+    }
+    if ((folder.parentId ?? null) === (sidebar.currentFolderId ?? null)) visible.push(i);
+  }
+  return visible;
 }
 
 export function getVisibleConversationIndicesForQuery(
@@ -150,6 +190,11 @@ function buildSidebarSearchState(
   barMode: SidebarSearchBarMode,
   direction: SidebarSearchDirection,
 ): SidebarSearchState {
+  const savedSelectedItem = sidebar.selectedItem
+    ? { ...sidebar.selectedItem }
+    : sidebar.selectedId
+      ? { type: "conversation" as const, id: sidebar.selectedId }
+      : null;
   return {
     barOpen: true,
     barMode,
@@ -160,27 +205,48 @@ function buildSidebarSearchState(
     highlightsVisible: sidebar.search?.highlightsVisible ?? false,
     savedSelectedId: sidebar.selectedId,
     savedSelectedIndex: sidebar.selectedIndex,
-    savedSelectedItem: sidebar.selectedItem ? { ...sidebar.selectedItem } : null,
+    savedSelectedItem,
     savedScrollOffset: sidebar.scrollOffset,
   };
 }
 
-function findNextConversationMatch(
-  sidebar: Pick<SidebarSearchableState, "conversations">,
+function findNextSidebarSearchMatch(
+  sidebar: Pick<SidebarSearchableState, "conversations" | "folders">,
   query: string,
-  fromIndex: number,
+  fromItem: SidebarSelectableItem | null | undefined,
   direction: SidebarSearchDirection,
-): number | null {
-  return findNextSortedMatch(getVisibleConversationIndicesForQuery(sidebar, query), fromIndex, direction);
-}
+): SidebarSelectableItem | null {
+  if (!query) return null;
+  const entries = [
+    ...sidebar.folders
+      .map((folder) => ({
+        pinned: folder.pinned,
+        sortOrder: folder.sortOrder,
+        item: { type: "folder" as const, id: folder.id },
+        matches: folderMatchesQuery(folder, query),
+      })),
+    ...sidebar.conversations
+      .map((conv) => ({
+        pinned: conv.pinned,
+        sortOrder: conv.sortOrder,
+        item: { type: "conversation" as const, id: conv.id },
+        matches: findAllCaseInsensitiveMatchStarts(getSearchFilterConversationTitle(conv), query).length > 0,
+      })),
+  ].sort(compareSidebarOrder);
+  const matches = entries
+    .map((entry, index) => entry.matches ? index : -1)
+    .filter(index => index !== -1);
+  if (matches.length === 0) return null;
 
-function getSavedSearchStartIndex(sidebar: SidebarSearchableState, search: SidebarSearchState): number {
-  if (sidebar.conversations.length === 0) return 0;
-  if (search.savedSelectedId) {
-    const idx = sidebar.conversations.findIndex(conv => conv.id === search.savedSelectedId);
-    if (idx !== -1) return idx;
-  }
-  return Math.max(0, Math.min(search.savedSelectedIndex, sidebar.conversations.length - 1));
+  const selectedKey = sidebarItemKey(fromItem ?? null);
+  const selectedEntryIndex = selectedKey
+    ? entries.findIndex(entry => sidebarItemKey(entry.item) === selectedKey)
+    : -1;
+  const fromIndex = selectedEntryIndex === -1
+    ? direction === "forward" ? -1 : entries.length
+    : selectedEntryIndex;
+  const matchIndex = findNextSortedMatch(matches, fromIndex, direction);
+  return matchIndex == null ? null : entries[matchIndex]?.item ?? null;
 }
 
 function restoreSidebarSearchOrigin(sidebar: SidebarSearchableState, search: SidebarSearchState): void {
@@ -213,15 +279,15 @@ function liveSidebarSearchToNearestMatch(sidebar: SidebarSearchableState): void 
     return;
   }
 
-  const matchIndex = findNextConversationMatch(
+  const match = findNextSidebarSearchMatch(
     sidebar,
     search.barInput,
-    getSavedSearchStartIndex(sidebar, search),
+    search.savedSelectedItem ?? sidebar.selectedItem,
     search.direction,
   );
-  if (matchIndex == null) return;
+  if (match == null) return;
 
-  focusConversationAt(sidebar, matchIndex);
+  focusSidebarItem(sidebar, match);
 }
 
 function replaceSidebarSearchBarInput(sidebar: SidebarSearchableState, nextInput: string, nextCursorPos: number): void {
@@ -253,10 +319,50 @@ function executeSidebarCommand(sidebar: SidebarSearchableState, command: string)
   switch (command) {
     case "noh":
       search.highlightsVisible = false;
+      revealFocusedSidebarItemAfterSearch(sidebar);
       return { type: "handled" };
     default:
       return { type: "handled" };
   }
+}
+
+function revealFocusedSidebarItemAfterSearch(sidebar: SidebarSearchableState): void {
+  const item = sidebar.selectedItem ?? null;
+  sidebar.visualAnchor = null;
+  sidebar.scrollOffset = 0;
+
+  if (item?.type === "folder") {
+    const folder = sidebar.folders.find(f => f.id === item.id);
+    if (folder) {
+      sidebar.currentFolderId = folder.parentId ?? null;
+      focusSidebarItem(sidebar, item);
+      return;
+    }
+  }
+
+  if (item?.type === "conversation") {
+    const conv = sidebar.conversations.find(c => c.id === item.id);
+    if (conv) {
+      sidebar.currentFolderId = conv.folderId ?? null;
+      focusSidebarItem(sidebar, item);
+      return;
+    }
+  }
+
+  sidebar.currentFolderId = null;
+  focusSidebarItem(sidebar, firstSidebarItemInFolder(sidebar, null));
+}
+
+function firstSidebarItemInFolder(sidebar: SidebarSearchableState, parentId: string | null): SidebarSelectableItem | null {
+  const entries = [
+    ...sidebar.folders
+      .filter(folder => (folder.parentId ?? null) === parentId)
+      .map(folder => ({ pinned: folder.pinned, sortOrder: folder.sortOrder, item: { type: "folder" as const, id: folder.id } })),
+    ...sidebar.conversations
+      .filter(conv => (conv.folderId ?? null) === parentId)
+      .map(conv => ({ pinned: conv.pinned, sortOrder: conv.sortOrder, item: { type: "conversation" as const, id: conv.id } })),
+  ].sort(compareSidebarOrder);
+  return entries[0]?.item ?? null;
 }
 
 export function openSidebarSearchBar(sidebar: SidebarSearchableState, direction: SidebarSearchDirection): void {
@@ -289,11 +395,11 @@ export function jumpToSidebarSearchMatch(
   const search = sidebar.search;
   if (!search?.query) return false;
 
-  const matchIndex = findNextConversationMatch(sidebar, search.query, sidebar.selectedIndex, direction);
-  if (matchIndex == null) return false;
+  const match = findNextSidebarSearchMatch(sidebar, search.query, sidebar.selectedItem, direction);
+  if (match == null) return false;
 
   search.highlightsVisible = true;
-  focusConversationAt(sidebar, matchIndex);
+  focusSidebarItem(sidebar, match);
   return true;
 }
 
