@@ -33,8 +33,9 @@ function isSidebarItemVisible(sidebar: SidebarState, item: SidebarSelectableItem
   if (item.type === "folder") {
     const folder = sidebar.folders.find(f => f.id === item.id);
     return Boolean(folder)
-      && (folder!.parentId ?? null) === sidebar.currentFolderId
-      && (!lowerQuery || folder!.name.toLowerCase().includes(lowerQuery));
+      && (lowerQuery
+        ? folder!.name.toLowerCase().includes(lowerQuery)
+        : (folder!.parentId ?? null) === sidebar.currentFolderId);
   }
 
   const conv = sidebar.conversations.find(c => c.id === item.id);
@@ -59,7 +60,7 @@ function firstVisibleSidebarItem(sidebar: SidebarState): SidebarSelectableItem |
   };
 
   for (const folder of sidebar.folders) {
-    if ((folder.parentId ?? null) !== sidebar.currentFolderId) continue;
+    if (!lowerQuery && (folder.parentId ?? null) !== sidebar.currentFolderId) continue;
     if (lowerQuery && !folder.name.toLowerCase().includes(lowerQuery)) continue;
     consider(folder.pinned, folder.sortOrder, { type: "folder", id: folder.id });
   }

@@ -165,6 +165,7 @@ export function enterSelectedFolder(sidebar: SidebarState): SidebarKeyResult {
   const item = getSelectedSidebarItem(sidebar);
   if (item?.type === "folder") {
     sidebar.currentFolderId = item.id;
+    if (sidebar.search) sidebar.search.highlightsVisible = false;
     sidebar.scrollOffset = 0;
     sidebar.visualAnchor = null;
     syncSelectedIndex(sidebar);

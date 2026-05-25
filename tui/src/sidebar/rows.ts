@@ -5,6 +5,7 @@ import { sidebarPromptAutocompleteVisibleRows } from "./prompt";
 import { compareSidebarOrder } from "./order";
 import {
   getActiveSidebarSearchQuery,
+  getVisibleFolderIndicesForQuery,
   getVisibleConversationIndicesForQuery,
 } from "../sidebarsearch";
 
@@ -33,20 +34,20 @@ export function buildDisplayRows(sidebar: SidebarRowsState): DisplayRow[] {
   const rows: DisplayRow[] = [];
   const activeQuery = getActiveSidebarSearchQuery(sidebar);
   const visibleConvIndices = getVisibleConversationIndicesForQuery(sidebar, activeQuery);
-  const folderIndices = sidebar.folders
-    .map((folder, index) => ({ folder, index }))
-    .filter(({ folder }) => (folder.parentId ?? null) === sidebar.currentFolderId
-      && (!activeQuery || folder.name.toLowerCase().includes(activeQuery.toLowerCase())));
+  const visibleFolderIndices = getVisibleFolderIndicesForQuery(sidebar, activeQuery);
 
   const entries = [
-    ...folderIndices.map(({ folder, index }) => ({ pinned: folder.pinned, sortOrder: folder.sortOrder, row: { type: "entry" as const, folderIdx: index, item: { type: "folder" as const, id: folder.id } } })),
+    ...visibleFolderIndices.map((index) => {
+      const folder = sidebar.folders[index];
+      return { pinned: folder.pinned, sortOrder: folder.sortOrder, row: { type: "entry" as const, folderIdx: index, item: { type: "folder" as const, id: folder.id } } };
+    }),
     ...visibleConvIndices.map((index) => {
       const conv = sidebar.conversations[index];
       return { pinned: conv.pinned, sortOrder: conv.sortOrder, row: { type: "entry" as const, convIdx: index, item: { type: "conversation" as const, id: conv.id } } };
     }),
   ].sort(compareSidebarOrder);
 
-  if (sidebar.currentFolderId) {
+  if (!activeQuery && sidebar.currentFolderId) {
     rows.push({ type: "entry", item: { type: "up" }, text: ".." });
     rows.push({ type: "entry", item: { type: "folder_instructions", folderId: sidebar.currentFolderId } });
   }
@@ -141,4 +142,3 @@ export function snapSidebarViewStartToEntry(
   if (direction < 0) return scan(-1) ?? scan(1) ?? clamped;
   return scan(1) ?? scan(-1) ?? clamped;
 }
-

@@ -104,6 +104,7 @@ const WIDE_RANGES: readonly [number, number][] = [
 ];
 
 const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
+const UNICODE_NONSPACING_OR_ENCLOSING_MARK_RE = /[\p{Mn}\p{Me}]/u;
 
 function inRanges(cp: number, ranges: readonly [number, number][]): boolean {
   let lo = 0;
@@ -118,6 +119,10 @@ function inRanges(cp: number, ranges: readonly [number, number][]): boolean {
 }
 
 function isZeroWidth(cp: number): boolean {
+  // Keep this property check first so script-specific combining marks outside
+  // the common ranges below (for example U+0A48 GURMUKHI VOWEL SIGN AI) don't
+  // consume a terminal column and push sidebar borders out of alignment.
+  if (UNICODE_NONSPACING_OR_ENCLOSING_MARK_RE.test(String.fromCodePoint(cp))) return true;
   if (cp >= 0x200B && cp <= 0x200F) return true;
   if (cp >= 0x2028 && cp <= 0x202E) return true;
   if (cp >= 0x2060 && cp <= 0x2069) return true;

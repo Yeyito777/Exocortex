@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { handleFocusedKey } from "./focus";
-import type { ConversationSummary } from "./messages";
+import type { ConversationSummary, FolderSummary } from "./messages";
 import { createInitialState } from "./state";
 import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { termWidth } from "./textwidth";
@@ -23,6 +23,10 @@ function conversation(id: string, title: string, sortOrder: number, folderId: st
     sortOrder,
     folderId,
   };
+}
+
+function folder(id: string, name: string, sortOrder: number, parentId: string | null = null): FolderSummary {
+  return { id, name, parentId, createdAt: sortOrder, updatedAt: sortOrder, pinned: false, sortOrder };
 }
 
 function setupSidebarState() {
@@ -96,6 +100,18 @@ describe("sidebar conversation search", () => {
     expect(state.sidebar.selectedId).toBe("conv-2");
   });
 
+  test("? searches backward from the current row even when that row is not a match", () => {
+    const state = setupSidebarState();
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-3" };
+    state.sidebar.selectedIndex = 2;
+    state.sidebar.selectedId = "conv-3";
+
+    handleFocusedKey({ type: "char", char: "?" }, state);
+    for (const ch of "beta") handleFocusedKey({ type: "char", char: ch }, state);
+
+    expect(state.sidebar.selectedId).toBe("conv-2");
+  });
+
   test(":noh hides sidebar search highlights without clearing the last query", () => {
     const state = setupSidebarState();
 
@@ -159,6 +175,67 @@ describe("sidebar conversation search", () => {
 
     expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "handled" });
     expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "load_conversation", convId: "conv-nested" });
+  });
+
+  test("sidebar search directly matches folders and opens matched folders unfiltered", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [folder("folder-work", "Work", 1)];
+    state.sidebar.conversations = [
+      conversation("conv-root", "Root notes", 1),
+      conversation("conv-child", "Zebra child", 2, "folder-work"),
+    ];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-root" };
+    state.sidebar.selectedId = "conv-root";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "/" }, state)).toEqual({ type: "handled" });
+    for (const ch of "work") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "folder-work" });
+
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.currentFolderId).toBe("folder-work");
+    expect(state.sidebar.search?.highlightsVisible).toBe(false);
+
+    const rendered = renderSidebar(state.sidebar, 8, true, null).map(stripAnsi).join("\n");
+    expect(rendered).toContain("Zebra child");
+  });
+
+  test(":noh reveals the focused search result instead of the active conversation", () => {
+    const state = createInitialState();
+    state.convId = "conv-active";
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [
+      folder("folder-work", "Work", 1),
+      folder("folder-clients", "Clients", 2, "folder-work"),
+    ];
+    state.sidebar.conversations = [
+      conversation("conv-active", "Active root chat", 1),
+      conversation("conv-nested", "Needle project", 2, "folder-clients"),
+    ];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-active" };
+    state.sidebar.selectedId = "conv-active";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "/" }, state)).toEqual({ type: "handled" });
+    for (const ch of "needle") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "conv-nested" });
+    expect(state.convId).toBe("conv-active");
+
+    expect(handleFocusedKey({ type: "char", char: ":" }, state)).toEqual({ type: "handled" });
+    for (const ch of "noh") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "handled" });
+
+    expect(state.convId).toBe("conv-active");
+    expect(state.sidebar.currentFolderId).toBe("folder-clients");
+    expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "conv-nested" });
+    expect(state.sidebar.search?.highlightsVisible).toBe(false);
   });
 
   test("renderSidebar keeps the search bar at the bottom and filters out non-matches", () => {
