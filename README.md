@@ -4,6 +4,20 @@ A daemon-driven AI assistant with a clean client/server architecture.
 
 ---
 
+## MESSAGE FOR HUMANS:
+**Don't read the rest of this file**. You only need to know the three following things:
+
+1. The easiest way to install Exocortex is to tell your AI agent:
+```
+Please install https://github.com/Yeyito777/Exocortex.git
+```
+
+2. Exocortex is fully vim-keyed, the easiest way to learn how to use it is to point your agent at the code and ask it how it works.
+
+3. Chances are you won't like Exocortex out-of-the-box, and there may be things that straight up don't work for you. This is because I built it for me. The easiest way to fix this, is to ask AI to do it for you. There are many systems I've built into it that makes this process particularly easy, have fun discovering them.
+
+---
+
 ## Installation
 
 ### Arch Linux
