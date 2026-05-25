@@ -1,7 +1,7 @@
 import type { Conversation, ConversationGoal, ConversationGoalStatus } from "./messages";
 import * as convStore from "./conversations";
 
-export type UserGoalAction = "show" | "set" | "pause" | "resume" | "clear";
+export type UserGoalAction = "show" | "set" | "pause" | "resume" | "complete" | "clear";
 export type ModelGoalAction = "set" | "pause" | "resume" | "complete";
 
 export interface GoalOperationResult {
@@ -92,12 +92,13 @@ export function clearGoal(convId: string): GoalOperationResult {
   return { ok: true, goal: null, message: changed ? "Goal cleared." : "No goal set." };
 }
 
-export function updateGoalStatus(convId: string, status: ConversationGoalStatus, message: string): GoalOperationResult {
+export function updateGoalStatus(convId: string, status: ConversationGoalStatus, message: string, options: { enforceModelPermissions?: boolean } = {}): GoalOperationResult {
   const currentGoal = convStore.get(convId)?.goal ?? null;
-  if (status === "paused" && currentGoal && !goalCanPause(currentGoal)) {
+  const enforceModelPermissions = options.enforceModelPermissions ?? false;
+  if (enforceModelPermissions && status === "paused" && currentGoal && !goalCanPause(currentGoal)) {
     return { ok: false, goal: currentGoal, message: "This goal cannot be paused." };
   }
-  if (status === "complete" && currentGoal && !goalCanComplete(currentGoal)) {
+  if (enforceModelPermissions && status === "complete" && currentGoal && !goalCanComplete(currentGoal)) {
     return { ok: false, goal: currentGoal, message: "This goal cannot be completed." };
   }
   const goal = convStore.updateGoalStatus(convId, status);
@@ -115,6 +116,8 @@ export function applyUserGoalAction(conv: Conversation, action: UserGoalAction, 
       return updateGoalStatus(conv.id, "paused", "Goal paused.");
     case "resume":
       return updateGoalStatus(conv.id, "active", "Goal resumed.");
+    case "complete":
+      return updateGoalStatus(conv.id, "complete", "Goal complete.");
     case "clear":
       return clearGoal(conv.id);
   }
@@ -122,5 +125,5 @@ export function applyUserGoalAction(conv: Conversation, action: UserGoalAction, 
 
 export function applyModelGoalAction(convId: string, action: ModelGoalAction, objective?: string, options?: GoalSetOptions): GoalOperationResult {
   if (action === "set") return setGoal(convId, objective ?? "", options);
-  return updateGoalStatus(convId, statusForModelAction(action), `Goal ${actionPastTense(action)}.`);
+  return updateGoalStatus(convId, statusForModelAction(action), `Goal ${actionPastTense(action)}.`, { enforceModelPermissions: true });
 }

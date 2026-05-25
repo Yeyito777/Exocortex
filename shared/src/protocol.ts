@@ -153,7 +153,7 @@ export interface SetFastModeCommand {
   enabled: boolean;
 }
 
-export type GoalAction = "show" | "set" | "pause" | "resume" | "clear";
+export type GoalAction = "show" | "set" | "pause" | "resume" | "complete" | "clear";
 
 export interface SetGoalCommand {
   type: "set_goal";
