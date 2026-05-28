@@ -15,6 +15,7 @@ import { handleMouseEvent } from "./mouse";
 import { clearPrompt } from "./promptstate";
 import { tryCommand } from "./commands";
 import { expandMacros } from "./macros";
+import { applyInlineEffortCommands, type InlineEffortApplication } from "./inlineeffort";
 import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
@@ -455,8 +456,15 @@ function startNewConversation(): void {
   }
 }
 
+function syncInlineEffortChanges(result: InlineEffortApplication, convId = state.convId): void {
+  if (!convId) return;
+  for (const effort of result.efforts) {
+    daemon.setEffort(convId, effort);
+  }
+}
+
 function handleSubmit(): void {
-  const text = state.inputBuffer.trim();
+  let text = state.inputBuffer.trim();
   const hasImages = state.pendingImages.length > 0;
 
   if (state.folderInstructionsDoc) {
@@ -572,10 +580,22 @@ function handleSubmit(): void {
     }
   }
 
+  const inlineEffort = applyInlineEffortCommands(text, state);
+  if (inlineEffort.efforts.length > 0) {
+    syncInlineEffortChanges(inlineEffort);
+    text = inlineEffort.text.trim();
+    if (!text && !hasImages) {
+      clearPrompt(state);
+      state.scrollOffset = 0;
+      scheduleRender();
+      return;
+    }
+  }
+
   if (isStreaming(state)) {
-    // Keep the queue prompt text exactly as typed. Macro expansion happens only
-    // if the user confirms the modal; canceling should restore the original
-    // promptline contents.
+    // Macro expansion happens only if the user confirms the modal. Inline
+    // /effort is the one exception: it has already run and been stripped so
+    // the queued send honors the selected effort.
     openQueuePrompt(state, text);
     scheduleRender();
     return;
@@ -627,8 +647,12 @@ function confirmPendingVoiceQueuePrompt(): boolean {
   // The transcription may have completed while the queue modal was open. In
   // that case the prompt now contains plain text; confirm it through the normal
   // queued-message path using the timing the user selected.
-  const messageText = expandMacros(state.inputBuffer.trim());
+  const inlineEffort = applyInlineEffortCommands(state.inputBuffer.trim(), state);
+  syncInlineEffortChanges(inlineEffort);
+  const messageText = expandMacros(inlineEffort.text.trim());
   if (!messageText && !images?.length) {
+    clearPrompt(state);
+    state.pendingImages = [];
     scheduleRender();
     return true;
   }
@@ -784,7 +808,10 @@ function submitPendingVoiceTranscription(
 }
 
 function completePendingVoiceTranscription(submission: SubmittedVoiceTranscription, finalText: string): void {
-  const messageText = expandMacros(finalText.trim());
+  const inlineEffort = applyInlineEffortCommands(finalText.trim(), state);
+  syncInlineEffortChanges(inlineEffort, submission.convId ?? state.convId);
+  if (inlineEffort.efforts.length > 0) submission.effort = state.effort;
+  const messageText = expandMacros(inlineEffort.text.trim());
   const hasImages = !!submission.images?.length;
   pendingVoiceSubmissions.delete(submission);
 

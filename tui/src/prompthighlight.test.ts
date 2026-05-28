@@ -90,4 +90,16 @@ describe("prompt highlighting", () => {
 
     expect(line).toBe(`Use ${theme.command}/xenv${theme.reset} then ${theme.command}/tool install xenv${theme.reset} please`);
   });
+
+  test("highlights inline /effort but not other mid-message slash commands", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "openai";
+    state.model = "gpt-5.4";
+
+    const input = "Use /model openai gpt-5.4 and /effort high please";
+    const [line] = highlightPromptInput(state, [input], input, 120, 0);
+
+    expect(line).toBe(`Use /model openai gpt-5.4 and ${theme.command}/effort high${theme.reset} please`);
+  });
 });

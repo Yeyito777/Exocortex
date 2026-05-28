@@ -49,12 +49,17 @@ const commands: SlashCommand[] = [
   LOGOUT_COMMAND,
 ];
 
+function isStandaloneEffortCommand(text: string): boolean {
+  return /^\/effort(?:\s+\S+)?$/.test(text.trim());
+}
+
 export function tryCommand(text: string, state: RenderState): CommandResult | null {
   if (!text.startsWith("/")) return null;
 
   const name = text.split(/\s+/)[0];
   const cmd = commands.find((command) => command.name === name);
   if (!cmd) return null;
+  if (cmd === EFFORT_COMMAND && !isStandaloneEffortCommand(text)) return null;
 
   return cmd.handler(text, state);
 }

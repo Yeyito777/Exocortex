@@ -261,6 +261,35 @@ describe("autocomplete with vim Escape", () => {
     expect(state.inputBuffer).toBe("please /go");
     expect(state.cursorPos).toBe(9);
   });
+
+  test("mid-message autocomplete offers /effort and its supported levels", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "openai";
+    state.model = "gpt-5.4";
+
+    typePromptText(state, "please /eff");
+    expect(state.autocomplete?.type).toBe("macro");
+    expect(state.autocomplete?.matches.map(match => match.name)).toContain("/effort");
+
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("please /effort");
+
+    typePromptText(state, " h");
+    expect(state.autocomplete?.type).toBe("macro");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["high"]);
+
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("please /effort high");
+  });
+
+  test("mid-message autocomplete does not offer ordinary slash commands", () => {
+    const state = createInitialState();
+
+    typePromptText(state, "please /mod");
+
+    expect(state.autocomplete).toBeNull();
+  });
 });
 
 function buildToolToggleState(showToolOutput: boolean) {

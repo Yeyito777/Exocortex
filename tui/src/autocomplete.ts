@@ -1,9 +1,10 @@
 /**
  * Autocomplete engine for the prompt line.
  *
- * Manages command, macro, and path completion with a popup UI.
+ * Manages command, macro, inline-effort, and path completion with a popup UI.
  * Command completion activates live when input starts with "/".
- * Macro completion activates for slash tokens mid-message.
+ * Macro completion activates for slash tokens mid-message; `/effort` is the
+ * only command that participates in this mid-message path.
  * Path completion triggers on Tab for path-like tokens (~/, ./, ../, /).
  *
  * State lifecycle:
@@ -17,6 +18,7 @@
 import type { RenderState } from "./state";
 import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
 import { MACRO_LIST, getMacroArgs } from "./macros";
+import { INLINE_EFFORT_COMMAND, getInlineEffortArgs } from "./inlineeffort";
 import { readdirSync } from "fs";
 import { resolve, dirname, basename } from "path";
 import { homedir } from "os";
@@ -83,18 +85,19 @@ function getCommandMatches(state: RenderState, input: string): CompletionItem[] 
 }
 
 /**
- * Get matching macros for a slash token mid-message.
- * Only macros are valid mid-message (not commands).
+ * Get matching inline slash completions for a token mid-message.
+ * Only macros and the special `/effort` command are valid here; no other
+ * commands should be offered or treated as macro-like mid-prompt commands.
  */
-function getMacroMatches(token: string): CompletionItem[] {
+function getInlineSlashMatches(state: RenderState, token: string): CompletionItem[] {
   const raw = token.trimStart();
   if (!raw.startsWith("/")) return [];
 
-  const argMatch = matchArgCompletion(raw, getMacroArgs());
+  const argMatch = matchArgCompletion(raw, getInlineEffortArgs(state)) ?? matchArgCompletion(raw, getMacroArgs());
   if (argMatch) return argMatch;
 
   const prefix = raw.toLowerCase();
-  return MACRO_LIST.filter(c => c.name.startsWith(prefix));
+  return [...MACRO_LIST, INLINE_EFFORT_COMMAND].filter(c => c.name.startsWith(prefix));
 }
 
 // ── Token scanning ────────────────────────────────────────────────
@@ -164,7 +167,8 @@ function extractSlashToken(
 /**
  * Update autocomplete state after a keystroke (char, backspace, delete).
  * Activates command autocomplete when input starts with "/".
- * Activates macro autocomplete for slash tokens mid-message.
+ * Activates macro autocomplete for slash tokens mid-message, with `/effort`
+ * as the only command exception.
  * Dismisses when it no longer matches.
  */
 export function updateAutocomplete(state: RenderState): void {
@@ -189,10 +193,10 @@ export function updateAutocomplete(state: RenderState): void {
     }
   }
 
-  // Mid-message macro autocomplete: slash token at cursor position
+  // Mid-message slash autocomplete: macros plus the special /effort command
   const slashToken = extractSlashToken(state.inputBuffer, state.cursorPos);
   if (slashToken) {
-    const matches = getMacroMatches(slashToken.token);
+    const matches = getInlineSlashMatches(state, slashToken.token);
     if (matches.length > 0) {
       state.autocomplete = {
         type: "macro",
@@ -304,7 +308,7 @@ export function acceptAutocomplete(state: RenderState): void {
 
 /**
  * Try to tab-complete a path token at the cursor.
- * For /-prefixed tokens, also includes matching macros.
+ * For /-prefixed tokens, also includes matching macros and /effort.
  * Single match: fills directly (no popup).
  * Multiple matches: fills the common prefix and shows a popup.
  * Returns true if a completion was attempted.
@@ -316,10 +320,10 @@ export function tryPathComplete(state: RenderState): boolean {
   const { token, start } = extracted;
   const fsMatches = getFilesystemMatches(token);
 
-  // For /-prefixed tokens, also include macro matches
+  // For /-prefixed tokens, also include macro and inline /effort matches
   let macroMatches: CompletionItem[] = [];
   if (token.startsWith("/")) {
-    macroMatches = getMacroMatches(token);
+    macroMatches = getInlineSlashMatches(state, token);
   }
 
   const matches = [...fsMatches, ...macroMatches];
@@ -427,4 +431,3 @@ function getFilesystemMatches(pathToken: string): CompletionItem[] {
     return [];
   }
 }
-

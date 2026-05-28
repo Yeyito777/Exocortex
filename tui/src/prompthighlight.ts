@@ -10,21 +10,28 @@
 import type { RenderState } from "./state";
 import { COMMAND_LIST, getCommandArgs } from "./commands";
 import { MACRO_LIST, getMacroArgs } from "./macros";
+import { INLINE_EFFORT_COMMAND, getInlineEffortArgs } from "./inlineeffort";
 import { theme } from "./theme";
 import { wrappedLineOffsets } from "./promptline";
 
 // ── Valid names & args ────────────────────────────────────────────
 
-const VALID_NAMES = new Set([
+const VALID_COMMAND_NAMES = new Set([
   ...COMMAND_LIST.map(c => c.name),
-  ...MACRO_LIST.map(c => c.name),
   "/exit",  // alias not in COMMAND_LIST (filtered out for display)
 ]);
+
+const VALID_MACRO_NAMES = new Set(MACRO_LIST.map(c => c.name));
+
+const VALID_INLINE_COMMAND_NAMES = new Set([INLINE_EFFORT_COMMAND.name]);
 
 function buildValidArgs(state: RenderState): Record<string, Set<string>> {
   return {
     ...Object.fromEntries(
       Object.entries(getCommandArgs(state)).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
+    ),
+    ...Object.fromEntries(
+      Object.entries(getInlineEffortArgs(state)).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
     ),
     ...Object.fromEntries(
       Object.entries(getMacroArgs()).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
@@ -68,9 +75,12 @@ function findCommandSpans(
     const firstWord = words[wordIndex];
     if (!firstWord.word.startsWith("/")) continue;
 
-    // First word (with /) must be a known command or macro
+    // Commands are only commands at the start of a prompt.  Macros can appear
+    // anywhere, and /effort is the single command allowed to behave like one.
     const baseCmd = firstWord.word;
-    if (!VALID_NAMES.has(baseCmd)) continue;
+    const isPromptCommand = wordIndex === 0 && VALID_COMMAND_NAMES.has(baseCmd);
+    const isInlineSlash = VALID_MACRO_NAMES.has(baseCmd) || VALID_INLINE_COMMAND_NAMES.has(baseCmd);
+    if (!isPromptCommand && !isInlineSlash) continue;
     let spanEnd = firstWord.end;
 
     // Walk through subsequent words, extending highlight while args are valid
