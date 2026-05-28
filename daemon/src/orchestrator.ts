@@ -240,6 +240,7 @@ async function orchestrateAssistantTurn(
   if (goalContinuation && conv.goal?.status !== "active") {
     return buildErrorOutcome("No active goal to continue.");
   }
+  const hadGoalAtStart = !!conv.goal;
 
   // ── Start stream and broadcast initial state ──────────────────────
 
@@ -933,8 +934,8 @@ async function orchestrateAssistantTurn(
       }
     }
 
-    if (conv.goal) {
-      server.sendToSubscribers(convId, { type: "goal_updated", convId, goal: conv.goal });
+    if (hadGoalAtStart || conv.goal) {
+      server.sendToSubscribers(convId, { type: "goal_updated", convId, goal: conv.goal ?? null });
     }
 
     ext.onComplete();

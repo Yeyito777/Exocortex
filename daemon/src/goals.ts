@@ -1,7 +1,7 @@
 import type { Conversation, ConversationGoal, ConversationGoalStatus } from "./messages";
 import * as convStore from "./conversations";
 
-export type UserGoalAction = "show" | "set" | "pause" | "resume" | "complete" | "clear";
+export type UserGoalAction = "show" | "set" | "pause" | "resume" | "complete";
 export type ModelGoalAction = "set" | "pause" | "resume" | "complete";
 
 export interface GoalOperationResult {
@@ -15,13 +15,15 @@ export interface GoalSetOptions {
   completable?: boolean;
 }
 
+type IncompleteGoalStatus = Exclude<ConversationGoalStatus, "complete">;
+
 export const GOAL_CONTINUATION_PROMPT = `This is an automated message you're seeing because the user isn't present and you didn't pause / complete the goal you've been working on. Ask yourself: Should you pause it? Are you stuck and need human review? Perhaps you're addressing a tangent rn bc of user request and should also pause? If so pause. Also ask yourself: Should you complete it? is the goal done? Have you completed it thoroughly, accurately, and to a level of satisfaction that when the user comes back he'll most likely say "good job!"? If so, complete it. Else, if you don't need to pause or complete your goal, continue working.`;
 
 export const GOAL_CONTINUATION_NO_PAUSE_PROMPT = `This is an automated message you're seeing because the user isn't present and you didn't complete the goal you've been working on. Ask yourself: Should you complete it? Is the goal done? Have you completed it thoroughly, accurately, and to a level of satisfaction that when the user comes back he'll most likely say "good job!"? If so, complete it. Else continue working.`;
 
 export const GOAL_CONTINUATION_WORK_ONLY_PREFIX = "Continue working on the active goal: ";
 
-export const GOAL_TOOL_SYSTEM_HINT = "When the user requests a hard or long-horizon task use the goal tool to manage it as a goal. When setting a goal, pausable and completable default to true; set completable=false for goals that should continue until the user intervenes, which also forces pausable=false. Only mark a goal as complete when it has been genuinely achieved thoroughly and fully and completion is allowed. Only pause a goal when you *require* user input to continue chasing your goal, don't see any other path forward, and pausing is allowed. Again: only use this tool when the user requests a genuinely hard or long-horizon task. Don't use goals when asked to do simple things like commits or things that could take less than 5 hours.";
+export const GOAL_TOOL_SYSTEM_HINT = "When the user requests a hard or long-horizon task use the goal tool to manage it as a goal. When setting a goal, pausable and completable default to true; set completable=false for goals that should continue until the user intervenes, which also forces pausable=false. Completing a goal clears the active goal. Only complete a goal when it has been genuinely achieved thoroughly and fully and completion is allowed. Only pause a goal when you *require* user input to continue chasing your goal, don't see any other path forward, and pausing is allowed. Again: only use this tool when the user requests a genuinely hard or long-horizon task. Don't use goals when asked to do simple things like commits or things that could take less than 5 hours.";
 
 export function formatGoalSummary(goal: ConversationGoal | null | undefined): string {
   if (!goal) return "No goal set. Usage: /goal <objective>";
@@ -55,19 +57,9 @@ export function goalContinuationUserMessage(goal: ConversationGoal): string {
   return `Continue the active /goal objective now: ${goal.objective}`;
 }
 
-function statusForModelAction(action: Exclude<ModelGoalAction, "set">): ConversationGoalStatus {
-  if (action === "complete") return "complete";
+function statusForModelAction(action: Exclude<ModelGoalAction, "set" | "complete">): IncompleteGoalStatus {
   if (action === "pause") return "paused";
   return "active";
-}
-
-function actionPastTense(action: ModelGoalAction): string {
-  switch (action) {
-    case "set": return "set";
-    case "pause": return "paused";
-    case "resume": return "resumed";
-    case "complete": return "complete";
-  }
 }
 
 export function normalizeGoalSetOptions(options: GoalSetOptions = {}): Required<GoalSetOptions> {
@@ -87,23 +79,27 @@ export function setGoal(convId: string, objective: string, options: GoalSetOptio
   return { ok: true, goal, message: `Goal set: ${trimmed}${goalPermissionFlagSuffix(normalizedOptions)}` };
 }
 
-export function clearGoal(convId: string): GoalOperationResult {
-  const changed = convStore.clearGoal(convId);
-  return { ok: true, goal: null, message: changed ? "Goal cleared." : "No goal set." };
-}
-
-export function updateGoalStatus(convId: string, status: ConversationGoalStatus, message: string, options: { enforceModelPermissions?: boolean } = {}): GoalOperationResult {
+export function updateGoalStatus(convId: string, status: IncompleteGoalStatus, message: string, options: { enforceModelPermissions?: boolean } = {}): GoalOperationResult {
   const currentGoal = convStore.get(convId)?.goal ?? null;
   const enforceModelPermissions = options.enforceModelPermissions ?? false;
   if (enforceModelPermissions && status === "paused" && currentGoal && !goalCanPause(currentGoal)) {
     return { ok: false, goal: currentGoal, message: "This goal cannot be paused." };
   }
-  if (enforceModelPermissions && status === "complete" && currentGoal && !goalCanComplete(currentGoal)) {
-    return { ok: false, goal: currentGoal, message: "This goal cannot be completed." };
-  }
   const goal = convStore.updateGoalStatus(convId, status);
   if (!goal) return { ok: false, goal: null, message: "No goal set." };
   return { ok: true, goal, message };
+}
+
+export function completeGoal(convId: string, message = "Goal complete.", options: { enforceModelPermissions?: boolean } = {}): GoalOperationResult {
+  const currentGoal = convStore.get(convId)?.goal ?? null;
+  const enforceModelPermissions = options.enforceModelPermissions ?? false;
+  if (!currentGoal) return { ok: false, goal: null, message: "No goal set." };
+  if (enforceModelPermissions && !goalCanComplete(currentGoal)) {
+    return { ok: false, goal: currentGoal, message: "This goal cannot be completed." };
+  }
+
+  convStore.clearGoal(convId);
+  return { ok: true, goal: null, message };
 }
 
 export function applyUserGoalAction(conv: Conversation, action: UserGoalAction, objective?: string): GoalOperationResult {
@@ -117,13 +113,12 @@ export function applyUserGoalAction(conv: Conversation, action: UserGoalAction, 
     case "resume":
       return updateGoalStatus(conv.id, "active", "Goal resumed.");
     case "complete":
-      return updateGoalStatus(conv.id, "complete", "Goal complete.");
-    case "clear":
-      return clearGoal(conv.id);
+      return completeGoal(conv.id);
   }
 }
 
 export function applyModelGoalAction(convId: string, action: ModelGoalAction, objective?: string, options?: GoalSetOptions): GoalOperationResult {
   if (action === "set") return setGoal(convId, objective ?? "", options);
-  return updateGoalStatus(convId, statusForModelAction(action), `Goal ${actionPastTense(action)}.`, { enforceModelPermissions: true });
+  if (action === "complete") return completeGoal(convId, "Goal complete.", { enforceModelPermissions: true });
+  return updateGoalStatus(convId, statusForModelAction(action), action === "pause" ? "Goal paused." : "Goal resumed.", { enforceModelPermissions: true });
 }

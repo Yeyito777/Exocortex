@@ -206,7 +206,7 @@ export function summarizeConversation(conv: Conversation): PersistedConversation
     updatedAt: conv.updatedAt,
     messageCount: countConversationMessages(conv.messages),
     title: conv.title,
-    goal: conv.goal ?? null,
+    goal: conv.goal?.status === "complete" ? null : conv.goal ?? null,
     marked: conv.marked,
     pinned: conv.pinned,
     sortOrder: conv.sortOrder,

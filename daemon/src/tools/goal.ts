@@ -12,7 +12,7 @@ function actionFromInput(input: Record<string, unknown>): GoalAction | null {
 
 export const goal: Tool = {
   name: "goal",
-  description: "Manage the active conversation goal. Mirrors the user's /goal command: set a goal, pause when user input is required, resume when no longer blocked, or mark the goal complete.",
+  description: "Manage the active conversation goal. Mirrors the user's /goal command: set a goal, pause when user input is required, resume when no longer blocked, or complete and clear the goal.",
   systemHint: GOAL_TOOL_SYSTEM_HINT,
   inputSchema: {
     type: "object",

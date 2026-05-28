@@ -26,6 +26,7 @@ describe("/goal command", () => {
   test("exposes simple unpausable and uncompletable completions", () => {
     expect(GOAL_COMMAND.args?.map(arg => arg.name)).toContain("unpausable");
     expect(GOAL_COMMAND.args?.map(arg => arg.name)).toContain("uncompletable");
+    expect(GOAL_COMMAND.args?.map(arg => arg.name)).not.toContain("clear");
     expect(GOAL_COMMAND.args?.map(arg => arg.name)).not.toContain("pausable=false");
     expect(GOAL_COMMAND.args?.map(arg => arg.name)).not.toContain("completable=false");
   });

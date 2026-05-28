@@ -664,6 +664,7 @@ export function loadFromDisk(): LoadFromDiskStats {
   }
 
   let normalizedEffortCount = 0;
+  let normalizedGoalCount = 0;
   for (const summary of index.summaries) {
     if (!getProvider(summary.provider)) {
       summary.provider = DEFAULT_PROVIDER_ID;
@@ -674,6 +675,10 @@ export function loadFromDisk(): LoadFromDiskStats {
     if (normalizedEffort !== summary.effort) {
       summary.effort = normalizedEffort;
       normalizedEffortCount++;
+    }
+    if (summary.goal?.status === "complete") {
+      summary.goal = null;
+      normalizedGoalCount++;
     }
     summary.folderId = summary.folderId && folders.has(summary.folderId) ? summary.folderId : null;
     summaries.set(summary.id, summary);
@@ -711,8 +716,8 @@ export function loadFromDisk(): LoadFromDiskStats {
     }
     seen.add(`${summary.folderId ?? "root"}:${summary.pinned}:${summary.sortOrder}`);
   }
-  if (fixed > 0 || normalizedEffortCount > 0 || index.saved) {
-    log("info", `conversations: repaired index (deduplicated=${fixed}, normalizedEffort=${normalizedEffortCount})`);
+  if (fixed > 0 || normalizedEffortCount > 0 || normalizedGoalCount > 0 || index.saved) {
+    log("info", `conversations: repaired index (deduplicated=${fixed}, normalizedEffort=${normalizedEffortCount}, normalizedGoals=${normalizedGoalCount})`);
     if (dirty.size > 0) flushAll();
     else saveSummaryIndex();
   }

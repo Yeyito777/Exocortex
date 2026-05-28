@@ -253,6 +253,35 @@ describe("handler set_goal resume", () => {
     expect(consumeGoalContinuationAfterStream(convId)).toBe(true);
     expect(orchestrateGoalContinuation).not.toHaveBeenCalled();
   });
+
+  test("completing a goal clears it and returns a null goal update", async () => {
+    const convId = mkId("complete-clears");
+    create(convId, "openai", "gpt-5.4");
+    setGoal(convId, "finish the refactor");
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "set_goal", reqId: "req-complete", convId, action: "complete" });
+
+    expect(get(convId)?.goal).toBeNull();
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "goal_updated",
+      reqId: "req-complete",
+      convId,
+      message: "Goal complete.",
+      goal: null,
+    }));
+  });
 });
 
 describe("handler abort", () => {
