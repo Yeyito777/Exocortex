@@ -59,6 +59,12 @@ export const DEFAULT_MODEL_BY_PROVIDER = {
 export const EFFORT_LEVELS: readonly EffortLevel[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 export const DEFAULT_EFFORT: EffortLevel = "high";
 
+/** Default effort fallback when the app only knows the provider/model ids. */
+export function defaultEffortForModelId(providerId: ProviderId, model: ModelId): EffortLevel {
+  if (providerId === "openai" && /^gpt-5\.5(?:-|$)/.test(model)) return "medium";
+  return DEFAULT_EFFORT;
+}
+
 export function supportsEffort(model: Pick<ModelInfo, "supportedEfforts"> | null | undefined, effort: EffortLevel): boolean {
   return model?.supportedEfforts.some((candidate) => candidate.effort === effort) ?? false;
 }

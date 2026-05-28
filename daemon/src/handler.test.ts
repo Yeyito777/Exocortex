@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { consumeGoalContinuationAfterStream, create, get, remove, replaceStreamingDisplayMessages, setGoal, updateGoalStatus } from "./conversations";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "./messages";
+import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
 
 const orchestrateSendMessage = mock(async () => {});
@@ -39,7 +39,7 @@ describe("handler new_conversation defaults", () => {
   });
   afterEach(cleanupIds);
 
-  test("uses OpenAI GPT-5.5 high effort when the client omits model settings", async () => {
+  test("uses OpenAI GPT-5.5 medium effort when the client omits model settings", async () => {
     const sent: Array<Record<string, unknown>> = [];
     const server = {
       sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
@@ -60,7 +60,7 @@ describe("handler new_conversation defaults", () => {
       reqId: "req-defaults",
       provider: DEFAULT_PROVIDER_ID,
       model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID],
-      effort: DEFAULT_EFFORT,
+      effort: defaultEffortForModelId(DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]),
       fastMode: false,
     });
 
@@ -71,7 +71,7 @@ describe("handler new_conversation defaults", () => {
       expect(get(convId)).toMatchObject({
         provider: DEFAULT_PROVIDER_ID,
         model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID],
-        effort: DEFAULT_EFFORT,
+        effort: defaultEffortForModelId(DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]),
         fastMode: false,
       });
     }
@@ -252,6 +252,35 @@ describe("handler set_goal resume", () => {
     }));
     expect(consumeGoalContinuationAfterStream(convId)).toBe(true);
     expect(orchestrateGoalContinuation).not.toHaveBeenCalled();
+  });
+
+  test("completing a goal clears it and returns a null goal update", async () => {
+    const convId = mkId("complete-clears");
+    create(convId, "openai", "gpt-5.4");
+    setGoal(convId, "finish the refactor");
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "set_goal", reqId: "req-complete", convId, action: "complete" });
+
+    expect(get(convId)?.goal).toBeNull();
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "goal_updated",
+      reqId: "req-complete",
+      convId,
+      message: "Goal complete.",
+      goal: null,
+    }));
   });
 });
 

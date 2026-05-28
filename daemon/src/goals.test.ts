@@ -86,7 +86,12 @@ describe("goal permissions", () => {
       ok: false,
       message: "This goal cannot be paused.",
     });
-    expect(applyModelGoalAction(pauseLockedId, "complete")).toMatchObject({ ok: true });
+    expect(applyModelGoalAction(pauseLockedId, "complete")).toMatchObject({
+      ok: true,
+      message: "Goal complete.",
+      goal: null,
+    });
+    expect(get(pauseLockedId)?.goal).toBeNull();
 
     const completeLockedId = makeConversation("complete-locked");
     setGoal(completeLockedId, "do not complete", { completable: false });
@@ -118,8 +123,19 @@ describe("goal permissions", () => {
     expect(applyUserGoalAction(get(convId)!, "complete")).toMatchObject({
       ok: true,
       message: "Goal complete.",
-      goal: expect.objectContaining({ status: "complete" }),
+      goal: null,
     });
+    expect(get(convId)?.goal).toBeNull();
+  });
+
+  test("model completion clears the goal instead of leaving a complete status", () => {
+    const convId = makeConversation("complete-clears");
+    setGoal(convId, "finish and disappear");
+
+    const result = applyModelGoalAction(convId, "complete");
+
+    expect(result).toMatchObject({ ok: true, message: "Goal complete.", goal: null });
+    expect(get(convId)?.goal).toBeNull();
   });
 
   test("formats disabled permissions as CLI-style flags", () => {

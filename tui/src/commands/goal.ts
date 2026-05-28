@@ -49,12 +49,11 @@ function parseSetArgs(rest: string): { objective: string; pausable?: boolean; co
 
 export const GOAL_COMMAND: SlashCommand = {
   name: "/goal",
-  description: "Set/show/pause/resume/clear an auto-continuing goal",
+  description: "Set/show/pause/resume/complete an auto-continuing goal",
   args: [
     { name: "pause", desc: "pause the active goal" },
     { name: "resume", desc: "resume the paused goal" },
-    { name: "complete", desc: "mark the active goal complete" },
-    { name: "clear", desc: "clear the goal" },
+    { name: "complete", desc: "complete and clear the active goal" },
     { name: "unpausable", desc: "set a goal the AI cannot pause" },
     { name: "uncompletable", desc: "set a goal the AI cannot complete or pause" },
   ],
@@ -64,7 +63,6 @@ export const GOAL_COMMAND: SlashCommand = {
     if (rest === "pause") return { type: "goal", action: "pause" };
     if (rest === "resume") return { type: "goal", action: "resume" };
     if (rest === "complete") return { type: "goal", action: "complete" };
-    if (rest === "clear") return { type: "goal", action: "clear" };
     const parsed = parseSetArgs(rest);
     return { type: "goal", action: "set", ...parsed };
   },

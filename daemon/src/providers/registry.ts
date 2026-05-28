@@ -2,6 +2,7 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_ORDER,
   MAX_CONTEXT,
+  defaultEffortForModelId,
   normalizeEffortForModel,
   supportsImageInputsForModel,
   type ProviderId,
@@ -127,11 +128,13 @@ export function getSupportedEfforts(providerId: ProviderId, model: ModelId): Rea
 }
 
 export function getDefaultEffort(providerId: ProviderId, model: ModelId): EffortLevel {
-  return normalizeEffortForModel(getModelInfo(providerId, model), null);
+  return getModelInfo(providerId, model)?.defaultEffort ?? defaultEffortForModelId(providerId, model);
 }
 
 export function normalizeEffort(providerId: ProviderId, model: ModelId, effort: EffortLevel | null | undefined): EffortLevel {
-  return normalizeEffortForModel(getModelInfo(providerId, model), effort);
+  const modelInfo = getModelInfo(providerId, model);
+  if (modelInfo) return normalizeEffortForModel(modelInfo, effort);
+  return effort ?? defaultEffortForModelId(providerId, model);
 }
 
 export function supportsEffort(providerId: ProviderId, model: ModelId, effort: EffortLevel): boolean {

@@ -7,7 +7,7 @@
 
 import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage } from "./messages";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, supportsImageInputsForModel } from "./messages";
+import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId, supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
 import { loadPreferredProvider } from "./preferences";
 import { loadHideSensitiveInfoPreference } from "./privacy";
@@ -418,7 +418,7 @@ export function resetNewConversationDefaults(state: RenderState): void {
   // provider-registry refreshes don't substitute the focused/sole auth provider.
   state.hasChosenProvider = true;
   state.model = DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID];
-  state.effort = DEFAULT_EFFORT;
+  state.effort = defaultEffortForModelId(DEFAULT_PROVIDER_ID, state.model);
   state.fastMode = false;
 }
 
@@ -458,7 +458,7 @@ export function createInitialState(): RenderState {
     provider,
     hasChosenProvider: preferredProvider !== null,
     model: DEFAULT_MODEL_BY_PROVIDER[provider],
-    effort: DEFAULT_EFFORT,
+    effort: defaultEffortForModelId(provider, DEFAULT_MODEL_BY_PROVIDER[provider]),
     fastMode: false,
     goal: null,
     convId: null,

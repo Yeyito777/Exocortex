@@ -619,6 +619,36 @@ describe("save / load round-trip", () => {
       expect(load(id)).toEqual(conv);
     }
   });
+
+  test("legacy completed goals are treated as cleared on load", () => {
+    const id = mkId("completed-goal-load");
+    writeFixture(id, {
+      version: 13,
+      id,
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      messages: [{ role: "user", content: "Done", metadata: null }],
+      createdAt: 14_000_000,
+      updatedAt: 14_000_001,
+      lastContextTokens: null,
+      marked: false,
+      pinned: false,
+      sortOrder: -14_000_001,
+      folderId: null,
+      title: "Completed goal",
+      goal: {
+        objective: "already finished",
+        status: "complete",
+        createdAt: 14_000_000,
+        updatedAt: 14_000_001,
+        turns: 1,
+      },
+    });
+
+    expect(load(id)?.goal).toBeUndefined();
+  });
 });
 
 describe("loadAll()", () => {
@@ -843,5 +873,38 @@ describe("loadAll()", () => {
     } catch {
       /* ignore */
     }
+  });
+
+  test("legacy completed goals are omitted from summaries", () => {
+    const id = mkId("loadall-completed-goal");
+    writeFixture(id, {
+      version: 13,
+      id,
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      messages: [{ role: "user", content: "Done", metadata: null }],
+      createdAt: 17_000_000,
+      updatedAt: 17_000_001,
+      lastContextTokens: null,
+      marked: false,
+      pinned: false,
+      sortOrder: -17_000_001,
+      folderId: null,
+      title: "Completed goal summary",
+      goal: {
+        objective: "already finished",
+        status: "complete",
+        createdAt: 17_000_000,
+        updatedAt: 17_000_001,
+        turns: 1,
+      },
+    });
+
+    const summary = loadAll().find((c) => c.id === id);
+
+    expect(summary).toBeDefined();
+    expect(summary!.goal).toBeNull();
   });
 });

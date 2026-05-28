@@ -14,7 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlink
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
 import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal } from "./messages";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, countConversationMessages, sortConversations, summarizeConversation } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, sortConversations, summarizeConversation } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
@@ -546,7 +546,7 @@ function fromFile(file: ConversationFile): Conversation {
     title: file.title,
   };
   if (file.folderId != null) conv.folderId = file.folderId;
-  if (file.goal != null) conv.goal = file.goal;
+  if (file.goal != null && file.goal.status !== "complete") conv.goal = file.goal;
   return conv;
 }
 
@@ -920,21 +920,9 @@ export function loadAllConversations(): Conversation[] {
 /** Load all conversations from disk, returning summaries sorted by sortOrder. */
 export function loadAll(): ConversationSummary[] {
   const summaries = loadAllConversations().map((conv) => ({
-    id: conv.id,
-    provider: conv.provider,
-    model: conv.model,
-    effort: conv.effort,
-    fastMode: conv.fastMode,
-    createdAt: conv.createdAt,
-    updatedAt: conv.updatedAt,
-    messageCount: countConversationMessages(conv.messages),
-    title: conv.title,
-    marked: conv.marked,
-    pinned: conv.pinned,
+    ...summarizeConversation(conv),
     streaming: false,
     unread: false,
-    sortOrder: conv.sortOrder,
-    folderId: conv.folderId ?? null,
   }));
   sortConversations(summaries);
   return summaries;

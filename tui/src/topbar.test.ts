@@ -49,4 +49,20 @@ describe("topbar rendering", () => {
     expect(rendered).not.toContain("--unpausable");
     expect(rendered).not.toContain("--uncompletable");
   });
+
+  test("does not render legacy completed goals", () => {
+    const state = createInitialState();
+    state.hasChosenProvider = true;
+    state.goal = {
+      objective: "already done",
+      status: "complete",
+      createdAt: 1,
+      updatedAt: 2,
+      turns: 1,
+    };
+
+    const rendered = renderTopbar(state, 120);
+
+    expect(rendered).not.toContain("goal:complete");
+  });
 });

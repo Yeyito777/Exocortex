@@ -34,7 +34,7 @@ export function renderTopbar(state: RenderState, width?: number): string {
     const providerId = typeof state.provider === "string" && state.provider.length > 0 ? state.provider : "unknown";
     const providerLabel = state.providerRegistry.find((provider) => provider.id === providerId)?.label
       ?? (providerId === "openai" ? "OpenAI" : providerId.charAt(0).toUpperCase() + providerId.slice(1));
-    const goalLabel = state.goal ? ` — goal:${state.goal.status}` : "";
+    const goalLabel = state.goal && state.goal.status !== "complete" ? ` — goal:${state.goal.status}` : "";
     rightLabel = `${providerLabel}/${formatModelDisplayName(state.model)} — ${state.effort}${state.fastMode ? " — fast" : ""}${goalLabel}`;
   }
 

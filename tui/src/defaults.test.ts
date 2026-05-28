@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, MAX_CONTEXT, normalizeEffortForModel } from "./messages";
+import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, MAX_CONTEXT, defaultEffortForModelId, normalizeEffortForModel } from "./messages";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState, resetNewConversationDefaults } from "./state";
 
@@ -26,7 +26,7 @@ describe("tui defaults", () => {
 
     expect(String(state.provider)).toBe(DEFAULT_PROVIDER_ID);
     expect(String(state.model)).toBe(DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
-    expect(String(state.effort)).toBe(DEFAULT_EFFORT);
+    expect(String(state.effort)).toBe(defaultEffortForModelId(DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]));
     expect(state.fastMode).toBe(false);
   });
 
@@ -34,14 +34,19 @@ describe("tui defaults", () => {
     expect(MAX_CONTEXT[DEFAULT_MODEL_BY_PROVIDER.openai]).toBe(272_000);
   });
 
-  test("gpt-5.5-style defaults normalize to high effort", () => {
+  test("gpt-5.5-style defaults normalize to medium effort", () => {
     expect(normalizeEffortForModel({
       supportedEfforts: [
         { effort: "low", description: "low" },
         { effort: "medium", description: "medium" },
         { effort: "high", description: "high" },
       ],
-      defaultEffort: "high",
-    }, null)).toBe("high");
+      defaultEffort: "medium",
+    }, null)).toBe("medium");
+  });
+
+  test("fallback default effort is medium for gpt-5.5-family OpenAI models", () => {
+    expect(defaultEffortForModelId("openai", "gpt-5.5")).toBe("medium");
+    expect(defaultEffortForModelId("openai", "gpt-5.5-pro")).toBe("medium");
   });
 });
