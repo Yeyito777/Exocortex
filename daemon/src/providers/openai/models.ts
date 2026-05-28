@@ -19,7 +19,7 @@ export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
     label: formatModelDisplayName("gpt-5.5"),
     maxContext: 272_000,
     supportedEfforts: FALLBACK_OPENAI_EFFORTS,
-    defaultEffort: "high",
+    defaultEffort: "medium",
     supportsImages: supportsOpenAIImageInputs("gpt-5.5"),
   },
   {
@@ -103,9 +103,11 @@ function isPreferredOpenAIModel(model: OpenAICodexModel, preferredFamily: Primar
 }
 
 function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel | undefined): EffortLevel {
-  // Product preference: make the primary OpenAI defaults land on high effort,
-  // even if the upstream model metadata reports a lower default.
-  if (modelSlug === "gpt-5.5" || modelSlug === "gpt-5.4") return "high";
+  // Product preference: use medium effort for GPT-5.5-family models, even if
+  // upstream model metadata reports a higher default.
+  if (isOpenAIModelInFamily(modelSlug, "gpt-5.5")) return "medium";
+  // Keep the older primary OpenAI default on high effort.
+  if (modelSlug === "gpt-5.4") return "high";
   return apiDefaultEffort ?? "medium";
 }
 

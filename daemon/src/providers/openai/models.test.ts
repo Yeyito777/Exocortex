@@ -128,6 +128,30 @@ describe("OpenAI model selection", () => {
       "gpt-5.4-mini",
       "gpt-5.3-codex-spark",
     ]);
-    expect(models[0]?.defaultEffort).toBe("high");
+    expect(models[0]?.defaultEffort).toBe("medium");
+  });
+
+  test("defaults every GPT-5.5-family model to medium effort", () => {
+    const models = selectOpenAIModelsForTest([
+      {
+        slug: "gpt-5.5-pro",
+        display_name: "gpt-5.5-pro",
+        supported_in_api: true,
+        visibility: "list",
+        priority: 1,
+        default_reasoning_level: "high",
+      },
+      {
+        slug: "gpt-5.5-mini",
+        display_name: "gpt-5.5-mini",
+        supported_in_api: true,
+        visibility: "list",
+        priority: 2,
+        default_reasoning_level: "high",
+      },
+    ]);
+
+    expect(models.find((model) => model.id === "gpt-5.5-pro")?.defaultEffort).toBe("medium");
+    expect(models.find((model) => model.id === "gpt-5.5-mini")?.defaultEffort).toBe("medium");
   });
 });

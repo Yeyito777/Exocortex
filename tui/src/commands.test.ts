@@ -3,7 +3,7 @@ import { defaultExocortexConfig, readExocortexConfig, writeExocortexConfig } fro
 import { getCommandArgs, tryCommand } from "./commands";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, type ProviderInfo, type TokenStatsSnapshot, type TokenUsageTotals } from "./messages";
+import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId, type ProviderInfo, type TokenStatsSnapshot, type TokenUsageTotals } from "./messages";
 import { theme } from "./theme";
 
 const providers: ProviderInfo[] = [
@@ -165,7 +165,7 @@ describe("/new", () => {
     expect(state.contextTokens).toBeNull();
     expect(String(state.provider)).toBe(DEFAULT_PROVIDER_ID);
     expect(String(state.model)).toBe(DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
-    expect(String(state.effort)).toBe(DEFAULT_EFFORT);
+    expect(String(state.effort)).toBe(defaultEffortForModelId(DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]));
     expect(state.fastMode).toBe(false);
     expect(state.hasChosenProvider).toBe(true);
   });
