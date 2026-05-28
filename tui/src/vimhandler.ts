@@ -147,6 +147,7 @@ export function processVimKey(
       state.cursorPos = result.cursor;
       resetPromptCurswant();
       state.vim.mode = result.mode;
+      if (result.yankText !== undefined) copyToClipboard(result.yankText);
       return { type: "handled" };
 
     case "undo": {

@@ -174,6 +174,14 @@ function executeVisualCommand(
           return { type: "visual_edit", buffer: newBuf, cursor: newCursor, mode: "normal" };
         }
 
+        case "visual_delete_yank": {
+          if (context !== "prompt") return exitVisual(vim, cursor);
+          const newBuf = buffer.slice(0, start) + buffer.slice(end);
+          const newCursor = clampNormal(newBuf, start);
+          exitVisual(vim, newCursor);
+          return { type: "visual_edit", buffer: newBuf, cursor: newCursor, mode: "normal", yankText: text };
+        }
+
         case "visual_change": {
           if (context !== "prompt") return exitVisual(vim, cursor);
           const newBuf = buffer.slice(0, start) + buffer.slice(end);

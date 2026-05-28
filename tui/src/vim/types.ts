@@ -86,8 +86,8 @@ export type VimResult =
   | { type: "yank"; text: string }
   /** Paste requested — caller reads clipboard, inserts at position. */
   | { type: "paste"; position: "after" | "before" }
-  /** Visual selection deleted/changed in prompt. */
-  | { type: "visual_edit"; buffer: string; cursor: number; mode: VimMode }
+  /** Visual selection deleted/changed in prompt. Optional yank text is copied by caller. */
+  | { type: "visual_edit"; buffer: string; cursor: number; mode: VimMode; yankText?: string }
   /** Undo/redo requested — caller manages the stack. */
   | { type: "undo" }
   | { type: "redo" }
