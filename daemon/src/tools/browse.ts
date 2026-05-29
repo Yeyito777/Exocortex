@@ -16,19 +16,30 @@ import { complete } from "../llm";
 import { formatToolAbortMessage } from "../abort";
 import { log } from "../log";
 import { getInnerLlmSummaryOptions } from "./inner-llm";
+import { createHash } from "node:crypto";
 
 // ── Constants ──────────────────────────────────────────────────────
 
 const CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 const MAX_CACHE_ENTRIES = 50;
+const SUMMARY_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+const MAX_SUMMARY_CACHE_ENTRIES = 100;
 const BROWSE_USER_AGENT = "Mozilla/5.0 (compatible; Exocortex/1.0)";
 const BROWSE_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
-const BROWSE_MAX_TOKENS = 8192;
+const BROWSE_MAX_TOKENS = 4096;
+const SUMMARY_MARKDOWN_MAX_CHARS = 200_000;
+const SUMMARY_MARKDOWN_HEAD_CHARS = 160_000;
+const SUMMARY_MARKDOWN_TAIL_CHARS = SUMMARY_MARKDOWN_MAX_CHARS - SUMMARY_MARKDOWN_HEAD_CHARS;
 const BLOCKED_CRATES_PATTERN = /API data access policy/i;
 
 interface CachedPage {
   content: string;
   pageUrl: string;
+  ts: number;
+}
+
+interface CachedSummary {
+  content: string;
   ts: number;
 }
 
@@ -40,29 +51,64 @@ interface FetchedPage {
 // ── Cache ──────────────────────────────────────────────────────────
 
 const fetchCache = new Map<string, CachedPage>();
+const summaryCache = new Map<string, CachedSummary>();
 
 function cleanCache(): void {
   const now = Date.now();
   for (const [key, entry] of fetchCache) {
     if (now - entry.ts > CACHE_TTL) fetchCache.delete(key);
   }
+  for (const [key, entry] of summaryCache) {
+    if (now - entry.ts > SUMMARY_CACHE_TTL) summaryCache.delete(key);
+  }
+}
+
+function evictOldest<T extends { ts: number }>(cache: Map<string, T>): void {
+  let oldestKey: string | null = null;
+  let oldestTs = Infinity;
+  for (const [key, entry] of cache) {
+    if (entry.ts < oldestTs) {
+      oldestTs = entry.ts;
+      oldestKey = key;
+    }
+  }
+  if (oldestKey !== null) cache.delete(oldestKey);
 }
 
 function setCacheEntry(url: string, pageUrl: string, content: string): void {
   // Evict the oldest entry by timestamp when at capacity.
   if (fetchCache.size >= MAX_CACHE_ENTRIES) {
-    let oldestKey: string | null = null;
-    let oldestTs = Infinity;
-    for (const [key, entry] of fetchCache) {
-      if (entry.ts < oldestTs) {
-        oldestTs = entry.ts;
-        oldestKey = key;
-      }
-    }
-    if (oldestKey !== null) fetchCache.delete(oldestKey);
+    evictOldest(fetchCache);
   }
 
   fetchCache.set(url, { content, pageUrl, ts: Date.now() });
+}
+
+function hashText(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function prepareMarkdownForSummary(markdown: string): string {
+  if (markdown.length <= SUMMARY_MARKDOWN_MAX_CHARS) return markdown;
+
+  const omitted = markdown.length - SUMMARY_MARKDOWN_MAX_CHARS;
+  return [
+    markdown.slice(0, SUMMARY_MARKDOWN_HEAD_CHARS),
+    `\n\n---\n[Browse note: omitted ${omitted.toLocaleString()} characters from the middle of this large page to keep summarization fast. The end of the page follows.]\n---\n\n`,
+    markdown.slice(-SUMMARY_MARKDOWN_TAIL_CHARS),
+  ].join("");
+}
+
+function getSummaryCacheEntry(key: string): string | null {
+  cleanCache();
+  const cached = summaryCache.get(key);
+  if (!cached) return null;
+  return cached.content;
+}
+
+function setSummaryCacheEntry(key: string, content: string): void {
+  if (summaryCache.size >= MAX_SUMMARY_CACHE_ENTRIES) evictOldest(summaryCache);
+  summaryCache.set(key, { content, ts: Date.now() });
 }
 
 function buildSummaryHeader(url: string, prompt?: string): string {
@@ -153,8 +199,9 @@ async function fetchPage(fetchUrl: string, originalUrl: URL, signal?: AbortSigna
   }
 
   const rawBody = await res.text();
+  const markdown = responseBodyToMarkdown(rawBody, res.headers.get("content-type") ?? "", finalUrl);
   return {
-    markdown: responseBodyToMarkdown(rawBody, res.headers.get("content-type") ?? "", finalUrl),
+    markdown,
     pageUrl: finalUrl,
   };
 }
@@ -179,7 +226,8 @@ async function getPageContent(fetchUrl: string, originalUrl: URL, signal?: Abort
 const SUMMARIZE_SYSTEM = [
   "You are a web page digestor. You receive the markdown content of a web page and a user prompt describing what they're looking for.",
   "Your job:",
-  "- Produce an extensive, and thorough digest of the markdown that addresses the user's prompt.",
+  "- Produce a focused, useful digest of the markdown that directly addresses the user's prompt.",
+  "- Prefer concise answers; include detail when the prompt asks for it or the page needs it for accuracy.",
   "- At the very end of your response, include a markdown section exactly titled: ## Relevant Links, then include links you consider relevant. Max 7 links.",
   "- For each link, use markdown numbered-list format: 1. [Title](URL)",
   "- Mention links inline if you think they are important to understanding the page; keep the dedicated Relevant Links section for follow-up exploration.",
@@ -193,11 +241,27 @@ async function summarizeContent(
   context?: ToolExecutionContext,
   signal?: AbortSignal,
 ): Promise<string> {
-  const userMessage = buildSummaryHeader(url, prompt) + markdown;
+  const summaryMarkdown = prepareMarkdownForSummary(markdown);
+  const userMessage = buildSummaryHeader(url, prompt) + summaryMarkdown;
 
   try {
     const llmOptions = getInnerLlmSummaryOptions(context);
-    log("info", `browse: summarizing ${url} (${markdown.length} chars) with ${llmOptions.provider}/${llmOptions.model}`);
+    const cacheKey = JSON.stringify({
+      provider: llmOptions.provider,
+      model: llmOptions.model,
+      effort: llmOptions.effort,
+      serviceTier: llmOptions.serviceTier ?? null,
+      prompt: prompt ?? "",
+      url,
+      markdownHash: hashText(summaryMarkdown),
+    });
+    const cached = getSummaryCacheEntry(cacheKey);
+    if (cached) {
+      log("debug", `browse: summary cache hit for ${url}`);
+      return cached;
+    }
+
+    log("info", `browse: summarizing ${url} (${summaryMarkdown.length}/${markdown.length} chars) with ${llmOptions.provider}/${llmOptions.model} effort=${llmOptions.effort} serviceTier=${llmOptions.serviceTier ?? "default"}`);
     const result = await complete(SUMMARIZE_SYSTEM, userMessage, {
       ...llmOptions,
       maxTokens: BROWSE_MAX_TOKENS,
@@ -208,7 +272,9 @@ async function summarizeContent(
       },
     });
     log("info", `browse: summary done (${result.text.length} chars, in=${result.inputTokens ?? "?"}, out=${result.outputTokens ?? "?"})`);
-    return `Summary of ${url}:\n\n${result.text}`;
+    const summary = `Summary of ${url}:\n\n${result.text}`;
+    setSummaryCacheEntry(cacheKey, summary);
+    return summary;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log("warn", `browse: summarization failed (${msg}), returning raw content`);

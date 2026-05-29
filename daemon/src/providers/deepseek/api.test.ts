@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ApiMessage } from "../../messages";
 import { buildDeepSeekMessagesForTest, readDeepSeekEventsForTest } from "./api";
+import { buildRequestBody } from "./request";
 
 describe("DeepSeek chat backend", () => {
   test("streams reasoning, text, tool calls, and usage", () => {
@@ -93,5 +94,14 @@ describe("DeepSeek chat backend", () => {
       },
       { role: "tool", tool_call_id: "call_1", content: "Created /tmp/a" },
     ]);
+  });
+
+  test("none effort disables thinking mode", () => {
+    const body = buildRequestBody([
+      { role: "user", content: "hello" },
+    ], "deepseek-v4-flash", { effort: "none" });
+
+    expect(body.thinking).toEqual({ type: "disabled" });
+    expect(body.reasoning_effort).toBeUndefined();
   });
 });

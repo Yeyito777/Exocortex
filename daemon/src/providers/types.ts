@@ -95,6 +95,8 @@ export interface StreamOptions {
   promptCacheKey?: string;
   /** Token-accounting metadata for this request. */
   tracking?: TokenTrackingContext;
+  /** Prefer a simple HTTP/SSE request for one-shot, tool-free calls when the provider supports it. */
+  preferHttp?: boolean;
   /** Provider-created state shared by all model rounds within one assistant turn. */
   turnSession?: ProviderTurnSession;
 }
