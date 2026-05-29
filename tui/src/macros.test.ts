@@ -27,8 +27,20 @@ describe("macro expansion", () => {
     expect(expandMacros("/exocortex daemon-quality")).toContain("Once done, test the daemon in the worktree end to end with exo-cli to make sure nothing broke. Check exo-cli -h first to see how to test in worktree.");
   });
 
-  test("/worktree exposes setup, ready, and merge helpers", () => {
-    expect(getMacroArgs()["/worktree"]?.map(arg => arg.name)).toEqual(["setup", "ready", "merge"]);
+  test("/worktree exposes setup, ready, merge, and clean helpers", () => {
+    expect(getMacroArgs()["/worktree"]?.map(arg => arg.name)).toEqual(["setup", "ready", "merge", "clean"]);
+  });
+
+  test("/worktree clean expands to a rejection cleanup prompt", () => {
+    const expanded = expandMacros("/worktree clean hosted-web-run");
+
+    expect(expanded).toContain("The work in this worktree is rejected.");
+    expect(expanded).toContain("Do not merge it");
+    expect(expanded).toContain("do not preserve the changes");
+    expect(expanded).toContain("verify it is a linked worktree and not main");
+    expect(expanded).toContain("./scripts/dev/clean-worktree <name-or-path>");
+    expect(expanded).toContain("force-remove the worktree/branch");
+    expect(expanded).toEndWith("hosted-web-run");
   });
 
   test("/worktree setup expands to a concise reference-based setup prompt", () => {
