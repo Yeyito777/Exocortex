@@ -104,18 +104,6 @@ export function createHandler(server: DaemonServer) {
     if (shouldAutoGenerateTitle(convId)) startTitleGeneration(server, convId);
   };
 
-  const ensureConversationInSubagentsFolder = (convId: string): void => {
-    const folder = convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME);
-    if (!folder) {
-      log("warn", `handler: failed to ensure ${SUBAGENTS_FOLDER_NAME} folder for detached subagent ${convId}`);
-      return;
-    }
-    if ((convStore.getSummary(convId)?.folderId ?? null) === folder.id) return;
-    if (convStore.moveConversationToFolder(convId, folder.id)) {
-      server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
-    }
-  };
-
   // ── Subagent parent notifications ────────────────────────────────
 
   const textFromBlocks = (blocks: import("./messages").Block[]): string => blocks
@@ -514,7 +502,6 @@ export function createHandler(server: DaemonServer) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Already streaming" });
             break;
           }
-          if (cmd.notifyParent) ensureConversationInSubagentsFolder(cmd.convId);
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
           const turn = orchestrateSendMessage(
             server, null, undefined, cmd.convId, cmd.text, cmd.startedAt, callbacks, cmd.images,

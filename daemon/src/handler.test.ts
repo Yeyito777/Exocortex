@@ -1,9 +1,17 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { consumeGoalContinuationAfterStream, create, get, remove, replaceStreamingDisplayMessages, setGoal, updateGoalStatus } from "./conversations";
+import { consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getSummary, remove, replaceStreamingDisplayMessages, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
 
-const orchestrateSendMessage = mock(async () => {});
+const makeAssistantOutcome = () => ({
+  ok: true as const,
+  blocks: [],
+  tokens: 0,
+  durationMs: 0,
+  endedAt: Date.now(),
+});
+
+const orchestrateSendMessage = mock(async () => makeAssistantOutcome());
 const orchestrateReplayConversation = mock(async () => {});
 const orchestrateGoalContinuation = mock(async () => {});
 
@@ -28,6 +36,8 @@ function cleanupIds(): void {
     clearActiveJob(id);
     remove(id);
   }
+  const subagentsFolder = findTopLevelFolderByName("subagents");
+  if (subagentsFolder) deleteFolder(subagentsFolder.id);
 }
 
 describe("handler new_conversation defaults", () => {
@@ -123,6 +133,79 @@ describe("handler new_conversation defaults", () => {
       convId: "../bad",
       message: "Invalid or duplicate client-supplied conversation id",
     }));
+  });
+});
+
+describe("handler subagent folder placement", () => {
+  beforeEach(() => {
+    orchestrateSendMessage.mockClear();
+    orchestrateReplayConversation.mockClear();
+    orchestrateGoalContinuation.mockClear();
+    cleanupIds();
+  });
+  afterEach(cleanupIds);
+
+  test("places newly-created subagent conversations in the subagents folder", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "new_conversation", reqId: "req-new-subagent", subagent: true });
+
+    const created = sent.find((event) => event.type === "conversation_created");
+    const convId = created?.convId as string | undefined;
+    expect(convId).toBeTruthy();
+    if (convId) IDS.push(convId);
+
+    const subagentsFolder = findTopLevelFolderByName("subagents");
+    expect(subagentsFolder).toBeTruthy();
+    expect(convId ? getSummary(convId)?.folderId : null).toBe(subagentsFolder?.id);
+    expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation_moved" }));
+  });
+
+  test("does not re-home existing conversations on detached parent-notifying sends", async () => {
+    const parentId = mkId("parent-notify-target");
+    const childId = mkId("existing-detached-child");
+    create(parentId, "openai", "gpt-5.4", "parent");
+    create(childId, "openai", "gpt-5.4", "existing child");
+    const subagentsFolder = ensureTopLevelFolder("subagents");
+    expect(subagentsFolder).toBeTruthy();
+    expect(getSummary(childId)?.folderId ?? null).toBeNull();
+    setActiveJob(parentId, new AbortController(), Date.now());
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "send_message",
+      reqId: "req-existing-detached",
+      convId: childId,
+      text: "continue this existing conversation",
+      startedAt: 123,
+      detached: true,
+      notifyParent: { convId: parentId },
+    });
+
+    expect(sent).toContainEqual(expect.objectContaining({ type: "ack", reqId: "req-existing-detached", convId: childId }));
+    expect(getSummary(childId)?.folderId ?? null).toBeNull();
+    expect(server.broadcast).not.toHaveBeenCalledWith(expect.objectContaining({ type: "conversation_moved" }));
   });
 });
 
