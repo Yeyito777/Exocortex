@@ -12,7 +12,8 @@
 
 import { streamMessage } from "./api";
 import { log } from "./log";
-import type { ProviderId, ModelId, TokenTrackingContext } from "./messages";
+import type { ProviderId, ModelId, EffortLevel, TokenTrackingContext } from "./messages";
+import type { ServiceTier } from "./providers/types";
 import { getDefaultModel, getDefaultProvider } from "./providers/registry";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -24,6 +25,12 @@ export interface CompleteOptions {
   model?: ModelId;
   /** Max output tokens. Defaults to 4096. */
   maxTokens?: number;
+  /** Optional reasoning effort override for utility completions. */
+  effort?: EffortLevel;
+  /** Optional provider latency/capacity tier for utility completions. */
+  serviceTier?: ServiceTier;
+  /** Prefer a simple HTTP/SSE provider request for one-shot completions. */
+  preferHttp?: boolean;
   /** Abort signal for cancellation. */
   signal?: AbortSignal;
   /** Optional token-accounting metadata for this helper request. */
@@ -73,6 +80,9 @@ export async function complete(
   const {
     provider = getDefaultProvider().id,
     maxTokens = 4096,
+    effort,
+    serviceTier,
+    preferHttp,
     signal,
     tracking,
     promptCacheKey,
@@ -82,7 +92,7 @@ export async function complete(
 
   const messages = [{ role: "user" as const, content: userText }];
 
-  log("info", `llm: inner completion (provider=${provider}, model=${model}, maxTokens=${maxTokens}, input=${userText.length} chars)`);
+  log("info", `llm: inner completion (provider=${provider}, model=${model}, effort=${effort ?? "default"}, serviceTier=${serviceTier ?? "default"}, maxTokens=${maxTokens}, input=${userText.length} chars)`);
 
   const result = await streamMessage(provider, messages, model, {
     onText: noop,
@@ -90,6 +100,9 @@ export async function complete(
   }, {
     system,
     maxTokens,
+    effort,
+    serviceTier,
+    preferHttp,
     signal,
     tracking,
     promptCacheKey: effectivePromptCacheKey,

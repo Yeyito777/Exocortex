@@ -392,6 +392,30 @@ export interface VerifiedOpenAISession {
   accountKey: string | null;
 }
 
+const VERIFIED_SESSION_CACHE_TTL_MS = 60_000;
+
+let verifiedSessionCache: (VerifiedOpenAISession & {
+  checkedAt: number;
+}) | null = null;
+
+function cacheVerifiedSession(session: VerifiedOpenAISession): VerifiedOpenAISession {
+  verifiedSessionCache = { ...session, checkedAt: Date.now() };
+  return session;
+}
+
+function cachedVerifiedSessionFor(stored: StoredOpenAIAuth): VerifiedOpenAISession | null {
+  const cached = verifiedSessionCache;
+  if (!cached) return null;
+  if (Date.now() - cached.checkedAt > VERIFIED_SESSION_CACHE_TTL_MS) return null;
+  if (cached.accessToken !== stored.tokens.accessToken) return null;
+  if (cached.accountId !== stored.accountId) return null;
+  return {
+    accessToken: cached.accessToken,
+    accountId: cached.accountId,
+    accountKey: cached.accountKey,
+  };
+}
+
 export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}): Promise<VerifiedOpenAISession> {
   const pool = loadStoredAuthPool();
   if (pool.accounts.length === 0) {
@@ -401,6 +425,11 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
   const index = normalizeCurrentIndex(pool.currentIndex, pool.accounts.length);
   const stored = pool.accounts[index];
 
+  const cached = !opts.forceRefresh && stored?.tokens?.accessToken && !isTokenExpired(stored.tokens)
+    ? cachedVerifiedSessionFor(stored)
+    : null;
+  if (cached) return cached;
+
   if (
     stored?.tokens?.accessToken
     && !opts.forceRefresh
@@ -409,7 +438,7 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
   ) {
     const enriched = await enrichStoredAuth(stored);
     saveAccountAt(index, enriched);
-    return { accessToken: enriched.tokens.accessToken, accountId: enriched.accountId, accountKey: getAccountKey(enriched) };
+    return cacheVerifiedSession({ accessToken: enriched.tokens.accessToken, accountId: enriched.accountId, accountKey: getAccountKey(enriched) });
   }
 
   if (stored?.tokens?.refreshToken) {
@@ -420,13 +449,13 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
       fallbackIdToken: stored.idToken,
     });
     saveAccountAt(index, refreshed);
-    return { accessToken: refreshed.tokens.accessToken, accountId: refreshed.accountId, accountKey: getAccountKey(refreshed) };
+    return cacheVerifiedSession({ accessToken: refreshed.tokens.accessToken, accountId: refreshed.accountId, accountKey: getAccountKey(refreshed) });
   }
 
   if (stored?.tokens?.accessToken && await verifyStoredSession(stored.tokens.accessToken, stored.accountId)) {
     const enriched = await enrichStoredAuth(stored);
     saveAccountAt(index, enriched);
-    return { accessToken: enriched.tokens.accessToken, accountId: enriched.accountId, accountKey: getAccountKey(enriched) };
+    return cacheVerifiedSession({ accessToken: enriched.tokens.accessToken, accountId: enriched.accountId, accountKey: getAccountKey(enriched) });
   }
 
   throw new AuthError("Current OpenAI account could not be verified. Use `/account <email>` or `/login openai add`.");

@@ -5,13 +5,13 @@ import { readExocortexConfig } from "@exocortex/shared/config";
 import { createHash } from "crypto";
 import { getCurrentAccountKey, getVerifiedSession } from "./auth";
 import { AuthError, isNonRetryableProviderError } from "../errors";
-import { OPENAI_CODEX_RESPONSES_WS_URL } from "./constants";
+import { OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL } from "./constants";
 import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "./cookies";
 import { buildOpenAIInput, buildRequestBody } from "./request";
 import { mergeReasoningSummaries } from "./reasoning";
 import { OpenAIWebSocketClosedBeforeResponseStartedError, readOpenAIResponsesWebSocket } from "./responses-websocket";
-import { readOpenAIEventsForTest } from "./stream";
+import { createOpenAIEventAccumulator, readOpenAIEventsForTest } from "./stream";
 import { connectOpenAIWebSocket, OpenAIWebSocketHttpError, type OpenAIWebSocketConnection } from "./websocket";
 import { OPENAI_USAGE_ACCOUNT_KEY_HEADER } from "./usage";
 import type { ProviderTurnSession, StreamCallbacks, StreamOptions, StreamResult } from "../types";
@@ -194,6 +194,129 @@ function isKnownPreviousResponseOutputItem(item: unknown): boolean {
   if (!isRecord(item)) return false;
   if (item.type === "reasoning" || item.type === "function_call") return true;
   return item.type === "message" && item.role === "assistant";
+}
+
+interface ServerSentEvent {
+  event?: string;
+  data: string;
+}
+
+function parseServerSentEvents(buffer: string): { events: ServerSentEvent[]; rest: string } {
+  const parts = buffer.split(/\r?\n\r?\n/);
+  const rest = parts.pop() ?? "";
+  const events: ServerSentEvent[] = [];
+
+  for (const part of parts) {
+    let event: string | undefined;
+    const dataLines: string[] = [];
+    for (const line of part.split(/\r?\n/)) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+    }
+    if (dataLines.length > 0) events.push({ event, data: dataLines.join("\n") });
+  }
+
+  return { events, rest };
+}
+
+async function readOpenAIResponsesHttpSse(
+  res: Response,
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal,
+): Promise<StreamResult> {
+  const body = res.body;
+  if (!body) throw new Error("OpenAI HTTP response had no body");
+
+  const accumulator = createOpenAIEventAccumulator(callbacks);
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    if (signal?.aborted) throw createAbortError();
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parsed = parseServerSentEvents(buffer);
+    buffer = parsed.rest;
+
+    for (const event of parsed.events) {
+      if (event.data === "[DONE]") return accumulator.finalize();
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(event.data) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      accumulator.handle(payload);
+      if (payload.type === "response.completed" || payload.type === "response.incomplete") {
+        return accumulator.finalize();
+      }
+    }
+  }
+
+  throw new Error("OpenAI HTTP stream ended before response.completed");
+}
+
+async function streamMessageHttpWithSession(
+  session: OpenAIRequestSession,
+  messages: ApiMessage[],
+  model: ModelId,
+  callbacks: StreamCallbacks,
+  options: StreamOptions = {},
+): Promise<StreamResult> {
+  const requestCallbacks = callbacksForSession(callbacks, session);
+  const requestBody = buildRequestBody(messages, model, options);
+  const headers: Record<string, string> = {
+    ...buildOpenAIRequestHeaders(session, options),
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
+  };
+  // The Codex HTTP endpoint streams Server-Sent Events. The websocket beta
+  // header switches the backend into websocket mode and can make HTTP fail.
+  delete headers["OpenAI-Beta"];
+  const cookieHeader = buildCloudflareCookieHeader(OPENAI_CODEX_RESPONSES_URL);
+  if (cookieHeader) headers.Cookie = cookieHeader;
+
+  const res = await fetch(OPENAI_CODEX_RESPONSES_URL, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(requestBody),
+    signal: options.signal,
+  });
+
+  storeCloudflareCookiesFromHeaders(OPENAI_CODEX_RESPONSES_URL, res.headers);
+  requestCallbacks.onHeaders?.(res.headers);
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    if (res.status === 401) throw new AuthError("OpenAI authentication failed. Re-run `bun run src/main.ts login openai`.");
+    throw new OpenAIWebSocketHttpError(res.status, res.headers, body);
+  }
+
+  const result = await readOpenAIResponsesHttpSse(res, requestCallbacks, options.signal);
+  const input = Array.isArray(requestBody.input) ? requestBody.input : [];
+  result.requestDiagnostics = {
+    usedIncremental: false,
+    previousResponseIdUsed: false,
+    incrementalInputItems: input.length,
+    fullInputItems: input.length,
+    connectionReused: false,
+    fallbackReason: "http_sse",
+    requestShapeHash: hashValue(cloneWithoutInput(requestBody)),
+    inputPrefixHash: hashValue(input.slice(0, Math.min(input.length, 8))),
+  };
+  return result;
+}
+
+export async function streamMessageHttpWithSessionForTest(
+  session: OpenAIRequestSession,
+  messages: ApiMessage[],
+  model: ModelId,
+  callbacks: StreamCallbacks,
+  options: StreamOptions = {},
+): Promise<StreamResult> {
+  return streamMessageHttpWithSession(session, messages, model, callbacks, options);
 }
 
 /**
@@ -819,6 +942,9 @@ export async function streamMessage(
     ? await turnSession.getVerifiedRequestSession(callbacks, signal)
     : await getVerifiedSessionWithRetries(callbacks, signal);
   try {
+    if (options.preferHttp && !turnSession && (!options.tools || options.tools.length === 0)) {
+      return await streamMessageHttpWithSession(session, messages, model, callbacks, options);
+    }
     return await streamMessageWithSession(session, messages, model, callbacks, options);
   } catch (err) {
     if (!isOpenAIAuthFailure(err)) throw err;
@@ -831,6 +957,9 @@ export async function streamMessage(
       throw err;
     }
 
+    if (options.preferHttp && !turnSession && (!options.tools || options.tools.length === 0)) {
+      return streamMessageHttpWithSession(refreshed, messages, model, callbacks, options);
+    }
     return streamMessageWithSession(refreshed, messages, model, callbacks, options);
   }
 }

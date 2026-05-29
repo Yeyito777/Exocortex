@@ -12,11 +12,12 @@ import {
   readOpenAIEventsForTest,
   setOpenAIWebSocketIdleTimeoutMsForTest,
   shouldRetryOpenAIUsageLimitResetForTest,
+  streamMessageHttpWithSessionForTest,
   streamMessage,
   streamMessageWithSession,
 } from "./api";
 import { clearProviderAuth, saveProviderAuth } from "../../store";
-import { OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_TOKEN_URL } from "./constants";
+import { OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_TOKEN_URL } from "./constants";
 import { clearCloudflareCookiesForTest } from "./cookies";
 import type { StoredOpenAIAuth } from "./session";
 import { OpenAIWebSocketHttpError, setOpenAIWebSocketConnectorForTest, type OpenAIWebSocketConnection } from "./websocket";
@@ -124,12 +125,53 @@ describe("OpenAI replay input", () => {
     expect(body.service_tier).toBe("priority");
   });
 
+  test("one-shot HTTP transport parses SSE responses without websocket beta headers", async () => {
+    globalThis.fetch = mock((input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(OPENAI_CODEX_RESPONSES_URL);
+      const headers = init?.headers as Record<string, string>;
+      expect(headers["OpenAI-Beta"]).toBeUndefined();
+      expect(headers.Accept).toBe("text/event-stream");
+      const body = [
+        `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_1" } })}`,
+        `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1" } })}`,
+        `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "OK" })}`,
+        `event: response.output_text.done\ndata: ${JSON.stringify({ type: "response.output_text.done", output_index: 0, content_index: 0, text: "OK" })}`,
+        `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 3, output_tokens: 1 }, output: [{ type: "message", id: "msg_1", content: [{ type: "output_text", text: "OK" }] }] } })}`,
+        "",
+      ].join("\n\n");
+      return Promise.resolve(new Response(body, { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const result = await streamMessageHttpWithSessionForTest(
+      { accessToken: "test-token", accountId: null },
+      [{ role: "user", content: "hello" }],
+      "gpt-5.4-mini",
+      { onText: () => {}, onThinking: () => {} },
+      { effort: "none", preferHttp: true },
+    );
+
+    expect(result.text).toBe("OK");
+    expect(result.inputTokens).toBe(3);
+    expect(result.outputTokens).toBe(1);
+    expect(result.requestDiagnostics?.fallbackReason).toBe("http_sse");
+  });
+
   test("reasoning summary defaults to detailed for models that support it", () => {
     const body = buildRequestBodyForTest([
       { role: "user", content: "hello" },
     ], "gpt-5.4", 1234, {});
 
     expect((body.reasoning as { summary?: string }).summary).toBe("detailed");
+  });
+
+  test("none effort disables reasoning summaries", () => {
+    const body = buildRequestBodyForTest([
+      { role: "user", content: "hello" },
+    ], "gpt-5.4-mini", 1234, { effort: "none" });
+
+    expect((body.reasoning as { effort?: string; summary?: string }).effort).toBe("none");
+    expect((body.reasoning as { summary?: string }).summary).toBeUndefined();
+    expect(body.include).toEqual([]);
   });
 
   test("omits reasoning summary for gpt-5.3-codex-spark", () => {

@@ -250,19 +250,20 @@ function shouldRequestReasoningSummary(model: ModelId): boolean {
 function buildRequestShape(model: ModelId, options: StreamOptions): OpenAIRequestShape {
   const tools = buildOpenAITools(options.tools);
   const serviceTier = mapServiceTier(options.serviceTier);
+  const effort = mapEffort(options.effort);
   return {
     model,
     instructions: options.system || "You are a helpful assistant.",
     tool_choice: "auto",
     parallel_tool_calls: true,
-    include: ["reasoning.encrypted_content"],
+    include: effort === "none" ? [] : ["reasoning.encrypted_content"],
     reasoning: {
-      effort: mapEffort(options.effort),
+      effort,
       // Always request the fullest summary OpenAI exposes when the selected
       // model accepts that parameter. Codex Spark rejects `reasoning.summary`
       // with a 400, so omit it there and fall back to whatever reasoning data
       // the backend emits by default.
-      ...(shouldRequestReasoningSummary(model) ? { summary: OPENAI_REASONING_SUMMARY } : {}),
+      ...(effort !== "none" && shouldRequestReasoningSummary(model) ? { summary: OPENAI_REASONING_SUMMARY } : {}),
     },
     ...(serviceTier ? { service_tier: serviceTier } : {}),
     ...(tools ? { tools } : {}),
