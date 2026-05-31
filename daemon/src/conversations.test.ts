@@ -290,6 +290,19 @@ describe("sidebar ordering", () => {
     expect(moveSidebarItem({ type: "conversation", id: ids[2] }, "down")).toBe(true);
     expect(rootConversationOrder(ids)).toEqual([ids[0], ids[2], ids[1], ids[3]]);
   });
+
+  test("manual moves survive reload before the debounced index save", () => {
+    const ids = ["reload-move-one", "reload-move-two", "reload-move-three", "reload-move-four"].map(mkId);
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+    expect(rootConversationOrder(ids)).toEqual(ids);
+
+    expect(moveSidebarItem({ type: "conversation", id: ids[1] }, "down")).toBe(true);
+    expect(rootConversationOrder(ids)).toEqual([ids[0], ids[2], ids[1], ids[3]]);
+
+    loadFromDisk();
+
+    expect(rootConversationOrder(ids)).toEqual([ids[0], ids[2], ids[1], ids[3]]);
+  });
 });
 
 describe("createWithInitialUserMessage", () => {

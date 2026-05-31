@@ -46,7 +46,19 @@ function saveUnreadState(): void {
 
 // ── Summary/index persistence helpers ──────────────────────────────
 
-function saveSummaryIndex(): void {
+// Reordering large sidebars can persist several conversation files per keypress.
+// Keep those file writes synchronous, but debounce the monolithic summary index
+// rewrite so repeated e/Shift+E moves do not stat/stringify every chat twice per
+// step. If the daemon exits before the debounce fires, the next load repairs the
+// stale index from the changed conversation file mtimes; graceful shutdown calls
+// flushAll(), which writes it immediately.
+const SUMMARY_INDEX_DEBOUNCE_MS = 1000;
+let summaryIndexDirty = false;
+let summaryIndexSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+type SummaryIndexFlushMode = "immediate" | "defer";
+
+function saveSummaryIndexNow(): void {
   const entries: persistence.ConversationIndexEntry[] = [];
   for (const summary of summaries.values()) {
     const loaded = conversations.get(summary.id);
@@ -61,6 +73,34 @@ function saveSummaryIndex(): void {
     }
   }
   persistence.saveConversationIndex(entries);
+}
+
+function clearSummaryIndexSaveTimer(): void {
+  if (!summaryIndexSaveTimer) return;
+  clearTimeout(summaryIndexSaveTimer);
+  summaryIndexSaveTimer = null;
+}
+
+function scheduleSummaryIndexSave(): void {
+  summaryIndexDirty = true;
+  clearSummaryIndexSaveTimer();
+  summaryIndexSaveTimer = setTimeout(() => {
+    summaryIndexSaveTimer = null;
+    if (!summaryIndexDirty) return;
+    summaryIndexDirty = false;
+    saveSummaryIndexNow();
+  }, SUMMARY_INDEX_DEBOUNCE_MS);
+  summaryIndexSaveTimer.unref?.();
+}
+
+function saveSummaryIndex(mode: SummaryIndexFlushMode = "immediate"): void {
+  if (mode === "defer") {
+    scheduleSummaryIndexSave();
+    return;
+  }
+  summaryIndexDirty = false;
+  clearSummaryIndexSaveTimer();
+  saveSummaryIndexNow();
 }
 
 function updateSummaryFromConversation(conv: Conversation): void {
@@ -125,13 +165,13 @@ function getItemSortOrder(item: SidebarItemRef): number | undefined {
   return folders.get(item.id)?.sortOrder;
 }
 
-function setItemSortOrder(item: SidebarItemRef, sortOrder: number): boolean {
+function setItemSortOrder(item: SidebarItemRef, sortOrder: number, summaryIndex: SummaryIndexFlushMode = "immediate"): boolean {
   if (item.type === "conversation") {
     const conv = get(item.id);
     if (!conv) return false;
     conv.sortOrder = sortOrder;
     markDirty(conv.id);
-    flush(conv.id);
+    flush(conv.id, { summaryIndex });
     return true;
   }
   const folder = folders.get(item.id);
@@ -741,18 +781,19 @@ export function markDirty(id: string): void {
 }
 
 /** Flush a dirty conversation to disk. */
-export function flush(id: string): void {
+export function flush(id: string, options: { summaryIndex?: SummaryIndexFlushMode } = {}): void {
   if (!dirty.has(id)) return;
   const conv = conversations.get(id);
   if (!conv) return;
   persistence.save(conv);
   dirty.delete(id);
   updateSummaryFromConversation(conv);
-  saveSummaryIndex();
+  saveSummaryIndex(options.summaryIndex ?? "immediate");
 }
 
 /** Flush all dirty conversations. */
 export function flushAll(): void {
+  clearSummaryIndexSaveTimer();
   for (const id of dirty) {
     const conv = conversations.get(id);
     if (!conv) continue;
@@ -760,7 +801,8 @@ export function flushAll(): void {
     updateSummaryFromConversation(conv);
   }
   dirty.clear();
-  saveSummaryIndex();
+  summaryIndexDirty = false;
+  saveSummaryIndexNow();
 }
 
 /** Track chunk count and flush every N chunks. Returns true on save boundaries. */
@@ -928,11 +970,11 @@ export function moveSidebarItem(item: SidebarItemRef, direction: "up" | "down"):
   if (currentOrder === undefined) return false;
   const targetRef: SidebarItemRef = { type: target.type, id: target.id };
   const targetOrder = target.sortOrder;
-  setItemSortOrder(item, targetOrder);
-  setItemSortOrder(targetRef, currentOrder);
+  setItemSortOrder(item, targetOrder, "defer");
+  setItemSortOrder(targetRef, currentOrder, "defer");
 
   if (targetOrder === currentOrder) {
-    setItemSortOrder(item, currentOrder + (direction === "up" ? -0.5 : 0.5));
+    setItemSortOrder(item, currentOrder + (direction === "up" ? -0.5 : 0.5), "defer");
   }
   return true;
 }
@@ -1006,7 +1048,7 @@ export function moveSidebarItems(
       conv.pinned = pinned;
       conv.sortOrder = order;
       markDirty(conv.id);
-      flush(conv.id);
+      flush(conv.id, { summaryIndex: "defer" });
       moved = true;
     } else {
       const folder = folders.get(item.id);
