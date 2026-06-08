@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { defaultExocortexConfig, readExocortexConfig, writeExocortexConfig } from "@exocortex/shared/config";
+import { configuredConversationDefaults, defaultExocortexConfig, readExocortexConfig, saveConversationDefaults, writeExocortexConfig } from "@exocortex/shared/config";
 import { getCommandArgs, tryCommand } from "./commands";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
@@ -168,6 +168,89 @@ describe("/new", () => {
     expect(String(state.effort)).toBe(defaultEffortForModelId(DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]));
     expect(state.fastMode).toBe(false);
     expect(state.hasChosenProvider).toBe(true);
+  });
+});
+
+describe("/default-model command", () => {
+  test("saves an explicit provider/model/effort/fast default and applies it to a draft", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    const result = tryCommand("/default-model openai/gpt-5.4 high fast", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(configuredConversationDefaults()).toEqual({
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "high",
+      fastMode: true,
+    });
+    expect(String(state.provider)).toBe("openai");
+    expect(String(state.model)).toBe("gpt-5.4");
+    expect(String(state.effort)).toBe("high");
+    expect(state.fastMode).toBe(true);
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toContain("Default model saved");
+  });
+
+  test("saves the current selection", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "deepseek";
+    state.model = "deepseek-v4-pro";
+    state.effort = "max";
+    state.fastMode = false;
+
+    const result = tryCommand("/default-model current", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(configuredConversationDefaults()).toEqual({
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      effort: "max",
+      fastMode: false,
+    });
+  });
+
+  test("resets to the app default", () => {
+    saveConversationDefaults({ provider: "openai", model: "gpt-5.4", effort: "high", fastMode: true });
+    const state = createInitialState();
+
+    const result = tryCommand("/default-model reset", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(configuredConversationDefaults()).toBeNull();
+    expect(String(state.provider)).toBe(DEFAULT_PROVIDER_ID);
+    expect(String(state.model)).toBe(DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    expect(String(state.effort)).toBe(defaultEffortForModelId(DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]));
+    expect(state.fastMode).toBe(false);
+  });
+
+  test("rejects unsupported fast mode", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    const result = tryCommand("/default-model deepseek/pro max fast", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(configuredConversationDefaults()).toBeNull();
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Fast mode is only available for deepseek conversations that support it.");
+  });
+
+  test("registers nested autocomplete entries", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    const args = getCommandArgs(state);
+
+    expect(args["/default-model"].map((item) => item.name)).toEqual(expect.arrayContaining([
+      "current",
+      "reset",
+      "openai",
+      "openai/gpt-5.4",
+    ]));
+    expect(args["/default-model openai"].map((item) => item.name)).toContain("gpt-5.4");
+    expect(args["/default-model openai/gpt-5.4"].map((item) => item.name)).toEqual(expect.arrayContaining(["high", "fast", "off"]));
+    expect(args["/default-model openai/gpt-5.4 high"].map((item) => item.name)).toEqual(["fast", "off"]);
   });
 });
 

@@ -1,6 +1,7 @@
 import type { RenderState } from "./state";
 import { ACCOUNT_COMMAND } from "./commands/account";
 import { CONVO_COMMAND } from "./commands/convo";
+import { DEFAULT_MODEL_COMMAND } from "./commands/default-model";
 import { EFFORT_COMMAND } from "./commands/effort";
 import { FAST_COMMAND } from "./commands/fast";
 import { GOAL_COMMAND } from "./commands/goal";
@@ -33,6 +34,7 @@ const commands: SlashCommand[] = [
   REPLAY_COMMAND,
   RENAME_COMMAND,
   MODEL_COMMAND,
+  DEFAULT_MODEL_COMMAND,
   TRIM_COMMAND,
   EFFORT_COMMAND,
   FAST_COMMAND,

@@ -8,6 +8,7 @@
  */
 
 import { log } from "./log";
+import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import { refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { orchestrateGoalContinuation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
@@ -50,6 +51,25 @@ export function createHandler(server: DaemonServer) {
   };
   const unknownModelMessage = (provider: import("./messages").ProviderId, model: string): string => {
     return `Unknown model for provider ${provider}: ${model}. Available models: ${describeAvailableModels(provider)}`;
+  };
+  const inferProviderForModel = (model: string | undefined): import("./messages").ProviderId | undefined => {
+    const lowered = model?.trim().toLowerCase();
+    if (!lowered) return undefined;
+    if (lowered === "pro" || lowered === "flash" || lowered.startsWith("deepseek-") || lowered.startsWith("v4-")) return "deepseek";
+    if (lowered.startsWith("gpt-") || lowered.startsWith("o1") || lowered.startsWith("o3") || lowered.startsWith("o4")) return "openai";
+    return undefined;
+  };
+  const modelDefaultForProvider = (provider: import("./messages").ProviderId): string => {
+    const defaults = effectiveConversationDefaults();
+    return provider === defaults.provider ? defaults.model : getDefaultModel(provider);
+  };
+  const effortDefaultForSelection = (provider: import("./messages").ProviderId, model: string): import("./messages").EffortLevel | undefined => {
+    const defaults = effectiveConversationDefaults();
+    return provider === defaults.provider && model === defaults.model ? defaults.effort : undefined;
+  };
+  const fastDefaultForSelection = (provider: import("./messages").ProviderId, model: string): boolean => {
+    const defaults = effectiveConversationDefaults();
+    return provider === defaults.provider && model === defaults.model && defaults.fastMode;
   };
   const formatOpenAIAccount = (account: ReturnType<typeof listOpenAIAccounts>[number]): string => {
     const marker = account.current ? "*" : " ";
@@ -283,7 +303,8 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid or duplicate client-supplied conversation id" });
           break;
         }
-        const provider = cmd.provider ?? getDefaultProvider().id;
+        const conversationDefaults = effectiveConversationDefaults();
+        const provider = cmd.provider ?? inferProviderForModel(cmd.model) ?? conversationDefaults.provider;
         const providerInfo = getProvider(provider);
         if (!providerInfo) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Unknown provider: ${provider}` });
@@ -298,13 +319,19 @@ export function createHandler(server: DaemonServer) {
           });
           break;
         }
-        const model = cmd.model ?? getDefaultModel(provider);
-        const effort = normalizeEffort(provider, model, cmd.effort);
-        const fastMode = cmd.fastMode === true;
-        if (fastMode && !supportsFastMode(provider)) {
+        const model = cmd.model ?? (provider === conversationDefaults.provider ? conversationDefaults.model : getDefaultModel(provider));
+        const defaultEffort = provider === conversationDefaults.provider && model === conversationDefaults.model
+          ? conversationDefaults.effort
+          : undefined;
+        const effort = normalizeEffort(provider, model, cmd.effort ?? defaultEffort);
+        const requestedFastMode = typeof cmd.fastMode === "boolean"
+          ? cmd.fastMode
+          : (provider === conversationDefaults.provider && model === conversationDefaults.model ? conversationDefaults.fastMode : false);
+        if (cmd.fastMode === true && !supportsFastMode(provider)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Fast mode is only available for ${provider} conversations that support it.` });
           break;
         }
+        const fastMode = requestedFastMode && supportsFastMode(provider);
         const initialMessage = cmd.initialMessage;
         const goalObjective = cmd.goalObjective?.trim();
         if (goalObjective && !hasConfiguredCredentials(provider)) {
@@ -555,7 +582,7 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot switch provider/model while the conversation is streaming." });
           break;
         }
-        const nextProvider = cmd.provider ?? conv.provider;
+        const nextProvider = cmd.provider ?? inferProviderForModel(cmd.model) ?? conv.provider;
         if (!getProvider(nextProvider)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Unknown provider: ${nextProvider}` });
           break;
@@ -958,12 +985,12 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "llm_complete": {
-        const provider = cmd.provider ?? getDefaultProvider().id;
+        const provider = cmd.provider ?? inferProviderForModel(cmd.model) ?? effectiveConversationDefaults().provider;
         if (!getProvider(provider)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Unknown provider: ${provider}` });
           break;
         }
-        const model = cmd.model ?? getDefaultModel(provider);
+        const model = cmd.model ?? modelDefaultForProvider(provider);
         if (cmd.model && !isKnownModel(provider, cmd.model) && !allowsCustomModels(provider)) {
           server.sendTo(client, {
             type: "error",
@@ -984,6 +1011,8 @@ export function createHandler(server: DaemonServer) {
           provider,
           model,
           maxTokens,
+          effort: effortDefaultForSelection(provider, model),
+          serviceTier: fastDefaultForSelection(provider, model) && supportsFastMode(provider) ? "fast" : undefined,
           tracking: { source: cmd.trackingSource ?? "llm_complete" },
         })
           .then((result) => {

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { clearConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
 import { consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getSummary, remove, replaceStreamingDisplayMessages, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
@@ -45,9 +46,13 @@ describe("handler new_conversation defaults", () => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
     orchestrateGoalContinuation.mockClear();
+    clearConversationDefaults();
     cleanupIds();
   });
-  afterEach(cleanupIds);
+  afterEach(() => {
+    clearConversationDefaults();
+    cleanupIds();
+  });
 
   test("uses OpenAI GPT-5.5 medium effort when the client omits model settings", async () => {
     const sent: Array<Record<string, unknown>> = [];
@@ -85,6 +90,98 @@ describe("handler new_conversation defaults", () => {
         fastMode: false,
       });
     }
+  });
+
+  test("uses configured conversation defaults when the client omits model settings", async () => {
+    saveConversationDefaults({ provider: "openai", model: "gpt-5.4", effort: "high", fastMode: true });
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "new_conversation", reqId: "req-configured-defaults" });
+
+    const created = sent.find((event) => event.type === "conversation_created");
+    expect(created).toMatchObject({
+      type: "conversation_created",
+      reqId: "req-configured-defaults",
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "high",
+      fastMode: true,
+    });
+
+    const convId = created?.convId as string | undefined;
+    expect(convId).toBeTruthy();
+    if (convId) {
+      IDS.push(convId);
+      expect(get(convId)).toMatchObject({
+        provider: "openai",
+        model: "gpt-5.4",
+        effort: "high",
+        fastMode: true,
+      });
+    }
+  });
+
+  test("explicit provider/model overrides configured defaults", async () => {
+    saveConversationDefaults({ provider: "openai", model: "gpt-5.4", effort: "high", fastMode: true });
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "new_conversation", reqId: "req-explicit", provider: "deepseek", model: "deepseek-v4-pro" });
+
+    const created = sent.find((event) => event.type === "conversation_created");
+    expect(created).toMatchObject({
+      type: "conversation_created",
+      reqId: "req-explicit",
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      effort: "high",
+      fastMode: false,
+    });
+  });
+
+  test("an explicit OpenAI model infers OpenAI even when the saved default provider differs", async () => {
+    saveConversationDefaults({ provider: "deepseek", model: "deepseek-v4-pro", effort: "max", fastMode: false });
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "new_conversation", reqId: "req-model-infer", model: "gpt-5.4" });
+
+    const created = sent.find((event) => event.type === "conversation_created");
+    expect(created).toMatchObject({
+      type: "conversation_created",
+      reqId: "req-model-infer",
+      provider: "openai",
+      model: "gpt-5.4",
+      fastMode: false,
+    });
   });
 
   test("honors a client-supplied conversation id", async () => {

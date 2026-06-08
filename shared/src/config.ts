@@ -9,6 +9,15 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { isAbsolute, join, resolve } from "path";
+import {
+  DEFAULT_MODEL_BY_PROVIDER,
+  DEFAULT_PROVIDER_ID,
+  EFFORT_LEVELS,
+  defaultEffortForModelId,
+  type EffortLevel,
+  type ModelId,
+  type ProviderId,
+} from "./messages";
 import { agentCwdDir, configDir, repoRoot } from "./paths";
 
 export type SafetyDenylistEntry = string | {
@@ -80,6 +89,31 @@ export interface PingConfig {
   sound?: string | null;
 }
 
+export interface ConversationDefaultsConfig {
+  /** Provider used for newly-created conversations when a client does not override it. */
+  provider?: ProviderId;
+  /** Provider-scoped model id used for newly-created conversations. */
+  model?: ModelId;
+  /** Reasoning effort used for newly-created conversations. */
+  effort?: EffortLevel;
+  /** Whether OpenAI fast service tier is enabled for newly-created conversations. */
+  fastMode?: boolean;
+}
+
+export interface DefaultsConfig {
+  /** User-configured conversation defaults. Absence means product defaults. */
+  conversation?: ConversationDefaultsConfig;
+  /** Preserve unknown future/user default blocks. */
+  [key: string]: unknown;
+}
+
+export interface ConversationDefaults {
+  provider: ProviderId;
+  model: ModelId;
+  effort: EffortLevel;
+  fastMode: boolean;
+}
+
 export interface TuiConfig {
   /** If true, the TUI censors account/email labels in status and auth UI. */
   hideSensitiveInfo?: boolean;
@@ -88,6 +122,8 @@ export interface TuiConfig {
 export interface ExocortexConfig {
   /** Active TUI theme name. */
   theme?: string;
+  /** User-overridable app defaults. */
+  defaults?: DefaultsConfig;
   /** Agent/runtime behavior. */
   agent?: AgentConfig;
   /** TUI ping behavior when an assistant stream finishes. */
@@ -178,6 +214,18 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isProviderId(value: unknown): value is ProviderId {
+  return value === "openai" || value === "deepseek";
+}
+
+function isEffortLevel(value: unknown): value is EffortLevel {
+  return typeof value === "string" && (EFFORT_LEVELS as readonly string[]).includes(value);
+}
+
+function normalizeModelId(value: unknown): ModelId | null {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
 function parseJsonObject(path: string): Record<string, unknown> | null {
   try {
     const data = JSON.parse(readFileSync(path, "utf8"));
@@ -229,4 +277,63 @@ export function updateExocortexConfig(mutator: (config: ExocortexConfig) => Exoc
   const next = replacement ?? config;
   writeExocortexConfig(next);
   return next;
+}
+
+export function productConversationDefaults(provider: ProviderId = DEFAULT_PROVIDER_ID): ConversationDefaults {
+  const model = DEFAULT_MODEL_BY_PROVIDER[provider];
+  return {
+    provider,
+    model,
+    effort: defaultEffortForModelId(provider, model),
+    fastMode: false,
+  };
+}
+
+/**
+ * Return the user-saved conversation defaults from a config object, if present.
+ * This performs only schema-level normalization; provider/model capability
+ * validation lives in the TUI/daemon, where the live provider registry exists.
+ */
+export function configuredConversationDefaults(config: ExocortexConfig = readExocortexConfig()): ConversationDefaults | null {
+  const defaults = config.defaults;
+  if (!isObject(defaults)) return null;
+  const conversation = defaults.conversation;
+  if (!isObject(conversation)) return null;
+
+  const provider = isProviderId(conversation.provider) ? conversation.provider : DEFAULT_PROVIDER_ID;
+  const model = normalizeModelId(conversation.model) ?? DEFAULT_MODEL_BY_PROVIDER[provider];
+  const effort = isEffortLevel(conversation.effort)
+    ? conversation.effort
+    : defaultEffortForModelId(provider, model);
+
+  return {
+    provider,
+    model,
+    effort,
+    fastMode: conversation.fastMode === true,
+  };
+}
+
+/** Return the active conversation defaults, falling back to product defaults. */
+export function effectiveConversationDefaults(config: ExocortexConfig = readExocortexConfig()): ConversationDefaults {
+  return configuredConversationDefaults(config) ?? productConversationDefaults();
+}
+
+/** Persist a complete user conversation default, preserving unrelated config keys. */
+export function saveConversationDefaults(defaults: ConversationDefaults): void {
+  updateExocortexConfig((config) => {
+    config.defaults = {
+      ...(isObject(config.defaults) ? config.defaults : {}),
+      conversation: { ...defaults },
+    };
+  });
+}
+
+/** Remove the user conversation default override, preserving unrelated config keys. */
+export function clearConversationDefaults(): void {
+  updateExocortexConfig((config) => {
+    if (!isObject(config.defaults)) return;
+    delete config.defaults.conversation;
+    if (Object.keys(config.defaults).length === 0) delete config.defaults;
+  });
 }

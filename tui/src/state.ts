@@ -6,8 +6,9 @@
  */
 
 import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
+import { configuredConversationDefaults, effectiveConversationDefaults, productConversationDefaults, type ConversationDefaults } from "@exocortex/shared/config";
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage } from "./messages";
-import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId, supportsImageInputsForModel } from "./messages";
+import { DEFAULT_MODEL_BY_PROVIDER, defaultEffortForModelId, supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage } from "./messages";
 import { loadPreferredProvider } from "./preferences";
 import { loadHideSensitiveInfoPreference } from "./privacy";
@@ -411,15 +412,27 @@ export function modelSupportsImages(state: RenderState, provider = state.provide
   return supportsImageInputsForModel(getModelInfo(state, provider, model));
 }
 
-/** Reset the pending-new-conversation settings to the product defaults. */
+/** Reset the pending-new-conversation settings to the configured app defaults. */
 export function resetNewConversationDefaults(state: RenderState): void {
-  state.provider = DEFAULT_PROVIDER_ID;
-  // Treat the product default as the selected blank-chat provider so later
+  const defaults = effectiveConversationDefaults();
+  state.provider = defaults.provider;
+  // Treat the configured default as the selected blank-chat provider so later
   // provider-registry refreshes don't substitute the focused/sole auth provider.
   state.hasChosenProvider = true;
-  state.model = DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID];
-  state.effort = defaultEffortForModelId(DEFAULT_PROVIDER_ID, state.model);
-  state.fastMode = false;
+  state.model = defaults.model;
+  state.effort = defaults.effort;
+  state.fastMode = defaults.fastMode;
+}
+
+function defaultSelectionForPreferredProvider(provider: ProviderId | null): ConversationDefaults {
+  if (!provider) return productConversationDefaults();
+  const model = DEFAULT_MODEL_BY_PROVIDER[provider];
+  return {
+    provider,
+    model,
+    effort: defaultEffortForModelId(provider, model),
+    fastMode: false,
+  };
 }
 
 // ── Focus transition helpers ──────────────────────────────────────
@@ -446,20 +459,22 @@ export function focusSidebar(state: RenderState): void {
 }
 
 export function createInitialState(): RenderState {
+  const configuredDefaults = configuredConversationDefaults();
   const preferredProvider = loadPreferredProvider();
-  const provider = preferredProvider ?? DEFAULT_PROVIDER_ID;
+  const defaults = configuredDefaults ?? defaultSelectionForPreferredProvider(preferredProvider);
+  const provider = defaults.provider;
   const hideSensitiveInfo = loadHideSensitiveInfoPreference();
 
   const s: RenderState = {
-    messages: [],
+ 	    messages: [],
     pendingAI: null,
     pendingAIHydratedFromSnapshot: false,
     suppressPendingAIMetadataStartedAt: null,
-    provider,
-    hasChosenProvider: preferredProvider !== null,
-    model: DEFAULT_MODEL_BY_PROVIDER[provider],
-    effort: defaultEffortForModelId(provider, DEFAULT_MODEL_BY_PROVIDER[provider]),
-    fastMode: false,
+	    provider,
+	    hasChosenProvider: configuredDefaults !== null || preferredProvider !== null,
+	    model: defaults.model,
+	    effort: defaults.effort,
+	    fastMode: defaults.fastMode,
     goal: null,
     convId: null,
     inputBuffer: "",

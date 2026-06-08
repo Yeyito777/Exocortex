@@ -245,6 +245,25 @@ describe("autocomplete with vim Escape", () => {
     expect(state.cursorPos).toBe(5);
   });
 
+  test("/default-model command and nested args autocomplete", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    typePromptText(state, "/def");
+    expect(state.autocomplete?.type).toBe("command");
+    expect(state.autocomplete?.matches.map(match => match.name)).toContain("/default-model");
+
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("/default-model");
+
+    typePromptText(state, " openai/gpt-5.4 h");
+    expect(state.autocomplete?.type).toBe("command");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["high"]);
+
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("/default-model openai/gpt-5.4 high");
+  });
+
   test("Escape after tab-completing a mid-message macro enters normal mode without undoing the completion", () => {
     const state = createInitialState();
 
