@@ -9,6 +9,7 @@
 import type { Tool, ToolResult, ToolSummary } from "./types";
 import { cap, getString, getNumber, safeSlice, summarizeParams } from "./util";
 import { log } from "../log";
+import { isValidImagePayload } from "../image-validation";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -58,31 +59,56 @@ async function compressImage(
 ): Promise<{ base64: string; mediaType: string; compressedBytes: number } | { error: string }> {
   const { tmpdir } = await import("os");
   const tmpOut = `${tmpdir()}/exocortex-compress-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+  let sawOversizedOutput = false;
+  let lastFailure = "";
 
   try {
     for (const quality of COMPRESSION_QUALITIES) {
-      const proc = Bun.spawn(
-        ["magick", filePath, "-resize", `${MAX_DIMENSION_PX}x${MAX_DIMENSION_PX}>`, "-quality", quality.toString(), tmpOut],
-        { stdout: "pipe", stderr: "pipe" },
-      );
-      const stderr = await new Response(proc.stderr).text();
+      let proc: ReturnType<typeof Bun.spawn>;
+      try {
+        proc = Bun.spawn(
+          ["magick", filePath, "-resize", `${MAX_DIMENSION_PX}x${MAX_DIMENSION_PX}>`, "-quality", quality.toString(), tmpOut],
+          { stdout: "pipe", stderr: "pipe" },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { error: `Error: ImageMagick is required to validate/convert this image before sending it to the provider: ${msg}` };
+      }
+      const stderr = await new Response(proc.stderr as ReadableStream<Uint8Array>).text();
       const exitCode = await proc.exited;
 
       if (exitCode !== 0) {
-        log("warn", `compressImage: magick exit ${exitCode}: ${stderr.slice(0, 200)}`);
+        lastFailure = stderr.trim() || `ImageMagick exited with code ${exitCode}`;
+        log("warn", `compressImage: magick exit ${exitCode}: ${lastFailure.slice(0, 200)}`);
         continue;
       }
 
       const compressedFile = Bun.file(tmpOut);
-      if (!await compressedFile.exists()) continue;
+      if (!await compressedFile.exists()) {
+        lastFailure = "ImageMagick did not produce an output file";
+        continue;
+      }
 
       const compressedBytes = await compressedFile.arrayBuffer();
       const base64 = Buffer.from(compressedBytes).toString("base64");
 
+      if (!isValidImagePayload("image/jpeg", base64)) {
+        lastFailure = "ImageMagick produced a JPEG that failed integrity checks";
+        log("warn", `compressImage: ${lastFailure}`);
+        continue;
+      }
+
       if (base64.length <= MAX_BASE64_BYTES) {
         return { base64, mediaType: "image/jpeg", compressedBytes: compressedBytes.byteLength };
       }
+      sawOversizedOutput = true;
       log("debug", `compressImage: quality ${quality} → ${formatMB(base64.length)} MB base64, still over limit`);
+    }
+
+    if (!sawOversizedOutput) {
+      return {
+        error: `Error: image could not be decoded/converted by ImageMagick, so it was not sent to the provider.${lastFailure ? ` ${lastFailure}` : ""}`,
+      };
     }
 
     return {
@@ -94,6 +120,20 @@ async function compressImage(
 }
 
 // ── Image file reading ─────────────────────────────────────────────
+
+async function validateImageReadable(filePath: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn(["magick", filePath, "null:"], { stdout: "pipe", stderr: "pipe" });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `ImageMagick is required to validate this image before sending it to the provider: ${msg}` };
+  }
+  const stderr = await new Response(proc.stderr as ReadableStream<Uint8Array>).text();
+  const exitCode = await proc.exited;
+  if (exitCode === 0) return { ok: true };
+  return { ok: false, error: stderr.trim() || `ImageMagick exited with code ${exitCode}` };
+}
 
 /** Use ImageMagick `identify` to get image dimensions. Returns null on failure. */
 async function getImageDimensions(filePath: string): Promise<{ width: number; height: number } | null> {
@@ -132,7 +172,14 @@ async function readImageFile(filePath: string): Promise<ToolResult> {
     const dims = await getImageDimensions(filePath);
     const oversized = dims != null && (dims.width > MAX_DIMENSION_PX || dims.height > MAX_DIMENSION_PX);
 
-    if (base64.length <= MAX_BASE64_BYTES && mediaType && !oversized) {
+    if (base64.length <= MAX_BASE64_BYTES && mediaType && dims && !oversized && isValidImagePayload(mediaType, base64)) {
+      const validation = await validateImageReadable(filePath);
+      if (!validation.ok) {
+        return {
+          output: `Error: image ${filePath} could not be decoded safely, so it was not sent to the provider. ${validation.error}`,
+          isError: true,
+        };
+      }
       return {
         output: `Read image: ${filePath} (${formatMB(sizeBytes)} MB${dims ? `, ${dims.width}×${dims.height}` : ""})`,
         isError: false,
@@ -140,10 +187,16 @@ async function readImageFile(filePath: string): Promise<ToolResult> {
       };
     }
 
-    // Need compression / resize
-    const reason = oversized
-      ? `dimensions ${dims!.width}×${dims!.height} exceed ${MAX_DIMENSION_PX}px limit`
-      : `base64 size ${formatMB(base64.length)} MB`;
+    // Need validation, compression, resize, or conversion to a provider-safe JPEG.
+    const reasons: string[] = [];
+    if (!mediaType) reasons.push(`format ${ext || "(none)"} needs conversion`);
+    if (base64.length > MAX_BASE64_BYTES) reasons.push(`base64 size ${formatMB(base64.length)} MB exceeds ${formatMB(MAX_BASE64_BYTES)} MB limit`);
+    if (!dims) reasons.push("dimensions/readability could not be verified");
+    if (oversized) reasons.push(`dimensions ${dims!.width}×${dims!.height} exceed ${MAX_DIMENSION_PX}px limit`);
+    if (mediaType && base64.length <= MAX_BASE64_BYTES && dims && !oversized && !isValidImagePayload(mediaType, base64)) {
+      reasons.push("payload failed image integrity checks");
+    }
+    const reason = reasons.join("; ") || "provider-safe validation required";
     log("info", `readImageFile: ${filePath} needs compression (${reason}, format: ${ext})`);
     const result = await compressImage(filePath, base64.length);
 

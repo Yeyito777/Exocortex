@@ -4,6 +4,7 @@ import { buildPromptCacheBodyFields } from "./cache";
 import { supportsOpenAIReasoningSummary } from "./capabilities";
 import { buildCodexClientMetadata } from "./identity";
 import type { OpenAIReasoningItem } from "./types";
+import { isValidImagePayload } from "../../image-validation";
 
 export type OpenAIInputItem =
   | { type: "message"; role: "user"; content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string }> }
@@ -50,39 +51,6 @@ function mapEffort(effort: EffortLevel | undefined): string {
 
 function encodeImage(mediaType: string, base64: string): string {
   return `data:${mediaType};base64,${base64}`;
-}
-
-function isStrictBase64(value: string): boolean {
-  return value.length > 0
-    && value.length % 4 === 0
-    && /^[A-Za-z0-9+/]+={0,2}$/.test(value)
-    && !/=/.test(value.slice(0, -2));
-}
-
-function isValidImagePayload(mediaType: string, base64: string): boolean {
-  if (!isStrictBase64(base64)) return false;
-
-  const bytes = Buffer.from(base64, "base64");
-  switch (mediaType) {
-    case "image/png":
-      return bytes.length >= 8
-        && bytes[0] === 0x89
-        && bytes[1] === 0x50
-        && bytes[2] === 0x4e
-        && bytes[3] === 0x47
-        && bytes[4] === 0x0d
-        && bytes[5] === 0x0a
-        && bytes[6] === 0x1a
-        && bytes[7] === 0x0a;
-    case "image/jpeg":
-      return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-    case "image/gif":
-      return bytes.length >= 6 && (bytes.subarray(0, 6).toString("ascii") === "GIF87a" || bytes.subarray(0, 6).toString("ascii") === "GIF89a");
-    case "image/webp":
-      return bytes.length >= 12 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
-    default:
-      return false;
-  }
 }
 
 function buildImageInputPart(
