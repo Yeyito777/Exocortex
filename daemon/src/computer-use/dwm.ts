@@ -562,6 +562,16 @@ async function runX11Helper(args: string[], signal?: AbortSignal): Promise<void>
   }
 }
 
+async function trustedXorgInputAvailable(signal?: AbortSignal): Promise<boolean> {
+  try {
+    const helper = await x11HelperPath();
+    const result = await runCommand(helper, ["probe"], signal);
+    return result.exitCode === 0 && result.stdout.toString("utf8").includes("available");
+  } catch {
+    return false;
+  }
+}
+
 async function compressScreenshot(raw: Buffer, signal?: AbortSignal): Promise<{ mediaType: string; base64: string } | { error: string }> {
   const dir = await mkdtemp(join(tmpdir(), "exocortex-computer-use-"));
   const input = join(dir, "screenshot.png");
@@ -641,7 +651,7 @@ function renderAppState(client: DwmClient, monitors: DwmMonitor[], screenshotNot
   const monitor = monitors.find((m) => m.num === client.monitor);
   const lines = [
     "Computer Use state",
-    "Backend: dwm IPC + direct X11 synthetic events (AT-SPI accessibility is pending)",
+    "Backend: dwm IPC + targeted X11 events (patched Xorg trusted path when available; AT-SPI accessibility is pending)",
     "Coordinate space: window-relative pixels for future action tools; screenshot origin is the target window content area as captured by X11.",
     screenshotNote ? `Screenshot: ${screenshotNote}` : null,
     "",
@@ -745,9 +755,7 @@ function isToolResult(value: ResolvedApp | ToolResult): value is ToolResult {
 
 async function actionState(prefix: string, client: DwmClient, signal?: AbortSignal): Promise<ToolResult> {
   const state = await executeComputerGetAppState({ app: client.win, include_screenshot: true }, signal);
-  const mode = isVimbrowserClient(client)
-    ? "Input mode: vimbrowser browser IPC/DOM action when available, otherwise direct X11 fallback; dwm focus/tag was not changed by Exocortex."
-    : "Input mode: direct synthetic X11 events sent to the target window; dwm focus/tag was not changed by Exocortex.";
+  const mode = "Input mode: Exocortex sends targeted background input to the target window (trusted Xorg extension when available, otherwise X11/app fallback); dwm focus/tag was not changed by Exocortex.";
   return {
     ...state,
     output: [
@@ -964,7 +972,8 @@ export async function executeComputerClick(input: Record<string, unknown>, signa
   const resolved = await resolveActionTarget(input, signal);
   if (isToolResult(resolved)) return resolved;
 
-  if (isVimbrowserClient(resolved.client)) {
+  const trustedInput = await trustedXorgInputAvailable(signal);
+  if (!trustedInput && isVimbrowserClient(resolved.client)) {
     try {
       return await executeVimbrowserClick(resolved.client, input, signal);
     } catch (err) {
@@ -972,12 +981,24 @@ export async function executeComputerClick(input: Record<string, unknown>, signa
     }
   }
 
-  if (getString(input, "element_index") && (numericInput(input, "x") == null || numericInput(input, "y") == null)) {
-    return { output: "element_index clicks require the upcoming AT-SPI backend. For now provide window-relative x and y coordinates.", isError: true };
+  let x = numericInput(input, "x");
+  let y = numericInput(input, "y");
+  const elementIndex = parseElementIndex(getString(input, "element_index"));
+  if (elementIndex != null && (x == null || y == null) && isVimbrowserClient(resolved.client)) {
+    try {
+      const dom = await getVimbrowserDomState(2000, signal);
+      const el = dom.elements.find((candidate) => candidate.index === elementIndex);
+      if (el) {
+        x = Math.round(el.windowRect.x + el.windowRect.w / 2);
+        y = Math.round(el.windowRect.y + el.windowRect.h / 2);
+      }
+    } catch {
+      // Fall through to the generic missing-coordinate error below.
+    }
   }
-
-  const x = numericInput(input, "x");
-  const y = numericInput(input, "y");
+  if (elementIndex != null && (x == null || y == null)) {
+    return { output: "element_index clicks require an element backend to map the element to coordinates. Vimbrowser can do this when its IPC is available; generic AT-SPI is pending.", isError: true };
+  }
   if (x == null || y == null) {
     return { output: "computer_click currently requires window-relative x and y coordinates because AT-SPI element targeting is not wired yet.", isError: true };
   }
@@ -986,7 +1007,7 @@ export async function executeComputerClick(input: Record<string, unknown>, signa
   const count = Math.max(1, Math.min(3, numericInput(input, "click_count") ?? 1));
   try {
     await runX11Helper(["click", resolved.client.win, String(x), String(y), button, String(count)], signal);
-    return actionState(`Background click sent to ${resolved.client.win} at ${x},${y} (${button}, count=${count}).`, resolved.client, signal);
+    return actionState(`${trustedInput ? "Trusted Xorg" : "Background X11"} click sent to ${resolved.client.win} at ${x},${y} (${button}, count=${count}).`, resolved.client, signal);
   } catch (err) {
     return { output: err instanceof Error ? err.message : String(err), isError: true };
   }
@@ -1016,9 +1037,10 @@ export async function executeComputerTypeText(input: Record<string, unknown>, si
   const text = typeof input.text === "string" ? input.text : null;
   if (text == null) return { output: "computer_type_text requires text.", isError: true };
   try {
-    if (isVimbrowserClient(resolved.client)) return await executeVimbrowserTypeText(resolved.client, input, signal);
+    const trustedInput = await trustedXorgInputAvailable(signal);
+    if (!trustedInput && isVimbrowserClient(resolved.client)) return await executeVimbrowserTypeText(resolved.client, input, signal);
     await runX11Helper(["type", resolved.client.win, text], signal);
-    return actionState(`Background text typing sent to ${resolved.client.win} (${text.length} chars).`, resolved.client, signal);
+    return actionState(`${trustedInput ? "Trusted Xorg" : "Background X11"} text typing sent to ${resolved.client.win} (${text.length} chars).`, resolved.client, signal);
   } catch (err) {
     return { output: err instanceof Error ? err.message : String(err), isError: true };
   }
@@ -1030,9 +1052,10 @@ export async function executeComputerPressKey(input: Record<string, unknown>, si
   const key = getString(input, "key");
   if (!key) return { output: "computer_press_key requires key.", isError: true };
   try {
-    if (isVimbrowserClient(resolved.client)) return await executeVimbrowserPressKey(resolved.client, input, signal);
+    const trustedInput = await trustedXorgInputAvailable(signal);
+    if (!trustedInput && isVimbrowserClient(resolved.client)) return await executeVimbrowserPressKey(resolved.client, input, signal);
     await runX11Helper(["key", resolved.client.win, key], signal);
-    return actionState(`Background key ${JSON.stringify(key)} sent to ${resolved.client.win}.`, resolved.client, signal);
+    return actionState(`${trustedInput ? "Trusted Xorg" : "Background X11"} key ${JSON.stringify(key)} sent to ${resolved.client.win}.`, resolved.client, signal);
   } catch (err) {
     return { output: err instanceof Error ? err.message : String(err), isError: true };
   }
@@ -1041,7 +1064,8 @@ export async function executeComputerPressKey(input: Record<string, unknown>, si
 export async function executeComputerScroll(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
   const resolved = await resolveActionTarget(input, signal);
   if (isToolResult(resolved)) return resolved;
-  if (isVimbrowserClient(resolved.client)) {
+  const trustedInput = await trustedXorgInputAvailable(signal);
+  if (!trustedInput && isVimbrowserClient(resolved.client)) {
     try {
       return await executeVimbrowserScroll(resolved.client, input, signal);
     } catch (err) {
@@ -1060,7 +1084,7 @@ export async function executeComputerScroll(input: Record<string, unknown>, sign
   const y = Math.round(resolved.client.geometry.h / 2);
   try {
     await runX11Helper(["scroll", resolved.client.win, direction, String(pages), String(x), String(y)], signal);
-    return actionState(`Background scroll ${direction} x${pages} sent to ${resolved.client.win}.`, resolved.client, signal);
+    return actionState(`${trustedInput ? "Trusted Xorg" : "Background X11"} scroll ${direction} x${pages} sent to ${resolved.client.win}.`, resolved.client, signal);
   } catch (err) {
     return { output: err instanceof Error ? err.message : String(err), isError: true };
   }

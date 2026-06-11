@@ -21,8 +21,8 @@ import {
 } from "../computer-use/dwm";
 
 const ACTIONS_NOT_IMPLEMENTED = [
-  "Computer Use is partially wired: dwm IPC observation and direct X11 background input work for coordinate/key/text actions.",
-  "Currently wired: list_apps, get_app_state, click, drag, type_text, press_key, scroll, plus vimbrowser DOM element actions.",
+  "Computer Use is partially wired: dwm IPC observation and targeted background input work for coordinate/key/text actions.",
+  "Currently wired: list_apps, get_app_state, click, drag, type_text, press_key, scroll. A patched Xorg EXOCORTEX-AUTOINPUT extension is preferred when present; plain X11/app fallbacks are used otherwise.",
   "Pending: generic AT-SPI set_value/secondary accessibility actions for non-browser apps.",
 ].join("\n");
 
@@ -111,10 +111,10 @@ export const computerGetAppState = computerTool({
     required: ["app"],
   },
   systemHint: [
-    "Computer Use tools are available behind a bring-up feature flag. The dwm IPC observation backend and direct X11 coordinate/key/text actions are wired.",
+    "Computer Use tools are available behind a bring-up feature flag. The dwm IPC observation backend and targeted background coordinate/key/text actions are wired.",
     "Use computer_list_apps to discover window ids/classes/titles and computer_get_app_state to inspect a target window before GUI actions.",
-    "Input actions use app-specific background IPC when available (vimbrowser), otherwise direct synthetic X11 events sent to the target window. They should not switch dwm tags or steal focus.",
-    "Treat coordinates as window-relative pixels from the last app state screenshot, and prefer element_index when the state tree exposes one (currently vimbrowser DOM elements).",
+    "Input actions prefer the patched Xorg EXOCORTEX-AUTOINPUT trusted targeted-event path when available, otherwise fall back to plain X11/app backends. They should not switch dwm tags or steal focus.",
+    "Treat coordinates as window-relative pixels from the last app state screenshot, and prefer element_index when the state tree exposes one.",
   ].join("\n"),
   summarize: (input) => summarizeWithApp("Computer state", input),
   execute: (input, _context, signal) => executeComputerGetAppState(input, signal),

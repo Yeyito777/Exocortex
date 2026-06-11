@@ -1,11 +1,70 @@
 #include <X11/Xlib.h>
+#include <X11/Xlibint.h>
 #include <X11/Xutil.h>
+#include <X11/Xproto.h>
 #include <X11/keysym.h>
 #include <ctype.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#define EXOCORTEX_EXTENSION_NAME "EXOCORTEX-AUTOINPUT"
+#define X_ExocortexTrustedSendEvent 1
+
+typedef struct {
+    CARD8 reqType;
+    CARD8 exocortexReqType;
+    CARD16 length;
+    CARD16 tokenLen;
+    CARD16 pad0;
+    uint32_t destination;
+    uint32_t eventMask;
+    xEvent event;
+} xExocortexTrustedSendEventReq;
+
+static int exocortex_major_opcode = -2;
+
+static int exocortex_major(Display *dpy) {
+    int event_base = 0, error_base = 0;
+    if (exocortex_major_opcode != -2) return exocortex_major_opcode;
+    if (XQueryExtension(dpy, EXOCORTEX_EXTENSION_NAME, &exocortex_major_opcode, &event_base, &error_base))
+        return exocortex_major_opcode;
+    exocortex_major_opcode = -1;
+    return -1;
+}
+
+static int send_targeted_event(Display *dpy, Window destination, long event_mask, XEvent *ev) {
+    const char *token = getenv("EXOCORTEX_XORG_INPUT_TOKEN");
+    size_t token_len, padded_token_len, total_len;
+    xExocortexTrustedSendEventReq *req;
+
+    if (!token || !*token || exocortex_major(dpy) < 0)
+        return XSendEvent(dpy, destination, True, event_mask, ev);
+
+    token_len = strlen(token);
+    if (token_len > 0xffff)
+        return XSendEvent(dpy, destination, True, event_mask, ev);
+    padded_token_len = (token_len + 3) & ~(size_t)3;
+    total_len = sizeof(xExocortexTrustedSendEventReq) + padded_token_len;
+
+    LockDisplay(dpy);
+    req = (xExocortexTrustedSendEventReq *) _XGetRequest(dpy, (CARD8) exocortex_major_opcode, total_len);
+    req->exocortexReqType = X_ExocortexTrustedSendEvent;
+    req->tokenLen = (CARD16) token_len;
+    req->destination = (uint32_t) destination;
+    req->eventMask = (uint32_t) event_mask;
+    if (!_XEventToWire(dpy, ev, &req->event)) {
+        UnlockDisplay(dpy);
+        SyncHandle();
+        return 0;
+    }
+    memcpy((char *) req + sizeof(xExocortexTrustedSendEventReq), token, token_len);
+    UnlockDisplay(dpy);
+    SyncHandle();
+    return 1;
+}
 
 static Window root_window(Display *dpy) {
     return DefaultRootWindow(dpy);
@@ -97,7 +156,7 @@ static int send_motion(Display *dpy, Window w, int x, int y, unsigned int state)
     ev.xmotion.state = state;
     ev.xmotion.is_hint = NotifyNormal;
     ev.xmotion.same_screen = True;
-    return XSendEvent(dpy, w, True, PointerMotionMask, &ev);
+    return send_targeted_event(dpy, w, PointerMotionMask, &ev);
 }
 
 static int send_button(Display *dpy, Window w, int x, int y, int button, int press, unsigned int state) {
@@ -118,7 +177,7 @@ static int send_button(Display *dpy, Window w, int x, int y, int button, int pre
     ev.xbutton.state = state;
     ev.xbutton.button = (unsigned int)button;
     ev.xbutton.same_screen = True;
-    return XSendEvent(dpy, w, True, press ? ButtonPressMask : ButtonReleaseMask, &ev);
+    return send_targeted_event(dpy, w, press ? ButtonPressMask : ButtonReleaseMask, &ev);
 }
 
 static int send_click(Display *dpy, Window top, int x, int y, int button, int count) {
@@ -191,7 +250,7 @@ static int send_key_event(Display *dpy, Window w, KeySym ks, unsigned int state,
     ev.xkey.state = state;
     ev.xkey.keycode = kc;
     ev.xkey.same_screen = True;
-    return XSendEvent(dpy, w, True, press ? KeyPressMask : KeyReleaseMask, &ev);
+    return send_targeted_event(dpy, w, press ? KeyPressMask : KeyReleaseMask, &ev);
 }
 
 static int send_key_with_state(Display *dpy, Window w, KeySym ks, unsigned int state) {
@@ -360,12 +419,13 @@ static int send_drag(Display *dpy, Window top, int x1, int y1, int x2, int y2) {
 static void usage(const char *argv0) {
     fprintf(stderr,
         "usage:\n"
+        "  %s probe\n"
         "  %s click <win> <x> <y> <button> <count>\n"
         "  %s scroll <win> <direction> <pages> <x> <y>\n"
         "  %s key <win> <key-combo>\n"
         "  %s type <win> <text>\n"
         "  %s drag <win> <from_x> <from_y> <to_x> <to_y>\n",
-        argv0, argv0, argv0, argv0, argv0);
+        argv0, argv0, argv0, argv0, argv0, argv0);
 }
 
 int main(int argc, char **argv) {
@@ -374,6 +434,17 @@ int main(int argc, char **argv) {
     const char *cmd;
     int ok = 0;
 
+    if (argc >= 2 && streqi(argv[1], "probe")) {
+        dpy = XOpenDisplay(NULL);
+        if (!dpy) {
+            fprintf(stderr, "cannot open X display\n");
+            return 1;
+        }
+        ok = exocortex_major(dpy) >= 0 && getenv("EXOCORTEX_XORG_INPUT_TOKEN") && *getenv("EXOCORTEX_XORG_INPUT_TOKEN");
+        printf("trusted_input=%s\n", ok ? "available" : "unavailable");
+        XCloseDisplay(dpy);
+        return ok ? 0 : 1;
+    }
     if (argc < 3) { usage(argv[0]); return 2; }
     cmd = argv[1];
     if (!parse_window(argv[2], &win)) {
