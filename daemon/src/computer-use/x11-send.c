@@ -26,6 +26,36 @@ typedef struct {
 
 static int exocortex_major_opcode = -2;
 
+static const char *exocortex_token(void) {
+    static char token[65536];
+    static char fallback_path[128];
+    const char *env_token = getenv("EXOCORTEX_XORG_INPUT_TOKEN");
+    const char *path;
+    FILE *f;
+    size_t n;
+
+    if (env_token && *env_token) return env_token;
+
+    path = getenv("EXOCORTEX_XORG_INPUT_TOKEN_FILE");
+    if (!path || !*path) {
+        const char *runtime = getenv("XDG_RUNTIME_DIR");
+        if (runtime && *runtime) {
+            snprintf(fallback_path, sizeof(fallback_path), "%s/exocortex-xorg-input-token", runtime);
+        } else {
+            snprintf(fallback_path, sizeof(fallback_path), "/run/user/%lu/exocortex-xorg-input-token", (unsigned long)getuid());
+        }
+        path = fallback_path;
+    }
+
+    f = fopen(path, "rb");
+    if (!f) return NULL;
+    n = fread(token, 1, sizeof(token) - 1, f);
+    fclose(f);
+    while (n > 0 && (token[n - 1] == '\n' || token[n - 1] == '\r' || token[n - 1] == ' ' || token[n - 1] == '\t')) n--;
+    token[n] = '\0';
+    return token[0] ? token : NULL;
+}
+
 static int exocortex_major(Display *dpy) {
     int event_base = 0, error_base = 0;
     if (exocortex_major_opcode != -2) return exocortex_major_opcode;
@@ -36,7 +66,7 @@ static int exocortex_major(Display *dpy) {
 }
 
 static int send_targeted_event(Display *dpy, Window destination, long event_mask, XEvent *ev) {
-    const char *token = getenv("EXOCORTEX_XORG_INPUT_TOKEN");
+    const char *token = exocortex_token();
     size_t token_len, padded_token_len, total_len;
     xExocortexTrustedSendEventReq *req;
 
@@ -440,7 +470,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "cannot open X display\n");
             return 1;
         }
-        ok = exocortex_major(dpy) >= 0 && getenv("EXOCORTEX_XORG_INPUT_TOKEN") && *getenv("EXOCORTEX_XORG_INPUT_TOKEN");
+        ok = exocortex_major(dpy) >= 0 && exocortex_token();
         printf("trusted_input=%s\n", ok ? "available" : "unavailable");
         XCloseDisplay(dpy);
         return ok ? 0 : 1;
