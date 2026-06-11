@@ -110,6 +110,15 @@ function primaryInputStrings(toolName: string, input: Record<string, unknown>): 
     grep: ["pattern", "path", "glob", "type"],
     glob: ["pattern", "patterns", "path", "exclude", "query"],
     browse: ["url", "prompt"],
+    computer_list_apps: ["target"],
+    computer_get_app_state: ["target", "app"],
+    computer_click: ["target", "app", "element_index", "mouse_button"],
+    computer_drag: ["target", "app"],
+    computer_type_text: ["target", "app", "text"],
+    computer_press_key: ["target", "app", "key"],
+    computer_scroll: ["target", "app", "element_index", "direction"],
+    computer_set_value: ["target", "app", "element_index", "value"],
+    computer_perform_secondary_action: ["target", "app", "element_index", "action"],
   };
 
   const values: string[] = [];

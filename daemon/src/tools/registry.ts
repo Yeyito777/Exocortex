@@ -18,6 +18,7 @@ import { patch } from "./patch";
 import { browse } from "./browse";
 import { context, executeContext, type ContextToolEnv } from "./context";
 import { goal } from "./goal";
+import { computerUseTools } from "./computer-use";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage } from "../abort";
 import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
@@ -37,6 +38,7 @@ const TOOLS: Tool[] = [
   browse,
   context,
   goal,
+  ...computerUseTools,
 ];
 
 const toolMap = new Map<string, Tool>(TOOLS.map(t => [t.name, t]));

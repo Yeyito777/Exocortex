@@ -107,6 +107,16 @@ export interface DefaultsConfig {
   [key: string]: unknown;
 }
 
+export interface FeatureFlagsConfig {
+  /**
+   * Expose the internal Computer Use tool contract. Defaults to true while the
+   * dwm/X11/AT-SPI backend is being brought up; set false to hide the tools.
+   */
+  computerUse?: boolean;
+  /** Preserve unknown future feature flags. */
+  [feature: string]: unknown;
+}
+
 export interface ConversationDefaults {
   provider: ProviderId;
   model: ModelId;
@@ -122,6 +132,8 @@ export interface TuiConfig {
 export interface ExocortexConfig {
   /** Active TUI theme name. */
   theme?: string;
+  /** Experimental/product feature gates. */
+  features?: FeatureFlagsConfig;
   /** User-overridable app defaults. */
   defaults?: DefaultsConfig;
   /** Agent/runtime behavior. */
@@ -181,6 +193,7 @@ export function defaultOpenersConfig(): OpenersConfig {
 export function defaultExocortexConfig(): ExocortexConfig {
   return {
     theme: "whale",
+    features: { computerUse: true },
     agent: { workingDirectory: ".exocortex-cwd" },
     ping: { mode: null, sound: null },
     openers: defaultOpenersConfig(),

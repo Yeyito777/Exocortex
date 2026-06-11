@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { writeExocortexConfig } from "@exocortex/shared/config";
 import { buildToolSystemHints, getToolDefs, getToolDisplayInfo } from "./registry";
 
 describe("tool availability", () => {
@@ -20,5 +21,21 @@ describe("tool availability", () => {
         expect(tool.input_schema).not.toHaveProperty(keyword);
       }
     }
+  });
+
+  test("computer use tools are gated by the default-on feature flag", () => {
+    writeExocortexConfig({ features: { computerUse: true } });
+    const enabledTools = getToolDefs().map((tool) => tool.name);
+    expect(enabledTools).toContain("computer_list_apps");
+    expect(enabledTools).toContain("computer_get_app_state");
+    expect(enabledTools).toContain("computer_click");
+    expect(buildToolSystemHints()).toContain("Computer Use tools are available");
+
+    writeExocortexConfig({ features: { computerUse: false } });
+    const disabledTools = getToolDefs().map((tool) => tool.name);
+    expect(disabledTools).not.toContain("computer_list_apps");
+    expect(disabledTools).not.toContain("computer_get_app_state");
+
+    writeExocortexConfig({ features: { computerUse: true } });
   });
 });

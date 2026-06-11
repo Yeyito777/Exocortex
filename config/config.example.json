@@ -1,5 +1,8 @@
 {
   "theme": "whale",
+  "features": {
+    "computerUse": true
+  },
   "agent": {
     "workingDirectory": ".exocortex-cwd"
   },
@@ -23,7 +26,16 @@
     "edit": [],
     "grep": [],
     "glob": [],
-    "browse": []
+    "browse": [],
+    "computer_list_apps": [],
+    "computer_get_app_state": [],
+    "computer_click": [],
+    "computer_drag": [],
+    "computer_type_text": [],
+    "computer_press_key": [],
+    "computer_scroll": [],
+    "computer_set_value": [],
+    "computer_perform_secondary_action": []
   },
   "openers": {
     "url": null,
