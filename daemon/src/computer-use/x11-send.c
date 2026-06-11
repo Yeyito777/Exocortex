@@ -262,6 +262,17 @@ static KeySym key_alias(const char *name) {
     return XStringToKeysym(name);
 }
 
+static int send_focus_event(Display *dpy, Window w, int in) {
+    XEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.xfocus.type = in ? FocusIn : FocusOut;
+    ev.xfocus.display = dpy;
+    ev.xfocus.window = w;
+    ev.xfocus.mode = NotifyNormal;
+    ev.xfocus.detail = NotifyNonlinear;
+    return send_targeted_event(dpy, w, FocusChangeMask, &ev);
+}
+
 static int send_key_event(Display *dpy, Window w, KeySym ks, unsigned int state, int press) {
     XEvent ev;
     KeyCode kc = XKeysymToKeycode(dpy, ks);
@@ -285,6 +296,7 @@ static int send_key_event(Display *dpy, Window w, KeySym ks, unsigned int state,
 
 static int send_key_with_state(Display *dpy, Window w, KeySym ks, unsigned int state) {
     unsigned int masks[] = { ControlMask, ShiftMask, Mod1Mask, Mod4Mask };
+    send_focus_event(dpy, w, 1);
     unsigned int i, active = 0;
     for (i = 0; i < sizeof(masks) / sizeof(masks[0]); i++) {
         if (state & masks[i]) {
@@ -397,6 +409,7 @@ static int send_text(Display *dpy, Window w, const char *text) {
      * Without this, some terminals accept the later key events but drop the
      * first burst of characters. */
     XSync(dpy, False);
+    send_focus_event(dpy, w, 1);
     usleep(90000);
     for (p = (const unsigned char *)text; *p; p++) {
         KeySym ks;

@@ -36,10 +36,61 @@ function blockContentKey(block: Block): string {
     case "text":
       return block.text;
     case "tool_call":
-      return block.summary;
+      return `${block.summary}\n${JSON.stringify(block.input)}`;
     case "tool_result":
       return block.output;
   }
+}
+
+function shortValue(value: unknown): string {
+  let text: string;
+  if (typeof value === "string") text = JSON.stringify(value);
+  else if (typeof value === "number" || typeof value === "boolean") text = String(value);
+  else if (value == null) text = String(value);
+  else text = JSON.stringify(value);
+  if (text.length > 160) text = `${text.slice(0, 157)}…`;
+  return text;
+}
+
+const COMPUTER_ARG_ORDER = [
+  "target",
+  "app",
+  "include_screenshot",
+  "max_elements",
+  "element_index",
+  "x",
+  "y",
+  "click_count",
+  "mouse_button",
+  "from_x",
+  "from_y",
+  "to_x",
+  "to_y",
+  "text",
+  "key",
+  "direction",
+  "pages",
+  "value",
+  "action",
+];
+
+function formatComputerToolCallSummary(toolName: string, input: Record<string, unknown>): string {
+  const action = toolName.replace(/^computer_/, "");
+  const keys = [
+    ...COMPUTER_ARG_ORDER.filter((key) => Object.prototype.hasOwnProperty.call(input, key)),
+    ...Object.keys(input).filter((key) => !COMPUTER_ARG_ORDER.includes(key)).sort(),
+  ];
+  const args = keys
+    .filter((key) => input[key] !== undefined)
+    .map((key) => `${key}=${shortValue(input[key])}`)
+    .join(" ");
+  const detail = args ? `${action} ${args}` : action;
+  return detail.length > 520 ? `${detail.slice(0, 517)}…` : detail;
+}
+
+function toolCallSummaryForRender(block: Extract<Block, { type: "tool_call" }>): string {
+  if (block.toolName.startsWith("computer_")) return formatComputerToolCallSummary(block.toolName, block.input);
+  return block.summary;
 }
 
 export function renderBlockCached(
@@ -119,7 +170,7 @@ function renderBlock(
       break;
     }
     case "tool_call": {
-      const summary = sanitizeUntrustedText(block.summary);
+      const summary = sanitizeUntrustedText(toolCallSummaryForRender(block));
       const logical = renderToolCallLogicalLines(block.toolName, summary, toolRegistry, externalToolStyles);
 
       for (const entry of logical) {

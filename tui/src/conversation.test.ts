@@ -103,6 +103,32 @@ describe("tool call rendering", () => {
     expect(rendered).toContain("  Exocortex ls | sed -n '1,3p' --timeout 120000");
   });
 
+  test("renders computer tool call arguments in the TUI", () => {
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "computer_click",
+          input: { app: "vimbrowser", x: 995, y: 28, mouse_button: "left" },
+          summary: "vimbrowser",
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "computer_click", label: "Computer", color: "#ff79c6" }],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 120).lines.map(stripAnsi);
+
+    expect(rendered).toContain('  Computer click app="vimbrowser" x=995 y=28 mouse_button="left"');
+  });
+
   test("preserves same-line setup command before an &&-chained external tool", () => {
     const state = {
       messages: [{

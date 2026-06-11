@@ -130,7 +130,7 @@ function x11Environment(): Record<string, string | undefined> {
 function targetError(target: string | null): ToolResult | null {
   if (!target || target === "host") return null;
   return {
-    output: `Computer Use dwm backend currently supports only target=host. Received target=${JSON.stringify(target)}.`,
+    output: `Computer Use currently supports only target=host. Received target=${JSON.stringify(target)}.`,
     isError: true,
   };
 }
@@ -139,9 +139,9 @@ function socketUnavailableMessage(path: string, err: unknown): string {
   const reason = err instanceof Error ? err.message : String(err);
   const exists = existsSync(path);
   return [
-    `Could not connect to dwm IPC socket: ${path}`,
+    "Could not connect to the desktop window list.",
+    exists ? "The desktop control socket exists but did not accept the request." : "The desktop control socket does not exist.",
     `Reason: ${reason}`,
-    exists ? "The socket exists but did not accept the request." : "The socket does not exist. Make sure host dwm is running the exocortex-computer-use-ipc branch/build.",
   ].join("\n");
 }
 
@@ -165,12 +165,12 @@ async function callDwm<T>(method: string, params: Record<string, unknown> = {}, 
 
     function onAbort(): void {
       socket?.destroy();
-      settle(() => reject(new Error("dwm IPC request aborted")));
+      settle(() => reject(new Error("Desktop window request aborted")));
     }
 
     const timer = setTimeout(() => {
       socket?.destroy();
-      settle(() => reject(new Error(`dwm IPC request timed out after ${DWM_IPC_TIMEOUT_MS}ms`)));
+      settle(() => reject(new Error(`Desktop window request timed out after ${DWM_IPC_TIMEOUT_MS}ms`)));
     }, DWM_IPC_TIMEOUT_MS);
 
     if (signal?.aborted) {
@@ -191,16 +191,16 @@ async function callDwm<T>(method: string, params: Record<string, unknown> = {}, 
         try {
           const parsed = JSON.parse(data.trim()) as DwmResponse<T>;
           if (!parsed.ok) {
-            reject(new Error(parsed.error || `dwm IPC method ${method} failed`));
+            reject(new Error(parsed.error || "Desktop window request failed"));
             return;
           }
           if (parsed.result === undefined) {
-            reject(new Error(`dwm IPC method ${method} returned no result`));
+            reject(new Error("Desktop window request returned no result"));
             return;
           }
           resolve(parsed.result);
         } catch (err) {
-          reject(new Error(`Invalid dwm IPC response for ${method}: ${err instanceof Error ? err.message : String(err)}\n${data.slice(0, 500)}`));
+          reject(new Error(`Invalid desktop window response: ${err instanceof Error ? err.message : String(err)}\n${data.slice(0, 500)}`));
         }
       });
     });
@@ -226,12 +226,12 @@ function clientLabel(c: DwmClient): string {
     c.fullscreen ? "fullscreen" : null,
     c.floating ? "floating" : null,
   ].filter(Boolean).join(",");
-  return `${name} — win=${c.win} pid=${c.pid}${classPart} mon=${c.monitor} tags=0x${c.tags.toString(16)} [${state}] geom=${c.geometry.x},${c.geometry.y} ${c.geometry.w}×${c.geometry.h}`;
+  return `${JSON.stringify(name)} id=${c.win} pid=${c.pid}${classPart} [${state}] bounds=${c.geometry.x},${c.geometry.y} ${c.geometry.w}×${c.geometry.h}`;
 }
 
 function formatClientList(clients: DwmClient[]): string {
-  if (clients.length === 0) return "No dwm-managed clients/windows found.";
-  const lines = [`dwm clients (${clients.length}):`];
+  if (clients.length === 0) return "No windows found.";
+  const lines = [`Windows (${clients.length}):`];
   for (const c of clients) lines.push(`- ${clientLabel(c)}`);
   return lines.join("\n");
 }
@@ -268,7 +268,7 @@ function resolveFromClients(clients: DwmClient[], app: string): ResolvedApp | { 
 
   if (["focused", "active", "current", "frontmost"].includes(q)) {
     const focused = clients.find((c) => c.focused);
-    return focused ? { client: focused, clients } : { error: "No focused dwm client found." };
+    return focused ? { client: focused, clients } : { error: "No focused window found." };
   }
 
   let matches = clients.filter((c) => exactWindowMatch(c, query));
@@ -301,7 +301,7 @@ function resolveFromClients(clients: DwmClient[], app: string): ResolvedApp | { 
 
   return {
     error: [
-      `No dwm client matched app target ${JSON.stringify(app)}.`,
+      `No window matched app target ${JSON.stringify(app)}.`,
       formatClientList(clients),
     ].join("\n"),
   };
@@ -351,7 +351,7 @@ async function x11HelperPath(): Promise<string> {
   if (!outStat || outStat.mtimeMs < srcStat.mtimeMs) {
     const result = await runCommand("cc", [source, "-O2", "-Wall", "-o", out, "-lX11"]);
     if (result.exitCode !== 0) {
-      throw new Error(`Failed to build computer-use X11 helper:\n${result.stderr || result.stdout.toString("utf8")}`);
+      throw new Error(`Failed to build desktop input helper:\n${result.stderr || result.stdout.toString("utf8")}`);
     }
     await chmod(out, 0o755).catch(() => {});
   }
@@ -362,17 +362,7 @@ async function runX11Helper(args: string[], signal?: AbortSignal): Promise<void>
   const helper = await x11HelperPath();
   const result = await runCommand(helper, args, signal);
   if (result.exitCode !== 0) {
-    throw new Error(`X11 background input helper failed (${args.join(" ")}):\n${result.stderr || result.stdout.toString("utf8") || `exit ${result.exitCode}`}`);
-  }
-}
-
-async function trustedXorgInputAvailable(signal?: AbortSignal): Promise<boolean> {
-  try {
-    const helper = await x11HelperPath();
-    const result = await runCommand(helper, ["probe"], signal);
-    return result.exitCode === 0 && result.stdout.toString("utf8").includes("available");
-  } catch {
-    return false;
+    throw new Error(`Desktop input helper failed (${args.join(" ")}):\n${result.stderr || result.stdout.toString("utf8") || `exit ${result.exitCode}`}`);
   }
 }
 
@@ -396,16 +386,12 @@ async function compressScreenshot(raw: Buffer, signal?: AbortSignal): Promise<{ 
 
 async function captureWindow(win: string, signal?: AbortSignal): Promise<{ image?: { mediaType: string; base64: string }; note: string; isError?: boolean }> {
   let result = await runCommand("maim", ["-x", displayNameForX11(), "-u", "-i", win, "-f", "png"], signal);
-  let backend = "maim";
   if (result.exitCode !== 0 || result.stdout.length === 0) {
-    // ImageMagick import is less reliable for off-screen dwm windows, but it is
-    // a useful fallback on systems without maim.
     result = await runMagick(["import", "-silent", "-display", displayNameForX11(), "-window", win, "png:-"], signal);
-    backend = "ImageMagick import";
   }
   if (result.exitCode !== 0 || result.stdout.length === 0) {
     return {
-      note: `Screenshot capture failed for ${win}: ${result.stderr.trim() || `${backend} exited ${result.exitCode}`}`,
+      note: "unavailable",
       isError: true,
     };
   }
@@ -414,7 +400,7 @@ async function captureWindow(win: string, signal?: AbortSignal): Promise<{ image
   if (base64.length <= MAX_INLINE_SCREENSHOT_BASE64) {
     return {
       image: { mediaType: "image/png", base64 },
-      note: `Screenshot captured from ${win} via ${backend} (${(result.stdout.length / 1024).toFixed(0)} KiB PNG).`,
+      note: "included",
     };
   }
 
@@ -422,7 +408,7 @@ async function captureWindow(win: string, signal?: AbortSignal): Promise<{ image
   if ("error" in compressed) return { note: compressed.error, isError: true };
   return {
     image: compressed,
-    note: `Screenshot captured from ${win} and compressed to ${(Math.ceil(compressed.base64.length * 3 / 4) / 1024).toFixed(0)} KiB JPEG.`,
+    note: "included",
   };
 }
 
@@ -430,25 +416,18 @@ function renderAppState(client: DwmClient, monitors: DwmMonitor[], screenshotNot
   const g = client.geometry;
   const monitor = monitors.find((m) => m.num === client.monitor);
   const lines = [
-    "Computer Use state",
-    "Backend: dwm IPC + targeted X11 events (patched Xorg trusted path when available; AT-SPI accessibility is pending)",
-    "Coordinate space: window-relative pixels for future action tools; screenshot origin is the target window content area as captured by X11.",
-    screenshotNote ? `Screenshot: ${screenshotNote}` : null,
-    "",
     "<app_state>",
     `0 window ${JSON.stringify(client.title || client.class || client.win)}`,
-    `  win: ${client.win}`,
+    `  id: ${client.win}`,
     `  pid: ${client.pid}`,
     `  class: ${client.class ?? ""}`,
     `  instance: ${client.instance ?? ""}`,
-    `  monitor: ${client.monitor}${monitor ? ` (${monitor.screen.w}×${monitor.screen.h}+${monitor.screen.x}+${monitor.screen.y})` : ""}`,
-    `  tags: 0x${client.tags.toString(16)} selectedTags: 0x${client.selectedTags.toString(16)}`,
+    monitor ? `  screen: ${monitor.screen.w}×${monitor.screen.h}+${monitor.screen.x}+${monitor.screen.y}` : null,
     `  visible: ${client.visible} focused: ${client.focused}`,
     `  floating: ${client.floating} fullscreen: ${client.fullscreen}`,
-    `  geometry: x=${g.x} y=${g.y} w=${g.w} h=${g.h} border=${g.border}`,
-    client.aiToken ? `  aiToken: ${client.aiToken}` : null,
+    `  bounds: x=${g.x} y=${g.y} w=${g.w} h=${g.h}`,
+    screenshotNote ? `  screenshot: ${screenshotNote}` : null,
     ...extraStateLines,
-    "  accessibility: not wired yet (element_index/set_value/secondary actions unavailable until AT-SPI backend lands)",
     "</app_state>",
   ].filter((line): line is string => line !== null);
   return lines.join("\n");
@@ -524,13 +503,10 @@ function isToolResult(value: ResolvedApp | ToolResult): value is ToolResult {
 
 async function actionState(prefix: string, client: DwmClient, signal?: AbortSignal): Promise<ToolResult> {
   const state = await executeComputerGetAppState({ app: client.win, include_screenshot: true }, signal);
-  const mode = "Input mode: Exocortex sends targeted background input to the target window (trusted Xorg extension when available, otherwise X11/app fallback); dwm focus/tag was not changed by Exocortex.";
   return {
     ...state,
     output: [
       prefix,
-      mode,
-      "Note: some applications/toolkits may ignore synthetic background events; if so, AT-SPI or app-specific backends will be needed.",
       "",
       state.output,
     ].join("\n"),
@@ -547,7 +523,7 @@ export async function executeComputerSetValue(input: Record<string, unknown>, si
   void resolved;
   void elementIndex;
   void value;
-  return { output: "computer_set_value requires the upcoming generic AT-SPI/accessibility backend; app-specific DOM backends are disabled.", isError: true };
+  return { output: "computer_set_value requires a generic accessibility backend that is not wired yet.", isError: true };
 }
 
 export async function executeComputerPerformSecondaryAction(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
@@ -560,30 +536,28 @@ export async function executeComputerPerformSecondaryAction(input: Record<string
   void resolved;
   void action;
   void elementIndex;
-  return { output: "computer_perform_secondary_action requires the upcoming generic AT-SPI/accessibility backend; app-specific DOM backends are disabled.", isError: true };
+  return { output: "computer_perform_secondary_action requires a generic accessibility backend that is not wired yet.", isError: true };
 }
 
 export async function executeComputerClick(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
   const resolved = await resolveActionTarget(input, signal);
   if (isToolResult(resolved)) return resolved;
 
-  const trustedInput = await trustedXorgInputAvailable(signal);
-
   const x = numericInput(input, "x");
   const y = numericInput(input, "y");
   const elementIndex = parseElementIndex(getString(input, "element_index"));
   if (elementIndex != null && (x == null || y == null)) {
-    return { output: "element_index clicks require the upcoming generic AT-SPI/accessibility backend to map the element to coordinates.", isError: true };
+    return { output: "element_index clicks require a generic accessibility backend to map the element to coordinates.", isError: true };
   }
   if (x == null || y == null) {
-    return { output: "computer_click currently requires window-relative x and y coordinates because AT-SPI element targeting is not wired yet.", isError: true };
+    return { output: "computer_click requires window-relative x and y coordinates.", isError: true };
   }
 
   const button = getString(input, "mouse_button") ?? "left";
   const count = Math.max(1, Math.min(3, numericInput(input, "click_count") ?? 1));
   try {
     await runX11Helper(["click", resolved.client.win, String(x), String(y), button, String(count)], signal);
-    return actionState(`${trustedInput ? "Trusted Xorg" : "Background X11"} click sent to ${resolved.client.win} at ${x},${y} (${button}, count=${count}).`, resolved.client, signal);
+    return actionState(`Clicked at ${x},${y} (${button}, count=${count}).`, resolved.client, signal);
   } catch (err) {
     return { output: err instanceof Error ? err.message : String(err), isError: true };
   }
@@ -601,7 +575,7 @@ export async function executeComputerDrag(input: Record<string, unknown>, signal
   }
   try {
     await runX11Helper(["drag", resolved.client.win, String(fromX), String(fromY), String(toX), String(toY)], signal);
-    return actionState(`Background drag sent to ${resolved.client.win}: ${fromX},${fromY} → ${toX},${toY}.`, resolved.client, signal);
+    return actionState(`Dragged from ${fromX},${fromY} to ${toX},${toY}.`, resolved.client, signal);
   } catch (err) {
     return { output: err instanceof Error ? err.message : String(err), isError: true };
   }
@@ -613,9 +587,8 @@ export async function executeComputerTypeText(input: Record<string, unknown>, si
   const text = typeof input.text === "string" ? input.text : null;
   if (text == null) return { output: "computer_type_text requires text.", isError: true };
   try {
-    const trustedInput = await trustedXorgInputAvailable(signal);
     await runX11Helper(["type", resolved.client.win, text], signal);
-    return actionState(`${trustedInput ? "Trusted Xorg" : "Background X11"} text typing sent to ${resolved.client.win} (${text.length} chars).`, resolved.client, signal);
+    return actionState(`Typed text (${text.length} chars).`, resolved.client, signal);
   } catch (err) {
     return { output: err instanceof Error ? err.message : String(err), isError: true };
   }
@@ -627,9 +600,8 @@ export async function executeComputerPressKey(input: Record<string, unknown>, si
   const key = getString(input, "key");
   if (!key) return { output: "computer_press_key requires key.", isError: true };
   try {
-    const trustedInput = await trustedXorgInputAvailable(signal);
     await runX11Helper(["key", resolved.client.win, key], signal);
-    return actionState(`${trustedInput ? "Trusted Xorg" : "Background X11"} key ${JSON.stringify(key)} sent to ${resolved.client.win}.`, resolved.client, signal);
+    return actionState(`Pressed key ${JSON.stringify(key)}.`, resolved.client, signal);
   } catch (err) {
     return { output: err instanceof Error ? err.message : String(err), isError: true };
   }
@@ -638,9 +610,8 @@ export async function executeComputerPressKey(input: Record<string, unknown>, si
 export async function executeComputerScroll(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
   const resolved = await resolveActionTarget(input, signal);
   if (isToolResult(resolved)) return resolved;
-  const trustedInput = await trustedXorgInputAvailable(signal);
   if (getString(input, "element_index")) {
-    return { output: "element_index scrolling requires the upcoming AT-SPI backend. For now scrolling targets the window center.", isError: true };
+    return { output: "element_index scrolling requires a generic accessibility backend. For now scrolling targets the window center.", isError: true };
   }
   const direction = getString(input, "direction");
   if (!direction || !["up", "down", "left", "right"].includes(direction)) {
@@ -651,7 +622,7 @@ export async function executeComputerScroll(input: Record<string, unknown>, sign
   const y = Math.round(resolved.client.geometry.h / 2);
   try {
     await runX11Helper(["scroll", resolved.client.win, direction, String(pages), String(x), String(y)], signal);
-    return actionState(`${trustedInput ? "Trusted Xorg" : "Background X11"} scroll ${direction} x${pages} sent to ${resolved.client.win}.`, resolved.client, signal);
+    return actionState(`Scrolled ${direction} x${pages}.`, resolved.client, signal);
   } catch (err) {
     return { output: err instanceof Error ? err.message : String(err), isError: true };
   }
@@ -662,8 +633,8 @@ export async function executeUnsupportedComputerAction(input: Record<string, unk
   return {
     output: [
       `Computer Use action is not wired yet for ${app}.`,
-      "Currently wired: dwm IPC list_apps/get_app_state and direct X11 background click/type/key/scroll/drag.",
-      "Pending backend: AT-SPI for element_index/set_value/secondary accessibility actions.",
+      "Currently wired: list_apps, get_app_state, click, type_text, press_key, scroll, drag.",
+      "Pending: element_index, set_value, and secondary accessibility actions.",
     ].join("\n"),
     isError: true,
   };

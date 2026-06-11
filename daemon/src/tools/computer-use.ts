@@ -2,7 +2,7 @@
  * Computer Use tool contract.
  *
  * This intentionally mirrors Codex's Computer Use MCP surface. The feature flag
- * is on by default while the dwm/X11/AT-SPI backend is being brought up.
+ * is on by default while the desktop-control backend is being brought up.
  */
 
 import { readExocortexConfig, type ExocortexConfig } from "@exocortex/shared/config";
@@ -21,9 +21,9 @@ import {
 } from "../computer-use/dwm";
 
 const ACTIONS_NOT_IMPLEMENTED = [
-  "Computer Use is partially wired: dwm IPC observation and targeted background input work for coordinate/key/text actions.",
-  "Currently wired: list_apps, get_app_state, click, drag, type_text, press_key, scroll. A patched Xorg EXOCORTEX-AUTOINPUT extension is preferred when present; plain X11 fallback is used otherwise.",
-  "Pending: generic AT-SPI set_value/secondary accessibility actions and element trees.",
+  "Computer Use is partially wired: window observation and coordinate/key/text actions work.",
+  "Currently wired: list_apps, get_app_state, click, drag, type_text, press_key, scroll.",
+  "Pending: generic accessibility element trees, set_value, and secondary actions.",
 ].join("\n");
 
 export function isComputerUseFeatureEnabled(config: ExocortexConfig = readExocortexConfig()): boolean {
@@ -37,9 +37,48 @@ function executeActionNotImplemented(input: Record<string, unknown>): Promise<To
   return Promise.resolve({ output: ACTIONS_NOT_IMPLEMENTED, isError: true });
 }
 
-function summarizeWithApp(label: string, input: Record<string, unknown>): ToolSummary {
-  const app = typeof input.app === "string" && input.app.trim() ? input.app.trim() : "app";
-  return { label, detail: app };
+const COMPUTER_ARG_ORDER = [
+  "target",
+  "app",
+  "include_screenshot",
+  "max_elements",
+  "element_index",
+  "x",
+  "y",
+  "click_count",
+  "mouse_button",
+  "from_x",
+  "from_y",
+  "to_x",
+  "to_y",
+  "text",
+  "key",
+  "direction",
+  "pages",
+  "value",
+  "action",
+];
+
+function shortValue(value: unknown): string {
+  let text: string;
+  if (typeof value === "string") text = JSON.stringify(value);
+  else if (typeof value === "number" || typeof value === "boolean") text = String(value);
+  else if (value == null) text = String(value);
+  else text = JSON.stringify(value);
+  return text.length > 160 ? `${text.slice(0, 157)}…` : text;
+}
+
+function summarizeComputerAction(action: string, input: Record<string, unknown>): ToolSummary {
+  const keys = [
+    ...COMPUTER_ARG_ORDER.filter((key) => Object.prototype.hasOwnProperty.call(input, key)),
+    ...Object.keys(input).filter((key) => !COMPUTER_ARG_ORDER.includes(key)).sort(),
+  ];
+  const args = keys
+    .filter((key) => input[key] !== undefined)
+    .map((key) => `${key}=${shortValue(input[key])}`)
+    .join(" ");
+  const detail = args ? `${action} ${args}` : action;
+  return { label: "Computer", detail: detail.length > 520 ? `${detail.slice(0, 517)}…` : detail };
 }
 
 const appProperty = {
@@ -68,7 +107,7 @@ function computerTool(tool: Omit<Tool, "isAvailable" | "parallelSafety" | "displ
     isAvailable: isComputerUseFeatureEnabled,
     display: {
       label: "Computer",
-      color: tool.color ?? "#ffb86c",
+      color: tool.color ?? "#ff79c6",
     },
     execute: tool.execute ?? executeActionNotImplemented,
   };
@@ -84,7 +123,7 @@ export const computerListApps = computerTool({
       target: targetProperty,
     },
   },
-  summarize: () => ({ label: "Computer", detail: "list apps" }),
+  summarize: (input) => summarizeComputerAction("list_apps", input),
   execute: (input, _context, signal) => executeComputerListApps(input, signal),
 });
 
@@ -111,18 +150,17 @@ export const computerGetAppState = computerTool({
     required: ["app"],
   },
   systemHint: [
-    "Computer Use tools are available behind a bring-up feature flag. The dwm IPC observation backend and targeted background coordinate/key/text actions are wired.",
-    "Use computer_list_apps to discover window ids/classes/titles and computer_get_app_state to inspect a target window before GUI actions.",
-    "Input actions prefer the patched Xorg EXOCORTEX-AUTOINPUT trusted targeted-event path when available, otherwise fall back to plain X11 events. They should not switch dwm tags, steal focus, or depend on app-specific backends.",
-    "Treat coordinates as window-relative pixels from the last app state screenshot. element_index support awaits a generic AT-SPI backend.",
+    "Use computer_list_apps to discover windows and computer_get_app_state to inspect a target window before GUI actions.",
+    "Input actions target the requested window and should not move the user's pointer or steal focus.",
+    "Treat coordinates as window-relative pixels from the last app state screenshot. element_index support awaits a generic accessibility backend.",
   ].join("\n"),
-  summarize: (input) => summarizeWithApp("Computer state", input),
+  summarize: (input) => summarizeComputerAction("get_app_state", input),
   execute: (input, _context, signal) => executeComputerGetAppState(input, signal),
 });
 
 export const computerClick = computerTool({
   name: "computer_click",
-  description: "Click an app element by element_index from computer_get_app_state or by window-relative coordinates. Coordinate clicks use direct background X11 events and return a refreshed app state.",
+  description: "Click an app element by element_index from computer_get_app_state or by window-relative coordinates. Returns a refreshed app state.",
   inputSchema: {
     type: "object",
     properties: {
@@ -136,13 +174,13 @@ export const computerClick = computerTool({
     },
     required: ["app"],
   },
-  summarize: (input) => summarizeWithApp("Computer click", input),
+  summarize: (input) => summarizeComputerAction("click", input),
   execute: (input, _context, signal) => executeComputerClick(input, signal),
 });
 
 export const computerDrag = computerTool({
   name: "computer_drag",
-  description: "Drag within an app from one window-relative point to another using direct background X11 events. Returns a refreshed app state.",
+  description: "Drag within an app from one window-relative point to another. Returns a refreshed app state.",
   inputSchema: {
     type: "object",
     properties: {
@@ -155,13 +193,13 @@ export const computerDrag = computerTool({
     },
     required: ["app", "from_x", "from_y", "to_x", "to_y"],
   },
-  summarize: (input) => summarizeWithApp("Computer drag", input),
+  summarize: (input) => summarizeComputerAction("drag", input),
   execute: (input, _context, signal) => executeComputerDrag(input, signal),
 });
 
 export const computerTypeText = computerTool({
   name: "computer_type_text",
-  description: "Type literal ASCII text into the target app using direct background X11 events. Returns a refreshed app state.",
+  description: "Type literal ASCII text into the target app. Returns a refreshed app state.",
   inputSchema: {
     type: "object",
     properties: {
@@ -171,13 +209,13 @@ export const computerTypeText = computerTool({
     },
     required: ["app", "text"],
   },
-  summarize: (input) => summarizeWithApp("Computer type", input),
+  summarize: (input) => summarizeComputerAction("type_text", input),
   execute: (input, _context, signal) => executeComputerTypeText(input, signal),
 });
 
 export const computerPressKey = computerTool({
   name: "computer_press_key",
-  description: "Press a key or key combination in the target app using direct background X11 events, such as Enter, Escape, Ctrl+L, Alt+Tab, or Shift+F4. Returns a refreshed app state.",
+  description: "Press a key or key combination in the target app, such as Enter, Escape, Ctrl+L, Alt+Tab, or Shift+F4. Returns a refreshed app state.",
   inputSchema: {
     type: "object",
     properties: {
@@ -187,13 +225,13 @@ export const computerPressKey = computerTool({
     },
     required: ["app", "key"],
   },
-  summarize: (input) => summarizeWithApp("Computer key", input),
+  summarize: (input) => summarizeComputerAction("press_key", input),
   execute: (input, _context, signal) => executeComputerPressKey(input, signal),
 });
 
 export const computerScroll = computerTool({
   name: "computer_scroll",
-  description: "Scroll an app element or window in a direction using direct background X11 events. Returns a refreshed app state.",
+  description: "Scroll an app element or window in a direction. Returns a refreshed app state.",
   inputSchema: {
     type: "object",
     properties: {
@@ -205,13 +243,13 @@ export const computerScroll = computerTool({
     },
     required: ["app", "direction"],
   },
-  summarize: (input) => summarizeWithApp("Computer scroll", input),
+  summarize: (input) => summarizeComputerAction("scroll", input),
   execute: (input, _context, signal) => executeComputerScroll(input, signal),
 });
 
 export const computerSetValue = computerTool({
   name: "computer_set_value",
-  description: "Set the value of an editable/settable accessibility element in an app. Pending generic AT-SPI backend; app-specific DOM backends are disabled. Returns a refreshed app state.",
+  description: "Set the value of an editable/settable accessibility element in an app. Pending generic accessibility backend; app-specific DOM backends are disabled. Returns a refreshed app state.",
   inputSchema: {
     type: "object",
     properties: {
@@ -222,13 +260,13 @@ export const computerSetValue = computerTool({
     },
     required: ["app", "element_index", "value"],
   },
-  summarize: (input) => summarizeWithApp("Computer set value", input),
+  summarize: (input) => summarizeComputerAction("set_value", input),
   execute: (input, _context, signal) => executeComputerSetValue(input, signal),
 });
 
 export const computerPerformSecondaryAction = computerTool({
   name: "computer_perform_secondary_action",
-  description: "Invoke a named secondary accessibility action on an app element. Pending generic AT-SPI backend; app-specific DOM backends are disabled. Returns a refreshed app state.",
+  description: "Invoke a named secondary accessibility action on an app element. Pending generic accessibility backend; app-specific DOM backends are disabled. Returns a refreshed app state.",
   inputSchema: {
     type: "object",
     properties: {
@@ -239,7 +277,7 @@ export const computerPerformSecondaryAction = computerTool({
     },
     required: ["app", "element_index", "action"],
   },
-  summarize: (input) => summarizeWithApp("Computer action", input),
+  summarize: (input) => summarizeComputerAction("perform_secondary_action", input),
   execute: (input, _context, signal) => executeComputerPerformSecondaryAction(input, signal),
 });
 

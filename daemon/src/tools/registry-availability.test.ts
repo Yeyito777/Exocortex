@@ -29,7 +29,8 @@ describe("tool availability", () => {
     expect(enabledTools).toContain("computer_list_apps");
     expect(enabledTools).toContain("computer_get_app_state");
     expect(enabledTools).toContain("computer_click");
-    expect(buildToolSystemHints()).toContain("Computer Use tools are available");
+    expect(buildToolSystemHints()).toContain("Use computer_list_apps");
+    expect(getToolDisplayInfo().find((tool) => tool.name === "computer_click")?.color).toBe("#ff79c6");
 
     writeExocortexConfig({ features: { computerUse: false } });
     const disabledTools = getToolDefs().map((tool) => tool.name);
