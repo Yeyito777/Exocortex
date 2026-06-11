@@ -270,6 +270,77 @@ describe("OpenAI replay input", () => {
     expect(JSON.stringify(input)).not.toContain("input_image");
   });
 
+  test("limits replayed tool-result images to the latest five", () => {
+    const validPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
+    const messages: ApiMessage[] = [];
+    for (let i = 0; i < 7; i++) {
+      messages.push({
+        role: "assistant",
+        content: [{ type: "tool_use", id: `call_${i}`, name: "computer_get_app_state", input: { app: "vimbrowser" } }],
+      });
+      messages.push({
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: `call_${i}`,
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/png", data: validPng } },
+            { type: "text", text: `screenshot ${i}` },
+          ],
+          is_error: false,
+        }],
+      });
+    }
+
+    const input = buildOpenAIInputForTest(messages) as Array<{
+      type: string;
+      role?: string;
+      call_id?: string;
+      output?: string;
+      content?: Array<{ type: string; text?: string; image_url?: string }>;
+    }>;
+
+    expect(input.filter((item) => item.type === "function_call_output")).toHaveLength(7);
+    const imageMessages = input.filter((item) =>
+      item.type === "message" && item.role === "user" && item.content?.some((part) => part.type === "input_image")
+    );
+    expect(imageMessages).toHaveLength(5);
+    expect(imageMessages.map((item) => item.content?.[0]?.text)).toEqual([
+      "Image output for tool call call_2.",
+      "Image output for tool call call_3.",
+      "Image output for tool call call_4.",
+      "Image output for tool call call_5.",
+      "Image output for tool call call_6.",
+    ]);
+  });
+
+  test("limits direct user image attachments to the latest five", () => {
+    const validPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
+    const messages: ApiMessage[] = [{
+      role: "user",
+      content: [
+        ...Array.from({ length: 6 }, () => ({
+          type: "image" as const,
+          source: { type: "base64" as const, media_type: "image/png", data: validPng },
+        })),
+        { type: "text", text: "caption" },
+      ],
+    }];
+
+    const input = buildOpenAIInputForTest(messages) as Array<{
+      type: string;
+      content?: Array<{ type: string; text?: string; image_url?: string }>;
+    }>;
+    const content = input[0].content ?? [];
+
+    expect(content.filter((part) => part.type === "input_image")).toHaveLength(5);
+    expect(content[0]).toEqual({
+      type: "input_text",
+      text: "[Older image omitted from replay; only the latest 5 images are sent to OpenAI.]",
+    });
+    expect(content.at(-1)).toEqual({ type: "input_text", text: "caption" });
+  });
+
   test("parses OpenAI usage-limit 429 reset metadata", () => {
     const parsed = parseOpenAIUsageLimitErrorForTest(JSON.stringify({
       error: {

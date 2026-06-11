@@ -14,6 +14,8 @@ export type OpenAIInputItem =
   | { type: "reasoning"; id: string; encrypted_content?: string | null; summary: Array<{ type: "summary_text"; text: string }> };
 
 const OPENAI_REASONING_SUMMARY = "detailed" as const;
+const MAX_OPENAI_INPUT_IMAGES = 5;
+const OMITTED_OLDER_IMAGE_TEXT = `[Older image omitted from replay; only the latest ${MAX_OPENAI_INPUT_IMAGES} images are sent to OpenAI.]`;
 
 interface OpenAIRequestShape {
   model: ModelId;
@@ -56,11 +58,49 @@ function encodeImage(mediaType: string, base64: string): string {
 function buildImageInputPart(
   mediaType: string,
   base64: string,
+  imageLimiter?: ImageReplayLimiter,
 ): { type: "input_image"; image_url: string } | { type: "input_text"; text: string } {
   if (isValidImagePayload(mediaType, base64)) {
+    if (imageLimiter && !shouldSendNextValidImage(imageLimiter)) {
+      return { type: "input_text", text: OMITTED_OLDER_IMAGE_TEXT };
+    }
     return { type: "input_image", image_url: encodeImage(mediaType, base64) };
   }
   return { type: "input_text", text: `[Invalid ${mediaType || "image"} attachment omitted before sending to OpenAI.]` };
+}
+
+interface ImageReplayLimiter {
+  firstIncludedImageIndex: number;
+  seenValidImages: number;
+}
+
+function countValidReplayImages(messages: ApiMessage[]): number {
+  let count = 0;
+  for (const message of messages) {
+    if (message.role !== "user" || typeof message.content === "string") continue;
+    for (const block of message.content) {
+      if (block.type === "image") {
+        if (isValidImagePayload(block.source.media_type, block.source.data)) count += 1;
+      } else if (block.type === "tool_result") {
+        count += extractToolResultImages(block.content).length;
+      }
+    }
+  }
+  return count;
+}
+
+function createImageReplayLimiter(messages: ApiMessage[]): ImageReplayLimiter {
+  const validImageCount = countValidReplayImages(messages);
+  return {
+    firstIncludedImageIndex: Math.max(0, validImageCount - MAX_OPENAI_INPUT_IMAGES),
+    seenValidImages: 0,
+  };
+}
+
+function shouldSendNextValidImage(limiter: ImageReplayLimiter): boolean {
+  const shouldSend = limiter.seenValidImages >= limiter.firstIncludedImageIndex;
+  limiter.seenValidImages += 1;
+  return shouldSend;
 }
 
 function extractToolResultText(content: string | unknown[]): string {
@@ -84,6 +124,7 @@ function extractToolResultImages(content: string | unknown[]): Array<{ mediaType
 
 export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
   const input: OpenAIInputItem[] = [];
+  const imageLimiter = createImageReplayLimiter(messages);
 
   for (const message of messages) {
     if (message.role === "user") {
@@ -111,7 +152,8 @@ export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
             output,
           });
 
-          const images = extractToolResultImages(result.content);
+          const images = extractToolResultImages(result.content)
+            .filter(() => shouldSendNextValidImage(imageLimiter));
           if (images.length > 0) {
             input.push({
               type: "message",
@@ -142,7 +184,7 @@ export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
         if (block.type === "text") {
           parts.push({ type: "input_text", text: block.text });
         } else if (block.type === "image") {
-          parts.push(buildImageInputPart(block.source.media_type, block.source.data));
+          parts.push(buildImageInputPart(block.source.media_type, block.source.data, imageLimiter));
         }
       }
       if (parts.length > 0) {
