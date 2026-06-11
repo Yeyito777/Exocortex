@@ -22,8 +22,8 @@ import {
 
 const ACTIONS_NOT_IMPLEMENTED = [
   "Computer Use is partially wired: dwm IPC observation and targeted background input work for coordinate/key/text actions.",
-  "Currently wired: list_apps, get_app_state, click, drag, type_text, press_key, scroll. A patched Xorg EXOCORTEX-AUTOINPUT extension is preferred when present; plain X11/app fallbacks are used otherwise.",
-  "Pending: generic AT-SPI set_value/secondary accessibility actions for non-browser apps.",
+  "Currently wired: list_apps, get_app_state, click, drag, type_text, press_key, scroll. A patched Xorg EXOCORTEX-AUTOINPUT extension is preferred when present; plain X11 fallback is used otherwise.",
+  "Pending: generic AT-SPI set_value/secondary accessibility actions and element trees.",
 ].join("\n");
 
 export function isComputerUseFeatureEnabled(config: ExocortexConfig = readExocortexConfig()): boolean {
@@ -113,8 +113,8 @@ export const computerGetAppState = computerTool({
   systemHint: [
     "Computer Use tools are available behind a bring-up feature flag. The dwm IPC observation backend and targeted background coordinate/key/text actions are wired.",
     "Use computer_list_apps to discover window ids/classes/titles and computer_get_app_state to inspect a target window before GUI actions.",
-    "Input actions prefer the patched Xorg EXOCORTEX-AUTOINPUT trusted targeted-event path when available, otherwise fall back to plain X11/app backends. They should not switch dwm tags or steal focus.",
-    "Treat coordinates as window-relative pixels from the last app state screenshot, and prefer element_index when the state tree exposes one.",
+    "Input actions prefer the patched Xorg EXOCORTEX-AUTOINPUT trusted targeted-event path when available, otherwise fall back to plain X11 events. They should not switch dwm tags, steal focus, or depend on app-specific backends.",
+    "Treat coordinates as window-relative pixels from the last app state screenshot. element_index support awaits a generic AT-SPI backend.",
   ].join("\n"),
   summarize: (input) => summarizeWithApp("Computer state", input),
   execute: (input, _context, signal) => executeComputerGetAppState(input, signal),
@@ -211,7 +211,7 @@ export const computerScroll = computerTool({
 
 export const computerSetValue = computerTool({
   name: "computer_set_value",
-  description: "Set the value of an editable/settable accessibility element in an app. Vimbrowser DOM elements are wired; generic AT-SPI is pending. Returns a refreshed app state.",
+  description: "Set the value of an editable/settable accessibility element in an app. Pending generic AT-SPI backend; app-specific DOM backends are disabled. Returns a refreshed app state.",
   inputSchema: {
     type: "object",
     properties: {
@@ -228,7 +228,7 @@ export const computerSetValue = computerTool({
 
 export const computerPerformSecondaryAction = computerTool({
   name: "computer_perform_secondary_action",
-  description: "Invoke a named secondary accessibility action on an app element. Vimbrowser DOM press/click/open/focus are wired; generic AT-SPI is pending. Returns a refreshed app state.",
+  description: "Invoke a named secondary accessibility action on an app element. Pending generic AT-SPI backend; app-specific DOM backends are disabled. Returns a refreshed app state.",
   inputSchema: {
     type: "object",
     properties: {

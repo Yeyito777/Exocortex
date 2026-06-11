@@ -69,46 +69,6 @@ interface ResolvedApp {
   clients: DwmClient[];
 }
 
-interface VimbrowserStatus {
-  active_tabid?: number;
-  active_tab?: number;
-  url?: string;
-  title?: string;
-  tabs?: unknown;
-}
-
-interface VimbrowserMetrics {
-  innerWidth: number;
-  innerHeight: number;
-  outerWidth: number;
-  outerHeight: number;
-  devicePixelRatio: number;
-  scrollX: number;
-  scrollY: number;
-  chromeLeft: number;
-  chromeTop: number;
-  chromeBottom: number;
-  title: string;
-  url: string;
-}
-
-interface VimbrowserElementInfo {
-  index: number;
-  tag: string;
-  role: string;
-  type: string;
-  name: string;
-  href: string;
-  value: string;
-  rect: { x: number; y: number; w: number; h: number };
-  windowRect: { x: number; y: number; w: number; h: number };
-}
-
-interface VimbrowserDomState {
-  metrics: VimbrowserMetrics;
-  elements: VimbrowserElementInfo[];
-}
-
 function getString(input: Record<string, unknown>, key: string): string | null {
   const value = input[key];
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -367,162 +327,6 @@ async function runCommand(command: string, args: string[], signal?: AbortSignal)
   }
 }
 
-function isVimbrowserClient(client: DwmClient): boolean {
-  return [client.title, client.class, client.instance]
-    .some((value) => normalize(value).includes("vimbrowser"));
-}
-
-async function runVimbrowserCli(args: string[], signal?: AbortSignal): Promise<{ stdout: Buffer; text: string }> {
-  const result = await runCommand("vimbrowser-cli", args, signal);
-  if (result.exitCode !== 0) {
-    throw new Error(`vimbrowser-cli ${args.join(" ")} failed:\n${result.stderr || result.stdout.toString("utf8") || `exit ${result.exitCode}`}`);
-  }
-  return { stdout: result.stdout, text: result.stdout.toString("utf8") };
-}
-
-async function runVimbrowserJson<T>(args: string[], signal?: AbortSignal): Promise<T> {
-  const { text } = await runVimbrowserCli(args, signal);
-  return JSON.parse(text) as T;
-}
-
-async function vimbrowserActiveTab(signal?: AbortSignal): Promise<string> {
-  const status = await runVimbrowserJson<VimbrowserStatus>(["status"], signal);
-  const tab = status.active_tabid ?? status.active_tab;
-  return tab == null ? "@active" : String(tab);
-}
-
-async function vimbrowserEvalJson<T>(script: string, signal?: AbortSignal): Promise<T> {
-  const tab = await vimbrowserActiveTab(signal);
-  const response = await runVimbrowserJson<{ ok?: boolean; type?: string; result?: string; error?: string }>(["js", tab, script], signal);
-  if (response.ok === false) throw new Error(response.error || "vimbrowser JavaScript evaluation failed");
-  if (typeof response.result !== "string") throw new Error(`vimbrowser JavaScript returned non-string result type ${response.type}`);
-  return JSON.parse(response.result) as T;
-}
-
-function vimbrowserDomStateScript(maxElements: number): string {
-  return `(() => {
-    const limit = ${Math.max(1, Math.min(2000, Math.round(maxElements)))};
-    const chromeLeft = Math.max(0, window.outerWidth - window.innerWidth);
-    const chromeTop = 0;
-    const chromeBottom = Math.max(0, window.outerHeight - window.innerHeight - chromeTop);
-    const selector = [
-      'a[href]', 'button', 'input', 'textarea', 'select', 'summary', 'video', 'audio',
-      '[contenteditable="true"]', '[role="button"]', '[role="link"]', '[role="menuitem"]',
-      '[onclick]', 'ytd-thumbnail', 'yt-lockup-view-model', 'yt-button-shape', 'tp-yt-paper-button'
-    ].join(',');
-    const visible = (el, rect) => {
-      const style = getComputedStyle(el);
-      if (style.visibility === 'hidden' || style.display === 'none' || style.pointerEvents === 'none') return false;
-      return rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.right >= 0 && rect.left <= innerWidth && rect.top <= innerHeight;
-    };
-    const nameOf = (el) => {
-      const aria = el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('alt') || '';
-      const value = 'value' in el ? String(el.value || '') : '';
-      const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-      return (aria || value || text || el.getAttribute('href') || '').slice(0, 180);
-    };
-    const elements = [];
-    const seen = new Set();
-    for (const el of Array.from(document.querySelectorAll(selector))) {
-      const target = el.closest('a[href],button,input,textarea,select,summary,video,audio,[contenteditable="true"],[role="button"],[role="link"],[role="menuitem"],[onclick]') || el;
-      if (seen.has(target)) continue;
-      seen.add(target);
-      const rect = target.getBoundingClientRect();
-      if (!visible(target, rect)) continue;
-      const hrefEl = target.closest('a[href]');
-      elements.push({
-        index: elements.length + 1,
-        tag: target.tagName.toLowerCase(),
-        role: target.getAttribute('role') || '',
-        type: target.getAttribute('type') || '',
-        name: nameOf(target),
-        href: hrefEl ? hrefEl.href : '',
-        value: 'value' in target ? String(target.value || '').slice(0, 120) : '',
-        rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) },
-        windowRect: { x: Math.round(rect.left + chromeLeft), y: Math.round(rect.top + chromeTop), w: Math.round(rect.width), h: Math.round(rect.height) }
-      });
-      if (elements.length >= limit) break;
-    }
-    return JSON.stringify({
-      metrics: {
-        innerWidth, innerHeight, outerWidth, outerHeight, devicePixelRatio,
-        scrollX, scrollY, chromeLeft, chromeTop, chromeBottom,
-        title: document.title, url: location.href
-      },
-      elements
-    });
-  })()`;
-}
-
-async function getVimbrowserDomState(maxElements: number, signal?: AbortSignal): Promise<VimbrowserDomState> {
-  return vimbrowserEvalJson<VimbrowserDomState>(vimbrowserDomStateScript(maxElements), signal);
-}
-
-function vimbrowserClickScript(args: { x?: number; y?: number; elementIndex?: number }): string {
-  const xExpr = typeof args.x === "number" ? String(Math.round(args.x)) : "null";
-  const yExpr = typeof args.y === "number" ? String(Math.round(args.y)) : "null";
-  const indexExpr = typeof args.elementIndex === "number" ? String(args.elementIndex) : "null";
-  return `(() => {
-    const requestedWindowX = ${xExpr};
-    const requestedWindowY = ${yExpr};
-    const requestedIndex = ${indexExpr};
-    const chromeLeft = Math.max(0, window.outerWidth - window.innerWidth);
-    const chromeTop = 0;
-    const selector = [
-      'a[href]', 'button', 'input', 'textarea', 'select', 'summary', 'video', 'audio',
-      '[contenteditable="true"]', '[role="button"]', '[role="link"]', '[role="menuitem"]',
-      '[onclick]', 'ytd-thumbnail', 'yt-lockup-view-model', 'yt-button-shape', 'tp-yt-paper-button'
-    ].join(',');
-    const closestClickable = (el) => el && (el.closest('a[href],button,input,textarea,select,summary,video,audio,[contenteditable="true"],[role="button"],[role="link"],[role="menuitem"],[onclick]') || el);
-    const visible = (el, rect) => {
-      const style = getComputedStyle(el);
-      return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.right >= 0 && rect.left <= innerWidth && rect.top <= innerHeight;
-    };
-    const collect = () => {
-      const out = [], seen = new Set();
-      for (const el of Array.from(document.querySelectorAll(selector))) {
-        const target = closestClickable(el);
-        if (!target || seen.has(target)) continue;
-        seen.add(target);
-        const rect = target.getBoundingClientRect();
-        if (!visible(target, rect)) continue;
-        out.push(target);
-      }
-      return out;
-    };
-    let clientX, clientY, target;
-    if (requestedIndex != null) {
-      target = collect()[requestedIndex - 1];
-      if (!target) return JSON.stringify({ ok: false, error: 'No visible vimbrowser DOM element at index ' + requestedIndex });
-      const rect = target.getBoundingClientRect();
-      clientX = Math.round(rect.left + rect.width / 2);
-      clientY = Math.round(rect.top + rect.height / 2);
-    } else {
-      clientX = Math.round(requestedWindowX - chromeLeft);
-      clientY = Math.round(requestedWindowY - chromeTop);
-      target = closestClickable(document.elementFromPoint(clientX, clientY));
-      if (!target) return JSON.stringify({ ok: false, error: 'No DOM element at content point ' + clientX + ',' + clientY, clientX, clientY, chromeLeft, chromeTop });
-    }
-    const hrefEl = target.closest && target.closest('a[href]');
-    const href = hrefEl ? hrefEl.href : '';
-    const before = location.href;
-    try { target.focus && target.focus({ preventScroll: true }); } catch {}
-    const eventInit = { bubbles: true, cancelable: true, view: window, clientX, clientY, screenX: clientX, screenY: clientY, button: 0, buttons: 1 };
-    for (const type of ['pointerover','pointerenter','mouseover','mouseenter','pointermove','mousemove','pointerdown','mousedown','pointerup','mouseup','click']) {
-      const ev = type.startsWith('pointer') && typeof PointerEvent !== 'undefined' ? new PointerEvent(type, eventInit) : new MouseEvent(type, eventInit);
-      target.dispatchEvent(ev);
-    }
-    try { target.click && target.click(); } catch {}
-    if (href && location.href === before) {
-      try { hrefEl.click(); } catch {}
-    }
-    if (href && location.href === before) {
-      location.href = href;
-    }
-    return JSON.stringify({ ok: true, tag: target.tagName.toLowerCase(), href, before, after: location.href, clientX, clientY, chromeLeft, chromeTop, text: (target.innerText || target.textContent || target.getAttribute('aria-label') || '').replace(/\s+/g, ' ').slice(0, 160) });
-  })()`;
-}
-
 function parseElementIndex(value: string | null): number | null {
   if (!value) return null;
   const match = /^(?:dom:)?(\d+)$/.exec(value.trim());
@@ -622,30 +426,6 @@ async function captureWindow(win: string, signal?: AbortSignal): Promise<{ image
   };
 }
 
-function renderVimbrowserDomState(dom: VimbrowserDomState): string[] {
-  const m = dom.metrics;
-  const lines = [
-    "",
-    "  browser: vimbrowser IPC",
-    `  browserUrl: ${m.url}`,
-    `  browserTitle: ${m.title}`,
-    `  browserViewport: inner=${m.innerWidth}×${m.innerHeight} outer=${m.outerWidth}×${m.outerHeight} chromeLeft=${m.chromeLeft} chromeTop=${m.chromeTop} chromeBottom=${m.chromeBottom} scroll=${m.scrollX},${m.scrollY}`,
-    "  domElements:",
-  ];
-  if (dom.elements.length === 0) {
-    lines.push("    (no visible clickable/editable DOM elements found)");
-    return lines;
-  }
-  for (const el of dom.elements) {
-    const role = el.role ? ` role=${JSON.stringify(el.role)}` : "";
-    const type = el.type ? ` type=${JSON.stringify(el.type)}` : "";
-    const href = el.href ? ` href=${JSON.stringify(el.href)}` : "";
-    const name = el.name ? ` ${JSON.stringify(el.name)}` : "";
-    lines.push(`    ${el.index} ${el.tag}${role}${type}${name} windowRect=x=${el.windowRect.x} y=${el.windowRect.y} w=${el.windowRect.w} h=${el.windowRect.h}${href}`);
-  }
-  return lines;
-}
-
 function renderAppState(client: DwmClient, monitors: DwmMonitor[], screenshotNote: string | null, extraStateLines: string[] = []): string {
   const g = client.geometry;
   const monitor = monitors.find((m) => m.num === client.monitor);
@@ -668,9 +448,7 @@ function renderAppState(client: DwmClient, monitors: DwmMonitor[], screenshotNot
     `  geometry: x=${g.x} y=${g.y} w=${g.w} h=${g.h} border=${g.border}`,
     client.aiToken ? `  aiToken: ${client.aiToken}` : null,
     ...extraStateLines,
-    isVimbrowserClient(client)
-      ? "  accessibility: vimbrowser DOM elements are exposed above for element_index clicks; native AT-SPI is still pending"
-      : "  accessibility: not wired yet (element_index/set_value/secondary actions unavailable until AT-SPI backend lands)",
+    "  accessibility: not wired yet (element_index/set_value/secondary actions unavailable until AT-SPI backend lands)",
     "</app_state>",
   ].filter((line): line is string => line !== null);
   return lines.join("\n");
@@ -697,7 +475,6 @@ export async function executeComputerGetAppState(input: Record<string, unknown>,
   const app = getString(input, "app");
   if (!app) return { output: "computer_get_app_state requires app.", isError: true };
   const includeScreenshot = getBoolean(input, "include_screenshot", true);
-  const maxElements = Math.max(1, Math.min(2000, Math.round(getNumber(input, "max_elements") ?? 300)));
 
   try {
     const resolved = await resolveApp(app, signal);
@@ -712,14 +489,6 @@ export async function executeComputerGetAppState(input: Record<string, unknown>,
     }
 
     const extraStateLines: string[] = [];
-    if (isVimbrowserClient(resolved.client)) {
-      try {
-        const dom = await getVimbrowserDomState(maxElements, signal);
-        extraStateLines.push(...renderVimbrowserDomState(dom));
-      } catch (err) {
-        extraStateLines.push(`  browser: vimbrowser IPC unavailable/error: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
 
     const monitors = await listDwmMonitors(signal).catch(() => []);
     const output = renderAppState(resolved.client, monitors, screenshotNote, extraStateLines);
@@ -768,166 +537,6 @@ async function actionState(prefix: string, client: DwmClient, signal?: AbortSign
   };
 }
 
-async function executeVimbrowserClick(client: DwmClient, input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
-  const elementIndex = parseElementIndex(getString(input, "element_index"));
-  const x = numericInput(input, "x");
-  const y = numericInput(input, "y");
-  if (elementIndex == null && (x == null || y == null)) {
-    return { output: "vimbrowser click requires either element_index from computer_get_app_state or window-relative x and y coordinates.", isError: true };
-  }
-  const result = await vimbrowserEvalJson<{ ok: boolean; error?: string; href?: string; before?: string; after?: string; tag?: string; text?: string; clientX?: number; clientY?: number; chromeLeft?: number }>(
-    vimbrowserClickScript({ x: x ?? undefined, y: y ?? undefined, elementIndex: elementIndex ?? undefined }),
-    signal,
-  );
-  if (!result.ok) return { output: result.error || "vimbrowser DOM click failed", isError: true };
-  const target = elementIndex != null ? `element_index=${elementIndex}` : `window coordinates ${x},${y}`;
-  const details = [`vimbrowser DOM click sent to ${target}.`];
-  if (result.href) details.push(`href: ${result.href}`);
-  if (result.before && result.after && result.before !== result.after) details.push(`navigation: ${result.before} → ${result.after}`);
-  else if (result.after) details.push(`url: ${result.after}`);
-  if (result.text) details.push(`target: ${result.tag ?? "element"} ${JSON.stringify(result.text)}`);
-  await sleep(result.href ? 900 : 250);
-  return actionState(details.join("\n"), client, signal);
-}
-
-async function executeVimbrowserScroll(client: DwmClient, input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
-  const direction = getString(input, "direction");
-  if (!direction || !["up", "down", "left", "right"].includes(direction)) {
-    return { output: "computer_scroll requires direction: up, down, left, or right.", isError: true };
-  }
-  const pages = Math.max(1, Math.min(20, numericInput(input, "pages") ?? 1));
-  const dy = direction === "up" ? -850 : direction === "down" ? 850 : 0;
-  if (direction === "left" || direction === "right") {
-    const dx = direction === "left" ? -850 * pages : 850 * pages;
-    await vimbrowserEvalJson<{ ok: boolean }>(`(() => { window.scrollBy(${dx}, 0); return JSON.stringify({ok:true, scrollX, scrollY}); })()`, signal);
-  } else {
-    const tab = await vimbrowserActiveTab(signal);
-    await runVimbrowserCli(["scroll-tab", tab, String(dy), String(pages)], signal);
-  }
-  return actionState(`vimbrowser background scroll ${direction} x${pages} sent through browser IPC.`, client, signal);
-}
-
-function vimbrowserTypeScript(text: string): string {
-  return `(() => {
-    const text = ${JSON.stringify(text)};
-    const el = document.activeElement;
-    if (!el) return JSON.stringify({ok:false,error:'No active element'});
-    const tag = el.tagName ? el.tagName.toLowerCase() : '';
-    const editable = tag === 'textarea' || tag === 'input' || el.isContentEditable;
-    if (!editable) return JSON.stringify({ok:false,error:'Active element is not editable', tag, text:(el.innerText||el.textContent||'').slice(0,80)});
-    el.focus();
-    if (el.isContentEditable) {
-      document.execCommand('insertText', false, text);
-    } else {
-      const start = el.selectionStart ?? String(el.value || '').length;
-      const end = el.selectionEnd ?? start;
-      const before = String(el.value || '').slice(0, start);
-      const after = String(el.value || '').slice(end);
-      el.value = before + text + after;
-      const pos = start + text.length;
-      try { el.setSelectionRange(pos, pos); } catch {}
-      el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:text}));
-      el.dispatchEvent(new Event('change', {bubbles:true}));
-    }
-    return JSON.stringify({ok:true, tag});
-  })()`;
-}
-
-async function executeVimbrowserTypeText(client: DwmClient, input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
-  const text = typeof input.text === "string" ? input.text : null;
-  if (text == null) return { output: "computer_type_text requires text.", isError: true };
-  const result = await vimbrowserEvalJson<{ ok: boolean; error?: string; tag?: string }>(vimbrowserTypeScript(text), signal);
-  if (!result.ok) {
-    // Fall back to direct X11 events. This still avoids dwm focus/tag changes,
-    // but browser widgets may ignore it.
-    await runX11Helper(["type", client.win, text], signal);
-    return actionState(`vimbrowser active DOM element was not editable (${result.error}); fell back to background X11 typing.`, client, signal);
-  }
-  return actionState(`vimbrowser DOM text insertion sent to active ${result.tag ?? "element"} (${text.length} chars).`, client, signal);
-}
-
-function vimbrowserSetValueScript(elementIndex: number, value: string): string {
-  return `(() => {
-    const requestedIndex = ${elementIndex};
-    const value = ${JSON.stringify(value)};
-    const selector = ['a[href]', 'button', 'input', 'textarea', 'select', 'summary', 'video', 'audio', '[contenteditable="true"]', '[role="button"]', '[role="link"]', '[role="menuitem"]', '[onclick]', 'ytd-thumbnail', 'yt-lockup-view-model', 'yt-button-shape', 'tp-yt-paper-button'].join(',');
-    const closestTarget = (el) => el && (el.closest('a[href],button,input,textarea,select,summary,video,audio,[contenteditable="true"],[role="button"],[role="link"],[role="menuitem"],[onclick]') || el);
-    const visible = (el, rect) => {
-      const style = getComputedStyle(el);
-      return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.right >= 0 && rect.left <= innerWidth && rect.top <= innerHeight;
-    };
-    const collect = () => {
-      const out = [], seen = new Set();
-      for (const el of Array.from(document.querySelectorAll(selector))) {
-        const target = closestTarget(el);
-        if (!target || seen.has(target)) continue;
-        seen.add(target);
-        const rect = target.getBoundingClientRect();
-        if (!visible(target, rect)) continue;
-        out.push(target);
-      }
-      return out;
-    };
-    const el = collect()[requestedIndex - 1];
-    if (!el) return JSON.stringify({ok:false,error:'No visible vimbrowser DOM element at index ' + requestedIndex});
-    const tag = el.tagName ? el.tagName.toLowerCase() : '';
-    const editable = tag === 'textarea' || tag === 'input' || el.isContentEditable;
-    if (!editable) return JSON.stringify({ok:false,error:'Element is not editable', tag, text:(el.innerText||el.textContent||'').replace(/\s+/g,' ').slice(0,100)});
-    try { el.focus({preventScroll:true}); } catch { try { el.focus(); } catch {} }
-    if (el.isContentEditable) {
-      el.textContent = value;
-      el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:value}));
-      el.dispatchEvent(new Event('change', {bubbles:true}));
-    } else {
-      el.value = value;
-      try { el.setSelectionRange(value.length, value.length); } catch {}
-      el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertReplacementText', data:value}));
-      el.dispatchEvent(new Event('change', {bubbles:true}));
-    }
-    return JSON.stringify({ok:true, tag});
-  })()`;
-}
-
-function vimbrowserKeyScript(key: string): string {
-  return `(() => {
-    const raw = ${JSON.stringify(key)};
-    const parts = raw.split('+').map(s => s.trim()).filter(Boolean);
-    let key = parts.pop() || raw;
-    const mods = new Set(parts.map(s => s.toLowerCase()));
-    const aliases = { Enter:'Enter', Return:'Enter', Esc:'Escape', Escape:'Escape', Space:' ', Tab:'Tab', Backspace:'Backspace', Delete:'Delete', Del:'Delete', Left:'ArrowLeft', Right:'ArrowRight', Up:'ArrowUp', Down:'ArrowDown', PageUp:'PageUp', PageDown:'PageDown' };
-    key = aliases[key] || aliases[key[0]?.toUpperCase() + key.slice(1)] || key;
-    if (key.length === 1 && (mods.has('ctrl') || mods.has('control') || mods.has('alt') || mods.has('meta') || mods.has('cmd') || mods.has('command'))) key = key.toLowerCase();
-    const target = document.activeElement || document.body || document.documentElement;
-    const init = { key, bubbles:true, cancelable:true, ctrlKey:mods.has('ctrl')||mods.has('control'), shiftKey:mods.has('shift'), altKey:mods.has('alt')||mods.has('option'), metaKey:mods.has('meta')||mods.has('cmd')||mods.has('command') };
-    const down = new KeyboardEvent('keydown', init);
-    target.dispatchEvent(down);
-    if (key.length === 1) target.dispatchEvent(new KeyboardEvent('keypress', init));
-    target.dispatchEvent(new KeyboardEvent('keyup', init));
-    const tag = target.tagName ? target.tagName.toLowerCase() : '';
-    if (key === 'Enter' && !down.defaultPrevented && (tag === 'input' || tag === 'textarea')) {
-      const form = target.form || target.closest?.('form');
-      if (form) {
-        try { form.requestSubmit ? form.requestSubmit() : form.submit(); } catch {}
-      }
-    }
-    if (key === 'Escape' && target.blur) target.blur();
-    return JSON.stringify({ok:true, key, tag});
-  })()`;
-}
-
-async function executeVimbrowserPressKey(client: DwmClient, input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
-  const key = getString(input, "key");
-  if (!key) return { output: "computer_press_key requires key.", isError: true };
-  try {
-    const result = await vimbrowserEvalJson<{ ok: boolean; error?: string; key?: string; tag?: string }>(vimbrowserKeyScript(key), signal);
-    if (!result.ok) throw new Error(result.error || "vimbrowser key dispatch failed");
-    return actionState(`vimbrowser DOM key ${JSON.stringify(key)} sent to active ${result.tag ?? "element"}.`, client, signal);
-  } catch (err) {
-    await runX11Helper(["key", client.win, key], signal);
-    return actionState(`vimbrowser DOM key dispatch failed (${err instanceof Error ? err.message : String(err)}); fell back to background X11 key ${JSON.stringify(key)}.`, client, signal);
-  }
-}
-
 export async function executeComputerSetValue(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
   const resolved = await resolveActionTarget(input, signal);
   if (isToolResult(resolved)) return resolved;
@@ -935,16 +544,10 @@ export async function executeComputerSetValue(input: Record<string, unknown>, si
   const value = typeof input.value === "string" ? input.value : null;
   if (elementIndex == null) return { output: "computer_set_value requires a numeric element_index from computer_get_app_state.", isError: true };
   if (value == null) return { output: "computer_set_value requires value.", isError: true };
-  if (!isVimbrowserClient(resolved.client)) {
-    return { output: "computer_set_value currently requires the vimbrowser DOM backend; generic AT-SPI set_value is pending.", isError: true };
-  }
-  try {
-    const result = await vimbrowserEvalJson<{ ok: boolean; error?: string; tag?: string; text?: string }>(vimbrowserSetValueScript(elementIndex, value), signal);
-    if (!result.ok) return { output: result.error || "vimbrowser set_value failed", isError: true };
-    return actionState(`vimbrowser DOM value set on element_index=${elementIndex} (${result.tag ?? "element"}, ${value.length} chars).`, resolved.client, signal);
-  } catch (err) {
-    return { output: err instanceof Error ? err.message : String(err), isError: true };
-  }
+  void resolved;
+  void elementIndex;
+  void value;
+  return { output: "computer_set_value requires the upcoming generic AT-SPI/accessibility backend; app-specific DOM backends are disabled.", isError: true };
 }
 
 export async function executeComputerPerformSecondaryAction(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
@@ -954,18 +557,10 @@ export async function executeComputerPerformSecondaryAction(input: Record<string
   const elementIndex = parseElementIndex(getString(input, "element_index"));
   if (!action) return { output: "computer_perform_secondary_action requires action.", isError: true };
   if (elementIndex == null) return { output: "computer_perform_secondary_action requires a numeric element_index from computer_get_app_state.", isError: true };
-  if (!isVimbrowserClient(resolved.client)) {
-    return { output: "computer_perform_secondary_action currently requires the vimbrowser DOM backend; generic AT-SPI actions are pending.", isError: true };
-  }
-  if (["press", "click", "open", "activate"].includes(action)) {
-    return executeVimbrowserClick(resolved.client, { ...input, element_index: String(elementIndex) }, signal);
-  }
-  if (["focus", "raise"].includes(action)) {
-    const result = await vimbrowserEvalJson<{ ok: boolean; error?: string }>(`(() => { const els = Array.from(document.querySelectorAll('a[href],button,input,textarea,select,[contenteditable="true"],[role="button"],[role="link"]')); const el = els[${elementIndex - 1}]; if (!el) return JSON.stringify({ok:false,error:'No element'}); el.focus && el.focus({preventScroll:true}); return JSON.stringify({ok:true}); })()`, signal);
-    if (!result.ok) return { output: result.error || "vimbrowser focus action failed", isError: true };
-    return actionState(`vimbrowser DOM focus action performed on element_index=${elementIndex}.`, resolved.client, signal);
-  }
-  return { output: `Unsupported vimbrowser secondary action ${JSON.stringify(action)}. Supported: press, click, open, activate, focus.`, isError: true };
+  void resolved;
+  void action;
+  void elementIndex;
+  return { output: "computer_perform_secondary_action requires the upcoming generic AT-SPI/accessibility backend; app-specific DOM backends are disabled.", isError: true };
 }
 
 export async function executeComputerClick(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
@@ -973,31 +568,12 @@ export async function executeComputerClick(input: Record<string, unknown>, signa
   if (isToolResult(resolved)) return resolved;
 
   const trustedInput = await trustedXorgInputAvailable(signal);
-  if (!trustedInput && isVimbrowserClient(resolved.client)) {
-    try {
-      return await executeVimbrowserClick(resolved.client, input, signal);
-    } catch (err) {
-      return { output: err instanceof Error ? err.message : String(err), isError: true };
-    }
-  }
 
-  let x = numericInput(input, "x");
-  let y = numericInput(input, "y");
+  const x = numericInput(input, "x");
+  const y = numericInput(input, "y");
   const elementIndex = parseElementIndex(getString(input, "element_index"));
-  if (elementIndex != null && (x == null || y == null) && isVimbrowserClient(resolved.client)) {
-    try {
-      const dom = await getVimbrowserDomState(2000, signal);
-      const el = dom.elements.find((candidate) => candidate.index === elementIndex);
-      if (el) {
-        x = Math.round(el.windowRect.x + el.windowRect.w / 2);
-        y = Math.round(el.windowRect.y + el.windowRect.h / 2);
-      }
-    } catch {
-      // Fall through to the generic missing-coordinate error below.
-    }
-  }
   if (elementIndex != null && (x == null || y == null)) {
-    return { output: "element_index clicks require an element backend to map the element to coordinates. Vimbrowser can do this when its IPC is available; generic AT-SPI is pending.", isError: true };
+    return { output: "element_index clicks require the upcoming generic AT-SPI/accessibility backend to map the element to coordinates.", isError: true };
   }
   if (x == null || y == null) {
     return { output: "computer_click currently requires window-relative x and y coordinates because AT-SPI element targeting is not wired yet.", isError: true };
@@ -1038,7 +614,6 @@ export async function executeComputerTypeText(input: Record<string, unknown>, si
   if (text == null) return { output: "computer_type_text requires text.", isError: true };
   try {
     const trustedInput = await trustedXorgInputAvailable(signal);
-    if (!trustedInput && isVimbrowserClient(resolved.client)) return await executeVimbrowserTypeText(resolved.client, input, signal);
     await runX11Helper(["type", resolved.client.win, text], signal);
     return actionState(`${trustedInput ? "Trusted Xorg" : "Background X11"} text typing sent to ${resolved.client.win} (${text.length} chars).`, resolved.client, signal);
   } catch (err) {
@@ -1053,7 +628,6 @@ export async function executeComputerPressKey(input: Record<string, unknown>, si
   if (!key) return { output: "computer_press_key requires key.", isError: true };
   try {
     const trustedInput = await trustedXorgInputAvailable(signal);
-    if (!trustedInput && isVimbrowserClient(resolved.client)) return await executeVimbrowserPressKey(resolved.client, input, signal);
     await runX11Helper(["key", resolved.client.win, key], signal);
     return actionState(`${trustedInput ? "Trusted Xorg" : "Background X11"} key ${JSON.stringify(key)} sent to ${resolved.client.win}.`, resolved.client, signal);
   } catch (err) {
@@ -1065,13 +639,6 @@ export async function executeComputerScroll(input: Record<string, unknown>, sign
   const resolved = await resolveActionTarget(input, signal);
   if (isToolResult(resolved)) return resolved;
   const trustedInput = await trustedXorgInputAvailable(signal);
-  if (!trustedInput && isVimbrowserClient(resolved.client)) {
-    try {
-      return await executeVimbrowserScroll(resolved.client, input, signal);
-    } catch (err) {
-      return { output: err instanceof Error ? err.message : String(err), isError: true };
-    }
-  }
   if (getString(input, "element_index")) {
     return { output: "element_index scrolling requires the upcoming AT-SPI backend. For now scrolling targets the window center.", isError: true };
   }
