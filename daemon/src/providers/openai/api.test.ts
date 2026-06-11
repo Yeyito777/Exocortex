@@ -24,6 +24,22 @@ import { OpenAIWebSocketHttpError, setOpenAIWebSocketConnectorForTest, type Open
 
 const originalFetch = globalThis.fetch;
 
+function corruptFirstPngIdatByte(base64: string): string {
+  const bytes = Buffer.from(base64, "base64");
+  let offset = 8; // PNG signature
+  while (offset + 12 <= bytes.length) {
+    const length = bytes.readUInt32BE(offset);
+    const type = bytes.subarray(offset + 4, offset + 8).toString("ascii");
+    if (type === "IDAT") {
+      const dataStart = offset + 8;
+      bytes[dataStart + Math.min(2, Math.max(0, length - 1))] ^= 0xff;
+      return bytes.toString("base64");
+    }
+    offset += 12 + length;
+  }
+  throw new Error("fixture PNG has no IDAT chunk");
+}
+
 interface MockWebSocketCall {
   url: string;
   headers: Record<string, string>;
@@ -190,11 +206,13 @@ describe("OpenAI replay input", () => {
   });
 
   test("omits invalid image payloads instead of sending provider-rejected data URLs", () => {
-    const validPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const validPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
+    const corruptPng = corruptFirstPngIdatByte(validPng);
     const messages: ApiMessage[] = [{
       role: "user",
       content: [
         { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: corruptPng } },
         { type: "image", source: { type: "base64", media_type: "image/png", data: validPng } },
         { type: "text", text: "caption" },
       ],
@@ -208,9 +226,48 @@ describe("OpenAI replay input", () => {
 
     expect(input[0].content).toEqual([
       { type: "input_text", text: "[Invalid image/png attachment omitted before sending to OpenAI.]" },
+      { type: "input_text", text: "[Invalid image/png attachment omitted before sending to OpenAI.]" },
       { type: "input_image", image_url: `data:image/png;base64,${validPng}` },
       { type: "input_text", text: "caption" },
     ]);
+  });
+
+  test("omits corrupt tool-result images before building OpenAI input", () => {
+    const validPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
+    const corruptPng = corruptFirstPngIdatByte(validPng);
+    const messages: ApiMessage[] = [
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "call_read", name: "read", input: { file_path: "/tmp/corrupt.png" } }],
+      },
+      {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: "call_read",
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/png", data: corruptPng } },
+            { type: "text", text: "Read image: /tmp/corrupt.png (0.0 MB)" },
+          ],
+          is_error: false,
+        }],
+      },
+    ];
+
+    const input = buildOpenAIInputForTest(messages) as Array<{
+      type: string;
+      call_id?: string;
+      name?: string;
+      arguments?: string;
+      output?: string;
+      content?: Array<{ type: string; image_url?: string }>;
+    }>;
+
+    expect(input).toEqual([
+      { type: "function_call", call_id: "call_read", name: "read", arguments: JSON.stringify({ file_path: "/tmp/corrupt.png" }) },
+      { type: "function_call_output", call_id: "call_read", output: "Read image: /tmp/corrupt.png (0.0 MB)" },
+    ]);
+    expect(JSON.stringify(input)).not.toContain("input_image");
   });
 
   test("parses OpenAI usage-limit 429 reset metadata", () => {
