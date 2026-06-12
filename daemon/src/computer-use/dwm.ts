@@ -49,6 +49,18 @@ interface DwmMonitor {
   selectedClient: string | null;
 }
 
+interface DwmTag {
+  monitor: number;
+  index: number;
+  bit: number;
+  name: string;
+  selected: boolean;
+  occupied: number;
+  aiManaged: boolean;
+  aiToken: string | null;
+  aiLabel: string | null;
+}
+
 interface DwmResponse<T> {
   id: unknown;
   ok: boolean;
@@ -62,6 +74,20 @@ interface DwmListClientsResult {
 
 interface DwmListMonitorsResult {
   monitors: DwmMonitor[];
+}
+
+interface DwmListTagsResult {
+  tags: DwmTag[];
+}
+
+interface DwmTagMutationResult {
+  action: "created" | "deleted";
+  tag?: DwmTag;
+  monitor?: number;
+  index?: number;
+  bit?: number;
+  numTags: number;
+  selectedTags: number;
 }
 
 interface ResolvedApp {
@@ -82,6 +108,11 @@ function getBoolean(input: Record<string, unknown>, key: string, fallback: boole
 function getNumber(input: Record<string, unknown>, key: string): number | null {
   const value = input[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function getInteger(input: Record<string, unknown>, key: string): number | null {
+  const value = getNumber(input, key);
+  return value == null ? null : Math.round(value);
 }
 
 function normalize(value: string | null | undefined): string {
@@ -217,6 +248,11 @@ async function listDwmMonitors(signal?: AbortSignal): Promise<DwmMonitor[]> {
   return Array.isArray(result.monitors) ? result.monitors : [];
 }
 
+async function listDwmTags(signal?: AbortSignal): Promise<DwmTag[]> {
+  const result = await callDwm<DwmListTagsResult>("tags/list", {}, signal);
+  return Array.isArray(result.tags) ? result.tags : [];
+}
+
 function clientLabel(c: DwmClient): string {
   const name = c.title || c.class || c.instance || c.win;
   const classPart = c.class ? ` class=${c.class}` : "";
@@ -233,6 +269,23 @@ function formatClientList(clients: DwmClient[]): string {
   if (clients.length === 0) return "No windows found.";
   const lines = [`Windows (${clients.length}):`];
   for (const c of clients) lines.push(`- ${clientLabel(c)}`);
+  return lines.join("\n");
+}
+
+function tagLabel(t: DwmTag): string {
+  const state = [
+    t.selected ? "selected" : null,
+    t.occupied > 0 ? `${t.occupied} window${t.occupied === 1 ? "" : "s"}` : "empty",
+    t.aiManaged ? "ai-managed" : null,
+  ].filter(Boolean).join(",");
+  const label = t.aiLabel ? ` label=${JSON.stringify(t.aiLabel)}` : "";
+  return `monitor=${t.monitor} index=${t.index} name=${JSON.stringify(t.name)} bit=${t.bit}${label} [${state}]`;
+}
+
+function formatTagList(tags: DwmTag[]): string {
+  if (tags.length === 0) return "No tags found.";
+  const lines = [`Tags (${tags.length}):`];
+  for (const t of tags) lines.push(`- ${tagLabel(t)}`);
   return lines.join("\n");
 }
 
@@ -441,6 +494,81 @@ export async function executeComputerListApps(input: Record<string, unknown>, si
   try {
     const clients = await listDwmClients(signal);
     return { output: formatClientList(clients), isError: false };
+  } catch (err) {
+    return { output: err instanceof Error ? err.message : String(err), isError: true };
+  }
+}
+
+export async function executeComputerListTags(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
+  const target = getString(input, "target");
+  const unsupported = targetError(target);
+  if (unsupported) return unsupported;
+
+  try {
+    const tags = await listDwmTags(signal);
+    return { output: formatTagList(tags), isError: false };
+  } catch (err) {
+    return { output: err instanceof Error ? err.message : String(err), isError: true };
+  }
+}
+
+function tagMutationParams(input: Record<string, unknown>): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+  const monitor = getInteger(input, "monitor");
+  const index = getInteger(input, "index");
+  const position = getInteger(input, "position");
+  const side = getString(input, "side");
+  const select = input.select;
+  const force = input.force;
+
+  if (monitor != null) params.monitor = monitor;
+  if (index != null) params.index = index;
+  if (position != null) params.position = position;
+  if (side) params.side = side;
+  if (typeof select === "boolean") params.select = select;
+  if (typeof force === "boolean") params.force = force;
+  return params;
+}
+
+export async function executeComputerCreateTag(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
+  const target = getString(input, "target");
+  const unsupported = targetError(target);
+  if (unsupported) return unsupported;
+
+  try {
+    const result = await callDwm<DwmTagMutationResult>("tag/create", tagMutationParams(input), signal);
+    const lines = [
+      `Created tag${result.tag ? ` ${JSON.stringify(result.tag.name)}` : ""}.`,
+      result.tag ? tagLabel(result.tag) : null,
+      `numTags=${result.numTags} selectedTags=${result.selectedTags}`,
+      "",
+      formatTagList(await listDwmTags(signal)),
+    ].filter((line): line is string => line !== null);
+    return { output: lines.join("\n"), isError: false };
+  } catch (err) {
+    return { output: err instanceof Error ? err.message : String(err), isError: true };
+  }
+}
+
+export async function executeComputerDeleteTag(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
+  const target = getString(input, "target");
+  const unsupported = targetError(target);
+  if (unsupported) return unsupported;
+
+  try {
+    const result = await callDwm<DwmTagMutationResult>("tag/delete", tagMutationParams(input), signal);
+    const parts = [
+      result.monitor != null ? `monitor=${result.monitor}` : null,
+      result.index != null ? `index=${result.index}` : null,
+      result.bit != null ? `bit=${result.bit}` : null,
+    ].filter(Boolean).join(" ");
+    const lines = [
+      `Deleted tag${parts ? ` (${parts})` : ""}.`,
+      `numTags=${result.numTags} selectedTags=${result.selectedTags}`,
+      "",
+      formatTagList(await listDwmTags(signal)),
+    ];
+    return { output: lines.join("\n"), isError: false };
   } catch (err) {
     return { output: err instanceof Error ? err.message : String(err), isError: true };
   }

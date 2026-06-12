@@ -9,8 +9,11 @@ import { readExocortexConfig, type ExocortexConfig } from "@exocortex/shared/con
 import type { Tool, ToolResult, ToolSummary } from "./types";
 import {
   executeComputerClick,
+  executeComputerCreateTag,
+  executeComputerDeleteTag,
   executeComputerDrag,
   executeComputerGetAppState,
+  executeComputerListTags,
   executeComputerListApps,
   executeComputerPerformSecondaryAction,
   executeComputerPressKey,
@@ -42,6 +45,12 @@ const COMPUTER_ARG_ORDER = [
   "app",
   "include_screenshot",
   "max_elements",
+  "monitor",
+  "index",
+  "position",
+  "side",
+  "select",
+  "force",
   "element_index",
   "x",
   "y",
@@ -125,6 +134,56 @@ export const computerListApps = computerTool({
   },
   summarize: (input) => summarizeComputerAction("list_apps", input),
   execute: (input, _context, signal) => executeComputerListApps(input, signal),
+});
+
+export const computerListTags = computerTool({
+  name: "computer_list_tags",
+  description: "List dwm tags/desktops available for Computer Use, including selected and occupied state.",
+  parallelSafety: "safe",
+  inputSchema: {
+    type: "object",
+    properties: {
+      target: targetProperty,
+    },
+  },
+  summarize: (input) => summarizeComputerAction("list_tags", input),
+  execute: (input, _context, signal) => executeComputerListTags(input, signal),
+});
+
+const tagMutationProperties = {
+  target: targetProperty,
+  monitor: { type: "integer", minimum: 0, description: "dwm monitor number. Defaults to the selected monitor." },
+  index: { type: "integer", minimum: 0, description: "Zero-based tag index/position. For create, inserts at this index. For delete, deletes this index." },
+  position: { type: "integer", minimum: 0, description: "Alias for index." },
+  select: { type: "boolean", description: "Whether to select the created/neighbor tag. Defaults to true." },
+};
+
+export const computerCreateTag = computerTool({
+  name: "computer_create_tag",
+  description: "Create/insert a dwm tag/desktop on a monitor. Returns the updated tag list.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      ...tagMutationProperties,
+      side: { type: "string", enum: ["left", "right"], description: "When index is omitted, create to the left or right of the selected tag. Defaults to right." },
+    },
+  },
+  summarize: (input) => summarizeComputerAction("create_tag", input),
+  execute: (input, _context, signal) => executeComputerCreateTag(input, signal),
+});
+
+export const computerDeleteTag = computerTool({
+  name: "computer_delete_tag",
+  description: "Delete a dwm tag/desktop by zero-based index. Refuses non-empty tags unless force=true. Returns the updated tag list.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      ...tagMutationProperties,
+      force: { type: "boolean", description: "Delete even if the tag contains windows. Defaults to false." },
+    },
+  },
+  summarize: (input) => summarizeComputerAction("delete_tag", input),
+  execute: (input, _context, signal) => executeComputerDeleteTag(input, signal),
 });
 
 export const computerGetAppState = computerTool({
@@ -283,6 +342,9 @@ export const computerPerformSecondaryAction = computerTool({
 
 export const computerUseTools: Tool[] = [
   computerListApps,
+  computerListTags,
+  computerCreateTag,
+  computerDeleteTag,
   computerGetAppState,
   computerClick,
   computerDrag,
