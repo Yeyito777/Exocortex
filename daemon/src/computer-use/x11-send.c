@@ -262,17 +262,6 @@ static KeySym key_alias(const char *name) {
     return XStringToKeysym(name);
 }
 
-static int send_focus_event(Display *dpy, Window w, int in) {
-    XEvent ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.xfocus.type = in ? FocusIn : FocusOut;
-    ev.xfocus.display = dpy;
-    ev.xfocus.window = w;
-    ev.xfocus.mode = NotifyNormal;
-    ev.xfocus.detail = NotifyNonlinear;
-    return send_targeted_event(dpy, w, FocusChangeMask, &ev);
-}
-
 static int send_key_event(Display *dpy, Window w, KeySym ks, unsigned int state, int press) {
     XEvent ev;
     KeyCode kc = XKeysymToKeycode(dpy, ks);
@@ -296,7 +285,6 @@ static int send_key_event(Display *dpy, Window w, KeySym ks, unsigned int state,
 
 static int send_key_with_state(Display *dpy, Window w, KeySym ks, unsigned int state) {
     unsigned int masks[] = { ControlMask, ShiftMask, Mod1Mask, Mod4Mask };
-    send_focus_event(dpy, w, 1);
     unsigned int i, active = 0;
     for (i = 0; i < sizeof(masks) / sizeof(masks[0]); i++) {
         if (state & masks[i]) {
@@ -409,7 +397,6 @@ static int send_text(Display *dpy, Window w, const char *text) {
      * Without this, some terminals accept the later key events but drop the
      * first burst of characters. */
     XSync(dpy, False);
-    send_focus_event(dpy, w, 1);
     usleep(90000);
     for (p = (const unsigned char *)text; *p; p++) {
         KeySym ks;
@@ -441,15 +428,16 @@ static int send_drag(Display *dpy, Window top, int x1, int y1, int x2, int y2) {
     Window target;
     int tx1, ty1, tx2, ty2;
     int i, steps = 12;
+    int dx = x2 - x1, dy = y2 - y1;
     if (!lookup_child_at(dpy, top, x1, y1, &target, &tx1, &ty1)) return 0;
     /* Keep the same child target; translate destination by the same top-level offset. */
-    tx2 = tx1 + (x2 - x1);
-    ty2 = ty1 + (y2 - y1);
+    tx2 = tx1 + dx;
+    ty2 = ty1 + dy;
     send_motion(dpy, target, tx1, ty1, 0);
     send_button(dpy, target, tx1, ty1, Button1, 1, 0);
     for (i = 1; i <= steps; i++) {
-        int x = tx1 + ((tx2 - tx1) * i) / steps;
-        int y = ty1 + ((ty2 - ty1) * i) / steps;
+        int x = tx1 + (dx * i) / steps;
+        int y = ty1 + (dy * i) / steps;
         send_motion(dpy, target, x, y, Button1Mask);
         XFlush(dpy);
         usleep(10000);
