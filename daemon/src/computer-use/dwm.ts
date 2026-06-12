@@ -711,6 +711,25 @@ export async function executeComputerHoldClick(input: Record<string, unknown>, s
   }
 }
 
+export async function executeComputerMoveRelative(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
+  const resolved = await resolveActionTarget(input, signal);
+  if (isToolResult(resolved)) return resolved;
+
+  const dx = numericInput(input, "dx");
+  const dy = numericInput(input, "dy");
+  if (dx == null || dy == null) {
+    return { output: "computer_move_relative requires dx and dy relative mouse deltas.", isError: true };
+  }
+
+  const steps = Math.max(1, Math.min(200, numericInput(input, "steps") ?? 1));
+  try {
+    await runX11Helper(["move-relative", resolved.client.win, String(dx), String(dy), String(steps)], signal);
+    return actionState(`Moved pointer input relatively by dx=${dx}, dy=${dy} (${steps} step${steps === 1 ? "" : "s"}).`, resolved.client, signal);
+  } catch (err) {
+    return { output: err instanceof Error ? err.message : String(err), isError: true };
+  }
+}
+
 export async function executeComputerDrag(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
   const resolved = await resolveActionTarget(input, signal);
   if (isToolResult(resolved)) return resolved;

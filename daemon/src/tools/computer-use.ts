@@ -15,6 +15,7 @@ import {
   executeComputerGetAppState,
   executeComputerHoldClick,
   executeComputerListTags,
+  executeComputerMoveRelative,
   executeComputerListApps,
   executeComputerPerformSecondaryAction,
   executeComputerPressKey,
@@ -58,6 +59,9 @@ const COMPUTER_ARG_ORDER = [
   "click_count",
   "mouse_button",
   "duration_ms",
+  "dx",
+  "dy",
+  "steps",
   "from_x",
   "from_y",
   "to_x",
@@ -258,6 +262,24 @@ export const computerHoldClick = computerTool({
   execute: (input, _context, signal) => executeComputerHoldClick(input, signal),
 });
 
+export const computerMoveRelative = computerTool({
+  name: "computer_move_relative",
+  description: "Send relative mouse movement deltas to an app/window without moving the user's real pointer. Useful for pointer-locked camera controls. Returns a refreshed app state.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      target: targetProperty,
+      app: appProperty,
+      dx: { type: "integer", description: "Relative horizontal mouse delta in pixels/counts. Negative moves left; positive moves right." },
+      dy: { type: "integer", description: "Relative vertical mouse delta in pixels/counts. Negative moves up; positive moves down." },
+      steps: { type: "integer", minimum: 1, maximum: 200, description: "Split the movement into this many small events. Defaults to 1." },
+    },
+    required: ["app", "dx", "dy"],
+  },
+  summarize: (input) => summarizeComputerAction("move_relative", input),
+  execute: (input, _context, signal) => executeComputerMoveRelative(input, signal),
+});
+
 export const computerDrag = computerTool({
   name: "computer_drag",
   description: "Drag within an app from one window-relative point to another. Returns a refreshed app state.",
@@ -369,6 +391,7 @@ export const computerUseTools: Tool[] = [
   computerGetAppState,
   computerClick,
   computerHoldClick,
+  computerMoveRelative,
   computerDrag,
   computerTypeText,
   computerPressKey,

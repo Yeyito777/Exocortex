@@ -12,6 +12,7 @@
 
 #define EXOCORTEX_EXTENSION_NAME "EXOCORTEX-AUTOINPUT"
 #define X_ExocortexTrustedSendEvent 1
+#define X_ExocortexRelativeMotion 2
 
 typedef struct {
     CARD8 reqType;
@@ -23,6 +24,18 @@ typedef struct {
     uint32_t eventMask;
     xEvent event;
 } xExocortexTrustedSendEventReq;
+
+typedef struct {
+    CARD8 reqType;
+    CARD8 exocortexReqType;
+    CARD16 length;
+    CARD16 tokenLen;
+    CARD16 pad0;
+    uint32_t destination;
+    int32_t dx;
+    int32_t dy;
+    uint32_t pad1;
+} xExocortexRelativeMotionReq;
 
 static int exocortex_major_opcode = -2;
 
@@ -91,6 +104,35 @@ static int send_targeted_event(Display *dpy, Window destination, long event_mask
         return 0;
     }
     memcpy((char *) req + sizeof(xExocortexTrustedSendEventReq), token, token_len);
+    UnlockDisplay(dpy);
+    SyncHandle();
+    return 1;
+}
+
+static int send_relative_motion_request(Display *dpy, Window destination, int dx, int dy) {
+    const char *token = exocortex_token();
+    size_t token_len, padded_token_len, total_len;
+    xExocortexRelativeMotionReq *req;
+
+    if (!token || !*token || exocortex_major(dpy) < 0) {
+        fprintf(stderr, "relative mouse movement requires EXOCORTEX-AUTOINPUT\n");
+        return 0;
+    }
+
+    token_len = strlen(token);
+    if (token_len > 0xffff) return 0;
+    padded_token_len = (token_len + 3) & ~(size_t)3;
+    total_len = sizeof(xExocortexRelativeMotionReq) + padded_token_len;
+
+    LockDisplay(dpy);
+    req = (xExocortexRelativeMotionReq *) _XGetRequest(dpy, (CARD8) exocortex_major_opcode, total_len);
+    req->exocortexReqType = X_ExocortexRelativeMotion;
+    req->tokenLen = (CARD16) token_len;
+    req->destination = (uint32_t) destination;
+    req->dx = (int32_t) dx;
+    req->dy = (int32_t) dy;
+    req->pad1 = 0;
+    memcpy((char *) req + sizeof(xExocortexRelativeMotionReq), token, token_len);
     UnlockDisplay(dpy);
     SyncHandle();
     return 1;
@@ -462,6 +504,26 @@ static int send_drag(Display *dpy, Window top, int x1, int y1, int x2, int y2) {
     return 1;
 }
 
+static int send_relative_motion(Display *dpy, Window top, int dx, int dy, int steps) {
+    int i;
+    int sent_x = 0, sent_y = 0;
+    if (steps < 1) steps = 1;
+    if (steps > 200) steps = 200;
+    for (i = 1; i <= steps; i++) {
+        int target_x = (dx * i) / steps;
+        int target_y = (dy * i) / steps;
+        int step_x = target_x - sent_x;
+        int step_y = target_y - sent_y;
+        sent_x = target_x;
+        sent_y = target_y;
+        if (!send_relative_motion_request(dpy, top, step_x, step_y)) return 0;
+        XFlush(dpy);
+        usleep(5000);
+    }
+    XSync(dpy, False);
+    return 1;
+}
+
 static void usage(const char *argv0) {
     fprintf(stderr,
         "usage:\n"
@@ -469,10 +531,11 @@ static void usage(const char *argv0) {
         "  %s click <win> <x> <y> <button> <count>\n"
         "  %s hold <win> <x> <y> <button> <duration_ms>\n"
         "  %s scroll <win> <direction> <pages> <x> <y>\n"
+        "  %s move-relative <win> <dx> <dy> [steps]\n"
         "  %s key <win> <key-combo>\n"
         "  %s type <win> <text>\n"
         "  %s drag <win> <from_x> <from_y> <to_x> <to_y>\n",
-        argv0, argv0, argv0, argv0, argv0, argv0, argv0);
+        argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0);
 }
 
 int main(int argc, char **argv) {
@@ -517,6 +580,13 @@ int main(int argc, char **argv) {
             if (argc >= 7) { x = atoi(argv[5]); y = atoi(argv[6]); }
             else window_center(dpy, win, &x, &y);
             ok = send_scroll(dpy, win, argv[3], atoi(argv[4]), x, y);
+        }
+    } else if (streqi(cmd, "move-relative") || streqi(cmd, "relative") || streqi(cmd, "relmove")) {
+        int steps = 1;
+        if (argc < 5) usage(argv[0]);
+        else {
+            if (argc >= 6) steps = atoi(argv[5]);
+            ok = send_relative_motion(dpy, win, atoi(argv[3]), atoi(argv[4]), steps);
         }
     } else if (streqi(cmd, "key")) {
         if (argc < 4) usage(argv[0]);
