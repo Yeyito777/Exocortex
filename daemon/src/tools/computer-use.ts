@@ -13,6 +13,7 @@ import {
   executeComputerDeleteTag,
   executeComputerDrag,
   executeComputerGetAppState,
+  executeComputerHoldClick,
   executeComputerListTags,
   executeComputerListApps,
   executeComputerPerformSecondaryAction,
@@ -56,6 +57,7 @@ const COMPUTER_ARG_ORDER = [
   "y",
   "click_count",
   "mouse_button",
+  "duration_ms",
   "from_x",
   "from_y",
   "to_x",
@@ -237,6 +239,25 @@ export const computerClick = computerTool({
   execute: (input, _context, signal) => executeComputerClick(input, signal),
 });
 
+export const computerHoldClick = computerTool({
+  name: "computer_hold_click",
+  description: "Press and hold a mouse button at window-relative coordinates for a bounded duration, then release. Returns a refreshed app state.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      target: targetProperty,
+      app: appProperty,
+      x: { type: "number", description: "Window-relative x coordinate to hold at." },
+      y: { type: "number", description: "Window-relative y coordinate to hold at." },
+      duration_ms: { type: "integer", minimum: 1, maximum: 30000, description: "Hold duration in milliseconds. Defaults to 1000." },
+      mouse_button: { type: "string", enum: ["left", "right", "middle"], description: "Mouse button. Defaults to left." },
+    },
+    required: ["app", "x", "y"],
+  },
+  summarize: (input) => summarizeComputerAction("hold_click", input),
+  execute: (input, _context, signal) => executeComputerHoldClick(input, signal),
+});
+
 export const computerDrag = computerTool({
   name: "computer_drag",
   description: "Drag within an app from one window-relative point to another. Returns a refreshed app state.",
@@ -347,6 +368,7 @@ export const computerUseTools: Tool[] = [
   computerDeleteTag,
   computerGetAppState,
   computerClick,
+  computerHoldClick,
   computerDrag,
   computerTypeText,
   computerPressKey,

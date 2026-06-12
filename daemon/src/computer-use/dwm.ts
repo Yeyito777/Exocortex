@@ -691,6 +691,26 @@ export async function executeComputerClick(input: Record<string, unknown>, signa
   }
 }
 
+export async function executeComputerHoldClick(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
+  const resolved = await resolveActionTarget(input, signal);
+  if (isToolResult(resolved)) return resolved;
+
+  const x = numericInput(input, "x");
+  const y = numericInput(input, "y");
+  if (x == null || y == null) {
+    return { output: "computer_hold_click requires window-relative x and y coordinates.", isError: true };
+  }
+
+  const button = getString(input, "mouse_button") ?? "left";
+  const duration = Math.max(1, Math.min(30_000, numericInput(input, "duration_ms") ?? 1000));
+  try {
+    await runX11Helper(["hold", resolved.client.win, String(x), String(y), button, String(duration)], signal);
+    return actionState(`Held ${button} click at ${x},${y} for ${duration}ms.`, resolved.client, signal);
+  } catch (err) {
+    return { output: err instanceof Error ? err.message : String(err), isError: true };
+  }
+}
+
 export async function executeComputerDrag(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
   const resolved = await resolveActionTarget(input, signal);
   if (isToolResult(resolved)) return resolved;

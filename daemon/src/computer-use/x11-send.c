@@ -227,6 +227,21 @@ static int send_click(Display *dpy, Window top, int x, int y, int button, int co
     return 1;
 }
 
+static int send_hold(Display *dpy, Window top, int x, int y, int button, int duration_ms) {
+    Window target;
+    int tx, ty;
+    if (duration_ms < 1) duration_ms = 1;
+    if (duration_ms > 30000) duration_ms = 30000;
+    if (!lookup_child_at(dpy, top, x, y, &target, &tx, &ty)) return 0;
+    send_motion(dpy, target, tx, ty, 0);
+    send_button(dpy, target, tx, ty, button, 1, 0);
+    XFlush(dpy);
+    usleep((useconds_t)duration_ms * 1000U);
+    send_button(dpy, target, tx, ty, button, 0, (unsigned int)(1U << (button + 7)));
+    XSync(dpy, False);
+    return 1;
+}
+
 static unsigned int modifier_mask(const char *name) {
     if (streqi(name, "ctrl") || streqi(name, "control")) return ControlMask;
     if (streqi(name, "shift")) return ShiftMask;
@@ -452,11 +467,12 @@ static void usage(const char *argv0) {
         "usage:\n"
         "  %s probe\n"
         "  %s click <win> <x> <y> <button> <count>\n"
+        "  %s hold <win> <x> <y> <button> <duration_ms>\n"
         "  %s scroll <win> <direction> <pages> <x> <y>\n"
         "  %s key <win> <key-combo>\n"
         "  %s type <win> <text>\n"
         "  %s drag <win> <from_x> <from_y> <to_x> <to_y>\n",
-        argv0, argv0, argv0, argv0, argv0, argv0);
+        argv0, argv0, argv0, argv0, argv0, argv0, argv0);
 }
 
 int main(int argc, char **argv) {
@@ -491,6 +507,9 @@ int main(int argc, char **argv) {
     if (streqi(cmd, "click")) {
         if (argc < 7) usage(argv[0]);
         else ok = send_click(dpy, win, atoi(argv[3]), atoi(argv[4]), button_number(argv[5]), atoi(argv[6]));
+    } else if (streqi(cmd, "hold")) {
+        if (argc < 7) usage(argv[0]);
+        else ok = send_hold(dpy, win, atoi(argv[3]), atoi(argv[4]), button_number(argv[5]), atoi(argv[6]));
     } else if (streqi(cmd, "scroll")) {
         int x = 0, y = 0;
         if (argc < 5) usage(argv[0]);
