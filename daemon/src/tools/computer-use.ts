@@ -32,9 +32,9 @@ const ACTIONS_NOT_IMPLEMENTED = [
 ].join("\n");
 
 export function isComputerUseFeatureEnabled(config: ExocortexConfig = readExocortexConfig()): boolean {
-  // Feature flag is intentionally default-on during bring-up. Set
-  // config.features.computerUse=false to hide all Computer Use tools.
-  return config.features?.computerUse !== false;
+  // Computer Use is intentionally opt-in: it exposes desktop input/screenshot
+  // tools, so the tools are hidden unless config.features.computerUse=true.
+  return config.features?.computerUse === true;
 }
 
 function executeActionNotImplemented(input: Record<string, unknown>): Promise<ToolResult> {

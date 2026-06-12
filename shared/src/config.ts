@@ -109,8 +109,8 @@ export interface DefaultsConfig {
 
 export interface FeatureFlagsConfig {
   /**
-   * Expose the internal Computer Use tool contract. Defaults to true while the
-   * dwm/X11/AT-SPI backend is being brought up; set false to hide the tools.
+   * Expose the internal Computer Use tool contract. Defaults to false; set true
+   * to enable desktop screenshots/input tools for this config.
    */
   computerUse?: boolean;
   /** Preserve unknown future feature flags. */
@@ -193,7 +193,7 @@ export function defaultOpenersConfig(): OpenersConfig {
 export function defaultExocortexConfig(): ExocortexConfig {
   return {
     theme: "whale",
-    features: { computerUse: true },
+    features: { computerUse: false },
     agent: { workingDirectory: ".exocortex-cwd" },
     ping: { mode: null, sound: null },
     openers: defaultOpenersConfig(),

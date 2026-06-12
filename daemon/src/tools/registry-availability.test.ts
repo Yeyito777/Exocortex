@@ -23,7 +23,12 @@ describe("tool availability", () => {
     }
   });
 
-  test("computer use tools are gated by the default-on feature flag", () => {
+  test("computer use tools are gated by an opt-in feature flag", () => {
+    writeExocortexConfig({});
+    const defaultTools = getToolDefs().map((tool) => tool.name);
+    expect(defaultTools).not.toContain("computer_list_apps");
+    expect(defaultTools).not.toContain("computer_get_app_state");
+
     writeExocortexConfig({ features: { computerUse: true } });
     const enabledTools = getToolDefs().map((tool) => tool.name);
     expect(enabledTools).toContain("computer_list_apps");
@@ -36,7 +41,5 @@ describe("tool availability", () => {
     const disabledTools = getToolDefs().map((tool) => tool.name);
     expect(disabledTools).not.toContain("computer_list_apps");
     expect(disabledTools).not.toContain("computer_get_app_state");
-
-    writeExocortexConfig({ features: { computerUse: true } });
   });
 });
