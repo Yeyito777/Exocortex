@@ -252,6 +252,8 @@ static int send_button(Display *dpy, Window w, int x, int y, int button, int pre
     return send_targeted_event(dpy, w, press ? ButtonPressMask : ButtonReleaseMask, &ev);
 }
 
+static int send_focus_event(Display *dpy, Window w, int in);
+
 static int send_click(Display *dpy, Window top, int x, int y, int button, int count) {
     Window target;
     int tx, ty, i;
@@ -275,11 +277,16 @@ static int send_hold(Display *dpy, Window top, int x, int y, int button, int dur
     if (duration_ms < 1) duration_ms = 1;
     if (duration_ms > 30000) duration_ms = 30000;
     if (!lookup_child_at(dpy, top, x, y, &target, &tx, &ty)) return 0;
+    send_focus_event(dpy, top, 1);
+    usleep(90000);
     send_motion(dpy, target, tx, ty, 0);
     send_button(dpy, target, tx, ty, button, 1, 0);
     XFlush(dpy);
     usleep((useconds_t)duration_ms * 1000U);
     send_button(dpy, target, tx, ty, button, 0, (unsigned int)(1U << (button + 7)));
+    XFlush(dpy);
+    usleep(90000);
+    send_focus_event(dpy, top, 0);
     XSync(dpy, False);
     return 1;
 }
@@ -319,6 +326,20 @@ static KeySym key_alias(const char *name) {
     return XStringToKeysym(name);
 }
 
+static int send_focus_event(Display *dpy, Window w, int in) {
+    XEvent ev;
+    int ok;
+    memset(&ev, 0, sizeof(ev));
+    ev.xfocus.type = in ? FocusIn : FocusOut;
+    ev.xfocus.display = dpy;
+    ev.xfocus.window = w;
+    ev.xfocus.mode = NotifyNormal;
+    ev.xfocus.detail = NotifyNonlinear;
+    ok = send_targeted_event(dpy, w, FocusChangeMask, &ev);
+    XFlush(dpy);
+    return ok;
+}
+
 static int send_key_event(Display *dpy, Window w, KeySym ks, unsigned int state, int press) {
     XEvent ev;
     KeyCode kc = XKeysymToKeycode(dpy, ks);
@@ -343,6 +364,8 @@ static int send_key_event(Display *dpy, Window w, KeySym ks, unsigned int state,
 static int send_key_with_state(Display *dpy, Window w, KeySym ks, unsigned int state) {
     unsigned int masks[] = { ControlMask, ShiftMask, Mod1Mask, Mod4Mask };
     unsigned int i, active = 0;
+    send_focus_event(dpy, w, 1);
+    usleep(90000);
     for (i = 0; i < sizeof(masks) / sizeof(masks[0]); i++) {
         if (state & masks[i]) {
             KeySym mks = modifier_keysym(masks[i]);
@@ -366,6 +389,8 @@ static int send_key_with_state(Display *dpy, Window w, KeySym ks, unsigned int s
         }
     }
     XSync(dpy, False);
+    usleep(90000);
+    send_focus_event(dpy, w, 0);
     return 1;
 }
 
@@ -509,6 +534,8 @@ static int send_relative_motion(Display *dpy, Window top, int dx, int dy, int st
     int sent_x = 0, sent_y = 0;
     if (steps < 1) steps = 1;
     if (steps > 200) steps = 200;
+    send_focus_event(dpy, top, 1);
+    usleep(90000);
     for (i = 1; i <= steps; i++) {
         int target_x = (dx * i) / steps;
         int target_y = (dy * i) / steps;
@@ -520,6 +547,9 @@ static int send_relative_motion(Display *dpy, Window top, int dx, int dy, int st
         XFlush(dpy);
         usleep(5000);
     }
+    XFlush(dpy);
+    usleep(90000);
+    send_focus_event(dpy, top, 0);
     XSync(dpy, False);
     return 1;
 }
