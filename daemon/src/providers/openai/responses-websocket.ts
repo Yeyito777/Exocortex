@@ -118,6 +118,7 @@ export async function readOpenAIResponsesWebSocket(
 
   const accumulator = createOpenAIEventAccumulator(callbacks);
   let responseStarted = false;
+  let lastStillActiveLogAt = Date.now();
   while (true) {
     const message = await socket.nextMessage(options.stallTimeoutMs, options.signal);
     if (message.type === "close") {
@@ -148,7 +149,15 @@ export async function readOpenAIResponsesWebSocket(
       continue;
     }
 
-    if (typeof event.type === "string" && event.type.startsWith("response.")) {
+    const eventType = typeof event.type === "string" ? event.type : "<missing>";
+    const now = Date.now();
+    if (now - lastStillActiveLogAt >= options.stallTimeoutMs) {
+      const activeForSec = Math.round((now - lastStillActiveLogAt) / 1000);
+      log("info", `openai api: websocket stream still active after ${activeForSec}s (last event=${eventType})`);
+      lastStillActiveLogAt = now;
+    }
+
+    if (eventType.startsWith("response.")) {
       responseStarted = true;
     }
 

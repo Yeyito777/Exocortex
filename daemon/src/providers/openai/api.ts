@@ -65,7 +65,10 @@ export function setOpenAIWebSocketIdleTimeoutMsForTest(timeoutMs: number | null)
   websocketIdleTimeoutMsForTest = timeoutMs;
 }
 
-const STREAM_STALL_TIMEOUT = 120_000;
+// Match Codex's default stream idle timeout. The app-level stale watchdog must
+// stay longer than this so provider retries get a chance to fire before the
+// whole Exocortex conversation is aborted.
+const STREAM_STALL_TIMEOUT = 300_000;
 const MAX_RETRIES = 8;
 const USAGE_LIMIT_RESET_BUFFER_MS = 2_000;
 const RETRIABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504, 507, 520, 521, 522, 523, 524]);

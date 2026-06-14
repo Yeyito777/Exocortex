@@ -48,8 +48,16 @@ const activeToolBackgrounders = new Map<string, ActiveToolBackgrounder>();
 
 const CHUNK_SAVE_INTERVAL = 5;
 
-/** How long a stream can be inactive before the watchdog considers it stale. */
-export const STALE_STREAM_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+/**
+ * How long a stream can be inactive before the watchdog considers it stale.
+ *
+ * This is deliberately longer than provider-level stream idle timeouts. OpenAI's
+ * Codex transport defaults to 5 minutes of provider idle time before it retries
+ * or fails a stream; if the app watchdog uses the same window it can abort a
+ * legitimate long-thinking provider round before the provider's own recovery
+ * path gets a chance to run.
+ */
+export const STALE_STREAM_TIMEOUT = 15 * 60 * 1000; // 15 minutes
 
 // ── Active jobs (abort controllers for in-flight streams) ───────────
 
