@@ -1,8 +1,9 @@
 /**
  * Computer Use tool contract.
  *
- * This intentionally mirrors Codex's Computer Use MCP surface. The feature flag
- * is on by default while the desktop-control backend is being brought up.
+ * This intentionally mirrors Codex's Computer Use MCP surface. Because these
+ * tools expose desktop screenshots and input control, they are opt-in via
+ * config.features.computerUse=true.
  */
 
 import { readExocortexConfig, type ExocortexConfig } from "@exocortex/shared/config";
@@ -26,8 +27,8 @@ import {
 } from "../computer-use/dwm";
 
 const ACTIONS_NOT_IMPLEMENTED = [
-  "Computer Use is partially wired: window observation and coordinate/key/text actions work.",
-  "Currently wired: list_apps, get_app_state, click, drag, type_text, press_key, scroll.",
+  "Computer Use is partially wired: window/tag observation and coordinate/key/text actions work.",
+  "Currently wired: list_apps, list_tags, create_tag, delete_tag, get_app_state, click, hold_click, drag, move_relative, type_text, press_key, scroll.",
   "Pending: generic accessibility element trees, set_value, and secondary actions.",
 ].join("\n");
 
@@ -194,7 +195,7 @@ export const computerDeleteTag = computerTool({
 
 export const computerGetAppState = computerTool({
   name: "computer_get_app_state",
-  description: "Return an app/window state snapshot for Computer Use: focused window metadata, accessibility tree when available, and a screenshot. Call this before Computer Use actions.",
+  description: "Return an app/window state snapshot for Computer Use: target window metadata, accessibility tree when available, and a screenshot. Call this before Computer Use actions.",
   parallelSafety: "exclusive",
   inputSchema: {
     type: "object",
@@ -216,7 +217,7 @@ export const computerGetAppState = computerTool({
   },
   systemHint: [
     "Use computer_list_apps to discover windows and computer_get_app_state to inspect a target window before GUI actions.",
-    "Input actions target the requested window and should not move the user's pointer or steal focus.",
+    "Input actions target the requested window and should not move the user's real pointer or change the user's actual focused window.",
     "Treat coordinates as window-relative pixels from the last app state screenshot. element_index support awaits a generic accessibility backend.",
   ].join("\n"),
   summarize: (input) => summarizeComputerAction("get_app_state", input),

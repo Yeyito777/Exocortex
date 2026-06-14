@@ -800,8 +800,8 @@ export async function executeUnsupportedComputerAction(input: Record<string, unk
   return {
     output: [
       `Computer Use action is not wired yet for ${app}.`,
-      "Currently wired: list_apps, get_app_state, click, type_text, press_key, scroll, drag.",
-      "Pending: element_index, set_value, and secondary accessibility actions.",
+      "Currently wired: list_apps, list_tags, create_tag, delete_tag, get_app_state, click, hold_click, drag, move_relative, type_text, press_key, scroll.",
+      "Pending: generic accessibility element trees, element_index, set_value, and secondary actions.",
     ].join("\n"),
     isError: true,
   };
