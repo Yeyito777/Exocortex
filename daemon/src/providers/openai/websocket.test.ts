@@ -32,6 +32,19 @@ class FakeSocket extends EventEmitter {
   }
 }
 
+class StalledWriteSocket extends FakeSocket {
+  override write(chunk: Uint8Array | string, cb?: (err?: Error) => void): boolean;
+  override write(chunk: Uint8Array | string, encoding?: BufferEncoding, cb?: (err?: Error) => void): boolean;
+  override write(
+    chunk: Uint8Array | string,
+    _encodingOrCb?: BufferEncoding | ((err?: Error) => void),
+    _cb?: (err?: Error) => void,
+  ): boolean {
+    this.writes.push(Buffer.isBuffer(chunk) ? Buffer.from(chunk) : Buffer.from(chunk));
+    return true;
+  }
+}
+
 function serverFrame(opcode: number, payload: Uint8Array = Buffer.alloc(0)): Buffer {
   const payloadBuffer = Buffer.from(payload);
   let headerLength = 2;
@@ -122,5 +135,12 @@ describe("OpenAIWebSocketConnection", () => {
       reason: "keepalive ping timeout",
     });
     expect(decodeClientFrame(raw.writes[0]).opcode).toBe(0x8);
+  });
+
+  test("times out when a websocket request write never completes", async () => {
+    const raw = new StalledWriteSocket();
+    const socket = new OpenAIWebSocketConnection(raw as unknown as Socket);
+
+    await expect(socket.sendText("hello", undefined, 5)).rejects.toThrow("No websocket write completion for 0.005s");
   });
 });

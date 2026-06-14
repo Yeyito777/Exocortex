@@ -251,21 +251,42 @@ export class OpenAIWebSocketConnection {
     this.processBuffer();
   }
 
-  async sendText(text: string, signal?: AbortSignal): Promise<void> {
+  async sendText(text: string, signal?: AbortSignal, timeoutMs?: number): Promise<void> {
     if (signal?.aborted) throw createAbortError();
     if (this.closed) throw new Error("OpenAI websocket is closed");
     const frame = encodeFrame(0x1, Buffer.from(text, "utf8"));
     await new Promise<void>((resolve, reject) => {
-      const onAbort = () => {
-        cleanup();
-        reject(createAbortError());
+      let settled = false;
+      const timer = timeoutMs && timeoutMs > 0
+        ? setTimeout(() => fail(new Error(`No websocket write completion for ${timeoutMs / 1000}s`)), timeoutMs)
+        : null;
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        this.socket.off("error", onError);
+        this.socket.off("close", onClose);
       };
-      const cleanup = () => signal?.removeEventListener("abort", onAbort);
-      signal?.addEventListener("abort", onAbort, { once: true });
-      this.socket.write(frame, (err) => {
+      const finish = () => {
+        if (settled) return;
+        settled = true;
         cleanup();
-        if (err) reject(err);
-        else resolve();
+        resolve();
+      };
+      const fail = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      };
+      const onAbort = () => fail(createAbortError());
+      const onError = (err: Error) => fail(err);
+      const onClose = () => fail(new Error("OpenAI websocket closed while sending request"));
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.socket.once("error", onError);
+      this.socket.once("close", onClose);
+      this.socket.write(frame, (err) => {
+        if (err) fail(err);
+        else finish();
       });
     });
   }

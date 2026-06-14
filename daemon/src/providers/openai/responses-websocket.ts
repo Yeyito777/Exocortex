@@ -7,6 +7,7 @@ export interface ReadOpenAIResponsesWebSocketOptions {
   stallTimeoutMs: number;
   connectionReused?: boolean;
   signal?: AbortSignal;
+  onTurnState?: (turnState: string) => void;
 }
 
 export class OpenAIWebSocketClosedBeforeResponseStartedError extends Error {
@@ -85,6 +86,20 @@ function maybeHeadersFromCodexRateLimits(event: Record<string, unknown>): Header
   return Array.from(headers.keys()).length > 0 ? headers : null;
 }
 
+function headerValueFromRecord(headers: Record<string, unknown>, name: string): string | null {
+  const target = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== target) continue;
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
+}
+
+function maybeTurnStateFromMetadata(event: Record<string, unknown>): string | null {
+  if (event.type !== "response.metadata" || !isRecord(event.headers)) return null;
+  return headerValueFromRecord(event.headers, "x-codex-turn-state");
+}
+
 export async function readOpenAIResponsesWebSocket(
   socket: OpenAIWebSocketConnection,
   requestBody: Record<string, unknown>,
@@ -93,7 +108,7 @@ export async function readOpenAIResponsesWebSocket(
 ): Promise<StreamResult> {
   const requestText = JSON.stringify({ type: "response.create", ...requestBody });
   try {
-    await socket.sendText(requestText, options.signal);
+    await socket.sendText(requestText, options.signal, options.stallTimeoutMs);
   } catch (err) {
     if (isWebSocketClosedTransportError(err)) {
       throw new OpenAIWebSocketClosedBeforeResponseStartedError({ connectionReused: options.connectionReused, cause: err });
@@ -139,6 +154,8 @@ export async function readOpenAIResponsesWebSocket(
 
     const rateLimitHeaders = maybeHeadersFromCodexRateLimits(event);
     if (rateLimitHeaders) callbacks.onHeaders?.(rateLimitHeaders);
+    const turnState = maybeTurnStateFromMetadata(event);
+    if (turnState) options.onTurnState?.(turnState);
 
     accumulator.handle(event);
     if (event.type === "response.completed" || event.type === "response.incomplete") {

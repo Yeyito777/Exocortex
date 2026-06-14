@@ -70,6 +70,8 @@ const MAX_RETRIES = 8;
 const USAGE_LIMIT_RESET_BUFFER_MS = 2_000;
 const RETRIABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504, 507, 520, 521, 522, 523, 524]);
 const WEBSOCKET_IDLE_TIMEOUT_MS = 5 * 60_000;
+const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
+const WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE = "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.";
 
 let websocketIdleTimeoutMsForTest: number | null = null;
 
@@ -320,7 +322,8 @@ export async function streamMessageHttpWithSessionForTest(
 }
 
 /**
- * OpenAI websocket state for one Exocortex conversation/session.
+ * OpenAI websocket state for one Exocortex assistant turn, optionally backed by
+ * a cached physical websocket for the surrounding conversation.
  *
  * IMPORTANT: do not close this websocket after an individual OpenAI
  * `response.completed` event when the model asked for tools.  A single
@@ -328,22 +331,25 @@ export async function streamMessageHttpWithSessionForTest(
  *
  *   model -> tool calls -> tool results -> model -> ... -> final text
  *
- * Those rounds are one logical Codex websocket conversation. The server-issued
- * `x-codex-turn-state` and incremental `previous_response_id` flow are tied to
- * that conversation, so the same websocket must remain alive until the entire
- * assistant message/response is finished (or the stream errors/aborts). Closing
- * it at per-round `response.completed` breaks that contract and can cause the
- * follow-up tool-result request to be sent on the wrong transport/session.
+ * Those rounds are one logical Codex turn. The server-issued
+ * `x-codex-turn-state` is scoped to that turn, while the physical websocket and
+ * `previous_response_id` compression can survive into the next user turn.  Keep
+ * the turn-state for tool follow-ups/retries inside this assistant message, but
+ * clear it before parking the websocket for the next logical turn. Replaying a
+ * previous turn's sticky-routing token into a new turn violates the Codex
+ * client/server contract and can route future requests onto a wedged backend.
  *
  * Lifecycle:
- * - `getSocketLease()` opens once and then reuses the socket across tool rounds
- *   and follow-up user messages in the same conversation.
+ * - `getSocketLease()` opens once and then reuses the socket across tool rounds;
+ *   after `close()` the socket may be parked and reused by a later user turn
+ *   without carrying over the previous turn-state.
  * - `recordSuccessfulRequest()` records incremental replay state only; it must
  *   not close the socket.
  * - `close()` is called by the orchestrator after the full assistant message
  *   completes successfully. With a conversation prompt-cache key it parks the
  *   websocket in an idle cache for a short grace window instead of closing it
- *   immediately, so a new user message can land on the same Codex session.
+ *   immediately, so a new user message can reuse the connection/response-id
+ *   compression while starting with fresh turn-state.
  * - `destroy()`/`resetConnection()` are for errors, aborts, or retries.
  */
 export class OpenAITurnSession implements ProviderTurnSession {
@@ -389,6 +395,25 @@ export class OpenAITurnSession implements ProviderTurnSession {
     this.state.lastFullRequestBody = null;
     this.state.lastResponseId = null;
     this.state.lastResponseOutputItems = null;
+  }
+
+  private requestBodyWithTurnState(body: Record<string, unknown>): Record<string, unknown> {
+    const turnState = this.state.turnState;
+    if (!turnState) return body;
+    const existingMetadata = isRecord(body.client_metadata) ? body.client_metadata : {};
+    return {
+      ...body,
+      client_metadata: {
+        ...existingMetadata,
+        "x-codex-turn-state": turnState,
+      },
+    };
+  }
+
+  recordTurnState(turnState: string): void {
+    // Match Codex's OnceLock behavior: the first value in a logical turn wins,
+    // and later metadata events cannot silently reroute the same turn.
+    if (!this.state.turnState) this.state.turnState = turnState;
   }
 
   private removeReusableStateFromCache(): void {
@@ -484,7 +509,7 @@ export class OpenAITurnSession implements ProviderTurnSession {
         incrementalInputItems: fullInputItems,
         fallbackReason,
       };
-      return fullRequestBody;
+      return this.requestBodyWithTurnState(fullRequestBody);
     };
 
     if (!this.state.lastFullRequestBody || !this.state.lastResponseId) return fullReplay("no_previous_response");
@@ -520,7 +545,7 @@ export class OpenAITurnSession implements ProviderTurnSession {
     };
 
     return {
-      ...fullRequestBody,
+      ...this.requestBodyWithTurnState(fullRequestBody),
       previous_response_id: this.state.lastResponseId,
       input: incrementalInput,
     };
@@ -553,6 +578,10 @@ export class OpenAITurnSession implements ProviderTurnSession {
   close(): void {
     clearReusableTurnSessionTimer(this.state);
     this.state.inUse = false;
+    // The Codex sticky-routing token is per logical turn. Preserve the parked
+    // websocket and previous-response compression state, but never leak this
+    // turn's routing token into the next user turn.
+    this.state.turnState = null;
 
     if (!this.state.key) {
       this.state.socket?.close();
@@ -651,6 +680,22 @@ function parseOpenAIUsageLimitError(text: string, nowMs: number): OpenAIUsageLim
     ...(resetAt != null ? { resetAt } : {}),
     ...(resetDelayMs != null ? { resetDelayMs } : {}),
   };
+}
+
+function parseOpenAIWebSocketConnectionLimitError(text: string): string | null {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return null;
+  }
+
+  if (!isRecord(data) || !isRecord(data.error)) return null;
+  const err = data.error;
+  if (err.code !== WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE) return null;
+  return typeof err.message === "string" && err.message.length > 0
+    ? err.message
+    : WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE;
 }
 
 function shouldRetryOpenAIUsageLimitReset(): boolean {
@@ -810,6 +855,7 @@ export async function streamMessageWithSession(
         stallTimeoutMs: STREAM_STALL_TIMEOUT,
         connectionReused,
         signal,
+        onTurnState: turnSession ? (turnState) => turnSession.recordTurnState(turnState) : undefined,
       });
       if (turnSession) {
         turnSession.recordSuccessfulRequest(fullRequestBody, result);
@@ -858,6 +904,16 @@ export async function streamMessageWithSession(
         throw err;
       }
       if (err instanceof OpenAIWebSocketHttpError) {
+        const connectionLimitMessage = parseOpenAIWebSocketConnectionLimitError(err.body);
+        if (connectionLimitMessage) {
+          if (retryAttempt < MAX_RETRIES) {
+            log("warn", `openai api: websocket connection limit reached; reconnecting (attempt ${retryAttempt + 1}/${MAX_RETRIES})`);
+            await retryBackoff(retryAttempt++, connectionLimitMessage, requestCallbacks, signal);
+            continue;
+          }
+          throw new Error(`${connectionLimitMessage} after ${MAX_RETRIES} retries`);
+        }
+
         if (turnSession && attemptedIncremental && !retriedWithoutIncremental && (err.status === 400 || err.status === 404)) {
           log("warn", `openai api: incremental websocket request failed with HTTP ${err.status}; retrying once with full replay`);
           retriedWithoutIncremental = true;

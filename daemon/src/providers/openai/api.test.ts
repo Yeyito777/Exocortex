@@ -429,6 +429,46 @@ describe("OpenAI replay input", () => {
     expect(retryCalls[0][4]).toEqual({ kind: "transient" });
   });
 
+  test("reconnects when the Codex websocket connection limit is reached", async () => {
+    const retryCalls: unknown[][] = [];
+    const onRetry = mock((...args: unknown[]) => { retryCalls.push(args); });
+    const calls = mockOpenAIWebSocket([
+      { events: [
+        {
+          type: "error",
+          status: 400,
+          error: {
+            type: "invalid_request_error",
+            code: "websocket_connection_limit_reached",
+            message: "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.",
+          },
+        },
+      ] },
+      { events: [
+        { type: "response.created", response: { id: "resp_1" } },
+        { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1" } },
+        { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, content_index: 0, delta: "ok" },
+        { type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 1, output_tokens: 1 }, output: [{ type: "message", id: "msg_1", content: [{ type: "output_text", text: "ok" }] }] } },
+      ] },
+    ]);
+
+    const result = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [{ role: "user", content: "hello" }],
+      "gpt-5.4",
+      {
+        onText: () => {},
+        onThinking: () => {},
+        onRetry,
+      },
+    );
+
+    expect(result.text).toBe("ok");
+    expect(calls).toHaveLength(2);
+    expect(retryCalls[0][2]).toBe("Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.");
+    expect(retryCalls[0][4]).toEqual({ kind: "transient" });
+  });
+
   test("does not retry descriptive OpenAI websocket 403 handshake errors", async () => {
     const onRetry = mock(() => {});
     const calls = mockOpenAIWebSocket([
@@ -651,6 +691,7 @@ describe("OpenAI replay input", () => {
 
   test("reuses a turn websocket and sends incremental tool-result follow-ups", async () => {
     const calls = mockOpenAIWebSocket([{ events: [
+      { type: "response.metadata", headers: { "x-codex-turn-state": "turn-state-1" } },
       { type: "response.created", response: { id: "resp_1" } },
       { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call_1", name: "bash" } },
       { type: "response.function_call_arguments.delta", output_index: 0, delta: '{"cmd":"echo hi"}' },
@@ -706,8 +747,10 @@ describe("OpenAI replay input", () => {
     const firstBody = JSON.parse(calls[0].sent[0]);
     const secondBody = JSON.parse(calls[0].sent[1]);
     expect(firstBody.previous_response_id).toBeUndefined();
+    expect(firstBody.client_metadata?.["x-codex-turn-state"]).toBeUndefined();
     expect(firstBody.input).toHaveLength(1);
     expect(secondBody.previous_response_id).toBe("resp_1");
+    expect(secondBody.client_metadata["x-codex-turn-state"]).toBe("turn-state-1");
     expect(secondBody.input).toEqual([
       { type: "function_call_output", call_id: "call_1", output: "hi" },
     ]);
@@ -845,6 +888,60 @@ describe("OpenAI replay input", () => {
     expect(secondBody.input).toEqual([
       { type: "message", role: "user", content: [{ type: "input_text", text: "and now?" }] },
     ]);
+    secondSession.destroy();
+  });
+
+  test("clears Codex turn-state when reusing a parked websocket for a new user turn", async () => {
+    const calls = mockOpenAIWebSocket([{ events: [
+      { type: "response.metadata", headers: { "x-codex-turn-state": "turn-state-1" } },
+      { type: "response.created", response: { id: "resp_1" } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1" } },
+      { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, content_index: 0, delta: "hello" },
+      { type: "response.completed", response: { id: "resp_1", usage: { input_tokens: 2, output_tokens: 1 }, output: [{ type: "message", id: "msg_1", content: [{ type: "output_text", text: "hello" }] }] } },
+      { type: "response.created", response: { id: "resp_2" } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_2" } },
+      { type: "response.output_text.delta", item_id: "msg_2", output_index: 0, content_index: 0, delta: "again" },
+      { type: "response.completed", response: { id: "resp_2", usage: { input_tokens: 1, output_tokens: 1 }, output: [{ type: "message", id: "msg_2", content: [{ type: "output_text", text: "again" }] }] } },
+    ] }]);
+
+    const callbacks = {
+      onText: () => {},
+      onThinking: () => {},
+    };
+    const firstMessages: ApiMessage[] = [{ role: "user", content: "hi" }];
+    const firstSession = createOpenAITurnSession();
+    const first = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      firstMessages,
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-1", turnSession: firstSession },
+    );
+
+    firstSession.close();
+
+    const secondSession = createOpenAITurnSession();
+    await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [
+        ...firstMessages,
+        {
+          role: "assistant",
+          content: [{ type: "text", text: first.text }],
+          providerData: first.assistantProviderData,
+        },
+        { role: "user", content: "and now?" },
+      ],
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-1", turnSession: secondSession },
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sent).toHaveLength(2);
+    const secondBody = JSON.parse(calls[0].sent[1]);
+    expect(secondBody.previous_response_id).toBe("resp_1");
+    expect(secondBody.client_metadata?.["x-codex-turn-state"]).toBeUndefined();
     secondSession.destroy();
   });
 
