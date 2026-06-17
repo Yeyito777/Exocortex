@@ -200,13 +200,16 @@ export function renderSidebar(
     const fg = isPendingDelete ? theme.error : itemFg;
     const paddedTitle = padRightToWidth(title, maxTitle);
     const titleText = isCurrent && !isPendingDelete ? theme.bold + paddedTitle + theme.boldOff : paddedTitle;
+    const prefixText = isVisual && !isSelected && !isPendingDelete
+      ? theme.muted + prefix + fg
+      : prefix;
     const streamIconColored = streamIcon ? streamIconColor + streamIcon + fg : "";
     const starIconColored = starIcon ? theme.warning + starIcon + fg : "";
     const emojiIconColored = emojiIcon ? theme.warning + emojiIcon + fg : "";
 
     rows.push(
       theme.reset + bg + fg +
-      prefix + streamIconColored + starIconColored + emojiIconColored + titleText +
+      prefixText + streamIconColored + starIconColored + emojiIconColored + titleText +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   }
