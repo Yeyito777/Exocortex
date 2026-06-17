@@ -195,17 +195,21 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
           .filter((selected): selected is SidebarItemRef & { type: "conversation" } => selected.type === "conversation")
           .map(selected => selected.id);
         if (selectedConvIds.length > 1) {
+          const deletedIndices = selectedConvIds
+            .map(id => sidebar.conversations.findIndex(conv => conv.id === id))
+            .filter(index => index !== -1);
+          const preferredIndex = deletedIndices.length > 0 ? Math.min(...deletedIndices) - 1 : 0;
           const selectedSet = new Set(selectedConvIds);
           sidebar.conversations = sidebar.conversations.filter(conv => !selectedSet.has(conv.id));
           sidebar.visualAnchor = null;
-          focusNearestVisibleConversation(sidebar, sidebar.selectedIndex);
+          focusNearestVisibleConversation(sidebar, preferredIndex);
           return { type: "delete_conversations", convIds: selectedConvIds };
         }
         if (item.type === "conversation") {
           const deletedIndex = sidebar.selectedIndex;
           sidebar.conversations.splice(deletedIndex, 1);
           sidebar.visualAnchor = null;
-          focusNearestVisibleConversation(sidebar, deletedIndex);
+          focusNearestVisibleConversation(sidebar, deletedIndex - 1);
           return { type: "delete_conversation", convId: item.id };
         }
         sidebar.visualAnchor = null;
@@ -219,6 +223,9 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
 
     case "undo_delete":
       return { type: "undo_delete" };
+
+    case "redo_delete":
+      return { type: "redo_delete" };
 
     case "unwrap_folder":
       return unwrapSelectedFolder(sidebar);

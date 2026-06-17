@@ -99,6 +99,15 @@ test("Ctrl-A backgrounds the current tool even when a modal has focus", () => {
   expect(handleFocusedKey({ type: "ctrl-a" }, state)).toEqual({ type: "background_tool" });
 });
 
+test("Ctrl-R requests sidebar redo when the sidebar is focused", () => {
+  const state = createInitialState();
+  state.panelFocus = "sidebar";
+  state.sidebar.open = true;
+  state.vim.mode = "normal";
+
+  expect(handleFocusedKey({ type: "ctrl-r" }, state)).toEqual({ type: "redo_delete" });
+});
+
 function placeHistoryCursorOnText(state: ReturnType<typeof createInitialState>, text: string): void {
   const row = state.historyLines.findIndex((line) => stripAnsi(line).includes(text));
   expect(row).toBeGreaterThanOrEqual(0);
@@ -610,6 +619,44 @@ describe("sidebar folders", () => {
     expect(selected).toEqual({ type: "folder", id: "folder-project" });
   });
 
+  test("removing the selected conversation keeps the cursor near the old row", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [
+      conversation("top", 0),
+      conversation("source", 1),
+      conversation("clone", 2),
+      conversation("bottom", 3),
+    ];
+    state.sidebar.selectedItem = { type: "conversation", id: "clone" };
+    state.sidebar.selectedId = "clone";
+    state.sidebar.selectedIndex = 2;
+
+    handleEvent({ type: "conversation_deleted", convId: "clone" }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.sidebar.selectedItem as { type: string; id?: string } | null).toEqual({ type: "conversation", id: "source" });
+  });
+
+  test("removing the selected folder keeps the cursor near the old row, preferring above", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [folder("folder-project", 1)];
+    state.sidebar.conversations = [conversation("top", 0), conversation("bottom", 2)];
+    state.sidebar.selectedItem = { type: "folder", id: "folder-project" };
+
+    handleEvent({
+      type: "conversation_moved",
+      folders: [],
+      conversations: [conversation("top", 0), conversation("bottom", 2)],
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.sidebar.selectedItem as { type: string; id?: string } | null).toEqual({ type: "conversation", id: "top" });
+  });
+
   test("pinned folders render without a separate pinned marker", () => {
     const state = createInitialState();
     state.sidebar.open = true;
@@ -733,7 +780,7 @@ describe("sidebar folders", () => {
     expect(state.sidebar.prompt?.input).toBe("/");
   });
 
-  test("moving a conversation into a visible folder keeps focus at the removed row", () => {
+  test("moving a conversation into a visible folder keeps focus near the removed row, preferring above", () => {
     const state = createInitialState();
     state.sidebar.open = true;
     state.panelFocus = "sidebar";
@@ -751,7 +798,7 @@ describe("sidebar folders", () => {
       items: [{ type: "conversation", id: "conv-a" }],
       parentId: "folder-work",
     });
-    expect(state.sidebar.pendingFocusItem).toEqual({ type: "conversation", id: "conv-b" });
+    expect(state.sidebar.pendingFocusItem).toEqual({ type: "conversation", id: "top" });
 
     handleEvent({
       type: "conversation_moved",
@@ -764,7 +811,7 @@ describe("sidebar folders", () => {
     }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
 
     expect(state.sidebar.currentFolderId).toBeNull();
-    expect(state.sidebar.selectedItem as { type: string; id?: string } | null).toEqual({ type: "conversation", id: "conv-b" });
+    expect(state.sidebar.selectedItem as { type: string; id?: string } | null).toEqual({ type: "conversation", id: "top" });
   });
 
   test("moving a conversation out requests insertion immediately before the source folder", () => {
@@ -980,7 +1027,7 @@ describe("sidebar folders", () => {
     expect(state.sidebar.visualAnchor).toBeNull();
   });
 
-  test("dd on a folder waits for the server update before moving the cursor to a nearby item", () => {
+  test("dd on a folder waits for the server update before moving the cursor to a nearby item above", () => {
     const state = createInitialState();
     state.sidebar.open = true;
     state.panelFocus = "sidebar";
@@ -1005,7 +1052,7 @@ describe("sidebar folders", () => {
       conversations: [],
     }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
 
-    expect(state.sidebar.selectedItem).toEqual({ type: "folder", id: "folder-c" });
+    expect(state.sidebar.selectedItem).toEqual({ type: "folder", id: "folder-a" });
   });
 
   test("dd on a folder recursively deletes children and focuses the next nearby item", () => {

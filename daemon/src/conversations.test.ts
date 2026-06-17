@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { bumpToTop, clearUnread, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, pin, remove, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
+import { bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, mark, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, pin, pinFolder, pinSidebarItems, redoDelete, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
 
 const IDS: string[] = [];
@@ -158,6 +158,202 @@ describe("folders", () => {
     expect(undoDelete()).toEqual({ type: "sidebar_state" });
     expect(listSidebarState().folders.find(candidate => candidate.id === folder.id)).toMatchObject({ id: folder.id, parentId: null });
     expect(getSummary(childId)).toMatchObject({ folderId: folder.id });
+  });
+
+  test("undo restores a batch conversation delete as one sidebar entry", () => {
+    const ids = [mkId("batch-delete-a"), mkId("batch-delete-b")];
+    for (const id of ids) create(id, "openai", "gpt-5.4", id);
+
+    expect(removeMany(ids)).toEqual(ids);
+    expect(getSummary(ids[0])).toBeNull();
+    expect(getSummary(ids[1])).toBeNull();
+
+    expect(undoDelete()?.type).toBe("conversations");
+    expect(getSummary(ids[0])).toMatchObject({ id: ids[0] });
+    expect(getSummary(ids[1])).toMatchObject({ id: ids[1] });
+  });
+
+  test("undo restores a single sidebar reorder", () => {
+    const ids = ["undo-move-a", "undo-move-b", "undo-move-c"].map(mkId);
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+    expect(rootRows(ids).map(row => row.id)).toEqual(ids);
+
+    expect(moveSidebarItem({ type: "conversation", id: ids[1] }, "down")).toBe(true);
+    expect(rootRows(ids).map(row => row.id)).toEqual([ids[0], ids[2], ids[1]]);
+
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(rootRows(ids).map(row => row.id)).toEqual(ids);
+  });
+
+  test("undo restores moving conversations into a folder", () => {
+    const id = mkId("undo-move-folder-child");
+    create(id, "openai", "gpt-5.4", "child");
+    const folder = createFolder(`Undo Move Folder ${Date.now()} ${Math.random()}`)!;
+    FOLDER_IDS.push(folder.id);
+
+    expect(moveSidebarItems([{ type: "conversation", id }], folder.id)).toBe(true);
+    expect(getSummary(id)?.folderId).toBe(folder.id);
+
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(getSummary(id)?.folderId ?? null).toBeNull();
+  });
+
+  test("undo removes a created folder and restores items moved into it", () => {
+    const ids = [mkId("undo-create-folder-a"), mkId("undo-create-folder-b")];
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+
+    const folder = createFolder("Undo Created Folder", null, ids.map(id => ({ type: "conversation" as const, id })))!;
+    expect(listSidebarState().folders.some(candidate => candidate.id === folder.id)).toBe(true);
+    expect(getSummary(ids[0])?.folderId).toBe(folder.id);
+    expect(getSummary(ids[1])?.folderId).toBe(folder.id);
+
+    expect(undoDelete()).toEqual({ type: "sidebar_state", folderInstructions: [{ folderId: folder.id, text: "" }] });
+    expect(listSidebarState().folders.some(candidate => candidate.id === folder.id)).toBe(false);
+    expect(getSummary(ids[0])?.folderId ?? null).toBeNull();
+    expect(getSummary(ids[1])?.folderId ?? null).toBeNull();
+  });
+
+  test("undo restores folder rename, pinning, and instructions", () => {
+    const folder = createFolder(`Undo Folder Metadata ${Date.now()} ${Math.random()}`)!;
+    FOLDER_IDS.push(folder.id);
+
+    expect(renameFolder(folder.id, "Renamed Folder")).toBe(true);
+    expect(listSidebarState().folders.find(candidate => candidate.id === folder.id)?.name).toBe("Renamed Folder");
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(listSidebarState().folders.find(candidate => candidate.id === folder.id)?.name).toBe(folder.name);
+
+    expect(pinFolder(folder.id, true)).toBe(true);
+    expect(listSidebarState().folders.find(candidate => candidate.id === folder.id)?.pinned).toBe(true);
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(listSidebarState().folders.find(candidate => candidate.id === folder.id)?.pinned).toBe(false);
+
+    expect(setFolderInstructions(folder.id, "Remember folder rules.")).toBe(true);
+    expect(getFolderInstructions(folder.id)).toBe("Remember folder rules.");
+    expect(undoDelete()).toEqual({ type: "sidebar_state", folderInstructions: [{ folderId: folder.id, text: "" }] });
+    expect(getFolderInstructions(folder.id)).toBe("");
+  });
+
+  test("undo restores conversation mark, rename, pin, and clone sidebar actions", () => {
+    const id = mkId("undo-conv-metadata");
+    create(id, "openai", "gpt-5.4", "Original Title");
+
+    expect(mark(id, true)).toBe(true);
+    expect(getSummary(id)?.marked).toBe(true);
+    expect(undoDelete()).toEqual({ type: "sidebar_state", updatedConvIds: [id] });
+    expect(getSummary(id)?.marked).toBe(false);
+
+    expect(rename(id, "Renamed Title")).toBe(true);
+    expect(getSummary(id)?.title).toBe("Renamed Title");
+    expect(undoDelete()).toEqual({ type: "sidebar_state", updatedConvIds: [id] });
+    expect(getSummary(id)?.title).toBe("Original Title");
+
+    expect(pin(id, true)).toBe(true);
+    expect(getSummary(id)?.pinned).toBe(true);
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(getSummary(id)?.pinned).toBe(false);
+
+    const cloned = clone(id)!;
+    IDS.push(cloned.id);
+    expect(getSummary(cloned.id)).toMatchObject({ id: cloned.id });
+    expect(undoDelete()).toEqual({ type: "sidebar_state", deletedConvIds: [cloned.id] });
+    expect(getSummary(cloned.id)).toBeNull();
+  });
+
+  test("undo restores batch pinning as one sidebar entry", () => {
+    const ids = [mkId("undo-batch-pin-a"), mkId("undo-batch-pin-b")];
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+
+    expect(pinSidebarItems(ids.map(id => ({ item: { type: "conversation" as const, id }, pinned: true })))).toBe(true);
+    expect(ids.map(id => getSummary(id)?.pinned)).toEqual([true, true]);
+
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(ids.map(id => getSummary(id)?.pinned)).toEqual([false, false]);
+  });
+
+  test("redo re-applies a conversation delete after undo", () => {
+    const id = mkId("redo-delete");
+    create(id, "openai", "gpt-5.4", "redo delete");
+
+    expect(remove(id)).toBe(true);
+    expect(getSummary(id)).toBeNull();
+    expect(undoDelete()?.type).toBe("conversation");
+    expect(getSummary(id)).toMatchObject({ id });
+
+    expect(redoDelete()).toEqual({ type: "sidebar_state", deletedConvIds: [id] });
+    expect(getSummary(id)).toBeNull();
+    expect(undoDelete()?.type).toBe("conversation");
+    expect(getSummary(id)).toMatchObject({ id });
+  });
+
+  test("redo re-applies sidebar metadata and move actions", () => {
+    const ids = [mkId("redo-move-a"), mkId("redo-move-b")];
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+
+    expect(moveSidebarItem({ type: "conversation", id: ids[0] }, "down")).toBe(true);
+    expect(rootRows(ids).map(row => row.id)).toEqual([ids[1], ids[0]]);
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(rootRows(ids).map(row => row.id)).toEqual(ids);
+    expect(redoDelete()).toEqual({ type: "sidebar_state" });
+    expect(rootRows(ids).map(row => row.id)).toEqual([ids[1], ids[0]]);
+
+    expect(mark(ids[0], true)).toBe(true);
+    expect(undoDelete()).toEqual({ type: "sidebar_state", updatedConvIds: [ids[0]] });
+    expect(getSummary(ids[0])?.marked).toBe(false);
+    expect(redoDelete()).toEqual({ type: "sidebar_state", updatedConvIds: [ids[0]] });
+    expect(getSummary(ids[0])?.marked).toBe(true);
+  });
+
+  test("redo recreates a folder after undoing folder creation", () => {
+    const id = mkId("redo-create-folder-child");
+    create(id, "openai", "gpt-5.4", "child");
+    const folder = createFolder("Redo Created Folder", null, [{ type: "conversation", id }])!;
+
+    expect(undoDelete()).toEqual({ type: "sidebar_state", folderInstructions: [{ folderId: folder.id, text: "" }] });
+    expect(listSidebarState().folders.some(candidate => candidate.id === folder.id)).toBe(false);
+    expect(getSummary(id)?.folderId ?? null).toBeNull();
+
+    expect(redoDelete()).toEqual({ type: "sidebar_state" });
+    expect(listSidebarState().folders.find(candidate => candidate.id === folder.id)).toMatchObject({ id: folder.id, name: folder.name });
+    expect(getSummary(id)?.folderId).toBe(folder.id);
+  });
+
+  test("redo re-applies recursive folder delete and folder unwrap", () => {
+    const recursiveChildId = mkId("redo-recursive-child");
+    const recursiveFolder = createFolder(`Redo Recursive Folder ${Date.now()} ${Math.random()}`)!;
+    FOLDER_IDS.push(recursiveFolder.id);
+    create(recursiveChildId, "openai", "gpt-5.4", "recursive child", undefined, false, recursiveFolder.id);
+
+    expect(deleteFolder(recursiveFolder.id, "recursive")).toBe(true);
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(getSummary(recursiveChildId)).toMatchObject({ folderId: recursiveFolder.id });
+    expect(redoDelete()).toEqual({ type: "sidebar_state", deletedConvIds: [recursiveChildId] });
+    expect(getSummary(recursiveChildId)).toBeNull();
+    expect(listSidebarState().folders.some(candidate => candidate.id === recursiveFolder.id)).toBe(false);
+
+    const unwrapChildId = mkId("redo-unwrap-child");
+    const unwrapFolder = createFolder(`Redo Unwrap Folder ${Date.now()} ${Math.random()}`)!;
+    FOLDER_IDS.push(unwrapFolder.id);
+    create(unwrapChildId, "openai", "gpt-5.4", "unwrap child", undefined, false, unwrapFolder.id);
+
+    expect(deleteFolder(unwrapFolder.id, "unwrap")).toBe(true);
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(getSummary(unwrapChildId)?.folderId).toBe(unwrapFolder.id);
+    expect(redoDelete()).toEqual({ type: "sidebar_state" });
+    expect(getSummary(unwrapChildId)?.folderId ?? null).toBeNull();
+    expect(listSidebarState().folders.some(candidate => candidate.id === unwrapFolder.id)).toBe(false);
+  });
+
+  test("redo restores a clone after undo removes it", () => {
+    const id = mkId("redo-clone-source");
+    create(id, "openai", "gpt-5.4", "clone source");
+
+    const cloned = clone(id)!;
+    IDS.push(cloned.id);
+    expect(undoDelete()).toEqual({ type: "sidebar_state", deletedConvIds: [cloned.id] });
+    expect(getSummary(cloned.id)).toBeNull();
+
+    expect(redoDelete()?.type).toBe("conversation");
+    expect(getSummary(cloned.id)).toMatchObject({ id: cloned.id });
   });
 
   test("moving a visual block down preserves the block order", () => {

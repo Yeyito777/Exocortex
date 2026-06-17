@@ -24,7 +24,7 @@ function nextItemAfterRemovingItems(sidebar: SidebarState, items: SidebarItemRef
   const rowsAfter = rowsBefore.filter(row => !removedKeys.has(itemKey(row.item)));
   if (rowsAfter.length === 0) return null;
   const removedIndex = removedIndices.length === 0 ? 0 : Math.min(...removedIndices);
-  const nextIndex = Math.min(removedIndex, rowsAfter.length - 1);
+  const nextIndex = Math.max(0, Math.min(removedIndex - 1, rowsAfter.length - 1));
   return rowsAfter[nextIndex]?.item ?? null;
 }
 

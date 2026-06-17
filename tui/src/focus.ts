@@ -66,6 +66,7 @@ export type KeyResult =
   | { type: "delete_conversations"; convIds: string[] }
   | { type: "delete_folder"; folderId: string; mode: "recursive" | "unwrap" }
   | { type: "undo_delete" }
+  | { type: "redo_delete" }
   | { type: "mark_conversation"; convId: string; marked: boolean }
   | { type: "rename_conversation"; convId: string; title: string }
   | { type: "pin_conversation"; convId: string; pinned: boolean }
@@ -296,6 +297,9 @@ export function handleFocusedKey(
       }
       return { type: "handled" };
     }
+    case "redo_delete":
+      if (state.panelFocus === "sidebar" && state.sidebar.open) return { type: "redo_delete" };
+      break;
   }
 
   if (action === "submit" && state.panelFocus === "chat" && state.chatFocus === "history") {

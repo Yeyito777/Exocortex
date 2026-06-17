@@ -179,8 +179,16 @@ export class DaemonClient {
     this.send({ type: "delete_conversation", convId });
   }
 
+  deleteConversations(convIds: string[]): void {
+    this.send({ type: "delete_conversations", convIds });
+  }
+
   undoDelete(): void {
     this.send({ type: "undo_delete" });
+  }
+
+  redoDelete(): void {
+    this.send({ type: "redo_delete" });
   }
 
   markConversation(convId: string, marked: boolean): void {
@@ -213,6 +221,10 @@ export class DaemonClient {
 
   pinFolder(folderId: string, pinned: boolean): void {
     this.send({ type: "pin_folder", folderId, pinned });
+  }
+
+  pinSidebarItems(pins: { item: SidebarItemRef; pinned: boolean }[]): void {
+    this.send({ type: "pin_sidebar_items", pins });
   }
 
   moveSidebarItem(item: SidebarItemRef, direction: "up" | "down"): void {

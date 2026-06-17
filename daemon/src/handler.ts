@@ -259,6 +259,46 @@ export function createHandler(server: DaemonServer) {
     return goal;
   };
 
+  const broadcastSidebarUndoResult = (
+    target: ConnectedClient,
+    reqId: string | undefined,
+    result: convStore.UndoDeleteResult | null,
+    emptyMessage: string,
+  ): void => {
+    if (result?.type === "conversation") {
+      const summary = convStore.getSummary(result.conversation.id);
+      if (summary) {
+        server.broadcast({ type: "conversation_restored", reqId, summary });
+        server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+        return;
+      }
+    } else if (result?.type === "conversations") {
+      for (const conv of result.conversations) {
+        const summary = convStore.getSummary(conv.id);
+        if (summary) server.broadcast({ type: "conversation_restored", reqId, summary });
+      }
+      server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+      return;
+    } else if (result?.type === "sidebar_state") {
+      for (const convId of result.deletedConvIds ?? []) {
+        server.broadcast({ type: "conversation_deleted", convId });
+      }
+      for (const convId of result.updatedConvIds ?? []) {
+        broadcastConversationUpdated(server, convId);
+      }
+      for (const update of result.folderInstructions ?? []) {
+        server.broadcast({ type: "folder_instructions_updated", reqId, folderId: update.folderId, text: update.text });
+        for (const convId of convStore.listFolderConversationIds(update.folderId)) {
+          sendCompactHistoryUpdated(convId);
+        }
+      }
+      server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+      return;
+    }
+
+    server.sendTo(target, { type: "error", reqId, message: emptyMessage });
+  };
+
   const isSafeClientConversationId = (id: string): boolean => /^\d+-[a-z0-9]{6}$/.test(id);
 
   return async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
@@ -711,6 +751,17 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      case "delete_conversations": {
+        const deleted = convStore.removeMany(cmd.convIds);
+        if (deleted.length > 0) {
+          log("info", `handler: deleted ${deleted.length} conversations`);
+          for (const convId of deleted) server.broadcast({ type: "conversation_deleted", convId });
+        } else {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "No conversations found to delete" });
+        }
+        break;
+      }
+
       case "mark_conversation": {
         const ok = convStore.mark(cmd.convId, cmd.marked);
         if (ok) {
@@ -809,6 +860,13 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      case "pin_sidebar_items": {
+        if (convStore.pinSidebarItems(cmd.pins)) {
+          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+        }
+        break;
+      }
+
       case "move_sidebar_item": {
         if (convStore.moveSidebarItem(cmd.item, cmd.direction)) {
           server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
@@ -838,19 +896,12 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "undo_delete": {
-        const restored = convStore.undoDelete();
-        if (restored?.type === "conversation") {
-          const summary = convStore.getSummary(restored.conversation.id);
-          if (summary) {
-            log("info", `handler: restored conversation ${restored.conversation.id} from trash`);
-            server.broadcast({ type: "conversation_restored", reqId: cmd.reqId, summary });
-            server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
-          }
-        } else if (restored?.type === "sidebar_state") {
-          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
-        } else {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Nothing to undo" });
-        }
+        broadcastSidebarUndoResult(client, cmd.reqId, convStore.undoDelete(), "Nothing to undo");
+        break;
+      }
+
+      case "redo_delete": {
+        broadcastSidebarUndoResult(client, cmd.reqId, convStore.redoDelete(), "Nothing to redo");
         break;
       }
 

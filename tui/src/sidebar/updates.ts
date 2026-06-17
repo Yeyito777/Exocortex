@@ -1,6 +1,7 @@
 import type { ConversationSummary, FolderSummary } from "../messages";
-import { type SidebarSelectableItem } from "./items";
+import { sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { compareSidebarOrder } from "./order";
+import { buildDisplayRows, nearestDisplayEntry } from "./rows";
 import {
   getActiveSidebarSearchQuery,
   getSearchableConversationTitle,
@@ -74,7 +75,23 @@ function firstVisibleSidebarItem(sidebar: SidebarState): SidebarSelectableItem |
   return bestItem;
 }
 
+export function selectedSidebarDisplayRow(sidebar: SidebarState): number | null {
+  const selectedKey = itemKey(sidebar.selectedItem);
+  if (!selectedKey) return null;
+  const row = buildDisplayRows(sidebar).findIndex(displayRow => displayRow.type === "entry" && itemKey(displayRow.item ?? null) === selectedKey);
+  return row === -1 ? null : row;
+}
+
+export function focusNearestSidebarDisplayEntry(sidebar: SidebarState, preferredRow: number, preferredStep: -1 | 0 | 1 = 0): boolean {
+  const item = nearestDisplayEntry(buildDisplayRows(sidebar), preferredRow, preferredStep);
+  if (!item) return false;
+  focusSidebarItem(sidebar, item);
+  return true;
+}
+
 export function updateConversationList(sidebar: SidebarState, conversations: ConversationSummary[], folders: FolderSummary[] = sidebar.folders): void {
+  const previousSelectedItem = sidebar.selectedItem;
+  const previousSelectedRow = selectedSidebarDisplayRow(sidebar);
   sidebar.conversations = conversations;
   sidebar.folders = folders;
   if (sidebar.currentFolderId && !sidebar.folders.some(f => f.id === sidebar.currentFolderId)) {
@@ -99,6 +116,9 @@ export function updateConversationList(sidebar: SidebarState, conversations: Con
       focusSidebarItem(sidebar, { type: "folder", id: matchingFolder.id });
       return;
     }
+  }
+  if (previousSelectedItem && !isSidebarItemVisible(sidebar, previousSelectedItem) && previousSelectedRow !== null) {
+    if (focusNearestSidebarDisplayEntry(sidebar, previousSelectedRow - 1, -1)) return;
   }
   syncSelectedIndex(sidebar);
 }

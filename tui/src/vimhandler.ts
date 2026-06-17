@@ -224,6 +224,7 @@ function handleVimAction(action: string, state: RenderState): KeyResult {
     case "nav_select":
     case "delete":
     case "undo_delete":
+    case "redo_delete":
     case "mark":
     case "pin":
     case "move_up":

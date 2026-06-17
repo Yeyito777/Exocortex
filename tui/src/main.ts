@@ -1047,10 +1047,8 @@ function handleKey(key: KeyEvent): void {
       }
       break;
     case "delete_conversations": {
-      for (const convId of result.convIds) {
-        daemon.deleteConversation(convId);
-        clearLocalQueue(state, convId);
-      }
+      daemon.deleteConversations(result.convIds);
+      for (const convId of result.convIds) clearLocalQueue(state, convId);
       if (state.convId && result.convIds.includes(state.convId)) {
         state.convId = null;
         state.messages = [];
@@ -1067,6 +1065,9 @@ function handleKey(key: KeyEvent): void {
     case "undo_delete":
       daemon.undoDelete();
       break;
+    case "redo_delete":
+      daemon.redoDelete();
+      break;
     case "mark_conversation":
       daemon.markConversation(result.convId, result.marked);
       break;
@@ -1080,10 +1081,7 @@ function handleKey(key: KeyEvent): void {
       daemon.pinFolder(result.folderId, result.pinned);
       break;
     case "pin_sidebar_items":
-      for (const pin of result.pins) {
-        if (pin.item.type === "conversation") daemon.pinConversation(pin.item.id, pin.pinned);
-        else daemon.pinFolder(pin.item.id, pin.pinned);
-      }
+      daemon.pinSidebarItems(result.pins);
       break;
     case "move_conversation":
       daemon.moveConversation(result.convId, result.direction);

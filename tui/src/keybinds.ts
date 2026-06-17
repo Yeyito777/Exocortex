@@ -49,6 +49,7 @@ export type Action =
   | "clone"
   | "unwrap_folder"
   | "undo_delete"
+  | "redo_delete"
   // Scrolling
   | "scroll_line_up"
   | "scroll_line_down"
@@ -104,6 +105,7 @@ const BINDS: Record<string, Action> = {
   "ctrl-c":     "quit",
   "ctrl-a":     "background_tool",
   "ctrl-q":     "abort",
+  "ctrl-r":     "redo_delete",
   "ctrl-m":     "sidebar_toggle",
   "ctrl-s":     "sidebar_toggle",
   "ctrl-j":     "focus_cycle",

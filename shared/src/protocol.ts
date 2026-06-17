@@ -190,6 +190,12 @@ export interface DeleteConversationCommand {
   convId: string;
 }
 
+export interface DeleteConversationsCommand {
+  type: "delete_conversations";
+  reqId?: string;
+  convIds: string[];
+}
+
 export interface MarkConversationCommand {
   type: "mark_conversation";
   reqId?: string;
@@ -253,6 +259,12 @@ export interface PinFolderCommand {
   pinned: boolean;
 }
 
+export interface PinSidebarItemsCommand {
+  type: "pin_sidebar_items";
+  reqId?: string;
+  pins: { item: SidebarItemRef; pinned: boolean }[];
+}
+
 export interface MoveSidebarItemCommand {
   type: "move_sidebar_item";
   reqId?: string;
@@ -304,6 +316,11 @@ export interface SetFolderInstructionsCommand {
 
 export interface UndoDeleteCommand {
   type: "undo_delete";
+  reqId?: string;
+}
+
+export interface RedoDeleteCommand {
+  type: "redo_delete";
   reqId?: string;
 }
 
@@ -417,6 +434,7 @@ export type Command =
   | LoadConversationCommand
   | LoadToolOutputsCommand
   | DeleteConversationCommand
+  | DeleteConversationsCommand
   | MarkConversationCommand
   | PinConversationCommand
   | MoveConversationCommand
@@ -426,12 +444,14 @@ export type Command =
   | CreateFolderCommand
   | RenameFolderCommand
   | PinFolderCommand
+  | PinSidebarItemsCommand
   | MoveSidebarItemCommand
   | MoveSidebarItemsCommand
   | DeleteFolderCommand
   | LoadFolderInstructionsCommand
   | SetFolderInstructionsCommand
   | UndoDeleteCommand
+  | RedoDeleteCommand
   | QueueMessageCommand
   | UnqueueMessageCommand
   | UnwindConversationCommand

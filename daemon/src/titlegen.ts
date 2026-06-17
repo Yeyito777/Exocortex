@@ -115,7 +115,7 @@ function hasTitleContext(conv: Conversation, extraContext?: string): boolean {
 }
 
 function broadcastTitle(server: DaemonServer, convId: string, title: string, reason: string): void {
-  if (!convStore.rename(convId, title)) return;
+  if (!convStore.rename(convId, title, false)) return;
   broadcastConversationUpdated(server, convId);
   log("info", `titlegen: ${reason} for ${convId} -> "${title}"`);
 }

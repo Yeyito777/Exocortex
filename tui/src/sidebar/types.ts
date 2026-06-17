@@ -9,6 +9,7 @@ export type SidebarKeyResult =
   | { type: "delete_conversations"; convIds: string[] }
   | { type: "delete_folder"; folderId: string; mode: "recursive" | "unwrap" }
   | { type: "undo_delete" }
+  | { type: "redo_delete" }
   | { type: "mark_conversation"; convId: string; marked: boolean }
   | { type: "rename_conversation"; convId: string; title: string }
   | { type: "pin_conversation"; convId: string; pinned: boolean }
