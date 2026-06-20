@@ -463,6 +463,10 @@ function syncInlineEffortChanges(result: InlineEffortApplication, convId = state
   }
 }
 
+function hasNonWhitespaceText(text: string): boolean {
+  return /\S/.test(text);
+}
+
 function handleSubmit(): void {
   let text = state.inputBuffer.trim();
   const hasImages = state.pendingImages.length > 0;
@@ -684,8 +688,8 @@ function maybeScheduleOpenAIPrewarm(inputBefore: string): void {
   if (!convId || state.provider !== "openai" || isStreaming(state) || state.folderInstructionsDoc) return;
   if (!daemon.connected || !state.authByProvider.openai) return;
 
-  const beforeWasEmpty = inputBefore.trim().length === 0;
-  const nowHasInput = state.inputBuffer.trim().length > 0 || state.pendingImages.length > 0;
+  const beforeWasEmpty = !hasNonWhitespaceText(inputBefore);
+  const nowHasInput = hasNonWhitespaceText(state.inputBuffer) || state.pendingImages.length > 0;
   if (!beforeWasEmpty || !nowHasInput) return;
 
   const key = `${convId}:${state.model}:${state.effort}:${state.fastMode ? "fast" : "normal"}`;

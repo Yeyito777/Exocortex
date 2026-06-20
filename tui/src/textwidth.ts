@@ -201,15 +201,28 @@ export function termWidth(s: string): number {
   return w;
 }
 
-export function sliceByWidth(s: string, maxCols: number): [string, string] {
+export function sliceByWidthFrom(s: string, start: number, maxCols: number): [end: number, width: number] {
   let w = 0;
-  let i = 0;
+  let i = Math.max(0, Math.min(start, s.length));
   while (i < s.length) {
+    const code = s.charCodeAt(i);
+    if (code >= 0x20 && code <= 0x7E) {
+      if (w + 1 > maxCols) break;
+      w++;
+      i++;
+      continue;
+    }
+
     const [cw, end] = nextGrapheme(s, i);
     if (w + cw > maxCols) break;
     w += cw;
     i = end;
   }
+  return [i, w];
+}
+
+export function sliceByWidth(s: string, maxCols: number): [string, string] {
+  const [i] = sliceByWidthFrom(s, 0, maxCols);
   return [s.slice(0, i), s.slice(i)];
 }
 
@@ -218,26 +231,29 @@ export function visibleLength(s: string): number {
 }
 
 export function hardBreak(word: string, width: number, result: string[]): string {
-  let remaining = word;
+  let start = 0;
   for (;;) {
-    const [taken, rest] = sliceByWidth(remaining, width);
-    if (!rest) return taken;
-    if (taken === "") {
-      result.push(remaining.slice(0, 1));
-      remaining = remaining.slice(1);
+    const [end] = sliceByWidthFrom(word, start, width);
+    if (end >= word.length) return word.slice(start);
+    if (end === start) {
+      const cp = word.codePointAt(start)!;
+      const next = start + (cp > 0xFFFF ? 2 : 1);
+      result.push(word.slice(start, next));
+      start = next;
     } else {
-      result.push(taken);
-      remaining = rest;
+      result.push(word.slice(start, end));
+      start = end;
     }
   }
 }
 
 export function truncateToWidth(text: string, maxCols: number): string {
   if (maxCols <= 0) return "";
-  if (termWidth(text) <= maxCols) return text;
+  const [fitEnd] = sliceByWidthFrom(text, 0, maxCols);
+  if (fitEnd >= text.length) return text;
   if (maxCols === 1) return "…";
-  const [taken] = sliceByWidth(text, maxCols - 1);
-  return taken + "…";
+  const [takenEnd] = sliceByWidthFrom(text, 0, maxCols - 1);
+  return text.slice(0, takenEnd) + "…";
 }
 
 export function padRightToWidth(text: string, width: number): string {

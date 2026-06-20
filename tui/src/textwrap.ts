@@ -4,7 +4,7 @@
  * Wrap results retain continuation metadata so history yanks can reconstruct
  * logical text without adding or losing separators at soft-wrap boundaries.
  */
-import { sliceByWidth, termWidth } from "./textwidth";
+import { sliceByWidthFrom } from "./textwidth";
 
 export interface WrapResult {
   lines: string[];
@@ -32,8 +32,21 @@ export interface WrapCopyLine {
   skip?: boolean;
 }
 
-function firstCodePoint(text: string): string {
-  return Array.from(text)[0] ?? "";
+function firstCodePointEnd(text: string, start: number): number {
+  const cp = text.codePointAt(start);
+  if (cp === undefined) return start;
+  return start + (cp > 0xFFFF ? 2 : 1);
+}
+
+function trimStartIndex(text: string, start: number): number {
+  let i = start;
+  while (i < text.length) {
+    const cp = text.codePointAt(i)!;
+    const char = String.fromCodePoint(cp);
+    if (char.trimStart() !== "") break;
+    i += cp > 0xFFFF ? 2 : 1;
+  }
+  return i;
 }
 
 export function wordWrap(text: string, width: number): WrapResult {
@@ -43,41 +56,49 @@ export function wordWrap(text: string, width: number): WrapResult {
   const join: string[] = [];
 
   for (const rawLine of text.split("\n")) {
-    if (termWidth(rawLine) <= width) {
+    if (rawLine.length === 0) {
       lines.push(rawLine);
       cont.push(false);
       join.push("");
       continue;
     }
-    let line = rawLine;
+
+    let lineStart = 0;
     let first = true;
     let pendingJoin = "";
-    while (termWidth(line) > width) {
-      const [taken] = sliceByWidth(line, width);
-      let breakAt = taken.lastIndexOf(" ");
+    for (;;) {
+      const [fitEnd] = sliceByWidthFrom(rawLine, lineStart, width);
+      if (fitEnd >= rawLine.length) break;
+
+      const fit = rawLine.slice(lineStart, fitEnd);
+      const breakRel = fit.lastIndexOf(" ");
+      let breakAt = breakRel > 0 ? lineStart + breakRel : -1;
       let nextJoin = breakAt > 0 ? " " : "";
-      if (breakAt <= 0 && taken.length > 0 && line[taken.length] === " ") {
+
+      if (breakRel <= 0 && fitEnd > lineStart && rawLine[fitEnd] === " ") {
         // Match the previous ASCII wrapper's behavior when the best break is a
         // space exactly at the wrap boundary. The space is omitted visually but
         // preserved as the copy/yank joiner for the continuation row.
-        breakAt = taken.length;
+        breakAt = fitEnd;
         nextJoin = " ";
       }
-      if (breakAt <= 0) {
+
+      if (breakAt <= lineStart) {
         // If the first grapheme is wider than the wrap width, sliceByWidth()
         // returns an empty prefix. Still consume one codepoint so wrapping makes
         // progress; extremely narrow terminals may display that glyph as wide.
-        breakAt = taken.length > 0 ? taken.length : firstCodePoint(line).length;
+        breakAt = fitEnd > lineStart ? fitEnd : firstCodePointEnd(rawLine, lineStart);
       }
-      lines.push(line.slice(0, breakAt));
+
+      lines.push(rawLine.slice(lineStart, breakAt));
       cont.push(!first);
       join.push(first ? "" : pendingJoin);
       first = false;
-      line = line.slice(breakAt).trimStart();
+      lineStart = trimStartIndex(rawLine, breakAt);
       pendingJoin = nextJoin;
     }
-    if (line) {
-      lines.push(line);
+    if (lineStart < rawLine.length) {
+      lines.push(rawLine.slice(lineStart));
       cont.push(!first);
       join.push(first ? "" : pendingJoin);
     }

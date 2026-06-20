@@ -107,6 +107,17 @@ function isWS(ch: string): boolean {
   return ch === " " || ch === "\n" || ch === "\t";
 }
 
+function firstNonWhitespaceIndex(input: string): number {
+  let i = 0;
+  while (i < input.length) {
+    const cp = input.codePointAt(i)!;
+    const char = String.fromCodePoint(cp);
+    if (char.trimStart() !== "") break;
+    i += cp > 0xFFFF ? 2 : 1;
+  }
+  return i;
+}
+
 /**
  * Scan backwards from `pos` to find the start of the current token.
  * A token is delimited by whitespace (space, newline, tab) or input start.
@@ -138,27 +149,24 @@ function extractSlashToken(
   input: string,
   cursorPos: number,
 ): { token: string; start: number } | null {
-  const wordStart = tokenStart(input, cursorPos);
-  const currentWord = input.slice(wordStart, cursorPos);
+  const safeCursor = Math.max(0, Math.min(cursorPos, input.length));
+  if (safeCursor <= 0) return null;
 
-  // If the current word starts with /, we found the token directly
-  if (currentWord.startsWith("/") && atWordBoundary(input, wordStart)) {
-    return { token: currentWord, start: wordStart };
-  }
+  const searchFrom = safeCursor - 1;
+  const lastNewline = input.lastIndexOf("\n", searchFrom);
+  const lastTab = input.lastIndexOf("\t", searchFrom);
+  const segmentStart = Math.max(lastNewline, lastTab) + 1;
 
-  // Walk backward through preceding words to find one starting with "/"
-  let scanPos = wordStart;
-  while (scanPos > 0 && input[scanPos - 1] === " ") {
-    const prevStart = tokenStart(input, scanPos - 1);
-    const prevWord = input.slice(prevStart, scanPos - 1);
-
-    if (prevWord.startsWith("/") && atWordBoundary(input, prevStart)) {
-      return { token: input.slice(prevStart, cursorPos), start: prevStart };
+  // Find the nearest slash-prefixed word in the current space-separated segment.
+  // This preserves multi-word macro args while avoiding an O(words-before-cursor)
+  // backwards scan on every keystroke in long ordinary prompts.
+  let slash = input.lastIndexOf("/", searchFrom);
+  while (slash >= segmentStart) {
+    if (atWordBoundary(input, slash)) {
+      return { token: input.slice(slash, safeCursor), start: slash };
     }
-
-    scanPos = prevStart;
+    slash = input.lastIndexOf("/", slash - 1);
   }
-
   return null;
 }
 
@@ -178,8 +186,8 @@ export function updateAutocomplete(state: RenderState): void {
   }
 
   // Command + macro autocomplete: single-line input starts with /
-  const trimmed = state.inputBuffer.trimStart();
-  if (trimmed.startsWith("/") && !trimmed.includes("\n")) {
+  const firstNonWs = firstNonWhitespaceIndex(state.inputBuffer);
+  if (state.inputBuffer[firstNonWs] === "/" && state.inputBuffer.indexOf("\n", firstNonWs) === -1) {
     const matches = getCommandMatches(state, state.inputBuffer);
     if (matches.length > 0) {
       state.autocomplete = {

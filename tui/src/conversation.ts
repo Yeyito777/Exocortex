@@ -10,7 +10,7 @@ import { combineMessageMetadata, type Message, type MessageMetadata } from "./me
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { theme } from "./theme";
-import { renderBlockCached, renderSystemMessage, renderUserMessage } from "./blockrenderer";
+import { renderBlockCached, renderSystemMessage, renderUserMessageCached } from "./blockrenderer";
 import { isVisuallyBlankLine, sanitizeUntrustedText } from "./terminaltext";
 import { termWidth } from "./textwidth";
 import { wordWrap, type WrapCopyLine, type WrapResult } from "./textwrap";
@@ -273,7 +273,7 @@ export function buildMessageLines(
     if (msg.role === "user") {
       if (!firstUser) pushLine("", msg, "user_margin_top");  // top margin (skip for first)
       const contentStart = lines.length;
-      pushBlock(msg, "user_content", renderUserMessage(msg.text, availableWidth, msg.images));
+      pushBlock(msg, "user_content", renderUserMessageCached(msg, msg.text, availableWidth, msg.images));
       const contentEnd = lines.length;
       pushLine("", msg, "user_margin_bottom");               // bottom margin
       firstUser = false;
@@ -362,7 +362,7 @@ export function buildMessageLines(
       const timingLabel = qm.timing === "next-turn" ? "queued: next turn" : "queued: message end";
       pushLine("", qm, "queued_margin_top");
       // Render a dimmed user bubble
-      const qr = renderUserMessage(qm.text, availableWidth, qm.images);
+      const qr = renderUserMessageCached(qm, qm.text, availableWidth, qm.images);
       for (let i = 0; i < qr.lines.length; i++) {
         pushLine(`${theme.muted}${qr.lines[i]}${theme.reset}`, qm, "queued_content", i);
       }

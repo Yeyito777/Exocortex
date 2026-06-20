@@ -104,6 +104,7 @@ function findCommandSpans(
 }
 
 export function getPromptHighlightRanges(state: RenderState, buffer: string): Span[] {
+  if (!buffer.includes("/")) return [];
   return findCommandSpans(buffer, buildValidArgs(state), customModelProviders(state));
 }
 
@@ -124,6 +125,7 @@ export function highlightPromptInput(
   maxWidth: number,
   scrollOffset: number,
 ): string[] {
+  if (!buffer.includes("/")) return lines;
   const spans = getPromptHighlightRanges(state, buffer);
   if (spans.length === 0) return lines;
 

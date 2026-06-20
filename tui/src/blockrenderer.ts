@@ -23,11 +23,31 @@ interface BlockCacheEntry {
   width: number;
   /** Whether tool output was shown (affects tool_result blocks). */
   showToolOutput: boolean;
+  /** Theme name used to produce ANSI styling. */
+  themeName: string;
+  /** Tool style registries used by tool_call rendering. */
+  toolRegistryRef: ToolDisplayInfo[];
+  externalToolStylesRef: ExternalToolStyle[];
   /** Cached render result. */
   result: WrapResult;
 }
 
 const blockRenderCache = new WeakMap<Block, BlockCacheEntry>();
+
+interface UserMessageCacheEntry {
+  text: string;
+  cols: number;
+  imagesKey: string;
+  themeName: string;
+  result: WrapResult;
+}
+
+const userMessageRenderCache = new WeakMap<object, UserMessageCacheEntry>();
+
+function imageAttachmentsKey(images: ImageAttachment[] | undefined): string {
+  if (!images?.length) return "";
+  return images.map(img => `${img.mediaType}:${img.sizeBytes}`).join("|");
+}
 
 /** Exact mutable block content — used for cache invalidation. */
 function blockContentKey(block: Block): string {
@@ -106,13 +126,24 @@ export function renderBlockCached(
     cached &&
     cached.contentKey === contentKey &&
     cached.width === contentWidth &&
-    cached.showToolOutput === showToolOutput
+    cached.showToolOutput === showToolOutput &&
+    cached.themeName === theme.name &&
+    cached.toolRegistryRef === toolRegistry &&
+    cached.externalToolStylesRef === externalToolStyles
   ) {
     return cached.result;
   }
 
   const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput);
-  blockRenderCache.set(block, { contentKey, width: contentWidth, showToolOutput, result });
+  blockRenderCache.set(block, {
+    contentKey,
+    width: contentWidth,
+    showToolOutput,
+    themeName: theme.name,
+    toolRegistryRef: toolRegistry,
+    externalToolStylesRef: externalToolStyles,
+    result,
+  });
   return result;
 }
 
@@ -270,6 +301,18 @@ export function renderUserMessage(text: string, cols: number, images?: ImageAtta
     pushBubbleLine(badge, false, "", theme.dim);
   }
   return { lines, cont, join };
+}
+
+export function renderUserMessageCached(owner: object, text: string, cols: number, images?: ImageAttachment[]): WrapResult {
+  const imagesKey = imageAttachmentsKey(images);
+  const cached = userMessageRenderCache.get(owner);
+  if (cached && cached.text === text && cached.cols === cols && cached.imagesKey === imagesKey && cached.themeName === theme.name) {
+    return cached.result;
+  }
+
+  const result = renderUserMessage(text, cols, images);
+  userMessageRenderCache.set(owner, { text, cols, imagesKey, themeName: theme.name, result });
+  return result;
 }
 
 export function renderSystemMessage(text: string, availableWidth: number, color?: string): WrapResult {

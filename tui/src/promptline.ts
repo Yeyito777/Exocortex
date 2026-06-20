@@ -12,7 +12,7 @@ import { resolveAction } from "./keybinds";
 import { updateAutocomplete, cycleAutocomplete, tryPathComplete } from "./autocomplete";
 import { getSymbol } from "./symbols";
 import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./graphemes";
-import { sliceByWidth, termWidth } from "./textwidth";
+import { sliceByWidthFrom, termWidth } from "./textwidth";
 import { sanitizePromptTextForInsertion } from "./prompttext";
 
 export type PromptKeyResult =
@@ -277,14 +277,15 @@ export function wrappedLineOffsets(buffer: string, maxWidth: number): number[] {
   let pos = 0;
 
   for (const line of lines) {
-    if (line.length === 0 || termWidth(line) <= maxWidth) {
+    const [firstChunkEnd] = line.length === 0 ? [0] : sliceByWidthFrom(line, 0, maxWidth);
+    if (line.length === 0 || firstChunkEnd >= line.length) {
       offsets.push(pos);
     } else {
       let rel = 0;
       while (rel < line.length) {
         offsets.push(pos + rel);
-        const [chunk] = sliceByWidth(line.slice(rel), maxWidth);
-        rel += chunk.length || nextGraphemeEnd(line, rel) - rel;
+        const [chunkEnd] = rel === 0 ? [firstChunkEnd] : sliceByWidthFrom(line, rel, maxWidth);
+        rel = chunkEnd > rel ? chunkEnd : nextGraphemeEnd(line, rel);
       }
     }
     pos += line.length + 1; // +1 for \n
@@ -338,8 +339,9 @@ export function getInputLines(
 
   for (let li = 0; li < bufferLines.length; li++) {
     const line = bufferLines[li];
+    const [firstChunkEnd] = line.length === 0 ? [0] : sliceByWidthFrom(line, 0, maxWidth);
 
-    if (line.length === 0 || termWidth(line) <= maxWidth) {
+    if (line.length === 0 || firstChunkEnd >= line.length) {
       // Cursor within this line?
       if (cursorPos >= bufOffset && cursorPos <= bufOffset + line.length) {
         cursorWrappedLine = wrapped.length;
@@ -351,8 +353,8 @@ export function getInputLines(
       // Hard-wrap into terminal-width chunks without splitting grapheme clusters.
       let rel = 0;
       while (rel < line.length) {
-        const [taken] = sliceByWidth(line.slice(rel), maxWidth);
-        const chunkEndRel = rel + (taken.length || nextGraphemeEnd(line, rel) - rel);
+        const [chunkEndIndex] = rel === 0 ? [firstChunkEnd] : sliceByWidthFrom(line, rel, maxWidth);
+        const chunkEndRel = chunkEndIndex > rel ? chunkEndIndex : nextGraphemeEnd(line, rel);
         const chunk = line.slice(rel, chunkEndRel);
         // Cursor within this chunk?
         const chunkStart = bufOffset + rel;
