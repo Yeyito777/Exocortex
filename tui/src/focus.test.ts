@@ -6,6 +6,7 @@ import { handleEvent } from "./events";
 import { buildDisplayRows, renderSidebar, sidebarHitTest } from "./sidebar";
 import { theme } from "./theme";
 import { createInitialState } from "./state";
+import { clearPrompt } from "./promptstate";
 import type { ConversationSummary, FolderSummary, ProviderInfo } from "./messages";
 
 const providers: ProviderInfo[] = [
@@ -290,7 +291,7 @@ describe("autocomplete with vim Escape", () => {
     expect(state.cursorPos).toBe(9);
   });
 
-  test("mid-message autocomplete offers /effort and its supported levels", () => {
+  test("mid-message autocomplete offers inline commands and their supported args", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
     state.provider = "openai";
@@ -309,6 +310,18 @@ describe("autocomplete with vim Escape", () => {
 
     expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
     expect(state.inputBuffer).toBe("please /effort high");
+
+    clearPrompt(state);
+    typePromptText(state, "please /fa");
+    expect(state.autocomplete?.type).toBe("macro");
+    expect(state.autocomplete?.matches.map(match => match.name)).toContain("/fast");
+
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("please /fast");
+
+    typePromptText(state, " o");
+    expect(state.autocomplete?.type).toBe("macro");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["on", "off"]);
   });
 
   test("mid-message autocomplete does not offer ordinary slash commands", () => {

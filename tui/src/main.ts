@@ -15,7 +15,7 @@ import { handleMouseEvent } from "./mouse";
 import { clearPrompt } from "./promptstate";
 import { tryCommand } from "./commands";
 import { expandMacros } from "./macros";
-import { applyInlineEffortCommands, type InlineEffortApplication } from "./inlineeffort";
+import { applyInlineCommands, type InlineCommandApplication } from "./inlineeffort";
 import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
@@ -456,11 +456,18 @@ function startNewConversation(): void {
   }
 }
 
-function syncInlineEffortChanges(result: InlineEffortApplication, convId = state.convId): void {
+function syncInlineCommandChanges(result: InlineCommandApplication, convId = state.convId): void {
   if (!convId) return;
   for (const effort of result.efforts) {
     daemon.setEffort(convId, effort);
   }
+  for (const enabled of result.fastModes) {
+    daemon.setFastMode(convId, enabled);
+  }
+}
+
+function hasInlineCommandChanges(result: InlineCommandApplication): boolean {
+  return result.efforts.length > 0 || result.fastModes.length > 0;
 }
 
 function hasNonWhitespaceText(text: string): boolean {
@@ -584,10 +591,10 @@ function handleSubmit(): void {
     }
   }
 
-  const inlineEffort = applyInlineEffortCommands(text, state);
-  if (inlineEffort.efforts.length > 0) {
-    syncInlineEffortChanges(inlineEffort);
-    text = inlineEffort.text.trim();
+  const inlineCommands = applyInlineCommands(text, state);
+  if (hasInlineCommandChanges(inlineCommands)) {
+    syncInlineCommandChanges(inlineCommands);
+    text = inlineCommands.text.trim();
     if (!text && !hasImages) {
       clearPrompt(state);
       state.scrollOffset = 0;
@@ -598,8 +605,8 @@ function handleSubmit(): void {
 
   if (isStreaming(state)) {
     // Macro expansion happens only if the user confirms the modal. Inline
-    // /effort is the one exception: it has already run and been stripped so
-    // the queued send honors the selected effort.
+    // commands are the exception: they have already run and been stripped so
+    // the queued send honors the selected settings.
     openQueuePrompt(state, text);
     scheduleRender();
     return;
@@ -651,9 +658,9 @@ function confirmPendingVoiceQueuePrompt(): boolean {
   // The transcription may have completed while the queue modal was open. In
   // that case the prompt now contains plain text; confirm it through the normal
   // queued-message path using the timing the user selected.
-  const inlineEffort = applyInlineEffortCommands(state.inputBuffer.trim(), state);
-  syncInlineEffortChanges(inlineEffort);
-  const messageText = expandMacros(inlineEffort.text.trim());
+  const inlineCommands = applyInlineCommands(state.inputBuffer.trim(), state);
+  syncInlineCommandChanges(inlineCommands);
+  const messageText = expandMacros(inlineCommands.text.trim());
   if (!messageText && !images?.length) {
     clearPrompt(state);
     state.pendingImages = [];
@@ -812,10 +819,11 @@ function submitPendingVoiceTranscription(
 }
 
 function completePendingVoiceTranscription(submission: SubmittedVoiceTranscription, finalText: string): void {
-  const inlineEffort = applyInlineEffortCommands(finalText.trim(), state);
-  syncInlineEffortChanges(inlineEffort, submission.convId ?? state.convId);
-  if (inlineEffort.efforts.length > 0) submission.effort = state.effort;
-  const messageText = expandMacros(inlineEffort.text.trim());
+  const inlineCommands = applyInlineCommands(finalText.trim(), state);
+  syncInlineCommandChanges(inlineCommands, submission.convId ?? state.convId);
+  if (inlineCommands.efforts.length > 0) submission.effort = state.effort;
+  if (inlineCommands.fastModes.length > 0) submission.fastMode = state.fastMode;
+  const messageText = expandMacros(inlineCommands.text.trim());
   const hasImages = !!submission.images?.length;
   pendingVoiceSubmissions.delete(submission);
 

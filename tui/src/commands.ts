@@ -51,8 +51,9 @@ const commands: SlashCommand[] = [
   LOGOUT_COMMAND,
 ];
 
-function isStandaloneEffortCommand(text: string): boolean {
-  return /^\/effort(?:\s+\S+)?$/.test(text.trim());
+function isStandaloneOptionalArgCommand(text: string, commandName: string): boolean {
+  const parts = text.trim().split(/\s+/).filter(Boolean);
+  return parts.length >= 1 && parts.length <= 2 && parts[0] === commandName;
 }
 
 export function tryCommand(text: string, state: RenderState): CommandResult | null {
@@ -61,7 +62,7 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
   const name = text.split(/\s+/)[0];
   const cmd = commands.find((command) => command.name === name);
   if (!cmd) return null;
-  if (cmd === EFFORT_COMMAND && !isStandaloneEffortCommand(text)) return null;
+  if ((cmd === EFFORT_COMMAND || cmd === FAST_COMMAND) && !isStandaloneOptionalArgCommand(text, cmd.name)) return null;
 
   return cmd.handler(text, state);
 }

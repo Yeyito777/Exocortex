@@ -1,7 +1,7 @@
 import type { RenderState } from "./state";
 import type { EffortLevel } from "./messages";
 import { pushSystemMessage } from "./state";
-import { effortItems, supportedEfforts } from "./commands/shared";
+import { effortItems, providerSupportsFastMode, supportedEfforts } from "./commands/shared";
 import type { CompletionItem } from "./commands";
 
 export const INLINE_EFFORT_COMMAND: CompletionItem = {
@@ -9,10 +9,29 @@ export const INLINE_EFFORT_COMMAND: CompletionItem = {
   desc: "Set reasoning effort level",
 };
 
-export interface InlineEffortApplication {
+export const INLINE_FAST_COMMAND: CompletionItem = {
+  name: "/fast",
+  desc: "Toggle or set fast mode",
+};
+
+export const INLINE_COMMANDS: CompletionItem[] = [INLINE_EFFORT_COMMAND, INLINE_FAST_COMMAND];
+
+const INLINE_FAST_ARGS: CompletionItem[] = [
+  { name: "on", desc: "Enable fast mode for this conversation" },
+  { name: "off", desc: "Disable fast mode for this conversation" },
+];
+
+export interface InlineCommandApplication {
   text: string;
   efforts: EffortLevel[];
+  fastModes: boolean[];
 }
+
+export type InlineEffortApplication = InlineCommandApplication;
+
+type InlineAction =
+  | { type: "effort"; effort: EffortLevel }
+  | { type: "fast"; enabled: boolean };
 
 interface WordPosition {
   word: string;
@@ -20,8 +39,15 @@ interface WordPosition {
   end: number;
 }
 
+export function getInlineCommandArgs(state: RenderState): Record<string, CompletionItem[]> {
+  return {
+    "/effort": effortItems(state),
+    "/fast": INLINE_FAST_ARGS,
+  };
+}
+
 export function getInlineEffortArgs(state: RenderState): Record<string, CompletionItem[]> {
-  return { "/effort": effortItems(state) };
+  return getInlineCommandArgs(state);
 }
 
 function wordsIn(text: string): WordPosition[] {
@@ -55,37 +81,59 @@ function removeSpanPreservingBoundary(text: string, start: number, end: number):
 }
 
 /**
- * Execute supported `/effort <level>` occurrences anywhere in prompt text and
- * return the prompt with those command tokens removed.
+ * Execute supported inline slash commands anywhere in prompt text and return
+ * the prompt with those command tokens removed.
  *
- * This is intentionally narrower than macro expansion: `/effort` is the only
- * slash command that can run mid-prompt, and only when followed by a currently
- * supported effort level.  Other slash commands remain ordinary text unless
- * they are submitted through the normal command path at the start of a prompt.
+ * This is intentionally narrower than macro expansion: only `/effort <level>`
+ * and `/fast [on|off]` can run mid-prompt.  Other slash commands remain
+ * ordinary text unless they are submitted through the normal command path at
+ * the start of a prompt.
  */
-export function applyInlineEffortCommands(text: string, state: RenderState): InlineEffortApplication {
+export function applyInlineCommands(text: string, state: RenderState): InlineCommandApplication {
   const supportedLevels = new Set(supportedEfforts(state).map(candidate => candidate.effort));
+  const supportsFast = providerSupportsFastMode(state);
   const words = wordsIn(text);
   const spans: Array<{ start: number; end: number }> = [];
+  const actions: InlineAction[] = [];
   const efforts: EffortLevel[] = [];
+  const fastModes: boolean[] = [];
+  let simulatedFastMode = state.fastMode;
 
-  for (let i = 0; i < words.length - 1; i++) {
+  for (let i = 0; i < words.length; i++) {
     const command = words[i];
     const arg = words[i + 1];
-    if (command.word !== "/effort") continue;
-    if (!supportedLevels.has(arg.word as EffortLevel)) continue;
 
-    const effort = arg.word as EffortLevel;
-    efforts.push(effort);
-    spans.push({ start: command.start, end: arg.end });
-    i++;
+    if (command.word === "/effort" && arg && supportedLevels.has(arg.word as EffortLevel)) {
+      const effort = arg.word as EffortLevel;
+      efforts.push(effort);
+      actions.push({ type: "effort", effort });
+      spans.push({ start: command.start, end: arg.end });
+      i++;
+      continue;
+    }
+
+    if (command.word === "/fast" && supportsFast) {
+      const rawArg = arg?.word.toLowerCase();
+      const hasExplicitArg = rawArg === "on" || rawArg === "off";
+      const enabled = hasExplicitArg ? rawArg === "on" : !simulatedFastMode;
+      simulatedFastMode = enabled;
+      fastModes.push(enabled);
+      actions.push({ type: "fast", enabled });
+      spans.push({ start: command.start, end: hasExplicitArg && arg ? arg.end : command.end });
+      if (hasExplicitArg) i++;
+    }
   }
 
-  if (efforts.length === 0) return { text, efforts };
+  if (actions.length === 0) return { text, efforts, fastModes };
 
-  for (const effort of efforts) {
-    state.effort = effort;
-    pushSystemMessage(state, `Effort set to ${effort}`);
+  for (const action of actions) {
+    if (action.type === "effort") {
+      state.effort = action.effort;
+      pushSystemMessage(state, `Effort set to ${action.effort}`);
+    } else {
+      state.fastMode = action.enabled;
+      pushSystemMessage(state, `Fast mode ${action.enabled ? "enabled" : "disabled"}.`);
+    }
   }
 
   let stripped = text;
@@ -93,6 +141,9 @@ export function applyInlineEffortCommands(text: string, state: RenderState): Inl
     stripped = removeSpanPreservingBoundary(stripped, spans[i].start, spans[i].end);
   }
 
-  return { text: stripped, efforts };
+  return { text: stripped, efforts, fastModes };
 }
 
+export function applyInlineEffortCommands(text: string, state: RenderState): InlineCommandApplication {
+  return applyInlineCommands(text, state);
+}

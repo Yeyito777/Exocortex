@@ -10,7 +10,7 @@
 import type { RenderState } from "./state";
 import { COMMAND_LIST, getCommandArgs } from "./commands";
 import { MACRO_LIST, getMacroArgs } from "./macros";
-import { INLINE_EFFORT_COMMAND, getInlineEffortArgs } from "./inlineeffort";
+import { INLINE_COMMANDS, getInlineCommandArgs } from "./inlineeffort";
 import { theme } from "./theme";
 import { wrappedLineOffsets } from "./promptline";
 
@@ -23,7 +23,7 @@ const VALID_COMMAND_NAMES = new Set([
 
 const VALID_MACRO_NAMES = new Set(MACRO_LIST.map(c => c.name));
 
-const VALID_INLINE_COMMAND_NAMES = new Set([INLINE_EFFORT_COMMAND.name]);
+const VALID_INLINE_COMMAND_NAMES = new Set(INLINE_COMMANDS.map(c => c.name));
 
 function buildValidArgs(state: RenderState): Record<string, Set<string>> {
   return {
@@ -31,7 +31,7 @@ function buildValidArgs(state: RenderState): Record<string, Set<string>> {
       Object.entries(getCommandArgs(state)).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
     ),
     ...Object.fromEntries(
-      Object.entries(getInlineEffortArgs(state)).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
+      Object.entries(getInlineCommandArgs(state)).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
     ),
     ...Object.fromEntries(
       Object.entries(getMacroArgs()).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
@@ -75,8 +75,8 @@ function findCommandSpans(
     const firstWord = words[wordIndex];
     if (!firstWord.word.startsWith("/")) continue;
 
-    // Commands are only commands at the start of a prompt.  Macros can appear
-    // anywhere, and /effort is the single command allowed to behave like one.
+    // Commands are only commands at the start of a prompt.  Macros and
+    // explicitly registered inline commands can appear anywhere.
     const baseCmd = firstWord.word;
     const isPromptCommand = wordIndex === 0 && VALID_COMMAND_NAMES.has(baseCmd);
     const isInlineSlash = VALID_MACRO_NAMES.has(baseCmd) || VALID_INLINE_COMMAND_NAMES.has(baseCmd);
