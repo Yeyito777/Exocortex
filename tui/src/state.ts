@@ -39,6 +39,20 @@ export interface QueuedMessage {
   text: string;
   timing: QueueTiming;
   images?: ImageAttachment[];
+  /**
+   * Omitted/"daemon" means the daemon owns delivery timing (message-end/next-turn).
+   * "global-idle" is the TUI-only /queue FIFO that waits for every visible
+   * conversation and daemon-owned queued turn to finish before sending.
+   */
+  source?: "daemon" | "global-idle";
+  /** New-conversation /queue entries reserve a client conversation id here. */
+  target?: "conversation" | "new-conversation";
+  /** Captured draft settings for target === "new-conversation". */
+  provider?: ProviderId;
+  model?: ModelId;
+  effort?: EffortLevel;
+  fastMode?: boolean;
+  folderId?: string | null;
 }
 
 export interface QueuePromptState {
@@ -178,6 +192,8 @@ export interface RenderState {
   pendingSystemInstructions: string | null;
   /** Whether a just-created conversation should auto-generate its title. */
   pendingGenerateTitleOnCreate: boolean;
+  /** Reserved id for a queued draft conversation that is still awaiting daemon creation. */
+  pendingQueuedDraftConvId: string | null;
   /**
    * User-invoked notices buffered while streaming.
    *
@@ -373,6 +389,7 @@ export function resetDraftConversationState(state: RenderState): void {
   resetNewConversationDefaults(state);
   state.pendingSystemInstructions = null;
   state.pendingGenerateTitleOnCreate = false;
+  state.pendingQueuedDraftConvId = null;
   renderCurrentFolderDraftInstructions(state);
 }
 
@@ -507,6 +524,7 @@ export function createInitialState(): RenderState {
     pendingAuthQueue: [],
     pendingSystemInstructions: null,
     pendingGenerateTitleOnCreate: false,
+    pendingQueuedDraftConvId: null,
     streamingTailMessages: [],
     pendingAICommittedIndex: null,
     lastStreamSeqByConv: {},

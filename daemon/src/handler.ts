@@ -374,6 +374,7 @@ export function createHandler(server: DaemonServer) {
         const fastMode = requestedFastMode && supportsFastMode(provider);
         const initialMessage = cmd.initialMessage;
         const goalObjective = cmd.goalObjective?.trim();
+        const titleContext = cmd.titleContext?.trim();
         if (goalObjective && !hasConfiguredCredentials(provider)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Not authenticated for provider ${provider}. Run: bun run src/main.ts login ${provider}` });
           break;
@@ -389,7 +390,7 @@ export function createHandler(server: DaemonServer) {
           }
         }
 
-        const title = cmd.title ?? (initialMessage || goalObjective ? PENDING_TITLE : undefined);
+        const title = cmd.title ?? (initialMessage || goalObjective || titleContext ? PENDING_TITLE : undefined);
         const subagentFolder = cmd.subagent ? convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME) : null;
         if (cmd.subagent && !subagentFolder) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Failed to create ${SUBAGENTS_FOLDER_NAME} folder` });
@@ -425,6 +426,8 @@ export function createHandler(server: DaemonServer) {
           void orchestrateGoalContinuation(server, id, buildOrchestrationCallbacks(id)).catch((err) => {
             log("error", `handler: initial new-conversation goal continuation failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
           });
+        } else if (titleContext && !initialMessage) {
+          startTitleGeneration(server, id, { extraContext: titleContext });
         }
 
         if (initialMessage) {

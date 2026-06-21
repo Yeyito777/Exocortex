@@ -115,6 +115,21 @@ describe("DaemonClient commands", () => {
       goalCompletable: false,
     });
   });
+
+  test("can include title context for pending queued draft conversations", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.createConversation("openai", "gpt-5.4", "pending", "high", false, undefined, "folder-1", undefined, "queued-draft-1", undefined, undefined, "queued prompt text");
+
+    expect(internal.pendingCommands[0]).toMatchObject({
+      type: "new_conversation",
+      convId: "queued-draft-1",
+      title: "pending",
+      titleContext: "queued prompt text",
+      folderId: "folder-1",
+    });
+  });
 });
 
 describe("DaemonClient reconnect behavior", () => {

@@ -16,6 +16,69 @@ describe("plain word wrapping", () => {
   });
 });
 
+describe("queued message rendering", () => {
+  test("uses a distinct label for TUI-only global idle queue entries", () => {
+    const state = {
+      messages: [],
+      pendingAI: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: "conv-1",
+      queuedMessages: [
+        { convId: "conv-1", text: "wait for everyone", timing: "message-end", source: "global-idle" },
+      ],
+    } as any;
+
+    const rendered = buildMessageLines(state, 80).lines.map(stripAnsi);
+
+    expect(rendered.some(line => line.includes("queued: global idle"))).toBe(true);
+    expect(rendered.some(line => line.includes("queued: message end"))).toBe(false);
+  });
+
+  test("renders queued new-conversation messages in a draft chat", () => {
+    const state = {
+      messages: [],
+      pendingAI: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      folderInstructionsDoc: null,
+      pendingQueuedDraftConvId: "reserved-conv",
+      queuedMessages: [
+        { convId: "reserved-conv", text: "start a fresh convo", timing: "message-end", source: "global-idle", target: "new-conversation" },
+      ],
+    } as any;
+
+    const rendered = buildMessageLines(state, 80).lines.map(stripAnsi);
+
+    expect(rendered.some(line => line.includes("start a fresh convo"))).toBe(true);
+    expect(rendered.some(line => line.includes("queued: global idle"))).toBe(true);
+  });
+
+  test("does not leak queued pending-conversation messages into unrelated blank drafts", () => {
+    const state = {
+      messages: [],
+      pendingAI: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      folderInstructionsDoc: null,
+      pendingQueuedDraftConvId: null,
+      queuedMessages: [
+        { convId: "pending-conv", text: "belongs elsewhere", timing: "message-end", source: "global-idle", target: "new-conversation" },
+      ],
+    } as any;
+
+    const rendered = buildMessageLines(state, 80).lines.map(stripAnsi);
+
+    expect(rendered.some(line => line.includes("belongs elsewhere"))).toBe(false);
+    expect(rendered.some(line => line.includes("queued: global idle"))).toBe(false);
+  });
+});
+
 describe("tool call rendering", () => {
   test("wraps wide-character bash tool calls to the chat width", () => {
     const availableWidth = 162;

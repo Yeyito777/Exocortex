@@ -14,7 +14,12 @@ export const INLINE_FAST_COMMAND: CompletionItem = {
   desc: "Toggle or set fast mode",
 };
 
-export const INLINE_COMMANDS: CompletionItem[] = [INLINE_EFFORT_COMMAND, INLINE_FAST_COMMAND];
+export const INLINE_QUEUE_COMMAND: CompletionItem = {
+  name: "/queue",
+  desc: "Send after all TUI conversations are idle",
+};
+
+export const INLINE_COMMANDS: CompletionItem[] = [INLINE_EFFORT_COMMAND, INLINE_FAST_COMMAND, INLINE_QUEUE_COMMAND];
 
 const INLINE_FAST_ARGS: CompletionItem[] = [
   { name: "on", desc: "Enable fast mode for this conversation" },
@@ -25,6 +30,8 @@ export interface InlineCommandApplication {
   text: string;
   efforts: EffortLevel[];
   fastModes: boolean[];
+  /** True when the prompt contained /queue and should enter the TUI global idle queue. */
+  queue?: true;
 }
 
 export type InlineEffortApplication = InlineCommandApplication;
@@ -84,10 +91,10 @@ function removeSpanPreservingBoundary(text: string, start: number, end: number):
  * Execute supported inline slash commands anywhere in prompt text and return
  * the prompt with those command tokens removed.
  *
- * This is intentionally narrower than macro expansion: only `/effort <level>`
- * and `/fast [on|off]` can run mid-prompt.  Other slash commands remain
- * ordinary text unless they are submitted through the normal command path at
- * the start of a prompt.
+ * This is intentionally narrower than macro expansion: only `/effort <level>`,
+ * `/fast [on|off]`, and `/queue` can run mid-prompt.  Other slash commands
+ * remain ordinary text unless they are submitted through the normal command
+ * path at the start of a prompt.
  */
 export function applyInlineCommands(text: string, state: RenderState): InlineCommandApplication {
   const supportedLevels = new Set(supportedEfforts(state).map(candidate => candidate.effort));
@@ -97,6 +104,7 @@ export function applyInlineCommands(text: string, state: RenderState): InlineCom
   const actions: InlineAction[] = [];
   const efforts: EffortLevel[] = [];
   const fastModes: boolean[] = [];
+  let queue = false;
   let simulatedFastMode = state.fastMode;
 
   for (let i = 0; i < words.length; i++) {
@@ -121,10 +129,16 @@ export function applyInlineCommands(text: string, state: RenderState): InlineCom
       actions.push({ type: "fast", enabled });
       spans.push({ start: command.start, end: hasExplicitArg && arg ? arg.end : command.end });
       if (hasExplicitArg) i++;
+      continue;
+    }
+
+    if (command.word === "/queue") {
+      queue = true;
+      spans.push({ start: command.start, end: command.end });
     }
   }
 
-  if (actions.length === 0) return { text, efforts, fastModes };
+  if (actions.length === 0 && !queue) return { text, efforts, fastModes };
 
   for (const action of actions) {
     if (action.type === "effort") {
@@ -141,7 +155,7 @@ export function applyInlineCommands(text: string, state: RenderState): InlineCom
     stripped = removeSpanPreservingBoundary(stripped, spans[i].start, spans[i].end);
   }
 
-  return { text: stripped, efforts, fastModes };
+  return { text: stripped, efforts, fastModes, ...(queue ? { queue: true as const } : {}) };
 }
 
 export function applyInlineEffortCommands(text: string, state: RenderState): InlineCommandApplication {

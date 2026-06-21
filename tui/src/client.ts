@@ -119,8 +119,9 @@ export class DaemonClient {
     convId?: string,
     goalPausable?: boolean,
     goalCompletable?: boolean,
+    titleContext?: string,
   ): void {
-    this.send({ type: "new_conversation", ...(convId ? { convId } : {}), provider, model, title, effort, fastMode, initialMessage, folderId, goalObjective, goalPausable, goalCompletable });
+    this.send({ type: "new_conversation", ...(convId ? { convId } : {}), provider, model, title, titleContext, effort, fastMode, initialMessage, folderId, goalObjective, goalPausable, goalCompletable });
   }
 
   subscribe(convId: string): void {

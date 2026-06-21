@@ -142,3 +142,28 @@ describe("inline /fast command", () => {
     expect(tryCommand("/fast on\nanswer this", state)).toBeNull();
   });
 });
+
+describe("inline /queue command", () => {
+  test("marks the message for the global idle queue and removes the command token", () => {
+    const state = stateWithEfforts();
+
+    const result = applyInlineCommands("please /queue answer this", state);
+
+    expect(result).toEqual({ text: "please answer this", efforts: [], fastModes: [], queue: true });
+    expect(state.messages).toEqual([]);
+  });
+
+  test("preserves message boundaries when /queue appears on its own line", () => {
+    const state = stateWithEfforts();
+
+    const result = applyInlineCommands("first\n/queue\nsecond", state);
+
+    expect(result).toEqual({ text: "first\nsecond", efforts: [], fastModes: [], queue: true });
+  });
+
+  test("does not let message-leading /queue prompts get swallowed by standalone command handling", () => {
+    const state = stateWithEfforts();
+
+    expect(tryCommand("/queue hello", state)).toBeNull();
+  });
+});

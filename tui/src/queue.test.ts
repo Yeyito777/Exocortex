@@ -1,6 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { createPendingAI, type ImageAttachment } from "./messages";
-import { openQueuePrompt, confirmQueueMessage, cancelQueuePrompt } from "./queue";
+import {
+  clearAllQueuedMessagesForConversation,
+  clearLocalQueue,
+  confirmQueueMessage,
+  enqueueGlobalIdleMessage,
+  hasDaemonQueuedMessageShadows,
+  isGlobalIdleQueuedMessage,
+  openQueuePrompt,
+  removeFirstDaemonQueuedMessageForConversation,
+  removeLocalQueueEntry,
+  cancelQueuePrompt,
+} from "./queue";
 import { createInitialState } from "./state";
 
 function makeImage(): ImageAttachment {
@@ -125,5 +136,91 @@ describe("queue prompt image handling", () => {
     });
     expect(state.pendingImages).toEqual([]);
     expect(state.queuePrompt).toBeNull();
+  });
+});
+
+describe("global idle /queue shadow handling", () => {
+  test("enqueues TUI-only global idle messages separately from daemon queue shadows", () => {
+    const state = createInitialState();
+
+    const queued = enqueueGlobalIdleMessage(state, "conv-1", "later");
+
+    expect(isGlobalIdleQueuedMessage(queued)).toBe(true);
+    expect(state.queuedMessages).toEqual([
+      { convId: "conv-1", text: "later", timing: "message-end", source: "global-idle" },
+    ]);
+    expect(hasDaemonQueuedMessageShadows(state)).toBe(false);
+  });
+
+  test("captures draft settings for queued new conversations", () => {
+    const state = createInitialState();
+
+    const queued = enqueueGlobalIdleMessage(state, "reserved-conv", "start later", undefined, {
+      target: "new-conversation",
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "high",
+      fastMode: true,
+      folderId: "folder-1",
+    });
+
+    expect(queued).toEqual({
+      convId: "reserved-conv",
+      text: "start later",
+      timing: "message-end",
+      source: "global-idle",
+      target: "new-conversation",
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "high",
+      fastMode: true,
+      folderId: "folder-1",
+    });
+  });
+
+  test("daemon queue reload cleanup preserves global idle queue entries", () => {
+    const state = createInitialState();
+    state.queuedMessages.push({ convId: "conv-1", text: "daemon", timing: "message-end" });
+    const global = enqueueGlobalIdleMessage(state, "conv-1", "global");
+
+    clearLocalQueue(state, "conv-1");
+
+    expect(state.queuedMessages).toEqual([global]);
+  });
+
+  test("daemon user_message cleanup does not remove a same-text global idle entry", () => {
+    const state = createInitialState();
+    state.queuedMessages.push({ convId: "conv-1", text: "same", timing: "next-turn" });
+    const global = enqueueGlobalIdleMessage(state, "conv-1", "same");
+
+    removeLocalQueueEntry(state, "conv-1", "same");
+
+    expect(state.queuedMessages).toEqual([global]);
+  });
+
+  test("background daemon queue reconciliation removes one daemon shadow at a time", () => {
+    const state = createInitialState();
+    state.queuedMessages.push({ convId: "conv-1", text: "first", timing: "message-end" });
+    state.queuedMessages.push({ convId: "conv-1", text: "second", timing: "message-end" });
+    const global = enqueueGlobalIdleMessage(state, "conv-1", "global");
+
+    expect(removeFirstDaemonQueuedMessageForConversation(state, "conv-1")).toBe(true);
+
+    expect(state.queuedMessages).toEqual([
+      { convId: "conv-1", text: "second", timing: "message-end" },
+      global,
+    ]);
+  });
+
+  test("conversation deletion clears global idle queue entries too", () => {
+    const state = createInitialState();
+    enqueueGlobalIdleMessage(state, "conv-1", "global");
+    enqueueGlobalIdleMessage(state, "conv-2", "keep");
+
+    clearAllQueuedMessagesForConversation(state, "conv-1");
+
+    expect(state.queuedMessages).toEqual([
+      { convId: "conv-2", text: "keep", timing: "message-end", source: "global-idle" },
+    ]);
   });
 });

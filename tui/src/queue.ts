@@ -19,6 +19,79 @@ import type { RenderState, QueueTiming, QueuedMessage } from "./state";
 import { expandMacros } from "./macros";
 import { isStreaming } from "./state";
 
+export const GLOBAL_IDLE_QUEUE_LABEL = "queued: global idle";
+
+export function isGlobalIdleQueuedMessage(message: QueuedMessage): boolean {
+  return message.source === "global-idle";
+}
+
+export function isNewConversationQueuedMessage(message: QueuedMessage): boolean {
+  return isGlobalIdleQueuedMessage(message) && message.target === "new-conversation";
+}
+
+export type GlobalIdleQueueOptions = Pick<QueuedMessage, "target" | "provider" | "model" | "effort" | "fastMode" | "folderId">;
+
+export function enqueueGlobalIdleMessage(
+  state: RenderState,
+  convId: string,
+  text: string,
+  images?: ImageAttachment[],
+  options: GlobalIdleQueueOptions = {},
+): QueuedMessage {
+  const queued: QueuedMessage = {
+    convId,
+    text,
+    timing: "message-end",
+    source: "global-idle",
+    ...(options.target ? { target: options.target } : {}),
+    ...(options.provider ? { provider: options.provider } : {}),
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.effort ? { effort: options.effort } : {}),
+    ...(typeof options.fastMode === "boolean" ? { fastMode: options.fastMode } : {}),
+    ...("folderId" in options ? { folderId: options.folderId ?? null } : {}),
+    ...(images?.length ? { images } : {}),
+  };
+  state.queuedMessages.push(queued);
+  return queued;
+}
+
+export function peekGlobalIdleQueuedMessage(state: RenderState): QueuedMessage | null {
+  return state.queuedMessages.find(isGlobalIdleQueuedMessage) ?? null;
+}
+
+export function hasGlobalIdleQueuedMessages(state: RenderState): boolean {
+  return state.queuedMessages.some(isGlobalIdleQueuedMessage);
+}
+
+export function hasDaemonQueuedMessageShadows(state: RenderState): boolean {
+  return state.queuedMessages.some(qm => !isGlobalIdleQueuedMessage(qm));
+}
+
+export function hasDaemonQueuedMessageShadowsForConversation(state: RenderState, convId: string): boolean {
+  return state.queuedMessages.some(qm => !isGlobalIdleQueuedMessage(qm) && qm.convId === convId);
+}
+
+export function removeQueuedMessageByReference(state: RenderState, message: QueuedMessage): boolean {
+  const idx = state.queuedMessages.indexOf(message);
+  if (idx === -1) return false;
+  state.queuedMessages.splice(idx, 1);
+  return true;
+}
+
+export function removeNewConversationQueuedMessage(state: RenderState, convId: string): boolean {
+  const idx = state.queuedMessages.findIndex(qm => isNewConversationQueuedMessage(qm) && qm.convId === convId);
+  if (idx === -1) return false;
+  state.queuedMessages.splice(idx, 1);
+  return true;
+}
+
+export function removeFirstDaemonQueuedMessageForConversation(state: RenderState, convId: string): boolean {
+  const idx = state.queuedMessages.findIndex(qm => !isGlobalIdleQueuedMessage(qm) && qm.convId === convId);
+  if (idx === -1) return false;
+  state.queuedMessages.splice(idx, 1);
+  return true;
+}
+
 /**
  * Open the queue prompt for the current prompt buffer.
  *
@@ -154,17 +227,25 @@ export function cancelQueuePrompt(state: RenderState): void {
  */
 export function removeLocalQueueEntry(state: RenderState, convId: string, text: string): void {
   const idx = state.queuedMessages.findIndex(
-    qm => qm.convId === convId && qm.text === text,
+    qm => !isGlobalIdleQueuedMessage(qm) && qm.convId === convId && qm.text === text,
   );
   if (idx !== -1) state.queuedMessages.splice(idx, 1);
 }
 
 /**
- * Remove all local shadow entries for a conversation.
- * Called on conversation switch/delete — NOT on streaming_stopped,
+ * Remove daemon-owned local shadow entries for a conversation.
+ * Called on conversation refresh/reload — NOT on streaming_stopped,
  * since the daemon drains queued messages one at a time (each
  * removal is handled individually by the user_message event handler).
+ *
+ * TUI-only /queue entries intentionally survive conversation switches because
+ * they are owned by this client and may target a background conversation.
  */
 export function clearLocalQueue(state: RenderState, convId: string): void {
+  state.queuedMessages = state.queuedMessages.filter(qm => qm.convId !== convId || isGlobalIdleQueuedMessage(qm));
+}
+
+/** Remove every queued shadow for a conversation, including TUI-only /queue. */
+export function clearAllQueuedMessagesForConversation(state: RenderState, convId: string): void {
   state.queuedMessages = state.queuedMessages.filter(qm => qm.convId !== convId);
 }

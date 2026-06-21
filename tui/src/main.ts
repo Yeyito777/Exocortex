@@ -24,7 +24,23 @@ import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMess
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
-import { openQueuePrompt, confirmQueueMessage, cancelQueuePrompt, clearLocalQueue, removeLocalQueueEntry } from "./queue";
+import { CONV_SCOPED } from "./events/stream-sequence";
+import {
+  clearAllQueuedMessagesForConversation,
+  confirmQueueMessage,
+  cancelQueuePrompt,
+  enqueueGlobalIdleMessage,
+  hasDaemonQueuedMessageShadows,
+  hasDaemonQueuedMessageShadowsForConversation,
+  hasGlobalIdleQueuedMessages,
+  isGlobalIdleQueuedMessage,
+  isNewConversationQueuedMessage,
+  openQueuePrompt,
+  peekGlobalIdleQueuedMessage,
+  removeLocalQueueEntry,
+  removeNewConversationQueuedMessage,
+  removeQueuedMessageByReference,
+} from "./queue";
 import { confirmEditMessage, cancelEditMessage } from "./editmessage";
 import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
@@ -63,6 +79,7 @@ let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let renderDueAt = 0;
 let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
 let streamFinishedPingTimer: ReturnType<typeof setTimeout> | null = null;
+let globalIdleQueuePumpTimer: ReturnType<typeof setTimeout> | null = null;
 let prewarmTimer: ReturnType<typeof setTimeout> | null = null;
 let deferredHistoryRenderTimer: ReturnType<typeof setTimeout> | null = null;
 let lastPrewarmKey: string | null = null;
@@ -74,11 +91,13 @@ let voiceInput: VoiceInputController | null = null;
 let pendingVoiceQueuePrompt = false;
 let pendingNewConversationConvId: string | null = null;
 let pendingLocalInterruptConvId: string | null = null;
+let globalIdleQueueInFlight: { convId: string; observedStreaming: boolean } | null = null;
 // Local-only user-message echoes whose audio jobs are still transcribing. They
 // are intentionally withheld from the daemon until the TUI has final text.
 const pendingVoiceSubmissions = new Set<SubmittedVoiceTranscription>();
 const PREWARM_DEBOUNCE_MS = 700;
 const PREWARM_COOLDOWN_MS = 30_000;
+const GLOBAL_IDLE_QUEUE_PUMP_DELAY_MS = 120;
 
 function generateClientConversationId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -183,9 +202,144 @@ function clearStreamFinishedPingTimer(): void {
   streamFinishedPingTimer = null;
 }
 
+function clearGlobalIdleQueuePumpTimer(): void {
+  if (!globalIdleQueuePumpTimer) return;
+  clearTimeout(globalIdleQueuePumpTimer);
+  globalIdleQueuePumpTimer = null;
+}
+
 function isConversationStreaming(convId: string): boolean {
   if (convId === state.convId) return isStreaming(state);
   return state.sidebar.conversations.some((conversation) => conversation.id === convId && conversation.streaming);
+}
+
+function hasAnyTuiConversationStreaming(): boolean {
+  return isStreaming(state) || state.sidebar.conversations.some((conversation) => conversation.streaming);
+}
+
+function releaseBackgroundQueueSubscriptionIfIdle(convId: string): void {
+  if (convId === state.convId) return;
+  if (hasDaemonQueuedMessageShadowsForConversation(state, convId)) return;
+  daemon.unsubscribe(convId);
+}
+
+function unsubscribeUnlessWaitingForQueuedMessages(convId: string): void {
+  if (hasDaemonQueuedMessageShadowsForConversation(state, convId)) return;
+  daemon.unsubscribe(convId);
+}
+
+function scheduleGlobalIdleQueuePump(delayMs = GLOBAL_IDLE_QUEUE_PUMP_DELAY_MS): void {
+  if (!hasGlobalIdleQueuedMessages(state)) return;
+  if (globalIdleQueuePumpTimer) return;
+  globalIdleQueuePumpTimer = setTimeout(() => {
+    globalIdleQueuePumpTimer = null;
+    pumpGlobalIdleQueue();
+  }, delayMs);
+}
+
+function pumpGlobalIdleQueue(): void {
+  if (!daemon?.connected) return;
+  if (globalIdleQueueInFlight) return;
+  if (hasAnyTuiConversationStreaming()) return;
+  if (hasDaemonQueuedMessageShadows(state)) return;
+
+  const next = peekGlobalIdleQueuedMessage(state);
+  if (!next) return;
+
+  const targetStillKnown = next.convId === state.convId
+    || state.sidebar.conversations.some((conversation) => conversation.id === next.convId);
+  if (!targetStillKnown) {
+    if (isNewConversationQueuedMessage(next)) {
+      // Creation was requested when the draft was queued; wait for the daemon's
+      // conversation_created/conversation_updated events before sending.
+      scheduleGlobalIdleQueuePump();
+      return;
+    }
+    removeQueuedMessageByReference(state, next);
+    pushSystemMessage(state, "✗ Dropped queued message because its conversation no longer exists.", theme.error);
+    scheduleGlobalIdleQueuePump();
+    scheduleRender();
+    return;
+  }
+
+  if (next.convId === state.convId && !canSendImages(next.images)) {
+    removeQueuedMessageByReference(state, next);
+    scheduleGlobalIdleQueuePump();
+    scheduleRender();
+    return;
+  }
+
+  removeQueuedMessageByReference(state, next);
+
+  const startedAt = Date.now();
+  if (next.convId === state.convId) {
+    if (!state.authByProvider[state.provider]) {
+      sendDirectly(next.text, next.images, { startedAt });
+      scheduleGlobalIdleQueuePump();
+      return;
+    }
+    globalIdleQueueInFlight = { convId: next.convId, observedStreaming: false };
+    sendDirectly(next.text, next.images, { startedAt });
+  } else {
+    globalIdleQueueInFlight = { convId: next.convId, observedStreaming: false };
+    daemon.sendMessage(next.convId, next.text, startedAt, next.images);
+    scheduleRender();
+  }
+}
+
+function updateGlobalIdleQueueInFlightFromEvent(event: Event): void {
+  const inFlight = globalIdleQueueInFlight;
+  if (!inFlight) return;
+
+  if (event.type === "streaming_started" && event.convId === inFlight.convId) {
+    inFlight.observedStreaming = true;
+    return;
+  }
+
+  if (event.type === "conversation_updated" && event.summary.id === inFlight.convId) {
+    if (event.summary.streaming) {
+      inFlight.observedStreaming = true;
+      return;
+    }
+    if (inFlight.observedStreaming) {
+      globalIdleQueueInFlight = null;
+      scheduleGlobalIdleQueuePump();
+    }
+    return;
+  }
+
+  if (event.type === "streaming_stopped" && event.convId === inFlight.convId && inFlight.observedStreaming) {
+    globalIdleQueueInFlight = null;
+    scheduleGlobalIdleQueuePump();
+    return;
+  }
+
+  if (event.type === "error" && event.convId === inFlight.convId) {
+    globalIdleQueueInFlight = null;
+    if (event.convId !== state.convId) {
+      const title = state.sidebar.conversations.find((conversation) => conversation.id === event.convId)?.title || event.convId;
+      pushSystemMessage(state, `✗ Queued send failed for ${title}: ${event.message}`, theme.error);
+    }
+    scheduleGlobalIdleQueuePump();
+    return;
+  }
+
+  if (event.type === "conversation_deleted" && event.convId === inFlight.convId) {
+    globalIdleQueueInFlight = null;
+    scheduleGlobalIdleQueuePump();
+  }
+}
+
+function removeBackgroundDaemonQueueShadowFromEvent(event: Event): void {
+  if (event.type !== "user_message") return;
+  if (event.convId === state.convId) return;
+  removeLocalQueueEntry(state, event.convId, event.text);
+  releaseBackgroundQueueSubscriptionIfIdle(event.convId);
+  scheduleGlobalIdleQueuePump();
+}
+
+function isBackgroundConversationScopedEvent(event: Event): boolean {
+  return CONV_SCOPED.has(event.type) && "convId" in event && event.convId !== state.convId;
 }
 
 function scheduleStreamFinishedPing(completedConvId: string): void {
@@ -273,8 +427,11 @@ function resetStreamTick(): void {
 
 function onDaemonEvent(event: Event): void {
   if (event.type === "conversation_created" && event.convId === pendingNewConversationConvId) {
+    if (state.pendingQueuedDraftConvId === event.convId) state.pendingQueuedDraftConvId = null;
     pendingNewConversationConvId = null;
   } else if (event.type === "error" && event.convId === pendingNewConversationConvId) {
+    removeNewConversationQueuedMessage(state, event.convId);
+    if (state.pendingQueuedDraftConvId === event.convId) state.pendingQueuedDraftConvId = null;
     pendingNewConversationConvId = null;
   }
 
@@ -289,6 +446,13 @@ function onDaemonEvent(event: Event): void {
     startupProfileMark("conversations_list_received", { conversationCount: event.conversations.length });
   }
 
+  if (isBackgroundConversationScopedEvent(event)) {
+    removeBackgroundDaemonQueueShadowFromEvent(event);
+    updateGlobalIdleQueueInFlightFromEvent(event);
+    scheduleGlobalIdleQueuePump();
+    return;
+  }
+
   const activeConvIdBeforeEvent = state.convId;
   const wasUpdatedConversationStreaming = event.type === "conversation_updated"
     ? state.sidebar.conversations.find((c) => c.id === event.summary.id)?.streaming ?? false
@@ -296,6 +460,8 @@ function onDaemonEvent(event: Event): void {
 
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
+  removeBackgroundDaemonQueueShadowFromEvent(event);
+  updateGlobalIdleQueueInFlightFromEvent(event);
   reattachVisiblePendingVoiceSubmissions();
 
   if (event.type === "conversations_list") {
@@ -309,9 +475,11 @@ function onDaemonEvent(event: Event): void {
     state.pendingGenerateTitleOnCreate = false;
   }
 
-  // Clear stream tick on streaming_stopped
+  // Clear stream tick on active-conversation streaming_stopped. This TUI may
+  // also stay temporarily subscribed to background conversations with queued
+  // shadows; their scoped stop events must not disturb active stream timers.
   if (event.type === "streaming_stopped") {
-    clearStreamTick();
+    if (event.convId === state.convId) clearStreamTick();
     if (event.convId === pendingLocalInterruptConvId) pendingLocalInterruptConvId = null;
     if (shouldPingForStreamStopped(event.reason)) scheduleStreamFinishedPing(event.convId);
     // Queue shadows are NOT cleared here — the daemon drains one queued
@@ -335,13 +503,18 @@ function onDaemonEvent(event: Event): void {
     scheduleStreamFinishedPing(event.summary.id);
   }
 
-  if (maybeFlushPendingAuthQueue()) return;
-
-  if (event.type === "streaming_started" && event.convId === state.convId && event.snapshotKind !== "heartbeat") {
-    renderImmediately();
+  if (maybeFlushPendingAuthQueue()) {
+    scheduleGlobalIdleQueuePump();
     return;
   }
 
+  if (event.type === "streaming_started" && event.convId === state.convId && event.snapshotKind !== "heartbeat") {
+    renderImmediately();
+    scheduleGlobalIdleQueuePump();
+    return;
+  }
+
+  scheduleGlobalIdleQueuePump();
   scheduleRender(renderDelayForEvent(event));
 }
 
@@ -446,8 +619,7 @@ function startNewConversation(): void {
   const wasFolderInstructionsDoc = state.folderInstructionsDoc !== null;
   pendingNewConversationConvId = null;
   if (state.convId) {
-    daemon.unsubscribe(state.convId);
-    clearLocalQueue(state, state.convId);
+    unsubscribeUnlessWaitingForQueuedMessages(state.convId);
   }
   resetDraftConversationState(state);
   if (wasFolderInstructionsDoc) {
@@ -506,7 +678,7 @@ function handleSubmit(): void {
           startNewConversation();
           break;
         case "create_conversation_for_instructions":
-          if (state.convId) daemon.unsubscribe(state.convId);
+          if (state.convId) unsubscribeUnlessWaitingForQueuedMessages(state.convId);
           state.convId = null;
           resetNewConversationDefaults(state);
           state.pendingSystemInstructions = cmdResult.text;
@@ -592,9 +764,61 @@ function handleSubmit(): void {
   }
 
   const inlineCommands = applyInlineCommands(text, state);
-  if (hasInlineCommandChanges(inlineCommands)) {
+  if (hasInlineCommandChanges(inlineCommands) || inlineCommands.queue) {
     syncInlineCommandChanges(inlineCommands);
     text = inlineCommands.text.trim();
+    if (inlineCommands.queue) {
+      const images = hasImages ? [...state.pendingImages] : undefined;
+      if (!text && !images?.length) {
+        pushSystemMessage(state, "Nothing to queue.", theme.warning);
+        clearPrompt(state);
+        state.pendingImages = [];
+        state.scrollOffset = 0;
+        scheduleRender();
+        return;
+      }
+      if (!canSendImages(images)) {
+        scheduleRender();
+        return;
+      }
+
+      const messageText = expandMacros(text);
+      const queueingDraftConversation = !state.convId;
+      const convId = state.convId ?? generateClientConversationId();
+      const folderId = state.sidebar.currentFolderId;
+      enqueueGlobalIdleMessage(state, convId, messageText, images, queueingDraftConversation ? {
+        target: "new-conversation",
+        provider: state.provider,
+        model: state.model,
+        effort: state.effort,
+        fastMode: state.fastMode,
+        folderId,
+      } : undefined);
+      if (queueingDraftConversation) {
+        pendingNewConversationConvId = convId;
+        state.pendingQueuedDraftConvId = convId;
+        daemon.createConversation(
+          state.provider,
+          state.model,
+          PENDING_TITLE,
+          state.effort,
+          state.fastMode,
+          undefined,
+          folderId,
+          undefined,
+          convId,
+          undefined,
+          undefined,
+          messageText,
+        );
+      }
+      clearPrompt(state);
+      state.pendingImages = [];
+      state.scrollOffset = 0;
+      scheduleGlobalIdleQueuePump();
+      scheduleRender();
+      return;
+    }
     if (!text && !hasImages) {
       clearPrompt(state);
       state.scrollOffset = 0;
@@ -717,6 +941,10 @@ function maybeScheduleOpenAIPrewarm(inputBefore: string): void {
 interface SendDirectlyOptions {
   startedAt?: number;
   echoMessage?: UserMessage;
+  /** Override folder for a newly-created conversation. */
+  folderId?: string | null;
+  /** Reserved client id for a newly-created conversation. */
+  convId?: string;
 }
 
 /** Send a message immediately (no streaming in progress). */
@@ -752,7 +980,7 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
   state.pendingAI = createPendingAI(startedAt, state.model);
 
   if (!state.convId) {
-    const convId = generateClientConversationId();
+    const convId = options.convId ?? generateClientConversationId();
     pendingNewConversationConvId = convId;
     state.pendingSend.active = false;
     state.pendingSend.text = "";
@@ -762,7 +990,7 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
       text: messageText,
       startedAt,
       images,
-    }, state.sidebar.currentFolderId, undefined, convId);
+    }, options.folderId ?? state.sidebar.currentFolderId, undefined, convId);
   } else {
     daemon.sendMessage(state.convId, messageText, startedAt, images);
   }
@@ -956,7 +1184,10 @@ function confirmSelectedEditMessage(): void {
 
   const er = confirmEditMessage(state);
   if (er.action === "edit_queued") {
-    if (state.convId) {
+    if (er.queuedMessage && isGlobalIdleQueuedMessage(er.queuedMessage)) {
+      removeQueuedMessageByReference(state, er.queuedMessage);
+      scheduleGlobalIdleQueuePump();
+    } else if (state.convId) {
       removeLocalQueueEntry(state, state.convId, er.text);
       daemon.unqueueMessage(state.convId, er.text);
     }
@@ -1034,7 +1265,7 @@ function handleKey(key: KeyEvent): void {
       daemon.loadConversation(result.convId);
       break;
     case "open_folder_instructions":
-      if (state.convId) daemon.unsubscribe(state.convId);
+      if (state.convId) unsubscribeUnlessWaitingForQueuedMessages(state.convId);
       openFolderInstructionsDocument(state, result.folderId);
       daemon.loadFolderInstructions(result.folderId);
       break;
@@ -1046,7 +1277,7 @@ function handleKey(key: KeyEvent): void {
       break;
     case "delete_conversation":
       daemon.deleteConversation(result.convId);
-      clearLocalQueue(state, result.convId);
+      clearAllQueuedMessagesForConversation(state, result.convId);
       // If deleting the current conversation, clear the chat
       if (state.convId === result.convId) {
         state.convId = null;
@@ -1060,7 +1291,7 @@ function handleKey(key: KeyEvent): void {
       break;
     case "delete_conversations": {
       daemon.deleteConversations(result.convIds);
-      for (const convId of result.convIds) clearLocalQueue(state, convId);
+      for (const convId of result.convIds) clearAllQueuedMessagesForConversation(state, convId);
       if (state.convId && result.convIds.includes(state.convId)) {
         state.convId = null;
         state.messages = [];
@@ -1145,7 +1376,7 @@ function handleMouse(ev: MouseEvent): void {
       daemon.loadConversation(result.convId);
       break;
     case "open_folder_instructions":
-      if (state.convId) daemon.unsubscribe(state.convId);
+      if (state.convId) unsubscribeUnlessWaitingForQueuedMessages(state.convId);
       openFolderInstructionsDocument(state, result.folderId);
       daemon.loadFolderInstructions(result.folderId);
       break;
@@ -1179,6 +1410,7 @@ function restoreDaemonSessionAfterReconnect(hadPendingCommands: boolean): void {
   // reloads to avoid issuing duplicate loads.
   daemon.ping();
   if (!hadPendingCommands && state.convId) daemon.loadConversation(state.convId);
+  scheduleGlobalIdleQueuePump();
 }
 
 async function reconnectToDaemon(): Promise<void> {
@@ -1210,6 +1442,7 @@ function handleDaemonConnectionLost(): void {
   clearStreamingTailMessages(state);
   clearStreamTick();
   clearStreamFinishedPingTimer();
+  clearGlobalIdleQueuePumpTimer();
   clearPrewarmTimer();
   pushSystemMessage(state, "✗ Lost connection to daemon.", theme.error);
   scheduleRender();
@@ -1318,6 +1551,7 @@ function cleanup(): void {
   clearRenderTimer();
   clearStreamTick();
   clearStreamFinishedPingTimer();
+  clearGlobalIdleQueuePumpTimer();
   clearPrewarmTimer();
   clearReconnectTimer();
   voiceInput?.cleanup();

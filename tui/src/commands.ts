@@ -13,6 +13,7 @@ import { LOGOUT_COMMAND } from "./commands/logout";
 import { MODEL_COMMAND } from "./commands/model";
 import { NEW_COMMAND } from "./commands/new";
 import { PING_COMMAND } from "./commands/ping";
+import { QUEUE_COMMAND } from "./commands/queue";
 import { QUIT_COMMAND, EXIT_COMMAND } from "./commands/quit";
 import { RENAME_COMMAND } from "./commands/rename";
 import { REPLAY_COMMAND } from "./commands/replay";
@@ -38,6 +39,7 @@ const commands: SlashCommand[] = [
   TRIM_COMMAND,
   EFFORT_COMMAND,
   FAST_COMMAND,
+  QUEUE_COMMAND,
   GOAL_COMMAND,
   CONVO_COMMAND,
   TOKENS_COMMAND,
@@ -56,6 +58,11 @@ function isStandaloneOptionalArgCommand(text: string, commandName: string): bool
   return parts.length >= 1 && parts.length <= 2 && parts[0] === commandName;
 }
 
+function isStandaloneNoArgCommand(text: string, commandName: string): boolean {
+  const parts = text.trim().split(/\s+/).filter(Boolean);
+  return parts.length === 1 && parts[0] === commandName;
+}
+
 export function tryCommand(text: string, state: RenderState): CommandResult | null {
   if (!text.startsWith("/")) return null;
 
@@ -63,6 +70,7 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
   const cmd = commands.find((command) => command.name === name);
   if (!cmd) return null;
   if ((cmd === EFFORT_COMMAND || cmd === FAST_COMMAND) && !isStandaloneOptionalArgCommand(text, cmd.name)) return null;
+  if (cmd === QUEUE_COMMAND && !isStandaloneNoArgCommand(text, cmd.name)) return null;
 
   return cmd.handler(text, state);
 }

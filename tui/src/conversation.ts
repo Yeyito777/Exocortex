@@ -14,6 +14,7 @@ import { renderBlockCached, renderSystemMessage, renderUserMessageCached } from 
 import { isVisuallyBlankLine, sanitizeUntrustedText } from "./terminaltext";
 import { termWidth } from "./textwidth";
 import { wordWrap, type WrapCopyLine, type WrapResult } from "./textwrap";
+import { GLOBAL_IDLE_QUEUE_LABEL, isGlobalIdleQueuedMessage, isNewConversationQueuedMessage } from "./queue";
 
 export { wordWrap, type WrapResult } from "./textwrap";
 
@@ -356,10 +357,14 @@ export function buildMessageLines(
   }
 
   // Queued messages — dimmed user bubbles with timing label (after pendingAI)
-  if (state.convId) {
-    const queued = state.queuedMessages.filter(qm => qm.convId === state.convId);
-    for (const qm of queued) {
-      const timingLabel = qm.timing === "next-turn" ? "queued: next turn" : "queued: message end";
+  if (state.convId || !state.folderInstructionsDoc) {
+    const queued = state.convId
+      ? state.queuedMessages.filter(qm => qm.convId === state.convId)
+      : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId);
+	    for (const qm of queued) {
+	      const timingLabel = isGlobalIdleQueuedMessage(qm)
+	        ? GLOBAL_IDLE_QUEUE_LABEL
+	        : qm.timing === "next-turn" ? "queued: next turn" : "queued: message end";
       pushLine("", qm, "queued_margin_top");
       // Render a dimmed user bubble
       const qr = renderUserMessageCached(qm, qm.text, availableWidth, qm.images);

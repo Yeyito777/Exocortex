@@ -95,6 +95,43 @@ describe("edit message modal", () => {
     });
   });
 
+  test("Ctrl-W includes queued new-conversation messages in draft chats", () => {
+    const state = createInitialState();
+    const queuedMessage = {
+      convId: "reserved-conv",
+      text: "start this later",
+      timing: "message-end" as const,
+      source: "global-idle" as const,
+      target: "new-conversation" as const,
+    };
+    state.pendingQueuedDraftConvId = "reserved-conv";
+    state.queuedMessages.push(queuedMessage);
+
+    openEditMessageModal(state);
+
+    expect(state.editMessagePrompt?.items).toHaveLength(1);
+    expect(state.editMessagePrompt?.items[0]).toMatchObject({
+      text: "start this later",
+      isQueued: true,
+      queuedMessage,
+    });
+  });
+
+  test("Ctrl-W does not include queued pending-conversation messages in unrelated blank drafts", () => {
+    const state = createInitialState();
+    state.queuedMessages.push({
+      convId: "pending-conv",
+      text: "belongs elsewhere",
+      timing: "message-end",
+      source: "global-idle",
+      target: "new-conversation",
+    });
+
+    openEditMessageModal(state);
+
+    expect(state.editMessagePrompt).toBeNull();
+  });
+
   test("mouse hit testing selects visible Ctrl-W edit items", () => {
     const state = createInitialState();
     state.convId = "conv-click";

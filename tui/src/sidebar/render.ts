@@ -20,18 +20,20 @@ import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 interface FolderAggregate {
   count: number;
   streaming: boolean;
+  globalIdle: boolean;
   unread: boolean;
 }
 
-function buildFolderAggregates(sidebar: SidebarState): Map<string, FolderAggregate> {
+function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: ReadonlySet<string>): Map<string, FolderAggregate> {
   const aggregates = new Map<string, FolderAggregate>();
   const parentById = new Map<string, string | null>();
   for (const folder of sidebar.folders) {
-    aggregates.set(folder.id, { count: 0, streaming: false, unread: false });
+    aggregates.set(folder.id, { count: 0, streaming: false, globalIdle: false, unread: false });
     parentById.set(folder.id, folder.parentId ?? null);
   }
 
   for (const conv of sidebar.conversations) {
+    const hasGlobalIdle = globalIdleConvIds.has(conv.id);
     let folderId = conv.folderId ?? null;
     const seen = new Set<string>();
     while (folderId && aggregates.has(folderId) && !seen.has(folderId)) {
@@ -39,6 +41,7 @@ function buildFolderAggregates(sidebar: SidebarState): Map<string, FolderAggrega
       const aggregate = aggregates.get(folderId)!;
       aggregate.count++;
       aggregate.streaming ||= conv.streaming;
+      aggregate.globalIdle ||= hasGlobalIdle;
       aggregate.unread ||= conv.unread;
       folderId = parentById.get(folderId) ?? null;
     }
@@ -61,6 +64,7 @@ export function renderSidebar(
   totalRows: number,
   focused: boolean,
   currentConvId: string | null,
+  globalIdleConvIds: ReadonlySet<string> = new Set(),
 ): string[] {
   const rows: string[] = [];
   const innerWidth = SIDEBAR_WIDTH - 1; // -1 for right border │
@@ -84,7 +88,7 @@ export function renderSidebar(
   // Build display rows: section labels + delimiter + sidebar entries
   const convs = sidebar.conversations;
   const displayRows = buildDisplayRows(sidebar);
-  const folderAggregates = sidebar.folders.length > 0 ? buildFolderAggregates(sidebar) : null;
+  const folderAggregates = sidebar.folders.length > 0 ? buildFolderAggregates(sidebar, globalIdleConvIds) : null;
   // Compute visual selection once per render. Calling selectedVisualItems() per
   // row rebuilds displayRows each time; with an active /? filter this made `v`
   // feel very laggy on large conversation lists.
@@ -175,16 +179,18 @@ export function renderSidebar(
       const aggregate = folder ? folderAggregates?.get(folder.id) : null;
       rawTitle = folder ? `📁 ${folder.name}/ ${aggregate?.count ?? 0}` : "📁 folder/";
       const hasStreaming = aggregate?.streaming ?? false;
+      const hasGlobalIdle = aggregate?.globalIdle ?? false;
       const hasUnread = aggregate?.unread ?? false;
-      streamIcon = hasStreaming ? "◉ " : hasUnread ? "◉ " : "";
-      streamIconColor = hasStreaming ? theme.accent : hasUnread ? theme.success : "";
+      streamIcon = hasStreaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
+      streamIconColor = hasStreaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
       itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "conversation") {
       const conv = convs[dr.convIdx ?? -1];
       if (!conv) continue;
       isCurrent = conv.id === currentConvId;
-      streamIcon = conv.streaming ? "◉ " : conv.unread ? "◉ " : "";
-      streamIconColor = conv.streaming ? theme.accent : conv.unread ? theme.success : "";
+      const hasGlobalIdle = globalIdleConvIds.has(conv.id);
+      streamIcon = conv.streaming ? "◉ " : hasGlobalIdle ? "◉ " : conv.unread ? "◉ " : "";
+      streamIconColor = conv.streaming ? theme.accent : hasGlobalIdle ? theme.warning : conv.unread ? theme.success : "";
       starIcon = conv.marked ? "★ " : "";
       const mark = getMarkFromTitle(conv.title);
       emojiIcon = mark ? mark.emoji + " " : "";

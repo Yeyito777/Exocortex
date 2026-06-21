@@ -16,6 +16,7 @@ import type { ImageAttachment } from "./messages";
 import { getViewStart } from "./chatscroll";
 import { renderTopbar } from "./topbar";
 import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
+import { isGlobalIdleQueuedMessage } from "./queue";
 import { getSidebarSearchBarViewport } from "./sidebarsearch";
 import { buildMessageLines, type BuildMessageLinesResult } from "./conversation";
 import { wrappedLineOffsets } from "./promptline";
@@ -621,6 +622,7 @@ export function render(state: RenderState): void {
       rows,
       state.panelFocus === "sidebar",
       state.convId,
+      new Set(state.queuedMessages.filter(isGlobalIdleQueuedMessage).map(message => message.convId)),
     );
   }
 

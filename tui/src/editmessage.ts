@@ -14,6 +14,7 @@ import type { UserMessage } from "./messages";
 import type { RenderState, EditMessageItem } from "./state";
 import { EDIT_INDEX_INSTRUCTIONS, EDIT_INDEX_QUEUED, focusPrompt } from "./state";
 import { computeEditMessageOverlayLayout, type EditMessageOverlayLayout } from "./editmessage-layout";
+import { isNewConversationQueuedMessage } from "./queue";
 
 // ── Open modal ────────────────────────────────────────────────────
 
@@ -84,7 +85,9 @@ export function openEditMessageModal(state: RenderState): void {
   }
 
   // Collect queued messages
-  const queued = state.convId ? state.queuedMessages.filter(qm => qm.convId === state.convId) : [];
+  const queued = state.convId
+    ? state.queuedMessages.filter(qm => qm.convId === state.convId)
+    : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId);
   for (const qm of queued) {
     items.push({
       userMessageIndex: EDIT_INDEX_QUEUED,
@@ -174,7 +177,7 @@ export function editMessageItemIndexAtMouse(
 
 export type EditConfirmResult =
   | { action: "edit_sent"; text: string; userMessageIndex: number }
-  | { action: "edit_queued"; text: string }
+  | { action: "edit_queued"; text: string; queuedMessage?: EditMessageItem["queuedMessage"] }
   | { action: "edit_instructions"; text: string }
   | { action: "cancel" };
 
@@ -213,7 +216,7 @@ export function confirmEditMessage(state: RenderState): EditConfirmResult {
   }
 
   if (item.isQueued) {
-    return { action: "edit_queued", text: item.text };
+    return { action: "edit_queued", text: item.text, queuedMessage: item.queuedMessage };
   }
 
   return { action: "edit_sent", text: item.text, userMessageIndex: item.userMessageIndex };

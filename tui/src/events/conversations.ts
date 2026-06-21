@@ -1,7 +1,7 @@
 import { log } from "../log";
 import type { Event } from "../protocol";
 import { syncChosenProvider } from "../providerselection";
-import { clearLocalQueue } from "../queue";
+import { clearAllQueuedMessagesForConversation, clearLocalQueue, hasDaemonQueuedMessageShadowsForConversation } from "../queue";
 import {
   focusConversationById,
   rememberEnteredConversation,
@@ -123,7 +123,7 @@ export function handleConversationDeleted(event: Extract<Event, { type: "convers
     resetToolOutputState(state);
     resetNewConversationDefaults(state);
   }
-  clearLocalQueue(state, event.convId);
+  clearAllQueuedMessagesForConversation(state, event.convId);
 }
 
 export function handleConversationMoved(event: Extract<Event, { type: "conversation_moved" }>, state: RenderState): void {
@@ -169,14 +169,15 @@ export function handleConversationLoaded(
       preservedPending: preservedPendingAI ? blockStats(preservedPendingAI.blocks) : null,
     })}`);
   }
-  // Unsubscribe from old conversation before switching.
+  // Unsubscribe from old conversation before switching unless it still has
+  // local daemon-queue shadows. In that case, keep the subscription just long
+  // enough to hear the background user_message events that remove those shadows,
+  // so TUI-only /queue can wait for queued turns in other conversations exactly.
   if (previousConvId && previousConvId !== event.convId) {
-    daemon.unsubscribe(previousConvId);
+    if (!hasDaemonQueuedMessageShadowsForConversation(state, previousConvId)) {
+      daemon.unsubscribe(previousConvId);
+    }
     delete state.lastStreamSeqByConv[previousConvId];
-    // Clear stale queue shadows — the daemon owns the real queue and will drain
-    // it regardless; we won't receive streaming_stopped after unsubscribing, so
-    // clean up now.
-    clearLocalQueue(state, previousConvId);
   }
   state.messages = [];
   clearPendingAI(state);
