@@ -113,6 +113,8 @@ export interface FeatureFlagsConfig {
    * to enable desktop screenshots/input tools for this config.
    */
   computerUse?: boolean;
+  /** Expose the model-facing goal lifecycle tool. Defaults to true; set false to hide/disable it. */
+  goalTool?: boolean;
   /** Preserve unknown future feature flags. */
   [feature: string]: unknown;
 }
@@ -193,7 +195,7 @@ export function defaultOpenersConfig(): OpenersConfig {
 export function defaultExocortexConfig(): ExocortexConfig {
   return {
     theme: "whale",
-    features: { computerUse: false },
+    features: { computerUse: false, goalTool: true },
     agent: { workingDirectory: ".exocortex-cwd" },
     ping: { mode: null, sound: null },
     openers: defaultOpenersConfig(),

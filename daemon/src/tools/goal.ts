@@ -1,4 +1,5 @@
 import type { Tool } from "./types";
+import { readExocortexConfig, type ExocortexConfig } from "@exocortex/shared/config";
 import { applyModelGoalAction, GOAL_TOOL_SYSTEM_HINT, goalPermissionFlagSuffix, normalizeGoalSetOptions } from "../goals";
 
 type GoalAction = "set" | "pause" | "resume" | "complete";
@@ -10,10 +11,17 @@ function actionFromInput(input: Record<string, unknown>): GoalAction | null {
     : null;
 }
 
+export function isGoalToolFeatureEnabled(config: ExocortexConfig = readExocortexConfig()): boolean {
+  // The goal tool is product behavior by default; hide/disable it only when the
+  // user explicitly opts out with config.features.goalTool=false.
+  return config.features?.goalTool !== false;
+}
+
 export const goal: Tool = {
   name: "goal",
   description: "Manage the active conversation goal. Mirrors the user's /goal command: set a goal, pause when user input is required, resume when no longer blocked, or complete and clear the goal.",
   systemHint: GOAL_TOOL_SYSTEM_HINT,
+  isAvailable: isGoalToolFeatureEnabled,
   inputSchema: {
     type: "object",
     properties: {

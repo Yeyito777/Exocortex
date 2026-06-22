@@ -1,6 +1,10 @@
-import { describe, expect, test } from "bun:test";
-import { writeExocortexConfig } from "@exocortex/shared/config";
+import { afterEach, describe, expect, test } from "bun:test";
+import { defaultExocortexConfig, writeExocortexConfig } from "@exocortex/shared/config";
 import { buildToolSystemHints, getToolDefs, getToolDisplayInfo } from "./registry";
+
+afterEach(() => {
+  writeExocortexConfig(defaultExocortexConfig());
+});
 
 describe("tool availability", () => {
   test("image generation and file transcription are external CLI tools, not internal API tools", () => {
@@ -41,5 +45,23 @@ describe("tool availability", () => {
     const disabledTools = getToolDefs().map((tool) => tool.name);
     expect(disabledTools).not.toContain("computer_list_apps");
     expect(disabledTools).not.toContain("computer_get_app_state");
+  });
+
+  test("goal tool is enabled by default and can be disabled by feature flag", () => {
+    writeExocortexConfig({});
+    const defaultTools = getToolDefs().map((tool) => tool.name);
+    expect(defaultTools).toContain("goal");
+    expect(getToolDisplayInfo().some((tool) => tool.name === "goal")).toBe(true);
+    expect(buildToolSystemHints()).toContain("use the goal tool");
+
+    writeExocortexConfig({ features: { goalTool: false } });
+    const disabledTools = getToolDefs().map((tool) => tool.name);
+    expect(disabledTools).not.toContain("goal");
+    expect(getToolDisplayInfo().some((tool) => tool.name === "goal")).toBe(false);
+    expect(buildToolSystemHints()).not.toContain("use the goal tool");
+
+    writeExocortexConfig({ features: { goalTool: true } });
+    const enabledTools = getToolDefs().map((tool) => tool.name);
+    expect(enabledTools).toContain("goal");
   });
 });

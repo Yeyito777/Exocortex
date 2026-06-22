@@ -1,7 +1,8 @@
 {
   "theme": "whale",
   "features": {
-    "computerUse": false
+    "computerUse": false,
+    "goalTool": true
   },
   "agent": {
     "workingDirectory": ".exocortex-cwd"
