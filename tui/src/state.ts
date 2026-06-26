@@ -34,6 +34,11 @@ import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 
 export type { QueueTiming } from "./protocol";
 
+export type QueueWaitTarget =
+  | { type: "global" }
+  | { type: "conversation"; convId: string; label: string }
+  | { type: "folder"; folderId: string; label: string };
+
 export interface QueuedMessage {
   convId: string;
   text: string;
@@ -53,6 +58,8 @@ export interface QueuedMessage {
   effort?: EffortLevel;
   fastMode?: boolean;
   folderId?: string | null;
+  /** For TUI-owned queue entries, what must be idle before delivery. */
+  waitTarget?: QueueWaitTarget;
 }
 
 export interface QueuePromptState {

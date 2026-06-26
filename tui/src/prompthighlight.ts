@@ -26,15 +26,17 @@ const VALID_MACRO_NAMES = new Set(MACRO_LIST.map(c => c.name));
 const VALID_INLINE_COMMAND_NAMES = new Set(INLINE_COMMANDS.map(c => c.name));
 
 function buildValidArgs(state: RenderState): Record<string, Set<string>> {
+  const argNames = (args: Array<{ name: string; insertText?: string; aliases?: string[] }>): string[] =>
+    args.flatMap(arg => [arg.name, ...(arg.insertText ? [arg.insertText] : []), ...(arg.aliases ?? [])]);
   return {
     ...Object.fromEntries(
-      Object.entries(getCommandArgs(state)).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
+      Object.entries(getCommandArgs(state)).map(([cmd, args]) => [cmd, new Set(argNames(args))]),
     ),
     ...Object.fromEntries(
-      Object.entries(getInlineCommandArgs(state)).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
+      Object.entries(getInlineCommandArgs(state)).map(([cmd, args]) => [cmd, new Set(argNames(args))]),
     ),
     ...Object.fromEntries(
-      Object.entries(getMacroArgs()).map(([cmd, args]) => [cmd, new Set(args.map(arg => arg.name))]),
+      Object.entries(getMacroArgs()).map(([cmd, args]) => [cmd, new Set(argNames(args))]),
     ),
   };
 }

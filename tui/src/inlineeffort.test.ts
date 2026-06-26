@@ -149,7 +149,7 @@ describe("inline /queue command", () => {
 
     const result = applyInlineCommands("please /queue answer this", state);
 
-    expect(result).toEqual({ text: "please answer this", efforts: [], fastModes: [], queue: true });
+    expect(result).toEqual({ text: "please answer this", efforts: [], fastModes: [], queue: { type: "global" } });
     expect(state.messages).toEqual([]);
   });
 
@@ -158,7 +158,56 @@ describe("inline /queue command", () => {
 
     const result = applyInlineCommands("first\n/queue\nsecond", state);
 
-    expect(result).toEqual({ text: "first\nsecond", efforts: [], fastModes: [], queue: true });
+    expect(result).toEqual({ text: "first\nsecond", efforts: [], fastModes: [], queue: { type: "global" } });
+  });
+
+  test("uses the most recently updated matching conversation as the wait target", () => {
+    const state = stateWithEfforts();
+    state.sidebar.conversations = [
+      { id: "older", provider: "openai", model: "gpt-5.4", effort: "medium", fastMode: false, createdAt: 1, updatedAt: 10, messageCount: 1, title: "Build", marked: false, pinned: false, streaming: false, unread: false, sortOrder: 1 },
+      { id: "newer", provider: "openai", model: "gpt-5.4", effort: "medium", fastMode: false, createdAt: 2, updatedAt: 20, messageCount: 1, title: "Build", marked: false, pinned: false, streaming: false, unread: false, sortOrder: 2 },
+    ];
+
+    const result = applyInlineCommands("please /queue Build answer this", state);
+
+    expect(result).toEqual({
+      text: "please answer this",
+      efforts: [],
+      fastModes: [],
+      queue: { type: "conversation", convId: "newer", label: "Build" },
+    });
+  });
+
+  test("accepts multi-word conversation names", () => {
+    const state = stateWithEfforts();
+    state.sidebar.conversations = [
+      { id: "conv", provider: "openai", model: "gpt-5.4", effort: "medium", fastMode: false, createdAt: 1, updatedAt: 10, messageCount: 1, title: "Build the Thing", marked: false, pinned: false, streaming: false, unread: false, sortOrder: 1 },
+    ];
+
+    const result = applyInlineCommands("please /queue Build the Thing answer this", state);
+
+    expect(result).toEqual({
+      text: "please answer this",
+      efforts: [],
+      fastModes: [],
+      queue: { type: "conversation", convId: "conv", label: "Build the Thing" },
+    });
+  });
+
+  test("accepts folder targets selected with the folder icon", () => {
+    const state = stateWithEfforts();
+    state.sidebar.folders = [
+      { id: "folder-work", name: "Work", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 1 },
+    ];
+
+    const result = applyInlineCommands("please /queue 📁 Work answer this", state);
+
+    expect(result).toEqual({
+      text: "please answer this",
+      efforts: [],
+      fastModes: [],
+      queue: { type: "folder", folderId: "folder-work", label: "Work" },
+    });
   });
 
   test("does not let message-leading /queue prompts get swallowed by standalone command handling", () => {

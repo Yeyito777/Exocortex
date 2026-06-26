@@ -15,9 +15,10 @@
 
 import type { KeyEvent } from "./input";
 import type { ImageAttachment } from "./messages";
-import type { RenderState, QueueTiming, QueuedMessage } from "./state";
+import type { RenderState, QueueTiming, QueueWaitTarget, QueuedMessage } from "./state";
 import { expandMacros } from "./macros";
 import { isStreaming } from "./state";
+import { folderDescendantConversations } from "./sidebar/folders";
 
 export const GLOBAL_IDLE_QUEUE_LABEL = "queued: global idle";
 
@@ -29,7 +30,23 @@ export function isNewConversationQueuedMessage(message: QueuedMessage): boolean 
   return isGlobalIdleQueuedMessage(message) && message.target === "new-conversation";
 }
 
-export type GlobalIdleQueueOptions = Pick<QueuedMessage, "target" | "provider" | "model" | "effort" | "fastMode" | "folderId">;
+export type GlobalIdleQueueOptions = Pick<QueuedMessage, "target" | "provider" | "model" | "effort" | "fastMode" | "folderId" | "waitTarget">;
+
+export function queueWaitTargetOf(message: QueuedMessage): QueueWaitTarget {
+  return message.waitTarget ?? { type: "global" };
+}
+
+export function queueTimingLabel(message: QueuedMessage): string {
+  if (isGlobalIdleQueuedMessage(message)) {
+    const waitTarget = queueWaitTargetOf(message);
+    if (waitTarget.type === "conversation") return `queued: after ${waitTarget.label}`;
+    if (waitTarget.type === "folder") return `queued: after folder ${waitTarget.label}`;
+    return GLOBAL_IDLE_QUEUE_LABEL;
+  }
+  return message.timing === "next-turn" ? "queued: next turn" : "queued: message end";
+}
+
+export type QueueWaitStatus = "ready" | "waiting" | "missing-target";
 
 export function enqueueGlobalIdleMessage(
   state: RenderState,
@@ -49,10 +66,51 @@ export function enqueueGlobalIdleMessage(
     ...(options.effort ? { effort: options.effort } : {}),
     ...(typeof options.fastMode === "boolean" ? { fastMode: options.fastMode } : {}),
     ...("folderId" in options ? { folderId: options.folderId ?? null } : {}),
+    ...(options.waitTarget && options.waitTarget.type !== "global" ? { waitTarget: options.waitTarget } : {}),
     ...(images?.length ? { images } : {}),
   };
   state.queuedMessages.push(queued);
   return queued;
+}
+
+function isConversationKnown(state: RenderState, convId: string): boolean {
+  return convId === state.convId || state.sidebar.conversations.some(conversation => conversation.id === convId);
+}
+
+function isConversationStreamingInState(state: RenderState, convId: string): boolean {
+  if (convId === state.convId) return isStreaming(state);
+  return state.sidebar.conversations.some(conversation => conversation.id === convId && conversation.streaming);
+}
+
+function hasAnyTuiConversationStreaming(state: RenderState): boolean {
+  return isStreaming(state) || state.sidebar.conversations.some(conversation => conversation.streaming);
+}
+
+export function queueWaitStatus(state: RenderState, waitTarget: QueueWaitTarget): QueueWaitStatus {
+  if (waitTarget.type === "global") {
+    if (hasAnyTuiConversationStreaming(state)) return "waiting";
+    if (hasDaemonQueuedMessageShadows(state)) return "waiting";
+    return "ready";
+  }
+
+  if (waitTarget.type === "conversation") {
+    if (!isConversationKnown(state, waitTarget.convId)) return "missing-target";
+    if (isConversationStreamingInState(state, waitTarget.convId)) return "waiting";
+    if (hasDaemonQueuedMessageShadowsForConversation(state, waitTarget.convId)) return "waiting";
+    return "ready";
+  }
+
+  const folder = state.sidebar.folders.find(candidate => candidate.id === waitTarget.folderId);
+  if (!folder) return "missing-target";
+  for (const conversation of folderDescendantConversations(state.sidebar, waitTarget.folderId)) {
+    if (isConversationStreamingInState(state, conversation.id)) return "waiting";
+    if (hasDaemonQueuedMessageShadowsForConversation(state, conversation.id)) return "waiting";
+  }
+  return "ready";
+}
+
+export function queuedMessageWaitStatus(state: RenderState, message: QueuedMessage): QueueWaitStatus {
+  return queueWaitStatus(state, queueWaitTargetOf(message));
 }
 
 export function peekGlobalIdleQueuedMessage(state: RenderState): QueuedMessage | null {

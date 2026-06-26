@@ -324,6 +324,36 @@ describe("autocomplete with vim Escape", () => {
     expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["on", "off"]);
   });
 
+  test("/queue target autocomplete sorts duplicate conversations newest first and includes folders", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [
+      conversation("older-build", 1, { title: "Build", updatedAt: 10 }),
+      conversation("newer-build", 2, { title: "Build", updatedAt: 20 }),
+    ];
+    state.sidebar.folders = [folder("folder-build", 1, { name: "Build" })];
+
+    typePromptText(state, "/queue B");
+
+    expect(state.autocomplete?.type).toBe("command");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["Build", "Build", "📁 Build"]);
+    expect(state.autocomplete?.matches[0]?.desc).toContain("newer-build");
+    expect(state.autocomplete?.matches[1]?.desc).toContain("older-build");
+    expect(state.autocomplete?.matches[2]?.desc).toContain("📁 folder");
+  });
+
+  test("/queue target autocomplete replaces the whole multi-word target", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [
+      conversation("conv-build", 1, { title: "Build the Thing", updatedAt: 10 }),
+    ];
+
+    typePromptText(state, "/queue Build t");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["Build the Thing"]);
+
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("/queue Build the Thing");
+  });
+
   test("mid-message autocomplete does not offer ordinary slash commands", () => {
     const state = createInitialState();
 

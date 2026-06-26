@@ -3,6 +3,8 @@ import type { EffortLevel } from "./messages";
 import { pushSystemMessage } from "./state";
 import { effortItems, providerSupportsFastMode, supportedEfforts } from "./commands/shared";
 import type { CompletionItem } from "./commands";
+import type { QueueWaitTarget } from "./state";
+import { matchQueueTargetAfterCommand, queueTargetCompletionItems } from "./queuetargets";
 
 export const INLINE_EFFORT_COMMAND: CompletionItem = {
   name: "/effort",
@@ -16,7 +18,7 @@ export const INLINE_FAST_COMMAND: CompletionItem = {
 
 export const INLINE_QUEUE_COMMAND: CompletionItem = {
   name: "/queue",
-  desc: "Send after all TUI conversations are idle",
+  desc: "Send after global, conversation, or folder idle",
 };
 
 export const INLINE_COMMANDS: CompletionItem[] = [INLINE_EFFORT_COMMAND, INLINE_FAST_COMMAND, INLINE_QUEUE_COMMAND];
@@ -30,8 +32,8 @@ export interface InlineCommandApplication {
   text: string;
   efforts: EffortLevel[];
   fastModes: boolean[];
-  /** True when the prompt contained /queue and should enter the TUI global idle queue. */
-  queue?: true;
+  /** Present when the prompt contained /queue and should enter the TUI-owned queue. */
+  queue?: QueueWaitTarget;
 }
 
 export type InlineEffortApplication = InlineCommandApplication;
@@ -50,6 +52,7 @@ export function getInlineCommandArgs(state: RenderState): Record<string, Complet
   return {
     "/effort": effortItems(state),
     "/fast": INLINE_FAST_ARGS,
+    "/queue": queueTargetCompletionItems(state),
   };
 }
 
@@ -104,7 +107,7 @@ export function applyInlineCommands(text: string, state: RenderState): InlineCom
   const actions: InlineAction[] = [];
   const efforts: EffortLevel[] = [];
   const fastModes: boolean[] = [];
-  let queue = false;
+  let queue: QueueWaitTarget | undefined;
   let simulatedFastMode = state.fastMode;
 
   for (let i = 0; i < words.length; i++) {
@@ -133,8 +136,11 @@ export function applyInlineCommands(text: string, state: RenderState): InlineCom
     }
 
     if (command.word === "/queue") {
-      queue = true;
-      spans.push({ start: command.start, end: command.end });
+      const target = matchQueueTargetAfterCommand(state, text, command.end);
+      queue = target?.target ?? { type: "global" };
+      const spanEnd = target?.end ?? command.end;
+      spans.push({ start: command.start, end: spanEnd });
+      while (i + 1 < words.length && words[i + 1].start < spanEnd) i++;
     }
   }
 
@@ -155,7 +161,7 @@ export function applyInlineCommands(text: string, state: RenderState): InlineCom
     stripped = removeSpanPreservingBoundary(stripped, spans[i].start, spans[i].end);
   }
 
-  return { text: stripped, efforts, fastModes, ...(queue ? { queue: true as const } : {}) };
+  return { text: stripped, efforts, fastModes, ...(queue ? { queue } : {}) };
 }
 
 export function applyInlineEffortCommands(text: string, state: RenderState): InlineCommandApplication {

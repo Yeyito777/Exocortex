@@ -5,6 +5,10 @@ import type { ProviderId, ModelId, EffortLevel } from "../messages";
 export interface CompletionItem {
   name: string;
   desc: string;
+  /** Optional replacement text. Defaults to name. */
+  insertText?: string;
+  /** Extra strings that should match this item during prefix filtering. */
+  aliases?: string[];
 }
 
 export type CommandResult =

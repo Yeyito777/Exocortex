@@ -60,9 +60,20 @@ function matchArgCompletion(
   for (const [cmd, args] of entries) {
     const re = new RegExp(`^${escapeRegex(cmd)}\\s+(.*)$`, "i");
     const m = raw.match(re);
-    if (m) return args.filter(a => a.name.toLowerCase().startsWith(m[1].toLowerCase()));
+    if (m) return args.filter(a => completionMatchesPrefix(a, m[1]));
   }
   return null;
+}
+
+function completionInsertText(item: CompletionItem): string {
+  return item.insertText ?? item.name;
+}
+
+function completionMatchesPrefix(item: CompletionItem, rawPrefix: string): boolean {
+  const prefix = rawPrefix.toLowerCase();
+  if (item.name.toLowerCase().startsWith(prefix)) return true;
+  if (item.insertText?.toLowerCase().startsWith(prefix)) return true;
+  return item.aliases?.some(alias => alias.toLowerCase().startsWith(prefix)) ?? false;
 }
 
 // ── Command + macro matching ──────────────────────────────────────
@@ -234,7 +245,7 @@ export function cycleAutocomplete(state: RenderState, direction: 1 | -1): void {
     ac.selection = ac.selection <= 0 ? ac.matches.length - 1 : ac.selection - 1;
   }
 
-  fillAutocomplete(state, ac.matches[ac.selection].name);
+  fillAutocomplete(state, ac.matches[ac.selection]);
 }
 
 /**
@@ -242,8 +253,14 @@ export function cycleAutocomplete(state: RenderState, direction: 1 | -1): void {
  * For commands (tokenStart 0): replaces the full buffer (preserving leading whitespace + command prefix for args).
  * For macros / paths: replaces only the token portion.
  */
-function fillAutocomplete(state: RenderState, name: string): void {
+function singleArgumentPrefix(prefix: string, commandName: string): string | null {
+  const re = new RegExp(`^(\\s*${escapeRegex(commandName)}\\s+).*$`, "i");
+  return prefix.match(re)?.[1] ?? null;
+}
+
+function fillAutocomplete(state: RenderState, item: CompletionItem): void {
   const ac = state.autocomplete!;
+  const name = completionInsertText(item);
 
   if (ac.type === "path" || ac.type === "macro") {
     const before = state.inputBuffer.slice(0, ac.tokenStart);
@@ -251,9 +268,14 @@ function fillAutocomplete(state: RenderState, name: string): void {
     // For macro arg completion, preserve the "/command arg1 ..." prefix
     let fillText = name;
     if (ac.type === "macro") {
-      const spaceIdx = ac.prefix.lastIndexOf(" ");
-      if (spaceIdx >= 0) {
-        fillText = ac.prefix.slice(0, spaceIdx + 1) + name;
+      const queuePrefix = singleArgumentPrefix(ac.prefix, "/queue");
+      if (queuePrefix) {
+        fillText = queuePrefix + name;
+      } else {
+        const spaceIdx = ac.prefix.lastIndexOf(" ");
+        if (spaceIdx >= 0) {
+          fillText = ac.prefix.slice(0, spaceIdx + 1) + name;
+        }
       }
     }
     state.inputBuffer = before + fillText + after;
@@ -262,7 +284,10 @@ function fillAutocomplete(state: RenderState, name: string): void {
   }
 
   // Command: check if we're completing an argument ("/tool install disc" → "/tool install discord")
-  if (!name.startsWith("/")) {
+  const queuePrefix = singleArgumentPrefix(ac.prefix, "/queue");
+  if (queuePrefix) {
+    state.inputBuffer = queuePrefix + name;
+  } else if (!name.startsWith("/")) {
     // Completing an argument — preserve everything before the last word
     const lastSpace = ac.prefix.lastIndexOf(" ");
     if (lastSpace >= 0) {
@@ -341,8 +366,9 @@ export function tryPathComplete(state: RenderState): boolean {
     // Single match: fill directly, no popup
     const before = state.inputBuffer.slice(0, start);
     const after = state.inputBuffer.slice(state.cursorPos);
-    state.inputBuffer = before + matches[0].name + after;
-    state.cursorPos = before.length + matches[0].name.length;
+    const fillText = completionInsertText(matches[0]);
+    state.inputBuffer = before + fillText + after;
+    state.cursorPos = before.length + fillText.length;
     state.autocomplete = null;
     return true;
   }
@@ -350,8 +376,9 @@ export function tryPathComplete(state: RenderState): boolean {
   // Multiple matches: show popup with first item selected
   const before = state.inputBuffer.slice(0, start);
   const after = state.inputBuffer.slice(state.cursorPos);
-  state.inputBuffer = before + matches[0].name + after;
-  state.cursorPos = before.length + matches[0].name.length;
+  const fillText = completionInsertText(matches[0]);
+  state.inputBuffer = before + fillText + after;
+  state.cursorPos = before.length + fillText.length;
 
   state.autocomplete = {
     type: "path",

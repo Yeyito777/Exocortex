@@ -30,13 +30,13 @@ import {
   confirmQueueMessage,
   cancelQueuePrompt,
   enqueueGlobalIdleMessage,
-  hasDaemonQueuedMessageShadows,
   hasDaemonQueuedMessageShadowsForConversation,
   hasGlobalIdleQueuedMessages,
   isGlobalIdleQueuedMessage,
   isNewConversationQueuedMessage,
   openQueuePrompt,
   peekGlobalIdleQueuedMessage,
+  queuedMessageWaitStatus,
   removeLocalQueueEntry,
   removeNewConversationQueuedMessage,
   removeQueuedMessageByReference,
@@ -213,10 +213,6 @@ function isConversationStreaming(convId: string): boolean {
   return state.sidebar.conversations.some((conversation) => conversation.id === convId && conversation.streaming);
 }
 
-function hasAnyTuiConversationStreaming(): boolean {
-  return isStreaming(state) || state.sidebar.conversations.some((conversation) => conversation.streaming);
-}
-
 function releaseBackgroundQueueSubscriptionIfIdle(convId: string): void {
   if (convId === state.convId) return;
   if (hasDaemonQueuedMessageShadowsForConversation(state, convId)) return;
@@ -240,11 +236,19 @@ function scheduleGlobalIdleQueuePump(delayMs = GLOBAL_IDLE_QUEUE_PUMP_DELAY_MS):
 function pumpGlobalIdleQueue(): void {
   if (!daemon?.connected) return;
   if (globalIdleQueueInFlight) return;
-  if (hasAnyTuiConversationStreaming()) return;
-  if (hasDaemonQueuedMessageShadows(state)) return;
 
   const next = peekGlobalIdleQueuedMessage(state);
   if (!next) return;
+
+  const waitStatus = queuedMessageWaitStatus(state, next);
+  if (waitStatus === "waiting") return;
+  if (waitStatus === "missing-target") {
+    removeQueuedMessageByReference(state, next);
+    pushSystemMessage(state, "✗ Dropped queued message because its wait target no longer exists.", theme.error);
+    scheduleGlobalIdleQueuePump();
+    scheduleRender();
+    return;
+  }
 
   const targetStillKnown = next.convId === state.convId
     || state.sidebar.conversations.some((conversation) => conversation.id === next.convId);
@@ -261,6 +265,8 @@ function pumpGlobalIdleQueue(): void {
     scheduleRender();
     return;
   }
+
+  if (isConversationStreaming(next.convId) || hasDaemonQueuedMessageShadowsForConversation(state, next.convId)) return;
 
   if (next.convId === state.convId && !canSendImages(next.images)) {
     removeQueuedMessageByReference(state, next);
@@ -786,6 +792,7 @@ function handleSubmit(): void {
       const queueingDraftConversation = !state.convId;
       const convId = state.convId ?? generateClientConversationId();
       const folderId = state.sidebar.currentFolderId;
+      const waitTarget = inlineCommands.queue;
       enqueueGlobalIdleMessage(state, convId, messageText, images, queueingDraftConversation ? {
         target: "new-conversation",
         provider: state.provider,
@@ -793,7 +800,10 @@ function handleSubmit(): void {
         effort: state.effort,
         fastMode: state.fastMode,
         folderId,
-      } : undefined);
+        waitTarget,
+      } : {
+        waitTarget,
+      });
       if (queueingDraftConversation) {
         pendingNewConversationConvId = convId;
         state.pendingQueuedDraftConvId = convId;

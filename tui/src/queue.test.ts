@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createPendingAI, type ImageAttachment } from "./messages";
+import { createPendingAI, type ConversationSummary, type FolderSummary, type ImageAttachment } from "./messages";
 import {
   clearAllQueuedMessagesForConversation,
   clearLocalQueue,
@@ -8,6 +8,9 @@ import {
   hasDaemonQueuedMessageShadows,
   isGlobalIdleQueuedMessage,
   openQueuePrompt,
+  queuedMessageWaitStatus,
+  queueTimingLabel,
+  queueWaitStatus,
   removeFirstDaemonQueuedMessageForConversation,
   removeLocalQueueEntry,
   cancelQueuePrompt,
@@ -19,6 +22,40 @@ function makeImage(): ImageAttachment {
     mediaType: "image/png",
     base64: "i-am-base64",
     sizeBytes: 1234,
+  };
+}
+
+function conversation(id: string, overrides: Partial<ConversationSummary> = {}): ConversationSummary {
+  return {
+    id,
+    provider: "openai",
+    model: "gpt-5.4",
+    effort: "medium",
+    fastMode: false,
+    createdAt: 1,
+    updatedAt: 1,
+    messageCount: 0,
+    title: id,
+    goal: null,
+    marked: false,
+    pinned: false,
+    streaming: false,
+    unread: false,
+    sortOrder: 1,
+    ...overrides,
+  };
+}
+
+function folder(id: string, overrides: Partial<FolderSummary> = {}): FolderSummary {
+  return {
+    id,
+    name: id,
+    parentId: null,
+    createdAt: 1,
+    updatedAt: 1,
+    pinned: false,
+    sortOrder: 1,
+    ...overrides,
   };
 }
 
@@ -176,6 +213,54 @@ describe("global idle /queue shadow handling", () => {
       fastMode: true,
       folderId: "folder-1",
     });
+  });
+
+  test("stores conversation wait targets on TUI-owned queued messages", () => {
+    const state = createInitialState();
+
+    const queued = enqueueGlobalIdleMessage(state, "conv-1", "later", undefined, {
+      waitTarget: { type: "conversation", convId: "dependency", label: "Build" },
+    });
+
+    expect(queued).toEqual({
+      convId: "conv-1",
+      text: "later",
+      timing: "message-end",
+      source: "global-idle",
+      waitTarget: { type: "conversation", convId: "dependency", label: "Build" },
+    });
+    expect(queueTimingLabel(queued)).toBe("queued: after Build");
+  });
+
+  test("waits for a targeted conversation to stop streaming", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [conversation("dependency", { streaming: true })];
+    const queued = enqueueGlobalIdleMessage(state, "conv-1", "later", undefined, {
+      waitTarget: { type: "conversation", convId: "dependency", label: "Build" },
+    });
+
+    expect(queuedMessageWaitStatus(state, queued)).toBe("waiting");
+
+    state.sidebar.conversations[0]!.streaming = false;
+    expect(queuedMessageWaitStatus(state, queued)).toBe("ready");
+  });
+
+  test("waits for all descendant conversations in a target folder", () => {
+    const state = createInitialState();
+    state.sidebar.folders = [
+      folder("work", { name: "Work" }),
+      folder("clients", { name: "Clients", parentId: "work" }),
+    ];
+    state.sidebar.conversations = [
+      conversation("idle", { folderId: "work" }),
+      conversation("busy", { folderId: "clients", streaming: true }),
+      conversation("outside", { folderId: null, streaming: true }),
+    ];
+
+    expect(queueWaitStatus(state, { type: "folder", folderId: "work", label: "Work" })).toBe("waiting");
+
+    state.sidebar.conversations[1]!.streaming = false;
+    expect(queueWaitStatus(state, { type: "folder", folderId: "work", label: "Work" })).toBe("ready");
   });
 
   test("daemon queue reload cleanup preserves global idle queue entries", () => {
