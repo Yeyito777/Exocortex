@@ -282,11 +282,17 @@ export function getMacroMap(): Record<string, string> {
 }
 
 /** Sub-argument lists, keyed by "/name" or "/name arg1 ...". Used by autocomplete and prompt highlighting. */
-export function getMacroArgs(): Record<string, CompletionItem[]> {
-  return {
-    ...STATIC_MACRO_ARGS,
-    "/tool uninstall": dynamicToolUninstallArgs().map(arg => ({ name: arg.name, desc: arg.desc })),
-  };
+export function getMacroArgs(baseName?: string): Record<string, CompletionItem[]> {
+  const registry = Object.fromEntries(
+    Object.entries(STATIC_MACRO_ARGS)
+      .filter(([key]) => !baseName || key === baseName || key.startsWith(`${baseName} `)),
+  );
+
+  if (!baseName || baseName === "/tool") {
+    registry["/tool uninstall"] = dynamicToolUninstallArgs().map(arg => ({ name: arg.name, desc: arg.desc }));
+  }
+
+  return registry;
 }
 
 // ── Expansion ─────────────────────────────────────────────────────

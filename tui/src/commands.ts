@@ -79,9 +79,10 @@ export const COMMAND_LIST: CompletionItem[] = commands
   .filter((command) => command.name !== "/exit")
   .map((command) => ({ name: command.name, desc: command.description }));
 
-export function getCommandArgs(state: RenderState): Record<string, CompletionItem[]> {
+export function getCommandArgs(state: RenderState, commandName?: string): Record<string, CompletionItem[]> {
   const registry: Record<string, CompletionItem[]> = {};
-  for (const command of commands) {
+  const candidates = commandName ? commands.filter((command) => command.name === commandName) : commands;
+  for (const command of candidates) {
     if (command.args && command.args.length > 0) {
       registry[command.name] = command.args;
     }

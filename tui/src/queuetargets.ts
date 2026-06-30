@@ -4,6 +4,12 @@ import type { QueueWaitTarget, RenderState } from "./state";
 import { folderDescendantConversations, folderPath } from "./sidebar/folders";
 
 const FOLDER_ICON = "📁";
+const QUEUE_TARGET_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
 
 export interface QueueTargetCandidate {
   type: "conversation" | "folder";
@@ -30,12 +36,7 @@ function folderLabel(state: RenderState, folder: Pick<FolderSummary, "id" | "nam
 
 function formatQueueTargetTime(timestamp: number): string {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return "unknown";
-  return new Date(timestamp).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return QUEUE_TARGET_TIME_FORMATTER.format(timestamp);
 }
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {

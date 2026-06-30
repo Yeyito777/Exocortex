@@ -48,12 +48,12 @@ interface WordPosition {
   end: number;
 }
 
-export function getInlineCommandArgs(state: RenderState): Record<string, CompletionItem[]> {
-  return {
-    "/effort": effortItems(state),
-    "/fast": INLINE_FAST_ARGS,
-    "/queue": queueTargetCompletionItems(state),
-  };
+export function getInlineCommandArgs(state: RenderState, commandName?: string): Record<string, CompletionItem[]> {
+  const registry: Record<string, CompletionItem[]> = {};
+  if (!commandName || commandName === "/effort") registry["/effort"] = effortItems(state);
+  if (!commandName || commandName === "/fast") registry["/fast"] = INLINE_FAST_ARGS;
+  if (!commandName || commandName === "/queue") registry["/queue"] = queueTargetCompletionItems(state);
+  return registry;
 }
 
 export function getInlineEffortArgs(state: RenderState): Record<string, CompletionItem[]> {

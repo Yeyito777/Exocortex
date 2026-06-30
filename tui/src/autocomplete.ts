@@ -76,6 +76,14 @@ function completionMatchesPrefix(item: CompletionItem, rawPrefix: string): boole
   return item.aliases?.some(alias => alias.toLowerCase().startsWith(prefix)) ?? false;
 }
 
+function hasArgumentPrefix(raw: string): boolean {
+  return /\s/.test(raw);
+}
+
+function slashBase(raw: string): string {
+  return raw.split(/\s+/, 1)[0] ?? raw;
+}
+
 // ── Command + macro matching ──────────────────────────────────────
 
 /**
@@ -87,8 +95,11 @@ function getCommandMatches(state: RenderState, input: string): CompletionItem[] 
   if (!raw.startsWith("/")) return [];
 
   // Argument completion against both command and macro registries
-  const argMatch = matchArgCompletion(raw, getCommandArgs(state)) ?? matchArgCompletion(raw, getMacroArgs());
-  if (argMatch) return argMatch;
+  if (hasArgumentPrefix(raw)) {
+    const base = slashBase(raw);
+    const argMatch = matchArgCompletion(raw, getCommandArgs(state, base)) ?? matchArgCompletion(raw, getMacroArgs(base));
+    if (argMatch) return argMatch;
+  }
 
   const prefix = raw.toLowerCase();
   const combined = [...COMMAND_LIST, ...MACRO_LIST];
@@ -104,8 +115,11 @@ function getInlineSlashMatches(state: RenderState, token: string): CompletionIte
   const raw = token.trimStart();
   if (!raw.startsWith("/")) return [];
 
-  const argMatch = matchArgCompletion(raw, getInlineCommandArgs(state)) ?? matchArgCompletion(raw, getMacroArgs());
-  if (argMatch) return argMatch;
+  if (hasArgumentPrefix(raw)) {
+    const base = slashBase(raw);
+    const argMatch = matchArgCompletion(raw, getInlineCommandArgs(state, base)) ?? matchArgCompletion(raw, getMacroArgs(base));
+    if (argMatch) return argMatch;
+  }
 
   const prefix = raw.toLowerCase();
   return [...MACRO_LIST, ...INLINE_COMMANDS].filter(c => c.name.startsWith(prefix));

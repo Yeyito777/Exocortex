@@ -25,18 +25,18 @@ const VALID_MACRO_NAMES = new Set(MACRO_LIST.map(c => c.name));
 
 const VALID_INLINE_COMMAND_NAMES = new Set(INLINE_COMMANDS.map(c => c.name));
 
-function buildValidArgs(state: RenderState): Record<string, Set<string>> {
+function buildValidArgs(state: RenderState, baseName?: string): Record<string, Set<string>> {
   const argNames = (args: Array<{ name: string; insertText?: string; aliases?: string[] }>): string[] =>
     args.flatMap(arg => [arg.name, ...(arg.insertText ? [arg.insertText] : []), ...(arg.aliases ?? [])]);
   return {
     ...Object.fromEntries(
-      Object.entries(getCommandArgs(state)).map(([cmd, args]) => [cmd, new Set(argNames(args))]),
+      Object.entries(getCommandArgs(state, baseName)).map(([cmd, args]) => [cmd, new Set(argNames(args))]),
     ),
     ...Object.fromEntries(
-      Object.entries(getInlineCommandArgs(state)).map(([cmd, args]) => [cmd, new Set(argNames(args))]),
+      Object.entries(getInlineCommandArgs(state, baseName)).map(([cmd, args]) => [cmd, new Set(argNames(args))]),
     ),
     ...Object.fromEntries(
-      Object.entries(getMacroArgs()).map(([cmd, args]) => [cmd, new Set(argNames(args))]),
+      Object.entries(getMacroArgs(baseName)).map(([cmd, args]) => [cmd, new Set(argNames(args))]),
     ),
   };
 }
@@ -62,8 +62,8 @@ interface WordPosition { word: string; start: number; end: number }
  */
 function findCommandSpans(
   buffer: string,
-  validArgs: Record<string, Set<string>>,
-  providersWithCustomModels: Set<string>,
+  getValidArgs: (baseName: string) => Record<string, Set<string>>,
+  getProvidersWithCustomModels: () => Set<string>,
 ): Span[] {
   const spans: Span[] = [];
   const words: WordPosition[] = [];
@@ -87,11 +87,13 @@ function findCommandSpans(
 
     // Walk through subsequent words, extending highlight while args are valid
     let key = baseCmd;
+    let validArgs: Record<string, Set<string>> | null = null;
     for (let i = wordIndex + 1; i < words.length; i++) {
+      validArgs ??= getValidArgs(baseCmd);
       if (validArgs[key]?.has(words[i].word)) {
         spanEnd = words[i].end;
         key = key + " " + words[i].word;
-      } else if (key.startsWith("/model ") && providersWithCustomModels.has(key.slice("/model ".length))) {
+      } else if (key.startsWith("/model ") && getProvidersWithCustomModels().has(key.slice("/model ".length))) {
         spanEnd = words[i].end;
         break;
       } else {
@@ -107,7 +109,20 @@ function findCommandSpans(
 
 export function getPromptHighlightRanges(state: RenderState, buffer: string): Span[] {
   if (!buffer.includes("/")) return [];
-  return findCommandSpans(buffer, buildValidArgs(state), customModelProviders(state));
+  const validArgsByBase = new Map<string, Record<string, Set<string>>>();
+  let providersWithCustomModels: Set<string> | null = null;
+  return findCommandSpans(
+    buffer,
+    (baseName) => {
+      let validArgs = validArgsByBase.get(baseName);
+      if (!validArgs) {
+        validArgs = buildValidArgs(state, baseName);
+        validArgsByBase.set(baseName, validArgs);
+      }
+      return validArgs;
+    },
+    () => providersWithCustomModels ??= customModelProviders(state),
+  );
 }
 
 // ── Line highlighting ────────────────────────────────────────────
