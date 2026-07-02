@@ -11,6 +11,7 @@ import type { RenderState } from "./state";
 import { COMMAND_LIST, getCommandArgs } from "./commands";
 import { MACRO_LIST, getMacroArgs } from "./macros";
 import { INLINE_COMMANDS, getInlineCommandArgs } from "./inlineeffort";
+import { matchQueueTargetAfterCommand } from "./queuetargets";
 import { theme } from "./theme";
 import { wrappedLineOffsets } from "./promptline";
 
@@ -64,6 +65,7 @@ function findCommandSpans(
   buffer: string,
   getValidArgs: (baseName: string) => Record<string, Set<string>>,
   getProvidersWithCustomModels: () => Set<string>,
+  getQueueTargetEnd: (commandEnd: number) => number | null,
 ): Span[] {
   const spans: Span[] = [];
   const words: WordPosition[] = [];
@@ -84,6 +86,12 @@ function findCommandSpans(
     const isInlineSlash = VALID_MACRO_NAMES.has(baseCmd) || VALID_INLINE_COMMAND_NAMES.has(baseCmd);
     if (!isPromptCommand && !isInlineSlash) continue;
     let spanEnd = firstWord.end;
+
+    if (baseCmd === "/queue") {
+      spanEnd = getQueueTargetEnd(firstWord.end) ?? spanEnd;
+      spans.push({ start: firstWord.start, end: spanEnd });
+      continue;
+    }
 
     // Walk through subsequent words, extending highlight while args are valid
     let key = baseCmd;
@@ -122,6 +130,7 @@ export function getPromptHighlightRanges(state: RenderState, buffer: string): Sp
       return validArgs;
     },
     () => providersWithCustomModels ??= customModelProviders(state),
+    (commandEnd) => matchQueueTargetAfterCommand(state, buffer, commandEnd)?.end ?? null,
   );
 }
 

@@ -1,9 +1,42 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import type { ProviderInfo } from "./messages";
+import type { ConversationSummary, FolderSummary, ProviderInfo } from "./messages";
 import { clearPreferredProvider } from "./preferences";
 import { highlightPromptInput } from "./prompthighlight";
 import { createInitialState } from "./state";
 import { theme } from "./theme";
+
+function conversation(id: string, title: string, overrides: Partial<ConversationSummary> = {}): ConversationSummary {
+  return {
+    id,
+    provider: "openai",
+    model: "gpt-5.4",
+    effort: "high",
+    fastMode: false,
+    createdAt: 1,
+    updatedAt: 1,
+    messageCount: 0,
+    title,
+    marked: false,
+    pinned: false,
+    streaming: false,
+    unread: false,
+    sortOrder: 1,
+    ...overrides,
+  };
+}
+
+function folder(id: string, name: string, overrides: Partial<FolderSummary> = {}): FolderSummary {
+  return {
+    id,
+    name,
+    parentId: null,
+    createdAt: 1,
+    updatedAt: 1,
+    pinned: false,
+    sortOrder: 1,
+    ...overrides,
+  };
+}
 
 const providers: ProviderInfo[] = [
   {
@@ -101,5 +134,25 @@ describe("prompt highlighting", () => {
     const [line] = highlightPromptInput(state, [input], input, 120, 0);
 
     expect(line).toBe(`Use /model openai gpt-5.4 and ${theme.command}/effort high${theme.reset} with ${theme.command}/fast on${theme.reset} please`);
+  });
+
+  test("highlights multi-word /queue conversation targets without swallowing message text", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [conversation("conv-build", "Build the Thing")];
+
+    const input = "please /queue Build the Thing answer this";
+    const [line] = highlightPromptInput(state, [input], input, 120, 0);
+
+    expect(line).toBe(`please ${theme.command}/queue Build the Thing${theme.reset} answer this`);
+  });
+
+  test("highlights /queue folder targets selected with the folder icon", () => {
+    const state = createInitialState();
+    state.sidebar.folders = [folder("folder-work", "Work Projects")];
+
+    const input = "/queue 📁 Work Projects do it";
+    const [line] = highlightPromptInput(state, [input], input, 120, 0);
+
+    expect(line).toBe(`${theme.command}/queue 📁 Work Projects${theme.reset} do it`);
   });
 });
