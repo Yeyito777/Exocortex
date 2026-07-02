@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from "crypto";
-import { isWindows } from "@exocortex/shared/paths";
 
 function base64url(buffer: Buffer): string {
   return buffer.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
@@ -17,13 +16,15 @@ export function generateState(): string {
   return base64url(randomBytes(32));
 }
 
-export async function openUrlInBrowser(url: string): Promise<boolean> {
-  const openCmd = isWindows
-    ? ["powershell", "-NoProfile", "-Command", `Start-Process "${url}"`]
-    : ["xdg-open", url];
+export function browserOpenCommand(url: string, platform: NodeJS.Platform = process.platform): string[] {
+  if (platform === "darwin") return ["open", url];
+  if (platform === "win32") return ["powershell", "-NoProfile", "-Command", `Start-Process "${url}"`];
+  return ["xdg-open", url];
+}
 
+export async function openUrlInBrowser(url: string): Promise<boolean> {
   try {
-    const proc = Bun.spawn(openCmd, { stdout: "ignore", stderr: "ignore" });
+    const proc = Bun.spawn(browserOpenCommand(url), { stdout: "ignore", stderr: "ignore" });
     const code = await proc.exited;
     return code === 0;
   } catch {

@@ -52,6 +52,12 @@ import type { DaemonActions } from "./events/types";
 
 export type { DaemonActions } from "./events/types";
 
+export function browserOpenCommand(url: string, platform: NodeJS.Platform = process.platform): string[] {
+  if (platform === "darwin") return ["open", url];
+  if (platform === "win32") return ["cmd", "/c", "start", "", url];
+  return ["xdg-open", url];
+}
+
 export function handleEvent(
   event: Event,
   state: RenderState,
@@ -239,7 +245,7 @@ export function handleEvent(
       }
       if (event.openUrl) {
         try {
-          Bun.spawn(["xdg-open", event.openUrl], { stdout: "ignore", stderr: "ignore" }).unref();
+          Bun.spawn(browserOpenCommand(event.openUrl), { stdout: "ignore", stderr: "ignore" }).unref();
         } catch {
           pushSystemMessage(state, "Could not automatically open a browser. Paste this URL into a browser instead:", theme.warning);
           pushSystemMessage(state, event.openUrl, theme.muted);

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { handleEvent, type DaemonActions } from "./events";
+import { browserOpenCommand, handleEvent, type DaemonActions } from "./events";
 import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostics";
 import type { ConversationSummary } from "./messages";
 import { createInitialState } from "./state";
@@ -11,6 +11,20 @@ const daemon: DaemonActions = {
   setSystemInstructions() {},
   loadToolOutputs() {},
 };
+
+describe("auth browser opener", () => {
+  test("uses macOS open on Darwin", () => {
+    expect(browserOpenCommand("https://example.com/auth", "darwin")).toEqual(["open", "https://example.com/auth"]);
+  });
+
+  test("uses xdg-open on Linux", () => {
+    expect(browserOpenCommand("https://example.com/auth", "linux")).toEqual(["xdg-open", "https://example.com/auth"]);
+  });
+
+  test("uses cmd start on Windows", () => {
+    expect(browserOpenCommand("https://example.com/auth", "win32")).toEqual(["cmd", "/c", "start", "", "https://example.com/auth"]);
+  });
+});
 
 function summary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
