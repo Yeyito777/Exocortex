@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyVoicePlaceholder, chooseLinuxRecorderCommand, getRenderedVoicePrompt, insertVoiceTranscript, voicePlaceholderText, type VoicePromptState } from "./voice";
+import { applyVoicePlaceholder, chooseDarwinRecorderCommand, chooseLinuxRecorderCommand, chooseRecorderCommand, getRenderedVoicePrompt, insertVoiceTranscript, voicePlaceholderText, type VoicePromptState } from "./voice";
 
 describe("voice prompt helpers", () => {
   test("renders the requested spinner frames for recording and transcription", () => {
@@ -46,5 +46,36 @@ describe("voice prompt helpers", () => {
       command: "arecord",
       args: ["-q", "-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "wav", "/tmp/input.wav"],
     });
+  });
+
+  test("uses ffmpeg AVFoundation on macOS", () => {
+    const cmd = chooseDarwinRecorderCommand((name) => name === "ffmpeg", "/tmp/input.wav");
+    expect(cmd).toEqual({
+      command: "ffmpeg",
+      args: [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-f",
+        "avfoundation",
+        "-i",
+        "none:default",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_s16le",
+        "-y",
+        "/tmp/input.wav",
+      ],
+    });
+  });
+
+  test("dispatches recorder selection by platform", () => {
+    expect(chooseRecorderCommand("darwin", (name) => name === "ffmpeg", "/tmp/input.wav")?.args).toContain("avfoundation");
+    expect(chooseRecorderCommand("linux", (name) => name === "pw-record", "/tmp/input.wav")?.command).toBe("pw-record");
+    expect(chooseRecorderCommand("win32", () => true, "/tmp/input.wav")).toBeNull();
   });
 });

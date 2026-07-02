@@ -223,6 +223,50 @@ export function chooseLinuxRecorderCommand(
   return null;
 }
 
+export function chooseDarwinRecorderCommand(
+  hasCommand: (command: string) => boolean,
+  outputPath: string,
+): RecorderCommand | null {
+  if (!hasCommand("ffmpeg")) return null;
+  return {
+    command: "ffmpeg",
+    args: [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-nostdin",
+      "-f",
+      "avfoundation",
+      "-i",
+      process.env.EXOCORTEX_VOICE_AVFOUNDATION_DEVICE || "none:default",
+      "-ac",
+      "1",
+      "-ar",
+      "16000",
+      "-c:a",
+      "pcm_s16le",
+      "-y",
+      outputPath,
+    ],
+  };
+}
+
+export function chooseRecorderCommand(
+  platform: NodeJS.Platform,
+  hasCommand: (command: string) => boolean,
+  outputPath: string,
+): RecorderCommand | null {
+  if (platform === "linux") return chooseLinuxRecorderCommand(hasCommand, outputPath);
+  if (platform === "darwin") return chooseDarwinRecorderCommand(hasCommand, outputPath);
+  return null;
+}
+
+function recorderDependencyMessage(platform: NodeJS.Platform): string {
+  if (platform === "linux") return "Voice input requires pw-record, arecord, or ffmpeg to be installed.";
+  if (platform === "darwin") return "Voice input on macOS requires ffmpeg to be installed.";
+  return `Voice input is currently only implemented for Linux and macOS (got ${platform}).`;
+}
+
 function commandExists(command: string): boolean {
   if (typeof Bun !== "undefined" && typeof Bun.which === "function") {
     return Bun.which(command) !== null;
@@ -261,15 +305,12 @@ export class VoiceRecorder {
   }
 
   static start(): VoiceRecorder {
-    if (process.platform !== "linux") {
-      throw new Error(`Voice input is currently only implemented for Linux (got ${process.platform}).`);
-    }
     const tmpDir = mkdtempSync(join(tmpdir(), "exocortex-voice-"));
     const filePath = join(tmpDir, "input.wav");
-    const recorder = chooseLinuxRecorderCommand(commandExists, filePath);
+    const recorder = chooseRecorderCommand(process.platform, commandExists, filePath);
     if (!recorder) {
       cleanupPath(tmpDir);
-      throw new Error("Voice input requires pw-record, arecord, or ffmpeg to be installed.");
+      throw new Error(recorderDependencyMessage(process.platform));
     }
     const child = spawn(recorder.command, recorder.args, {
       stdio: ["ignore", "ignore", "pipe"],
