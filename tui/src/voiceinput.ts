@@ -716,7 +716,11 @@ export function createVoiceInputController(
       }
       if (isVoicePassthroughKey(key)) return false;
       if (key.type === "enter") {
-        submitActiveTranscription();
+        submitActiveTranscription(
+          deps.shouldQueuePendingTranscription?.()
+            ? { queueTiming: "message-end" }
+            : undefined,
+        );
         void stopVoiceRecordingAndTranscribe();
         return true;
       }

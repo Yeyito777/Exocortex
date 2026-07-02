@@ -1025,8 +1025,9 @@ function submitPendingVoiceTranscription(
     images,
     metadata: createMessageMetadata(startedAt, state.model),
   };
-  const queuedMessage = options.queueTiming && state.convId
-    ? { convId: state.convId, text: placeholderText, timing: options.queueTiming, images }
+  const queueTiming = options.queueTiming ?? (state.convId && isStreaming(state) ? "message-end" : undefined);
+  const queuedMessage = queueTiming && state.convId
+    ? { convId: state.convId, text: placeholderText, timing: queueTiming, images }
     : undefined;
   if (queuedMessage) {
     state.queuedMessages.push(queuedMessage);

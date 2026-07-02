@@ -77,6 +77,35 @@ describe("queued message rendering", () => {
     expect(rendered.some(line => line.includes("belongs elsewhere"))).toBe(false);
     expect(rendered.some(line => line.includes("queued: global idle"))).toBe(false);
   });
+
+  test("anchors queued messages below a metadata-only pending assistant turn", () => {
+    const state = {
+      messages: [
+        { role: "user", text: "start work", metadata: null },
+      ],
+      pendingAI: {
+        role: "assistant",
+        blocks: [],
+        metadata: { startedAt: Date.now(), endedAt: null, tokens: 0, model: "gpt-5.4" },
+      },
+      pendingAICommittedIndex: null,
+      suppressPendingAIMetadataStartedAt: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: "conv-1",
+      queuedMessages: [
+        { convId: "conv-1", text: "queued voice transcript", timing: "message-end" },
+      ],
+    } as any;
+
+    const rendered = buildMessageLines(state, 80).lines.map(stripAnsi);
+    const pendingMetadataIndex = rendered.findIndex(line => line.includes("0 tokens"));
+    const queuedIndex = rendered.findIndex(line => line.includes("queued voice transcript"));
+
+    expect(pendingMetadataIndex).toBeGreaterThan(-1);
+    expect(queuedIndex).toBeGreaterThan(pendingMetadataIndex);
+  });
 });
 
 describe("tool call rendering", () => {

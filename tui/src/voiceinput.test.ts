@@ -1077,4 +1077,70 @@ describe("voice input controller", () => {
       controller.cleanup();
     }
   });
+
+  test("enter while actively recording submits a queued placeholder during streaming", async () => {
+    const state = createInitialState();
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "normal";
+    state.convId = "conv-streaming";
+
+    let clock = 61_000;
+    let submittedTiming: string | undefined;
+    let submittedPlaceholder = "";
+    let transcriptSuccess: ((text: string) => void) | null = null;
+    const controller = createVoiceInputController(
+      state,
+      {
+        transcribeAudio(_audioBase64, _mimeType, onSuccess) {
+          transcriptSuccess = onSuccess;
+        },
+      },
+      () => {},
+      {
+        startRecorder: () => ({
+          stop: async () => ({ bytes: Buffer.from([1, 2, 3]), mimeType: "audio/wav" }),
+          abort() {},
+        }),
+        now: () => clock,
+        shouldQueuePendingTranscription: () => true,
+        submitPendingTranscription: (placeholderText, options) => {
+          submittedPlaceholder = placeholderText;
+          submittedTiming = options?.queueTiming;
+          const message: UserMessage = { role: "user", text: placeholderText, metadata: null };
+          const queuedMessage = { convId: state.convId!, text: placeholderText, timing: options?.queueTiming ?? "message-end" as const };
+          state.queuedMessages.push(queuedMessage);
+          return {
+            message,
+            queuedMessage,
+            startedAt: 790,
+            convId: state.convId,
+            provider: state.provider,
+            model: state.model,
+            effort: state.effort,
+            fastMode: state.fastMode,
+            folderId: state.sidebar.currentFolderId,
+            wasStreaming: true,
+          };
+        },
+      },
+    );
+
+    try {
+      expect(controller.handleKey({ type: "char", char: " ", event: "press" })).toBe(true);
+      clock += 600;
+      expect(controller.handleKey({ type: "enter" })).toBe(true);
+      await Promise.resolve();
+
+      expect(submittedTiming).toBe("message-end");
+      expect(submittedPlaceholder).toContain("Transcribing…");
+      expect(state.queuedMessages[0]?.text).toContain("Transcribing…");
+      expect(state.messages.some(message => message.role === "user" && message.text.includes("Transcribing…"))).toBe(false);
+
+      expect(transcriptSuccess).not.toBeNull();
+      transcriptSuccess!("queued text");
+    } finally {
+      controller.cleanup();
+    }
+  });
 });
