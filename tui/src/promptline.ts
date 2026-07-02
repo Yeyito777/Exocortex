@@ -142,6 +142,13 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
     return HANDLED;
   }
 
+  // Up/Down choose from the visible autocomplete popup when it is open.
+  if (state.autocomplete && (key.type === "up" || key.type === "down")) {
+    cycleAutocomplete(state, key.type === "down" ? 1 : -1);
+    resetPromptCurswant(state);
+    return HANDLED;
+  }
+
   // Symbol keys (Ctrl+number row → F14-F24 from st)
   const sym = getSymbol(key);
   if (sym) {

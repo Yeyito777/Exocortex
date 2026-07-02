@@ -354,6 +354,29 @@ describe("autocomplete with vim Escape", () => {
     expect(state.inputBuffer).toBe("/queue Build the Thing");
   });
 
+  test("/queue target autocomplete can be picked with arrow keys", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [
+      conversation("conv-alpha", 1, { title: "Alpha", updatedAt: 10 }),
+      conversation("conv-beta", 2, { title: "Beta", updatedAt: 20 }),
+    ];
+
+    typePromptText(state, "/queue ");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["Beta", "Alpha"]);
+
+    expect(handleFocusedKey({ type: "down" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("/queue Beta");
+    expect(state.autocomplete?.selection).toBe(0);
+
+    expect(handleFocusedKey({ type: "down" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("/queue Alpha");
+    expect(state.autocomplete?.selection).toBe(1);
+
+    expect(handleFocusedKey({ type: "up" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("/queue Beta");
+    expect(state.autocomplete?.selection).toBe(0);
+  });
+
   test("mid-message autocomplete does not offer ordinary slash commands", () => {
     const state = createInitialState();
 

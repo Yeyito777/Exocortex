@@ -4,6 +4,7 @@ import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, inv
 import { createInitialState, type RenderState } from "./state";
 import { invalidateFrame } from "./frame";
 import { theme } from "./theme";
+import { termWidth } from "./textwidth";
 
 function captureRenderOutput(state: RenderState): string {
   let out = "";
@@ -26,6 +27,28 @@ function renderSilently(state: RenderState): void {
 
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function stripCsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+}
+
+function positionedWrites(output: string): Array<{ row: number; col: number; text: string }> {
+  const moveRe = /\x1b\[(\d+);(\d+)H/g;
+  const writes: Array<{ row: number; col: number; start: number; text: string }> = [];
+  let current: { row: number; col: number; start: number; text: string } | null = null;
+  for (let match = moveRe.exec(output); match !== null; match = moveRe.exec(output)) {
+    if (current) {
+      current.text = output.slice(current.start, match.index);
+      writes.push(current);
+    }
+    current = { row: Number(match[1]), col: Number(match[2]), start: moveRe.lastIndex, text: "" };
+  }
+  if (current) {
+    current.text = output.slice(current.start);
+    writes.push(current);
+  }
+  return writes;
 }
 
 function makeState(): RenderState {
@@ -168,6 +191,70 @@ describe("render caching and frame diffing", () => {
 
     expect(out).toContain(theme.command + "/go" + theme.reset);
     expect(stripAnsi(out)).toContain("Transcribing… /go");
+  });
+
+  test("autocomplete popup is capped instead of covering the whole message area", () => {
+    const state = createInitialState();
+    state.cols = 100;
+    state.rows = 40;
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "insert";
+    state.inputBuffer = "/queue ";
+    state.cursorPos = state.inputBuffer.length;
+    state.autocomplete = {
+      type: "command",
+      selection: -1,
+      prefix: state.inputBuffer,
+      tokenStart: 0,
+      matches: Array.from({ length: 25 }, (_, i) => ({
+        name: `queue-target-${String(i).padStart(2, "0")}`,
+        desc: "conversation",
+      })),
+    };
+
+    const plain = stripAnsi(captureRenderOutput(state));
+    const renderedTargets = plain.match(/queue-target-\d\d/g) ?? [];
+
+    expect(renderedTargets).toHaveLength(10);
+    expect(renderedTargets).toContain("queue-target-00");
+    expect(renderedTargets).toContain("queue-target-09");
+    expect(renderedTargets).not.toContain("queue-target-10");
+  });
+
+  test("autocomplete rows never exceed the chat width even with long offscreen matches", () => {
+    const state = createInitialState();
+    state.cols = 80;
+    state.rows = 30;
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "insert";
+    state.inputBuffer = "/queue ";
+    state.cursorPos = state.inputBuffer.length;
+    state.autocomplete = {
+      type: "command",
+      selection: -1,
+      prefix: state.inputBuffer,
+      tokenStart: 0,
+      matches: [
+        ...Array.from({ length: 10 }, (_, i) => ({
+          name: `queue-target-${String(i).padStart(2, "0")}`,
+          desc: "conversation",
+        })),
+        { name: `long-offscreen-${"x".repeat(500)}`, desc: "conversation" },
+      ],
+    };
+
+    const writes = positionedWrites(captureRenderOutput(state));
+    const autocompleteRows = writes
+      .map(write => ({ ...write, plain: stripCsi(stripAnsi(write.text)) }))
+      .filter(write => write.plain.includes("queue-target") || write.plain.includes("long-offscreen"));
+
+    expect(autocompleteRows).toHaveLength(10);
+    for (const row of autocompleteRows) {
+      expect(row.col).toBe(1);
+      expect(termWidth(row.plain)).toBeLessThanOrEqual(state.cols - 2);
+    }
   });
 
   test("defers older chat-history rendering for first paint, then fills it in", () => {

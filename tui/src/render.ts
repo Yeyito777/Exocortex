@@ -65,6 +65,7 @@ const DEFERRED_HISTORY_MIN_MESSAGES = 24;
 const DEFERRED_HISTORY_INITIAL_MESSAGE_BATCH = 8;
 const DEFERRED_HISTORY_ADVANCE_MESSAGE_BATCH = 8;
 const DEFERRED_HISTORY_GRACE_LINES = 200;
+const AUTOCOMPLETE_MAX_VISIBLE_ROWS = 10;
 
 function canReuseHistoryRender(cached: HistoryRenderCacheEntry, state: RenderState, width: number): boolean {
   return cached.width === width
@@ -413,6 +414,10 @@ function renderMessageArea(
   }
 }
 
+function autocompleteDisplayText(text: string): string {
+  return text.replace(/[\r\n\t]+/g, " ").replace(/[\x00-\x1F\x7F]/g, "");
+}
+
 /**
  * Render the autocomplete popup overlay above the input area.
  * Floats over the message area when the autocomplete state is active.
@@ -427,13 +432,7 @@ function renderAutocompletePopup(
 
   const { chatCol } = ctx;
   const { matches, selection: sel } = state.autocomplete;
-  const maxName = matches.reduce((m, c) => Math.max(m, termWidth(c.name)), 0);
-  const maxDesc = matches.reduce((m, c) => Math.max(m, termWidth(c.desc)), 0);
-  const popupWidth = Math.min(maxName + maxDesc + 6, chatW - 2);
-  const nameWidth = maxName + 1;
-  const descWidth = popupWidth - nameWidth - 4;
-
-  const maxVisible = Math.max(1, sepAbove - 3);
+  const maxVisible = Math.max(1, Math.min(AUTOCOMPLETE_MAX_VISIBLE_ROWS, sepAbove - 3));
   const total = matches.length;
   const winSize = Math.min(total, maxVisible);
   let winStart = 0;
@@ -443,29 +442,35 @@ function renderAutocompletePopup(
     winStart = Math.max(0, Math.min(ideal, total - winSize));
   }
 
+  const visibleMatches = matches.slice(winStart, winStart + winSize);
+  const popupWidth = Math.max(1, chatW - 2);
+  const markerWidth = popupWidth >= 2 ? 2 : 0;
+  const indicatorWidth = total > winSize && popupWidth - markerWidth >= 2 ? 2 : 0;
+  const contentWidth = Math.max(0, popupWidth - markerWidth - indicatorWidth);
+  const maxName = visibleMatches.reduce((m, c) => Math.max(m, termWidth(autocompleteDisplayText(c.name))), 0);
+  const nameWidth = Math.min(maxName + (contentWidth > 0 ? 1 : 0), contentWidth);
+  const descWidth = Math.max(0, contentWidth - nameWidth);
+
   const topRow = sepAbove - winSize;
   for (let vi = 0; vi < winSize; vi++) {
     const i = winStart + vi;
     const row = topRow + vi;
     const isSelected = sel === i;
     const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;
-    const marker = isSelected ? "▸ " : "  ";
-    const name = padRightToWidth(matches[i].name, nameWidth);
-    const desc = padRightToWidth(matches[i].desc, descWidth);
+    const marker = markerWidth > 0 ? padRightToWidth(isSelected ? "▸ " : "  ", markerWidth) : "";
+    const name = padRightToWidth(autocompleteDisplayText(matches[i].name), nameWidth);
+    const desc = padRightToWidth(autocompleteDisplayText(matches[i].desc), descWidth);
+    const upIndicator = vi === 0 && winStart > 0;
+    const downIndicator = vi === winSize - 1 && winStart + winSize < total;
+    const indicator = indicatorWidth > 0
+      ? padRightToWidth(upIndicator ? "▲" : downIndicator ? "▼" : "", indicatorWidth)
+      : "";
     appendRowWrite(
       ctx,
       row,
       chatCol,
-      bg + theme.accent + marker + theme.text + name + theme.dim + desc + theme.reset,
+      bg + theme.accent + marker + theme.text + name + theme.dim + desc + indicator + theme.reset,
     );
-  }
-
-  // Scroll indicators when items are clipped
-  if (winStart > 0) {
-    appendRowWrite(ctx, topRow, chatCol + popupWidth - 2, theme.sidebarBg + theme.dim + " ▲" + theme.reset);
-  }
-  if (winStart + winSize < total) {
-    appendRowWrite(ctx, topRow + winSize - 1, chatCol + popupWidth - 2, theme.sidebarBg + theme.dim + " ▼" + theme.reset);
   }
 }
 
