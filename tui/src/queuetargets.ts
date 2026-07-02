@@ -4,12 +4,6 @@ import type { QueueWaitTarget, RenderState } from "./state";
 import { folderDescendantConversations, folderPath } from "./sidebar/folders";
 
 const FOLDER_ICON = "📁";
-const QUEUE_TARGET_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-});
 
 export interface QueueTargetCandidate {
   type: "conversation" | "folder";
@@ -34,11 +28,6 @@ function folderLabel(state: RenderState, folder: Pick<FolderSummary, "id" | "nam
   return nonEmptyLabel(folderPath(state.sidebar, folder.id), nonEmptyLabel(folder.name, "Folder"));
 }
 
-function formatQueueTargetTime(timestamp: number): string {
-  if (!Number.isFinite(timestamp) || timestamp <= 0) return "unknown";
-  return QUEUE_TARGET_TIME_FORMATTER.format(timestamp);
-}
-
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -53,21 +42,22 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
   return out;
 }
 
+function conversationLocation(state: RenderState, folderId: string | null | undefined): string {
+  return folderPath(state.sidebar, folderId) || "top-level";
+}
+
 function conversationCandidates(state: RenderState): QueueTargetCandidate[] {
   return [...state.sidebar.conversations]
     .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt || a.id.localeCompare(b.id))
     .map((conv) => {
       const title = conversationTitle(conv);
-      const folder = conv.folderId ? folderPath(state.sidebar, conv.folderId) : "";
-      const descBits = ["conversation", `updated ${formatQueueTargetTime(conv.updatedAt)}`, conv.id];
-      if (folder) descBits.splice(1, 0, `in ${folder}`);
       return {
         type: "conversation" as const,
         id: conv.id,
         label: title,
         completionName: title,
         aliases: uniqueStrings([title, conv.id]),
-        desc: descBits.join(" • "),
+        desc: `in ${conversationLocation(state, conv.folderId)}`,
         waitTarget: { type: "conversation" as const, convId: conv.id, label: title },
       };
     });
@@ -79,14 +69,13 @@ function folderCandidates(state: RenderState): QueueTargetCandidate[] {
     .map((folder) => {
       const label = folderLabel(state, folder);
       const childCount = folderDescendantConversations(state.sidebar, folder.id).length;
-      const descBits = [`${FOLDER_ICON} folder`, `${childCount} conversation${childCount === 1 ? "" : "s"}`];
       return {
         type: "folder" as const,
         id: folder.id,
         label,
         completionName: `${FOLDER_ICON} ${label}`,
         aliases: uniqueStrings([label, folder.name, folder.id]),
-        desc: descBits.join(" • "),
+        desc: `${childCount} conversation${childCount === 1 ? "" : "s"}`,
         waitTarget: { type: "folder" as const, folderId: folder.id, label },
       };
     });

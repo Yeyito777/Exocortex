@@ -328,7 +328,7 @@ describe("autocomplete with vim Escape", () => {
     const state = createInitialState();
     state.sidebar.conversations = [
       conversation("older-build", 1, { title: "Build", updatedAt: 10 }),
-      conversation("newer-build", 2, { title: "Build", updatedAt: 20 }),
+      conversation("newer-build", 2, { title: "Build", updatedAt: 20, folderId: "folder-build" }),
     ];
     state.sidebar.folders = [folder("folder-build", 1, { name: "Build" })];
 
@@ -336,9 +336,7 @@ describe("autocomplete with vim Escape", () => {
 
     expect(state.autocomplete?.type).toBe("command");
     expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["Build", "Build", "📁 Build"]);
-    expect(state.autocomplete?.matches[0]?.desc).toContain("newer-build");
-    expect(state.autocomplete?.matches[1]?.desc).toContain("older-build");
-    expect(state.autocomplete?.matches[2]?.desc).toContain("📁 folder");
+    expect(state.autocomplete?.matches.map(match => match.desc)).toEqual(["in Build", "in top-level", "1 conversation"]);
   });
 
   test("/queue target autocomplete replaces the whole multi-word target", () => {
