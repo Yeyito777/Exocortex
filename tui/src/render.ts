@@ -443,12 +443,17 @@ function renderAutocompletePopup(
   }
 
   const visibleMatches = matches.slice(winStart, winStart + winSize);
-  const popupWidth = Math.max(1, chatW - 2);
-  const markerWidth = popupWidth >= 2 ? 2 : 0;
-  const indicatorWidth = total > winSize && popupWidth - markerWidth >= 2 ? 2 : 0;
-  const contentWidth = Math.max(0, popupWidth - markerWidth - indicatorWidth);
-  const maxName = visibleMatches.reduce((m, c) => Math.max(m, termWidth(autocompleteDisplayText(c.name))), 0);
-  const nameWidth = Math.min(maxName + (contentWidth > 0 ? 1 : 0), contentWidth);
+  const visibleNames = visibleMatches.map(match => autocompleteDisplayText(match.name));
+  const visibleDescs = visibleMatches.map(match => autocompleteDisplayText(match.desc));
+  const maxPopupWidth = Math.max(1, chatW - 2);
+  const markerWidth = maxPopupWidth >= 2 ? 2 : 0;
+  const indicatorWidth = total > winSize && maxPopupWidth - markerWidth >= 2 ? 2 : 0;
+  const maxName = visibleNames.reduce((m, name) => Math.max(m, termWidth(name)), 0);
+  const maxDesc = visibleDescs.reduce((m, desc) => Math.max(m, termWidth(desc)), 0);
+  const desiredNameWidth = Math.min(maxName + (maxDesc > 0 ? 1 : 0), maxPopupWidth);
+  const desiredPopupWidth = Math.max(1, Math.min(maxPopupWidth, markerWidth + indicatorWidth + desiredNameWidth + maxDesc));
+  const contentWidth = Math.max(0, desiredPopupWidth - markerWidth - indicatorWidth);
+  const nameWidth = Math.min(desiredNameWidth, contentWidth);
   const descWidth = Math.max(0, contentWidth - nameWidth);
 
   const topRow = sepAbove - winSize;
@@ -458,12 +463,12 @@ function renderAutocompletePopup(
     const isSelected = sel === i;
     const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;
     const marker = markerWidth > 0 ? padRightToWidth(isSelected ? "▸ " : "  ", markerWidth) : "";
-    const name = padRightToWidth(autocompleteDisplayText(matches[i].name), nameWidth);
-    const desc = padRightToWidth(autocompleteDisplayText(matches[i].desc), descWidth);
+    const name = padRightToWidth(visibleNames[vi], nameWidth);
+    const desc = padRightToWidth(visibleDescs[vi], descWidth);
     const upIndicator = vi === 0 && winStart > 0;
     const downIndicator = vi === winSize - 1 && winStart + winSize < total;
     const indicator = indicatorWidth > 0
-      ? padRightToWidth(upIndicator ? "▲" : downIndicator ? "▼" : "", indicatorWidth)
+      ? padRightToWidth(upIndicator ? " ▲" : downIndicator ? " ▼" : "", indicatorWidth)
       : "";
     appendRowWrite(
       ctx,

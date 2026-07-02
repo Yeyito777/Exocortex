@@ -222,6 +222,38 @@ describe("render caching and frame diffing", () => {
     expect(renderedTargets).not.toContain("queue-target-10");
   });
 
+  test("autocomplete popup dynamically sizes to visible content", () => {
+    const state = createInitialState();
+    state.cols = 120;
+    state.rows = 30;
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "insert";
+    state.inputBuffer = "/queue ";
+    state.cursorPos = state.inputBuffer.length;
+    state.autocomplete = {
+      type: "command",
+      selection: -1,
+      prefix: state.inputBuffer,
+      tokenStart: 0,
+      matches: [
+        { name: "alpha", desc: "desc" },
+        { name: "beta", desc: "desc" },
+      ],
+    };
+
+    const writes = positionedWrites(captureRenderOutput(state));
+    const autocompleteRows = writes
+      .map(write => ({ ...write, plain: stripCsi(stripAnsi(write.text)) }))
+      .filter(write => write.plain.includes("alpha") || write.plain.includes("beta"));
+
+    expect(autocompleteRows).toHaveLength(2);
+    for (const row of autocompleteRows) {
+      expect(termWidth(row.plain)).toBe(12);
+      expect(termWidth(row.plain)).toBeLessThan(state.cols - 2);
+    }
+  });
+
   test("autocomplete rows never exceed the chat width even with long offscreen matches", () => {
     const state = createInitialState();
     state.cols = 80;
