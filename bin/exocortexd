@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # exocortexd — Exocortex daemon.
 # Thin wrapper that resolves the project root and runs the daemon entry point.
-# Service subcommands use systemctl; restart gracefully interrupts active streams and replays them after boot.
+# Service subcommands use systemctl on Linux and launchctl on macOS.
+# Restart gracefully interrupts active streams and replays them after boot.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 SERVICE="exocortex-daemon.service"
+LAUNCHD_LABEL="${EXOCORTEX_LAUNCHD_LABEL:-com.exocortex.daemon}"
 RED=$'\033[31m'
 RESET=$'\033[0m'
 
@@ -18,10 +20,219 @@ print_error() {
   fi
 }
 
+is_macos() {
+  [[ "$(uname -s)" == "Darwin" ]]
+}
+
+launchd_domain() {
+  printf 'gui/%s' "$(id -u)"
+}
+
+launchd_target() {
+  printf '%s/%s' "$(launchd_domain)" "$LAUNCHD_LABEL"
+}
+
+launchd_plist() {
+  printf '%s/Library/LaunchAgents/%s.plist' "$HOME" "$LAUNCHD_LABEL"
+}
+
+daemon_socket_path() {
+  printf '%s/config/runtime/exocortexd.sock' "$PROJECT_DIR"
+}
+
+launchd_service_is_loaded() {
+  launchctl print "$(launchd_target)" >/dev/null 2>&1
+}
+
+launchd_status_output() {
+  launchctl print "$(launchd_target)" 2>/dev/null || true
+}
+
+launchd_service_is_running() {
+  local status
+  status="$(launchd_status_output)"
+  grep -q "state = running" <<< "$status"
+}
+
+launchd_status_field() {
+  local field="$1"
+  sed -n "s/^[[:space:]]*$field = //p" | head -n 1
+}
+
+print_launchd_summary() {
+  local status state pid runs last_exit socket log
+  status="$(launchd_status_output)"
+  state="$(printf '%s\n' "$status" | launchd_status_field "state")"
+  pid="$(printf '%s\n' "$status" | launchd_status_field "pid")"
+  runs="$(printf '%s\n' "$status" | launchd_status_field "runs")"
+  last_exit="$(printf '%s\n' "$status" | launchd_status_field "last exit code")"
+  socket="$(daemon_socket_path)"
+  log="$PROJECT_DIR/config/runtime/launchd.out.log"
+
+  echo "  • LaunchAgent: $LAUNCHD_LABEL (${state:-unknown})"
+  [[ -n "$pid" ]] && echo "  • PID: $pid"
+  [[ -n "$runs" ]] && echo "  • Runs: $runs"
+  [[ -n "$last_exit" ]] && echo "  • Last exit: $last_exit"
+  if [[ -S "$socket" ]]; then
+    echo "  • Socket: $socket"
+  else
+    echo "  • Socket: not ready yet ($socket)"
+  fi
+  echo "  • Logs: $log"
+  echo "  • Details: exocortexd status --verbose"
+}
+
+wait_for_launchd_running() {
+  for _ in {1..50}; do
+    if launchd_service_is_running; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+wait_for_daemon_socket() {
+  local socket
+  socket="$(daemon_socket_path)"
+  for _ in {1..100}; do
+    if [[ -S "$socket" ]]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+ensure_launchd_service_loaded() {
+  if launchd_service_is_loaded; then
+    return
+  fi
+
+  local plist
+  plist="$(launchd_plist)"
+  if [[ ! -f "$plist" ]]; then
+    print_error "LaunchAgent not found: $plist"
+    echo "    Install the daemon LaunchAgent first, then retry." >&2
+    exit 1
+  fi
+
+  launchctl bootstrap "$(launchd_domain)" "$plist"
+  launchctl enable "$(launchd_target)" 2>/dev/null || true
+}
+
 restart_service() {
-  systemctl --user restart "$SERVICE"
-  echo "  ✓ Restarted"
-  systemctl --user status "$SERVICE" --no-pager
+  if is_macos; then
+    ensure_launchd_service_loaded
+    launchctl kickstart -k "$(launchd_target)"
+    if ! wait_for_launchd_running; then
+      print_error "Timed out waiting for LaunchAgent to restart: $(launchd_target)"
+      print_launchd_summary >&2
+      exit 1
+    fi
+    wait_for_daemon_socket || true
+    echo "  ✓ Restarted"
+    print_launchd_summary
+  else
+    systemctl --user restart "$SERVICE"
+    echo "  ✓ Restarted"
+    systemctl --user status "$SERVICE" --no-pager
+  fi
+}
+
+start_service() {
+  if is_macos; then
+    ensure_launchd_service_loaded
+    if launchd_service_is_running; then
+      echo "  • Already running"
+      print_launchd_summary
+      return
+    fi
+    launchctl kickstart "$(launchd_target)"
+    if ! wait_for_launchd_running; then
+      print_error "Timed out waiting for LaunchAgent to start: $(launchd_target)"
+      print_launchd_summary >&2
+      exit 1
+    fi
+    wait_for_daemon_socket || true
+    echo "  ✓ Started"
+    print_launchd_summary
+  else
+    systemctl --user start "$SERVICE"
+    echo "  ✓ Started"
+    systemctl --user status "$SERVICE" --no-pager
+  fi
+}
+
+stop_service() {
+  if is_macos; then
+    if ! launchd_service_is_loaded; then
+      echo "  • Not loaded"
+      return
+    fi
+
+    if launchd_service_is_running; then
+      launchctl kill TERM "$(launchd_target)" 2>/dev/null || true
+      for _ in {1..50}; do
+        if ! launchd_service_is_running; then
+          break
+        fi
+        sleep 0.1
+      done
+    fi
+
+    if launchd_service_is_running; then
+      print_error "Timed out waiting for LaunchAgent to stop: $(launchd_target)"
+      exit 1
+    fi
+
+    echo "  ✓ Stopped"
+  else
+    systemctl --user stop "$SERVICE"
+    echo "  ✓ Stopped"
+  fi
+}
+
+status_service() {
+  if is_macos; then
+    local verbose=0
+    while (($# > 0)); do
+      case "$1" in
+        -v|--verbose)
+          verbose=1
+          ;;
+        *)
+          print_error "Unknown status option: $1"
+          echo "    Usage: exocortexd status [--verbose|-v]" >&2
+          exit 2
+          ;;
+      esac
+      shift
+    done
+
+    if ! launchd_service_is_loaded; then
+      print_error "LaunchAgent is not loaded: $(launchd_target)"
+      local plist
+      plist="$(launchd_plist)"
+      [[ -f "$plist" ]] && echo "    plist: $plist" >&2
+      exit 3
+    fi
+    if (( verbose == 1 )); then
+      launchctl print "$(launchd_target)"
+    else
+      print_launchd_summary
+    fi
+  else
+    systemctl --user status "$SERVICE" --no-pager
+  fi
+}
+
+service_is_active() {
+  if is_macos; then
+    launchd_service_is_running
+  else
+    systemctl --user is-active --quiet "$SERVICE"
+  fi
 }
 
 prepare_restart_for_replay() {
@@ -60,7 +271,7 @@ handle_restart() {
     shift
   done
 
-  if (( force == 0 )) && systemctl --user is-active --quiet "$SERVICE"; then
+  if (( force == 0 )) && service_is_active; then
     local interrupted_output
     if ! interrupted_output="$(prepare_restart_for_replay)"; then
       print_error "Failed to prepare running conversations for replay; use --force to override"
@@ -82,16 +293,19 @@ handle_restart() {
 }
 
 case "${1:-}" in
+  start)
+    start_service
+    ;;
   restart)
     shift
     handle_restart "$@"
     ;;
   stop)
-    systemctl --user stop "$SERVICE"
-    echo "  ✓ Stopped"
+    stop_service
     ;;
   status)
-    systemctl --user status "$SERVICE" --no-pager
+    shift
+    status_service "$@"
     ;;
   *)
     exec "$PROJECT_DIR/scripts/setup/run-daemon.sh" "$@"
