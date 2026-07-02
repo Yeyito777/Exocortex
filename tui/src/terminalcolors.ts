@@ -232,10 +232,6 @@ export function detectTerminalColorLevel(env: TerminalColorEnv = process.env as 
   const explicit = normalizeOverride(env.EXOCORTEX_TUI_COLOR);
   if (explicit) return explicit;
 
-  // Respect common color knobs when a caller explicitly sets them.  NO_COLOR is
-  // interpreted as the lowest colored mode rather than disabling ANSI entirely;
-  // the TUI layout currently depends on style resets and highlighted regions.
-  if (env.NO_COLOR) return "16";
   const forced = normalizeOverride(env.FORCE_COLOR);
   if (forced) return forced;
 
@@ -256,9 +252,8 @@ export function detectTerminalColorLevel(env: TerminalColorEnv = process.env as 
   // SSH this variable is often absent; TERM/COLORTERM remain the portable path.
   if (["wezterm", "ghostty", "kitty", "iterm.app"].includes(termProgram)) return "truecolor";
 
-  // Apple Terminal.app commonly reports xterm-256color and has historically not
-  // been a reliable truecolor target, so keep it on the 256-color path unless a
-  // stronger signal above says otherwise.
+  // Match Record's Apple Terminal behavior: use the xterm-256 fallback, which
+  // preserves Whale's deep blue backgrounds better than the ANSI-16 fallback.
   if (termProgram === "apple_terminal") return "256";
 
   if (term.includes("256color") || term.includes("256")) return "256";

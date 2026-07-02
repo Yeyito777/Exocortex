@@ -8,7 +8,9 @@ describe("terminal color capability detection", () => {
 
   test("treats Apple Terminal as 256-color unless truecolor is explicitly advertised", () => {
     expect(detectTerminalColorLevel({ TERM: "xterm-256color", TERM_PROGRAM: "Apple_Terminal" })).toBe("256");
+    expect(detectTerminalColorLevel({ TERM: "xterm-256color", TERM_PROGRAM: "Apple_Terminal", NO_COLOR: "1" })).toBe("256");
     expect(detectTerminalColorLevel({ TERM: "xterm-256color", TERM_PROGRAM: "Apple_Terminal", COLORTERM: "truecolor" })).toBe("truecolor");
+    expect(detectTerminalColorLevel({ TERM: "xterm-256color", TERM_PROGRAM: "Apple_Terminal", EXOCORTEX_TUI_COLOR: "16" })).toBe("16");
   });
 
   test("recognizes direct/truecolor terminals", () => {
