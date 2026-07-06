@@ -5,6 +5,7 @@ import { createInitialState, type RenderState } from "./state";
 import { invalidateFrame } from "./frame";
 import { theme } from "./theme";
 import { termWidth } from "./textwidth";
+import { hide_cursor, show_cursor } from "./terminal";
 
 function captureRenderOutput(state: RenderState): string {
   let out = "";
@@ -126,6 +127,9 @@ describe("render caching and frame diffing", () => {
 
     expect(clearCount).toBe(1);
     expect(new Set(col1Rows)).toEqual(new Set([37]));
+    expect(out.startsWith(`\x1b[?2026h${hide_cursor}`)).toBe(true);
+    expect(out.endsWith("\x1b[?2026l")).toBe(true);
+    expect(out).toContain(show_cursor);
   });
 
   test("unchanged frames emit no redraw bytes", () => {

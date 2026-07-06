@@ -12,6 +12,7 @@ export const moveTo = (row: number, col: number) => `${ESC}${row};${col}H`;
 
 const beginSynchronizedUpdate = `${ESC}?2026h`;
 const endSynchronizedUpdate = `${ESC}?2026l`;
+const hideCursor = `${ESC}?25l`;
 
 export interface ScrollRegion {
   start: number;
@@ -134,9 +135,11 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
   const rowCount = Math.max(prevFrame?.rows.length ?? 0, nextFrame.rows.length);
   const scrollShift = prevFrame ? detectUpwardScroll(prevFrame, nextFrame) : 0;
   const scrollRegion = scrollShift > 0 ? nextFrame.scrollRegion : null;
+  let hasDrawingUpdates = false;
 
   if (scrollRegion) {
     out.push(scrollUpRegion(scrollRegion, scrollShift));
+    hasDrawingUpdates = true;
   }
 
   for (let i = 0; i < rowCount; i++) {
@@ -149,7 +152,10 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
       unchanged = sameRowContent(shiftedPrevRow, nextRow);
     }
 
-    if (!unchanged) out.push(nextRow);
+    if (!unchanged) {
+      out.push(nextRow);
+      hasDrawingUpdates = true;
+    }
   }
 
   if (out.length > 0 || !prevFrame || prevFrame.cursor !== nextFrame.cursor) {
@@ -157,11 +163,12 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
   }
 
   if (out.length > 0) {
+    const payload = out.join("");
     // Terminals that support synchronized updates (most modern GUI emulators)
     // will present multi-row diffs atomically. Unsupported terminals, including
     // the Linux virtual console, ignore the DEC private mode sequences.
-    if (out.length > 2) process.stdout.write(beginSynchronizedUpdate + out.join("") + endSynchronizedUpdate);
-    else process.stdout.write(out.join(""));
+    if (hasDrawingUpdates) process.stdout.write(beginSynchronizedUpdate + hideCursor + payload + endSynchronizedUpdate);
+    else process.stdout.write(payload);
   }
 
   lastRenderedFrames.set(owner, nextFrame);
