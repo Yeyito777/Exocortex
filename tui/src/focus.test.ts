@@ -100,13 +100,20 @@ test("Ctrl-A backgrounds the current tool even when a modal has focus", () => {
   expect(handleFocusedKey({ type: "ctrl-a" }, state)).toEqual({ type: "background_tool" });
 });
 
-test("Ctrl-R requests sidebar redo when the sidebar is focused", () => {
+test("Ctrl-R requests a daemon restart even when the sidebar is focused", () => {
   const state = createInitialState();
   state.panelFocus = "sidebar";
   state.sidebar.open = true;
   state.vim.mode = "normal";
 
-  expect(handleFocusedKey({ type: "ctrl-r" }, state)).toEqual({ type: "redo_delete" });
+  expect(handleFocusedKey({ type: "ctrl-r" }, state)).toEqual({ type: "restart_daemon" });
+});
+
+test("Ctrl-R requests a daemon restart even when a modal has focus", () => {
+  const state = createInitialState();
+  state.queuePrompt = { text: "queued", selection: "next-turn" };
+
+  expect(handleFocusedKey({ type: "ctrl-r" }, state)).toEqual({ type: "restart_daemon" });
 });
 
 function placeHistoryCursorOnText(state: ReturnType<typeof createInitialState>, text: string): void {

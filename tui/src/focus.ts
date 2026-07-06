@@ -59,6 +59,7 @@ export type KeyResult =
   | { type: "quit" }
   | { type: "abort" }
   | { type: "background_tool" }
+  | { type: "restart_daemon" }
   | { type: "load_conversation"; convId: string }
   | { type: "open_folder_instructions"; folderId: string }
   | { type: "load_tool_outputs"; convId: string }
@@ -137,6 +138,10 @@ export function handleFocusedKey(
   // when a prompt/search/modal has focus.
   if (key.type === "ctrl-a") return { type: "background_tool" };
 
+  // Ctrl-R always requests a daemon restart, regardless of focused panel,
+  // prompt/modal, or vim state.
+  if (key.type === "ctrl-r") return { type: "restart_daemon" };
+
   // ── Queue prompt modal — intercept all keys when showing ──────
   if (state.queuePrompt) {
     const qr = handleQueuePromptKey(key, state);
@@ -209,6 +214,8 @@ export function handleFocusedKey(
   switch (action) {
     case "quit":
       return { type: "quit" };
+    case "restart_daemon":
+      return { type: "restart_daemon" };
     case "sidebar_toggle":
       state.sidebar.open = !state.sidebar.open;
       if (state.sidebar.open) {

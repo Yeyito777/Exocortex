@@ -20,6 +20,7 @@ export type Action =
   | "quit"
   | "abort"
   | "background_tool"
+  | "restart_daemon"
   | "sidebar_toggle"
   | "focus_cycle"
   | "paste_image"
@@ -105,7 +106,7 @@ const BINDS: Record<string, Action> = {
   "ctrl-c":     "quit",
   "ctrl-a":     "background_tool",
   "ctrl-q":     "abort",
-  "ctrl-r":     "redo_delete",
+  "ctrl-r":     "restart_daemon",
   "ctrl-m":     "sidebar_toggle",
   "ctrl-s":     "sidebar_toggle",
   "ctrl-j":     "focus_cycle",

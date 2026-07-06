@@ -5,8 +5,8 @@
  * Push before every buffer mutation. Insert mode sessions
  * are grouped into one undo unit (snapshot taken on mode exit).
  *
- * u → pop undo, push current to redo, restore.
- * Ctrl+R → pop redo, push current to undo, restore.
+ * Undo pops the undo stack, pushes current to redo, and restores.
+ * Redo pops the redo stack, pushes current to undo, and restores.
  * Any new edit clears the redo stack.
  */
 

@@ -8,6 +8,7 @@
  * Usage: bun run src/main.ts
  */
 
+import { spawn } from "child_process";
 import { DaemonClient } from "./client";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
 import { handleFocusedKey } from "./focus";
@@ -1212,6 +1213,26 @@ function confirmSelectedEditMessage(): void {
   }
 }
 
+function requestDaemonRestart(): void {
+  const child = spawn("exocortexd", ["restart"], {
+    detached: true,
+    stdio: "ignore",
+  });
+  let childErrorReported = false;
+  child.once("error", (err) => {
+    childErrorReported = true;
+    pushSystemMessage(state, `✗ Failed to request daemon restart: ${err.message}`, theme.error);
+    scheduleRender();
+  });
+  child.once("exit", (code, signal) => {
+    if (code === 0 || childErrorReported) return;
+    const detail = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
+    pushSystemMessage(state, `✗ exocortexd restart failed (${detail}).`, theme.error);
+    scheduleRender();
+  });
+  child.unref();
+}
+
 function handleKey(key: KeyEvent): void {
   const inputBefore = state.inputBuffer;
   const voicePromptBufferBefore = state.voicePromptJobs.length > 0 || state.voicePrompt?.phase === "transcribing"
@@ -1270,6 +1291,9 @@ function handleKey(key: KeyEvent): void {
       break;
     case "background_tool":
       if (isStreaming(state) && state.convId) daemon.backgroundTool(state.convId);
+      break;
+    case "restart_daemon":
+      requestDaemonRestart();
       break;
     case "load_conversation":
       state.folderInstructionsDoc = null;
