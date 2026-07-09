@@ -14,6 +14,10 @@ describe("macro expansion", () => {
     expect(expandMacros("/xenv")).toBe("You're going to test this in a xenv and go into a loop: build → test in xenv → fix anything that's wrong → ... until it's complete");
   });
 
+  test("/subagents requests useful proactive delegation", () => {
+    expect(expandMacros("/subagents")).toBe("Use subagents when parallel work would materially improve speed or quality.");
+  });
+
   test("/exocortex exposes quality task macros", () => {
     expect(getMacroArgs()["/exocortex"]?.map(arg => arg.name)).toEqual(["tui-quality", "daemon-quality"]);
   });
