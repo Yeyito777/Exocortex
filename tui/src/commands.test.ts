@@ -176,7 +176,7 @@ describe("/default-model command", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
 
-    const result = tryCommand("/default-model openai/gpt-5.4 high fast", state);
+    const result = tryCommand("/default-model openai gpt-5.4 high fast", state);
 
     expect(result).toEqual({ type: "handled" });
     expect(configuredConversationDefaults()).toEqual({
@@ -236,21 +236,32 @@ describe("/default-model command", () => {
     expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Fast mode is only available for deepseek conversations that support it.");
   });
 
+  test("accepts na for providers without fast mode", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    const result = tryCommand("/default-model deepseek deepseek-v4-pro max na", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(configuredConversationDefaults()).toEqual({
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      effort: "max",
+      fastMode: false,
+    });
+  });
+
   test("registers nested autocomplete entries", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
 
     const args = getCommandArgs(state);
 
-    expect(args["/default-model"].map((item) => item.name)).toEqual(expect.arrayContaining([
-      "current",
-      "reset",
-      "openai",
-      "openai/gpt-5.4",
-    ]));
+    expect(args["/default-model"].map((item) => item.name)).toEqual(["openai", "deepseek"]);
     expect(args["/default-model openai"].map((item) => item.name)).toContain("gpt-5.4");
-    expect(args["/default-model openai/gpt-5.4"].map((item) => item.name)).toEqual(expect.arrayContaining(["high", "fast", "off"]));
-    expect(args["/default-model openai/gpt-5.4 high"].map((item) => item.name)).toEqual(["fast", "off"]);
+    expect(args["/default-model openai gpt-5.4"].map((item) => item.name)).toEqual(["low", "medium", "high"]);
+    expect(args["/default-model openai gpt-5.4 high"].map((item) => item.name)).toEqual(["fast", "off"]);
+    expect(args["/default-model deepseek deepseek-v4-pro max"].map((item) => item.name)).toEqual(["na"]);
   });
 });
 

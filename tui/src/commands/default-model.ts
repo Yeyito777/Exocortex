@@ -26,13 +26,16 @@ const USAGE = [
   "  /default-model",
   "  /default-model current",
   "  /default-model reset",
-  "  /default-model <provider>/<model> [effort] [fast|off]",
-  "  /default-model <provider> <model> [effort] [fast|off]",
+  "  /default-model <provider> <model> <effort> <fast|off|na>",
 ].join("\n");
 
 const FAST_ITEMS: CompletionItem[] = [
   { name: "fast", desc: "Enable fast mode for new conversations" },
   { name: "off", desc: "Disable fast mode for new conversations" },
+];
+
+const FAST_UNAVAILABLE_ITEMS: CompletionItem[] = [
+  { name: "na", desc: "Fast mode is not available for this provider" },
 ];
 
 const DEEPSEEK_ALIASES: Record<string, ModelId> = {
@@ -64,6 +67,8 @@ function parseFast(value: string): FastParseResult {
     case "yes":
       return { ok: true, value: true };
     case "off":
+    case "na":
+    case "n/a":
     case "standard":
     case "normal":
     case "false":
@@ -243,22 +248,14 @@ function persistDefaults(state: Parameters<SlashCommand["handler"]>[1], defaults
   return { type: "handled" };
 }
 
-function effortAndFastItems(state: Parameters<SlashCommand["handler"]>[1], provider: ProviderId, model: ModelId): CompletionItem[] {
-  const seen = new Set<string>();
-  const items: CompletionItem[] = [];
-  for (const item of [...effortItems(state, provider, model), ...FAST_ITEMS]) {
-    if (seen.has(item.name)) continue;
-    seen.add(item.name);
-    items.push(item);
-  }
-  return items;
+function fastItems(state: Parameters<SlashCommand["handler"]>[1], provider: ProviderId): CompletionItem[] {
+  return providerSupportsFastFallback(state, provider) ? FAST_ITEMS : FAST_UNAVAILABLE_ITEMS;
 }
 
-function addEffortAndFastCompletions(registry: Record<string, CompletionItem[]>, state: Parameters<SlashCommand["handler"]>[1], key: string, provider: ProviderId, model: ModelId): void {
-  const firstLevel = effortAndFastItems(state, provider, model);
-  registry[key] = firstLevel;
+function addPositionalCompletions(registry: Record<string, CompletionItem[]>, state: Parameters<SlashCommand["handler"]>[1], key: string, provider: ProviderId, model: ModelId): void {
+  registry[key] = effortItems(state, provider, model);
   for (const effort of effortItems(state, provider, model)) {
-    registry[`${key} ${effort.name}`] = FAST_ITEMS;
+    registry[`${key} ${effort.name}`] = fastItems(state, provider);
   }
 }
 
@@ -267,22 +264,13 @@ export const DEFAULT_MODEL_COMMAND: SlashCommand = {
   description: "Set or show defaults for new conversations",
   getArgs: (state) => {
     const registry: Record<string, CompletionItem[]> = {
-      "/default-model": [
-        { name: "current", desc: "Save the current provider/model/effort/fast settings" },
-        { name: "reset", desc: "Return to the built-in app default" },
-        ...providerCompletionItems(state),
-        ...availableProviders(state).flatMap((provider) => providerModelItems(state, provider).map((model) => ({
-          name: `${provider}/${model.name}`,
-          desc: model.desc,
-        }))),
-      ],
+      "/default-model": providerCompletionItems(state),
     };
 
     for (const provider of availableProviders(state)) {
       registry[`/default-model ${provider}`] = providerModelItems(state, provider);
       for (const model of providerModels(state, provider)) {
-        addEffortAndFastCompletions(registry, state, `/default-model ${provider} ${model}`, provider, model);
-        addEffortAndFastCompletions(registry, state, `/default-model ${provider}/${model}`, provider, model);
+        addPositionalCompletions(registry, state, `/default-model ${provider} ${model}`, provider, model);
       }
     }
 

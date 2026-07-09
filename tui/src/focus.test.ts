@@ -273,12 +273,27 @@ describe("autocomplete with vim Escape", () => {
     expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
     expect(state.inputBuffer).toBe("/default-model");
 
-    typePromptText(state, " openai/gpt-5.4 h");
+    typePromptText(state, " o");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["openai"]);
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("/default-model openai");
+
+    typePromptText(state, " gpt-5.4");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["gpt-5.4"]);
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("/default-model openai gpt-5.4");
+
+    typePromptText(state, " h");
     expect(state.autocomplete?.type).toBe("command");
     expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["high"]);
 
     expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
-    expect(state.inputBuffer).toBe("/default-model openai/gpt-5.4 high");
+    expect(state.inputBuffer).toBe("/default-model openai gpt-5.4 high");
+
+    typePromptText(state, " f");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["fast"]);
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("/default-model openai gpt-5.4 high fast");
   });
 
   test("Escape after tab-completing a mid-message macro enters normal mode without undoing the completion", () => {
