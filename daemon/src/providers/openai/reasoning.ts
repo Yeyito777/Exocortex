@@ -1,5 +1,7 @@
 import type { OpenAIReasoningItem } from "./types";
 
+const EMPTY_REASONING_SUMMARY_PLACEHOLDER = "<!-- -->";
+
 /**
  * Extract the canonical reasoning summary sections from a completed Responses item.
  */
@@ -40,10 +42,34 @@ export function extractReasoningRawContent(item: Record<string, unknown>): strin
     .filter((text) => text.length > 0);
 }
 
+/**
+ * OpenAI can emit a generated bold status heading followed only by an empty
+ * HTML comment when a reasoning-summary part has no prose. Treat that wire
+ * placeholder as non-renderable without hiding legitimate mentions of the
+ * same HTML comment in otherwise meaningful text.
+ */
+export function isEmptyReasoningSummaryPlaceholder(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed === EMPTY_REASONING_SUMMARY_PLACEHOLDER) return true;
+  if (!trimmed.startsWith("**")) return false;
+
+  const headingEnd = trimmed.indexOf("**", 2);
+  if (headingEnd <= 2) return false;
+  return trimmed.slice(headingEnd + 2).trim() === EMPTY_REASONING_SUMMARY_PLACEHOLDER;
+}
+
+/** Provider reasoning data is preserved independently from its UI projection. */
+export function hasPreservableReasoning(reasoning: OpenAIReasoningItem | undefined): boolean {
+  if (!reasoning) return false;
+  return reasoning.encryptedContent !== null
+    || reasoning.summaries.some((text) => text.length > 0)
+    || reasoning.rawContent?.some((text) => text.length > 0) === true;
+}
+
 export function preferredReasoningTexts(reasoning: OpenAIReasoningItem | undefined): string[] {
   if (!reasoning) return [];
   if (reasoning.rawContent?.some((text) => text.length > 0)) return reasoning.rawContent;
-  return reasoning.summaries;
+  return reasoning.summaries.filter((text) => !isEmptyReasoningSummaryPlaceholder(text));
 }
 
 export function hasRenderableReasoning(reasoning: OpenAIReasoningItem | undefined): boolean {

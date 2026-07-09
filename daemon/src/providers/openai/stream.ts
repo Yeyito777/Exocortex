@@ -2,7 +2,7 @@ import { log } from "../../log";
 import { NonRetryableProviderError } from "../errors";
 import type { ApiToolCall } from "../types";
 import type { ContentBlock, StreamCallbacks, StreamResult } from "../types";
-import { extractReasoningRawContent, extractReasoningSummaries, finalizeReasoningItem, hasRenderableReasoning, mergeReasoningSummaries } from "./reasoning";
+import { extractReasoningRawContent, extractReasoningSummaries, finalizeReasoningItem, hasPreservableReasoning, hasRenderableReasoning, mergeReasoningSummaries } from "./reasoning";
 import type { OpenAIReasoningItem } from "./types";
 
 export interface OpenAIStreamToolState {
@@ -570,7 +570,7 @@ function buildResponseOutputItems(state: OpenAIReadState): unknown[] {
 function finalizeReadState(state: OpenAIReadState): StreamResult {
   const orderedReasoningEntries = [...state.reasoningStates.entries()]
     .sort((a, b) => a[0] - b[0])
-    .filter(([, item]) => hasRenderableReasoning(item));
+    .filter(([, item]) => hasPreservableReasoning(item));
   const orderedReasoningItems = orderedReasoningEntries.map(([, item]) => item);
   const orderedTextEntries = [...state.textStates.entries()]
     .sort((a, b) => a[0] - b[0])

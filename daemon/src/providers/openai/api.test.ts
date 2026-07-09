@@ -1443,6 +1443,122 @@ describe("OpenAI reasoning summaries", () => {
       { type: "thinking", text: "second", signature: "" },
     ]);
   });
+
+  test("hides placeholder-only summaries while preserving exact provider replay data", () => {
+    const result = readOpenAIEventsForTest([
+      {
+        type: "response.completed",
+        response: {
+          id: "resp_1",
+          output: [
+            {
+              type: "reasoning",
+              id: "rs_1",
+              encrypted_content: "opaque",
+              summary: [
+                { type: "summary_text", text: "**Checking tests**\n\n<!-- -->" },
+                { type: "summary_text", text: "  <!-- -->\n" },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+
+    expect(result.thinking).toBe("");
+    expect(result.blocks).toEqual([]);
+    expect(result.responseOutputItems).toEqual([
+      {
+        type: "reasoning",
+        id: "rs_1",
+        encrypted_content: "opaque",
+        summary: [
+          { type: "summary_text", text: "**Checking tests**\n\n<!-- -->" },
+          { type: "summary_text", text: "  <!-- -->\n" },
+        ],
+      },
+    ]);
+    expect(result.assistantProviderData).toEqual({
+      openai: {
+        responseId: "resp_1",
+        reasoningItems: [
+          {
+            id: "rs_1",
+            encryptedContent: "opaque",
+            summaries: ["**Checking tests**\n\n<!-- -->", "  <!-- -->\n"],
+          },
+        ],
+      },
+    });
+  });
+
+  test("drops empty summary parts without hiding bold content or literal HTML comments", () => {
+    const result = readOpenAIEventsForTest([
+      {
+        type: "response.completed",
+        response: {
+          output: [
+            {
+              type: "reasoning",
+              id: "rs_1",
+              summary: [
+                { type: "summary_text", text: "**Plan**\n\nInspect the parser." },
+                { type: "summary_text", text: "**Checking tests**\n\n<!-- -->" },
+                { type: "summary_text", text: "**Important conclusion**" },
+                { type: "summary_text", text: "Use `<!-- -->` in JSX." },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+
+    expect(result.blocks).toEqual([
+      { type: "thinking", text: "**Plan**\n\nInspect the parser.", signature: "" },
+      { type: "thinking", text: "**Important conclusion**", signature: "" },
+      { type: "thinking", text: "Use `<!-- -->` in JSX.", signature: "" },
+    ]);
+    expect(result.assistantProviderData?.openai.reasoningItems?.[0]?.summaries).toEqual([
+      "**Plan**\n\nInspect the parser.",
+      "**Checking tests**\n\n<!-- -->",
+      "**Important conclusion**",
+      "Use `<!-- -->` in JSX.",
+    ]);
+  });
+
+  test("retracts a streamed heading once the part resolves to an empty placeholder", () => {
+    const thinkingChunks: string[] = [];
+    const syncedBlocks: Array<Array<{ type: string; text: string }>> = [];
+    const result = readOpenAIEventsForTest([
+      { type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_1" } },
+      { type: "response.reasoning_summary_part.added", output_index: 0, summary_index: 0 },
+      {
+        type: "response.reasoning_summary_text.delta",
+        output_index: 0,
+        summary_index: 0,
+        delta: "**Checking tests**",
+      },
+      {
+        type: "response.reasoning_summary_text.delta",
+        output_index: 0,
+        summary_index: 0,
+        delta: "\n\n<!-- -->",
+      },
+    ], {
+      onThinking(chunk) { thinkingChunks.push(chunk); },
+      onBlocksUpdate(blocks) {
+        syncedBlocks.push(blocks.flatMap((block) =>
+          block.type === "text" || block.type === "thinking"
+            ? [{ type: block.type, text: block.text }]
+            : []));
+      },
+    });
+
+    expect(thinkingChunks).toEqual(["**Checking tests**"]);
+    expect(syncedBlocks.at(-1)).toEqual([]);
+    expect(result.thinking).toBe("");
+    expect(result.blocks).toEqual([]);
+  });
 });
 
   test("preserves output item ordering between reasoning and text blocks", () => {
