@@ -1444,7 +1444,7 @@ describe("OpenAI reasoning summaries", () => {
     ]);
   });
 
-  test("hides placeholder-only summaries while preserving exact provider replay data", () => {
+  test("keeps generated summary headings while hiding placeholders and preserving exact replay data", () => {
     const result = readOpenAIEventsForTest([
       {
         type: "response.completed",
@@ -1465,8 +1465,10 @@ describe("OpenAI reasoning summaries", () => {
       },
     ]);
 
-    expect(result.thinking).toBe("");
-    expect(result.blocks).toEqual([]);
+    expect(result.thinking).toBe("**Checking tests**");
+    expect(result.blocks).toEqual([
+      { type: "thinking", text: "**Checking tests**", signature: "" },
+    ]);
     expect(result.responseOutputItems).toEqual([
       {
         type: "reasoning",
@@ -1492,7 +1494,7 @@ describe("OpenAI reasoning summaries", () => {
     });
   });
 
-  test("drops empty summary parts without hiding bold content or literal HTML comments", () => {
+  test("projects empty summary parts without hiding bold content or literal HTML comments", () => {
     const result = readOpenAIEventsForTest([
       {
         type: "response.completed",
@@ -1515,6 +1517,7 @@ describe("OpenAI reasoning summaries", () => {
 
     expect(result.blocks).toEqual([
       { type: "thinking", text: "**Plan**\n\nInspect the parser.", signature: "" },
+      { type: "thinking", text: "**Checking tests**", signature: "" },
       { type: "thinking", text: "**Important conclusion**", signature: "" },
       { type: "thinking", text: "Use `<!-- -->` in JSX.", signature: "" },
     ]);
@@ -1526,7 +1529,7 @@ describe("OpenAI reasoning summaries", () => {
     ]);
   });
 
-  test("retracts a streamed heading once the part resolves to an empty placeholder", () => {
+  test("keeps a streamed heading when the part resolves to an empty placeholder", () => {
     const thinkingChunks: string[] = [];
     const syncedBlocks: Array<Array<{ type: string; text: string }>> = [];
     const result = readOpenAIEventsForTest([
@@ -1555,9 +1558,11 @@ describe("OpenAI reasoning summaries", () => {
     });
 
     expect(thinkingChunks).toEqual(["**Checking tests**"]);
-    expect(syncedBlocks.at(-1)).toEqual([]);
-    expect(result.thinking).toBe("");
-    expect(result.blocks).toEqual([]);
+    expect(syncedBlocks).toEqual([]);
+    expect(result.thinking).toBe("**Checking tests**");
+    expect(result.blocks).toEqual([
+      { type: "thinking", text: "**Checking tests**", signature: "" },
+    ]);
   });
 });
 

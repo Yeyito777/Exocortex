@@ -44,18 +44,20 @@ export function extractReasoningRawContent(item: Record<string, unknown>): strin
 
 /**
  * OpenAI can emit a generated bold status heading followed only by an empty
- * HTML comment when a reasoning-summary part has no prose. Treat that wire
- * placeholder as non-renderable without hiding legitimate mentions of the
- * same HTML comment in otherwise meaningful text.
+ * HTML comment when a reasoning-summary part has no prose. Preserve that
+ * useful heading as a compact reasoning trace while hiding the wire
+ * placeholder. Legitimate mentions of the same HTML comment in otherwise
+ * meaningful text remain unchanged.
  */
-export function isEmptyReasoningSummaryPlaceholder(text: string): boolean {
+export function projectReasoningSummaryText(text: string): string | null {
   const trimmed = text.trim();
-  if (trimmed === EMPTY_REASONING_SUMMARY_PLACEHOLDER) return true;
-  if (!trimmed.startsWith("**")) return false;
+  if (trimmed === EMPTY_REASONING_SUMMARY_PLACEHOLDER) return null;
+  if (!trimmed.startsWith("**")) return text;
 
   const headingEnd = trimmed.indexOf("**", 2);
-  if (headingEnd <= 2) return false;
-  return trimmed.slice(headingEnd + 2).trim() === EMPTY_REASONING_SUMMARY_PLACEHOLDER;
+  if (headingEnd <= 2) return text;
+  if (trimmed.slice(headingEnd + 2).trim() !== EMPTY_REASONING_SUMMARY_PLACEHOLDER) return text;
+  return trimmed.slice(0, headingEnd + 2);
 }
 
 /** Provider reasoning data is preserved independently from its UI projection. */
@@ -69,7 +71,9 @@ export function hasPreservableReasoning(reasoning: OpenAIReasoningItem | undefin
 export function preferredReasoningTexts(reasoning: OpenAIReasoningItem | undefined): string[] {
   if (!reasoning) return [];
   if (reasoning.rawContent?.some((text) => text.length > 0)) return reasoning.rawContent;
-  return reasoning.summaries.filter((text) => !isEmptyReasoningSummaryPlaceholder(text));
+  return reasoning.summaries
+    .map(projectReasoningSummaryText)
+    .filter((text): text is string => text !== null);
 }
 
 export function hasRenderableReasoning(reasoning: OpenAIReasoningItem | undefined): boolean {
