@@ -1340,6 +1340,7 @@ export const context: Tool = {
   name: "context",
   description: "Inspect and compact the conversation context using a staged flow. Use action='list' to get stable indices and a snapshot id; action='stage' to validate/store compaction operations without changing context; action='compact' to apply the staged plan once. Stage operations are: summarize, forget, strip_thinking, strip_results.",
   parallelSafety: "exclusive",
+  defaultTimeoutMs: 5 * 60_000,
   inputSchema: {
     type: "object",
     properties: {

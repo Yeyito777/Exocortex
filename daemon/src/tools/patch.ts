@@ -467,6 +467,7 @@ export const patch: Tool = {
   name: "patch",
   description: PATCH_DESCRIPTION,
   parallelSafety: "exclusive",
+  defaultTimeoutMs: 30_000,
   inputSchema: {
     type: "object",
     properties: {

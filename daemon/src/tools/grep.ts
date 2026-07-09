@@ -9,24 +9,14 @@ import { constants as fsConstants } from "node:fs";
 import { access, lstat } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
-import { cap, getString, getNumber, getBoolean, summarizeParams } from "./util";
+import { getString, getNumber, getBoolean, summarizeParams, MAX_OUTPUT_CHARS, safeSlice } from "./util";
 import { log } from "../log";
+import { HARD_EXCLUDED_DIRS } from "./filesystem-safety";
 
 // ── Constants ──────────────────────────────────────────────────────
 
-const EXCLUDED_DIRS = [
-  ".git",
-  ".svn",
-  ".hg",
-  ".bzr",
-  "node_modules",
-  "dosdevices",
-  "pfx",
-  "wineprefix",
-  "lost+found",
-];
-
 const GLOB_META_RE = /[*?\[\]{}]/;
+const GREP_STDOUT_BUDGET = MAX_OUTPUT_CHARS - 2_000;
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -73,15 +63,21 @@ async function runSudoTest(path: string, signal?: AbortSignal): Promise<{ ok: bo
     stderr: "pipe",
     env: { ...process.env, TERM: "dumb" },
   });
+  const onAbort = () => proc.kill();
   if (signal) {
-    const onAbort = () => proc.kill();
     if (signal.aborted) onAbort();
     else signal.addEventListener("abort", onAbort, { once: true });
   }
-  const [stderr, code] = await Promise.all([
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
+  let stderr: string;
+  let code: number;
+  try {
+    [stderr, code] = await Promise.all([
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
   return { ok: code === 0, stderr: stderr.trim(), code };
 }
 
@@ -160,8 +156,111 @@ function appendTraversalWarnings(output: string, warnings: GrepTraversalWarning[
   return `${output}\n\n[grep skipped ${warnings.length} inaccessible/looping path${warnings.length === 1 ? "" : "s"}:\n${first}${more}\n]`;
 }
 
+interface BoundedGrepOutput {
+  output: string;
+  stoppedEarly: boolean;
+  hitOutputBudget: boolean;
+}
+
+async function readBoundedGrepOutput(
+  stream: ReadableStream<Uint8Array>,
+  headLimit: number | undefined,
+  stopProcess: () => void,
+): Promise<BoundedGrepOutput> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  const lines: string[] = [];
+  let pending = "";
+  let chars = 0;
+  let stoppedEarly = false;
+  let hitOutputBudget = false;
+
+  const stop = async (outputBudget: boolean) => {
+    stoppedEarly = true;
+    hitOutputBudget ||= outputBudget;
+    stopProcess();
+    await reader.cancel().catch(() => {});
+  };
+
+  const appendLine = async (rawLine: string): Promise<boolean> => {
+    const line = rawLine.replace(/\r$/, "");
+    if (line.length === 0) return true;
+
+    const separatorChars = lines.length > 0 ? 1 : 0;
+    const remaining = GREP_STDOUT_BUDGET - chars - separatorChars;
+    if (remaining <= 0) {
+      await stop(true);
+      return false;
+    }
+    if (line.length > remaining) {
+      lines.push(safeSlice(line, remaining));
+      chars = GREP_STDOUT_BUDGET;
+      await stop(true);
+      return false;
+    }
+
+    lines.push(line);
+    chars += separatorChars + line.length;
+    if (headLimit !== undefined && headLimit > 0 && lines.length >= headLimit) {
+      await stop(false);
+      return false;
+    }
+    return true;
+  };
+
+  try {
+    while (!stoppedEarly) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      pending += decoder.decode(value, { stream: true });
+
+      let newline: number;
+      while (!stoppedEarly && (newline = pending.indexOf("\n")) !== -1) {
+        const line = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        if (!await appendLine(line)) break;
+      }
+
+      // Bound a single unterminated line instead of waiting for arbitrary
+      // amounts of stdout to find a newline.
+      if (!stoppedEarly && pending.length > GREP_STDOUT_BUDGET - chars) {
+        await appendLine(pending);
+        pending = "";
+      }
+    }
+
+    if (!stoppedEarly) {
+      pending += decoder.decode();
+      if (pending.length > 0) await appendLine(pending);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return { output: lines.join("\n"), stoppedEarly, hitOutputBudget };
+}
+
+async function readBoundedText(stream: ReadableStream<Uint8Array>, limit = 64_000): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let output = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (output.length < limit) {
+        output += decoder.decode(value, { stream: true }).slice(0, limit - output.length);
+      }
+    }
+    if (output.length < limit) output += decoder.decode().slice(0, limit - output.length);
+  } finally {
+    reader.releaseLock();
+  }
+  return output;
+}
+
 function addDefaultExcludeGlobs(args: string[]): void {
-  for (const dir of EXCLUDED_DIRS) {
+  for (const dir of HARD_EXCLUDED_DIRS) {
     args.push("--glob", `!${dir}/**`);
     args.push("--glob", `!**/${dir}/**`);
   }
@@ -245,20 +344,54 @@ async function executeGrep(input: Record<string, unknown>, _context?: ToolExecut
       stdout: "pipe",
       stderr: "pipe",
       env: { ...process.env, TERM: "dumb" },
+      detached: process.platform !== "win32",
     });
 
-    // Kill rg on abort
+    let terminating = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const terminate = () => {
+      if (terminating) return;
+      terminating = true;
+      try {
+        if (process.platform !== "win32" && proc.pid) process.kill(-proc.pid, "SIGTERM");
+        else proc.kill();
+      } catch {
+        try { proc.kill(); } catch { /* already exited */ }
+      }
+      killTimer = setTimeout(() => {
+        try {
+          if (process.platform !== "win32" && proc.pid) process.kill(-proc.pid, "SIGKILL");
+          else proc.kill(9);
+        } catch { /* already exited */ }
+      }, 1_000);
+      killTimer.unref?.();
+    };
+
+    // Kill rg (or sudo + rg) as one process group on abort.
+    const onAbort = () => terminate();
     if (signal) {
-      const onAbort = () => proc.kill();
       if (signal.aborted) { onAbort(); }
       else { signal.addEventListener("abort", onAbort, { once: true }); }
     }
 
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    const exitCode = await proc.exited;
+    let killedForOutputLimit = false;
+    const stopForOutputLimit = () => {
+      killedForOutputLimit = true;
+      terminate();
+    };
+    let boundedStdout: BoundedGrepOutput;
+    let stderr: string;
+    let exitCode: number;
+    try {
+      [boundedStdout, stderr, exitCode] = await Promise.all([
+        readBoundedGrepOutput(proc.stdout, headLimit, stopForOutputLimit),
+        readBoundedText(proc.stderr),
+        proc.exited,
+      ]);
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      if (killTimer) clearTimeout(killTimer);
+    }
     const classified = classifyRipgrepStderr(stderr);
 
     // rg exits 1 for no matches — not an error when stderr is clean or only
@@ -266,18 +399,14 @@ async function executeGrep(input: Record<string, unknown>, _context?: ToolExecut
     // nonzero exit (including sudo -n failures that often exit 1) is a real
     // tool error. rg can exit 2 for traversal errors even when the explicit root
     // is valid; downgrade those descendant failures to warnings.
-    if (exitCode !== 0 && classified.otherLines.length > 0) {
+    if (!killedForOutputLimit && exitCode !== 0 && classified.otherLines.length > 0) {
       return { output: `${sudo ? "sudo/" : ""}rg error (exit ${exitCode}): ${stderr.trim()}`, isError: true };
     }
 
-    let lines = stdout.trimEnd().split("\n").filter(l => l !== "");
-
-    // Apply head_limit
-    if (headLimit !== undefined && headLimit > 0 && lines.length > headLimit) {
-      lines = lines.slice(0, headLimit);
+    let baseOutput = boundedStdout.output || "No matches found.";
+    if (boundedStdout.hitOutputBudget) {
+      baseOutput += `\n\n[grep stopped after reaching the ${GREP_STDOUT_BUDGET.toLocaleString()}-character capture budget]`;
     }
-
-    const baseOutput = lines.length === 0 ? "No matches found." : cap(lines.join("\n"));
     return { output: appendTraversalWarnings(baseOutput, classified.traversalWarnings), isError: false };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -299,6 +428,8 @@ export const grep: Tool = {
   name: "grep",
   description: "Search file contents using ripgrep. Supports regex patterns, glob filters, file type filters, context lines, and three output modes.",
   parallelSafety: "safe",
+  defaultTimeoutMs: 45_000,
+  resourceClass: "filesystem_scan",
   inputSchema: {
     type: "object",
     properties: {
@@ -317,7 +448,7 @@ export const grep: Tool = {
       line_numbers: { type: "boolean", description: "Show line numbers (content mode only, default true)" },
       ignore_case: { type: "boolean", description: "Case insensitive search" },
       multiline: { type: "boolean", description: "Enable multiline mode where . matches newlines (default false)" },
-      no_ignore: { type: "boolean", description: "Bypass ripgrep ignore files such as .gitignore (default false). Does not change symlink behavior." },
+      no_ignore: { type: "boolean", description: "Bypass ripgrep ignore files such as .gitignore (default false). Hard safety exclusions and symlink controls still apply." },
       follow_symlinks: { type: "boolean", description: "Follow symlinks while searching (default false). Leave false to avoid recursive loops." },
       sudo: { type: "boolean", description: "Use non-interactive sudo (-n) for searching when elevated traversal is required (default false)." },
       head_limit: { type: "number", description: "Limit output to first N lines/entries" },

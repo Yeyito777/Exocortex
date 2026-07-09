@@ -67,6 +67,62 @@ describe("glob tool enhancements", () => {
     expect(lines(result.output)).toEqual(["large.txt"]);
   });
 
+  test("a bare star is shallow and does not traverse unrelated descendants", async () => {
+    if (process.getuid?.() === 0) return;
+    const root = await makeTempDir();
+    await writeFixture(root, "visible.txt");
+    await writeFixture(root, "blocked/secret.txt");
+    await chmod(join(root, "blocked"), 0o000);
+
+    try {
+      const result = await glob.execute({
+        path: root,
+        no_ignore: true,
+        pattern: "*",
+        sort: "path",
+      });
+
+      expect(result.isError).toBe(false);
+      expect(lines(result.output)).toEqual(["visible.txt"]);
+      expect(result.output).not.toContain("glob skipped");
+    } finally {
+      await chmod(join(root, "blocked"), 0o700).catch(() => {});
+    }
+  });
+
+  test("no_ignore retains hard safety exclusions for broad roots", async () => {
+    const root = await makeTempDir();
+    await writeFixture(root, "visible.ts");
+    await writeFixture(root, "node_modules/pkg/hidden.ts");
+    await writeFixture(root, ".git/objects/also-hidden.ts");
+
+    const result = await glob.execute({
+      path: root,
+      no_ignore: true,
+      pattern: "**/*.ts",
+      sort: "path",
+    });
+
+    expect(result.isError).toBe(false);
+    expect(lines(result.output)).toEqual(["visible.ts"]);
+  });
+
+  test("an excluded directory remains searchable when it is the explicit root", async () => {
+    const root = await makeTempDir();
+    const modules = join(root, "node_modules");
+    await writeFixture(root, "node_modules/pkg/index.js");
+
+    const result = await glob.execute({
+      path: modules,
+      no_ignore: true,
+      pattern: "**/*.js",
+      sort: "path",
+    });
+
+    expect(result.isError).toBe(false);
+    expect(lines(result.output)).toEqual(["pkg/index.js"]);
+  });
+
   test("supports fuzzy path queries without an explicit glob pattern", async () => {
     const root = await makeTempDir();
     await writeFixture(root, "package.json");

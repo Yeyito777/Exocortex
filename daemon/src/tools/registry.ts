@@ -4,7 +4,7 @@
  * Adding a new tool: import it, add to TOOLS array. Done.
  */
 
-import type { Tool, ToolResult, ToolSummary, ToolExecutionContext, ToolParallelSafety } from "./types";
+import type { Tool, ToolResult, ToolSummary, ToolExecutionContext, ToolParallelSafety, ToolResourceClass } from "./types";
 import type { ToolDisplayInfo } from "@exocortex/shared/messages";
 import type { ApiToolCall } from "../api";
 import type { ToolExecResult } from "../agent";
@@ -20,8 +20,10 @@ import { context, executeContext, type ContextToolEnv } from "./context";
 import { goal } from "./goal";
 import { computerUseTools } from "./computer-use";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
-import { formatToolAbortMessage } from "../abort";
+import { formatToolAbortMessage, isToolTimeoutReason, toolTimeoutReason } from "../abort";
 import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
+import { AbortableSemaphore } from "./semaphore";
+import { log } from "../log";
 
 export type { ContextToolEnv };
 
@@ -42,6 +44,15 @@ const TOOLS: Tool[] = [
 ];
 
 const toolMap = new Map<string, Tool>(TOOLS.map(t => [t.name, t]));
+
+const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
+const configuredFilesystemScanConcurrency = Number(process.env.TOOL_FILESYSTEM_SCAN_CONCURRENCY);
+const filesystemScanConcurrency = Number.isFinite(configuredFilesystemScanConcurrency)
+  ? Math.max(1, Math.floor(configuredFilesystemScanConcurrency))
+  : 3;
+const resourceSemaphores = new Map<ToolResourceClass, AbortableSemaphore>([
+  ["filesystem_scan", new AbortableSemaphore(filesystemScanConcurrency)],
+]);
 
 function isToolAvailable(tool: Tool): boolean {
   return tool.isAvailable?.() ?? true;
@@ -103,13 +114,20 @@ export function summarizeTool(name: string, input: Record<string, unknown>): Too
 function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
   if (signal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      signal.addEventListener("abort", () =>
-        reject(new DOMException("Aborted", "AbortError")), { once: true });
-    }),
-  ]);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      value => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      err => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
 }
 
 // ── Execute + abort-race wrapper ──────────────────────────────────
@@ -140,7 +158,12 @@ async function execTool(
     if (err instanceof DOMException && err.name === "AbortError") {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       const msg = formatToolAbortMessage(signal, elapsed);
-      return { toolCallId: call.id, toolName: call.name, output: msg, isError: false };
+      return {
+        toolCallId: call.id,
+        toolName: call.name,
+        output: msg,
+        isError: isToolTimeoutReason(signal?.reason),
+      };
     }
     return { toolCallId: call.id, toolName: call.name, output: `Tool error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
   }
@@ -155,6 +178,23 @@ export interface ToolExecutionBatch {
 
 export function getToolParallelSafety(toolName: string): ToolParallelSafety {
   return toolMap.get(toolName)?.parallelSafety ?? "exclusive";
+}
+
+export function getToolDefaultTimeoutMs(toolName: string): number | null {
+  const configured = toolMap.get(toolName)?.defaultTimeoutMs;
+  if (configured === null) return null;
+  if (typeof configured === "number" && Number.isFinite(configured) && configured > 0) {
+    return configured;
+  }
+  return DEFAULT_TOOL_TIMEOUT_MS;
+}
+
+export function getToolResourceClass(toolName: string): ToolResourceClass | undefined {
+  return toolMap.get(toolName)?.resourceClass;
+}
+
+export function toolCallsRequireWatchdogPause(calls: ApiToolCall[]): boolean {
+  return calls.some(call => toolMap.get(call.name)?.watchdogExempt === true);
 }
 
 function callSupportsParallel(call: ApiToolCall): boolean {
@@ -201,17 +241,6 @@ async function executeSingleTool(
     };
   }
 
-  // Context tool — needs conversation access, bypass normal execute()
-  if (call.name === "context" && contextEnv) {
-    return execTool(call, executeContext(call.input, contextEnv, signal), signal);
-  }
-
-  // Bash tool — use backgroundable executor so long-running commands
-  // are detached after TOOL_BACKGROUND_SECONDS instead of blocking.
-  if (call.name === "bash") {
-    return execTool(call, executeBashBackgroundable(call.input, signal, TOOL_BACKGROUND_SECONDS * 1000, callToolContext), signal);
-  }
-
   const tool = toolMap.get(call.name);
   if (!tool) {
     return { toolCallId: call.id, toolName: call.name, output: `Unknown tool: ${call.name}`, isError: true };
@@ -219,7 +248,52 @@ async function executeSingleTool(
   if (!isToolAvailable(tool)) {
     return { toolCallId: call.id, toolName: call.name, output: `Tool unavailable: ${call.name}`, isError: true };
   }
-  return execTool(call, tool.execute(call.input, callToolContext, signal), signal);
+
+  const timeoutMs = getToolDefaultTimeoutMs(call.name);
+  const deadline = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let onParentAbort: (() => void) | undefined;
+
+  if (signal) {
+    onParentAbort = () => deadline.abort(signal.reason);
+    if (signal.aborted) onParentAbort();
+    else signal.addEventListener("abort", onParentAbort, { once: true });
+  }
+  if (!deadline.signal.aborted && timeoutMs !== null) {
+    timeout = setTimeout(() => {
+      log("warn", `agent: tool '${call.name}' timed out after ${timeoutMs}ms (call ${call.id})`);
+      deadline.abort(toolTimeoutReason(call.name, timeoutMs));
+    }, timeoutMs);
+  }
+
+  const run = async (): Promise<ToolResult> => {
+    const resourceClass = tool.resourceClass;
+    const semaphore = resourceClass ? resourceSemaphores.get(resourceClass) : undefined;
+    const release = semaphore ? await semaphore.acquire(deadline.signal) : undefined;
+    try {
+      // Context tool — needs conversation access, bypass normal execute().
+      if (call.name === "context" && contextEnv) {
+        return await executeContext(call.input, contextEnv, deadline.signal);
+      }
+
+      // Bash tool — use backgroundable executor so long-running commands are
+      // detached after TOOL_BACKGROUND_SECONDS instead of blocking.
+      if (call.name === "bash") {
+        return await executeBashBackgroundable(call.input, deadline.signal, TOOL_BACKGROUND_SECONDS * 1000, callToolContext);
+      }
+
+      return await tool.execute(call.input, callToolContext, deadline.signal);
+    } finally {
+      release?.();
+    }
+  };
+
+  try {
+    return await execTool(call, run(), deadline.signal);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    if (signal && onParentAbort) signal.removeEventListener("abort", onParentAbort);
+  }
 }
 
 async function executeScheduledTools(

@@ -42,6 +42,23 @@ describe("grep tool hardening", () => {
     expect(result.output).not.toContain("b.txt");
   });
 
+  test("head_limit stops collection at the requested number of results", async () => {
+    const root = await makeTempDir();
+    for (let i = 0; i < 50; i++) {
+      await writeFixture(root, `${String(i).padStart(3, "0")}.txt`, "needle\n");
+    }
+
+    const result = await grep.execute({
+      pattern: "needle",
+      path: root,
+      output_mode: "files_with_matches",
+      head_limit: 3,
+    });
+
+    expect(result.isError).toBe(false);
+    expect(lines(result.output)).toHaveLength(3);
+  });
+
   test("skips unreadable descendant directories instead of failing the whole search", async () => {
     if (process.getuid?.() === 0) return;
     const root = await makeTempDir();

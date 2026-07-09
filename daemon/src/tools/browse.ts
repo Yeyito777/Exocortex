@@ -339,6 +339,7 @@ export const browse: Tool = {
   name: "browse",
   description: "Read content from a URL. Supports web pages, feeds, APIs, and community sites.",
   parallelSafety: "safe",
+  defaultTimeoutMs: 120_000,
   inputSchema: {
     type: "object",
     properties: {

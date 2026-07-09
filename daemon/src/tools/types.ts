@@ -8,6 +8,7 @@
 import type { ProviderId } from "../messages";
 
 export type ToolParallelSafety = "safe" | "exclusive";
+export type ToolResourceClass = "filesystem_scan";
 
 // ── Execution context / result ─────────────────────────────────────
 
@@ -72,6 +73,22 @@ export interface Tool {
    * Defaults to "exclusive" so new or side-effecting tools are conservative.
    */
   parallelSafety?: ToolParallelSafety;
+
+  /**
+   * Default wall-clock deadline for one invocation. `null` explicitly opts out
+   * (used by bash, which has its own timeout/backgrounding lifecycle).
+   * Unspecified tools receive the registry's conservative fallback deadline.
+   */
+  defaultTimeoutMs?: number | null;
+
+  /** Shared resource pool used to bound expensive calls across conversations. */
+  resourceClass?: ToolResourceClass;
+
+  /**
+   * Whether the conversation stale-stream watchdog should be paused while this
+   * tool runs. Only independently managed long-running tools should opt in.
+   */
+  watchdogExempt?: boolean;
 
   /** Display metadata sent to the TUI on connect. */
   display: {

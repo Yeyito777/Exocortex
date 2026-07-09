@@ -62,6 +62,7 @@ export const write: Tool = {
   name: "write",
   description: "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Parent directories are created automatically.",
   parallelSafety: "exclusive",
+  defaultTimeoutMs: 30_000,
   inputSchema: {
     type: "object",
     properties: {

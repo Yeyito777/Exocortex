@@ -12,7 +12,7 @@ import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
 import { buildSystemPrompt } from "./system";
 import { getMaxContext, supportsImageInputs } from "./providers/registry";
-import { getToolDefs, buildExecutor, summarizeTool, type ContextToolEnv } from "./tools/registry";
+import { getToolDefs, buildExecutor, summarizeTool, toolCallsRequireWatchdogPause, type ContextToolEnv } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
 import { buildHistoryTurnMap, createStoredUserMessage, isHistoryMessage, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
@@ -659,18 +659,19 @@ async function orchestrateAssistantTurn(
 
   // ── Tool executor wrapper ─────────────────────────────────────────
 
-  // Pause staleness tracking during tool execution. Tools can run for
-  // hours (e.g. kernel builds, long test suites) — the watchdog has no
-  // business timing them out. When tools finish, resume tracking so the
-  // watchdog catches a hung model on the *next* API streaming call.
+  // Bounded tools retain the stream watchdog as a second line of defense.
+  // Pause it only for tools such as bash that intentionally own a separate
+  // long-running/background lifecycle.
   const rawExecutor = buildExecutor(contextEnv, toolContext);
   const executor: typeof rawExecutor = async (calls, signal?) => {
-    convStore.pauseActivity(convId);
+    const pauseWatchdog = toolCallsRequireWatchdogPause(calls);
+    if (pauseWatchdog) convStore.pauseActivity(convId);
     try {
       return await rawExecutor(calls, signal);
     } finally {
     // ── Final cleanup/broadcast/queue drain ─────────────────────────
-      convStore.resumeActivity(convId);
+      if (pauseWatchdog) convStore.resumeActivity(convId);
+      else convStore.touchActivity(convId);
     }
   };
 

@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { ApiToolCall } from "../api";
-import { getToolParallelSafety, planToolExecutionBatches } from "./registry";
+import {
+  getToolDefaultTimeoutMs,
+  getToolParallelSafety,
+  getToolResourceClass,
+  planToolExecutionBatches,
+  toolCallsRequireWatchdogPause,
+} from "./registry";
 
 function call(name: string, id = name): ApiToolCall {
   return { id, name, input: {} };
@@ -42,5 +48,21 @@ describe("tool execution scheduling", () => {
       { mode: "exclusive", names: ["bash"] },
       { mode: "parallel", names: ["read"] },
     ]);
+  });
+
+  test("assigns bounded deadlines and shared scan resources", () => {
+    expect(getToolDefaultTimeoutMs("glob")).toBe(30_000);
+    expect(getToolDefaultTimeoutMs("grep")).toBe(45_000);
+    expect(getToolDefaultTimeoutMs("browse")).toBe(120_000);
+    expect(getToolDefaultTimeoutMs("bash")).toBeNull();
+    expect(getToolResourceClass("glob")).toBe("filesystem_scan");
+    expect(getToolResourceClass("grep")).toBe("filesystem_scan");
+    expect(getToolResourceClass("read")).toBeUndefined();
+  });
+
+  test("pauses the stream watchdog only for independently managed long-running tools", () => {
+    expect(toolCallsRequireWatchdogPause([call("glob")])).toBe(false);
+    expect(toolCallsRequireWatchdogPause([call("grep"), call("read")])).toBe(false);
+    expect(toolCallsRequireWatchdogPause([call("glob"), call("bash")])).toBe(true);
   });
 });

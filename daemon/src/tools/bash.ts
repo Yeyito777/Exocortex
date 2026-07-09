@@ -456,6 +456,8 @@ export const bash: Tool = {
   name: "bash",
   description: `Execute a ${shellName} command. Returns stdout and stderr.`,
   parallelSafety: "exclusive",
+  defaultTimeoutMs: null,
+  watchdogExempt: true,
   inputSchema: {
     type: "object",
     properties: {
