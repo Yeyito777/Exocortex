@@ -62,7 +62,7 @@ describe("tui defaults", () => {
   });
 
   test("gpt-5.6 Sol has a known context window for default-state UI fallbacks", () => {
-    expect(MAX_CONTEXT[DEFAULT_MODEL_BY_PROVIDER.openai]).toBe(1_050_000);
+    expect(MAX_CONTEXT[DEFAULT_MODEL_BY_PROVIDER.openai]).toBe(372_000);
   });
 
   test("gpt-5.6-style defaults normalize to medium effort", () => {

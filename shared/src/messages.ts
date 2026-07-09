@@ -86,9 +86,11 @@ export function supportsImageInputsForModel(
 /** Maximum context window size in tokens, keyed by model id. */
 export const MAX_CONTEXT: Record<string, number> = {
   "gpt-5": 400_000,
-  "gpt-5.6-sol": 1_050_000,
-  "gpt-5.6-terra": 1_050_000,
-  "gpt-5.6-luna": 1_050_000,
+  // These OpenAI models run through the ChatGPT Codex backend. Their public
+  // API context window is larger and should be modeled separately if added.
+  "gpt-5.6-sol": 372_000,
+  "gpt-5.6-terra": 372_000,
+  "gpt-5.6-luna": 372_000,
   "gpt-5.5": 272_000,
   "gpt-5.4": 272_000,
   "gpt-5.4-mini": 272_000,

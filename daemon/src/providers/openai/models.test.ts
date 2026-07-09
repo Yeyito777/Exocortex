@@ -55,7 +55,7 @@ describe("OpenAI model selection", () => {
     ]);
     expect(models[0]).toMatchObject({
       id: "gpt-5.6-sol",
-      maxContext: 1_050_000,
+      maxContext: 372_000,
       defaultEffort: "medium",
       supportsImages: true,
     });
@@ -172,7 +172,7 @@ describe("OpenAI model selection", () => {
       "gpt-5.3-codex-spark",
     ]);
     expect(models.find((model) => model.id === "gpt-5.6-terra")?.defaultEffort).toBe("medium");
-    expect(models.find((model) => model.id === "gpt-5.6-terra")?.maxContext).toBe(1_050_000);
+    expect(models.find((model) => model.id === "gpt-5.6-terra")?.maxContext).toBe(372_000);
     expect(models.find((model) => model.id === "gpt-5.6-terra")?.supportedEfforts.map((item) => item.effort)).toContain("max");
   });
 

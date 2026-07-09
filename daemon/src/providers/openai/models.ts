@@ -7,7 +7,9 @@ import { OPENAI_CODEX_CLIENT_VERSION, OPENAI_MODELS_URL } from "./constants";
 import { buildOpenAIJsonHeaders } from "./http";
 
 const DEFAULT_OPENAI_CONTEXT_TOKENS = 272_000;
-const GPT_5_6_CONTEXT_TOKENS = 1_050_000;
+// Exocortex uses the ChatGPT Codex backend, where GPT-5.6 has a 372K
+// context window. The public OpenAI API exposes a separate 1.05M window.
+const GPT_5_6_CODEX_CONTEXT_TOKENS = 372_000;
 const CODEX_SPARK_CONTEXT_TOKENS = 128_000;
 
 const FALLBACK_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
@@ -40,9 +42,9 @@ function fallbackOpenAIModel(
 }
 
 export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
-  fallbackOpenAIModel("gpt-5.6-sol", GPT_5_6_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
-  fallbackOpenAIModel("gpt-5.6-terra", GPT_5_6_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
-  fallbackOpenAIModel("gpt-5.6-luna", GPT_5_6_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
+  fallbackOpenAIModel("gpt-5.6-sol", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
+  fallbackOpenAIModel("gpt-5.6-terra", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
+  fallbackOpenAIModel("gpt-5.6-luna", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
   fallbackOpenAIModel("gpt-5.5"),
   fallbackOpenAIModel("gpt-5.4", DEFAULT_OPENAI_CONTEXT_TOKENS, FALLBACK_OPENAI_EFFORTS, "high"),
   fallbackOpenAIModel("gpt-5.4-mini"),
@@ -141,7 +143,7 @@ function supportedEffortsForModel(modelSlug: string, apiEfforts: ReasoningEffort
 }
 
 function fallbackContextWindow(modelSlug: string): number {
-  if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) return GPT_5_6_CONTEXT_TOKENS;
+  if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) return GPT_5_6_CODEX_CONTEXT_TOKENS;
   if (modelSlug === "gpt-5.3-codex-spark") return CODEX_SPARK_CONTEXT_TOKENS;
   return DEFAULT_OPENAI_CONTEXT_TOKENS;
 }
