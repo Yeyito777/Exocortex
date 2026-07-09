@@ -190,6 +190,22 @@ describe("OpenAI replay input", () => {
     expect(body.include).toEqual([]);
   });
 
+  test("max effort is sent through for GPT-5.6 models", () => {
+    const body = buildRequestBodyForTest([
+      { role: "user", content: "hello" },
+    ], "gpt-5.6-sol", 1234, { effort: "max" });
+
+    expect((body.reasoning as { effort?: string }).effort).toBe("max");
+  });
+
+  test("max effort remains xhigh-compatible for older OpenAI models", () => {
+    const body = buildRequestBodyForTest([
+      { role: "user", content: "hello" },
+    ], "gpt-5.5", 1234, { effort: "max" });
+
+    expect((body.reasoning as { effort?: string }).effort).toBe("xhigh");
+  });
+
   test("omits reasoning summary for gpt-5.3-codex-spark", () => {
     const body = buildRequestBodyForTest([
       { role: "user", content: "hello" },

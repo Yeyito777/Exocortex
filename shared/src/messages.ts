@@ -50,7 +50,7 @@ export const DEFAULT_PROVIDER_ORDER: readonly ProviderId[] = [DEFAULT_PROVIDER_I
 
 /** Preferred default model per provider when the app needs a fallback selection. */
 export const DEFAULT_MODEL_BY_PROVIDER = {
-  openai: "gpt-5.5",
+  openai: "gpt-5.6-sol",
   deepseek: "deepseek-v4-pro",
 } as const satisfies Record<ProviderId, ModelId>;
 
@@ -61,7 +61,7 @@ export const DEFAULT_EFFORT: EffortLevel = "high";
 
 /** Default effort fallback when the app only knows the provider/model ids. */
 export function defaultEffortForModelId(providerId: ProviderId, model: ModelId): EffortLevel {
-  if (providerId === "openai" && /^gpt-5\.5(?:-|$)/.test(model)) return "medium";
+  if (providerId === "openai" && (/^gpt-5\.6-/.test(model) || /^gpt-5\.5(?:-|$)/.test(model))) return "medium";
   return DEFAULT_EFFORT;
 }
 
@@ -86,6 +86,9 @@ export function supportsImageInputsForModel(
 /** Maximum context window size in tokens, keyed by model id. */
 export const MAX_CONTEXT: Record<string, number> = {
   "gpt-5": 400_000,
+  "gpt-5.6-sol": 1_050_000,
+  "gpt-5.6-terra": 1_050_000,
+  "gpt-5.6-luna": 1_050_000,
   "gpt-5.5": 272_000,
   "gpt-5.4": 272_000,
   "gpt-5.4-mini": 272_000,

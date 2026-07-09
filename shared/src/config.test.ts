@@ -26,10 +26,10 @@ describe("agentWorkingDirectory", () => {
 });
 
 describe("conversation defaults config", () => {
-  test("uses GPT-5.5 medium fast-off as the product conversation default", () => {
+  test("uses GPT-5.6 Sol medium fast-off as the product conversation default", () => {
     expect(productConversationDefaults()).toEqual({
       provider: "openai",
-      model: "gpt-5.5",
+      model: "gpt-5.6-sol",
       effort: "medium",
       fastMode: false,
     });

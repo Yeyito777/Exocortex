@@ -1,10 +1,14 @@
-import { type EffortLevel, type ModelInfo, type ReasoningEffortInfo } from "@exocortex/shared/messages";
+import { EFFORT_LEVELS, type EffortLevel, type ModelInfo, type ReasoningEffortInfo } from "@exocortex/shared/messages";
 import { formatModelDisplayName } from "@exocortex/shared/model-display";
 import { log } from "../../log";
 import { getVerifiedSession } from "./auth";
 import { supportsOpenAIImageInputs } from "./capabilities";
 import { OPENAI_CODEX_CLIENT_VERSION, OPENAI_MODELS_URL } from "./constants";
 import { buildOpenAIJsonHeaders } from "./http";
+
+const DEFAULT_OPENAI_CONTEXT_TOKENS = 272_000;
+const GPT_5_6_CONTEXT_TOKENS = 1_050_000;
+const CODEX_SPARK_CONTEXT_TOKENS = 128_000;
 
 const FALLBACK_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
   { effort: "low", description: "Fast responses with lighter reasoning" },
@@ -13,43 +17,43 @@ const FALLBACK_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
   { effort: "xhigh", description: "Extra high reasoning depth for complex problems" },
 ];
 
-export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
-  {
-    id: "gpt-5.5",
-    label: formatModelDisplayName("gpt-5.5"),
-    maxContext: 272_000,
-    supportedEfforts: FALLBACK_OPENAI_EFFORTS,
-    defaultEffort: "medium",
-    supportsImages: supportsOpenAIImageInputs("gpt-5.5"),
-  },
-  {
-    id: "gpt-5.4",
-    label: formatModelDisplayName("gpt-5.4"),
-    maxContext: 272_000,
-    supportedEfforts: FALLBACK_OPENAI_EFFORTS,
-    defaultEffort: "high",
-    supportsImages: supportsOpenAIImageInputs("gpt-5.4"),
-  },
-  {
-    id: "gpt-5.4-mini",
-    label: formatModelDisplayName("gpt-5.4-mini"),
-    maxContext: 272_000,
-    supportedEfforts: FALLBACK_OPENAI_EFFORTS,
-    defaultEffort: "medium",
-    supportsImages: supportsOpenAIImageInputs("gpt-5.4-mini"),
-  },
-  {
-    id: "gpt-5.3-codex-spark",
-    label: formatModelDisplayName("gpt-5.3-codex-spark"),
-    maxContext: 128_000,
-    supportedEfforts: FALLBACK_OPENAI_EFFORTS,
-    defaultEffort: "medium",
-    supportsImages: supportsOpenAIImageInputs("gpt-5.3-codex-spark"),
-  },
+const GPT_5_6_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
+  { effort: "none", description: "Disable reasoning for the fastest responses" },
+  ...FALLBACK_OPENAI_EFFORTS,
+  { effort: "max", description: "Maximum reasoning for the hardest quality-first workloads" },
 ];
 
-const PRIMARY_OPENAI_MODEL_FAMILIES = ["gpt-5.5", "gpt-5.4"] as const;
+function fallbackOpenAIModel(
+  id: string,
+  maxContext = DEFAULT_OPENAI_CONTEXT_TOKENS,
+  supportedEfforts: ReasoningEffortInfo[] = FALLBACK_OPENAI_EFFORTS,
+  defaultEffort: EffortLevel = "medium",
+): ModelInfo {
+  return {
+    id,
+    label: formatModelDisplayName(id),
+    maxContext,
+    supportedEfforts,
+    defaultEffort,
+    supportsImages: supportsOpenAIImageInputs(id),
+  };
+}
+
+export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
+  fallbackOpenAIModel("gpt-5.6-sol", GPT_5_6_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
+  fallbackOpenAIModel("gpt-5.6-terra", GPT_5_6_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
+  fallbackOpenAIModel("gpt-5.6-luna", GPT_5_6_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
+  fallbackOpenAIModel("gpt-5.5"),
+  fallbackOpenAIModel("gpt-5.4", DEFAULT_OPENAI_CONTEXT_TOKENS, FALLBACK_OPENAI_EFFORTS, "high"),
+  fallbackOpenAIModel("gpt-5.4-mini"),
+  fallbackOpenAIModel("gpt-5.3-codex-spark", CODEX_SPARK_CONTEXT_TOKENS),
+];
+
+const PRIMARY_OPENAI_MODEL_FAMILIES = ["gpt-5.6", "gpt-5.5", "gpt-5.4"] as const;
 const PREFERRED_OPENAI_MODEL_ORDER = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
   "gpt-5.5",
   "gpt-5.5-pro",
   "gpt-5.5-mini",
@@ -86,6 +90,12 @@ function isOpenAIModelInFamily(modelSlug: string, family: PrimaryOpenAIModelFami
   return new RegExp(`^${family.replace(".", "\\.")}(?:-|$)`).test(modelSlug);
 }
 
+function isUnsupportedOpenAIModel(modelSlug: string): boolean {
+  // Do not expose the broad GPT-5.6 alias; users should choose a concrete
+  // GPT-5.6 tier explicitly: Sol, Terra, or Luna.
+  return modelSlug === "gpt-5.6";
+}
+
 function preferredOpenAIPrimaryFamily(models: OpenAICodexModel[]): PrimaryOpenAIModelFamily {
   for (const family of PRIMARY_OPENAI_MODEL_FAMILIES) {
     if (models.some((model) => typeof model.slug === "string" && isOpenAIModelInFamily(model.slug, family))) {
@@ -103,18 +113,45 @@ function isPreferredOpenAIModel(model: OpenAICodexModel, preferredFamily: Primar
 }
 
 function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel | undefined): EffortLevel {
-  // Product preference: use medium effort for GPT-5.5-family models, even if
+  // Product preference: use medium effort for GPT-5.6/5.5-family models, even if
   // upstream model metadata reports a higher default.
+  if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) return "medium";
   if (isOpenAIModelInFamily(modelSlug, "gpt-5.5")) return "medium";
   // Keep the older primary OpenAI default on high effort.
   if (modelSlug === "gpt-5.4") return "high";
   return apiDefaultEffort ?? "medium";
 }
 
+function fallbackEffortsForModel(modelSlug: string): ReasoningEffortInfo[] {
+  if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) return GPT_5_6_OPENAI_EFFORTS;
+  return FALLBACK_OPENAI_EFFORTS;
+}
+
+function supportedEffortsForModel(modelSlug: string, apiEfforts: ReasoningEffortInfo[]): ReasoningEffortInfo[] {
+  const fallbackEfforts = fallbackEffortsForModel(modelSlug);
+  if (apiEfforts.length === 0) return fallbackEfforts;
+  if (!isOpenAIModelInFamily(modelSlug, "gpt-5.6")) return apiEfforts;
+
+  const apiEffortByLevel = new Map(apiEfforts.map((item) => [item.effort, item]));
+  const fallbackLevels = new Set(fallbackEfforts.map((item) => item.effort));
+  return [
+    ...fallbackEfforts.map((fallback) => apiEffortByLevel.get(fallback.effort) ?? fallback),
+    ...apiEfforts.filter((item) => !fallbackLevels.has(item.effort)),
+  ];
+}
+
+function fallbackContextWindow(modelSlug: string): number {
+  if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) return GPT_5_6_CONTEXT_TOKENS;
+  if (modelSlug === "gpt-5.3-codex-spark") return CODEX_SPARK_CONTEXT_TOKENS;
+  return DEFAULT_OPENAI_CONTEXT_TOKENS;
+}
+
 function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
   if (!model.slug) return null;
   const supportedEfforts = (model.supported_reasoning_levels ?? [])
-    .filter((candidate): candidate is { effort: EffortLevel; description?: string } => typeof candidate.effort === "string")
+    .filter((candidate): candidate is { effort: EffortLevel; description?: string } => (
+      typeof candidate.effort === "string" && (EFFORT_LEVELS as readonly string[]).includes(candidate.effort)
+    ))
     .map((candidate) => ({
       effort: candidate.effort,
       description: candidate.description?.trim() || candidate.effort,
@@ -122,8 +159,8 @@ function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
   return {
     id: model.slug,
     label: formatModelDisplayName(model.slug),
-    maxContext: model.context_window ?? 272_000,
-    supportedEfforts: supportedEfforts.length > 0 ? supportedEfforts : FALLBACK_OPENAI_EFFORTS,
+    maxContext: model.context_window ?? fallbackContextWindow(model.slug),
+    supportedEfforts: supportedEffortsForModel(model.slug, supportedEfforts),
     defaultEffort: preferredDefaultEffort(model.slug, model.default_reasoning_level),
     supportsImages: supportsOpenAIImageInputs(model.slug),
   };
@@ -132,7 +169,8 @@ function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
 function selectPreferredOpenAIModels(models: OpenAICodexModel[]): ModelInfo[] {
   const visibleModels = models
     .filter((model) => model.supported_in_api !== false)
-    .filter((model) => model.visibility !== "hide");
+    .filter((model) => model.visibility !== "hide")
+    .filter((model) => typeof model.slug !== "string" || !isUnsupportedOpenAIModel(model.slug));
   const preferredFamily = preferredOpenAIPrimaryFamily(visibleModels);
 
   return visibleModels

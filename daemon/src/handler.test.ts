@@ -54,7 +54,7 @@ describe("handler new_conversation defaults", () => {
     cleanupIds();
   });
 
-  test("uses OpenAI GPT-5.5 medium effort when the client omits model settings", async () => {
+  test("uses OpenAI GPT-5.6 Sol medium effort when the client omits model settings", async () => {
     const sent: Array<Record<string, unknown>> = [];
     const server = {
       sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),

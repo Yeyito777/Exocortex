@@ -37,14 +37,18 @@ interface OpenAIRequestShape {
   }>;
 }
 
-function mapEffort(effort: EffortLevel | undefined): string {
+function supportsOpenAIMaxEffort(model: ModelId): boolean {
+  return /^gpt-5\.6-/.test(model);
+}
+
+function mapEffort(effort: EffortLevel | undefined, model: ModelId): string {
   switch (effort) {
     case "none": return "none";
     case "minimal": return "minimal";
     case "low": return "low";
     case "medium": return "medium";
     case "xhigh": return "xhigh";
-    case "max": return "xhigh";
+    case "max": return supportsOpenAIMaxEffort(model) ? "max" : "xhigh";
     case "high":
     default:
       return "high";
@@ -260,7 +264,7 @@ function shouldRequestReasoningSummary(model: ModelId): boolean {
 function buildRequestShape(model: ModelId, options: StreamOptions): OpenAIRequestShape {
   const tools = buildOpenAITools(options.tools);
   const serviceTier = mapServiceTier(options.serviceTier);
-  const effort = mapEffort(options.effort);
+  const effort = mapEffort(options.effort, model);
   return {
     model,
     instructions: options.system || "You are a helpful assistant.",
