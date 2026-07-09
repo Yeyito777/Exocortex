@@ -1,6 +1,7 @@
 import type { ConversationSummary, FolderSummary } from "../messages";
-import { sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
+import { isMovableSidebarItem, sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { compareSidebarOrder } from "./order";
+import { focusTargetAfterRemovingSidebarItems } from "./removal";
 import { buildDisplayRows, nearestDisplayEntry } from "./rows";
 import {
   getActiveSidebarSearchQuery,
@@ -92,6 +93,9 @@ export function focusNearestSidebarDisplayEntry(sidebar: SidebarState, preferred
 export function updateConversationList(sidebar: SidebarState, conversations: ConversationSummary[], folders: FolderSummary[] = sidebar.folders): void {
   const previousSelectedItem = sidebar.selectedItem;
   const previousSelectedRow = selectedSidebarDisplayRow(sidebar);
+  const focusTarget = isMovableSidebarItem(previousSelectedItem)
+    ? focusTargetAfterRemovingSidebarItems(sidebar, [previousSelectedItem])
+    : null;
   sidebar.conversations = conversations;
   sidebar.folders = folders;
   if (sidebar.currentFolderId && !sidebar.folders.some(f => f.id === sidebar.currentFolderId)) {
@@ -118,6 +122,10 @@ export function updateConversationList(sidebar: SidebarState, conversations: Con
     }
   }
   if (previousSelectedItem && !isSidebarItemVisible(sidebar, previousSelectedItem) && previousSelectedRow !== null) {
+    if (focusTarget && isSidebarItemVisible(sidebar, focusTarget)) {
+      focusSidebarItem(sidebar, focusTarget);
+      return;
+    }
     if (focusNearestSidebarDisplayEntry(sidebar, previousSelectedRow - 1, -1)) return;
   }
   syncSelectedIndex(sidebar);

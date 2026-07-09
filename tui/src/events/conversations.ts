@@ -9,7 +9,8 @@ import {
   updateConversation,
   updateConversationList,
 } from "../sidebar";
-import { focusNearestSidebarDisplayEntry, selectedSidebarDisplayRow } from "../sidebar/updates";
+import { focusTargetAfterRemovingSidebarItems } from "../sidebar/removal";
+import { focusSidebarItem } from "../sidebar/selection";
 import type { RenderState } from "../state";
 import {
   clearPendingAI,
@@ -106,11 +107,12 @@ export function handleConversationDeleted(event: Extract<Event, { type: "convers
   const idx = state.sidebar.conversations.findIndex(c => c.id === event.convId);
   if (idx !== -1) {
     const selectedWasDeleted = state.sidebar.selectedItem?.type === "conversation" && state.sidebar.selectedItem.id === event.convId;
-    const selectedRow = selectedWasDeleted ? selectedSidebarDisplayRow(state.sidebar) : null;
+    const focusTarget = selectedWasDeleted
+      ? focusTargetAfterRemovingSidebarItems(state.sidebar, [{ type: "conversation", id: event.convId }])
+      : null;
     state.sidebar.conversations.splice(idx, 1);
-    if (!selectedWasDeleted || selectedRow === null || !focusNearestSidebarDisplayEntry(state.sidebar, selectedRow - 1, -1)) {
-      syncSelectedIndex(state.sidebar);
-    }
+    if (selectedWasDeleted) focusSidebarItem(state.sidebar, focusTarget);
+    else syncSelectedIndex(state.sidebar);
   }
   // If this was the current conversation, clear the chat.
   if (state.convId === event.convId) {

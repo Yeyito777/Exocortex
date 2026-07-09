@@ -23,11 +23,12 @@ import {
 import { sameSidebarItem as sameItem } from "./sidebar/items";
 import { moveSelection, moveToMarked, moveToStreaming } from "./sidebar/navigation";
 import {
-  focusNearestVisibleConversation,
+  focusSidebarItem,
   getSelectedSidebarItem,
   getSelectedVisibleConversation,
   selectedVisualItems,
 } from "./sidebar/selection";
+import { focusTargetAfterRemovingSidebarItems } from "./sidebar/removal";
 import type { SidebarState } from "./sidebar/state";
 import type { SidebarKeyResult } from "./sidebar/types";
 
@@ -195,21 +196,19 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
           .filter((selected): selected is SidebarItemRef & { type: "conversation" } => selected.type === "conversation")
           .map(selected => selected.id);
         if (selectedConvIds.length > 1) {
-          const deletedIndices = selectedConvIds
-            .map(id => sidebar.conversations.findIndex(conv => conv.id === id))
-            .filter(index => index !== -1);
-          const preferredIndex = deletedIndices.length > 0 ? Math.min(...deletedIndices) - 1 : 0;
+          const deletedItems = selectedConvIds.map(id => ({ type: "conversation" as const, id }));
+          const focusTarget = focusTargetAfterRemovingSidebarItems(sidebar, deletedItems);
           const selectedSet = new Set(selectedConvIds);
           sidebar.conversations = sidebar.conversations.filter(conv => !selectedSet.has(conv.id));
           sidebar.visualAnchor = null;
-          focusNearestVisibleConversation(sidebar, preferredIndex);
+          focusSidebarItem(sidebar, focusTarget);
           return { type: "delete_conversations", convIds: selectedConvIds };
         }
         if (item.type === "conversation") {
-          const deletedIndex = sidebar.selectedIndex;
-          sidebar.conversations.splice(deletedIndex, 1);
+          const focusTarget = focusTargetAfterRemovingSidebarItems(sidebar, [item]);
+          sidebar.conversations = sidebar.conversations.filter(conv => conv.id !== item.id);
           sidebar.visualAnchor = null;
-          focusNearestVisibleConversation(sidebar, deletedIndex - 1);
+          focusSidebarItem(sidebar, focusTarget);
           return { type: "delete_conversation", convId: item.id };
         }
         sidebar.visualAnchor = null;

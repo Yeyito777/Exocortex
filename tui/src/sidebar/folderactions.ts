@@ -4,6 +4,7 @@ import { currentFolder, parentOfCurrentFolder } from "./folders";
 import { isMovableSidebarItem, sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { compareSidebarOrder } from "./order";
 import { updateMovePromptAutocomplete } from "./moveautocomplete";
+import { focusTargetAfterRemovingSidebarItems } from "./removal";
 import { buildDisplayRows, type DisplayRow } from "./rows";
 import {
   focusFolderById,
@@ -15,26 +16,8 @@ import type { SidebarState } from "./state";
 import type { SidebarKeyResult } from "./types";
 import { syncSelectedIndex } from "./updates";
 
-function nextItemAfterRemovingItems(sidebar: SidebarState, items: SidebarItemRef[]): SidebarItemRef | { type: "up" } | null {
-  const removedKeys = new Set(items.map(item => itemKey(item)));
-  const rowsBefore = buildDisplayRows(sidebar).filter((row): row is DisplayRow & { type: "entry"; item: SidebarItemRef | { type: "up" } } => row.type === "entry" && !!row.item && row.item.type !== "folder_instructions");
-  const removedIndices = rowsBefore
-    .map((row, index) => removedKeys.has(itemKey(row.item)) ? index : -1)
-    .filter(index => index !== -1);
-  const rowsAfter = rowsBefore.filter(row => !removedKeys.has(itemKey(row.item)));
-  if (rowsAfter.length === 0) return null;
-  const removedIndex = removedIndices.length === 0 ? 0 : Math.min(...removedIndices);
-  const nextIndex = Math.max(0, Math.min(removedIndex - 1, rowsAfter.length - 1));
-  return rowsAfter[nextIndex]?.item ?? null;
-}
-
-function nextItemAfterRemovingItem(sidebar: SidebarState, item: SidebarItemRef): SidebarItemRef | { type: "up" } | null {
-  return nextItemAfterRemovingItems(sidebar, [item]);
-}
-
 export function requestFocusAfterMovingItemsOutOfView(sidebar: SidebarState, items: SidebarItemRef[]): void {
-  const next = nextItemAfterRemovingItems(sidebar, items);
-  sidebar.pendingFocusItem = next?.type === "up" ? null : next;
+  sidebar.pendingFocusItem = focusTargetAfterRemovingSidebarItems(sidebar, items);
 }
 
 function firstFolderChildItem(sidebar: SidebarState, folderId: string): SidebarItemRef | null {
@@ -54,16 +37,15 @@ export function requestFocusAfterRecursivelyDeletingFolder(sidebar: SidebarState
   // The daemon will recursively delete the folder tree and broadcast the final
   // sidebar in a moment; selecting only after that authoritative update avoids a
   // visible one-frame cursor jump.
-  const next = nextItemAfterRemovingItem(sidebar, item);
-  sidebar.pendingFocusItem = next?.type === "up" ? null : next;
+  sidebar.pendingFocusItem = focusTargetAfterRemovingSidebarItems(sidebar, [item]);
 }
 
 export function requestFocusAfterUnwrappingFolder(sidebar: SidebarState, item: SidebarItemRef & { type: "folder" }): void {
   // Prefer the first unwrapped child after the server update. If the folder is
   // empty, fall back to the next nearby row after removing the folder shell.
   const child = firstFolderChildItem(sidebar, item.id);
-  const next = nextItemAfterRemovingItem(sidebar, item);
-  const target = child ?? (next?.type === "up" ? null : next);
+  const next = focusTargetAfterRemovingSidebarItems(sidebar, [item]);
+  const target = child ?? next;
   sidebar.pendingFocusItem = target;
 }
 

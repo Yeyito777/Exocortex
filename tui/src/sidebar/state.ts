@@ -16,7 +16,7 @@ export interface SidebarState {
   pendingDeleteId: string | null;
   pendingDeleteItem: SidebarItemRef | null;
   visualAnchor: SidebarItemRef | null;
-  pendingFocusItem: SidebarItemRef | null;
+  pendingFocusItem: SidebarSelectableItem | null;
   pendingFocusFolder: { name: string; parentId: string | null } | null;
   prompt: SidebarPromptState | null;
   search: SidebarSearchState | null;

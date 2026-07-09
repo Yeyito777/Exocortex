@@ -111,9 +111,3 @@ export function selectedVisualItems(sidebar: SidebarState): SidebarItemRef[] {
   const end = Math.max(anchorIdx, currentIdx);
   return rows.slice(start, end + 1).map(row => row.item as SidebarItemRef);
 }
-
-export function focusNearestVisibleConversation(sidebar: SidebarState, preferredIndex: number): void {
-  const rows = buildDisplayRows(sidebar).filter(row => row.type === "entry" && row.item?.type === "conversation");
-  const next = rows.find(row => (row.convIdx ?? 0) >= preferredIndex) ?? rows[rows.length - 1];
-  focusSidebarItem(sidebar, next?.item ?? null);
-}
