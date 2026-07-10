@@ -198,6 +198,37 @@ describe("tool call rendering", () => {
     expect(rendered.every(line => visibleLength(line) <= availableWidth)).toBe(true);
   });
 
+  test("line-wraps long native Exocortex tool calls without losing their tail", () => {
+    const availableWidth = 52;
+    const summary = `send: ${"Inspect every relevant file and report the exact behavior. ".repeat(5)}TAIL_SENTINEL`;
+    const state = {
+      messages: [{
+        role: "assistant",
+        blocks: [{
+          type: "tool_call",
+          toolCallId: "1",
+          toolName: "exo",
+          input: {},
+          summary,
+        }],
+        metadata: null,
+      }],
+      pendingAI: null,
+      toolRegistry: [{ name: "exo", label: "Exocortex", color: "#1d9bf0" }],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: null,
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, availableWidth).lines.map(stripAnsi);
+
+    expect(rendered.length).toBeGreaterThan(1);
+    expect(rendered.every(line => visibleLength(line) <= availableWidth)).toBe(true);
+    expect(rendered.some(line => line.includes("TAIL_SENTINEL"))).toBe(true);
+    expect(rendered.every(line => !line.includes("…"))).toBe(true);
+  });
+
   test("preserves multiline bash prelude while styling the external tool line", () => {
     const state = {
       messages: [{

@@ -137,8 +137,7 @@ export const exo: Tool = {
       : action === "commands"
           ? detailValue(input, "command")
           : detailValue(input, "conversation_id");
-    const compact = detail && detail.length > 180 ? `${detail.slice(0, 177)}…` : detail;
-    return { label: "Exocortex", detail: compact ? `${action}: ${compact}` : action };
+    return { label: "Exocortex", detail: detail ? `${action}: ${detail}` : action };
   },
   async execute(input, context, signal) {
     if (!context?.exocortex) {

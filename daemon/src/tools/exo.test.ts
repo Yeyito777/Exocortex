@@ -83,6 +83,13 @@ describe("native exo tool contract", () => {
     expect(exo.systemHint).toContain("external `exo` CLI through bash only when debugging or targeting another daemon");
   });
 
+  test("preserves long task text in summaries so the TUI can wrap it", () => {
+    const text = `${"Inspect every relevant file and report the exact behavior. ".repeat(5)}TAIL_SENTINEL`;
+
+    expect(text.length).toBeGreaterThan(180);
+    expect(exo.summarize({ action: "send", text }).detail).toBe(`send: ${text}`);
+  });
+
   test("forwards calls through the daemon-injected runtime with the active parent id", async () => {
     const execute = mock(async () => ({ output: "ok", isError: false }));
     const signal = new AbortController().signal;
