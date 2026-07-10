@@ -15,7 +15,7 @@ import { complete } from "./llm";
 import { buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
-import { EFFORT_LEVELS } from "./messages";
+import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME } from "./messages";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode, supportsImageInputs } from "./providers/registry";
 import { transcribeAudioBytes } from "./transcription";
 import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen";
@@ -31,7 +31,6 @@ import { getTokenStatsSnapshot } from "./token-stats";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
 
-const SUBAGENTS_FOLDER_NAME = "subagents";
 const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
 
 // ── Handler ─────────────────────────────────────────────────────────

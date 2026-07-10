@@ -51,7 +51,7 @@ import type { Event, QueueTiming } from "./protocol";
 import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
 import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
 import { startReplayConversation } from "./replay";
-import { runStreamFinishedPing, shouldPingForBackgroundStreamCompletion, shouldPingForStreamStopped } from "./ping";
+import { isConversationInSubagentsFolder, runStreamFinishedPing, shouldPingForBackgroundStreamCompletion, shouldPingForStreamStopped } from "./ping";
 import { stripStartupLaunchEcho } from "./startupinput";
 
 // ── State ───────────────────────────────────────────────────────────
@@ -350,9 +350,13 @@ function isBackgroundConversationScopedEvent(event: Event): boolean {
 }
 
 function scheduleStreamFinishedPing(completedConvId: string): void {
+  if (isConversationInSubagentsFolder(completedConvId, state.sidebar.conversations, state.sidebar.folders)) return;
   clearStreamFinishedPingTimer();
   streamFinishedPingTimer = setTimeout(() => {
     streamFinishedPingTimer = null;
+    // Re-check after the debounce in case sidebar folder state arrived or the
+    // conversation moved while completion events were being reconciled.
+    if (isConversationInSubagentsFolder(completedConvId, state.sidebar.conversations, state.sidebar.folders)) return;
     runStreamFinishedPing({
       completedConvId,
       activeConvId: state.convId,

@@ -7,6 +7,7 @@ import { tryCommand } from "./commands";
 import { createInitialState } from "./state";
 import {
   cancelPendingStreamFinishedNotification,
+  isConversationInSubagentsFolder,
   isTerminalWindowFocused,
   loadStreamFinishedPing,
   normalizeSoundPath,
@@ -227,6 +228,27 @@ describe("ping config helpers", () => {
       isStreaming: true,
       activeConvIdBeforeUpdate: "conv-b",
     })).toBe(false);
+  });
+
+  test("recognizes direct and nested conversations inside the top-level subagents folder", () => {
+    const conversations = [
+      { id: "direct-agent", folderId: "subagents-folder" },
+      { id: "nested-agent", folderId: "nested-folder" },
+      { id: "ordinary", folderId: "project-folder" },
+      { id: "misleading-nested-name", folderId: "nested-subagents-name" },
+    ];
+    const folders = [
+      { id: "subagents-folder", name: "SubAgents", parentId: null },
+      { id: "nested-folder", name: "batch", parentId: "subagents-folder" },
+      { id: "project-folder", name: "project", parentId: null },
+      { id: "nested-subagents-name", name: "subagents", parentId: "project-folder" },
+    ];
+
+    expect(isConversationInSubagentsFolder("direct-agent", conversations, folders)).toBe(true);
+    expect(isConversationInSubagentsFolder("nested-agent", conversations, folders)).toBe(true);
+    expect(isConversationInSubagentsFolder("ordinary", conversations, folders)).toBe(false);
+    expect(isConversationInSubagentsFolder("misleading-nested-name", conversations, folders)).toBe(false);
+    expect(isConversationInSubagentsFolder("missing", conversations, folders)).toBe(false);
   });
 
   test("daemon-restart stopped streams do not trigger /ping", () => {

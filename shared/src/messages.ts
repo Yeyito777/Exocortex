@@ -18,6 +18,9 @@ export type ModelId = string;
 
 export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
+/** Reserved top-level folder used for autonomous subagent conversations. */
+export const SUBAGENTS_FOLDER_NAME = "subagents";
+
 export interface ReasoningEffortInfo {
   effort: EffortLevel;
   description: string;
