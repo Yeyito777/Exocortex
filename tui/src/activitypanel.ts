@@ -1,12 +1,13 @@
 /**
  * Focused-conversation task panel.
  *
- * Renders active subagents and detached background commands as a compact
- * top-right overlay. The daemon supplies ephemeral task details on conversation
- * summaries; this module owns all visual formatting for the panel.
+ * Renders the current goal, active subagents, and detached background commands
+ * as a compact top-right overlay. The daemon supplies ephemeral task details on
+ * conversation summaries; this module adds the focused conversation's durable
+ * goal and owns all visual formatting for the panel.
  */
 
-import type { ConversationTaskSummary } from "./messages";
+import type { ConversationGoalStatus, ConversationTaskSummary } from "./messages";
 import type { RenderState } from "./state";
 import { padRightToWidth, termWidth } from "./textwidth";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
@@ -17,15 +18,32 @@ const ELAPSED_WIDTH = 7;
 const PANEL_BG_HEX = "#00050f";
 const EXOCORTEX_FALLBACK_HEX = "#1d9bf0";
 const BASH_FALLBACK_HEX = "#d19a66";
+const GOAL_FALLBACK_HEX = "#c792ea";
+
+export interface TaskPanelEntry extends Omit<ConversationTaskSummary, "kind"> {
+  kind: ConversationTaskSummary["kind"] | "goal";
+  goalStatus?: ConversationGoalStatus;
+}
 
 export interface TaskPanelRender {
   width: number;
   lines: string[];
 }
 
-export function focusedConversationTasks(state: RenderState): ConversationTaskSummary[] {
+export function focusedConversationTasks(state: RenderState): TaskPanelEntry[] {
   if (!state.convId || state.folderInstructionsDoc) return [];
-  return state.sidebar.conversations.find(conversation => conversation.id === state.convId)?.tasks ?? [];
+  const activityTasks = state.sidebar.conversations.find(conversation => conversation.id === state.convId)?.tasks ?? [];
+  const goal = state.goal;
+  const goalTask: TaskPanelEntry[] = goal && goal.status !== "complete"
+    ? [{
+        id: `goal:${goal.createdAt}`,
+        kind: "goal",
+        title: goal.objective,
+        startedAt: goal.createdAt,
+        goalStatus: goal.status,
+      }]
+    : [];
+  return [...goalTask, ...activityTasks];
 }
 
 export function hasFocusedConversationTasks(state: RenderState): boolean {
@@ -45,7 +63,7 @@ export function formatTaskElapsed(startedAt: number, now = Date.now()): string {
   return `${Math.floor(totalDays / 7)}w ${totalDays % 7}d`;
 }
 
-function taskColor(state: RenderState, toolName: "exo" | "bash", fallback: string): string {
+function taskColor(state: RenderState, toolName: "exo" | "bash" | "goal", fallback: string): string {
   const color = state.toolRegistry.find(tool => tool.name === toolName)?.color ?? fallback;
   return hexToAnsi(color);
 }
@@ -92,6 +110,7 @@ export function renderTaskPanel(
   const topOutline = `${theme.bold}${theme.muted}`;
   const exocortex = taskColor(state, "exo", EXOCORTEX_FALLBACK_HEX);
   const bash = taskColor(state, "bash", BASH_FALLBACK_HEX);
+  const goal = taskColor(state, "goal", GOAL_FALLBACK_HEX);
 
   const withPanelBg = (line: string) => {
     const persistentBg = line.replaceAll(theme.reset, `${theme.reset}${panelBg}`);
@@ -112,12 +131,16 @@ export function renderTaskPanel(
 
   for (const task of visibleTasks) {
     const isSubagent = task.kind === "subagent";
-    const color = isSubagent ? exocortex : bash;
+    const isGoal = task.kind === "goal";
+    const color = isGoal ? goal : isSubagent ? exocortex : bash;
     const label = panelWidth >= 38
-      ? (isSubagent ? "◆ Exocortex" : "$ Bash")
-      : (isSubagent ? "◆ Exo" : "$ Bash");
-    const title = cleanTaskTitle(task.title) || (isSubagent ? "Subagent task" : "Background task");
-    const elapsed = formatTaskElapsed(task.startedAt, now);
+      ? (isGoal ? `${task.goalStatus === "paused" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exocortex" : "$ Bash")
+      : (isGoal ? `${task.goalStatus === "paused" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exo" : "$ Bash");
+    const fallbackTitle = isGoal ? "Conversation goal" : isSubagent ? "Subagent task" : "Background task";
+    const title = cleanTaskTitle(task.title) || fallbackTitle;
+    const elapsed = isGoal && task.goalStatus === "paused"
+      ? "paused"
+      : formatTaskElapsed(task.startedAt, now);
     lines.push(withPanelBg(
       `${outline}│${theme.reset} ${color}${padRightToWidth(label, labelWidth)}`
       + `${theme.text}${padRightToWidth(title, titleWidth)}`

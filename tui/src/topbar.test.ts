@@ -30,7 +30,7 @@ describe("topbar rendering", () => {
     expect(visibleLength(rendered)).toBe(40);
   });
 
-  test("hides goal permission restrictions", () => {
+  test("leaves goal state to the task panel", () => {
     const state = createInitialState();
     state.hasChosenProvider = true;
     state.goal = {
@@ -45,7 +45,7 @@ describe("topbar rendering", () => {
 
     const rendered = renderTopbar(state, 120);
 
-    expect(rendered).toContain("goal:active");
+    expect(rendered).not.toContain("goal:active");
     expect(rendered).not.toContain("--unpausable");
     expect(rendered).not.toContain("--uncompletable");
   });

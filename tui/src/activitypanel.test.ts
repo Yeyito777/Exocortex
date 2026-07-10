@@ -12,6 +12,7 @@ function stateWithTasks() {
   state.toolRegistry = [
     { name: "exo", label: "Exocortex", color: "#1122ee" },
     { name: "bash", label: "$", color: "#ee9911" },
+    { name: "goal", label: "Goal", color: "#cc77dd" },
   ];
   state.sidebar.conversations = [{
     id: "parent",
@@ -78,6 +79,33 @@ describe("focused conversation task panel", () => {
     state.sidebar.conversations[0].tasks = [{ id: "x", kind: "subagent", title: "One task", startedAt: 0 }];
     expect(renderTaskPanel(state, 29, 20)).toBeNull();
     expect(renderTaskPanel(state, 100, 2)).toBeNull();
+  });
+
+  test("shows active and paused goals as tool-colored tasks", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].tasks = [];
+    state.goal = {
+      objective: "Ship the activity panel",
+      status: "active",
+      createdAt: 1_000,
+      updatedAt: 1_000,
+      turns: 2,
+    };
+
+    const active = renderTaskPanel(state, 100, 20, 43_000);
+    expect(active?.lines).toHaveLength(3);
+    expect(active?.lines.map(stripAnsi).join("\n")).toContain("◆ Goal");
+    expect(active?.lines.map(stripAnsi).join("\n")).toContain("Ship the activity panel");
+    expect(active?.lines.map(stripAnsi).join("\n")).toContain("42s");
+    expect(active?.lines[1]).toContain(hexToAnsi("#cc77dd"));
+
+    state.goal.status = "paused";
+    const paused = renderTaskPanel(state, 100, 20, 43_000);
+    expect(paused?.lines.map(stripAnsi).join("\n")).toContain("◇ Goal");
+    expect(paused?.lines.map(stripAnsi).join("\n")).toContain("paused");
+
+    state.goal.status = "complete";
+    expect(renderTaskPanel(state, 100, 20, 43_000)).toBeNull();
   });
 });
 
