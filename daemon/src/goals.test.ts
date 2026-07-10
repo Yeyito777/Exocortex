@@ -6,12 +6,8 @@ import {
   applyUserGoalAction,
   goalCanComplete,
   goalCanPause,
-  goalContinuationSystemPrompt,
   goalContinuationUserMessage,
   goalPermissionFlagSuffix,
-  GOAL_CONTINUATION_NO_PAUSE_PROMPT,
-  GOAL_CONTINUATION_PROMPT,
-  GOAL_CONTINUATION_WORK_ONLY_PREFIX,
   setGoal,
 } from "./goals";
 import { goal as goalTool } from "./tools/goal";
@@ -146,28 +142,34 @@ describe("goal permissions", () => {
 });
 
 describe("goal continuation messages", () => {
-  test("uses the pause-or-complete prompt when both actions are allowed", () => {
+  test("includes concise pause and completion guidance when both actions are allowed", () => {
     const convId = makeConversation("continue-default");
     const result = setGoal(convId, "ship the thing");
 
-    expect(goalContinuationSystemPrompt(result.goal!)).toBe(GOAL_CONTINUATION_PROMPT);
-    expect(goalContinuationUserMessage(result.goal!)).toBe("Continue the active /goal objective now: ship the thing");
+    expect(goalContinuationUserMessage(result.goal!)).toBe(
+      "Continue the active goal:\n\nship the thing\n\n"
+      + "If the goal is finished, mark it complete. "
+      + "If you are blocked or need user input or review, pause it. "
+      + "Otherwise, keep working.",
+    );
   });
 
   test("omits pause references when only completion is allowed", () => {
     const convId = makeConversation("continue-no-pause");
     const result = setGoal(convId, "ship the thing", { pausable: false });
 
-    expect(goalContinuationSystemPrompt(result.goal!)).toBe(GOAL_CONTINUATION_NO_PAUSE_PROMPT);
-    expect(goalContinuationSystemPrompt(result.goal!)).not.toContain("pause");
-    expect(goalContinuationUserMessage(result.goal!)).toBe("Continue the active /goal objective now: ship the thing");
+    const message = goalContinuationUserMessage(result.goal!);
+    expect(message).toBe(
+      "Continue the active goal:\n\nship the thing\n\n"
+      + "If the goal is finished, mark it complete. Otherwise, keep working.",
+    );
+    expect(message).not.toContain("pause");
   });
 
-  test("uses only the work-only continuation message when pause and complete are disabled", () => {
+  test("uses only the continuation directive when pause and complete are disabled", () => {
     const convId = makeConversation("continue-work-only");
     const result = setGoal(convId, "ship the thing", { completable: false });
 
-    expect(goalContinuationSystemPrompt(result.goal!)).toBeNull();
-    expect(goalContinuationUserMessage(result.goal!)).toBe(`${GOAL_CONTINUATION_WORK_ONLY_PREFIX}ship the thing`);
+    expect(goalContinuationUserMessage(result.goal!)).toBe("Continue the active goal:\n\nship the thing");
   });
 });
