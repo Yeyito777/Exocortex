@@ -125,7 +125,7 @@ export function renderSidebar(
   const convs = sidebar.conversations;
   const displayRows = buildDisplayRows(sidebar);
   const folderAggregates = sidebar.folders.length > 0 ? buildFolderAggregates(sidebar, globalIdleConvIds) : null;
-  const suppressedBadgeFolderIds = sidebar.folders.length > 0 ? subagentsFolderIds(sidebar.folders) : new Set<string>();
+  const subagentFolderIds = sidebar.folders.length > 0 ? subagentsFolderIds(sidebar.folders) : new Set<string>();
   // Compute visual selection once per render. Calling selectedVisualItems() per
   // row rebuilds displayRows each time; with an active /? filter this made `v`
   // feel very laggy on large conversation lists.
@@ -218,18 +218,19 @@ export function renderSidebar(
       rawTitle = folder ? `📁 ${folder.name}/ ${aggregate?.count ?? 0}` : "📁 folder/";
       const hasStreaming = aggregate?.streaming ?? false;
       const hasGlobalIdle = aggregate?.globalIdle ?? false;
-      const hasUnread = aggregate?.unread ?? false;
+      const hasUnread = (aggregate?.unread ?? false) && !(folder && subagentFolderIds.has(folder.id));
       streamIcon = hasStreaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = hasStreaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
-      notificationCount = folder && !suppressedBadgeFolderIds.has(folder.id) ? aggregate?.unreadCount ?? 0 : 0;
+      notificationCount = folder && !subagentFolderIds.has(folder.id) ? aggregate?.unreadCount ?? 0 : 0;
       itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "conversation") {
       const conv = convs[dr.convIdx ?? -1];
       if (!conv) continue;
       isCurrent = conv.id === currentConvId;
       const hasGlobalIdle = globalIdleConvIds.has(conv.id);
-      streamIcon = conv.streaming ? "◉ " : hasGlobalIdle ? "◉ " : conv.unread ? "◉ " : "";
-      streamIconColor = conv.streaming ? theme.accent : hasGlobalIdle ? theme.warning : conv.unread ? theme.success : "";
+      const hasUnread = conv.unread && !(conv.folderId && subagentFolderIds.has(conv.folderId));
+      streamIcon = conv.streaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
+      streamIconColor = conv.streaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
       starIcon = conv.marked ? "★ " : "";
       const mark = getMarkFromTitle(conv.title);
       emojiIcon = mark ? mark.emoji + " " : "";
