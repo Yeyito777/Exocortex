@@ -670,6 +670,120 @@ describe("unwindTo", () => {
     expect(get(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer"]);
     expect(get(id)?.lastContextTokens).toBeNull();
   });
+
+  test("preserves a checkpoint when unwinding only its unrepresented transcript tail", async () => {
+    const id = mkId("unwind-preserve-context");
+    const conv = create(id, "openai", "gpt-5.6-sol");
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+    );
+    conv.activeContext = {
+      version: 1,
+      kind: "openai_native",
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      messages: [{
+        role: "assistant",
+        content: [],
+        providerData: { openai: { compactionItems: [{ encryptedContent: "opaque" }] } },
+      }],
+      transcriptHistoryCount: 2,
+      transcriptPrefixHash: historyPrefixHash(conv.messages, 2),
+      windowId: `${id}:1`,
+      windowNumber: 1,
+      compactedAt: 123,
+      compactionCount: 1,
+    };
+    const checkpoint = structuredClone(conv.activeContext);
+    conv.messages.push(
+      { role: "user", content: "remove", metadata: null },
+      { role: "assistant", content: "removed answer", metadata: null },
+    );
+
+    expect(await unwindTo(id, 1)).toBe(true);
+    expect(get(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer"]);
+    expect(get(id)?.activeContext).toEqual(checkpoint);
+    expect(get(id)?.lastContextTokens).toBeNull();
+  });
+
+  test("restores the pre-abort checkpoint when abort recovery advances past the unwind point", async () => {
+    const id = mkId("unwind-restore-pre-abort-context");
+    const conv = create(id, "openai", "gpt-5.6-sol");
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+    );
+    conv.activeContext = {
+      version: 1,
+      kind: "openai_native",
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      messages: [{
+        role: "assistant",
+        content: [],
+        providerData: { openai: { compactionItems: [{ encryptedContent: "opaque" }] } },
+      }],
+      transcriptHistoryCount: 2,
+      transcriptPrefixHash: historyPrefixHash(conv.messages, 2),
+      windowId: `${id}:1`,
+      windowNumber: 1,
+      compactedAt: 123,
+      compactionCount: 1,
+    };
+    const checkpoint = structuredClone(conv.activeContext);
+    conv.messages.push({ role: "user", content: "remove", metadata: null });
+
+    const ac = new AbortController();
+    setActiveJob(id, ac, Date.now());
+    ac.signal.addEventListener("abort", () => {
+      conv.activeContext = {
+        ...structuredClone(checkpoint),
+        messages: [
+          ...structuredClone(checkpoint.messages),
+          { role: "user", content: "remove" },
+        ],
+        transcriptHistoryCount: 3,
+        transcriptPrefixHash: historyPrefixHash(conv.messages, 3),
+      };
+      clearActiveJob(id);
+    }, { once: true });
+
+    expect(await unwindTo(id, 1)).toBe(true);
+    expect(get(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer"]);
+    expect(get(id)?.activeContext).toEqual(checkpoint);
+  });
+
+  test("discards a checkpoint when unwinding inside its represented prefix", async () => {
+    const id = mkId("unwind-discard-context");
+    const conv = create(id, "openai", "gpt-5.6-sol");
+    conv.messages.push(
+      { role: "user", content: "remove from here", metadata: null },
+      { role: "assistant", content: "represented answer", metadata: null },
+      { role: "user", content: "later", metadata: null },
+    );
+    conv.activeContext = {
+      version: 1,
+      kind: "openai_native",
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      messages: [{
+        role: "assistant",
+        content: [],
+        providerData: { openai: { compactionItems: [{ encryptedContent: "opaque" }] } },
+      }],
+      transcriptHistoryCount: 2,
+      transcriptPrefixHash: historyPrefixHash(conv.messages, 2),
+      windowId: `${id}:1`,
+      windowNumber: 1,
+      compactedAt: 123,
+      compactionCount: 1,
+    };
+
+    expect(await unwindTo(id, 0)).toBe(true);
+    expect(get(id)?.messages).toEqual([]);
+    expect(get(id)?.activeContext).toBeNull();
+  });
 });
 
 describe("setSystemInstructions", () => {

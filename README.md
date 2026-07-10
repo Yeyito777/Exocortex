@@ -50,7 +50,7 @@ This will:
 2. Symlink `exocortexd` and `exocortex` into `~/.local/bin/`
 3. Install and start a systemd user service for the daemon
 
-The daemon exposes current-instance conversation and subagent orchestration through its native `exo` tool. Lower-frequency operations such as folder management and one-shot LLM calls live in an on-demand command registry (`action=commands`, `command=ls`) so they do not bloat every model request. The separate `exo` CLI remains an external debugging/automation client—especially for targeting other daemon instances—and is not installed by this repository's `make install` target.
+The daemon exposes current-instance conversation and subagent orchestration through its native `exo` tool. Every `send` or `queue` call requires an explicit bounded `max_depth`; nested turns can only pass a smaller budget, and daemon-wide/per-parent concurrency ceilings prevent runaway recursive delegation. Lower-frequency operations such as folder management, rename/delete/status, and one-shot LLM calls live in an on-demand command registry (`action=commands`, with bare `commands` or `command=ls` for discovery) so they do not bloat every model request. The separate `exo` CLI remains an external debugging/automation client—especially for targeting other daemon instances—and is not installed by this repository's `make install` target.
 
 > **Note:** Make sure `~/.local/bin` is in your `PATH`.
 > Add this to your `~/.bashrc` or `~/.zshrc` if it isn't:

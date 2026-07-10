@@ -1,3 +1,4 @@
+import { MAX_EXO_SUBAGENT_DEPTH } from "../messages";
 import type { Tool } from "./types";
 
 export const EXO_ACTIONS = [
@@ -6,11 +7,8 @@ export const EXO_ACTIONS = [
   "jobs",
   "info",
   "history",
-  "delete",
   "abort",
   "queue",
-  "rename",
-  "status",
   "commands",
 ] as const;
 
@@ -31,16 +29,17 @@ function detailValue(input: Record<string, unknown>, key: string): string | unde
 
 const EXO_SYSTEM_HINT = [
   "Use the native `exo` tool to manage the current Exocortex daemon and spawn or control subagents.",
-  "For a new subagent, call action=send with text; it detaches by default and this conversation is notified on completion.",
-  "Use action=history, jobs, info, queue, abort, or another send to inspect and control child conversations.",
-  "For less-common management operations, call action=commands with command=ls to discover the daemon-owned command registry, then command=help with args.command to inspect one command.",
+  `For action=send or queue, max_depth is required (0-${MAX_EXO_SUBAGENT_DEPTH}). A spawned turn may pass at most its remaining depth minus one; max_depth=0 prevents further delegation.`,
+  "For a new subagent, call action=send with text and max_depth; it detaches by default and this conversation is notified on completion.",
+  "Use action=history, jobs, info, queue, abort, list, or another send to inspect and control child conversations.",
+  "For less-common management operations, call action=commands (or command=ls) to discover the daemon-owned command registry, then command=help with args.command to inspect one command.",
   "Use the external `exo` CLI through bash only when debugging or targeting another daemon instance (for example with --instance).",
   "Subagents use Exocortex's daemon working directory, so include the target absolute working directory in the task text when relevant.",
 ].join("\n");
 
 export const exo: Tool = {
   name: "exo",
-  description: "Manage the current Exocortex daemon directly. High-frequency conversation and subagent operations are top-level. Use action=commands with command=ls to discover lower-frequency management commands on demand. Transcription and cross-instance targeting are intentionally excluded.",
+  description: "Manage the current Exocortex daemon directly. Frequent conversation and subagent operations are direct actions. Use action=commands to discover lower-frequency management commands on demand. Transcription and cross-instance targeting are intentionally excluded.",
   systemHint: EXO_SYSTEM_HINT,
   inputSchema: {
     type: "object",
@@ -56,7 +55,33 @@ export const exo: Tool = {
       },
       conversation_id: {
         type: "string",
-        description: "Conversation targeted by send, info, history, delete, abort, queue, or rename. Omit for send to create a new subagent.",
+        description: "Conversation targeted by send, info, history, abort, or queue. Omit for send to create a new subagent.",
+      },
+      max_depth: {
+        type: "integer",
+        minimum: 0,
+        maximum: MAX_EXO_SUBAGENT_DEPTH,
+        description: `Required for send and queue. The target turn's nested delegation budget (0-${MAX_EXO_SUBAGENT_DEPTH}); a spawned caller may set at most its own remaining budget minus one.`,
+      },
+      query: {
+        type: "string",
+        description: "Optional case-insensitive ID/title/provider/model filter for list or jobs.",
+      },
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 200,
+        description: "Maximum results for list, jobs, or history. Defaults to 25 for list/jobs and 50 for history; list/jobs cap at 100 and history at 200.",
+      },
+      offset: {
+        type: "integer",
+        minimum: 0,
+        description: "Pagination offset for list/jobs, or number of newest entries to skip for history. Defaults to 0.",
+      },
+      scope: {
+        type: "string",
+        enum: ["children", "all"],
+        description: "For jobs/list, restrict to subagents spawned by the active conversation or include all conversations. Jobs defaults to children; list defaults to all.",
       },
       provider: {
         type: "string",
@@ -85,13 +110,9 @@ export const exo: Tool = {
         enum: ["next-turn", "message-end"],
         description: "Queue delivery timing for action=queue. Defaults to next-turn.",
       },
-      title: {
-        type: "string",
-        description: "New title for action=rename.",
-      },
       command: {
         type: "string",
-        description: "For action=commands: use ls to discover available commands, help to inspect one, or a discovered command name to execute it. Command names are intentionally not enumerated in this schema.",
+        description: "For action=commands: omit or use ls to discover available commands, help to inspect one, or a discovered command name to execute it. Command names are intentionally not enumerated in this schema.",
       },
       args: {
         type: "object",
@@ -113,9 +134,7 @@ export const exo: Tool = {
     if (!action) return { label: "Exocortex", detail: "invalid action" };
     const detail = action === "send" || action === "queue"
       ? detailValue(input, "text")
-      : action === "rename"
-        ? [detailValue(input, "conversation_id"), detailValue(input, "title")].filter(Boolean).join(" → ")
-        : action === "commands"
+      : action === "commands"
           ? detailValue(input, "command")
           : detailValue(input, "conversation_id");
     const compact = detail && detail.length > 180 ? `${detail.slice(0, 177)}…` : detail;
@@ -125,6 +144,6 @@ export const exo: Tool = {
     if (!context?.exocortex) {
       return { output: "The native Exocortex runtime is unavailable in this tool context.", isError: true };
     }
-    return await context.exocortex.execute(input, context.conversationId, signal);
+    return await context.exocortex.execute(input, context.conversationId, signal, context.subagentMaxDepth);
   },
 };

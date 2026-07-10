@@ -15,11 +15,11 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, rename
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
 import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal } from "./messages";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, isValidActiveContext, sortConversations, summarizeConversation } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, MAX_EXO_SUBAGENT_DEPTH, isValidActiveContext, sortConversations, summarizeConversation } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 14;
+const CURRENT_VERSION = 15;
 
 interface ConversationFileV1 {
   version: 1;
@@ -208,7 +208,12 @@ interface ConversationFileV14 extends Omit<ConversationFileV13, "version"> {
   activeContext: Conversation["activeContext"];
 }
 
-type ConversationFile = ConversationFileV14;
+interface ConversationFileV15 extends Omit<ConversationFileV14, "version"> {
+  version: 15;
+  subagentMaxDepth: number | null;
+}
+
+type ConversationFile = ConversationFileV15;
 
 function normalizeProviderId(provider: unknown): ProviderId {
   return typeof provider === "string" && (DEFAULT_PROVIDER_ORDER as readonly string[]).includes(provider)
@@ -360,6 +365,15 @@ function migrateV13toV14(data: ConversationFileV13): ConversationFileV14 {
   };
 }
 
+/** v14 → v15: Persist the native exo nesting budget across autonomous continuations. */
+function migrateV14toV15(data: ConversationFileV14): ConversationFileV15 {
+  return {
+    ...data,
+    version: 15,
+    subagentMaxDepth: null,
+  };
+}
+
 function migrate(raw: Record<string, unknown>): ConversationFile {
   // Progressive migration — each function validates and upgrades one version.
   // `any` is intentional at this deserialization boundary: the data is parsed
@@ -379,6 +393,7 @@ function migrate(raw: Record<string, unknown>): ConversationFile {
   if (data.version < 12) data = migrateV11toV12(data);
   if (data.version < 13) data = migrateV12toV13(data);
   if (data.version < 14) data = migrateV13toV14(data);
+  if (data.version < 15) data = migrateV14toV15(data);
 
   if (data.version !== CURRENT_VERSION) {
     log("warn", `persistence: unknown schema version ${data.version}, attempting to load as v${CURRENT_VERSION}`);
@@ -671,6 +686,7 @@ function toFile(conv: Conversation): ConversationFile {
     folderId: conv.folderId ?? null,
     title: conv.title,
     goal: conv.goal ?? null,
+    subagentMaxDepth: conv.subagentMaxDepth ?? null,
   };
 }
 
@@ -700,6 +716,12 @@ function fromFile(file: ConversationFile): Conversation {
     sortOrder: file.sortOrder,
     title: file.title,
   };
+  if (typeof file.subagentMaxDepth === "number"
+      && Number.isInteger(file.subagentMaxDepth)
+      && file.subagentMaxDepth >= 0
+      && file.subagentMaxDepth <= MAX_EXO_SUBAGENT_DEPTH) {
+    conv.subagentMaxDepth = file.subagentMaxDepth;
+  }
   if (file.folderId != null) conv.folderId = file.folderId;
   if (file.goal != null && file.goal.status !== "complete") conv.goal = file.goal;
   return conv;

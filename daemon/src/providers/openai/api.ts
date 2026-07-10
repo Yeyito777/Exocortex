@@ -4,7 +4,7 @@ import { log } from "../../log";
 import { readExocortexConfig } from "@exocortex/shared/config";
 import { createHash } from "crypto";
 import { accountScopeForKey, getCurrentAccountKey, getVerifiedSession } from "./auth";
-import { AuthError, isNonRetryableProviderError, NonRetryableProviderError } from "../errors";
+import { AuthError, isContextWindowProviderError, isNonRetryableProviderError, NonRetryableProviderError } from "../errors";
 import { OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL } from "./constants";
 import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "./cookies";
@@ -961,11 +961,12 @@ export async function streamMessageWithSession(
     && hasCompactionRequestRemaining(options);
   const retryTransport = async (
     message: string,
-    retryOptions: { notify?: boolean; delayMs?: number } = {},
+    retryOptions: { notify?: boolean; delayMs?: number; displayMaxAttempts?: number } = {},
   ): Promise<void> => {
-    const display = retryDisplay(options, retryAttempt + 1, retryDisplayMaxAttempts);
+    const { displayMaxAttempts = retryDisplayMaxAttempts, ...backoffOptions } = retryOptions;
+    const display = retryDisplay(options, retryAttempt + 1, displayMaxAttempts);
     await retryBackoff(retryAttempt++, message, requestCallbacks, signal, {
-      ...retryOptions,
+      ...backoffOptions,
       displayAttempt: display.attempt,
       maxAttempts: display.maxAttempts,
     });
@@ -1030,7 +1031,19 @@ export async function streamMessageWithSession(
     } catch (err) {
       if (turnSession) turnSession.resetConnection();
       else socket?.destroy();
-      if (signal?.aborted || isAbortLikeError(err) || isNonRetryableProviderError(err)) throw err;
+      if (signal?.aborted || isAbortLikeError(err)) throw err;
+      const retryableCompactionContextError = options.compaction === true
+        && isContextWindowProviderError(err);
+      if (isNonRetryableProviderError(err) && !retryableCompactionContextError) throw err;
+      if (retryableCompactionContextError) {
+        if (retryAttempt < MAX_RETRIES && hasCompactionRequestRemaining(options)) {
+          const message = err.message;
+          log("warn", `openai api: retrying native compaction after ${message} (attempt ${retryAttempt + 1}/${MAX_RETRIES})`);
+          await retryTransport(message, { displayMaxAttempts: MAX_RETRIES });
+          continue;
+        }
+        throw new OpenAIWebSocketRetriesExhaustedError(err);
+      }
       if (turnSession && connectionReused && err instanceof OpenAIWebSocketClosedBeforeResponseStartedError) {
         if (canRetryTransport()) {
           const close = err.code != null ? `code=${err.code}` : "raw close";

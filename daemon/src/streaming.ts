@@ -19,6 +19,8 @@ export interface QueuedMessage {
   text: string;
   timing: QueueTiming;
   images?: ImageAttachment[];
+  /** Delegation budget installed if this queue entry starts a later turn. */
+  subagentMaxDepth?: number | null;
 }
 
 // ── State ───────────────────────────────────────────────────────────
@@ -285,13 +287,19 @@ export function getQueuedMessages(convId: string): QueuedMessage[] {
 }
 
 /** Push a message onto a conversation's queue. */
-export function pushQueuedMessage(convId: string, text: string, timing: QueueTiming, images?: ImageAttachment[]): void {
+export function pushQueuedMessage(
+  convId: string,
+  text: string,
+  timing: QueueTiming,
+  images?: ImageAttachment[],
+  subagentMaxDepth?: number | null,
+): void {
   let queue = messageQueues.get(convId);
   if (!queue) {
     queue = [];
     messageQueues.set(convId, queue);
   }
-  queue.push({ text, timing, images });
+  queue.push({ text, timing, images, subagentMaxDepth });
 }
 
 /**

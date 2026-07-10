@@ -25,6 +25,8 @@ export interface ExocortexToolRuntime {
     input: Record<string, unknown>,
     parentConversationId: string | undefined,
     signal?: AbortSignal,
+    /** Remaining nesting budget for the active turn; null/undefined is a root turn. */
+    subagentMaxDepth?: number | null,
   ): Promise<ToolResult>;
 }
 
@@ -33,6 +35,8 @@ export interface ToolExecutionContext {
   provider?: ProviderId;
   /** Conversation id, if any. Reserved for future tool policies/logging. */
   conversationId?: string;
+  /** Remaining native exo nesting budget; null/undefined means a root turn. */
+  subagentMaxDepth?: number | null;
   /** Model backing the active conversation, when the tool is run from one. */
   model?: string;
   /** Provider-assigned tool call id for the currently executing tool. */

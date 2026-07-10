@@ -217,7 +217,13 @@ export function createHandler(server: DaemonServer) {
     }
     const text = buildSubagentNotification(childConvId, task, outcome, parent.maxChars ?? 6000);
     if (convStore.isStreaming(parent.convId)) {
-      convStore.pushQueuedMessage(parent.convId, text, "next-turn");
+      convStore.pushQueuedMessage(
+        parent.convId,
+        text,
+        "next-turn",
+        undefined,
+        convStore.get(parent.convId)?.subagentMaxDepth ?? null,
+      );
       log("info", `handler: queued subagent completion notification ${childConvId} -> parent ${parent.convId}`);
       return;
     }
@@ -238,7 +244,7 @@ export function createHandler(server: DaemonServer) {
 
   exocortexRuntime = createExocortexToolRuntime({
     server,
-    runTurn: (convId, text) => {
+    runTurn: (convId, text, maxDepth) => {
       const turn = orchestrateSendMessage(
         server,
         null,
@@ -247,6 +253,8 @@ export function createHandler(server: DaemonServer) {
         text,
         Date.now(),
         buildOrchestrationCallbacks(convId),
+        undefined,
+        { subagentMaxDepth: maxDepth },
       );
       maybeStartAutoTitleGeneration(convId);
       return turn;
@@ -506,6 +514,7 @@ export function createHandler(server: DaemonServer) {
             id,
             initialMessage.startedAt,
             buildOrchestrationCallbacks(id),
+            { subagentMaxDepth: null },
           );
           maybeStartAutoTitleGeneration(id);
           await turn;
@@ -586,7 +595,7 @@ export function createHandler(server: DaemonServer) {
           const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
           log("info", `handler: set goal for ${cmd.convId}: "${objective.slice(0, 80)}"`);
           if (goal?.status === "active") {
-            void orchestrateGoalContinuation(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId)).catch((err) => {
+            void orchestrateGoalContinuation(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId), { subagentMaxDepth: null }).catch((err) => {
               log("error", `handler: initial goal continuation failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
             });
           }
@@ -597,7 +606,7 @@ export function createHandler(server: DaemonServer) {
           const result = applyUserGoalAction(conv, "resume");
           const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
           if (goal?.status === "active" && !convStore.isStreaming(cmd.convId)) {
-            void orchestrateGoalContinuation(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId)).catch((err) => {
+            void orchestrateGoalContinuation(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId), { subagentMaxDepth: null }).catch((err) => {
               log("error", `handler: resumed goal continuation failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
             });
           } else if (goal?.status === "active") {
@@ -654,6 +663,7 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
           const turn = orchestrateSendMessage(
             server, null, undefined, cmd.convId, cmd.text, cmd.startedAt, callbacks, cmd.images,
+            { subagentMaxDepth: null },
           );
           maybeStartAutoTitleGeneration(cmd.convId);
           void turn.then((outcome) => {
@@ -680,6 +690,7 @@ export function createHandler(server: DaemonServer) {
           server, client, cmd.reqId, cmd.convId, cmd.text, cmd.startedAt,
           callbacks,
           cmd.images,
+          { subagentMaxDepth: null },
         );
         maybeStartAutoTitleGeneration(cmd.convId);
         await outcome;
@@ -693,6 +704,7 @@ export function createHandler(server: DaemonServer) {
         await orchestrateReplayConversation(
           server, client, cmd.reqId, cmd.convId, cmd.startedAt,
           buildOrchestrationCallbacks(cmd.convId),
+          { subagentMaxDepth: null },
         );
         break;
       }

@@ -7,12 +7,14 @@ import type { StatusBlock } from "../statusline";
 import { termWidth } from "../textwidth";
 import { theme } from "../theme";
 
-export function activityBlock(state: RenderState): StatusBlock {
+export function activityBlock(state: RenderState): StatusBlock | null {
   const conversation = state.convId
     ? state.sidebar.conversations.find(candidate => candidate.id === state.convId)
     : undefined;
   const subagents = conversation?.subagentCount ?? 0;
   const backgroundTasks = conversation?.backgroundTaskCount ?? 0;
+  if (subagents === 0 && backgroundTasks === 0) return null;
+
   const subagentLabel = "  Subagents: ";
   const backgroundLabel = "  Background tasks: ";
   const subagentValue = String(subagents);

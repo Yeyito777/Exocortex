@@ -21,7 +21,12 @@ export const AUTO_COMPACTION_FRACTION = 0.9;
 const OPENAI_RETAINED_USER_TOKENS = 64_000;
 const PLAINTEXT_RETAINED_USER_TOKENS = 20_000;
 const SUMMARY_MAX_OUTPUT_TOKENS = 12_000;
-const NATIVE_REQUEST_MAX_ATTEMPTS = 4;
+// OpenAI's normal transient-error loop allows eight retries after the initial
+// request. Native compaction shares one operation-wide budget with that loop.
+const NATIVE_REQUEST_MAX_ATTEMPTS = 9;
+// Completed but malformed checkpoint responses retain their narrower semantic
+// retry policy; they are not transport errors and do not use exponential backoff.
+const INVALID_NATIVE_RESPONSE_MAX_ATTEMPTS = 4;
 
 const SUMMARY_SYSTEM_PROMPT = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another language model that will continue the conversation.
 
@@ -656,17 +661,21 @@ export async function compactContextMessages(
       attempts: 0,
     };
     let nativeFailure: unknown;
+    let nativeRetriesExhausted = false;
     while (requestBudget.attempts < requestBudget.maxAttempts) {
       try {
         return await nativeOpenAICompaction(messages, options, requestBudget);
       } catch (error) {
         if (options.signal?.aborted) throw error;
         nativeFailure = error;
-        if (!(error instanceof InvalidNativeCompactionResponseError)
-            || requestBudget.attempts >= requestBudget.maxAttempts) break;
+        if (!(error instanceof InvalidNativeCompactionResponseError)) break;
+        if (requestBudget.attempts >= INVALID_NATIVE_RESPONSE_MAX_ATTEMPTS) {
+          nativeRetriesExhausted = true;
+          break;
+        }
 
         const retryNumber = requestBudget.attempts;
-        const maxRetries = requestBudget.maxAttempts - 1;
+        const maxRetries = INVALID_NATIVE_RESPONSE_MAX_ATTEMPTS - 1;
 
         // A completed but malformed response is not a valid incremental base.
         // Destroy it before retrying the full replay + compaction trigger.
@@ -692,7 +701,7 @@ export async function compactContextMessages(
     }
 
     const failure = nativeFailure instanceof Error ? nativeFailure.message : String(nativeFailure);
-    const exhausted = requestBudget.attempts >= requestBudget.maxAttempts
+    const exhausted = nativeRetriesExhausted || requestBudget.attempts >= requestBudget.maxAttempts
       ? " after exhausting its retries"
       : "";
     const warning = `⚠ OpenAI server-side context compaction failed${exhausted}; falling back to a model-generated plaintext checkpoint. ${failure}`;

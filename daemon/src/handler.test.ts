@@ -359,6 +359,7 @@ describe("handler replay_conversation", () => {
         onHeaders: expect.any(Function),
         onComplete: expect.any(Function),
       }),
+      { subagentMaxDepth: null },
     );
     expect(orchestrateSendMessage).not.toHaveBeenCalled();
   });
@@ -409,6 +410,7 @@ describe("handler set_goal resume", () => {
         onHeaders: expect.any(Function),
         onComplete: expect.any(Function),
       }),
+      { subagentMaxDepth: null },
     );
   });
 

@@ -501,7 +501,7 @@ describe("automatic context compaction state", () => {
     expect(fallbackWarning).toBe("");
   });
 
-  test("shares the four-request cap across transport and malformed-response retries", async () => {
+  test("shares the four-request malformed-response cap with transport attempts", async () => {
     const nativeBudgetSnapshots: number[] = [];
     const retryAttempts: number[] = [];
     let nativeCalls = 0;

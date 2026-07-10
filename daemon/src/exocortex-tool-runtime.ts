@@ -8,8 +8,18 @@
 
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import type { DisplayEntry, QueueTiming } from "@exocortex/shared/protocol";
-import type { Block, EffortLevel, FolderSummary, ModelId, ProviderId, SidebarItemRef } from "./messages";
-import { SUBAGENTS_FOLDER_NAME } from "./messages";
+import {
+  MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL,
+  MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT,
+  MAX_EXO_SUBAGENT_DEPTH,
+  SUBAGENTS_FOLDER_NAME,
+  type Block,
+  type EffortLevel,
+  type FolderSummary,
+  type ModelId,
+  type ProviderId,
+  type SidebarItemRef,
+} from "./messages";
 import * as convStore from "./conversations";
 import { complete } from "./llm";
 import { log } from "./log";
@@ -28,9 +38,14 @@ import { broadcastConversationUpdated } from "./conversation-events";
 import type { DaemonServer } from "./server";
 import type { AssistantTurnOutcome } from "./orchestrator";
 import type { ExocortexToolRuntime, ToolResult } from "./tools/types";
-import type { ExoAction } from "./tools/exo";
+import { EXO_ACTIONS, type ExoAction } from "./tools/exo";
 import { getTokenStatsSnapshot } from "./token-stats";
-import { setSubagentActive } from "./conversation-activity";
+import {
+  getActiveSubagentCount,
+  getConversationActivityCounts,
+  getSubagentConversationIds,
+  setSubagentActive,
+} from "./conversation-activity";
 import { buildSystemPrompt } from "./system";
 import { getLastUsage } from "./usage";
 
@@ -43,7 +58,7 @@ export function getExocortexToolRuntime(server: DaemonServer): ExocortexToolRunt
 
 export interface ExocortexToolRuntimeDependencies {
   server: DaemonServer;
-  runTurn(convId: string, text: string): Promise<AssistantTurnOutcome>;
+  runTurn(convId: string, text: string, maxDepth: number): Promise<AssistantTurnOutcome>;
   notifyParent(parentConvId: string, childConvId: string, task: string, outcome: AssistantTurnOutcome): void;
   /** Return a user-facing reason when a provider turn cannot currently start. */
   cannotStart?(provider: ProviderId): string | null;
@@ -61,20 +76,23 @@ type FolderResolution =
   | { kind: "root"; folderId: null; path: "/" }
   | { kind: "folder"; folder: FolderSummary; folderId: string; path: string };
 
-const LEGACY_ACTIONS = ["llm", "folder_ls", "folder_tree", "folder_mkdir", "folder_mv", "folder_rm"] as const;
+const LEGACY_ACTIONS = ["delete", "rename", "status", "llm", "folder_ls", "folder_tree", "folder_mkdir", "folder_mv", "folder_rm"] as const;
 type LegacyExoAction = typeof LEGACY_ACTIONS[number];
 type RuntimeExoAction = ExoAction | LegacyExoAction;
-const VALID_ACTIONS = new Set<string>([
-  "send", "list", "jobs", "info", "history", "delete", "abort", "queue", "rename", "status", "commands",
-  ...LEGACY_ACTIONS,
-]);
+const VALID_ACTIONS = new Set<string>([...EXO_ACTIONS, ...LEGACY_ACTIONS]);
 
 interface ExoCommandDefinition {
   name: string;
   description: string;
-  usage: Record<string, unknown>;
+  inputSchema: Record<string, unknown>;
+  examples?: Record<string, unknown>[];
   execute(args: Record<string, unknown>, parentConversationId: string | undefined, signal?: AbortSignal): Promise<ToolResult> | ToolResult;
 }
+
+const DEFAULT_LIST_LIMIT = 25;
+const MAX_LIST_LIMIT = 100;
+const DEFAULT_HISTORY_LIMIT = 50;
+const MAX_HISTORY_LIMIT = 200;
 
 function ok(output: string): ToolResult {
   return { output, isError: false };
@@ -106,6 +124,36 @@ function booleanInput(input: Record<string, unknown>, key: string, fallback: boo
 function numberInput(input: Record<string, unknown>, key: string, fallback: number): number {
   const value = input[key];
   return typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : fallback;
+}
+
+function boundedIntegerInput(
+  input: Record<string, unknown>,
+  key: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  return Math.min(maximum, Math.max(minimum, numberInput(input, key, fallback)));
+}
+
+function requestedMaxDepth(input: Record<string, unknown>, callerMaxDepth: number | null | undefined): number {
+  const value = input.max_depth;
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new Error(`max_depth is required for action=${String(input.action)} and must be an integer from 0 to ${MAX_EXO_SUBAGENT_DEPTH}`);
+  }
+  if (value < 0 || value > MAX_EXO_SUBAGENT_DEPTH) {
+    throw new Error(`max_depth must be between 0 and ${MAX_EXO_SUBAGENT_DEPTH}`);
+  }
+  if (callerMaxDepth != null) {
+    if (callerMaxDepth <= 0) {
+      throw new Error("This turn has max_depth=0 and cannot spawn or queue another subagent turn.");
+    }
+    const allowed = callerMaxDepth - 1;
+    if (value > allowed) {
+      throw new Error(`This turn has max_depth=${callerMaxDepth}; child max_depth must be between 0 and ${allowed}.`);
+    }
+  }
+  return value;
 }
 
 function objectInput(input: Record<string, unknown>, key: string): Record<string, unknown> {
@@ -231,12 +279,36 @@ function formatHistoryEntries(entries: DisplayEntry[], full: boolean): string {
   return parts.join("\n").trimEnd();
 }
 
-function historyForConversation(convId: string, full: boolean): string {
+function historyPageForConversation(
+  convId: string,
+  full: boolean,
+  limit: number,
+  offset: number,
+): Record<string, unknown> {
   const snapshot = convStore.getRenderSnapshot(convId, full);
   if (!snapshot) throw new Error(`Conversation ${convId} not found`);
   const entries = [...snapshot.entries];
   if (snapshot.pendingAI) entries.push({ type: "ai", ...snapshot.pendingAI });
-  return formatHistoryEntries(entries, full) || "(empty conversation)";
+
+  const total = entries.length;
+  const end = Math.max(0, total - offset);
+  const start = Math.max(0, end - limit);
+  const selected = entries.slice(start, end);
+  const hasOlder = start > 0;
+  const hasNewer = end < total;
+  return {
+    conversation_id: convId,
+    total_entries: total,
+    returned: selected.length,
+    offset,
+    limit,
+    truncated: selected.length < total,
+    has_older: hasOlder,
+    has_newer: hasNewer,
+    next_older_offset: hasOlder ? offset + selected.length : null,
+    next_newer_offset: hasNewer ? Math.max(0, Math.min(offset, total) - limit) : null,
+    history: formatHistoryEntries(selected, full) || "(empty conversation)",
+  };
 }
 
 function normalizeFolderPath(input: string | undefined): string {
@@ -291,6 +363,47 @@ function jobStatus(conversation: SidebarState["conversations"][number]): "runnin
 
 function conversationStatus(conversation: SidebarState["conversations"][number]): "running" | "done" | "idle" {
   return jobStatus(conversation) ?? "idle";
+}
+
+function matchesConversationQuery(
+  conversation: SidebarState["conversations"][number],
+  query: string | undefined,
+): boolean {
+  if (!query) return true;
+  const haystack = [
+    conversation.id,
+    conversation.title,
+    conversation.provider,
+    conversation.model,
+  ].join("\n").toLowerCase();
+  return haystack.includes(query.toLowerCase());
+}
+
+function requestedScope(
+  input: Record<string, unknown>,
+  fallback: "children" | "all",
+  parentConversationId: string | undefined,
+): "children" | "all" {
+  const value = input.scope ?? fallback;
+  if (value !== "children" && value !== "all") throw new Error("scope must be children or all");
+  if (value === "children" && !parentConversationId) {
+    if (input.scope === "children") throw new Error("scope=children requires an active conversation context");
+    return "all";
+  }
+  return value;
+}
+
+function compactConversation(conversation: SidebarState["conversations"][number]): Record<string, unknown> {
+  return {
+    id: conversation.id,
+    title: conversation.title,
+    provider: conversation.provider,
+    model: conversation.model,
+    message_count: conversation.messageCount,
+    updated_at: conversation.updatedAt,
+    status: conversationStatus(conversation),
+    folder_id: conversation.folderId ?? null,
+  };
 }
 
 function childCount(state: SidebarState, parentId: string | null): number {
@@ -396,6 +509,15 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }
   };
 
+  const ensureSubagentCapacity = (parentConvId: string | undefined): void => {
+    if (parentConvId && getConversationActivityCounts(parentConvId).subagentCount >= MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT) {
+      throw new Error(`Conversation ${parentConvId} already has ${MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT} active subagents; wait for one to finish or abort it.`);
+    }
+    if (getActiveSubagentCount() >= MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL) {
+      throw new Error(`The daemon already has ${MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL} active native subagents; wait for one to finish or abort it.`);
+    }
+  };
+
   const ensureCanStart = (provider: ProviderId): void => {
     if (!(deps.hasCredentials ?? hasConfiguredCredentials)(provider)) {
       throw new Error(`Not authenticated for provider ${provider}`);
@@ -421,12 +543,19 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     broadcastConversationUpdated(server, convId);
   };
 
-  const executeSend = async (input: Record<string, unknown>, parentConvId: string | undefined, signal?: AbortSignal): Promise<ToolResult> => {
+  const executeSend = async (
+    input: Record<string, unknown>,
+    parentConvId: string | undefined,
+    callerMaxDepth: number | null | undefined,
+    signal?: AbortSignal,
+  ): Promise<ToolResult> => {
     const text = stringInput(input, "text", true)!;
+    const maxDepth = requestedMaxDepth(input, callerMaxDepth);
     let convId = stringInput(input, "conversation_id");
     let created = false;
 
     if (!convId) {
+      ensureSubagentCapacity(parentConvId);
       const selection = resolveModelSelection(input);
       ensureCanStart(selection.provider);
       const folder = convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME);
@@ -453,23 +582,24 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       if (mode === "detach" || mode === "wait") {
         throw new Error("Cannot start a nested turn on the active parent conversation; use mode=auto or action=queue.");
       }
-      convStore.pushQueuedMessage(convId, text, "next-turn");
+      convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth);
       return ok(`Conversation ${convId} is active; queued the message for its next turn.`);
     }
 
     if (convStore.isStreaming(convId)) {
       if (mode === "wait") {
-        convStore.pushQueuedMessage(convId, text, "next-turn");
+        convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth);
         return ok(`Conversation ${convId} is busy; queued the message for its next turn.`);
       }
       throw new Error(`Conversation ${convId} is already streaming`);
     }
+    if (!created) ensureSubagentCapacity(parentConvId);
     const shouldDetach = mode !== "wait";
 
     if (shouldDetach) {
       const notify = booleanInput(input, "notify_parent", true) && Boolean(parentConvId);
       setTrackedSubagent(parentConvId, convId, true);
-      void deps.runTurn(convId, text).then(outcome => {
+      void deps.runTurn(convId, text, maxDepth).then(outcome => {
         setTrackedSubagent(parentConvId, convId!, false);
         if (notify && parentConvId) deps.notifyParent(parentConvId, convId!, text, outcome);
       }).catch(error => {
@@ -477,7 +607,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         log("error", `exo tool: detached subagent ${convId} failed: ${error instanceof Error ? error.message : error}`);
         if (notify && parentConvId) deps.notifyParent(parentConvId, convId!, text, failedOutcome(error));
       });
-      return ok(pretty({ conversation_id: convId, status: "running", detached: true, created, notify_parent: notify ? parentConvId : null }));
+      return ok(pretty({ conversation_id: convId, status: "running", detached: true, created, max_depth: maxDepth, notify_parent: notify ? parentConvId : null }));
     }
 
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -485,7 +615,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     signal?.addEventListener("abort", onAbort, { once: true });
     setTrackedSubagent(parentConvId, convId, true);
     try {
-      const outcome = await deps.runTurn(convId, text);
+      const outcome = await deps.runTurn(convId, text, maxDepth);
       const full = booleanInput(input, "full", false);
       const body = outcome.ok
         ? formatBlocks(outcome.blocks, full) || "(subagent completed without text output)"
@@ -500,29 +630,70 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }
   };
 
-  const executeList = (): ToolResult => ok(pretty(convStore.listSummaries().map(conversation => ({
-    id: conversation.id,
-    provider: conversation.provider,
-    model: conversation.model,
-    effort: conversation.effort,
-    fast_mode: conversation.fastMode,
-    message_count: conversation.messageCount,
-    title: conversation.title,
-    goal: conversation.goal ?? null,
-    marked: conversation.marked,
-    pinned: conversation.pinned,
-    created_at: conversation.createdAt,
-    updated_at: conversation.updatedAt,
-    streaming: conversation.streaming,
-    unread: conversation.unread,
-    sort_order: conversation.sortOrder,
-    folder_id: conversation.folderId ?? null,
-  }))));
+  const executeList = (input: Record<string, unknown>, parentConvId: string | undefined): ToolResult => {
+    const scope = requestedScope(input, "all", parentConvId);
+    const query = stringInput(input, "query");
+    const limit = boundedIntegerInput(input, "limit", DEFAULT_LIST_LIMIT, 1, MAX_LIST_LIMIT);
+    const offset = boundedIntegerInput(input, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
+    const childIds = scope === "children" && parentConvId
+      ? new Set(getSubagentConversationIds(parentConvId))
+      : null;
+    const matches = convStore.listSummaries()
+      .filter(conversation => !childIds || childIds.has(conversation.id))
+      .filter(conversation => matchesConversationQuery(conversation, query))
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+    const conversations = matches.slice(offset, offset + limit).map(compactConversation);
+    return ok(pretty({
+      scope,
+      parent_conversation_id: scope === "children" ? parentConvId : null,
+      query: query ?? null,
+      total: matches.length,
+      returned: conversations.length,
+      offset,
+      limit,
+      truncated: offset > 0 || offset + conversations.length < matches.length,
+      next_offset: offset + conversations.length < matches.length ? offset + conversations.length : null,
+      conversations,
+    }));
+  };
 
-  const executeJobs = (): ToolResult => ok(pretty(convStore.listSummaries().flatMap(conversation => {
-    const status = jobStatus(conversation);
-    return status ? [{ id: conversation.id, title: conversation.title, status, running: status === "running", done: status === "done" }] : [];
-  })));
+  const executeJobs = (input: Record<string, unknown>, parentConvId: string | undefined): ToolResult => {
+    const scope = requestedScope(input, "children", parentConvId);
+    const query = stringInput(input, "query");
+    const limit = boundedIntegerInput(input, "limit", DEFAULT_LIST_LIMIT, 1, MAX_LIST_LIMIT);
+    const offset = boundedIntegerInput(input, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
+    const childIds = scope === "children" && parentConvId
+      ? new Set(getSubagentConversationIds(parentConvId))
+      : null;
+    const matches = convStore.listSummaries()
+      .filter(conversation => !childIds || childIds.has(conversation.id))
+      .filter(conversation => matchesConversationQuery(conversation, query))
+      .flatMap(conversation => {
+        const status = jobStatus(conversation);
+        return status ? [{
+          id: conversation.id,
+          title: conversation.title,
+          status,
+          running: status === "running",
+          done: status === "done",
+          updated_at: conversation.updatedAt,
+        }] : [];
+      })
+      .sort((a, b) => b.updated_at - a.updated_at || a.id.localeCompare(b.id));
+    const jobs = matches.slice(offset, offset + limit);
+    return ok(pretty({
+      scope,
+      parent_conversation_id: scope === "children" ? parentConvId : null,
+      query: query ?? null,
+      total: matches.length,
+      returned: jobs.length,
+      offset,
+      limit,
+      truncated: offset > 0 || offset + jobs.length < matches.length,
+      next_offset: offset + jobs.length < matches.length ? offset + jobs.length : null,
+      jobs,
+    }));
+  };
 
   const executeInfo = (input: Record<string, unknown>): ToolResult => {
     const convId = stringInput(input, "conversation_id", true)!;
@@ -545,7 +716,13 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       created_at: summary.createdAt,
       updated_at: summary.updatedAt,
       folder_id: summary.folderId ?? null,
-      queued_messages: convStore.getQueuedMessages(convId).map(message => ({ text: message.text, timing: message.timing, image_count: message.images?.length ?? 0 })),
+      subagent_max_depth: convStore.get(convId)?.subagentMaxDepth ?? null,
+      queued_messages: convStore.getQueuedMessages(convId).map(message => ({
+        text: message.text,
+        timing: message.timing,
+        max_depth: message.subagentMaxDepth ?? null,
+        image_count: message.images?.length ?? 0,
+      })),
     }));
     if (convStore.clearUnread(convId)) broadcastConversationUpdated(server, convId);
     return result;
@@ -553,7 +730,9 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
 
   const executeHistory = (input: Record<string, unknown>): ToolResult => {
     const convId = stringInput(input, "conversation_id", true)!;
-    const result = ok(historyForConversation(convId, booleanInput(input, "full", false)));
+    const limit = boundedIntegerInput(input, "limit", DEFAULT_HISTORY_LIMIT, 1, MAX_HISTORY_LIMIT);
+    const offset = boundedIntegerInput(input, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
+    const result = ok(pretty(historyPageForConversation(convId, booleanInput(input, "full", false), limit, offset)));
     if (convStore.clearUnread(convId)) broadcastConversationUpdated(server, convId);
     return result;
   };
@@ -589,17 +768,18 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     return ok(`Aborted ${convId}.`);
   };
 
-  const executeQueue = (input: Record<string, unknown>): ToolResult => {
+  const executeQueue = (input: Record<string, unknown>, callerMaxDepth: number | null | undefined): ToolResult => {
     const convId = stringInput(input, "conversation_id", true)!;
     const text = stringInput(input, "text", true)!;
+    const maxDepth = requestedMaxDepth(input, callerMaxDepth);
     if (!convStore.getSummary(convId)) throw new Error(`Conversation ${convId} not found`);
     const timing: QueueTiming = input.timing === "message-end" ? "message-end" : "next-turn";
-    convStore.pushQueuedMessage(convId, text, timing);
-    return ok(`Queued (${timing}) for ${convId}`);
+    convStore.pushQueuedMessage(convId, text, timing, undefined, maxDepth);
+    return ok(`Queued (${timing}, max_depth=${maxDepth}) for ${convId}`);
   };
 
-  const executeRename = (input: Record<string, unknown>): ToolResult => {
-    const convId = stringInput(input, "conversation_id", true)!;
+  const executeRename = (input: Record<string, unknown>, parentConvId: string | undefined): ToolResult => {
+    const convId = conversationIdInput(input, parentConvId);
     const title = stringInput(input, "title", true)!;
     if (!convStore.rename(convId, title)) throw new Error(`Conversation ${convId} not found`);
     broadcastConversationUpdated(server, convId);
@@ -791,7 +971,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
 
   const executeSystemPromptCommand = (args: Record<string, unknown>, parentConversationId: string | undefined): ToolResult => {
     const convId = conversationIdInput(args, parentConversationId);
-    if (!convStore.get(convId)) throw new Error(`Conversation ${convId} not found`);
+    const conversation = convStore.get(convId);
+    if (!conversation) throw new Error(`Conversation ${convId} not found`);
     const instructions = convStore.getEffectiveSystemInstructions(convId);
     return ok(buildSystemPrompt({
       conversationInstructions: instructions ?? undefined,
@@ -847,62 +1028,135 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }
   };
 
+  const commandSchema = (
+    properties: Record<string, unknown>,
+    required: string[] = [],
+  ): Record<string, unknown> => ({
+    type: "object",
+    properties,
+    ...(required.length > 0 ? { required } : {}),
+    additionalProperties: false,
+  });
+
   const commands: ExoCommandDefinition[] = [
     {
       name: "folder",
       description: "List, inspect, create, move, remove, rename, pin, or unpin conversation folders.",
-      usage: {
-        operation: "ls | tree | mkdir | move | remove | rename | pin | unpin",
-        path: "Folder path; / is root for ls/tree",
-        sources: "For move: array of conversation IDs and/or folder paths",
-        destination: "For move: destination folder path, /, or ..",
-        name: "For rename: new folder name",
-        pinned: "For pin: boolean, defaults true",
-        mode: "For remove: recursive (default) or unwrap",
-      },
+      inputSchema: commandSchema({
+        operation: { type: "string", enum: ["ls", "tree", "mkdir", "move", "remove", "rename", "pin", "unpin"] },
+        path: { type: "string", description: "Folder path; / is root for ls/tree." },
+        sources: { type: "array", items: { type: "string" }, description: "For move: conversation IDs and/or folder paths." },
+        destination: { type: "string", description: "For move: destination folder path, /, or .." },
+        name: { type: "string", description: "For rename: new folder name." },
+        pinned: { type: "boolean", description: "For pin: defaults true." },
+        mode: { type: "string", enum: ["recursive", "unwrap"], description: "For remove: defaults recursive." },
+      }, ["operation"]),
+      examples: [
+        { operation: "ls", path: "/" },
+        { operation: "mkdir", path: "research/results" },
+        { operation: "move", sources: ["<conversation-id>"], destination: "research/" },
+      ],
       execute: executeFolderCommand,
     },
     {
       name: "mark",
       description: "Mark/star or unmark a conversation.",
-      usage: { conversation_id: "Defaults to the active conversation", marked: "Boolean; defaults true", starred: "Alias for marked" },
+      inputSchema: commandSchema({
+        conversation_id: { type: "string", description: "Defaults to the active conversation." },
+        marked: { type: "boolean", description: "Defaults true." },
+        starred: { type: "boolean", description: "Alias for marked." },
+      }),
+      examples: [{ marked: true }, { conversation_id: "<conversation-id>", marked: false }],
       execute: executeMarkCommand,
     },
     {
       name: "pin",
       description: "Pin or unpin a conversation.",
-      usage: { conversation_id: "Defaults to the active conversation", pinned: "Boolean; defaults true" },
+      inputSchema: commandSchema({
+        conversation_id: { type: "string", description: "Defaults to the active conversation." },
+        pinned: { type: "boolean", description: "Defaults true." },
+      }),
+      examples: [{ pinned: true }, { conversation_id: "<conversation-id>", pinned: false }],
       execute: executePinCommand,
     },
     {
       name: "reorder",
       description: "Move a conversation or folder up/down within its current sidebar section.",
-      usage: { target: "Conversation ID or folder path; defaults to active conversation", direction: "up | down", steps: "Positive integer; defaults 1" },
+      inputSchema: commandSchema({
+        target: { type: "string", description: "Conversation ID or folder path; defaults to active conversation." },
+        direction: { type: "string", enum: ["up", "down"] },
+        steps: { type: "integer", minimum: 1, maximum: 100, default: 1 },
+      }, ["direction"]),
+      examples: [{ direction: "up" }, { target: "research/results", direction: "down", steps: 2 }],
       execute: executeReorderCommand,
+    },
+    {
+      name: "rename",
+      description: "Rename a conversation.",
+      inputSchema: commandSchema({
+        conversation_id: { type: "string", description: "Defaults to the active conversation." },
+        title: { type: "string", description: "New conversation title." },
+      }, ["title"]),
+      examples: [{ title: "New title" }, { conversation_id: "<conversation-id>", title: "New title" }],
+      execute: (args, parentConversationId) => executeRename(args, parentConversationId),
+    },
+    {
+      name: "delete",
+      description: "Soft-delete a conversation to Exocortex trash.",
+      inputSchema: commandSchema({
+        conversation_id: { type: "string", description: "Conversation to delete; cannot be the active caller." },
+      }, ["conversation_id"]),
+      examples: [{ conversation_id: "<conversation-id>" }],
+      execute: executeDelete,
     },
     {
       name: "llm",
       description: "Run a stateless one-shot LLM completion.",
-      usage: { text: "Required user prompt", system: "Optional system prompt", provider: "openai | deepseek", model: "Optional model or provider/model spec", max_tokens: "1..128000; defaults 16000" },
+      inputSchema: commandSchema({
+        text: { type: "string", description: "User prompt." },
+        system: { type: "string", description: "Optional system prompt." },
+        provider: { type: "string", enum: ["openai", "deepseek"] },
+        model: { type: "string", description: "Optional model or provider/model spec." },
+        max_tokens: { type: "integer", minimum: 1, maximum: 128000, default: 16000 },
+      }, ["text"]),
+      examples: [{ text: "Summarize this", system: "Be terse" }],
       execute: executeLlm,
     },
     {
       name: "clone",
       description: "Clone a persisted conversation and its history.",
-      usage: { conversation_id: "Defaults to the active conversation" },
+      inputSchema: commandSchema({
+        conversation_id: { type: "string", description: "Defaults to the active conversation." },
+      }),
+      examples: [{ conversation_id: "<conversation-id>" }],
       execute: executeCloneCommand,
     },
     {
       name: "system_prompt",
       description: "View the fully assembled system prompt for a conversation, including effective folder and conversation instructions.",
-      usage: { conversation_id: "Defaults to the active conversation" },
+      inputSchema: commandSchema({
+        conversation_id: { type: "string", description: "Defaults to the active conversation." },
+      }),
+      examples: [{}],
       execute: executeSystemPromptCommand,
     },
     {
       name: "stats",
       description: "Query detailed token accounting, cached provider usage windows, and current conversation context usage.",
-      usage: { provider: "Optional openai | deepseek filter", conversation_id: "Defaults to active conversation", include_days: "Include per-day token history; defaults false" },
+      inputSchema: commandSchema({
+        provider: { type: "string", enum: ["openai", "deepseek"] },
+        conversation_id: { type: "string", description: "Defaults to the active conversation." },
+        include_days: { type: "boolean", default: false },
+      }),
+      examples: [{ include_days: false }, { provider: "openai", include_days: true }],
       execute: executeStatsCommand,
+    },
+    {
+      name: "status",
+      description: "Inspect current-daemon health and aggregate conversation activity.",
+      inputSchema: commandSchema({}),
+      examples: [{}],
+      execute: () => executeStatus(),
     },
   ];
   const commandMap = new Map(commands.map(command => [command.name, command]));
@@ -910,11 +1164,12 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
   const commandHelp = (command: ExoCommandDefinition): string => pretty({
     command: command.name,
     description: command.description,
-    args: command.usage,
+    input_schema: command.inputSchema,
+    examples: command.examples ?? [],
   });
 
   const executeCommands = async (input: Record<string, unknown>, parentConversationId: string | undefined, signal?: AbortSignal): Promise<ToolResult> => {
-    const commandName = stringInput(input, "command", true)!.toLowerCase();
+    const commandName = (stringInput(input, "command") ?? "ls").toLowerCase();
     const args = objectInput(input, "args");
     if (commandName === "ls" || commandName === "list") {
       return ok(pretty({
@@ -941,7 +1196,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
   };
 
   const runtime: ExocortexToolRuntime = {
-    async execute(input, parentConversationId, signal) {
+    async execute(input, parentConversationId, signal, callerMaxDepth) {
       try {
         const action = input.action;
         if (typeof action !== "string" || !VALID_ACTIONS.has(action)) {
@@ -949,15 +1204,15 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         }
 
         switch (action as RuntimeExoAction) {
-          case "send": return await executeSend(input, parentConversationId, signal);
-          case "list": return executeList();
-          case "jobs": return executeJobs();
+          case "send": return await executeSend(input, parentConversationId, callerMaxDepth, signal);
+          case "list": return executeList(input, parentConversationId);
+          case "jobs": return executeJobs(input, parentConversationId);
           case "info": return executeInfo(input);
           case "history": return executeHistory(input);
           case "delete": return await executeDelete(input, parentConversationId, signal);
           case "abort": return executeAbort(input);
-          case "queue": return executeQueue(input);
-          case "rename": return executeRename(input);
+          case "queue": return executeQueue(input, callerMaxDepth);
+          case "rename": return executeRename(input, parentConversationId);
           case "status": return executeStatus();
           case "commands": return await executeCommands(input, parentConversationId, signal);
           // Undocumented compatibility aliases for conversations that learned

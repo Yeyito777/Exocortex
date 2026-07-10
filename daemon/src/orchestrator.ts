@@ -15,7 +15,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContext, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContext, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
@@ -151,7 +151,14 @@ interface AssistantTurnOptions {
     images?: ImageAttachment[];
   };
   goalContinuation?: boolean;
+  /**
+   * Explicitly install a delegation budget for this turn. Omission inherits the
+   * conversation's persisted budget for automatic replay/goal continuations.
+   */
+  subagentMaxDepth?: number | null;
 }
+
+export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth">;
 
 export async function orchestrateSendMessage(
   server: DaemonServer,
@@ -162,8 +169,10 @@ export async function orchestrateSendMessage(
   startedAt: number,
   ext: OrchestrationCallbacks,
   images?: ImageAttachment[],
+  policy: SubagentTurnPolicy = {},
 ): Promise<AssistantTurnOutcome> {
   return await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext, {
+    ...policy,
     userMessage: { text, images },
   });
 }
@@ -175,16 +184,19 @@ export async function orchestrateReplayConversation(
   convId: string,
   startedAt: number,
   ext: OrchestrationCallbacks,
+  policy: SubagentTurnPolicy = {},
 ): Promise<AssistantTurnOutcome> {
-  return await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext);
+  return await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext, policy);
 }
 
 export async function orchestrateGoalContinuation(
   server: DaemonServer,
   convId: string,
   ext: OrchestrationCallbacks,
+  policy: SubagentTurnPolicy = {},
 ): Promise<AssistantTurnOutcome> {
   return await orchestrateAssistantTurn(server, null, undefined, convId, Date.now(), ext, {
+    ...policy,
     goalContinuation: true,
   });
 }
@@ -205,6 +217,17 @@ async function orchestrateAssistantTurn(
     return { ok: false, blocks: [], tokens: 0, durationMs: 0, endedAt: Date.now(), error: message };
   }
   const liveConv = conv;
+
+  if (Object.prototype.hasOwnProperty.call(options, "subagentMaxDepth")) {
+    const requestedDepth = options.subagentMaxDepth;
+    conv.subagentMaxDepth = typeof requestedDepth === "number"
+      && Number.isInteger(requestedDepth)
+      && requestedDepth >= 0
+      && requestedDepth <= MAX_EXO_SUBAGENT_DEPTH
+      ? requestedDepth
+      : null;
+  }
+  const subagentMaxDepth = conv.subagentMaxDepth ?? null;
 
   const { userMessage, goalContinuation = false } = options;
   const replaying = !userMessage;
@@ -365,6 +388,7 @@ async function orchestrateAssistantTurn(
   const toolContext: ToolExecutionContext = {
     provider: conv.provider,
     conversationId: convId,
+    subagentMaxDepth,
     model: conv.model,
     exocortex: ext.exocortex,
     setBackgroundTaskActive: (taskId, active) => {
@@ -401,6 +425,8 @@ async function orchestrateAssistantTurn(
   // incremental item, then safely falls back to full replay of the checkpoint.
   const providerTurnSession = createProviderTurnSession(conv.provider);
   const codexTurnId = `${convId}:${startedAt}`;
+  // Delegation depth stays in daemon-owned turn metadata/tool context. Keeping
+  // it out of the prompt preserves the stable prefix used by provider caches.
   const systemPrompt = buildSystemPrompt({
     conversationInstructions: systemInstructionsText || undefined,
     conversationId: convId,
@@ -1212,13 +1238,23 @@ async function orchestrateAssistantTurn(
       const first = allQueued[0];
       // Re-queue the rest for the next cycle
       for (let i = 1; i < allQueued.length; i++) {
-        convStore.pushQueuedMessage(convId, allQueued[i].text, allQueued[i].timing, allQueued[i].images);
+        convStore.pushQueuedMessage(convId, allQueued[i].text, allQueued[i].timing, allQueued[i].images, allQueued[i].subagentMaxDepth);
       }
       log("info", `orchestrator: draining queued message: "${first.text.slice(0, 50)}"`);
       // Kick off a new send cycle — null client so user_message broadcasts to everyone.
       // Await to keep the chain in a single promise so errors propagate and
       // the conversation stays consistent (no orphaned background streams).
-      await orchestrateSendMessage(server, null, undefined, convId, first.text, Date.now(), ext, first.images);
+      await orchestrateSendMessage(
+        server,
+        null,
+        undefined,
+        convId,
+        first.text,
+        Date.now(),
+        ext,
+        first.images,
+        { subagentMaxDepth: first.subagentMaxDepth ?? null },
+      );
     } else {
       const resumeRequestedAfterStream = convStore.consumeGoalContinuationAfterStream(convId);
       const shouldContinueActiveGoal = conv.goal?.status === "active"

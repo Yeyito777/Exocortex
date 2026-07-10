@@ -695,6 +695,57 @@ describe("OpenAI replay input", () => {
     expect(calls).toHaveLength(1);
   });
 
+  test("routes native-compaction context errors through the general eight-retry backoff", async () => {
+    const retryCalls: unknown[][] = [];
+    const requestBudget = { maxAttempts: 9, attempts: 0 };
+    const calls = mockOpenAIWebSocket([
+      { events: [{
+        type: "response.failed",
+        response: {
+          error: {
+            code: "context_length_exceeded",
+            message: "Your input exceeds the context window of this model. Please adjust your input and try again.",
+          },
+        },
+      }] },
+      { events: [
+        { type: "response.created", response: { id: "resp_compacted" } },
+        {
+          type: "response.completed",
+          response: {
+            id: "resp_compacted",
+            usage: { input_tokens: 1, output_tokens: 1 },
+            output: [],
+          },
+        },
+      ] },
+    ]);
+
+    const result = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [{ role: "user", content: "oversized input" }],
+      "gpt-5.4",
+      {
+        onText: () => {},
+        onThinking: () => {},
+        onRetry: (...args) => retryCalls.push(args),
+      },
+      { compaction: true, requestBudget },
+    );
+
+    expect(result.stopReason).toBe("stop");
+    expect(calls).toHaveLength(2);
+    expect(requestBudget.attempts).toBe(2);
+    expect(retryCalls).toHaveLength(1);
+    expect(retryCalls[0].slice(0, 3)).toEqual([
+      1,
+      8,
+      "Your input exceeds the context window of this model. Please adjust your input and try again.",
+    ]);
+    expect(retryCalls[0][3]).toBeGreaterThanOrEqual(1);
+    expect(retryCalls[0][4]).toEqual({ kind: "transient" });
+  });
+
   test("aborting an in-flight stream does not emit retry callbacks", async () => {
     const ac = new AbortController();
     const onRetry = mock(() => {});

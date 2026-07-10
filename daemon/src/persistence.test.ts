@@ -622,6 +622,29 @@ describe("save / load round-trip", () => {
     expect(loaded?.lastContextTokens).toBeNull();
   });
 
+  test("persists an active native exo subagent depth budget", () => {
+    const id = mkId("subagent-depth-roundtrip");
+    const original: Conversation = {
+      id,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      fastMode: false,
+      messages: [],
+      createdAt: 14_000_000,
+      updatedAt: 14_000_001,
+      lastContextTokens: null,
+      marked: false,
+      pinned: false,
+      sortOrder: -14_000_001,
+      title: "Nested child",
+      subagentMaxDepth: 3,
+    };
+
+    save(original);
+    expect(load(id)).toEqual(original);
+  });
+
   test("save then load returns a deeply equal conversation", () => {
     const id = mkId("roundtrip-basic");
     const original: Conversation = {

@@ -98,6 +98,11 @@ export interface ActiveContext {
 
 // ── Conversation state ──────────────────────────────────────────────
 
+/** Hard safety ceilings for recursively spawned native exo subagents. */
+export const MAX_EXO_SUBAGENT_DEPTH = 8;
+export const MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT = 8;
+export const MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL = 32;
+
 export interface Conversation {
   id: string;
   provider: ProviderId;
@@ -119,6 +124,11 @@ export interface Conversation {
   title: string;
   /** Optional persistent objective that can auto-continue while active. */
   goal?: ConversationGoal | null;
+  /**
+   * Remaining native exo nesting budget for autonomous continuations of this
+   * conversation. Null/omitted means a root/user-started turn.
+   */
+  subagentMaxDepth?: number | null;
 }
 
 /**

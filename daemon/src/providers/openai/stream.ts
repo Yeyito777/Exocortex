@@ -1,5 +1,5 @@
 import { log } from "../../log";
-import { NonRetryableProviderError } from "../errors";
+import { ContextWindowProviderError } from "../errors";
 import type { ApiToolCall } from "../types";
 import type { ContentBlock, StreamCallbacks, StreamResult } from "../types";
 import { extractReasoningRawContent, extractReasoningSummaries, finalizeReasoningItem, hasPreservableReasoning, hasRenderableReasoning, mergeReasoningSummaries } from "./reasoning";
@@ -89,7 +89,7 @@ function isContextWindowExceededError(error: OpenAIErrorPayload | undefined): bo
 function buildOpenAIStreamError(error: OpenAIErrorPayload | undefined, fallback: string): Error {
   const message = error?.message ?? fallback;
   return isContextWindowExceededError(error)
-    ? new NonRetryableProviderError(message)
+    ? new ContextWindowProviderError(message)
     : new Error(message);
 }
 

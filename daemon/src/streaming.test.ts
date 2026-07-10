@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, nextStreamSeq, setActiveJob, setContextCompactionStartedAt } from "./streaming";
+import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, clearQueuedMessages, drainQueuedMessages, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, nextStreamSeq, pushQueuedMessage, setActiveJob, setContextCompactionStartedAt } from "./streaming";
 
 const IDS: string[] = [];
 
@@ -10,7 +10,10 @@ function mkId(suffix: string): string {
 }
 
 beforeEach(() => {
-  for (const id of IDS.splice(0)) clearActiveJob(id);
+  for (const id of IDS.splice(0)) {
+    clearActiveJob(id);
+    clearQueuedMessages(id);
+  }
 });
 
 describe("stream event sequence", () => {
@@ -40,6 +43,20 @@ describe("context compaction status", () => {
 
     clearActiveJob(id);
     expect(getContextCompactionStartedAt(id)).toBeUndefined();
+  });
+});
+
+describe("queued-message delegation policy", () => {
+  test("retains the max-depth budget until the queued turn is drained", () => {
+    const id = mkId("queued-depth");
+    pushQueuedMessage(id, "follow up", "message-end", undefined, 2);
+
+    expect(drainQueuedMessages(id)).toEqual([{
+      text: "follow up",
+      timing: "message-end",
+      images: undefined,
+      subagentMaxDepth: 2,
+    }]);
   });
 });
 

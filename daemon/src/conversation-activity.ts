@@ -13,6 +13,8 @@ export interface ConversationActivityCounts {
 }
 
 const subagentsByParent = new Map<string, Set<string>>();
+/** Last parent that spawned each child during this daemon session. */
+const subagentParentByChild = new Map<string, string>();
 const backgroundTasksByConversation = new Map<string, Set<string>>();
 
 function setEntry(map: Map<string, Set<string>>, ownerId: string, taskId: string, active: boolean): boolean {
@@ -34,7 +36,22 @@ function setEntry(map: Map<string, Set<string>>, ownerId: string, taskId: string
 }
 
 export function setSubagentActive(parentConvId: string, childConvId: string, active: boolean): boolean {
+  if (active) subagentParentByChild.set(childConvId, parentConvId);
   return setEntry(subagentsByParent, parentConvId, childConvId, active);
+}
+
+/**
+ * Child conversations spawned by a parent during this daemon session.
+ *
+ * Unlike the active count, this relationship remains after a child finishes so
+ * the parent's native exo jobs/list calls can still find completed work.
+ */
+export function getSubagentConversationIds(parentConvId: string): string[] {
+  const ids: string[] = [];
+  for (const [childConvId, parentId] of subagentParentByChild) {
+    if (parentId === parentConvId) ids.push(childConvId);
+  }
+  return ids;
 }
 
 export function setBackgroundTaskActive(convId: string, taskId: string, active: boolean): boolean {
@@ -48,8 +65,15 @@ export function getConversationActivityCounts(convId: string): ConversationActiv
   };
 }
 
+export function getActiveSubagentCount(): number {
+  let count = 0;
+  for (const children of subagentsByParent.values()) count += children.size;
+  return count;
+}
+
 /** Test-only reset for isolated runtime-state assertions. */
 export function resetConversationActivityForTest(): void {
   subagentsByParent.clear();
+  subagentParentByChild.clear();
   backgroundTasksByConversation.clear();
 }

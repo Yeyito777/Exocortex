@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  getActiveSubagentCount,
   getConversationActivityCounts,
+  getSubagentConversationIds,
   resetConversationActivityForTest,
   setBackgroundTaskActive,
   setSubagentActive,
@@ -26,6 +28,7 @@ describe("focused conversation activity counts", () => {
       subagentCount: 2,
       backgroundTaskCount: 1,
     });
+    expect(getActiveSubagentCount()).toBe(2);
 
     expect(setSubagentActive("parent", "child-1", false)).toBe(true);
     expect(setBackgroundTaskActive("parent", "bash:1", false)).toBe(true);
@@ -33,6 +36,17 @@ describe("focused conversation activity counts", () => {
       subagentCount: 1,
       backgroundTaskCount: 0,
     });
+    expect(getActiveSubagentCount()).toBe(1);
+  });
+
+  test("retains the latest parent-child relationship after activity finishes", () => {
+    setSubagentActive("parent-a", "child", true);
+    setSubagentActive("parent-a", "child", false);
+    expect(getSubagentConversationIds("parent-a")).toEqual(["child"]);
+
+    setSubagentActive("parent-b", "child", true);
+    expect(getSubagentConversationIds("parent-a")).toEqual([]);
+    expect(getSubagentConversationIds("parent-b")).toEqual(["child"]);
   });
 
   test("projects ephemeral counts onto conversation summaries", () => {

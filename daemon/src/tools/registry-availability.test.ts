@@ -31,6 +31,9 @@ describe("tool availability", () => {
     expect(actionEnum).not.toContain("transcribe");
     expect(actionEnum).not.toContain("llm");
     expect(actionEnum).not.toContain("folder_mkdir");
+    expect(actionEnum).not.toContain("rename");
+    expect(actionEnum).not.toContain("delete");
+    expect(actionEnum).not.toContain("status");
     expect(JSON.stringify(definition?.input_schema)).not.toContain("system_prompt");
     expect(getToolDisplayInfo().find((tool) => tool.name === "exo")?.label).toBe("Exocortex");
     expect(buildToolSystemHints()).toContain("Use the native `exo` tool");

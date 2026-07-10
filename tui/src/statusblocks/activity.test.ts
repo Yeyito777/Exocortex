@@ -4,7 +4,7 @@ import { stripAnsi } from "../historycursor";
 import { renderStatusLine } from "../statusline";
 import { activityBlock } from "./activity";
 
-function focusedState() {
+function focusedState(subagentCount = 3, backgroundTaskCount = 2) {
   const state = createInitialState();
   state.convId = "focused";
   state.sidebar.conversations = [{
@@ -23,8 +23,8 @@ function focusedState() {
     unread: false,
     sortOrder: 0,
     folderId: null,
-    subagentCount: 3,
-    backgroundTaskCount: 2,
+    subagentCount,
+    backgroundTaskCount,
   }];
   return state;
 }
@@ -32,9 +32,10 @@ function focusedState() {
 describe("focused conversation activity status block", () => {
   test("renders active subagent and background-task counts", () => {
     const block = activityBlock(focusedState());
-    expect(block.priority).toBe(-1);
-    expect(stripAnsi(block.rows[0])).toContain("Subagents: 3");
-    expect(stripAnsi(block.rows[1])).toContain("Background tasks: 2");
+    expect(block).not.toBeNull();
+    expect(block?.priority).toBe(-1);
+    expect(stripAnsi(block?.rows[0] ?? "")).toContain("Subagents: 3");
+    expect(stripAnsi(block?.rows[1] ?? "")).toContain("Background tasks: 2");
   });
 
   test("appears immediately to the right of Context on a wide status line", () => {
@@ -53,10 +54,24 @@ describe("focused conversation activity status block", () => {
     expect(text).not.toContain("Background tasks:");
   });
 
-  test("defaults both counts to zero when no conversation is focused", () => {
-    const state = createInitialState();
-    const block = activityBlock(state);
-    expect(stripAnsi(block.rows[0])).toContain("Subagents: 0");
-    expect(stripAnsi(block.rows[1])).toContain("Background tasks: 0");
+  test("is omitted when both counts are zero", () => {
+    const state = focusedState(0, 0);
+    expect(activityBlock(state)).toBeNull();
+
+    const rendered = renderStatusLine(state, 100);
+    const text = rendered.lines.map(stripAnsi).join("\n");
+    expect(text).not.toContain("Subagents:");
+    expect(text).not.toContain("Background tasks:");
+  });
+
+  test("is omitted when no conversation is focused", () => {
+    expect(activityBlock(createInitialState())).toBeNull();
+  });
+
+  test("remains visible when either count is nonzero", () => {
+    const block = activityBlock(focusedState(1, 0));
+    expect(block).not.toBeNull();
+    expect(stripAnsi(block?.rows[0] ?? "")).toContain("Subagents: 1");
+    expect(stripAnsi(block?.rows[1] ?? "")).toContain("Background tasks: 0");
   });
 });

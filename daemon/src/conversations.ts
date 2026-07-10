@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus } from "./messages";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, createConversation, createMessageMetadata, createStoredUserMessage, isRealUserMessage, isToolResultMessage, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, createConversation, createMessageMetadata, createStoredUserMessage, isRealUserMessage, isToolResultMessage, isValidActiveContext, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
@@ -937,6 +937,14 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   }
   if (spliceAt === -1) return false;
 
+  // Aborting below lets the orchestrator salvage its in-flight replay state,
+  // which may advance activeContext through the very user turn being removed.
+  // Keep an immutable candidate from before abort recovery so an unwind of only
+  // the unrepresented transcript tail does not throw away a recent checkpoint.
+  const activeContextBeforeAbort = conv.activeContext
+    ? structuredClone(conv.activeContext)
+    : null;
+
   // Drain queued work first — prevents the orchestrator's finally block from
   // starting a new stream after we abort. Keep a rollback copy in case the
   // active stream cannot be stopped and the unwind is refused.
@@ -952,7 +960,7 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
       log("warn", `conversations: stream for ${id} did not stop within timeout; refusing unsafe unwind`);
       const queuedDuringWait = streaming.drainQueuedMessages(id);
       for (const queued of [...queuedBeforeAbort, ...queuedDuringWait]) {
-        streaming.pushQueuedMessage(id, queued.text, queued.timing, queued.images);
+        streaming.pushQueuedMessage(id, queued.text, queued.timing, queued.images, queued.subagentMaxDepth);
       }
       const goalContinuationDuringWait = streaming.consumeGoalContinuationAfterStream(id);
       if (goalContinuationBeforeAbort || goalContinuationDuringWait) {
@@ -968,7 +976,12 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   streaming.clearGoalContinuationAfterStream(id);
 
   conv.messages.splice(spliceAt);
-  conv.activeContext = null;
+  const recoveredActiveContext = conv.activeContext && isValidActiveContext(conv.activeContext, conv.messages)
+    ? conv.activeContext
+    : activeContextBeforeAbort && isValidActiveContext(activeContextBeforeAbort, conv.messages)
+      ? activeContextBeforeAbort
+      : null;
+  conv.activeContext = recoveredActiveContext;
   conv.lastContextTokens = null;
   conv.updatedAt = Date.now();
   markDirty(id);
