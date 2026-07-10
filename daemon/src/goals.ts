@@ -17,12 +17,6 @@ export interface GoalSetOptions {
 
 type IncompleteGoalStatus = Exclude<ConversationGoalStatus, "complete">;
 
-export const GOAL_CONTINUATION_PROMPT = `This is an automated message you're seeing because the user isn't present and you didn't pause / complete the goal you've been working on. Ask yourself: Should you pause it? Are you stuck and need human review? Perhaps you're addressing a tangent rn bc of user request and should also pause? If so pause. Also ask yourself: Should you complete it? is the goal done? Have you completed it thoroughly, accurately, and to a level of satisfaction that when the user comes back he'll most likely say "good job!"? If so, complete it. Else, if you don't need to pause or complete your goal, continue working.`;
-
-export const GOAL_CONTINUATION_NO_PAUSE_PROMPT = `This is an automated message you're seeing because the user isn't present and you didn't complete the goal you've been working on. Ask yourself: Should you complete it? Is the goal done? Have you completed it thoroughly, accurately, and to a level of satisfaction that when the user comes back he'll most likely say "good job!"? If so, complete it. Else continue working.`;
-
-export const GOAL_CONTINUATION_WORK_ONLY_PREFIX = "Continue working on the active goal: ";
-
 export const GOAL_TOOL_SYSTEM_HINT = "Only set a goal when the user explicitly asks you to. If a goal is already active, use this tool only to pause, resume, or complete it when appropriate.";
 
 export function formatGoalSummary(goal: ConversationGoal | null | undefined): string {
@@ -47,14 +41,17 @@ export function goalPermissionFlagSuffix(goal: ConversationGoal | Required<GoalS
   return flags.length ? ` ${flags.join(" ")}` : "";
 }
 
-export function goalContinuationSystemPrompt(goal: ConversationGoal): string | null {
-  if (!goalCanComplete(goal)) return null;
-  return goalCanPause(goal) ? GOAL_CONTINUATION_PROMPT : GOAL_CONTINUATION_NO_PAUSE_PROMPT;
-}
-
 export function goalContinuationUserMessage(goal: ConversationGoal): string {
-  if (!goalCanComplete(goal) && !goalCanPause(goal)) return `${GOAL_CONTINUATION_WORK_ONLY_PREFIX}${goal.objective}`;
-  return `Continue the active /goal objective now: ${goal.objective}`;
+  const lifecycle = [
+    goalCanComplete(goal) ? "If the goal is finished, mark it complete." : null,
+    goalCanPause(goal) ? "If you are blocked or need user input or review, pause it." : null,
+    goalCanComplete(goal) || goalCanPause(goal) ? "Otherwise, keep working." : null,
+  ].filter((instruction): instruction is string => Boolean(instruction));
+  return [
+    "Continue the active goal:",
+    goal.objective,
+    lifecycle.join(" "),
+  ].filter(Boolean).join("\n\n");
 }
 
 function statusForModelAction(action: Exclude<ModelGoalAction, "set" | "complete">): IncompleteGoalStatus {

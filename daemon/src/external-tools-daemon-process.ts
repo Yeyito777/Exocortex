@@ -5,7 +5,12 @@ import { log } from "./log";
 export function buildDaemonSpawnSpec(command: string): { cmd: string; args: string[] } | null {
   const trimmed = command.trim();
   if (!trimmed) return null;
-  return { cmd: "bash", args: ["-lc", trimmed] };
+  // Replace the shell with the configured daemon instead of leaving an extra
+  // `bash -lc` process at the root of the supervised process group. Tracking a
+  // wrapper lets the wrapper exit while a grandchild keeps running, at which
+  // point the supervisor repeatedly starts replacements that collide with the
+  // orphaned service's own PID/socket files.
+  return { cmd: "bash", args: ["-lc", `exec ${trimmed}`] };
 }
 
 export function getDaemonStatePaths(toolDir: string): { configDir: string; logPath: string; pidPath: string } {
@@ -65,8 +70,27 @@ export function isLikelyManagedDaemonPid(pid: number, toolDir: string): boolean 
   }
 }
 
-export function killProcessGroup(pid: number, label: string): Promise<void> {
+interface KillProcessGroupTimings {
+  pollMs?: number;
+  forceKillMs?: number;
+  bailMs?: number;
+}
+
+function processGroupExists(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err) {
+    // EPERM still means the process group exists; ESRCH means it is gone.
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+export function killProcessGroup(pid: number, label: string, timings: KillProcessGroupTimings = {}): Promise<void> {
   return new Promise<void>((resolve) => {
+    const pollMs = timings.pollMs ?? 100;
+    const forceKillMs = timings.forceKillMs ?? 5_000;
+    const bailMs = timings.bailMs ?? 7_000;
     let settled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
@@ -89,12 +113,8 @@ export function killProcessGroup(pid: number, label: string): Promise<void> {
     }
 
     pollTimer = setInterval(() => {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        settle();
-      }
-    }, 100);
+      if (!processGroupExists(pid)) settle();
+    }, pollMs);
     pollTimer.unref?.();
 
     forceKillTimer = setTimeout(() => {
@@ -104,13 +124,13 @@ export function killProcessGroup(pid: number, label: string): Promise<void> {
       } catch {
         // already dead
       }
-    }, 5_000);
+    }, forceKillMs);
     forceKillTimer.unref?.();
 
     bailTimer = setTimeout(() => {
       log("warn", `external-tools: giving up waiting for ${label} (pid ${pid})`);
       settle();
-    }, 7_000);
+    }, bailMs);
     bailTimer.unref?.();
   });
 }
