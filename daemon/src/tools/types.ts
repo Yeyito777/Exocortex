@@ -44,7 +44,11 @@ export interface ToolExecutionContext {
   /** Native current-daemon management and subagent capability. */
   exocortex?: ExocortexToolRuntime;
   /** Report the lifecycle of a detached tool process owned by this conversation. */
-  setBackgroundTaskActive?: (taskId: string, active: boolean) => void;
+  setBackgroundTaskActive?: (
+    taskId: string,
+    active: boolean,
+    details?: { title: string; startedAt: number },
+  ) => void;
   /** Register the currently executing tool as user-backgroundable. */
   registerBackgrounder?: (backgrounder: ActiveToolBackgrounder | null) => void;
 }

@@ -656,7 +656,10 @@ export function createHandler(server: DaemonServer) {
             break;
           }
           const trackedParentId = cmd.notifyParent?.convId;
-          if (trackedParentId && setSubagentActive(trackedParentId, cmd.convId, true)) {
+          if (trackedParentId && setSubagentActive(trackedParentId, cmd.convId, true, {
+            title: target?.title || "Subagent task",
+            startedAt: cmd.startedAt,
+          })) {
             broadcastConversationUpdated(server, trackedParentId);
           }
           const finishTrackedSubagent = () => {

@@ -14,7 +14,7 @@ import { trimConversationInPlace, type TrimConversationResult } from "./conversa
 import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
-import { getConversationActivityCounts } from "./conversation-activity";
+import { getConversationActivityCounts, getConversationTasks } from "./conversation-activity";
 import * as streaming from "./streaming";
 import { log } from "./log";
 import { getProvider, normalizeEffort } from "./providers/registry";
@@ -1153,6 +1153,7 @@ export function listSummaries(): ConversationSummary[] {
       streaming: streaming.isStreaming(summary.id),
       unread: unread.has(summary.id),
       ...getConversationActivityCounts(summary.id),
+      tasks: getConversationTasks(summary.id),
     });
   }
   sortSidebarEntries(result);
@@ -1522,6 +1523,7 @@ export function getSummary(id: string): ConversationSummary | null {
     streaming: streaming.isStreaming(id),
     unread: unread.has(id),
     ...getConversationActivityCounts(id),
+    tasks: getConversationTasks(id),
   };
 }
 

@@ -32,6 +32,7 @@ import { renderEditMessageOverlay } from "./overlays";
 import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
 import { padRightToWidth, termWidth } from "./textwidth";
 import { getVoicePromptRanges } from "./voice";
+import { renderTaskPanel } from "./activitypanel";
 import {
   appendPositionedPayload as appendFramePositionedPayload,
   appendRowWrite as appendFrameRowWrite,
@@ -767,6 +768,15 @@ export function render(state: RenderState): void {
     hlFirst, hlLast, searchQuery,
   );
 
+  // ── Active task panel (top-right overlay) ──────────────────────
+  const taskPanel = renderTaskPanel(state, chatW, messageAreaHeight);
+  if (taskPanel) {
+    const panelCol = chatCol + chatW - taskPanel.width;
+    for (let i = 0; i < taskPanel.lines.length; i++) {
+      appendRowWrite(ctx, messageAreaStart + i, panelCol, taskPanel.lines[i]);
+    }
+  }
+
   // ── Autocomplete popup (overlays message area above input) ────
   renderAutocompletePopup(ctx, state, chatW, bottomStartRow);
 
@@ -816,6 +826,7 @@ export function render(state: RenderState): void {
 
   const canScrollMessageRegion = !sidebarOpen
     && !state.autocomplete
+    && !taskPanel
     && !state.search?.barOpen
     && !state.queuePrompt
     && !state.editMessagePrompt

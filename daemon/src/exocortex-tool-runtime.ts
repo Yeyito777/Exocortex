@@ -171,9 +171,13 @@ function conversationIdInput(args: Record<string, unknown>, parentConversationId
   return convId;
 }
 
-function autoTitle(text: string): string {
-  const firstLine = text.split("\n")[0].replace(/\s+/g, " ").trim() || "subagent task";
-  return `exo: ${firstLine.length > 75 ? `${firstLine.slice(0, 74)}…` : firstLine}`;
+function subagentTitleInput(input: Record<string, unknown>): string {
+  const title = stringInput(input, "title", true)!.replace(/\s+/g, " ").trim();
+  const words = title.split(" ");
+  if (title.length > 60 || words.length > 6) {
+    throw new Error("title must be short (about three words, at most 6 words and 60 characters)");
+  }
+  return title;
 }
 
 function inferProviderForModel(model: string | undefined): ProviderId | undefined {
@@ -502,9 +506,14 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
 
   const broadcastSidebar = () => server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
 
-  const setTrackedSubagent = (parentConvId: string | undefined, childConvId: string, active: boolean): void => {
+  const setTrackedSubagent = (
+    parentConvId: string | undefined,
+    childConvId: string,
+    active: boolean,
+    details?: { title: string; startedAt: number },
+  ): void => {
     if (!parentConvId) return;
-    if (setSubagentActive(parentConvId, childConvId, active)) {
+    if (setSubagentActive(parentConvId, childConvId, active, details)) {
       broadcastConversationUpdated(server, parentConvId);
     }
   };
@@ -552,6 +561,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const text = stringInput(input, "text", true)!;
     const maxDepth = requestedMaxDepth(input, callerMaxDepth);
     let convId = stringInput(input, "conversation_id");
+    const requestedTitle = convId ? undefined : subagentTitleInput(input);
+    let taskTitle: string;
     let created = false;
 
     if (!convId) {
@@ -561,7 +572,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       const folder = convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME);
       if (!folder) throw new Error(`Failed to create ${SUBAGENTS_FOLDER_NAME} folder`);
       convId = convStore.generateId();
-      convStore.create(convId, selection.provider, selection.model, autoTitle(text), selection.effort, selection.fastMode, folder.id);
+      convStore.create(convId, selection.provider, selection.model, requestedTitle, selection.effort, selection.fastMode, folder.id);
+      taskTitle = requestedTitle!;
       created = true;
       broadcastConversationUpdated(server, convId);
       broadcastSidebar();
@@ -569,6 +581,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     } else {
       const target = convStore.get(convId);
       if (!target) throw new Error(`Conversation ${convId} not found`);
+      taskTitle = target.title || "Subagent task";
       setRequestedModel(convId, input);
       ensureCanStart(convStore.get(convId)!.provider);
     }
@@ -598,7 +611,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
 
     if (shouldDetach) {
       const notify = booleanInput(input, "notify_parent", true) && Boolean(parentConvId);
-      setTrackedSubagent(parentConvId, convId, true);
+      setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt: Date.now() });
       void deps.runTurn(convId, text, maxDepth).then(outcome => {
         setTrackedSubagent(parentConvId, convId!, false);
         if (notify && parentConvId) deps.notifyParent(parentConvId, convId!, text, outcome);
@@ -607,13 +620,13 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         log("error", `exo tool: detached subagent ${convId} failed: ${error instanceof Error ? error.message : error}`);
         if (notify && parentConvId) deps.notifyParent(parentConvId, convId!, text, failedOutcome(error));
       });
-      return ok(pretty({ conversation_id: convId, status: "running", detached: true, created, max_depth: maxDepth, notify_parent: notify ? parentConvId : null }));
+      return ok(pretty({ conversation_id: convId, title: taskTitle, status: "running", detached: true, created, max_depth: maxDepth, notify_parent: notify ? parentConvId : null }));
     }
 
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     const onAbort = () => convStore.getActiveJob(convId!)?.abort(signal?.reason);
     signal?.addEventListener("abort", onAbort, { once: true });
-    setTrackedSubagent(parentConvId, convId, true);
+    setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt: Date.now() });
     try {
       const outcome = await deps.runTurn(convId, text, maxDepth);
       const full = booleanInput(input, "full", false);

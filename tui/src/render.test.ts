@@ -174,6 +174,39 @@ describe("render caching and frame diffing", () => {
     expect(clearCount).toBeLessThan(state.layout.messageAreaHeight);
   });
 
+  test("positions focused conversation tasks at the message area's top-right", () => {
+    const state = makeState();
+    state.convId = "parent";
+    state.toolRegistry = [
+      { name: "exo", label: "Exocortex", color: "#1d9bf0" },
+      { name: "bash", label: "$", color: "#d19a66" },
+    ];
+    state.sidebar.conversations = [{
+      id: "parent",
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 2,
+      title: "Parent",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: [{ id: "child", kind: "subagent", title: "Inspect renderer flow", startedAt: Date.now() - 2_000 }],
+    }];
+
+    const writes = positionedWrites(captureRenderOutput(state));
+    const header = writes.find(write => write.row === 3 && write.col === 71 && stripAnsi(write.text).includes("Tasks"));
+    const task = writes.find(write => write.row === 4 && write.col === 71 && stripAnsi(write.text).includes("Inspect renderer flow"));
+
+    expect(header).toBeDefined();
+    expect(task).toBeDefined();
+  });
+
   test("keeps macro highlighting active while voice placeholders are rendered", () => {
     const state = createInitialState();
     state.cols = 100;

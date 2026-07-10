@@ -391,8 +391,8 @@ async function orchestrateAssistantTurn(
     subagentMaxDepth,
     model: conv.model,
     exocortex: ext.exocortex,
-    setBackgroundTaskActive: (taskId, active) => {
-      if (setConversationBackgroundTaskActive(convId, taskId, active)) {
+    setBackgroundTaskActive: (taskId, active, details) => {
+      if (setConversationBackgroundTaskActive(convId, taskId, active, details)) {
         broadcastConversationUpdated(server, convId);
       }
     },

@@ -50,6 +50,7 @@ function summarizeExoParams(primary: string, input: Record<string, unknown>, ski
 const EXO_SYSTEM_HINT = [
   "Use the native `exo` tool for the current daemon and its subagents.",
   "Use subagents only when parallel work would materially improve speed or quality; otherwise, do not use them.",
+  "Starting a subagent requires a short title of about three words; it becomes the child conversation title and identifies the task in the parent UI.",
   "Set max_depth=0 unless a subagent clearly needs to delegate further.",
   "Subagents start in the daemon's working directory, so include the target absolute directory in tasks when relevant.",
 ].join("\n");
@@ -73,6 +74,10 @@ export const exo: Tool = {
       conversation_id: {
         type: "string",
         description: "Conversation targeted by send, info, history, abort, or queue. Omit for send to create a new subagent.",
+      },
+      title: {
+        type: "string",
+        description: "Required when send creates a new subagent (conversation_id omitted). Short title of about three words; becomes the child conversation title and appears in the parent's Tasks UI.",
       },
       max_depth: {
         type: "integer",

@@ -263,7 +263,11 @@ async function executeBashImpl(
     function setBackgroundTaskTracked(active: boolean): void {
       if (!proc.pid || backgroundTaskTracked === active) return;
       backgroundTaskTracked = active;
-      context?.setBackgroundTaskActive?.(`bash:${proc.pid}`, active);
+      context?.setBackgroundTaskActive?.(
+        `bash:${proc.pid}`,
+        active,
+        active ? { title: command!, startedAt: startTime } : undefined,
+      );
     }
 
     function clearRegisteredBackgrounder(): void {

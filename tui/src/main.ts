@@ -53,6 +53,7 @@ import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch,
 import { startReplayConversation } from "./replay";
 import { isConversationInSubagentsFolder, runStreamFinishedPing, shouldPingForBackgroundStreamCompletion, shouldPingForStreamStopped } from "./ping";
 import { stripStartupLaunchEcho } from "./startupinput";
+import { focusedConversationTasks } from "./activitypanel";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -425,16 +426,23 @@ function renderDelayForEvent(event: Event): number {
   }
 }
 
-/** During streaming, re-render on the next exact elapsed-second boundary. */
+/** Re-render active stream/task durations on the next exact second boundary. */
 function resetStreamTick(): void {
   clearStreamTick();
   if (state.contextCompactionStartedAt != null) {
     streamTickTimer = setTimeout(scheduleRender, 80);
     return;
   }
+  const tickDelays: number[] = [];
   const startedAt = state.pendingAI?.metadata?.startedAt;
   if (isStreaming(state) && typeof startedAt === "number") {
-    streamTickTimer = setTimeout(scheduleRender, msUntilNextElapsedSecond(startedAt));
+    tickDelays.push(msUntilNextElapsedSecond(startedAt));
+  }
+  for (const task of focusedConversationTasks(state)) {
+    if (Number.isFinite(task.startedAt)) tickDelays.push(msUntilNextElapsedSecond(task.startedAt));
+  }
+  if (tickDelays.length > 0) {
+    streamTickTimer = setTimeout(scheduleRender, Math.min(...tickDelays));
   }
 }
 

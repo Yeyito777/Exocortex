@@ -152,26 +152,29 @@ describe("bash explicit backgrounding", () => {
   });
 
   test("reports the detached process lifecycle to its conversation context", async () => {
-    const activity: Array<{ id: string; active: boolean }> = [];
+    const activity: Array<{ id: string; active: boolean; details?: { title: string; startedAt: number } }> = [];
     const result = await executeBashBackgroundable({
       command: "sleep 0.1",
       background: true,
     }, undefined, 60_000, {
       conversationId: "parent-conversation",
-      setBackgroundTaskActive: (id, active) => activity.push({ id, active }),
+      setBackgroundTaskActive: (id, active, details) => activity.push({ id, active, details }),
     });
 
     expect(result.isError).toBe(false);
     expect(activity).toHaveLength(1);
-    expect(activity[0]).toMatchObject({ active: true });
+    expect(activity[0]).toMatchObject({
+      active: true,
+      details: { title: "sleep 0.1", startedAt: expect.any(Number) },
+    });
     expect(activity[0].id).toMatch(/^bash:\d+$/);
 
     for (let i = 0; i < 50 && activity.length < 2; i++) {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     expect(activity).toEqual([
-      { id: activity[0].id, active: true },
-      { id: activity[0].id, active: false },
+      { id: activity[0].id, active: true, details: activity[0].details },
+      { id: activity[0].id, active: false, details: undefined },
     ]);
 
     const spillPath = result.output.match(/Output is being written to: (\S+)/)?.[1];

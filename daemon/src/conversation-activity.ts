@@ -2,31 +2,53 @@
  * Ephemeral work spawned by a conversation.
  *
  * Subagents are keyed by their child conversation id. Background tasks are
- * keyed by a tool-owned id (currently bash:<pid>). Counts are intentionally not
- * persisted: after a daemon restart there is no managed task lifecycle left to
- * observe reliably.
+ * keyed by a tool-owned id (currently bash:<pid>). Task details are intentionally
+ * not persisted: after a daemon restart there is no managed task lifecycle left
+ * to observe reliably.
  */
+
+import type { ConversationTaskSummary } from "@exocortex/shared/messages";
 
 export interface ConversationActivityCounts {
   subagentCount: number;
   backgroundTaskCount: number;
 }
 
-const subagentsByParent = new Map<string, Set<string>>();
+type TaskDetails = Pick<ConversationTaskSummary, "title" | "startedAt">;
+type TaskMap = Map<string, ConversationTaskSummary>;
+
+const subagentsByParent = new Map<string, TaskMap>();
 /** Last parent that spawned each child during this daemon session. */
 const subagentParentByChild = new Map<string, string>();
-const backgroundTasksByConversation = new Map<string, Set<string>>();
+const backgroundTasksByConversation = new Map<string, TaskMap>();
 
-function setEntry(map: Map<string, Set<string>>, ownerId: string, taskId: string, active: boolean): boolean {
+function setEntry(
+  map: Map<string, TaskMap>,
+  ownerId: string,
+  taskId: string,
+  kind: ConversationTaskSummary["kind"],
+  active: boolean,
+  details?: TaskDetails,
+): boolean {
   if (active) {
     let tasks = map.get(ownerId);
     if (!tasks) {
-      tasks = new Set();
+      tasks = new Map();
       map.set(ownerId, tasks);
     }
-    const before = tasks.size;
-    tasks.add(taskId);
-    return tasks.size !== before;
+    const existing = tasks.get(taskId);
+    const task: ConversationTaskSummary = {
+      id: taskId,
+      kind,
+      title: details?.title ?? existing?.title ?? taskId,
+      startedAt: details?.startedAt ?? existing?.startedAt ?? Date.now(),
+    };
+    if (existing
+        && existing.kind === task.kind
+        && existing.title === task.title
+        && existing.startedAt === task.startedAt) return false;
+    tasks.set(taskId, task);
+    return true;
   }
 
   const tasks = map.get(ownerId);
@@ -35,9 +57,14 @@ function setEntry(map: Map<string, Set<string>>, ownerId: string, taskId: string
   return true;
 }
 
-export function setSubagentActive(parentConvId: string, childConvId: string, active: boolean): boolean {
+export function setSubagentActive(
+  parentConvId: string,
+  childConvId: string,
+  active: boolean,
+  details?: TaskDetails,
+): boolean {
   if (active) subagentParentByChild.set(childConvId, parentConvId);
-  return setEntry(subagentsByParent, parentConvId, childConvId, active);
+  return setEntry(subagentsByParent, parentConvId, childConvId, "subagent", active, details);
 }
 
 /**
@@ -54,8 +81,13 @@ export function getSubagentConversationIds(parentConvId: string): string[] {
   return ids;
 }
 
-export function setBackgroundTaskActive(convId: string, taskId: string, active: boolean): boolean {
-  return setEntry(backgroundTasksByConversation, convId, taskId, active);
+export function setBackgroundTaskActive(
+  convId: string,
+  taskId: string,
+  active: boolean,
+  details?: TaskDetails,
+): boolean {
+  return setEntry(backgroundTasksByConversation, convId, taskId, "background", active, details);
 }
 
 export function getConversationActivityCounts(convId: string): ConversationActivityCounts {
@@ -63,6 +95,16 @@ export function getConversationActivityCounts(convId: string): ConversationActiv
     subagentCount: subagentsByParent.get(convId)?.size ?? 0,
     backgroundTaskCount: backgroundTasksByConversation.get(convId)?.size ?? 0,
   };
+}
+
+/** Task details for the focused-conversation activity panel. */
+export function getConversationTasks(convId: string): ConversationTaskSummary[] {
+  const byStart = (a: ConversationTaskSummary, b: ConversationTaskSummary) =>
+    a.startedAt - b.startedAt || a.id.localeCompare(b.id);
+  return [
+    ...[...(subagentsByParent.get(convId)?.values() ?? [])].sort(byStart),
+    ...[...(backgroundTasksByConversation.get(convId)?.values() ?? [])].sort(byStart),
+  ].map(task => ({ ...task }));
 }
 
 export function getActiveSubagentCount(): number {

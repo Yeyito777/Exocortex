@@ -273,6 +273,17 @@ export interface ConversationGoal {
 
 // ── Conversation summary ────────────────────────────────────────────
 
+/** Ephemeral work currently owned by a conversation. */
+export interface ConversationTaskSummary {
+  /** Child conversation id for subagents, or the tool-owned task id for background work. */
+  id: string;
+  kind: "subagent" | "background";
+  /** Short subagent conversation title or a compact background-command description. */
+  title: string;
+  /** Unix epoch milliseconds when this work started. */
+  startedAt: number;
+}
+
 export interface ConversationSummary {
   id: string;
   provider: ProviderId;
@@ -297,6 +308,8 @@ export interface ConversationSummary {
   subagentCount?: number;
   /** Ephemeral number of detached background tool processes currently running for this conversation. */
   backgroundTaskCount?: number;
+  /** Ephemeral task details used by focused-conversation activity UI. */
+  tasks?: ConversationTaskSummary[];
 }
 
 export interface FolderSummary {

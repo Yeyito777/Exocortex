@@ -75,7 +75,8 @@ describe("native exo tool contract", () => {
     const schema = JSON.stringify(exo.inputSchema);
     expect(schema).not.toContain("folder_mkdir");
     expect(schema).not.toContain("system_prompt");
-    expect(schema).not.toContain('"title"');
+    expect(schema).toContain('"title"');
+    expect(schema).toContain("Short title of about three words");
     expect(schema).toContain("max_depth");
     expect(schema).toContain("Maximum number of additional subagent generations permitted");
     expect(schema).toContain("not a target. Use 0 unless the target clearly needs to delegate");
@@ -83,6 +84,7 @@ describe("native exo tool contract", () => {
     expect(exo.systemHint).toBe([
       "Use the native `exo` tool for the current daemon and its subagents.",
       "Use subagents only when parallel work would materially improve speed or quality; otherwise, do not use them.",
+      "Starting a subagent requires a short title of about three words; it becomes the child conversation title and identifies the task in the parent UI.",
       "Set max_depth=0 unless a subagent clearly needs to delegate further.",
       "Subagents start in the daemon's working directory, so include the target absolute directory in tasks when relevant.",
     ].join("\n"));
@@ -92,13 +94,15 @@ describe("native exo tool contract", () => {
     const text = `${"Inspect every relevant file and report the exact behavior. ".repeat(5)}TAIL_SENTINEL`;
 
     expect(text.length).toBeGreaterThan(180);
-    expect(exo.summarize({ action: "send", text }).detail).toBe(`send: ${text}`);
+    expect(exo.summarize({ action: "send", text, title: "Inspect relevant files" }).detail)
+      .toBe(`send: ${text} --title Inspect relevant files`);
   });
 
   test("includes supplied arguments in summaries", () => {
     expect(exo.summarize({
       action: "send",
       text: "Inspect the renderer",
+      title: "Inspect renderer flow",
       conversation_id: "child-1",
       max_depth: 2,
       provider: "openai",
@@ -107,7 +111,7 @@ describe("native exo tool contract", () => {
       notify_parent: false,
       full: true,
     }).detail).toBe(
-      "send: Inspect the renderer --conversation_id child-1 --max_depth 2 --provider openai "
+      "send: Inspect the renderer --title Inspect renderer flow --conversation_id child-1 --max_depth 2 --provider openai "
       + "--model gpt-5.6-terra --mode detach --notify_parent false --full",
     );
     expect(exo.summarize({
@@ -155,15 +159,19 @@ describe("native exo daemon runtime", () => {
       hasCredentials: () => true,
     });
 
-    const result = await runtime.execute({ action: "send", text: "Inspect /tmp/project", max_depth: 0 }, parentId);
+    const result = await runtime.execute({ action: "send", text: "Inspect /tmp/project", title: "Inspect project files", max_depth: 0 }, parentId);
     expect(result.isError).toBe(false);
     const payload = JSON.parse(result.output);
     const childId = payload.conversation_id as string;
     conversationIds.push(childId);
 
-    expect(payload).toMatchObject({ status: "running", detached: true, created: true, max_depth: 0, notify_parent: parentId });
+    expect(payload).toMatchObject({ title: "Inspect project files", status: "running", detached: true, created: true, max_depth: 0, notify_parent: parentId });
     expect(getSummary(childId)?.folderId).toBe(findTopLevelFolderByName("subagents")?.id);
+    expect(getSummary(childId)?.title).toBe("Inspect project files");
     expect(getSummary(parentId)?.subagentCount).toBe(1);
+    expect(getSummary(parentId)?.tasks).toEqual([
+      expect.objectContaining({ id: childId, kind: "subagent", title: "Inspect project files", startedAt: expect.any(Number) }),
+    ]);
     expect(runTurn).toHaveBeenCalledWith(childId, "Inspect /tmp/project", 0);
     expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({
       type: "conversation_updated",
@@ -186,7 +194,7 @@ describe("native exo daemon runtime", () => {
       hasCredentials: () => true,
     });
 
-    const waited = await runtime.execute({ action: "send", text: "Wait for this", mode: "wait", max_depth: 0 }, parentId);
+    const waited = await runtime.execute({ action: "send", text: "Wait for this", title: "Wait child result", mode: "wait", max_depth: 0 }, parentId);
     expect(waited).toMatchObject({ isError: false });
     expect(waited.output).toContain("waited result");
     const match = waited.output.match(/exo:([^\s]+)/);
@@ -213,6 +221,19 @@ describe("native exo daemon runtime", () => {
     expect(missing).toMatchObject({ isError: true });
     expect(missing.output).toContain("max_depth is required");
 
+    const missingTitle = await runtime.execute({ action: "send", text: "missing title", max_depth: 0 }, parentId);
+    expect(missingTitle).toMatchObject({ isError: true });
+    expect(missingTitle.output).toContain("title is required for action=send");
+
+    const longTitle = await runtime.execute({
+      action: "send",
+      text: "too many title words",
+      title: "one two three four five six seven",
+      max_depth: 0,
+    }, parentId);
+    expect(longTitle).toMatchObject({ isError: true });
+    expect(longTitle.output).toContain("title must be short");
+
     const tooDeep = await runtime.execute(
       { action: "send", text: "too deep", max_depth: 2, mode: "wait" },
       parentId,
@@ -223,7 +244,7 @@ describe("native exo daemon runtime", () => {
     expect(tooDeep.output).toContain("child max_depth must be between 0 and 1");
 
     const allowed = await runtime.execute(
-      { action: "send", text: "allowed", max_depth: 1, mode: "wait" },
+      { action: "send", text: "allowed", title: "Allowed nested task", max_depth: 1, mode: "wait" },
       parentId,
       undefined,
       2,
@@ -263,7 +284,7 @@ describe("native exo daemon runtime", () => {
       hasCredentials: () => true,
     });
 
-    const result = await runtime.execute({ action: "send", text: "overflow", max_depth: 0 }, parentId);
+    const result = await runtime.execute({ action: "send", text: "overflow", title: "Overflow child task", max_depth: 0 }, parentId);
     expect(result).toMatchObject({ isError: true });
     expect(result.output).toContain("already has 8 active subagents");
   });
@@ -281,7 +302,7 @@ describe("native exo daemon runtime", () => {
       hasCredentials: () => true,
     });
 
-    const result = await runtime.execute({ action: "send", text: "overflow", max_depth: 0 }, parentId);
+    const result = await runtime.execute({ action: "send", text: "overflow", title: "Overflow global task", max_depth: 0 }, parentId);
     expect(result).toMatchObject({ isError: true });
     expect(result.output).toContain("already has 32 active native subagents");
   });

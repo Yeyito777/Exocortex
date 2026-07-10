@@ -319,15 +319,23 @@ describe("handler subagent folder placement", () => {
     expect(sent).toContainEqual(expect.objectContaining({ type: "ack", reqId: "req-existing-detached", convId: childId }));
     expect(getSummary(childId)?.folderId ?? null).toBeNull();
     expect(getSummary(parentId)?.subagentCount).toBe(1);
+    expect(getSummary(parentId)?.tasks).toEqual([
+      { id: childId, kind: "subagent", title: "existing child", startedAt: 123 },
+    ]);
     expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({
       type: "conversation_updated",
-      summary: expect.objectContaining({ id: parentId, subagentCount: 1 }),
+      summary: expect.objectContaining({
+        id: parentId,
+        subagentCount: 1,
+        tasks: [{ id: childId, kind: "subagent", title: "existing child", startedAt: 123 }],
+      }),
     }));
     expect(server.broadcast).not.toHaveBeenCalledWith(expect.objectContaining({ type: "conversation_moved" }));
 
     finishChild(makeAssistantOutcome());
     await Promise.resolve();
     expect(getSummary(parentId)?.subagentCount).toBe(0);
+    expect(getSummary(parentId)?.tasks).toEqual([]);
   });
 
   test("does not notify the parent when a detached subagent is deliberately aborted", async () => {
