@@ -97,6 +97,7 @@ Commands flow client → daemon. Events flow daemon → client.
 | `Escape`         | Normal mode (vim)                   |
 | `i` / `a`        | Insert mode (vim)                   |
 | `v` / `V`        | Visual / visual-line mode           |
+| `;`               | In history visual mode, quote selection into the draft and focus the following line |
 | `/new`           | Start a new conversation            |
 | `/model <provider> <model>` | Switch provider/model for the current conversation |
 | `/trim <mode> <n>` | Trim old context from the current conversation |

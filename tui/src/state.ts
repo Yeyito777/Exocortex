@@ -25,7 +25,7 @@ import type { HistoryCursor } from "./historycursor";
 import { createHistoryCursor } from "./historycursor";
 import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
-import { createUndoState, markInsertEntry } from "./undo";
+import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
 import type { ConversationGoal, ProviderAuthInfo, QueueTiming } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
@@ -465,15 +465,28 @@ function defaultSelectionForPreferredProvider(provider: ProviderId | null): Conv
 // ── Focus transition helpers ──────────────────────────────────────
 // Centralise the mode+focus combos that are repeated across call sites.
 
+function commitFocusedPromptInsert(state: RenderState): void {
+  if (state.panelFocus === "chat" && state.chatFocus === "prompt" && state.vim.mode === "insert") {
+    commitInsertSession(state.undo, state.inputBuffer);
+  }
+}
+
 /** Focus the prompt in insert mode. */
 export function focusPrompt(state: RenderState): void {
+  const alreadyEditingPrompt = state.panelFocus === "chat"
+    && state.chatFocus === "prompt"
+    && state.vim.mode === "insert";
   state.panelFocus = "chat";
   state.chatFocus = "prompt";
   if (state.vim.mode !== "insert") state.vim.mode = "insert";
+  if (!alreadyEditingPrompt) {
+    markInsertEntry(state.undo, state.inputBuffer, state.cursorPos);
+  }
 }
 
 /** Focus chat history in normal mode. */
 export function focusHistory(state: RenderState): void {
+  commitFocusedPromptInsert(state);
   state.panelFocus = "chat";
   state.chatFocus = "history";
   state.vim.mode = "normal";
@@ -481,6 +494,7 @@ export function focusHistory(state: RenderState): void {
 
 /** Focus the sidebar in normal mode. */
 export function focusSidebar(state: RenderState): void {
+  commitFocusedPromptInsert(state);
   state.panelFocus = "sidebar";
   state.vim.mode = "normal";
 }

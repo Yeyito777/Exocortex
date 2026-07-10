@@ -207,7 +207,9 @@ export function processVimKey(
 function handleVimAction(action: string, state: RenderState): KeyResult {
   // History cursor actions (including visual yank)
   if ((action as Action).startsWith("history_")) {
-    return handleHistoryCursorAction(action as Action, state);
+    const result = handleHistoryCursorAction(action as Action, state);
+    if (action === "history_append_selection") focusPrompt(state);
+    return result;
   }
 
   switch (action) {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildMessageLines } from "./conversation";
+import { handleFocusedKey } from "./focus";
 import { applyHistoryAction, contentBounds, getHistoryVisualSelection, joinLogicalLines, stripAnsi } from "./historycursor";
 import { createInitialState } from "./state";
 import type { RenderState } from "./state";
@@ -69,6 +70,22 @@ function selectFirstWrappedBoundary(state: RenderState): void {
   const secondStart = contentBounds(stripAnsi(state.historyLines[1])).start;
   state.historyVisualAnchor = { row: 0, col: firstStart };
   state.historyCursor = { row: 1, col: secondStart + 1 };
+}
+
+function setupSelectedHistoryText(text: string): RenderState {
+  const state = setupRenderedHistory([
+    { role: "assistant", blocks: [{ type: "text", text }], metadata: null },
+  ], 80);
+  state.panelFocus = "chat";
+  state.chatFocus = "history";
+
+  const row = state.historyLines.findIndex(line => stripAnsi(line).includes(text));
+  const col = stripAnsi(state.historyLines[row] ?? "").indexOf(text);
+  if (row < 0 || col < 0) throw new Error("selected test text was not rendered");
+
+  state.historyVisualAnchor = { row, col };
+  state.historyCursor = { row, col: col + text.length - 1 };
+  return state;
 }
 
 describe("history brace navigation", () => {
@@ -220,5 +237,112 @@ describe("history visual selection", () => {
     state.historyCursor = { row, col: start + "const answer".length - 1 };
 
     expect(getHistoryVisualSelection(state)).toBe("const answer");
+  });
+});
+
+describe("appending a history selection to the prompt", () => {
+  test("visual ; appends a triple-quote block to an empty prompt", () => {
+    const state = setupSelectedHistoryText("alpha beta");
+    state.vim.lastFind = { char: "a", direction: "f" };
+
+    expect(handleFocusedKey({ type: "char", char: ";" }, state)).toEqual({ type: "handled" });
+
+    expect(state.inputBuffer).toBe(`"""\nalpha beta\n"""\n`);
+    expect(state.cursorPos).toBe(state.inputBuffer.length);
+    expect(state.chatFocus).toBe("prompt");
+    expect(state.vim.mode).toBe("insert");
+  });
+
+  test("adds a leading newline when the prompt's last line is not empty", () => {
+    const state = setupSelectedHistoryText("alpha beta");
+    state.inputBuffer = "Compare this";
+    state.cursorPos = 3;
+
+    expect(handleFocusedKey({ type: "char", char: ";" }, state)).toEqual({ type: "handled" });
+
+    expect(state.inputBuffer).toBe(`Compare this\n"""\nalpha beta\n"""\n`);
+    expect(state.cursorPos).toBe(state.inputBuffer.length);
+    expect(state.chatFocus).toBe("prompt");
+    expect(state.vim.mode).toBe("insert");
+
+    // Continue typing on the empty line after the closing delimiter. Undo
+    // should remove that new insert session first, then the quote block,
+    // without skipping back past the pre-existing draft.
+    for (const char of "explain") {
+      expect(handleFocusedKey({ type: "char", char }, state)).toEqual({ type: "handled" });
+    }
+    expect(handleFocusedKey({ type: "escape" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "u" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe(`Compare this\n"""\nalpha beta\n"""\n`);
+    expect(handleFocusedKey({ type: "char", char: "u" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("Compare this");
+    expect(state.cursorPos).toBe(3);
+  });
+
+  test("does not add another newline when already on an empty prompt line", () => {
+    const state = setupSelectedHistoryText("alpha beta");
+    state.inputBuffer = "Compare this\n";
+    state.cursorPos = state.inputBuffer.length;
+
+    expect(handleFocusedKey({ type: "char", char: ";" }, state)).toEqual({ type: "handled" });
+
+    expect(state.inputBuffer).toBe(`Compare this\n"""\nalpha beta\n"""\n`);
+  });
+
+  test("works for visual-line selections", () => {
+    const state = createInitialState();
+    state.panelFocus = "chat";
+    state.chatFocus = "history";
+    state.vim.mode = "visual-line";
+    state.historyLines = ["alpha", "beta"];
+    state.historyWrapContinuation = [false, false];
+    state.historyWrapJoiners = ["", ""];
+    state.historyVisualAnchor = { row: 0, col: 0 };
+    state.historyCursor = { row: 1, col: 0 };
+    state.layout.totalLines = 2;
+    state.layout.messageAreaHeight = 2;
+
+    expect(handleFocusedKey({ type: "char", char: ";" }, state)).toEqual({ type: "handled" });
+
+    expect(state.inputBuffer).toBe(`"""\nalpha\nbeta\n"""\n`);
+    expect(state.chatFocus as string).toBe("prompt");
+    expect(state.vim.mode as string).toBe("insert");
+  });
+
+  test("preserves a selected emoji as a complete grapheme", () => {
+    const state = createInitialState();
+    state.panelFocus = "chat";
+    state.chatFocus = "history";
+    state.vim.mode = "visual";
+    state.historyLines = ["😀"];
+    state.historyWrapContinuation = [false];
+    state.historyWrapJoiners = [""];
+    state.historyVisualAnchor = { row: 0, col: 0 };
+    state.historyCursor = { row: 0, col: 0 };
+    state.layout.totalLines = 1;
+    state.layout.messageAreaHeight = 1;
+
+    expect(handleFocusedKey({ type: "char", char: ";" }, state)).toEqual({ type: "handled" });
+
+    expect(state.inputBuffer).toBe(`"""\n😀\n"""\n`);
+    expect(state.chatFocus as string).toBe("prompt");
+    expect(state.vim.mode as string).toBe("insert");
+  });
+
+  test("normal-mode ; still repeats the last history find", () => {
+    const state = createInitialState();
+    state.panelFocus = "chat";
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.vim.lastFind = { char: "p", direction: "f" };
+    state.historyLines = ["alpha"];
+    state.historyCursor = { row: 0, col: 0 };
+    state.layout.totalLines = 1;
+    state.layout.messageAreaHeight = 1;
+
+    expect(handleFocusedKey({ type: "char", char: ";" }, state)).toEqual({ type: "handled" });
+
+    expect(state.historyCursor).toEqual({ row: 0, col: 2 });
+    expect(state.inputBuffer).toBe("");
   });
 });

@@ -20,6 +20,8 @@ import {
 import { copyToClipboard } from "./vim/clipboard";
 import { keyString, resetPending } from "./vim/types";
 import { resolveTextObject, isTextObjectKey } from "./vim/textobjects";
+import { appendPromptQuoteBlock } from "./promptstate";
+import { nextGraphemeEnd } from "./graphemes";
 import {
   stripAnsi, contentBounds, clampCol, clampCursor,
   logicalLineRange,
@@ -253,6 +255,11 @@ export function handleHistoryFind(key: KeyEvent, state: RenderState): boolean {
 
   // Repeat last find
   if (key.type === "char" && (key.char === ";" || key.char === ",")) {
+    // Visual `;` has a history-specific keymap action. Let the vim engine
+    // dispatch it instead of treating it as repeat-find.
+    if (key.char === ";" && (vim.mode === "visual" || vim.mode === "visual-line")) {
+      return false;
+    }
     if (!vim.lastFind) return true;
     const dir = key.char === ";"
       ? vim.lastFind.direction
@@ -357,7 +364,8 @@ function extractHistoryCharwiseSelection(
   const wrapCont = state.historyWrapContinuation;
   const wrapJoiners = state.historyWrapJoiners;
   if (start.row === end.row) {
-    return copyLineSlice(state, start.row, start.col, end.col + 1) ?? "";
+    const plain = stripAnsi(lines[start.row] ?? "");
+    return copyLineSlice(state, start.row, start.col, nextGraphemeEnd(plain, end.col)) ?? "";
   }
 
   const result: string[] = [];
@@ -365,7 +373,9 @@ function extractHistoryCharwiseSelection(
     const plain = stripAnsi(lines[r] ?? "");
     const { start: lineStart, end: lineEnd } = contentBounds(plain);
     const sliceStart = r === start.row ? start.col : lineStart;
-    const sliceEnd = r === end.row ? end.col + 1 : lineEnd + 1;
+    const sliceEnd = r === end.row
+      ? nextGraphemeEnd(plain, end.col)
+      : nextGraphemeEnd(plain, lineEnd);
     const text = copyLineSlice(state, r, sliceStart, sliceEnd);
     if (text == null) continue;
 
@@ -428,6 +438,14 @@ export function handleHistoryCursorAction(
     const text = getHistoryVisualSelection(state);
     if (text) copyToClipboard(text);
     state.vim.mode = "normal";
+    ensureCursorVisible(state);
+    return { type: "handled" };
+  }
+
+  if (action === "history_append_selection") {
+    appendPromptQuoteBlock(state, getHistoryVisualSelection(state));
+    state.vim.mode = "normal";
+    resetPending(state.vim);
     ensureCursorVisible(state);
     return { type: "handled" };
   }

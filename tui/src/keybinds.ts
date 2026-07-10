@@ -95,6 +95,7 @@ export type Action =
   | "history_G"
   | "history_yy"
   | "history_visual_yank"
+  | "history_append_selection"
   | "history_prev_message"
   | "history_next_message";
 

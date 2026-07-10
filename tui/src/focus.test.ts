@@ -116,6 +116,18 @@ test("Ctrl-R requests a daemon restart even when a modal has focus", () => {
   expect(handleFocusedKey({ type: "ctrl-r" }, state)).toEqual({ type: "restart_daemon" });
 });
 
+test("a Ctrl-N history round trip preserves the prompt insert session for undo", () => {
+  const state = createInitialState();
+  typePromptText(state, "draft");
+
+  expect(handleFocusedKey({ type: "ctrl-n" }, state)).toEqual({ type: "handled" });
+  expect(handleFocusedKey({ type: "ctrl-n" }, state)).toEqual({ type: "handled" });
+  expect(handleFocusedKey({ type: "escape" }, state)).toEqual({ type: "handled" });
+  expect(handleFocusedKey({ type: "char", char: "u" }, state)).toEqual({ type: "handled" });
+
+  expect(state.inputBuffer).toBe("");
+});
+
 function placeHistoryCursorOnText(state: ReturnType<typeof createInitialState>, text: string): void {
   const row = state.historyLines.findIndex((line) => stripAnsi(line).includes(text));
   expect(row).toBeGreaterThanOrEqual(0);
