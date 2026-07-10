@@ -95,9 +95,8 @@ export function renderTaskPanel(
 
   const panelWidth = Math.min(MAX_PANEL_WIDTH, chatWidth);
   const innerWidth = panelWidth - 2;
-  const labelWidth = panelWidth >= 38 ? 13 : 6;
-  const titleWidth = innerWidth - 1 - labelWidth - ELAPSED_WIDTH - 1;
-  if (titleWidth < 1) return null;
+  const maxLabelWidth = panelWidth >= 38 ? termWidth("◆ Exocortex") : termWidth("$ Bash");
+  if (innerWidth - maxLabelWidth - ELAPSED_WIDTH - 3 < 1) return null;
 
   const maxContentRows = maxHeight - 2;
   const hasOverflow = tasks.length > maxContentRows;
@@ -141,9 +140,10 @@ export function renderTaskPanel(
     const elapsed = isGoal && task.goalStatus === "paused"
       ? "paused"
       : formatTaskElapsed(task.startedAt, now);
+    const titleWidth = innerWidth - termWidth(label) - ELAPSED_WIDTH - 3;
     lines.push(withPanelBg(
-      `${outline}│${theme.reset} ${color}${padRightToWidth(label, labelWidth)}`
-      + `${theme.text}${padRightToWidth(title, titleWidth)}`
+      `${outline}│${theme.reset} ${color}${label}`
+      + `${theme.text} ${padRightToWidth(title, titleWidth)}`
       + `${theme.muted}${padLeftToWidth(elapsed, ELAPSED_WIDTH)}${theme.reset} ${outline}│`,
     ));
   }

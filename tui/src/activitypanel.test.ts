@@ -47,9 +47,9 @@ describe("focused conversation task panel", () => {
     const plain = panel!.lines.map(stripAnsi);
     expect(plain[0]).toContain("Tasks");
     expect(plain[0].trimEnd()).toEndWith("2 ─╮");
-    expect(plain[1]).toContain("◆ Exocortex  Map daemon events");
+    expect(plain[1]).toContain("◆ Exocortex Map daemon events");
     expect(plain[1]).toContain("42s");
-    expect(plain[2]).toContain("$ Bash       bun test tui");
+    expect(plain[2]).toContain("$ Bash bun test tui");
     expect(panel!.lines[0]).toContain(theme.bold + theme.muted);
     expect(panel!.lines[0]).toContain(theme.muted + "Tasks");
     expect(panel!.lines[1]).toContain(hexToAnsi("#1122ee"));
