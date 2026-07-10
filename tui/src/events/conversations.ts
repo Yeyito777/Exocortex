@@ -48,6 +48,10 @@ export function handleConversationCreated(
   daemon: DaemonActions,
 ): void {
   rememberEnteredConversation(state.sidebar, state.convId, event.convId);
+  // The summary arrives in the following conversation_updated event. Remember
+  // which row to select so creation moves the sidebar cursor even when keyboard
+  // focus remains in the chat panel.
+  state.sidebar.pendingFocusItem = { type: "conversation", id: event.convId };
   state.folderInstructionsDoc = null;
   state.convId = event.convId;
   syncChosenProvider(state, event.provider ?? fallbackProvider(state));

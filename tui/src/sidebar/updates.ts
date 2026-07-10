@@ -140,6 +140,13 @@ export function updateConversation(sidebar: SidebarState, summary: ConversationS
     sidebar.conversations.unshift(summary);
   }
   sortSidebarCollections(sidebar);
+  const pendingFocusItem = sidebar.pendingFocusItem;
+  if (pendingFocusItem?.type === "conversation" && pendingFocusItem.id === summary.id) {
+    sidebar.pendingFocusItem = null;
+    sidebar.currentFolderId = summary.folderId ?? null;
+    focusSidebarItem(sidebar, pendingFocusItem);
+    return;
+  }
   syncSelectedIndex(sidebar);
 }
 

@@ -257,6 +257,37 @@ function summary(overrides: Partial<ConversationSummary> = {}): ConversationSumm
   };
 }
 
+describe("conversation creation sidebar selection", () => {
+  for (const panelFocus of ["chat", "sidebar"] as const) {
+    test(`selects the created conversation while ${panelFocus} is focused`, () => {
+      const state = createInitialState();
+      state.panelFocus = panelFocus;
+      state.sidebar.open = true;
+      state.sidebar.conversations = [summary({ id: "old-conv" })];
+      state.sidebar.selectedItem = { type: "conversation", id: "old-conv" };
+      state.sidebar.selectedId = "old-conv";
+
+      handleEvent({
+        type: "conversation_created",
+        convId: "new-conv",
+        provider: "openai",
+        model: "gpt-5.5",
+        effort: "high",
+        fastMode: false,
+      }, state, daemon);
+      handleEvent({
+        type: "conversation_updated",
+        summary: summary({ id: "new-conv", title: "New chat", sortOrder: 2 }),
+      }, state, daemon);
+
+      expect(state.panelFocus).toBe(panelFocus);
+      expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "new-conv" });
+      expect(state.sidebar.selectedId).toBe("new-conv");
+      expect(state.sidebar.pendingFocusItem).toBeNull();
+    });
+  }
+});
+
 describe("disk sync assistant diagnostics", () => {
   function assistantBlocks(state: ReturnType<typeof createInitialState>) {
     return state.messages.flatMap((msg) => msg.role === "assistant" ? msg.blocks : []);
