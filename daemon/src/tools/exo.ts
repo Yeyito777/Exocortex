@@ -28,13 +28,8 @@ function detailValue(input: Record<string, unknown>, key: string): string | unde
 }
 
 const EXO_SYSTEM_HINT = [
-  "Use the native `exo` tool to manage the current Exocortex daemon and spawn or control subagents.",
-  `For action=send or queue, max_depth is required (0-${MAX_EXO_SUBAGENT_DEPTH}). A spawned turn may pass at most its remaining depth minus one; max_depth=0 prevents further delegation.`,
-  "For a new subagent, call action=send with text and max_depth; it detaches by default and this conversation is notified on completion.",
-  "Use action=history, jobs, info, queue, abort, list, or another send to inspect and control child conversations.",
-  "For less-common management operations, call action=commands (or command=ls) to discover the daemon-owned command registry, then command=help with args.command to inspect one command.",
-  "Use the external `exo` CLI through bash only when debugging or targeting another daemon instance (for example with --instance).",
-  "Subagents use Exocortex's daemon working directory, so include the target absolute working directory in the task text when relevant.",
+  "Use the native `exo` tool for the current daemon and its subagents.",
+  "Subagents start in the daemon's working directory, so include the target absolute directory in tasks when relevant.",
 ].join("\n");
 
 export const exo: Tool = {
@@ -61,7 +56,7 @@ export const exo: Tool = {
         type: "integer",
         minimum: 0,
         maximum: MAX_EXO_SUBAGENT_DEPTH,
-        description: `Required for send and queue. The target turn's nested delegation budget (0-${MAX_EXO_SUBAGENT_DEPTH}); a spawned caller may set at most its own remaining budget minus one.`,
+        description: `Required for send and queue. How many nested subagents you think the target turn should use to complete the task, if any (0-${MAX_EXO_SUBAGENT_DEPTH}); a spawned caller may set at most its own remaining depth minus one.`,
       },
       query: {
         type: "string",

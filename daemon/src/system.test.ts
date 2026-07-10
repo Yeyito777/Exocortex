@@ -14,11 +14,11 @@ describe("system prompt", () => {
     expect(prompt).toContain("- Exocortex conversation ID: conv-native-123");
   });
 
-  test("keeps the subagent-depth rule static instead of embedding a turn-specific allowance", () => {
+  test("includes compact native-subagent guidance", () => {
     const prompt = buildSystemPrompt({ conversationId: "nested" });
 
-    expect(prompt).toContain("For action=send or queue, max_depth is required");
-    expect(prompt).not.toContain("Native exo subagent depth:");
+    expect(prompt).toContain("Use the native `exo` tool for the current daemon and its subagents.");
+    expect(prompt).toContain("Subagents start in the daemon's working directory");
   });
 
   test("omits the conversation-id line for non-conversation utility prompts", () => {
