@@ -83,7 +83,8 @@ describe("native exo tool contract", () => {
     expect(exo.description).toContain("Transcription and cross-instance targeting are intentionally excluded");
     expect(exo.systemHint).toBe([
       "Use the native `exo` tool for the current daemon and its subagents.",
-      "Use subagents only when parallel work would materially improve speed or quality; otherwise, do not use them.",
+      "Default to doing the work yourself; use subagents only for multiple substantial, independent workstreams that can run concurrently, or for a genuinely hard problem where an independent second analysis is likely to materially improve the result—not merely to offload routine work.",
+      "When an OpenAI subagent is otherwise warranted, omit `model` for the newest default (currently gpt-5.6-sol), use gpt-5.6-terra or gpt-5.6-luna for lighter/grunt work that doesn't require intelligence at all, and use older generations only when requested or required.",
       "Starting a subagent requires a short title of about three words; it becomes the child conversation title and identifies the task in the parent UI.",
       "Set max_depth=0 unless a subagent clearly needs to delegate further.",
       "Subagents start in the daemon's working directory, so include the target absolute directory in tasks when relevant.",
@@ -172,7 +173,7 @@ describe("native exo daemon runtime", () => {
     expect(getSummary(parentId)?.tasks).toEqual([
       expect.objectContaining({ id: childId, kind: "subagent", title: "Inspect project files", startedAt: expect.any(Number) }),
     ]);
-    expect(runTurn).toHaveBeenCalledWith(childId, "Inspect /tmp/project", 0);
+    expect(runTurn).toHaveBeenCalledWith(childId, "Inspect /tmp/project", 0, expect.any(Number));
     expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({
       type: "conversation_updated",
       summary: expect.objectContaining({ id: parentId, subagentCount: 1 }),
@@ -182,6 +183,48 @@ describe("native exo daemon runtime", () => {
     await Promise.resolve();
     expect(getSummary(parentId)?.subagentCount).toBe(0);
     expect(notifyParent).toHaveBeenCalledWith(parentId, childId, "Inspect /tmp/project", expect.objectContaining({ ok: true }));
+  });
+
+  test("registers durable parent notification state before starting a detached child", async () => {
+    const parentId = id("durable-parent");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
+    let resolveTurn!: (outcome: ReturnType<typeof successfulOutcome>) => void;
+    const runTurn = mock(() => new Promise<ReturnType<typeof successfulOutcome>>((resolve) => {
+      resolveTurn = resolve;
+    }));
+    const beginParentNotification = mock(() => {});
+    const completeParentNotification = mock(() => {});
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn,
+      beginParentNotification,
+      completeParentNotification,
+      hasCredentials: () => true,
+    });
+
+    const result = await runtime.execute({
+      action: "send",
+      text: "survive restart",
+      title: "Survive daemon restart",
+      max_depth: 1,
+    }, parentId);
+    const childId = JSON.parse(result.output).conversation_id as string;
+    conversationIds.push(childId);
+    const startedAt = (runTurn.mock.calls[0] as unknown[])[3] as number;
+
+    expect(beginParentNotification).toHaveBeenCalledWith(
+      { convId: parentId },
+      childId,
+      "survive restart",
+      startedAt,
+      1,
+    );
+    expect(beginParentNotification.mock.invocationCallOrder[0]).toBeLessThan(runTurn.mock.invocationCallOrder[0]);
+
+    const outcome = successfulOutcome("durable result");
+    resolveTurn(outcome);
+    await Promise.resolve();
+    expect(completeParentNotification).toHaveBeenCalledWith(childId, outcome);
   });
 
   test("can wait for a child result and queues recursive sends to the active parent", async () => {
@@ -253,7 +296,7 @@ describe("native exo daemon runtime", () => {
     const childId = allowed.output.match(/exo:([^\s]+)/)?.[1];
     expect(childId).toBeTruthy();
     if (childId) conversationIds.push(childId);
-    expect(runTurn).toHaveBeenLastCalledWith(childId, "allowed", 1);
+    expect(runTurn).toHaveBeenLastCalledWith(childId, "allowed", 1, expect.any(Number));
 
     const missingQueueDepth = await runtime.execute({
       action: "queue",

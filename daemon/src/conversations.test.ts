@@ -520,6 +520,14 @@ describe("createWithInitialUserMessage", () => {
         metadata: { startedAt: 123, endedAt: 123, model: "gpt-5.4", tokens: 0 },
       }],
     });
+    expect(get(id)?.messages[0]?.contextCheckpoint).toMatchObject({
+      version: 1,
+      provider: "openai",
+      model: "gpt-5.4",
+      windowId: null,
+      transcriptHistoryCount: 0,
+      contextTokens: 0,
+    });
     expect(getSummary(id)).toMatchObject({ title: "pending", messageCount: 1 });
   });
 });
@@ -655,7 +663,7 @@ describe("trimConversation", () => {
 });
 
 describe("unwindTo", () => {
-  test("clears context usage measured against the removed transcript suffix", async () => {
+  test("replaces context usage measured against the removed suffix with a prefix estimate", async () => {
     const id = mkId("unwind-context-usage");
     const conv = create(id, "openai", "gpt-5.6-sol");
     conv.messages.push(
@@ -668,7 +676,7 @@ describe("unwindTo", () => {
 
     expect(await unwindTo(id, 1)).toBe(true);
     expect(get(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer"]);
-    expect(get(id)?.lastContextTokens).toBeNull();
+    expect(get(id)?.lastContextTokens).toBe(4);
   });
 
   test("preserves a checkpoint when unwinding only its unrepresented transcript tail", async () => {
@@ -690,6 +698,8 @@ describe("unwindTo", () => {
       }],
       transcriptHistoryCount: 2,
       transcriptPrefixHash: historyPrefixHash(conv.messages, 2),
+      compactionHistoryCount: 2,
+      compactionPrefixHash: historyPrefixHash(conv.messages, 2),
       windowId: `${id}:1`,
       windowNumber: 1,
       compactedAt: 123,
@@ -704,10 +714,10 @@ describe("unwindTo", () => {
     expect(await unwindTo(id, 1)).toBe(true);
     expect(get(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer"]);
     expect(get(id)?.activeContext).toEqual(checkpoint);
-    expect(get(id)?.lastContextTokens).toBeNull();
+    expect(get(id)?.lastContextTokens).toBe(2);
   });
 
-  test("restores the pre-abort checkpoint when abort recovery advances past the unwind point", async () => {
+  test("rewinds a legacy advanced checkpoint when abort recovery crosses the unwind point", async () => {
     const id = mkId("unwind-restore-pre-abort-context");
     const conv = create(id, "openai", "gpt-5.6-sol");
     conv.messages.push(
@@ -726,6 +736,8 @@ describe("unwindTo", () => {
       }],
       transcriptHistoryCount: 2,
       transcriptPrefixHash: historyPrefixHash(conv.messages, 2),
+      compactionHistoryCount: 2,
+      compactionPrefixHash: historyPrefixHash(conv.messages, 2),
       windowId: `${id}:1`,
       windowNumber: 1,
       compactedAt: 123,
@@ -754,7 +766,7 @@ describe("unwindTo", () => {
     expect(get(id)?.activeContext).toEqual(checkpoint);
   });
 
-  test("discards a checkpoint when unwinding inside its represented prefix", async () => {
+  test("refuses to unwind inside the immutable compaction prefix", async () => {
     const id = mkId("unwind-discard-context");
     const conv = create(id, "openai", "gpt-5.6-sol");
     conv.messages.push(
@@ -774,15 +786,99 @@ describe("unwindTo", () => {
       }],
       transcriptHistoryCount: 2,
       transcriptPrefixHash: historyPrefixHash(conv.messages, 2),
+      compactionHistoryCount: 2,
+      compactionPrefixHash: historyPrefixHash(conv.messages, 2),
       windowId: `${id}:1`,
       windowNumber: 1,
       compactedAt: 123,
       compactionCount: 1,
     };
 
-    expect(await unwindTo(id, 0)).toBe(true);
-    expect(get(id)?.messages).toEqual([]);
-    expect(get(id)?.activeContext).toBeNull();
+    const before = structuredClone(conv);
+    expect(await unwindTo(id, 0)).toBe(false);
+    expect(get(id)?.messages).toEqual(before.messages);
+    expect(get(id)?.activeContext).toEqual(before.activeContext);
+  });
+
+  test("refuses sent-message edits when a persisted divider has lost its checkpoint", async () => {
+    const id = mkId("unwind-lost-checkpoint");
+    const conv = create(id, "openai", "gpt-5.6-sol");
+    conv.messages.push(
+      { role: "user", content: "old prompt", metadata: null },
+      {
+        role: "system",
+        content: CONTEXT_COMPACTION_FINISHED_TEXT,
+        metadata: {
+          startedAt: 123,
+          endedAt: 123,
+          model: "gpt-5.6-sol",
+          tokens: 0,
+          kind: CONTEXT_COMPACTION_FINISHED_KIND,
+        },
+      },
+      { role: "user", content: "tail without replay base", metadata: null },
+    );
+
+    expect(await unwindTo(id, 1)).toBe(false);
+    expect(get(id)?.messages).toHaveLength(3);
+  });
+
+  test("trims an advanced compact replay back to a post-compaction user checkpoint", async () => {
+    const id = mkId("unwind-trim-compact-tail");
+    const conv = create(id, "openai", "gpt-5.6-sol");
+    conv.messages.push(
+      { role: "user", content: "represented prompt", metadata: null },
+      { role: "assistant", content: "represented answer", metadata: null },
+    );
+    const baseMessages = [{
+      role: "assistant" as const,
+      content: [],
+      providerData: { openai: { compactionItems: [{ encryptedContent: "opaque" }] } },
+    }];
+    conv.activeContext = {
+      version: 1,
+      kind: "openai_native",
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      messages: structuredClone(baseMessages),
+      transcriptHistoryCount: 2,
+      transcriptPrefixHash: historyPrefixHash(conv.messages, 2),
+      compactionHistoryCount: 2,
+      compactionPrefixHash: historyPrefixHash(conv.messages, 2),
+      windowId: `${id}:1`,
+      windowNumber: 1,
+      compactedAt: 123,
+      compactionCount: 1,
+    };
+    const rewindCheckpoint = {
+      version: 1 as const,
+      provider: "openai" as const,
+      model: "gpt-5.6-sol" as const,
+      windowId: `${id}:1`,
+      transcriptHistoryCount: 2,
+      transcriptPrefixHash: historyPrefixHash(conv.messages, 2),
+      contextTokens: 91_234,
+    };
+    conv.messages.push(
+      { role: "user", content: "edit me", metadata: null, contextCheckpoint: rewindCheckpoint },
+      { role: "assistant", content: "remove me", metadata: null },
+    );
+    conv.activeContext.messages.push(
+      { role: "user", content: "edit me" },
+      { role: "assistant", content: "remove me" },
+    );
+    conv.activeContext.transcriptHistoryCount = 4;
+    conv.activeContext.transcriptPrefixHash = historyPrefixHash(conv.messages, 4);
+    conv.lastContextTokens = 300_000;
+
+    expect(await unwindTo(id, 1)).toBe(true);
+    expect(get(id)?.messages.map((message) => message.content)).toEqual([
+      "represented prompt",
+      "represented answer",
+    ]);
+    expect(get(id)?.activeContext?.messages).toEqual(baseMessages);
+    expect(get(id)?.activeContext?.transcriptHistoryCount).toBe(2);
+    expect(get(id)?.lastContextTokens).toBe(91_234);
   });
 });
 
@@ -917,7 +1013,11 @@ describe("getDisplayData", () => {
     const snapshot = getRenderSnapshot(id)!;
 
     expect(snapshot.entries).toEqual([
-      { type: "user", text: "initial" },
+      {
+        type: "user",
+        text: "initial",
+        contextCheckpoint: { editable: false, contextTokens: null },
+      },
       { type: "ai", blocks: [{ type: "text", text: "Before compaction" }], metadata: null },
       {
         type: "system",

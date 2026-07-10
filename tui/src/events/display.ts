@@ -10,7 +10,13 @@ export function pushDisplayEntries(state: RenderState, entries: DisplayEntry[]):
   for (const entry of entries) {
     switch (entry.type) {
       case "user":
-        state.messages.push({ role: "user", text: entry.text, images: entry.images, metadata: entry.metadata ?? null });
+        state.messages.push({
+          role: "user",
+          text: entry.text,
+          images: entry.images,
+          metadata: entry.metadata ?? null,
+          ...(entry.contextCheckpoint ? { contextCheckpoint: entry.contextCheckpoint } : {}),
+        });
         break;
       case "ai":
         state.messages.push({

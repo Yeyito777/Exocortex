@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { editMessageItemIndexAtMouse, openEditMessageModal } from "./editmessage";
+import { confirmEditMessage, editMessageItemIndexAtMouse, openEditMessageModal } from "./editmessage";
 import type { UserMessage } from "./messages";
 import { createInitialState } from "./state";
 
@@ -151,5 +151,38 @@ describe("edit message modal", () => {
     expect(editMessageItemIndexAtMouse(state, 50, 17)).toBe(1);
     expect(editMessageItemIndexAtMouse(state, 50, 18)).toBe(2);
     expect(editMessageItemIndexAtMouse(state, 50, 15)).toBeNull();
+  });
+
+  test("hides users represented by the latest compaction while preserving daemon indices", () => {
+    const state = createInitialState();
+    state.messages.push(
+      {
+        role: "user",
+        text: "locked before checkpoint",
+        metadata: null,
+        contextCheckpoint: { contextTokens: 300_000, editable: false },
+      },
+      { role: "assistant", blocks: [], metadata: null },
+      {
+        role: "user",
+        text: "editable tail",
+        metadata: null,
+        contextCheckpoint: { contextTokens: 42_123, editable: true },
+      },
+    );
+
+    openEditMessageModal(state);
+
+    expect(state.editMessagePrompt?.items).toHaveLength(1);
+    expect(state.editMessagePrompt?.items[0]).toMatchObject({
+      text: "editable tail",
+      userMessageIndex: 1,
+    });
+    expect(confirmEditMessage(state)).toEqual({
+      action: "edit_sent",
+      text: "editable tail",
+      userMessageIndex: 1,
+    });
+    expect(state.contextTokens).toBe(42_123);
   });
 });

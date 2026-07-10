@@ -8,14 +8,21 @@
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus } from "./messages";
-export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus };
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, UserMessageContextCheckpoint } from "./messages";
+export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, UserMessageContextCheckpoint };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
 export interface PingCommand {
   type: "ping";
   reqId?: string;
+}
+
+/** Service wrapper handshake before it sends the daemon its shutdown signal. */
+export interface PrepareShutdownCommand {
+  type: "prepare_shutdown";
+  reqId?: string;
+  mode: "stop" | "restart";
 }
 
 export interface NewConversationCommand {
@@ -418,6 +425,7 @@ export interface LogoutCommand {
 
 export type Command =
   | PingCommand
+  | PrepareShutdownCommand
   | NewConversationCommand
   | SendMessageCommand
   | ReplayConversationCommand
@@ -630,7 +638,7 @@ export interface AIMessagePayload {
 
 export type DisplayEntry =
   | { type: "system_instructions"; text: string }
-  | { type: "user"; text: string; images?: ImageAttachment[]; metadata?: MessageMetadata | null }
+  | { type: "user"; text: string; images?: ImageAttachment[]; metadata?: MessageMetadata | null; contextCheckpoint?: UserMessageContextCheckpoint }
   | { type: "ai"; blocks: Block[]; metadata: MessageMetadata | null }
   | { type: "system"; text: string; color?: string; metadata?: MessageMetadata | null };
 

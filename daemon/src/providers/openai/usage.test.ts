@@ -151,6 +151,64 @@ describe("OpenAI usage header parsing", () => {
     expect(refreshed).toBeNull();
   });
 
+  test("keeps provider-observed usage across a reset boundary until the provider sends a new value", () => {
+    resetUsageStorage();
+    savePool(0);
+
+    const realDateNow = Date.now;
+    const realSetTimeout = globalThis.setTimeout;
+    const resetAt = 1_700_000_001_000;
+    let now = resetAt - 1_000;
+    let scheduledCallback: (() => void) | null = null;
+    const updates: UsageData[] = [];
+    const initialUsage: UsageData = {
+      fiveHour: { utilization: 97, resetsAt: resetAt },
+      sevenDay: { utilization: 27, resetsAt: resetAt + 7 * 24 * 60 * 60_000 },
+    };
+
+    try {
+      Date.now = () => now;
+      globalThis.setTimeout = ((callback: TimerHandler, _delay?: number, ...args: unknown[]) => {
+        if (typeof callback === "function") scheduledCallback = () => callback(...args);
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      }) as unknown as typeof setTimeout;
+
+      handleUsageHeaders(new Headers({
+        "x-codex-primary-used-percent": "97",
+        "x-codex-secondary-used-percent": "27",
+        "x-codex-primary-reset-at": String(resetAt),
+        "x-codex-secondary-reset-at": String(resetAt + 7 * 24 * 60 * 60_000),
+      }), (usage) => {
+        updates.push(usage);
+      });
+
+      now = resetAt + 5_000;
+      (scheduledCallback as (() => void) | null)?.();
+
+      let refreshed: UsageData | null | undefined;
+      refreshUsage((usage) => {
+        refreshed = usage;
+      });
+      expect(refreshed).toEqual(initialUsage);
+      expect(updates).toEqual([initialUsage]);
+
+      handleUsageHeaders(new Headers({
+        "x-codex-primary-used-percent": "1",
+        "x-codex-primary-reset-at": String(resetAt + 5 * 60 * 60_000),
+      }), (usage) => {
+        updates.push(usage);
+      });
+
+      expect(updates[1]?.fiveHour).toEqual({
+        utilization: 1,
+        resetsAt: resetAt + 5 * 60 * 60_000,
+      });
+    } finally {
+      Date.now = realDateNow;
+      globalThis.setTimeout = realSetTimeout;
+    }
+  });
+
   test("usage headers for a non-current scoped account are cached without changing the displayed usage", () => {
     resetUsageStorage();
     savePool(1);

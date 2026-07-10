@@ -1,21 +1,31 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, readFileSync } from "fs";
-import { clearActiveJob, create, get, remove, setActiveJob, setGoal, updateGoalStatus } from "./conversations";
+import { clearActiveJob, consumeGoalContinuationAfterStream, create, get, getQueuedMessages, getSummary, pushQueuedMessage, remove, requestGoalContinuationAfterStream, setActiveJob, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_EFFORT } from "./messages";
 
 const orchestrateReplayConversation = mock(async () => ({ ok: true }));
 const orchestrateGoalContinuation = mock(async () => ({ ok: true }));
+const orchestrateSendMessage = mock(async () => ({
+  ok: true,
+  blocks: [{ type: "text" as const, text: "recovered" }],
+  tokens: 1,
+  durationMs: 1,
+  endedAt: Date.now(),
+}));
 
 mock.module("./orchestrator", () => ({
   orchestrateReplayConversation,
   orchestrateGoalContinuation,
+  orchestrateSendMessage,
 }));
 
 import {
   activeGoalRestartPath,
   clearActiveGoalRestartMarker,
   clearInterruptedStreamIds,
+  hasActiveGoalRestartMarker,
   prepareCatchableShutdownForReplay,
+  prepareCatchableShutdownWithoutReplay,
   recoverActiveGoals,
   recoverInterruptedStreams,
   interruptedStreamsPath,
@@ -23,14 +33,29 @@ import {
   writeActiveGoalRestartMarker,
   writeInterruptedStreamIds,
 } from "./restart-recovery";
+import {
+  beginPendingSubagentNotification,
+  listPendingSubagentNotifications,
+  registerSubagentNotificationRuntime,
+  resetPendingSubagentNotificationsForTest,
+} from "./subagent-notifications";
+import { resetConversationActivityForTest } from "./conversation-activity";
 
 const IDS: string[] = [];
+
+beforeEach(() => {
+  resetPendingSubagentNotificationsForTest();
+  resetConversationActivityForTest();
+});
 
 afterEach(() => {
   clearInterruptedStreamIds();
   clearActiveGoalRestartMarker();
   orchestrateReplayConversation.mockClear();
   orchestrateGoalContinuation.mockClear();
+  orchestrateSendMessage.mockClear();
+  resetPendingSubagentNotificationsForTest();
+  resetConversationActivityForTest();
   for (const id of IDS.splice(0)) remove(id);
 });
 
@@ -102,6 +127,171 @@ describe("restart recovery file", () => {
     expect(ac.signal.aborted).toBe(true);
     expect(ac.signal.reason).toBe("daemon-restart");
     expect(readInterruptedStreamIds()).toEqual([convId]);
+  });
+
+  test("explicit stop aborts and flushes active work without leaving anything resumable", async () => {
+    const parentConvId = makeConversation("stop-parent");
+    const childConvId = makeConversation("stop-child");
+    const ac = new AbortController();
+    setActiveJob(childConvId, ac, Date.now());
+    pushQueuedMessage(childConvId, "do not run after start", "next-turn", undefined, 0);
+    requestGoalContinuationAfterStream(childConvId);
+    beginPendingSubagentNotification(
+      { convId: parentConvId },
+      childConvId,
+      "do not recover me",
+      444_555,
+      0,
+    );
+    writeInterruptedStreamIds([childConvId]);
+    writeActiveGoalRestartMarker();
+
+    setTimeout(() => clearActiveJob(childConvId), 5);
+    const result = await prepareCatchableShutdownWithoutReplay(1_000);
+
+    expect(result.convIds).toEqual([childConvId]);
+    expect(result.stillStreaming).toEqual([]);
+    expect(ac.signal.aborted).toBe(true);
+    expect(ac.signal.reason).toBe("daemon-stop");
+    expect(readInterruptedStreamIds()).toEqual([]);
+    expect(hasActiveGoalRestartMarker()).toBe(false);
+    expect(listPendingSubagentNotifications()).toEqual([]);
+    expect(getQueuedMessages(childConvId)).toEqual([]);
+    expect(consumeGoalContinuationAfterStream(childConvId)).toBe(false);
+  });
+
+  test("restores a persisted subagent task even if restart happened before its user message was appended", async () => {
+    const parentConvId = makeConversation("subagent-parent");
+    const childConvId = makeConversation("subagent-child");
+    beginPendingSubagentNotification(
+      { convId: parentConvId },
+      childConvId,
+      "durable child task",
+      987_654,
+      2,
+    );
+    const server = makeServer();
+    const complete = mock(() => {});
+    registerSubagentNotificationRuntime(server as object, {
+      begin: beginPendingSubagentNotification,
+      complete,
+      deliverReady: () => {},
+    });
+
+    const scheduled = recoverInterruptedStreams(server);
+    expect(getSummary(parentConvId)?.tasks).toEqual([
+      { id: childConvId, kind: "subagent", title: "subagent-child", startedAt: 987_654 },
+    ]);
+    await Promise.resolve();
+
+    expect(scheduled).toContain(childConvId);
+    expect(orchestrateSendMessage).toHaveBeenCalledWith(
+      server,
+      null,
+      undefined,
+      childConvId,
+      "durable child task",
+      987_654,
+      expect.any(Object),
+      undefined,
+      { subagentMaxDepth: 2 },
+    );
+    expect(orchestrateReplayConversation).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      childConvId,
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(complete).toHaveBeenCalledWith(childConvId, expect.objectContaining({ ok: true }));
+  });
+
+  test("replays an in-progress persisted subagent and retains its parent completion callback", async () => {
+    const parentConvId = makeConversation("replay-subagent-parent");
+    const childConvId = makeConversation("replay-subagent-child");
+    const childStartedAt = 123_987;
+    beginPendingSubagentNotification(
+      { convId: parentConvId },
+      childConvId,
+      "continue after restart",
+      childStartedAt,
+      1,
+    );
+    get(childConvId)!.messages.push({
+      role: "user",
+      content: "continue after restart",
+      metadata: { startedAt: childStartedAt, endedAt: childStartedAt, model: "gpt-5.5", tokens: 0 },
+    });
+    const server = makeServer();
+    const complete = mock(() => {});
+    registerSubagentNotificationRuntime(server as object, {
+      begin: beginPendingSubagentNotification,
+      complete,
+      deliverReady: () => {},
+    });
+
+    const scheduled = recoverInterruptedStreams(server);
+    await Promise.resolve();
+
+    expect(scheduled).toContain(childConvId);
+    expect(orchestrateReplayConversation).toHaveBeenCalledWith(
+      server,
+      null,
+      undefined,
+      childConvId,
+      expect.any(Number),
+      expect.any(Object),
+      { subagentMaxDepth: 1 },
+    );
+    expect(orchestrateSendMessage).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      childConvId,
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(complete).toHaveBeenCalledWith(childConvId, expect.objectContaining({ ok: true }));
+  });
+
+  test("does not replay a child whose completed answer beat the sidecar settlement during a crash", () => {
+    const parentConvId = makeConversation("settlement-race-parent");
+    const childConvId = makeConversation("settlement-race-child");
+    const childStartedAt = 222_333;
+    beginPendingSubagentNotification(
+      { convId: parentConvId },
+      childConvId,
+      "answer before crash",
+      childStartedAt,
+      0,
+    );
+    get(childConvId)!.messages.push(
+      {
+        role: "user",
+        content: "answer before crash",
+        metadata: { startedAt: childStartedAt, endedAt: childStartedAt, model: "gpt-5.5", tokens: 0 },
+      },
+      {
+        role: "assistant",
+        content: "already durable",
+        metadata: { startedAt: childStartedAt, endedAt: childStartedAt + 1, model: "gpt-5.5", tokens: 1 },
+      },
+    );
+    writeInterruptedStreamIds([childConvId]);
+
+    const scheduled = recoverInterruptedStreams(makeServer());
+
+    expect(scheduled).not.toContain(childConvId);
+    expect(orchestrateReplayConversation).not.toHaveBeenCalled();
+    expect(orchestrateSendMessage).not.toHaveBeenCalled();
+    expect(listPendingSubagentNotifications({ childConvId })).toEqual([
+      expect.objectContaining({ state: "ready", text: expect.stringContaining("already durable") }),
+    ]);
   });
 
   test("daemon boot resumes active goals that were not in interrupted-stream recovery", () => {

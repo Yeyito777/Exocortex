@@ -18,7 +18,7 @@ export function contextBlock(state: RenderState): StatusBlock | null {
   const model = provider?.models.find((m) => m.id === state.model);
   const maxCtx = model?.maxContext ?? MAX_CONTEXT[state.model] ?? 0;
   const ctxLabel = "  Context: ";
-  const ctxValue = formatTokenCount(state.contextTokens ?? 0);
+  const ctxValue = state.contextTokens === null ? "?" : formatTokenCount(state.contextTokens);
   const maxLabel = "  Max Context: ";
   const maxValue = maxCtx > 0 ? formatTokenCount(maxCtx) : "?";
 

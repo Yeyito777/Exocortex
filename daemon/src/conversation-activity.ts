@@ -2,9 +2,9 @@
  * Ephemeral work spawned by a conversation.
  *
  * Subagents are keyed by their child conversation id. Background tasks are
- * keyed by a tool-owned id (currently bash:<pid>). Task details are intentionally
- * not persisted: after a daemon restart there is no managed task lifecycle left
- * to observe reliably.
+ * keyed by a tool-owned id (currently bash:<pid>). Activity is normally
+ * ephemeral. Restart recovery reconstructs notification-linked subagents and
+ * their task details from its durable lifecycle sidecar before replaying them.
  */
 
 import type { ConversationTaskSummary } from "@exocortex/shared/messages";
@@ -79,6 +79,11 @@ export function getSubagentConversationIds(parentConvId: string): string[] {
     if (parentId === parentConvId) ids.push(childConvId);
   }
   return ids;
+}
+
+/** Last known parent for a child, including after the active count was cleared. */
+export function getSubagentParentConversationId(childConvId: string): string | undefined {
+  return subagentParentByChild.get(childConvId);
 }
 
 export function setBackgroundTaskActive(

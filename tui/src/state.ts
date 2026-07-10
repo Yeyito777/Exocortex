@@ -179,7 +179,7 @@ export interface RenderState {
   usageByProvider: Record<ProviderId, UsageData | null>;
   /** Persistent token-accounting snapshot from the daemon. */
   tokenStats: TokenStatsSnapshot | null;
-  /** Input tokens from the latest API round. Null until first context_update. */
+  /** Input tokens from the latest API round. Zero for a blank chat; null when unknown. */
   contextTokens: number | null;
   /** Which panel has focus — sidebar or chat. */
   panelFocus: PanelFocus;
@@ -390,7 +390,7 @@ export function resetDraftConversationState(state: RenderState): void {
   state.messages = [];
   clearPendingAI(state);
   clearStreamingTailMessages(state);
-  state.contextTokens = null;
+  state.contextTokens = 0;
   state.goal = null;
   state.voicePrompt = null;
   state.voicePromptJobs = [];
@@ -409,7 +409,7 @@ export function openFolderInstructionsDocument(state: RenderState, folderId: str
   state.sidebar.selectedItem = { type: "folder_instructions", folderId };
   state.sidebar.selectedId = null;
   state.convId = null;
-  state.contextTokens = null;
+  state.contextTokens = 0;
   state.goal = null;
   state.voicePrompt = null;
   state.voicePromptJobs = [];
@@ -538,7 +538,7 @@ export function createInitialState(): RenderState {
       deepseek: null,
     },
     tokenStats: null,
-    contextTokens: null,
+    contextTokens: 0,
     panelFocus: "chat",
     chatFocus: "prompt",
     sidebar: createSidebarState(),

@@ -7,7 +7,7 @@
  */
 
 import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, type Block, type MessageMetadata, type ImageAttachment } from "./messages";
-import { isModelVisibleSystemNotice, type StoredMessage, type ApiContentBlock } from "./messages";
+import { isModelVisibleSystemNotice, isReplayHistoryMessage, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { ProviderId, ModelId, EffortLevel } from "./messages";
 import type { DisplayEntry, ToolOutputInfo } from "@exocortex/shared/protocol";
 
@@ -34,6 +34,8 @@ export interface ConversationDisplayData {
 
 export interface BuildDisplayOptions {
   includeToolOutputs?: boolean;
+  /** First replay-history cursor whose user message may be unwound; null locks all. */
+  editableUserHistoryStart?: number | null;
 }
 
 /** Injected function that produces a display summary for a tool call. */
@@ -77,6 +79,7 @@ export function buildDisplayData(
 ): ConversationDisplayData {
   const includeToolOutputs = options?.includeToolOutputs ?? true;
   const entries: DisplayEntry[] = [];
+  let replayHistoryCount = 0;
 
   let currentAI: { blocks: Block[]; metadata: MessageMetadata | null; canMergeNextAssistant: boolean } | null = null;
 
@@ -121,6 +124,8 @@ export function buildDisplayData(
   }
 
   for (const msg of messages) {
+    const historyCountBeforeMessage = replayHistoryCount;
+    if (isReplayHistoryMessage(msg)) replayHistoryCount++;
     if (msg.role === "system_instructions") {
       flushAI();
       const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
@@ -193,6 +198,7 @@ export function buildDisplayData(
             text,
             images: images.length > 0 ? images : undefined,
             ...(msg.metadata ? { metadata: msg.metadata } : {}),
+            ...userContextCheckpoint(msg, historyCountBeforeMessage, options),
           });
           continue;
         }
@@ -202,6 +208,7 @@ export function buildDisplayData(
         type: "user",
         text: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
         ...(msg.metadata ? { metadata: msg.metadata } : {}),
+        ...userContextCheckpoint(msg, historyCountBeforeMessage, options),
       });
     } else if (msg.role === "assistant") {
       if (currentAI?.canMergeNextAssistant) {
@@ -225,5 +232,24 @@ export function buildDisplayData(
     entries,
     contextTokens: lastContextTokens,
     toolOutputsIncluded: includeToolOutputs,
+  };
+}
+
+function userContextCheckpoint(
+  message: StoredMessage,
+  historyCountBeforeMessage: number,
+  options: BuildDisplayOptions | undefined,
+): Pick<Extract<DisplayEntry, { type: "user" }>, "contextCheckpoint"> | Record<string, never> {
+  const editableStart = options?.editableUserHistoryStart;
+  // Direct data-transform callers that do not provide conversation compaction
+  // state keep the legacy wire shape unless the message has a stored snapshot.
+  if (editableStart === undefined && !message.contextCheckpoint) return {};
+  return {
+    contextCheckpoint: {
+      editable: editableStart === undefined
+        ? message.contextCheckpoint?.windowId == null
+        : editableStart != null && historyCountBeforeMessage >= editableStart,
+      contextTokens: message.contextCheckpoint?.contextTokens ?? null,
+    },
   };
 }

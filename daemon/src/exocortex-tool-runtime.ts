@@ -58,8 +58,18 @@ export function getExocortexToolRuntime(server: DaemonServer): ExocortexToolRunt
 
 export interface ExocortexToolRuntimeDependencies {
   server: DaemonServer;
-  runTurn(convId: string, text: string, maxDepth: number): Promise<AssistantTurnOutcome>;
-  notifyParent(parentConvId: string, childConvId: string, task: string, outcome: AssistantTurnOutcome): void;
+  runTurn(convId: string, text: string, maxDepth: number, startedAt: number): Promise<AssistantTurnOutcome>;
+  /** Durable lifecycle hooks used by production. */
+  beginParentNotification?(
+    parent: { convId: string; maxChars?: number },
+    childConvId: string,
+    task: string,
+    childStartedAt: number,
+    subagentMaxDepth: number | null,
+  ): unknown;
+  completeParentNotification?(childConvId: string, outcome: AssistantTurnOutcome): void;
+  /** Compatibility seam for isolated runtime tests without the durable manager. */
+  notifyParent?(parentConvId: string, childConvId: string, task: string, outcome: AssistantTurnOutcome): void;
   /** Return a user-facing reason when a provider turn cannot currently start. */
   cannotStart?(provider: ProviderId): string | null;
   /** Dependency seams used by tests; production uses daemon auth and llm.complete. */
@@ -608,17 +618,28 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }
     if (!created) ensureSubagentCapacity(parentConvId);
     const shouldDetach = mode !== "wait";
+    const startedAt = Date.now();
 
     if (shouldDetach) {
       const notify = booleanInput(input, "notify_parent", true) && Boolean(parentConvId);
-      setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt: Date.now() });
-      void deps.runTurn(convId, text, maxDepth).then(outcome => {
+      if (notify && parentConvId) {
+        deps.beginParentNotification?.({ convId: parentConvId }, convId, text, startedAt, maxDepth);
+      }
+      setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt });
+      void deps.runTurn(convId, text, maxDepth, startedAt).then(outcome => {
         setTrackedSubagent(parentConvId, convId!, false);
-        if (notify && parentConvId) deps.notifyParent(parentConvId, convId!, text, outcome);
+        if (notify && parentConvId) {
+          if (deps.completeParentNotification) deps.completeParentNotification(convId!, outcome);
+          else deps.notifyParent?.(parentConvId, convId!, text, outcome);
+        }
       }).catch(error => {
         setTrackedSubagent(parentConvId, convId!, false);
         log("error", `exo tool: detached subagent ${convId} failed: ${error instanceof Error ? error.message : error}`);
-        if (notify && parentConvId) deps.notifyParent(parentConvId, convId!, text, failedOutcome(error));
+        if (notify && parentConvId) {
+          const outcome = failedOutcome(error);
+          if (deps.completeParentNotification) deps.completeParentNotification(convId!, outcome);
+          else deps.notifyParent?.(parentConvId, convId!, text, outcome);
+        }
       });
       return ok(pretty({ conversation_id: convId, title: taskTitle, status: "running", detached: true, created, max_depth: maxDepth, notify_parent: notify ? parentConvId : null }));
     }
@@ -626,9 +647,9 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     const onAbort = () => convStore.getActiveJob(convId!)?.abort(signal?.reason);
     signal?.addEventListener("abort", onAbort, { once: true });
-    setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt: Date.now() });
+    setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt });
     try {
-      const outcome = await deps.runTurn(convId, text, maxDepth);
+      const outcome = await deps.runTurn(convId, text, maxDepth, startedAt);
       const full = booleanInput(input, "full", false);
       const body = outcome.ok
         ? formatBlocks(outcome.blocks, full) || "(subagent completed without text output)"

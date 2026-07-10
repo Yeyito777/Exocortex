@@ -157,6 +157,12 @@ export interface LoginCallbacks {
 export interface LoginOptions {
   /** Provider-specific secret supplied by the caller. DeepSeek uses this for API-key login. */
   apiKey?: string;
+  /**
+   * Reauthentication may replace credentials only for the currently selected
+   * account. OpenAI uses this while turns are active so OAuth recovery cannot
+   * silently switch their account-scoped replay state.
+   */
+  requireSameAccount?: boolean;
 }
 
 export interface EnsureAuthResult {

@@ -60,6 +60,8 @@ export interface ApiMessage {
   metadata?: MessageMetadata | null;
   providerData?: AssistantProviderData;
   contextTokens?: MessageContextTokenAttribution | null;
+  /** Daemon-only rewind metadata; provider request builders intentionally ignore it. */
+  contextCheckpoint?: StoredUserContextCheckpoint;
 }
 
 /** A message with optional metadata for persistence. */
@@ -69,12 +71,33 @@ export interface StoredMessage {
   metadata: MessageMetadata | null;
   providerData?: AssistantProviderData;
   contextTokens?: MessageContextTokenAttribution | null;
+  /** Context/replay state immediately before this real user message was added. */
+  contextCheckpoint?: StoredUserContextCheckpoint;
+}
+
+/**
+ * A small durable reference to a rewindable provider context. The opaque replay
+ * itself remains single-copy in Conversation.activeContext; user messages only
+ * record the cursor and token status needed to restore it safely.
+ */
+export interface StoredUserContextCheckpoint {
+  version: 1;
+  provider: ProviderId;
+  model: ModelId;
+  /** Active compact window at this point, or null for an uncompacted transcript. */
+  windowId: string | null;
+  /** Number/hash of replay-history messages before the user message. */
+  transcriptHistoryCount: number;
+  transcriptPrefixHash: string;
+  /** Context shown in the statusline after returning to this point. */
+  contextTokens: number | null;
 }
 
 /**
  * A compact provider replay kept separately from the immutable, user-visible
  * transcript. History appended after transcriptHistoryCount is replayed as a
- * tail until the checkpoint is advanced at the end of a turn.
+ * canonical tail. The checkpoint stays immutable until a later compaction
+ * replaces it, which makes that tail safely rewindable.
  */
 export interface ActiveContext {
   version: 1;
@@ -89,6 +112,14 @@ export interface ActiveContext {
   transcriptHistoryCount: number;
   /** Detect transcript edits/corruption before replaying a derived checkpoint. */
   transcriptPrefixHash: string;
+  /**
+   * Fixed transcript boundary represented by the latest compaction item itself.
+   * Legacy checkpoints advanced transcriptHistoryCount after each turn while
+   * this cursor stayed fixed. New checkpoints keep both at this boundary.
+   * Optional only for persisted checkpoints created before this field existed.
+   */
+  compactionHistoryCount?: number;
+  compactionPrefixHash?: string;
   /** Logical provider window installed by the latest compaction. */
   windowId: string;
   windowNumber: number;
@@ -203,6 +234,39 @@ export function historyPrefixHash(messages: StoredMessage[], historyCount: numbe
     seen += 1;
   }
   return hash.digest("hex").slice(0, 24);
+}
+
+/**
+ * Resolve the immutable transcript cursor represented by the latest compaction.
+ * Legacy checkpoints derive it from the persisted compaction divider.
+ */
+export function activeContextCompactionHistoryCount(
+  active: ActiveContext,
+  transcript: StoredMessage[],
+): number | null {
+  if (active.compactionHistoryCount !== undefined || active.compactionPrefixHash !== undefined) {
+    if (!Number.isSafeInteger(active.compactionHistoryCount)
+        || active.compactionHistoryCount! < 0
+        || active.compactionHistoryCount! > active.transcriptHistoryCount
+        || typeof active.compactionPrefixHash !== "string"
+        || !/^[0-9a-f]{24}$/.test(active.compactionPrefixHash)
+        || historyPrefixHash(transcript, active.compactionHistoryCount!) !== active.compactionPrefixHash) {
+      return null;
+    }
+    return active.compactionHistoryCount!;
+  }
+
+  let historyCount = 0;
+  for (const message of transcript) {
+    if (message.role === "system"
+        && message.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND
+        && message.metadata.startedAt === active.compactedAt) {
+      const tailCount = active.transcriptHistoryCount - historyCount;
+      return tailCount >= 0 && tailCount <= active.messages.length ? historyCount : null;
+    }
+    if (isReplayHistoryMessage(message)) historyCount += 1;
+  }
+  return null;
 }
 
 function validOpenAICompactionItem(value: unknown): boolean {
@@ -370,11 +434,52 @@ export function isValidActiveContext(active: unknown, transcript: StoredMessage[
   if (value.transcriptHistoryCount! > historyCount) return false;
   if (typeof value.transcriptPrefixHash !== "string" || !/^[0-9a-f]{24}$/.test(value.transcriptPrefixHash)) return false;
   if (historyPrefixHash(transcript, value.transcriptHistoryCount!) !== value.transcriptPrefixHash) return false;
+  const hasCompactionCount = value.compactionHistoryCount !== undefined;
+  const hasCompactionHash = value.compactionPrefixHash !== undefined;
+  if (hasCompactionCount !== hasCompactionHash) return false;
+  if (hasCompactionCount) {
+    if (!Number.isSafeInteger(value.compactionHistoryCount)
+        || value.compactionHistoryCount! < 0
+        || value.compactionHistoryCount! > value.transcriptHistoryCount!
+        || typeof value.compactionPrefixHash !== "string"
+        || !/^[0-9a-f]{24}$/.test(value.compactionPrefixHash)
+        || historyPrefixHash(transcript, value.compactionHistoryCount!) !== value.compactionPrefixHash) return false;
+    // Every replay message after the fixed compaction boundary is a suffix of
+    // active.messages. Without this invariant a rewind could cut into the opaque
+    // checkpoint itself.
+    if (value.transcriptHistoryCount! - value.compactionHistoryCount! > value.messages.length) return false;
+  }
   if (typeof value.windowId !== "string" || value.windowId.length === 0) return false;
   if (!Number.isSafeInteger(value.windowNumber) || value.windowNumber! < 1) return false;
   if (!Number.isSafeInteger(value.compactedAt) || value.compactedAt! < 0
       || !Number.isSafeInteger(value.compactionCount) || value.compactionCount! < 1) return false;
   return true;
+}
+
+/**
+ * Rewind an active compact replay to a canonical transcript prefix. Only the
+ * one-to-one post-compaction tail is removed; the opaque checkpoint is retained.
+ */
+export function rewindActiveContextToHistoryCount(
+  active: ActiveContext,
+  transcript: StoredMessage[],
+  targetHistoryCount: number,
+): ActiveContext | null {
+  if (!Number.isSafeInteger(targetHistoryCount) || targetHistoryCount < 0) return null;
+  const transcriptHistoryCount = transcript.filter(isReplayHistoryMessage).length;
+  if (targetHistoryCount > transcriptHistoryCount) return null;
+  const compactionHistoryCount = activeContextCompactionHistoryCount(active, transcript);
+  if (compactionHistoryCount == null || targetHistoryCount < compactionHistoryCount) return null;
+
+  const rewound = structuredClone(active);
+  const removeCount = rewound.transcriptHistoryCount - targetHistoryCount;
+  if (removeCount > 0) {
+    if (removeCount > rewound.messages.length) return null;
+    rewound.messages.splice(rewound.messages.length - removeCount, removeCount);
+    rewound.transcriptHistoryCount = targetHistoryCount;
+    rewound.transcriptPrefixHash = historyPrefixHash(transcript, targetHistoryCount);
+  }
+  return isValidActiveContext(rewound, transcript) ? rewound : null;
 }
 
 /** True for user-authored prompts, excluding tool_result containers and model-visible system notices. */
@@ -400,11 +505,39 @@ export function createStoredUserMessage(
   model: ModelId,
   startedAt: number,
   images?: ImageAttachment[],
+  options: {
+    subagentNotificationId?: string;
+    contextCheckpoint?: StoredUserContextCheckpoint;
+  } = {},
 ): StoredMessage {
+  const metadata = createMessageMetadata(startedAt, model, { endedAt: startedAt });
+  if (options.subagentNotificationId) metadata.subagentNotificationId = options.subagentNotificationId;
   return {
     role: "user",
     content: buildUserContent(text, images),
-    metadata: createMessageMetadata(startedAt, model, { endedAt: startedAt }),
+    metadata,
+    ...(options.contextCheckpoint ? { contextCheckpoint: options.contextCheckpoint } : {}),
+  };
+}
+
+/** Capture the provider replay cursor immediately before adding a user message. */
+export function createStoredUserContextCheckpoint(
+  conv: Conversation,
+  transcript: StoredMessage[] = conv.messages,
+  contextTokens: number | null = conv.lastContextTokens,
+): StoredUserContextCheckpoint {
+  const transcriptHistoryCount = transcript.filter(isReplayHistoryMessage).length;
+  const active = conv.activeContext && isValidActiveContext(conv.activeContext, transcript)
+    ? conv.activeContext
+    : null;
+  return {
+    version: 1,
+    provider: conv.provider,
+    model: conv.model,
+    windowId: active?.windowId ?? null,
+    transcriptHistoryCount,
+    transcriptPrefixHash: historyPrefixHash(transcript, transcriptHistoryCount),
+    contextTokens: contextTokens ?? (transcriptHistoryCount === 0 ? 0 : null),
   };
 }
 

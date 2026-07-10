@@ -49,6 +49,12 @@ export function openEditMessageModal(state: RenderState): void {
   let userIdx = 0;
   for (const msg of state.messages) {
     if (msg.role === "user") {
+      // Native/plaintext compaction is irreversible. The daemon exposes only
+      // post-checkpoint user messages as rewindable and enforces the same rule.
+      if (msg.contextCheckpoint?.editable === false) {
+        userIdx++;
+        continue;
+      }
       const itemMessage = isSameSubmittedVoiceMessage(msg) ? submittedVoiceMessage! : msg;
       if (includedMessages.has(itemMessage)) {
         userIdx++;
@@ -191,7 +197,9 @@ export function confirmEditMessage(state: RenderState): EditConfirmResult {
 
   state.editMessagePrompt = null;
 
-  if (!item) return { action: "cancel" };
+  if (!item || (!item.isQueued && item.userMessageIndex >= 0 && item.message?.contextCheckpoint?.editable === false)) {
+    return { action: "cancel" };
+  }
 
   // Place text in prompt
   state.inputBuffer = item.text;
@@ -217,6 +225,10 @@ export function confirmEditMessage(state: RenderState): EditConfirmResult {
 
   if (item.isQueued) {
     return { action: "edit_queued", text: item.text, queuedMessage: item.queuedMessage };
+  }
+
+  if (item.message?.contextCheckpoint) {
+    state.contextTokens = item.message.contextCheckpoint.contextTokens;
   }
 
   return { action: "edit_sent", text: item.text, userMessageIndex: item.userMessageIndex };

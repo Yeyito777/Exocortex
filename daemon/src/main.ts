@@ -22,12 +22,13 @@ import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
 import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
-import { getRunningConversationIds, prepareRestartForReplay } from "./control";
-import { prepareCatchableShutdownForReplay, recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
+import { getRunningConversationIds, prepareRestartForReplay, prepareStopWithoutReplay } from "./control";
+import { clearRestartRecoveryForStop, deliverPendingSubagentNotifications, hasActiveGoalRestartMarker, prepareCatchableShutdownForReplay, prepareCatchableShutdownWithoutReplay, recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
 import { startScheduler, stopScheduler, getCronDir, getJobs } from "./scheduler";
 import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
 import { recoverPendingTitles } from "./titlegen";
+import { beginDaemonShutdown, resolveDaemonShutdownMode } from "./daemon-lifecycle";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getProviders, refreshProviders } from "./providers/registry";
 import { socketPath, pidPath, runtimeDir, worktreeName, isWindows } from "@exocortex/shared/paths";
@@ -120,16 +121,28 @@ async function startDaemon(): Promise<void> {
     if (shutdownPromise) return shutdownPromise;
 
     shutdownPromise = (async () => {
-      log("info", `exocortexd: shutting down (${reason})`);
+      const requestedMode = resolveDaemonShutdownMode(exitCode, hasActiveGoalRestartMarker());
+      const shutdownMode = beginDaemonShutdown(requestedMode);
+      log("info", `exocortexd: shutting down (${reason}, mode=${shutdownMode})`);
       stopWatchdog();
       if (!isWindows) stopScheduler();
 
-      const replayPrep = await prepareCatchableShutdownForReplay();
-      if (replayPrep.convIds.length > 0) {
-        log("info", `exocortexd: scheduled ${replayPrep.convIds.length} interrupted conversation(s) for replay on next start: ${replayPrep.convIds.join(", ")}`);
-      }
-      if (replayPrep.stillStreaming.length > 0) {
-        log("warn", `exocortexd: ${replayPrep.stillStreaming.length} conversation(s) still streaming after graceful interrupt timeout: ${replayPrep.stillStreaming.join(", ")}; next start will replay from saved history`);
+      if (shutdownMode === "restart") {
+        const replayPrep = await prepareCatchableShutdownForReplay();
+        if (replayPrep.convIds.length > 0) {
+          log("info", `exocortexd: scheduled ${replayPrep.convIds.length} interrupted conversation(s) for replay on next start: ${replayPrep.convIds.join(", ")}`);
+        }
+        if (replayPrep.stillStreaming.length > 0) {
+          log("warn", `exocortexd: ${replayPrep.stillStreaming.length} conversation(s) still streaming after graceful interrupt timeout: ${replayPrep.stillStreaming.join(", ")}; next start will replay from saved history`);
+        }
+      } else {
+        const stopPrep = await prepareCatchableShutdownWithoutReplay();
+        if (stopPrep.convIds.length > 0) {
+          log("info", `exocortexd: stopped ${stopPrep.convIds.length} active conversation(s) without scheduling replay: ${stopPrep.convIds.join(", ")}`);
+        }
+        if (stopPrep.stillStreaming.length > 0) {
+          log("warn", `exocortexd: ${stopPrep.stillStreaming.length} conversation(s) still shutting down after stop timeout: ${stopPrep.stillStreaming.join(", ")}`);
+        }
       }
 
       if (!isWindows) {
@@ -245,6 +258,11 @@ async function startDaemon(): Promise<void> {
     console.log(`  goals: scheduled ${recoveredGoals.length} active goal continuation(s): ${recoveredGoals.join(", ")}`);
     profileMark("active_goals_recovered", { count: recoveredGoals.length });
   }
+  const pendingNotifications = deliverPendingSubagentNotifications(server);
+  if (pendingNotifications > 0) {
+    console.log(`  subagents: resumed delivery of ${pendingNotifications} parent notification(s)`);
+    profileMark("subagent_notifications_recovered", { count: pendingNotifications });
+  }
 }
 
 // ── Main ────────────────────────────────────────────────────────────
@@ -288,6 +306,22 @@ async function main(): Promise<void> {
       console.error(`\n  ✗ Failed to prepare restart: ${message}\n`);
       process.exit(1);
     }
+  }
+
+  if (command === "prepare-stop") {
+    try {
+      await prepareStopWithoutReplay();
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`\n  ✗ Failed to prepare stop: ${message}\n`);
+      process.exit(1);
+    }
+  }
+
+  if (command === "cancel-recovery") {
+    clearRestartRecoveryForStop();
+    return;
   }
 
   await startDaemon();

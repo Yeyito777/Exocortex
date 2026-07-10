@@ -168,6 +168,8 @@ export interface MessageMetadata {
   system?: boolean;
   /** Machine-readable subtype for daemon-authored metadata/system notices. */
   kind?: string;
+  /** Durable id used to deduplicate an accepted subagent completion notification. */
+  subagentNotificationId?: string;
 }
 
 /** Build standard message metadata with sensible defaults. */
@@ -222,6 +224,16 @@ export interface UserMessage {
   text: string;
   images?: ImageAttachment[];
   metadata: MessageMetadata | null;
+  /** Daemon-owned rewind point for Ctrl-W history editing. */
+  contextCheckpoint?: UserMessageContextCheckpoint;
+}
+
+/** Safe client projection of the context immediately before a user message. */
+export interface UserMessageContextCheckpoint {
+  /** Last provider-reported (or daemon-estimated) context at this rewind point. */
+  contextTokens: number | null;
+  /** False when the message is represented by the latest irreversible compaction. */
+  editable: boolean;
 }
 
 export interface AIMessage {

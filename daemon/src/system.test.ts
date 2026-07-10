@@ -18,7 +18,8 @@ describe("system prompt", () => {
     const prompt = buildSystemPrompt({ conversationId: "nested" });
 
     expect(prompt).toContain("Use the native `exo` tool for the current daemon and its subagents.");
-    expect(prompt).toContain("Use subagents only when parallel work would materially improve speed or quality");
+    expect(prompt).toContain("Default to doing the work yourself; use subagents only for multiple substantial, independent workstreams");
+    expect(prompt).toContain("When an OpenAI subagent is otherwise warranted, omit `model` for the newest default (currently gpt-5.6-sol)");
     expect(prompt).toContain("Starting a subagent requires a short title of about three words");
     expect(prompt).toContain("Set max_depth=0 unless a subagent clearly needs to delegate further.");
     expect(prompt).toContain("Subagents start in the daemon's working directory");

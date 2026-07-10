@@ -263,6 +263,21 @@ export function handleContextCompactionStatus(
   );
   if (alreadyLoaded) return;
 
+  // Every canonical user message currently visible was included in the new
+  // checkpoint. Lock them immediately instead of waiting for the eventual
+  // history refresh at the end of a potentially long tool-running turn.
+  const pendingVoiceStartedAt = state.voiceMessage?.message.metadata?.startedAt;
+  for (const message of state.messages) {
+    if (message.role !== "user") continue;
+    // An in-progress local transcription has not entered provider context yet.
+    if (message === state.voiceMessage?.message
+        || (pendingVoiceStartedAt != null && message.metadata?.startedAt === pendingVoiceStartedAt)) continue;
+    message.contextCheckpoint = {
+      contextTokens: message.contextCheckpoint?.contextTokens ?? null,
+      editable: false,
+    };
+  }
+
   if (state.pendingAI) {
     const pendingStartedAt = state.pendingAI.metadata?.startedAt ?? null;
     const finalized = splitPendingAI(state.pendingAI);

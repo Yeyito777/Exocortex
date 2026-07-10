@@ -21,7 +21,7 @@ import { transcribeAudioBytes } from "./transcription";
 import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen";
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
-import type { Command, ParentNotificationTarget } from "./protocol";
+import type { Command } from "./protocol";
 import type { ConversationRenderSnapshot } from "./conversations";
 import type { ImageAttachment } from "./messages";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials, invalidateCredentialsCache } from "./auth";
@@ -32,7 +32,18 @@ import { broadcastConversationUpdated } from "./conversation-events";
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
 import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
 import type { ExocortexToolRuntime } from "./tools/types";
-import { setSubagentActive } from "./conversation-activity";
+import { getSubagentParentConversationId, setSubagentActive } from "./conversation-activity";
+import {
+  acknowledgeSubagentNotification,
+  beginPendingSubagentNotification,
+  hasSubagentNotificationBeenDelivered,
+  hasSubagentTaskStarted,
+  listPendingSubagentNotifications,
+  registerSubagentNotificationRuntime,
+  settlePendingSubagentNotifications,
+  type PendingSubagentNotification,
+} from "./subagent-notifications";
+import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
 
 const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
 
@@ -155,107 +166,126 @@ export function createHandler(server: DaemonServer) {
     if (shouldAutoGenerateTitle(convId)) startTitleGeneration(server, convId);
   };
 
-  // ── Subagent parent notifications ────────────────────────────────
+  // ── Durable subagent parent notifications ────────────────────────
 
-  const textFromBlocks = (blocks: import("./messages").Block[]): string => blocks
-    .filter((block): block is Extract<import("./messages").Block, { type: "text" }> => block.type === "text")
-    .map((block) => block.text.trim())
-    .filter(Boolean)
-    .join("\n\n")
-    .trim();
+  let notificationRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const capText = (text: string, maxChars: number): string => {
-    if (text.length <= maxChars) return text;
-    return text.slice(0, Math.max(0, maxChars - 1)).trimEnd() + "…";
+  const scheduleNotificationRetry = (): void => {
+    if (notificationRetryTimer) return;
+    notificationRetryTimer = setTimeout(() => {
+      notificationRetryTimer = null;
+      deliverReadyParentNotifications();
+    }, 1_000);
+    notificationRetryTimer.unref?.();
   };
 
-  const buildSubagentNotification = (
-    childConvId: string,
-    task: string,
-    outcome: AssistantTurnOutcome,
-    maxChars: number,
-  ): string => {
-    const title = (convStore.get(childConvId)?.title || task.split("\n")[0] || "subagent task").trim();
-    const body = outcome.ok
-      ? (textFromBlocks(outcome.blocks) || "(subagent completed without text output)")
-      : (outcome.error || "Subagent did not complete successfully.");
-    const status = outcome.ok ? "completed" : "failed";
-    const section = outcome.ok ? "Result" : "Error";
-    return [
-      `[notification] Subagent ${status}: exo:${childConvId}`,
-      `Task: ${capText(title, 160)}`,
-      "",
-      `${section}:`,
-      capText(body, maxChars),
-      "",
-      "Full details:",
-      `Use the native exo tool with action=history, conversation_id=${childConvId}, full=true.`,
-    ].join("\n");
-  };
-
-  const deliverParentNotification = (
-    parent: ParentNotificationTarget,
-    childConvId: string,
-    task: string,
-    outcome: AssistantTurnOutcome,
-  ): void => {
-    if (outcome.aborted && !outcome.watchdog) {
-      log("info", `handler: skipping notification for deliberately aborted subagent ${childConvId}`);
-      return;
-    }
-    if (parent.convId === childConvId) {
-      log("warn", `handler: skipping self-notification for ${childConvId}`);
-      return;
-    }
-    if (!convStore.get(parent.convId)) {
-      log("warn", `handler: parent conversation ${parent.convId} not found for subagent ${childConvId}`);
-      return;
-    }
-    if (openAIAccountMutationInFlight && convStore.get(parent.convId)?.provider === "openai") {
-      log("info", `handler: deferring parent notification ${childConvId} while OpenAI account authentication is in progress`);
-      const timer = setTimeout(() => {
-        deliverParentNotification(parent, childConvId, task, outcome);
-      }, 250);
-      (timer as { unref?: () => void }).unref?.();
-      return;
-    }
-    const text = buildSubagentNotification(childConvId, task, outcome, parent.maxChars ?? 6000);
-    if (convStore.isStreaming(parent.convId)) {
-      convStore.pushQueuedMessage(
-        parent.convId,
-        text,
-        "next-turn",
-        undefined,
-        convStore.get(parent.convId)?.subagentMaxDepth ?? null,
-      );
-      log("info", `handler: queued subagent completion notification ${childConvId} -> parent ${parent.convId}`);
-      return;
-    }
-    log("info", `handler: sending subagent completion notification ${childConvId} -> parent ${parent.convId}`);
-    void orchestrateSendMessage(
-      server,
-      null,
+  const queueReadyParentNotification = (record: PendingSubagentNotification): void => {
+    const alreadyQueued = convStore.getQueuedMessages(record.parentConvId)
+      .some((message) => message.subagentNotificationId === record.id);
+    if (alreadyQueued) return;
+    convStore.pushQueuedMessage(
+      record.parentConvId,
+      record.text!,
+      "next-turn",
       undefined,
-      parent.convId,
-      text,
-      Date.now(),
-      buildOrchestrationCallbacks(parent.convId),
-    ).catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      log("error", `handler: parent notification send failed for ${parent.convId}: ${msg}`);
-    });
+      convStore.get(record.parentConvId)?.subagentMaxDepth ?? null,
+      record.id,
+    );
+    log("info", `handler: queued durable subagent completion notification ${record.childConvId} -> parent ${record.parentConvId}`);
   };
+
+  const deliverReadyParentNotifications = (childConvId?: string): void => {
+    for (const record of listPendingSubagentNotifications({ childConvId, state: "ready" })) {
+      if (hasSubagentNotificationBeenDelivered(record)) {
+        acknowledgeSubagentNotification(record.id);
+        continue;
+      }
+      if (record.parentConvId === record.childConvId) {
+        log("warn", `handler: dropping self-notification for ${record.childConvId}`);
+        acknowledgeSubagentNotification(record.id);
+        continue;
+      }
+      const parent = convStore.get(record.parentConvId);
+      if (!parent) {
+        log("warn", `handler: parent conversation ${record.parentConvId} not found for subagent ${record.childConvId}; keeping notification pending`);
+        continue;
+      }
+      if (convStore.isStreaming(record.parentConvId)) {
+        queueReadyParentNotification(record);
+        continue;
+      }
+      if (!hasConfiguredCredentials(parent.provider)) {
+        log("info", `handler: deferring parent notification ${record.childConvId}; ${parent.provider} is not authenticated`);
+        scheduleNotificationRetry();
+        continue;
+      }
+      if (openAIAccountMutationInFlight && parent.provider === "openai") {
+        log("info", `handler: deferring parent notification ${record.childConvId} while OpenAI account authentication is in progress`);
+        scheduleNotificationRetry();
+        continue;
+      }
+
+      log("info", `handler: sending durable subagent completion notification ${record.childConvId} -> parent ${record.parentConvId}`);
+      void orchestrateSendMessage(
+        server,
+        null,
+        undefined,
+        record.parentConvId,
+        record.text!,
+        Date.now(),
+        buildOrchestrationCallbacks(record.parentConvId),
+        undefined,
+        {
+          subagentMaxDepth: parent.subagentMaxDepth ?? null,
+          subagentNotificationId: record.id,
+        },
+      ).then(() => {
+        // Preflight failures do not accept the user message and therefore leave
+        // the durable record in place. Retry without duplicating accepted turns.
+        if (listPendingSubagentNotifications().some((candidate) => candidate.id === record.id)) {
+          scheduleNotificationRetry();
+        }
+      }).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        log("error", `handler: parent notification send failed for ${record.parentConvId}: ${msg}`);
+        scheduleNotificationRetry();
+      });
+    }
+  };
+
+  const completeParentNotification = (childConvId: string, outcome: AssistantTurnOutcome): void => {
+    const related = listPendingSubagentNotifications({ childConvId });
+    settlePendingSubagentNotifications(childConvId, outcome);
+    if (!(outcome.aborted && outcome.daemonRestart)) {
+      const parentIds = new Set(related.map((record) => record.parentConvId));
+      const knownParent = getSubagentParentConversationId(childConvId);
+      if (knownParent) parentIds.add(knownParent);
+      for (const parentConvId of parentIds) {
+        if (setSubagentActive(parentConvId, childConvId, false)) {
+          broadcastConversationUpdated(server, parentConvId);
+        }
+      }
+    }
+    deliverReadyParentNotifications(childConvId);
+  };
+
+  const notificationRuntime = {
+    begin: beginPendingSubagentNotification,
+    complete: completeParentNotification,
+    deliverReady: deliverReadyParentNotifications,
+  };
+  registerSubagentNotificationRuntime(server, notificationRuntime);
 
   exocortexRuntime = createExocortexToolRuntime({
     server,
-    runTurn: (convId, text, maxDepth) => {
+    runTurn: (convId, text, maxDepth, startedAt) => {
       const turn = orchestrateSendMessage(
         server,
         null,
         undefined,
         convId,
         text,
-        Date.now(),
+        startedAt,
         buildOrchestrationCallbacks(convId),
         undefined,
         { subagentMaxDepth: maxDepth },
@@ -263,12 +293,15 @@ export function createHandler(server: DaemonServer) {
       maybeStartAutoTitleGeneration(convId);
       return turn;
     },
-    notifyParent: (parentConvId, childConvId, task, outcome) => {
-      deliverParentNotification({ convId: parentConvId }, childConvId, task, outcome);
+    beginParentNotification: notificationRuntime.begin,
+    completeParentNotification: notificationRuntime.complete,
+    cannotStart: (provider) => {
+      const shutdownMode = getDaemonShutdownMode();
+      if (shutdownMode) return `Cannot start a subagent while the daemon is shutting down (${shutdownMode}).`;
+      return provider === "openai" && openAIAccountMutationInFlight
+        ? "Cannot start or change an OpenAI conversation while account authentication is still in progress."
+        : null;
     },
-    cannotStart: (provider) => provider === "openai" && openAIAccountMutationInFlight
-      ? "Cannot start or change an OpenAI conversation while account authentication is still in progress."
-      : null,
   });
 
   // ── Compact conversation payload helpers ─────────────────────────
@@ -406,6 +439,13 @@ export function createHandler(server: DaemonServer) {
         }).catch((err) => {
           log("warn", `handler: provider refresh failed: ${err instanceof Error ? err.message : err}`);
         });
+        break;
+      }
+
+      case "prepare_shutdown": {
+        const mode = beginDaemonShutdown(cmd.mode);
+        log("info", `handler: service requested daemon shutdown mode=${mode}`);
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId });
         break;
       }
 
@@ -656,6 +696,19 @@ export function createHandler(server: DaemonServer) {
             break;
           }
           const trackedParentId = cmd.notifyParent?.convId;
+          if (cmd.notifyParent) {
+            try {
+              notificationRuntime.begin(cmd.notifyParent, cmd.convId, cmd.text, cmd.startedAt, null);
+            } catch (err) {
+              server.sendTo(client, {
+                type: "error",
+                reqId: cmd.reqId,
+                convId: cmd.convId,
+                message: err instanceof Error ? err.message : String(err),
+              });
+              break;
+            }
+          }
           if (trackedParentId && setSubagentActive(trackedParentId, cmd.convId, true, {
             title: target?.title || "Subagent task",
             startedAt: cmd.startedAt,
@@ -675,13 +728,13 @@ export function createHandler(server: DaemonServer) {
           maybeStartAutoTitleGeneration(cmd.convId);
           void turn.then((outcome) => {
             finishTrackedSubagent();
-            if (cmd.notifyParent) deliverParentNotification(cmd.notifyParent, cmd.convId, cmd.text, outcome);
+            if (cmd.notifyParent) notificationRuntime.complete(cmd.convId, outcome);
           }).catch((err) => {
             finishTrackedSubagent();
             const message = err instanceof Error ? err.message : String(err);
             log("error", `handler: detached send failed for ${cmd.convId}: ${message}`);
             if (cmd.notifyParent) {
-              deliverParentNotification(cmd.notifyParent, cmd.convId, cmd.text, {
+              notificationRuntime.complete(cmd.convId, {
                 ok: false,
                 blocks: [],
                 tokens: 0,
@@ -708,11 +761,29 @@ export function createHandler(server: DaemonServer) {
         const target = convStore.get(cmd.convId);
         if (target?.provider === "openai"
             && rejectDuringOpenAIAccountMutation(client, cmd.reqId, cmd.convId)) break;
-        await orchestrateReplayConversation(
-          server, client, cmd.reqId, cmd.convId, cmd.startedAt,
-          buildOrchestrationCallbacks(cmd.convId),
-          { subagentMaxDepth: null },
-        );
+        const pending = listPendingSubagentNotifications({ childConvId: cmd.convId, state: "running" })[0];
+        const outcome = pending && !hasSubagentTaskStarted(pending)
+          ? await orchestrateSendMessage(
+              server,
+              client,
+              cmd.reqId,
+              cmd.convId,
+              pending.task,
+              pending.childStartedAt,
+              buildOrchestrationCallbacks(cmd.convId),
+              undefined,
+              { subagentMaxDepth: pending.subagentMaxDepth },
+            )
+          : await orchestrateReplayConversation(
+              server,
+              client,
+              cmd.reqId,
+              cmd.convId,
+              cmd.startedAt,
+              buildOrchestrationCallbacks(cmd.convId),
+              { subagentMaxDepth: pending?.subagentMaxDepth ?? null },
+            );
+        notificationRuntime.complete(cmd.convId, outcome);
         break;
       }
 
@@ -1292,9 +1363,18 @@ export function createHandler(server: DaemonServer) {
 
         if (provider === "openai") {
           if (rejectDuringOpenAIAccountMutation(client, cmd.reqId)) break;
-          if (rejectOpenAIAccountMutationWhileStreaming(client, cmd.reqId)) break;
+          // Plain /login is same-account recovery, not an account switch. Keep
+          // active turns alive while OAuth replaces rejected credentials; their
+          // OpenAI turn sessions will detect the auth fingerprint change and
+          // reconnect from the last completed round. Explicit add/remove/switch
+          // operations remain blocked above while any OpenAI turn is streaming.
           openAIAccountMutationInFlight = true;
         }
+        const loginOptions = cmd.apiKey
+          ? { apiKey: cmd.apiKey }
+          : provider === "openai" && hasStreamingOpenAIConversation()
+            ? { requireSameAccount: true }
+            : undefined;
         void ensureAuthenticated(provider, {
           onProgress: (msg) => {
             server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: msg });
@@ -1303,7 +1383,7 @@ export function createHandler(server: DaemonServer) {
             server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, openUrl: url });
             return true;
           },
-        }, cmd.apiKey ? { apiKey: cmd.apiKey } : undefined).then(({ status, email }) => {
+        }, loginOptions).then(({ status, email }) => {
           const label = email ?? provider;
           server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: statusMessages[status](label) });
           log("info", `handler: login ${status} (${label})`);

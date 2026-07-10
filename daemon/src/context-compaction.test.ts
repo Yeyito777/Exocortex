@@ -9,8 +9,10 @@ import {
 } from "./context-compaction";
 import {
   createConversation,
+  activeContextCompactionHistoryCount,
   historyPrefixHash,
   isValidActiveContext,
+  rewindActiveContextToHistoryCount,
   type ActiveContext,
   type StoredMessage,
 } from "./messages";
@@ -98,6 +100,40 @@ describe("automatic context compaction state", () => {
     messages[1] = { role: "user", content: "edited old question", metadata: null };
 
     expect(isValidActiveContext(active, messages)).toBe(false);
+  });
+
+  test("derives a legacy compaction boundary and rewinds only its mapped tail", () => {
+    const messages: StoredMessage[] = [
+      { role: "user", content: "represented", metadata: null },
+      { role: "assistant", content: "represented answer", metadata: null },
+      {
+        role: "system",
+        content: "--- Compaction finished ---",
+        metadata: {
+          startedAt: 123,
+          endedAt: 123,
+          model: "gpt-5.6-sol",
+          tokens: 0,
+          kind: "context_compaction_finished",
+        },
+      },
+      { role: "user", content: "tail prompt", metadata: null },
+      { role: "assistant", content: "tail answer", metadata: null },
+    ];
+    const active = activeContext(messages);
+    active.messages.push(
+      { role: "user", content: "tail prompt" },
+      { role: "assistant", content: "tail answer" },
+    );
+    active.transcriptHistoryCount = 4;
+    active.transcriptPrefixHash = historyPrefixHash(messages, 4);
+
+    expect(activeContextCompactionHistoryCount(active, messages)).toBe(2);
+    const truncated = messages.slice(0, 3);
+    const rewound = rewindActiveContextToHistoryCount(active, truncated, 2);
+    expect(rewound?.messages).toEqual(active.messages.slice(0, 2));
+    expect(rewound?.transcriptHistoryCount).toBe(2);
+    expect(isValidActiveContext(rewound, truncated)).toBe(true);
   });
 
   test("rejects malformed native and plaintext checkpoint payloads", () => {

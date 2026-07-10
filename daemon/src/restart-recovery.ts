@@ -2,13 +2,23 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
 import { log } from "./log";
-import { orchestrateGoalContinuation, orchestrateReplayConversation } from "./orchestrator";
+import { orchestrateGoalContinuation, orchestrateReplayConversation, orchestrateSendMessage } from "./orchestrator";
 import type { DaemonServer } from "./server";
 import * as convStore from "./conversations";
 import { handleUsageHeaders, refreshUsage } from "./usage";
 import { getDefaultProvider } from "./providers/registry";
 import { getTokenStatsSnapshot } from "./token-stats";
 import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
+import { broadcastConversationUpdated } from "./conversation-events";
+import { setSubagentActive } from "./conversation-activity";
+import {
+  clearPendingSubagentNotifications,
+  completedSubagentOutcomeFromHistory,
+  getSubagentNotificationRuntime,
+  hasSubagentTaskStarted,
+  listPendingSubagentNotifications,
+  settlePendingSubagentNotifications,
+} from "./subagent-notifications";
 
 const INTERRUPTED_STREAMS_FILE_VERSION = 1;
 const ACTIVE_GOAL_RESTART_FILE_VERSION = 1;
@@ -110,17 +120,31 @@ export function clearActiveGoalRestartMarker(): void {
   try { unlinkSync(activeGoalRestartPath()); } catch { /* absent */ }
 }
 
+/** Cancel every daemon-owned source of autonomous work on a later startup. */
+export function clearRestartRecoveryForStop(): number {
+  clearInterruptedStreamIds();
+  clearActiveGoalRestartMarker();
+  return clearPendingSubagentNotifications();
+}
+
+export function hasActiveGoalRestartMarker(): boolean {
+  const path = activeGoalRestartPath();
+  if (!existsSync(path)) return false;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<ActiveGoalRestartFile>;
+    return parsed.version === ACTIVE_GOAL_RESTART_FILE_VERSION && parsed.reason === "daemon-restart";
+  } catch (err) {
+    log("warn", `restart-recovery: cannot read active-goal restart marker: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 export function consumeActiveGoalRestartMarker(): boolean {
   const path = activeGoalRestartPath();
   if (!existsSync(path)) return false;
 
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<ActiveGoalRestartFile>;
-    return parsed.version === ACTIVE_GOAL_RESTART_FILE_VERSION && parsed.reason === "daemon-restart";
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log("warn", `restart-recovery: cannot read active-goal restart marker: ${message}`);
-    return false;
+    return hasActiveGoalRestartMarker();
   } finally {
     clearActiveGoalRestartMarker();
   }
@@ -181,6 +205,41 @@ export async function prepareCatchableShutdownForReplay(timeoutMs = 30_000): Pro
   };
 }
 
+/**
+ * Stop the daemon without scheduling any autonomous work for its next start.
+ * Active turns are still aborted through the normal orchestrator cleanup path
+ * so salvageable transcript state is flushed, but restart markers, queues,
+ * goals-after-stream requests, and durable subagent deliveries are cancelled.
+ */
+export async function prepareCatchableShutdownWithoutReplay(timeoutMs = 5_000): Promise<PrepareShutdownReplayResult> {
+  clearRestartRecoveryForStop();
+
+  const interrupted = new Set<string>();
+  const stopRunning = (ids: string[]): void => {
+    for (const id of ids) {
+      interrupted.add(id);
+      convStore.clearQueuedMessages(id);
+      convStore.clearGoalContinuationAfterStream(id);
+      const ac = convStore.getActiveJob(id);
+      if (ac && !ac.signal.aborted) ac.abort("daemon-stop");
+    }
+  };
+
+  let stillStreaming = convStore.listRunningConversationIds();
+  stopRunning(stillStreaming);
+  const deadline = Date.now() + timeoutMs;
+  while (stillStreaming.length > 0 && Date.now() < deadline) {
+    const delayMs = Math.min(250, Math.max(0, deadline - Date.now()));
+    if (delayMs > 0) await sleep(delayMs);
+    stillStreaming = convStore.listRunningConversationIds();
+    stopRunning(stillStreaming);
+  }
+
+  // A stop always wins over stale/partially prepared restart state.
+  clearRestartRecoveryForStop();
+  return { convIds: [...interrupted], stillStreaming };
+}
+
 function buildRecoveryCallbacks(server: DaemonServer, convId: string) {
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     server.broadcast({ type: "usage_update", provider, usage });
@@ -211,7 +270,35 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
     const message = err instanceof Error ? err.message : String(err);
     log("error", `restart-recovery: cannot read interrupted streams file: ${message}`);
     clearInterruptedStreamIds();
-    return [];
+    // Durable subagent records below remain independently recoverable even if
+    // the generic interrupted-stream marker was damaged.
+    convIds = [];
+  }
+
+  const persistedRunningNotifications = listPendingSubagentNotifications({ state: "running" });
+  const completedBeforeSettlement = new Set<string>();
+  const runningNotifications = persistedRunningNotifications.filter((record) => {
+    const completedOutcome = completedSubagentOutcomeFromHistory(record);
+    if (!completedOutcome) return true;
+    settlePendingSubagentNotifications(record.childConvId, completedOutcome);
+    completedBeforeSettlement.add(record.childConvId);
+    log("info", `restart-recovery: recovered completed subagent outcome from durable history for ${record.childConvId}`);
+    return false;
+  });
+  if (completedBeforeSettlement.size > 0) {
+    convIds = convIds.filter((convId) => !completedBeforeSettlement.has(convId));
+  }
+  convIds = normalizeConvIds([...convIds, ...runningNotifications.map((record) => record.childConvId)]);
+  for (const record of runningNotifications) {
+    const childTitle = convStore.get(record.childConvId)?.title.trim()
+      || record.task.split("\n")[0].replace(/\s+/g, " ").trim()
+      || "Subagent task";
+    if (setSubagentActive(record.parentConvId, record.childConvId, true, {
+      title: childTitle,
+      startedAt: record.childStartedAt,
+    })) {
+      broadcastConversationUpdated(server, record.parentConvId);
+    }
   }
 
   if (convIds.length === 0) {
@@ -227,6 +314,17 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
   for (const convId of convIds) {
     if (!convStore.get(convId)) {
       log("warn", `restart-recovery: interrupted conversation ${convId} no longer exists; skipping`);
+      const orphaned = runningNotifications.find((record) => record.childConvId === convId);
+      if (orphaned) {
+        settlePendingSubagentNotifications(convId, {
+          ok: false,
+          blocks: [],
+          error: `Subagent conversation ${convId} no longer exists after restart.`,
+        });
+        if (setSubagentActive(orphaned.parentConvId, convId, false)) {
+          broadcastConversationUpdated(server, orphaned.parentConvId);
+        }
+      }
       continue;
     }
     if (convStore.isStreaming(convId)) {
@@ -237,6 +335,49 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
     scheduled.push(convId);
     const conv = convStore.get(convId);
     const callbacks = buildRecoveryCallbacks(server, convId);
+    const pendingNotification = runningNotifications.find((record) => record.childConvId === convId);
+    if (pendingNotification) {
+      const taskAlreadyStarted = hasSubagentTaskStarted(pendingNotification);
+      log("info", `restart-recovery: ${taskAlreadyStarted ? "replaying" : "restoring"} interrupted subagent ${convId} for parent ${pendingNotification.parentConvId}`);
+      const turn = taskAlreadyStarted
+        ? orchestrateReplayConversation(
+            server,
+            null,
+            undefined,
+            convId,
+            Date.now(),
+            callbacks,
+            { subagentMaxDepth: pendingNotification.subagentMaxDepth },
+          )
+        : orchestrateSendMessage(
+            server,
+            null,
+            undefined,
+            convId,
+            pendingNotification.task,
+            pendingNotification.childStartedAt,
+            callbacks,
+            undefined,
+            { subagentMaxDepth: pendingNotification.subagentMaxDepth },
+          );
+      void turn.then((outcome) => {
+        getSubagentNotificationRuntime(server)?.complete(convId, outcome);
+        if (outcome.ok) {
+          log("info", `restart-recovery: subagent replay completed for ${convId}`);
+        } else {
+          log("warn", `restart-recovery: subagent replay did not complete for ${convId}: ${outcome.error ?? "unknown error"}`);
+        }
+      }).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        log("error", `restart-recovery: subagent replay failed for ${convId}: ${message}`);
+        getSubagentNotificationRuntime(server)?.complete(convId, {
+          ok: false,
+          blocks: [],
+          error: `✗ ${message}`,
+        });
+      });
+      continue;
+    }
     if (conv?.goal?.status === "active") {
       log("info", `restart-recovery: continuing interrupted active goal ${convId}`);
       void orchestrateGoalContinuation(server, convId, callbacks).then((outcome) => {
@@ -276,6 +417,13 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
   }
 
   return scheduled;
+}
+
+/** Queue/send every completed child notification after interrupted parents start replaying. */
+export function deliverPendingSubagentNotifications(server: DaemonServer): number {
+  const ready = listPendingSubagentNotifications({ state: "ready" });
+  getSubagentNotificationRuntime(server)?.deliverReady();
+  return ready.length;
 }
 
 export function recoverActiveGoals(server: DaemonServer, excludeConvIds: Iterable<string> = []): string[] {

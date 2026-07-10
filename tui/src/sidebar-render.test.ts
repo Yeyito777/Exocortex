@@ -93,7 +93,7 @@ describe("sidebar rendering", () => {
     expect(visibleLength(folderRow!)).toBe(SIDEBAR_WIDTH);
   });
 
-  test("does not render unread-count badges anywhere under top-level subagents", () => {
+  test("does not render finished indicators or unread-count badges anywhere under top-level subagents", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [
       { id: "subagents", name: " SubAgents ", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -102,13 +102,24 @@ describe("sidebar rendering", () => {
     sidebar.conversations = [
       conversation("direct-agent", 0, { folderId: "subagents", unread: true }),
       conversation("nested-agent", 1, { folderId: "batch", unread: true }),
+      conversation("ordinary", 2, { unread: true }),
     ];
 
     let rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("SubAgents"))).not.toContain(theme.notificationBg);
+    const subagentsRow = rows.find(row => row.includes("SubAgents"));
+    expect(subagentsRow).not.toContain(`${theme.success}◉ `);
+    expect(subagentsRow).not.toContain(theme.notificationBg);
+    expect(rows.find(row => row.includes("ordinary"))).toContain(`${theme.success}◉ `);
 
     sidebar.currentFolderId = "subagents";
     rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Batch"))).not.toContain(theme.notificationBg);
+    const batchRow = rows.find(row => row.includes("Batch"));
+    expect(batchRow).not.toContain(`${theme.success}◉ `);
+    expect(batchRow).not.toContain(theme.notificationBg);
+    expect(rows.find(row => row.includes("direct-agent"))).not.toContain(`${theme.success}◉ `);
+
+    sidebar.currentFolderId = "batch";
+    rows = renderSidebar(sidebar, 8, true, null);
+    expect(rows.find(row => row.includes("nested-agent"))).not.toContain(`${theme.success}◉ `);
   });
 });

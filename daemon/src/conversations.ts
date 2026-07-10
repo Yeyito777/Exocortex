@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus } from "./messages";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, createConversation, createMessageMetadata, createStoredUserMessage, isRealUserMessage, isToolResultMessage, isValidActiveContext, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, activeContextCompactionHistoryCount, createConversation, createMessageMetadata, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContext, rewindActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
@@ -19,6 +19,7 @@ import * as streaming from "./streaming";
 import { log } from "./log";
 import { getProvider, normalizeEffort } from "./providers/registry";
 import { isDeepStrictEqual } from "node:util";
+import { contextMessageChars } from "./context-token-attribution";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -366,7 +367,9 @@ export function createWithInitialUserMessage(
 ): Conversation {
   const parentId = folderId && folders.has(folderId) ? folderId : null;
   const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
-  conv.messages.push(createStoredUserMessage(message.text, model, message.startedAt, message.images));
+  conv.messages.push(createStoredUserMessage(message.text, model, message.startedAt, message.images, {
+    contextCheckpoint: createStoredUserContextCheckpoint(conv),
+  }));
   conversations.set(id, conv);
   markDirty(id);
   flush(id);
@@ -427,6 +430,13 @@ export function clone(id: string): Conversation | null {
     folderId: src.folderId ?? null,
     title: (src.title || "clone") + " 📋",
   };
+  if (src.activeContext && conv.activeContext) {
+    for (const message of [...conv.messages, ...conv.activeContext.messages]) {
+      if (message.contextCheckpoint?.windowId === src.activeContext.windowId) {
+        message.contextCheckpoint.windowId = conv.activeContext.windowId;
+      }
+    }
+  }
 
   conversations.set(newId, conv);
   markDirty(newId);
@@ -928,22 +938,48 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   // Skip system_instructions (always at index 0) — they're never unwound.
   let spliceAt = -1;
   let userCount = 0;
+  let historyCount = 0;
+  let targetHistoryCount = -1;
+  let targetContextCheckpoint: StoredUserContextCheckpoint | undefined;
   for (let i = 0; i < conv.messages.length; i++) {
-    if (conv.messages[i].role === "system_instructions") continue;
-    if (isRealUserMessage(conv.messages[i])) {
-      if (userCount === userMessageIndex) { spliceAt = i; break; }
+    const message = conv.messages[i];
+    if (message.role === "system_instructions") continue;
+    if (isRealUserMessage(message)) {
+      if (userCount === userMessageIndex) {
+        spliceAt = i;
+        targetHistoryCount = historyCount;
+        targetContextCheckpoint = message.contextCheckpoint;
+        break;
+      }
       userCount++;
     }
+    if (isReplayHistoryMessage(message)) historyCount++;
   }
   if (spliceAt === -1) return false;
 
-  // Aborting below lets the orchestrator salvage its in-flight replay state,
-  // which may advance activeContext through the very user turn being removed.
-  // Keep an immutable candidate from before abort recovery so an unwind of only
-  // the unrepresented transcript tail does not throw away a recent checkpoint.
-  const activeContextBeforeAbort = conv.activeContext
-    ? structuredClone(conv.activeContext)
-    : null;
+  // A compaction item is irreversible: only the one-to-one transcript tail
+  // written after its fixed boundary can be edited. Enforce this in the daemon
+  // as well as the TUI so stale/third-party clients cannot destroy the checkpoint.
+  if (conv.activeContext) {
+    const compactionHistoryCount = isValidActiveContext(conv.activeContext, conv.messages)
+      ? activeContextCompactionHistoryCount(conv.activeContext, conv.messages)
+      : null;
+    if (compactionHistoryCount == null || targetHistoryCount < compactionHistoryCount) {
+      log("warn", `conversations: refusing unwind before active compaction boundary for ${id} (target=${targetHistoryCount}, boundary=${compactionHistoryCount ?? "unknown"})`);
+      return false;
+    }
+  } else if (conv.messages.some((message) => message.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND)) {
+    // A divider without its derived replay means the checkpoint was discarded or
+    // corrupted. There is no safe generation to rewind, so freeze sent history
+    // until a later successful compaction establishes a new one.
+    log("warn", `conversations: refusing unwind for ${id}; transcript has a compaction boundary but no active checkpoint`);
+    return false;
+  }
+
+  // Aborting below can race with a successful compaction install or discard.
+  // Remember whether a checkpoint existed so a disappearing replay base causes
+  // a non-destructive refusal rather than a fallback to the full transcript.
+  const hadActiveContextBeforeAbort = conv.activeContext != null;
 
   // Drain queued work first — prevents the orchestrator's finally block from
   // starting a new stream after we abort. Keep a rollback copy in case the
@@ -960,7 +996,14 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
       log("warn", `conversations: stream for ${id} did not stop within timeout; refusing unsafe unwind`);
       const queuedDuringWait = streaming.drainQueuedMessages(id);
       for (const queued of [...queuedBeforeAbort, ...queuedDuringWait]) {
-        streaming.pushQueuedMessage(id, queued.text, queued.timing, queued.images, queued.subagentMaxDepth);
+        streaming.pushQueuedMessage(
+          id,
+          queued.text,
+          queued.timing,
+          queued.images,
+          queued.subagentMaxDepth,
+          queued.subagentNotificationId,
+        );
       }
       const goalContinuationDuringWait = streaming.consumeGoalContinuationAfterStream(id);
       if (goalContinuationBeforeAbort || goalContinuationDuringWait) {
@@ -970,23 +1013,95 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
     }
   }
 
+  // A compaction can win the race with abort and install a newer immutable
+  // boundary after the first validation. Revalidate before mutating history;
+  // never resurrect the pre-abort checkpoint across that new boundary.
+  const postAbortCompactionHistoryCount = conv.activeContext && isValidActiveContext(conv.activeContext, conv.messages)
+    ? activeContextCompactionHistoryCount(conv.activeContext, conv.messages)
+    : null;
+  const lostCheckpointDuringAbort = hadActiveContextBeforeAbort && conv.activeContext == null;
+  if (lostCheckpointDuringAbort
+      || (conv.activeContext != null
+        && (postAbortCompactionHistoryCount == null || targetHistoryCount < postAbortCompactionHistoryCount))) {
+    const queuedDuringWait = streaming.drainQueuedMessages(id);
+    for (const queued of [...queuedBeforeAbort, ...queuedDuringWait]) {
+      streaming.pushQueuedMessage(
+        id,
+        queued.text,
+        queued.timing,
+        queued.images,
+        queued.subagentMaxDepth,
+        queued.subagentNotificationId,
+      );
+    }
+    const goalContinuationDuringWait = streaming.consumeGoalContinuationAfterStream(id);
+    if (goalContinuationBeforeAbort || goalContinuationDuringWait) {
+      streaming.requestGoalContinuationAfterStream(id);
+    }
+    log("warn", `conversations: compaction state changed while unwinding ${id}; refusing stale edit (target=${targetHistoryCount}, boundary=${postAbortCompactionHistoryCount ?? "missing"})`);
+    return false;
+  }
+
   // Also discard work queued during the short abort wait: the explicit unwind
   // supersedes it and must leave no post-unwind continuation behind.
   streaming.clearQueuedMessages(id);
   streaming.clearGoalContinuationAfterStream(id);
 
   conv.messages.splice(spliceAt);
-  const recoveredActiveContext = conv.activeContext && isValidActiveContext(conv.activeContext, conv.messages)
-    ? conv.activeContext
-    : activeContextBeforeAbort && isValidActiveContext(activeContextBeforeAbort, conv.messages)
-      ? activeContextBeforeAbort
-      : null;
+  const recoveredActiveContext = conv.activeContext
+    ? rewindActiveContextToHistoryCount(conv.activeContext, conv.messages, targetHistoryCount)
+    : null;
   conv.activeContext = recoveredActiveContext;
-  conv.lastContextTokens = null;
+  conv.lastContextTokens = contextTokensAtUserCheckpoint(
+    conv,
+    targetContextCheckpoint,
+    targetHistoryCount,
+    recoveredActiveContext?.windowId ?? null,
+  ) ?? estimateCurrentReplayTokens(conv);
   conv.updatedAt = Date.now();
   markDirty(id);
   flush(id);
   return true;
+}
+
+function contextTokensAtUserCheckpoint(
+  conv: Conversation,
+  checkpoint: StoredUserContextCheckpoint | undefined,
+  targetHistoryCount: number,
+  windowId: string | null,
+): number | null {
+  if (!checkpoint
+      || checkpoint.version !== 1
+      || checkpoint.provider !== conv.provider
+      || checkpoint.model !== conv.model
+      || checkpoint.windowId !== windowId
+      || checkpoint.transcriptHistoryCount !== targetHistoryCount
+      || checkpoint.transcriptPrefixHash !== historyPrefixHash(conv.messages, targetHistoryCount)
+      || checkpoint.contextTokens == null
+      || !Number.isFinite(checkpoint.contextTokens)
+      || checkpoint.contextTokens < 0) return null;
+  return checkpoint.contextTokens;
+}
+
+/** Best-effort statusline value when an older user turn has no stored token snapshot. */
+function estimateCurrentReplayTokens(conv: Conversation): number {
+  const history = conv.messages.filter(isReplayHistoryMessage);
+  const replay = conv.activeContext && isValidActiveContext(conv.activeContext, conv.messages)
+    ? [
+        ...conv.activeContext.messages.map((message) => ({
+          ...message,
+          metadata: message.metadata ?? null,
+        })),
+        ...history.slice(conv.activeContext.transcriptHistoryCount).map((message) => ({
+          role: message.role as "user" | "assistant",
+          content: message.content,
+          metadata: message.metadata,
+          providerData: message.providerData,
+        })),
+      ]
+    : history;
+  const chars = replay.reduce((sum, message) => sum + contextMessageChars(message, conv.provider), 0);
+  return Math.max(0, Math.ceil(chars / 4));
 }
 
 /** Wait for a streaming job to finish (poll until activeJob clears). Returns false on timeout. */
@@ -1548,6 +1663,14 @@ function buildSnapshotDisplayData(
   const displayMessages = folderInstructionsText
     ? [{ role: "system_instructions" as const, content: folderInstructionsText, metadata: null }, ...messages]
     : messages;
+  const validActiveContext = conv.activeContext && isValidActiveContext(conv.activeContext, conv.messages)
+    ? conv.activeContext
+    : null;
+  const hasLostCompactionBoundary = !validActiveContext
+    && conv.messages.some((message) => message.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND);
+  const editableUserHistoryStart = validActiveContext
+    ? activeContextCompactionHistoryCount(validActiveContext, conv.messages)
+    : hasLostCompactionBoundary ? null : undefined;
   return buildDisplayData(
     conv.id,
     conv.provider,
@@ -1557,7 +1680,7 @@ function buildSnapshotDisplayData(
     displayMessages,
     conv.lastContextTokens,
     summarizeTool,
-    { includeToolOutputs },
+    { includeToolOutputs, editableUserHistoryStart },
   );
 }
 

@@ -162,7 +162,7 @@ describe("/new", () => {
 
     expect(result).toEqual({ type: "new_conversation" });
     expect(state.messages).toEqual([]);
-    expect(state.contextTokens).toBeNull();
+    expect(state.contextTokens).toBe(0);
     expect(String(state.provider)).toBe(DEFAULT_PROVIDER_ID);
     expect(String(state.model)).toBe(DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
     expect(String(state.effort)).toBe(defaultEffortForModelId(DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]));

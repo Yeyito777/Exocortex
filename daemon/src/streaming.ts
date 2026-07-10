@@ -21,6 +21,8 @@ export interface QueuedMessage {
   images?: ImageAttachment[];
   /** Delegation budget installed if this queue entry starts a later turn. */
   subagentMaxDepth?: number | null;
+  /** Durable completion notification represented by this ephemeral queue item. */
+  subagentNotificationId?: string;
 }
 
 // ── State ───────────────────────────────────────────────────────────
@@ -293,13 +295,14 @@ export function pushQueuedMessage(
   timing: QueueTiming,
   images?: ImageAttachment[],
   subagentMaxDepth?: number | null,
+  subagentNotificationId?: string,
 ): void {
   let queue = messageQueues.get(convId);
   if (!queue) {
     queue = [];
     messageQueues.set(convId, queue);
   }
-  queue.push({ text, timing, images, subagentMaxDepth });
+  queue.push({ text, timing, images, subagentMaxDepth, subagentNotificationId });
 }
 
 /**

@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { clearProviderAuth, loadProviderAuth, saveProviderAuth } from "../../store";
-import { getCurrentAccountScope, getVerifiedSession, listAccounts, switchAccount, type StoredOpenAIAuthPool } from "./auth";
+import {
+  ensureAuthenticated,
+  getCurrentAccountScope,
+  getOpenAIAuthSessionRevision,
+  getVerifiedSession,
+  listAccounts,
+  setOpenAIBrowserOAuthForTest,
+  switchAccount,
+  type StoredOpenAIAuthPool,
+} from "./auth";
 import type { StoredOpenAIAuth } from "./session";
 
 const originalFetch = globalThis.fetch;
@@ -35,10 +44,62 @@ function makeAuth(email: string, accountId: string, accessToken: string): Stored
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  setOpenAIBrowserOAuthForTest(null);
   clearProviderAuth("openai");
 });
 
+function jwt(claims: Record<string, unknown>): string {
+  return `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
+}
+
 describe("OpenAI multi-account auth", () => {
+  test("replaces a rejected current session with browser OAuth for the same account", async () => {
+    const stale = makeAuth("one@example.com", "acct_one", "stale-token");
+    stale.tokens.expiresAt = Date.now() - 60_000;
+    saveProviderAuth("openai", stale);
+    globalThis.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      error: { code: "refresh_token_invalidated" },
+    }), { status: 401 }))) as unknown as typeof fetch;
+    setOpenAIBrowserOAuthForTest(async () => ({
+      access_token: jwt({ sub: "google-oauth-subject", email: "one@example.com" }),
+      refresh_token: "replacement-refresh",
+      expires_in: 3600,
+    }));
+    const revisionBefore = getOpenAIAuthSessionRevision();
+
+    await expect(ensureAuthenticated(undefined, { requireSameAccount: true })).resolves.toMatchObject({
+      status: "logged_in",
+      email: "one@example.com",
+    });
+
+    const stored = loadProviderAuth<StoredOpenAIAuthPool>("openai");
+    expect(stored?.tokens.refreshToken).toBe("replacement-refresh");
+    expect(stored?.accounts).toHaveLength(1);
+    expect(stored?.accountId).toBe("acct_one");
+    expect(stored?.profile?.accountUuid).toBe("acct_one");
+    expect(getOpenAIAuthSessionRevision()).not.toBe(revisionBefore);
+  });
+
+  test("does not replace an active account when browser OAuth returns another account", async () => {
+    const stale = makeAuth("one@example.com", "acct_one", "stale-token");
+    stale.tokens.expiresAt = Date.now() - 60_000;
+    saveProviderAuth("openai", stale);
+    globalThis.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      error: { code: "refresh_token_invalidated" },
+    }), { status: 401 }))) as unknown as typeof fetch;
+    setOpenAIBrowserOAuthForTest(async () => ({
+      access_token: jwt({ sub: "acct_two", email: "two@example.com" }),
+      refresh_token: "other-refresh",
+      expires_in: 3600,
+    }));
+
+    await expect(ensureAuthenticated(undefined, { requireSameAccount: true })).rejects.toThrow(/different OpenAI account/i);
+
+    const stored = loadProviderAuth<StoredOpenAIAuthPool>("openai");
+    expect(stored?.tokens.accessToken).toBe("stale-token");
+    expect(stored?.tokens.refreshToken).toBe("stale-token-refresh");
+  });
+
   test("derives a non-secret persisted account scope", () => {
     const auth = makeAuth("one@example.com", "acct_one", "token-one");
     saveProviderAuth("openai", auth);
