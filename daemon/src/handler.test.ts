@@ -289,6 +289,10 @@ describe("handler subagent folder placement", () => {
       hasSubscribers: mock(() => false),
     };
     const handle = createHandler(server as never);
+    let finishChild!: (outcome: ReturnType<typeof makeAssistantOutcome>) => void;
+    orchestrateSendMessage.mockImplementationOnce(() => new Promise((resolve) => {
+      finishChild = resolve;
+    }));
 
     await handle({} as never, {
       type: "send_message",
@@ -302,7 +306,16 @@ describe("handler subagent folder placement", () => {
 
     expect(sent).toContainEqual(expect.objectContaining({ type: "ack", reqId: "req-existing-detached", convId: childId }));
     expect(getSummary(childId)?.folderId ?? null).toBeNull();
+    expect(getSummary(parentId)?.subagentCount).toBe(1);
+    expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({
+      type: "conversation_updated",
+      summary: expect.objectContaining({ id: parentId, subagentCount: 1 }),
+    }));
     expect(server.broadcast).not.toHaveBeenCalledWith(expect.objectContaining({ type: "conversation_moved" }));
+
+    finishChild(makeAssistantOutcome());
+    await Promise.resolve();
+    expect(getSummary(parentId)?.subagentCount).toBe(0);
   });
 });
 

@@ -258,6 +258,13 @@ async function executeBashImpl(
     let bgStreamFailed = false;
     let bgStreamError: string | undefined;
     let backgrounderCleared = false;
+    let backgroundTaskTracked = false;
+
+    function setBackgroundTaskTracked(active: boolean): void {
+      if (!proc.pid || backgroundTaskTracked === active) return;
+      backgroundTaskTracked = active;
+      context?.setBackgroundTaskActive?.(`bash:${proc.pid}`, active);
+    }
 
     function clearRegisteredBackgrounder(): void {
       if (backgrounderCleared) return;
@@ -308,6 +315,7 @@ async function executeBashImpl(
       }
       settled = true;
       clearRegisteredBackgrounder();
+      setBackgroundTaskTracked(true);
 
       const spillPath = join(tmpdir(), `exocortex-bash-${proc.pid}-${Date.now()}.tmp`);
       const partial = Buffer.concat(chunks).toString("utf8");
@@ -411,6 +419,7 @@ async function executeBashImpl(
     proc.on("error", (err) => {
       if (bgTimer) clearTimeout(bgTimer);
       clearRegisteredBackgrounder();
+      setBackgroundTaskTracked(false);
       if (settled) return;
       settled = true;
       resolve({ output: `Error: ${err.message}`, isError: true });
@@ -419,6 +428,7 @@ async function executeBashImpl(
     proc.on("close", (code, _sig) => {
       if (bgTimer) clearTimeout(bgTimer);
       if (!bgStream) clearRegisteredBackgrounder();
+      setBackgroundTaskTracked(false);
 
       // If backgrounded, append exit status to the temp file and close.
       // Stream failures are already reported via markBgStreamFailed; don't crash here.

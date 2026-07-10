@@ -12,6 +12,22 @@ export type ToolResourceClass = "filesystem_scan";
 
 // ── Execution context / result ─────────────────────────────────────
 
+/**
+ * Daemon-owned implementation behind the native `exo` tool.
+ *
+ * Keeping this as an injected capability avoids making the generic tool
+ * registry import the conversation orchestrator (which itself imports the
+ * registry). The daemon handler installs the runtime on every conversation
+ * turn; tests and non-conversation callers may omit it.
+ */
+export interface ExocortexToolRuntime {
+  execute(
+    input: Record<string, unknown>,
+    parentConversationId: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<ToolResult>;
+}
+
 export interface ToolExecutionContext {
   /** Provider backing the active conversation, when the tool is run from one. */
   provider?: ProviderId;
@@ -21,6 +37,10 @@ export interface ToolExecutionContext {
   model?: string;
   /** Provider-assigned tool call id for the currently executing tool. */
   toolCallId?: string;
+  /** Native current-daemon management and subagent capability. */
+  exocortex?: ExocortexToolRuntime;
+  /** Report the lifecycle of a detached tool process owned by this conversation. */
+  setBackgroundTaskActive?: (taskId: string, active: boolean) => void;
   /** Register the currently executing tool as user-backgroundable. */
   registerBackgrounder?: (backgrounder: ActiveToolBackgrounder | null) => void;
 }

@@ -18,7 +18,7 @@ import type { DaemonServer, ConnectedClient } from "./server";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContext, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
-import type { ToolExecutionContext } from "./tools/types";
+import type { ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { goalContinuationSystemPrompt, goalContinuationUserMessage } from "./goals";
 import { createProviderTurnSession } from "./api";
@@ -34,6 +34,7 @@ import {
 } from "./context-compaction";
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./providers/openai/auth";
 import { buildCodexWindowId } from "./providers/openai/identity";
+import { setBackgroundTaskActive as setConversationBackgroundTaskActive } from "./conversation-activity";
 
 // ── Transcript marker helpers ──────────────────────────────────────
 
@@ -100,6 +101,8 @@ export interface OrchestrationCallbacks {
   onHeaders(headers: Headers): void;
   /** Called after the message completes (for usage refresh). */
   onComplete(): void;
+  /** Native current-daemon operations exposed to the model-facing exo tool. */
+  exocortex?: ExocortexToolRuntime;
 }
 
 // ── Message history/replay helpers ─────────────────────────────────
@@ -363,6 +366,12 @@ async function orchestrateAssistantTurn(
     provider: conv.provider,
     conversationId: convId,
     model: conv.model,
+    exocortex: ext.exocortex,
+    setBackgroundTaskActive: (taskId, active) => {
+      if (setConversationBackgroundTaskActive(convId, taskId, active)) {
+        broadcastConversationUpdated(server, convId);
+      }
+    },
     registerBackgrounder: (backgrounder) => {
       if (backgrounder) convStore.setActiveToolBackgrounder(convId, backgrounder);
       else convStore.clearActiveToolBackgrounder(convId);
@@ -392,7 +401,10 @@ async function orchestrateAssistantTurn(
   // incremental item, then safely falls back to full replay of the checkpoint.
   const providerTurnSession = createProviderTurnSession(conv.provider);
   const codexTurnId = `${convId}:${startedAt}`;
-  const systemPrompt = buildSystemPrompt(systemInstructionsText || undefined);
+  const systemPrompt = buildSystemPrompt({
+    conversationInstructions: systemInstructionsText || undefined,
+    conversationId: convId,
+  });
   const toolDefs = getToolDefs();
   const contextLimit = getMaxContext(conv.provider, conv.model);
   const startingCompactionCount = conv.activeContext?.compactionCount ?? 0;

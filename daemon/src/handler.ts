@@ -30,6 +30,9 @@ import { getProviderAdapter } from "./providers/catalog";
 import { getTokenStatsSnapshot } from "./token-stats";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
+import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
+import type { ExocortexToolRuntime } from "./tools/types";
+import { setSubagentActive } from "./conversation-activity";
 
 const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
 
@@ -39,6 +42,7 @@ export function createHandler(server: DaemonServer) {
   // ── Local helper functions ────────────────────────────────────────
 
   let openAIAccountMutationInFlight = false;
+  let exocortexRuntime: ExocortexToolRuntime | undefined;
 
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     server.broadcast({ type: "usage_update", provider, usage });
@@ -137,6 +141,7 @@ export function createHandler(server: DaemonServer) {
       refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
       broadcastTokenStats();
     },
+    exocortex: exocortexRuntime,
   });
 
   const getRenderSnapshot = (convId: string) => convStore.getRenderSnapshot(convId, false);
@@ -184,7 +189,7 @@ export function createHandler(server: DaemonServer) {
       capText(body, maxChars),
       "",
       "Full details:",
-      `exo history ${childConvId} --full`,
+      `Use the native exo tool with action=history, conversation_id=${childConvId}, full=true.`,
     ].join("\n");
   };
 
@@ -230,6 +235,29 @@ export function createHandler(server: DaemonServer) {
       log("error", `handler: parent notification send failed for ${parent.convId}: ${msg}`);
     });
   };
+
+  exocortexRuntime = createExocortexToolRuntime({
+    server,
+    runTurn: (convId, text) => {
+      const turn = orchestrateSendMessage(
+        server,
+        null,
+        undefined,
+        convId,
+        text,
+        Date.now(),
+        buildOrchestrationCallbacks(convId),
+      );
+      maybeStartAutoTitleGeneration(convId);
+      return turn;
+    },
+    notifyParent: (parentConvId, childConvId, task, outcome) => {
+      deliverParentNotification({ convId: parentConvId }, childConvId, task, outcome);
+    },
+    cannotStart: (provider) => provider === "openai" && openAIAccountMutationInFlight
+      ? "Cannot start or change an OpenAI conversation while account authentication is still in progress."
+      : null,
+  });
 
   // ── Compact conversation payload helpers ─────────────────────────
 
@@ -614,14 +642,25 @@ export function createHandler(server: DaemonServer) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Already streaming" });
             break;
           }
+          const trackedParentId = cmd.notifyParent?.convId;
+          if (trackedParentId && setSubagentActive(trackedParentId, cmd.convId, true)) {
+            broadcastConversationUpdated(server, trackedParentId);
+          }
+          const finishTrackedSubagent = () => {
+            if (trackedParentId && setSubagentActive(trackedParentId, cmd.convId, false)) {
+              broadcastConversationUpdated(server, trackedParentId);
+            }
+          };
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
           const turn = orchestrateSendMessage(
             server, null, undefined, cmd.convId, cmd.text, cmd.startedAt, callbacks, cmd.images,
           );
           maybeStartAutoTitleGeneration(cmd.convId);
           void turn.then((outcome) => {
+            finishTrackedSubagent();
             if (cmd.notifyParent) deliverParentNotification(cmd.notifyParent, cmd.convId, cmd.text, outcome);
           }).catch((err) => {
+            finishTrackedSubagent();
             const message = err instanceof Error ? err.message : String(err);
             log("error", `handler: detached send failed for ${cmd.convId}: ${message}`);
             if (cmd.notifyParent) {
@@ -1080,11 +1119,14 @@ export function createHandler(server: DaemonServer) {
       // ── Utility/tool/auth commands ────────────────────────────────
 
       case "get_system_prompt": {
-        const instructions = cmd.convId ? convStore.getSystemInstructions(cmd.convId) : null;
+        const instructions = cmd.convId ? convStore.getEffectiveSystemInstructions(cmd.convId) : null;
         server.sendTo(client, {
           type: "system_prompt",
           reqId: cmd.reqId,
-          systemPrompt: buildSystemPrompt(instructions ?? undefined),
+          systemPrompt: buildSystemPrompt({
+            conversationInstructions: instructions ?? undefined,
+            conversationId: cmd.convId,
+          }),
         });
         break;
       }

@@ -22,6 +22,20 @@ describe("tool availability", () => {
     expect(buildToolSystemHints()).not.toContain("Use audio transcription");
   });
 
+  test("native exo management is available while transcription remains external", () => {
+    const definition = getToolDefs().find((tool) => tool.name === "exo");
+    expect(definition).toBeTruthy();
+    const actionEnum = (definition?.input_schema.properties as Record<string, { enum?: string[] }>).action.enum;
+    expect(actionEnum).toContain("send");
+    expect(actionEnum).toContain("commands");
+    expect(actionEnum).not.toContain("transcribe");
+    expect(actionEnum).not.toContain("llm");
+    expect(actionEnum).not.toContain("folder_mkdir");
+    expect(JSON.stringify(definition?.input_schema)).not.toContain("system_prompt");
+    expect(getToolDisplayInfo().find((tool) => tool.name === "exo")?.label).toBe("Exocortex");
+    expect(buildToolSystemHints()).toContain("Use the native `exo` tool");
+  });
+
   test("tool schemas avoid OpenAI-rejected top-level JSON Schema composition keywords", () => {
     const forbiddenTopLevelKeywords = ["oneOf", "anyOf", "allOf", "enum", "not"];
 

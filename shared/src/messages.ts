@@ -293,6 +293,10 @@ export interface ConversationSummary {
   sortOrder: number;
   /** Folder containing this conversation. Null means the sidebar root. */
   folderId?: string | null;
+  /** Ephemeral number of child subagent turns currently running for this conversation. */
+  subagentCount?: number;
+  /** Ephemeral number of detached background tool processes currently running for this conversation. */
+  backgroundTaskCount?: number;
 }
 
 export interface FolderSummary {

@@ -17,6 +17,7 @@ import { edit } from "./edit";
 import { patch } from "./patch";
 import { browse } from "./browse";
 import { goal } from "./goal";
+import { exo } from "./exo";
 import { computerUseTools } from "./computer-use";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage, isToolTimeoutReason, toolTimeoutReason } from "../abort";
@@ -36,6 +37,7 @@ const TOOLS: Tool[] = [
   patch,
   browse,
   goal,
+  exo,
   ...computerUseTools,
 ];
 

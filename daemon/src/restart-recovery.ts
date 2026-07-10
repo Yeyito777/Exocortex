@@ -8,6 +8,7 @@ import * as convStore from "./conversations";
 import { handleUsageHeaders, refreshUsage } from "./usage";
 import { getDefaultProvider } from "./providers/registry";
 import { getTokenStatsSnapshot } from "./token-stats";
+import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
 
 const INTERRUPTED_STREAMS_FILE_VERSION = 1;
 const ACTIVE_GOAL_RESTART_FILE_VERSION = 1;
@@ -198,6 +199,7 @@ function buildRecoveryCallbacks(server: DaemonServer, convId: string) {
       refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
       broadcastTokenStats();
     },
+    exocortex: getExocortexToolRuntime(server),
   };
 }
 

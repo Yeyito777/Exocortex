@@ -151,6 +151,33 @@ describe("bash explicit backgrounding", () => {
     rmSync(spillPath!, { force: true });
   });
 
+  test("reports the detached process lifecycle to its conversation context", async () => {
+    const activity: Array<{ id: string; active: boolean }> = [];
+    const result = await executeBashBackgroundable({
+      command: "sleep 0.1",
+      background: true,
+    }, undefined, 60_000, {
+      conversationId: "parent-conversation",
+      setBackgroundTaskActive: (id, active) => activity.push({ id, active }),
+    });
+
+    expect(result.isError).toBe(false);
+    expect(activity).toHaveLength(1);
+    expect(activity[0]).toMatchObject({ active: true });
+    expect(activity[0].id).toMatch(/^bash:\d+$/);
+
+    for (let i = 0; i < 50 && activity.length < 2; i++) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(activity).toEqual([
+      { id: activity[0].id, active: true },
+      { id: activity[0].id, active: false },
+    ]);
+
+    const spillPath = result.output.match(/Output is being written to: (\S+)/)?.[1];
+    if (spillPath) rmSync(spillPath, { force: true });
+  });
+
   test("rejects conflicting background and await parameters before spawning", async () => {
     const result = await executeBashBackgroundable({
       command: "echo should-not-run",

@@ -19,7 +19,7 @@ function loadUserAddendum(): void {
 }
 loadUserAddendum();
 
-function buildEnvironmentHeader(): string {
+function buildEnvironmentHeader(conversationId?: string): string {
   const cwd = process.cwd();
   const date = new Date().toLocaleDateString("en-US", {
     weekday: "long",
@@ -35,16 +35,21 @@ function buildEnvironmentHeader(): string {
     `- Working directory: ${cwd}`,
     `- Date: ${date}`,
     `- Platform: ${process.platform} ${process.arch}`,
+    ...(conversationId ? [`- Exocortex conversation ID: ${conversationId}`] : []),
   ].join("\n");
 }
 
-function buildPromptParts(options: {
+export interface BuildSystemPromptOptions {
+  conversationInstructions?: string;
+  conversationId?: string;
+}
+
+function buildPromptParts(options: BuildSystemPromptOptions & {
   includeToolHints: boolean;
   includeExternalHints: boolean;
-  conversationInstructions?: string;
   wrapperNote?: string;
 }): string[] {
-  const parts = [buildEnvironmentHeader()];
+  const parts = [buildEnvironmentHeader(options.conversationId)];
 
   if (options.wrapperNote) parts.push(options.wrapperNote);
 
@@ -64,10 +69,10 @@ function buildPromptParts(options: {
   return parts;
 }
 
-export function buildSystemPrompt(conversationInstructions?: string): string {
+export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): string {
   return buildPromptParts({
     includeToolHints: true,
     includeExternalHints: true,
-    conversationInstructions,
+    ...options,
   }).join("\n\n");
 }
