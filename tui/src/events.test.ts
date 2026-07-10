@@ -75,6 +75,29 @@ describe("context compaction status events", () => {
     }, state, daemon);
     expect(state.messages.filter((message) => message.role === "system")).toHaveLength(1);
   });
+
+  test("immediately locks user messages represented by a completed compaction", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages.push({
+      role: "user",
+      text: "now represented",
+      metadata: null,
+      contextCheckpoint: { contextTokens: 123_000, editable: true },
+    });
+
+    handleEvent({
+      type: "context_compaction_status",
+      convId: "conv-1",
+      active: false,
+      completedAt: 456,
+    }, state, daemon);
+
+    expect(state.messages[0]).toMatchObject({
+      role: "user",
+      contextCheckpoint: { contextTokens: 123_000, editable: false },
+    });
+  });
 });
 
 function summary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {

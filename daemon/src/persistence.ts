@@ -15,11 +15,11 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, rename
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
 import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal } from "./messages";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, MAX_EXO_SUBAGENT_DEPTH, isValidActiveContext, sortConversations, summarizeConversation } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, MAX_EXO_SUBAGENT_DEPTH, activeContextCompactionHistoryCount, historyPrefixHash, isValidActiveContext, sortConversations, summarizeConversation } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 15;
+const CURRENT_VERSION = 16;
 
 interface ConversationFileV1 {
   version: 1;
@@ -213,7 +213,11 @@ interface ConversationFileV15 extends Omit<ConversationFileV14, "version"> {
   subagentMaxDepth: number | null;
 }
 
-type ConversationFile = ConversationFileV15;
+interface ConversationFileV16 extends Omit<ConversationFileV15, "version"> {
+  version: 16;
+}
+
+type ConversationFile = ConversationFileV16;
 
 function normalizeProviderId(provider: unknown): ProviderId {
   return typeof provider === "string" && (DEFAULT_PROVIDER_ORDER as readonly string[]).includes(provider)
@@ -374,6 +378,31 @@ function migrateV14toV15(data: ConversationFileV14): ConversationFileV15 {
   };
 }
 
+/** v15 → v16: Persist the fixed cursor of legacy active compaction windows. */
+function migrateV15toV16(data: ConversationFileV15): ConversationFileV16 {
+  const activeContext = data.activeContext && isValidActiveContext(data.activeContext, data.messages)
+    ? structuredClone(data.activeContext)
+    : data.activeContext;
+  if (activeContext && isValidActiveContext(activeContext, data.messages)) {
+    const compactionHistoryCount = activeContextCompactionHistoryCount(activeContext, data.messages);
+    if (compactionHistoryCount != null) {
+      const legacyTailCount = activeContext.transcriptHistoryCount - compactionHistoryCount;
+      if (legacyTailCount > 0) {
+        activeContext.messages.splice(activeContext.messages.length - legacyTailCount, legacyTailCount);
+        activeContext.transcriptHistoryCount = compactionHistoryCount;
+        activeContext.transcriptPrefixHash = historyPrefixHash(data.messages, compactionHistoryCount);
+      }
+      activeContext.compactionHistoryCount = compactionHistoryCount;
+      activeContext.compactionPrefixHash = historyPrefixHash(data.messages, compactionHistoryCount);
+    }
+  }
+  return {
+    ...data,
+    version: 16,
+    activeContext,
+  };
+}
+
 function migrate(raw: Record<string, unknown>): ConversationFile {
   // Progressive migration — each function validates and upgrades one version.
   // `any` is intentional at this deserialization boundary: the data is parsed
@@ -394,6 +423,7 @@ function migrate(raw: Record<string, unknown>): ConversationFile {
   if (data.version < 13) data = migrateV12toV13(data);
   if (data.version < 14) data = migrateV13toV14(data);
   if (data.version < 15) data = migrateV14toV15(data);
+  if (data.version < 16) data = migrateV15toV16(data);
 
   if (data.version !== CURRENT_VERSION) {
     log("warn", `persistence: unknown schema version ${data.version}, attempting to load as v${CURRENT_VERSION}`);

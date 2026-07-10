@@ -572,6 +572,8 @@ describe("save / load round-trip", () => {
       }],
       transcriptHistoryCount: 2,
       transcriptPrefixHash: historyPrefixHash(conv.messages, 2),
+      compactionHistoryCount: 2,
+      compactionPrefixHash: historyPrefixHash(conv.messages, 2),
       windowId: `${id}:1`,
       windowNumber: 1,
       compactedAt: 13_500_001,
@@ -580,6 +582,71 @@ describe("save / load round-trip", () => {
 
     save(conv);
     expect(load(id)).toEqual(conv);
+  });
+
+  test("migrates a v15 compaction divider into a fixed rewind boundary", () => {
+    const id = mkId("active-context-boundary-migration");
+    const messages: Conversation["messages"] = [
+      { role: "user", content: "represented", metadata: null },
+      { role: "assistant", content: "represented answer", metadata: null },
+      {
+        role: "system",
+        content: CONTEXT_COMPACTION_FINISHED_TEXT,
+        metadata: {
+          startedAt: 123,
+          endedAt: 123,
+          model: "gpt-5.6-sol",
+          tokens: 0,
+          kind: CONTEXT_COMPACTION_FINISHED_KIND,
+        },
+      },
+      { role: "user", content: "tail", metadata: null },
+    ];
+    writeFixture(id, {
+      version: 15,
+      id,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      fastMode: false,
+      messages,
+      activeContext: {
+        version: 1,
+        kind: "openai_native",
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        messages: [
+          {
+            role: "assistant",
+            content: [],
+            providerData: { openai: { compactionItems: [{ encryptedContent: "opaque" }] } },
+          },
+          { role: "user", content: "tail" },
+        ],
+        transcriptHistoryCount: 3,
+        transcriptPrefixHash: historyPrefixHash(messages, 3),
+        windowId: `${id}:1`,
+        windowNumber: 1,
+        compactedAt: 123,
+        compactionCount: 1,
+      },
+      createdAt: 1,
+      updatedAt: 2,
+      lastContextTokens: 10,
+      marked: false,
+      pinned: false,
+      sortOrder: -2,
+      folderId: null,
+      title: "Legacy boundary",
+      goal: null,
+      subagentMaxDepth: null,
+    });
+
+    const loaded = load(id);
+    expect(loaded?.activeContext?.compactionHistoryCount).toBe(2);
+    expect(loaded?.activeContext?.compactionPrefixHash).toBe(historyPrefixHash(messages, 2));
+    expect(loaded?.activeContext?.transcriptHistoryCount).toBe(2);
+    expect(loaded?.activeContext?.messages).toHaveLength(1);
   });
 
   test("discards a stale compact replay but keeps the full transcript loadable", () => {

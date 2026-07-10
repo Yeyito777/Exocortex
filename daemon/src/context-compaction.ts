@@ -164,6 +164,7 @@ function asApiMessage(
     metadata: structuredClone(message.metadata),
     providerData: stripProviderScopedData ? undefined : structuredClone(message.providerData),
     contextTokens: structuredClone(message.contextTokens),
+    contextCheckpoint: structuredClone(message.contextCheckpoint),
   };
 }
 

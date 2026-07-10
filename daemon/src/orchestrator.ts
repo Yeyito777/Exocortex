@@ -15,7 +15,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContext, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContext, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
@@ -117,6 +117,7 @@ function toStoredMessages(messages: import("./messages").ApiMessage[]): StoredMe
     metadata: m.metadata ?? null,
     providerData: m.providerData,
     contextTokens: m.contextTokens ?? null,
+    ...(m.contextCheckpoint ? { contextCheckpoint: m.contextCheckpoint } : {}),
   }));
 }
 
@@ -302,8 +303,10 @@ async function orchestrateAssistantTurn(
   // ── Start stream and broadcast initial state ──────────────────────
 
   if (userMessage) {
+    const contextCheckpoint = createStoredUserContextCheckpoint(conv);
     conv.messages.push(createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images, {
       subagentNotificationId: options.subagentNotificationId,
+      contextCheckpoint,
     }));
 
     // Notify subscribers about the user message.
@@ -560,7 +563,13 @@ async function orchestrateAssistantTurn(
 
   function syncActiveContext(messages: ApiMessage[]): void {
     const previous = liveConv.activeContext;
-    if (!previous && compactionsThisTurn === 0) return;
+    // activeContext is the immutable output of the latest compaction, not a
+    // second copy of all later turns. Ordinary success/abort paths call this
+    // helper too, but their canonical transcript tail is replayed directly by
+    // buildConversationApiContext and must not overwrite the rewind base.
+    const installingNewCompaction = compactionsThisTurn > 0
+      && previous?.windowId !== currentWindowId;
+    if (!installingNewCompaction) return;
     const checkpointAccountScope = compactionsThisTurn > 0
       ? latestCompactionAccountScope
       : previous?.accountScope ?? accountScope;
@@ -574,6 +583,8 @@ async function orchestrateAssistantTurn(
       messages: structuredClone(messages),
       transcriptHistoryCount,
       transcriptPrefixHash: historyPrefixHash(liveConv.messages, transcriptHistoryCount),
+      compactionHistoryCount: transcriptHistoryCount,
+      compactionPrefixHash: historyPrefixHash(liveConv.messages, transcriptHistoryCount),
       windowId: currentWindowId,
       windowNumber: currentWindowNumber,
       compactedAt: latestCompactedAt ?? previous!.compactedAt,
@@ -852,13 +863,34 @@ async function orchestrateAssistantTurn(
       hadNextTurnInjections = true;
       const apiMsgs: import("./messages").ApiMessage[] = [];
       const injectedStored: StoredMessage[] = [];
+      // Multiple queued prompts can be accepted in one drain. Build each rewind
+      // cursor against the preceding accepted prompt, even though persistence is
+      // intentionally batched below.
+      const checkpointTranscript = [...liveConv.messages];
+      let checkpointContextTokens = Math.max(
+        liveConv.lastContextTokens ?? 0,
+        estimateContextTokens(agentState.contextMessages, liveConv.provider),
+      );
       for (const qm of drained) {
         const injectedStartedAt = Date.now();
+        const contextCheckpoint = createStoredUserContextCheckpoint(
+          liveConv,
+          checkpointTranscript,
+          checkpointContextTokens,
+        );
         const storedUser = createStoredUserMessage(qm.text, conv.model, injectedStartedAt, qm.images, {
           subagentNotificationId: qm.subagentNotificationId,
+          contextCheckpoint,
         });
-        apiMsgs.push({ role: "user", content: storedUser.content, metadata: storedUser.metadata });
+        apiMsgs.push({
+          role: "user",
+          content: storedUser.content,
+          metadata: storedUser.metadata,
+          contextCheckpoint: storedUser.contextCheckpoint,
+        });
         injectedStored.push(storedUser);
+        checkpointTranscript.push(storedUser);
+        checkpointContextTokens += estimateContextTokens([apiMsgs.at(-1)!], liveConv.provider);
         log("info", `orchestrator: injected next-turn message: "${qm.text.slice(0, 50)}"`);
       }
 
@@ -1010,6 +1042,7 @@ async function orchestrateAssistantTurn(
       metadata: m.metadata ?? null,
       providerData: m.providerData,
       contextTokens: m.contextTokens ?? null,
+      ...(m.contextCheckpoint ? { contextCheckpoint: m.contextCheckpoint } : {}),
     }));
     const lastAssistant = [...storedMessages].reverse().find(m => m.role === "assistant");
     if (lastAssistant) {
@@ -1093,6 +1126,7 @@ async function orchestrateAssistantTurn(
       metadata: m.metadata ?? null,
       providerData: m.providerData,
       contextTokens: m.contextTokens ?? null,
+      ...(m.contextCheckpoint ? { contextCheckpoint: m.contextCheckpoint } : {}),
     }));
     if (completedStored.length > 0) {
       // Stamp metadata on the last completed assistant — mirrors the success path.

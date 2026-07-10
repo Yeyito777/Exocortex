@@ -94,6 +94,61 @@ describe("buildDisplayData — return shape", () => {
     expect(result.contextTokens).toBeNull();
   });
 
+  test("projects compaction edit locks and user context checkpoints", () => {
+    const messages: StoredMessage[] = [
+      {
+        role: "user",
+        content: "represented",
+        metadata: null,
+        contextCheckpoint: {
+          version: 1,
+          provider: "openai",
+          model: "gpt-5.5",
+          windowId: null,
+          transcriptHistoryCount: 0,
+          transcriptPrefixHash: "0".repeat(24),
+          contextTokens: 10,
+        },
+      },
+      { role: "assistant", content: "answer", metadata: null },
+      {
+        role: "user",
+        content: "tail",
+        metadata: null,
+        contextCheckpoint: {
+          version: 1,
+          provider: "openai",
+          model: "gpt-5.5",
+          windowId: "conv-1:1",
+          transcriptHistoryCount: 2,
+          transcriptPrefixHash: "1".repeat(24),
+          contextTokens: 12_345,
+        },
+      },
+    ];
+
+    const result = buildDisplayData(
+      "conv-1",
+      "openai",
+      "gpt-5.5",
+      "high",
+      false,
+      messages,
+      20_000,
+      summarizer,
+      { editableUserHistoryStart: 2 },
+    );
+
+    expect(result.entries[0]).toMatchObject({
+      type: "user",
+      contextCheckpoint: { editable: false, contextTokens: 10 },
+    });
+    expect(result.entries[2]).toMatchObject({
+      type: "user",
+      contextCheckpoint: { editable: true, contextTokens: 12_345 },
+    });
+  });
+
   test("empty messages → empty entries", () => {
     expect(build([]).entries).toHaveLength(0);
   });

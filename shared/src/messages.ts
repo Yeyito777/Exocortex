@@ -224,6 +224,16 @@ export interface UserMessage {
   text: string;
   images?: ImageAttachment[];
   metadata: MessageMetadata | null;
+  /** Daemon-owned rewind point for Ctrl-W history editing. */
+  contextCheckpoint?: UserMessageContextCheckpoint;
+}
+
+/** Safe client projection of the context immediately before a user message. */
+export interface UserMessageContextCheckpoint {
+  /** Last provider-reported (or daemon-estimated) context at this rewind point. */
+  contextTokens: number | null;
+  /** False when the message is represented by the latest irreversible compaction. */
+  editable: boolean;
 }
 
 export interface AIMessage {
