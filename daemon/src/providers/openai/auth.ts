@@ -10,7 +10,7 @@ import {
   verifyAuth as verifyStoredSession,
 } from "./session";
 import { AuthError } from "../errors";
-import type { EnsureAuthResult, LoginCallbacks, LoginResult } from "../types";
+import type { EnsureAuthResult, LoginCallbacks, LoginOptions, LoginResult } from "../types";
 import { createHash } from "node:crypto";
 
 export interface StoredOpenAIAuthPool extends StoredOpenAIAuth {
@@ -150,19 +150,62 @@ function saveStoredAuth(auth: StoredOpenAIAuth): void {
   saveStoredAuthPool(pool);
 }
 
+function authSessionFingerprint(stored: StoredOpenAIAuth | null | undefined): string | null {
+  if (!stored) return null;
+  return `sha256:${createHash("sha256").update(JSON.stringify([
+    stored.accountId,
+    stored.profile?.accountUuid,
+    stored.tokens.accessToken,
+    stored.tokens.refreshToken,
+  ])).digest("hex").slice(0, 32)}`;
+}
+
+function isCurrentStoredSession(stored: StoredOpenAIAuth): boolean {
+  return authSessionFingerprint(loadStoredAuth()) === authSessionFingerprint(stored);
+}
+
 function persistIfChanged(current: StoredOpenAIAuth, next: StoredOpenAIAuth): void {
   if (JSON.stringify(current) !== JSON.stringify(next)) {
     saveStoredAuth(next);
   }
 }
 
-async function enrichAndPersistAuth(auth: StoredOpenAIAuth): Promise<StoredOpenAIAuth> {
+async function enrichAndPersistAuth(auth: StoredOpenAIAuth): Promise<StoredOpenAIAuth | null> {
   const enriched = await enrichStoredAuth(auth);
+  if (!isCurrentStoredSession(auth)) return null;
   persistIfChanged(auth, enriched);
   return enriched;
 }
 
 const inflightRefreshes = new Map<string, Promise<StoredOpenAIAuth>>();
+const rejectedRefreshTokens = new Map<string, string>();
+let browserOAuthForTest: typeof runOpenAIBrowserOAuth | null = null;
+
+function refreshTokenFingerprint(refreshToken: string): string {
+  return createHash("sha256").update(refreshToken).digest("hex");
+}
+
+function rejectedRefreshMessage(refreshToken: string): string | null {
+  return rejectedRefreshTokens.get(refreshTokenFingerprint(refreshToken)) ?? null;
+}
+
+/**
+ * Non-secret fingerprint used to discard sockets carrying superseded auth.
+ * Deriving it from persisted credentials also notices a login performed by a
+ * separate Exocortex CLI process, without exposing token material to callers.
+ */
+export function getOpenAIAuthSessionRevision(): string | null {
+  return authSessionFingerprint(loadStoredAuth());
+}
+
+export function setOpenAIBrowserOAuthForTest(override: typeof runOpenAIBrowserOAuth | null): void {
+  browserOAuthForTest = override;
+  if (override === null) rejectedRefreshTokens.clear();
+}
+
+function runBrowserOAuth(callbacks?: LoginCallbacks) {
+  return (browserOAuthForTest ?? runOpenAIBrowserOAuth)(callbacks);
+}
 
 export async function refreshTokens(refreshToken: string): Promise<StoredTokens> {
   const refreshed = await refreshStoredAuth(refreshToken);
@@ -173,6 +216,8 @@ async function refreshStoredAuth(
   refreshToken: string,
   opts?: { source?: StoredOpenAIAuth["source"]; accountId?: string | null; authMode?: string | null; fallbackIdToken?: string | null },
 ): Promise<StoredOpenAIAuth> {
+  const previousRejection = rejectedRefreshMessage(refreshToken);
+  if (previousRejection) throw new Error(previousRejection);
   const existing = inflightRefreshes.get(refreshToken);
   if (existing) return existing;
 
@@ -193,6 +238,12 @@ async function refreshStoredAuth(
 
     const text = await res.text();
     if (!res.ok) {
+      if (/invalid_grant|refresh_token_(?:reused|invalidated)/i.test(text)) {
+        rejectedRefreshTokens.set(
+          refreshTokenFingerprint(refreshToken),
+          `Token refresh failed (${res.status}): ${text}`,
+        );
+      }
       if (res.status === 400 && text.includes("invalid_grant")) {
         throw new AuthError(`Session expired — use login to re-authenticate. (${text})`);
       }
@@ -213,19 +264,22 @@ async function refreshStoredAuth(
   return inflightRefresh;
 }
 
-export async function ensureAuthenticated(callbacks?: LoginCallbacks): Promise<EnsureAuthResult> {
+export async function ensureAuthenticated(callbacks?: LoginCallbacks, options?: LoginOptions): Promise<EnsureAuthResult> {
   const say = callbacks?.onProgress ?? (() => {});
   const stored = loadStoredAuth();
+  const storedRefreshRejected = !!stored?.tokens?.refreshToken
+    && rejectedRefreshMessage(stored.tokens.refreshToken) !== null;
 
-  if (stored?.tokens?.accessToken && !isTokenExpired(stored.tokens)) {
+  if (stored?.tokens?.accessToken && !storedRefreshRejected && !isTokenExpired(stored.tokens)) {
     say("Checking stored OpenAI session...");
     if (await verifyStoredSession(stored.tokens.accessToken, stored.accountId)) {
       const enriched = await enrichAndPersistAuth(stored);
+      if (!enriched) return ensureAuthenticated(callbacks, options);
       return { status: "already_authenticated", email: enriched.profile?.email ?? null };
     }
   }
 
-  if (stored?.tokens?.refreshToken) {
+  if (stored?.tokens?.refreshToken && !storedRefreshRejected) {
     say("Refreshing stored OpenAI session...");
     try {
       const refreshed = await refreshStoredAuth(stored.tokens.refreshToken, {
@@ -234,6 +288,7 @@ export async function ensureAuthenticated(callbacks?: LoginCallbacks): Promise<E
         authMode: stored.authMode,
         fallbackIdToken: stored.idToken,
       });
+      if (!isCurrentStoredSession(stored)) return ensureAuthenticated(callbacks, options);
       saveStoredAuth(refreshed);
       return { status: "refreshed", email: refreshed.profile?.email ?? null };
     } catch {
@@ -241,7 +296,14 @@ export async function ensureAuthenticated(callbacks?: LoginCallbacks): Promise<E
     }
   }
 
-  const result = await login(callbacks);
+  if (storedRefreshRejected) say("Stored OpenAI session was rejected; re-authenticating...");
+  if (!stored && options?.requireSameAccount) {
+    throw new AuthError("Cannot safely authenticate active OpenAI turns because their current account credentials are missing.");
+  }
+
+  const result = stored
+    ? await replaceCurrentAccount(stored, callbacks, options?.requireSameAccount === true)
+    : await login(callbacks);
   return { status: "logged_in", email: result.profile?.email ?? null };
 }
 
@@ -255,7 +317,7 @@ export async function login(callbacks?: LoginCallbacks | ((msg: string) => void)
 export async function addAccount(callbacks?: LoginCallbacks | ((msg: string) => void)): Promise<LoginResult> {
   const cbs = typeof callbacks === "function" ? { onProgress: callbacks } : callbacks ?? {};
 
-  const token = await runOpenAIBrowserOAuth(cbs);
+  const token = await runBrowserOAuth(cbs);
   const auth = await buildStoredAuth(token, "oauth");
 
   const pool = loadStoredAuthPool();
@@ -268,6 +330,91 @@ export async function addAccount(callbacks?: LoginCallbacks | ((msg: string) => 
     pool.accounts.push(auth);
     pool.currentIndex = pool.accounts.length - 1;
   }
+  saveStoredAuthPool(pool);
+  return {
+    tokens: auth.tokens,
+    profile: auth.profile,
+  };
+}
+
+function hasStableAccountIdentity(auth: StoredOpenAIAuth | null | undefined): boolean {
+  return !!(auth?.accountId?.trim() || auth?.profile?.accountUuid?.trim() || auth?.profile?.email?.trim());
+}
+
+function accountsRepresentSameIdentity(
+  expected: StoredOpenAIAuth | null | undefined,
+  replacement: StoredOpenAIAuth | null | undefined,
+): boolean {
+  if (!expected || !replacement) return false;
+  const expectedAccountId = expected.accountId?.trim() || null;
+  const replacementAccountId = replacement.accountId?.trim() || null;
+  // ChatGPT-Account-ID is the strongest identity and scopes encrypted replay.
+  // If both logins resolved one, an email match must not hide a workspace change.
+  if (expectedAccountId && replacementAccountId) return expectedAccountId === replacementAccountId;
+
+  const expectedEmail = expected.profile?.email?.trim().toLowerCase() || null;
+  const replacementEmail = replacement.profile?.email?.trim().toLowerCase() || null;
+  if (expectedEmail && replacementEmail && expectedEmail === replacementEmail) return true;
+
+  const expectedProfileId = expected.profile?.accountUuid?.trim() || null;
+  const replacementProfileId = replacement.profile?.accountUuid?.trim() || null;
+  return !!expectedProfileId && expectedProfileId === replacementProfileId;
+}
+
+function preserveCurrentAccountScope(
+  expected: StoredOpenAIAuth,
+  replacement: StoredOpenAIAuth,
+): StoredOpenAIAuth {
+  if (replacement.accountId) return replacement;
+  const accountId = expected.accountId;
+  const accountUuid = expected.profile?.accountUuid || accountId || replacement.profile?.accountUuid || "";
+  return {
+    ...replacement,
+    accountId,
+    profile: replacement.profile ? {
+      ...replacement.profile,
+      accountUuid,
+      email: replacement.profile.email || expected.profile?.email || "",
+    } : expected.profile,
+  };
+}
+
+async function replaceCurrentAccount(
+  expected: StoredOpenAIAuth,
+  callbacks?: LoginCallbacks,
+  requireSameAccount = false,
+): Promise<LoginResult> {
+  if (requireSameAccount && !hasStableAccountIdentity(expected)) {
+    throw new AuthError("Cannot safely re-authenticate an active OpenAI turn because the current account identity is unknown.");
+  }
+
+  const token = await runBrowserOAuth(callbacks ?? {});
+  const browserAuth = await buildStoredAuth(token, "oauth");
+  if (hasStableAccountIdentity(expected) && !accountsRepresentSameIdentity(expected, browserAuth)) {
+    throw new AuthError(
+      "Reauthentication returned a different OpenAI account. Sign in with the current account, or use `/login openai add` after active OpenAI turns finish.",
+    );
+  }
+  if (requireSameAccount && !hasStableAccountIdentity(browserAuth)) {
+    throw new AuthError("OpenAI did not return enough account information to safely resume active turns.");
+  }
+  const auth = preserveCurrentAccountScope(expected, browserAuth);
+
+  // Reload after browser OAuth: active requests may have refreshed the same
+  // account while the callback was pending. Account mutations are blocked by
+  // the handler, but verify that invariant before replacing anything on disk.
+  const pool = loadStoredAuthPool();
+  const currentIndex = normalizeCurrentIndex(pool.currentIndex, pool.accounts.length);
+  const current = pool.accounts[currentIndex];
+  if (!current) {
+    throw new AuthError("The current OpenAI account was removed while reauthentication was in progress.");
+  }
+  if (hasStableAccountIdentity(expected) && !accountsRepresentSameIdentity(expected, current)) {
+    throw new AuthError("The selected OpenAI account changed while reauthentication was in progress. Please retry `/login openai`.");
+  }
+
+  pool.accounts[currentIndex] = auth;
+  pool.currentIndex = currentIndex;
   saveStoredAuthPool(pool);
   return {
     tokens: auth.tokens,
@@ -342,7 +489,6 @@ export function removeAccount(identifier?: string): OpenAIAccountSummary {
     pool.currentIndex = normalizeCurrentIndex(pool.currentIndex, pool.accounts.length);
     saveStoredAuthPool(pool);
   }
-
   return summary;
 }
 
@@ -438,6 +584,7 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
     && await verifyStoredSession(stored.tokens.accessToken, stored.accountId)
   ) {
     const enriched = await enrichStoredAuth(stored);
+    if (!isCurrentStoredSession(stored)) return getVerifiedSession();
     saveAccountAt(index, enriched);
     return cacheVerifiedSession({ accessToken: enriched.tokens.accessToken, accountId: enriched.accountId, accountKey: getAccountKey(enriched) });
   }
@@ -449,17 +596,19 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
       authMode: stored.authMode,
       fallbackIdToken: stored.idToken,
     });
+    if (!isCurrentStoredSession(stored)) return getVerifiedSession();
     saveAccountAt(index, refreshed);
     return cacheVerifiedSession({ accessToken: refreshed.tokens.accessToken, accountId: refreshed.accountId, accountKey: getAccountKey(refreshed) });
   }
 
   if (stored?.tokens?.accessToken && await verifyStoredSession(stored.tokens.accessToken, stored.accountId)) {
     const enriched = await enrichStoredAuth(stored);
+    if (!isCurrentStoredSession(stored)) return getVerifiedSession();
     saveAccountAt(index, enriched);
     return cacheVerifiedSession({ accessToken: enriched.tokens.accessToken, accountId: enriched.accountId, accountKey: getAccountKey(enriched) });
   }
 
-  throw new AuthError("Current OpenAI account could not be verified. Use `/account <email>` or `/login openai add`.");
+  throw new AuthError("Current OpenAI account could not be verified. Use `/login openai` to re-authenticate it, or `/account <email>` to switch accounts.");
 }
 
 export function getCurrentAccountKey(): string | null {

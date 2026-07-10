@@ -49,7 +49,8 @@ function summarizeExoParams(primary: string, input: Record<string, unknown>, ski
 
 const EXO_SYSTEM_HINT = [
   "Use the native `exo` tool for the current daemon and its subagents.",
-  "Use subagents only when parallel work would materially improve speed or quality; otherwise, do not use them.",
+  "Default to doing the work yourself; use subagents only for multiple substantial, independent workstreams that can run concurrently, or for a genuinely hard problem where an independent second analysis is likely to materially improve the result—not merely to offload routine work.",
+  "When an OpenAI subagent is otherwise warranted, omit `model` for the newest default (currently gpt-5.6-sol), use gpt-5.6-terra or gpt-5.6-luna for lighter/grunt work that doesn't require intelligence at all, and use older generations only when requested or required.",
   "Set max_depth=0 unless a subagent clearly needs to delegate further.",
   "Subagents start in the daemon's working directory, so include the target absolute directory in tasks when relevant.",
 ].join("\n");

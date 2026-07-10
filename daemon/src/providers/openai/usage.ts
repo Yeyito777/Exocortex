@@ -1,7 +1,6 @@
 import { join } from "path";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { runtimeDir } from "@exocortex/shared/paths";
-import { log } from "../../log";
 import type { UsageData, UsageWindow } from "../../messages";
 import { getCurrentAccountKey } from "./auth";
 
@@ -54,7 +53,6 @@ function saveToDisk(store: UsageStore): void {
 }
 
 let usageStore: UsageStore = loadFromDisk();
-let resetTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function getLastUsage(): UsageData | null {
   return usageForCurrentAccount();
@@ -62,10 +60,6 @@ export function getLastUsage(): UsageData | null {
 
 export function clearUsage(): void {
   usageStore = { version: 2, byAccount: {} };
-  if (resetTimer) {
-    clearTimeout(resetTimer);
-    resetTimer = null;
-  }
   try {
     if (existsSync(USAGE_FILE)) unlinkSync(USAGE_FILE);
   } catch {
@@ -93,66 +87,21 @@ function isCurrentAccount(accountKey: string): boolean {
   return accountKey === currentAccountKey();
 }
 
-function clearResetTimer(): void {
-  if (!resetTimer) return;
-  clearTimeout(resetTimer);
-  resetTimer = null;
-}
-
 function commitUsageForAccount(accountKey: string, usage: UsageData, onUpdate: (usage: UsageData) => void): void {
   usageStore.byAccount[accountKey] = usage;
   saveToDisk(usageStore);
   if (isCurrentAccount(accountKey)) {
     onUpdate(usage);
-    scheduleResetRefresh(accountKey, onUpdate);
   }
-}
-
-function scheduleResetRefresh(accountKey: string, onUpdate: (usage: UsageData) => void): void {
-  clearResetTimer();
-
-  const now = Date.now();
-  const lastUsage = usageForAccount(accountKey);
-  const candidates = [lastUsage?.fiveHour?.resetsAt, lastUsage?.sevenDay?.resetsAt]
-    .filter((timestamp): timestamp is number => timestamp != null && timestamp > now);
-
-  if (candidates.length === 0) return;
-
-  const earliest = Math.min(...candidates);
-  const delay = earliest - now + 5_000;
-  resetTimer = setTimeout(() => {
-    resetTimer = null;
-    if (!lastUsage) return;
-    const nextUsage = {
-      fiveHour: normalizeExpiredWindow(lastUsage.fiveHour, Date.now()),
-      sevenDay: normalizeExpiredWindow(lastUsage.sevenDay, Date.now()),
-    };
-    if (JSON.stringify(nextUsage) === JSON.stringify(lastUsage)) {
-      if (isCurrentAccount(accountKey)) scheduleResetRefresh(accountKey, onUpdate);
-      return;
-    }
-    log("info", "openai usage: reset boundary reached, zeroing expired windows");
-    commitUsageForAccount(accountKey, nextUsage, onUpdate);
-  }, delay);
-}
-
-function normalizeExpiredWindow(window: UsageWindow | null, now: number): UsageWindow | null {
-  if (!window) return null;
-  if (window.resetsAt != null && window.resetsAt <= now) {
-    return {
-      utilization: 0,
-      resetsAt: null,
-    };
-  }
-  return window;
 }
 
 export function refreshUsage(onUpdate: (usage: UsageData | null) => void): void {
-  clearResetTimer();
   const accountKey = currentAccountKey();
   const usage = usageForAccount(accountKey);
+  // OpenAI has no standalone usage endpoint to poll at a reset boundary.
+  // Keep the last provider-observed value until the next rate-limit event
+  // instead of briefly broadcasting a synthetic 0% update.
   onUpdate(usage);
-  if (usage) scheduleResetRefresh(accountKey, onUpdate);
 }
 
 export function handleUsageHeaders(headers: Headers, onUpdate: (usage: UsageData) => void): void {

@@ -960,7 +960,14 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
       log("warn", `conversations: stream for ${id} did not stop within timeout; refusing unsafe unwind`);
       const queuedDuringWait = streaming.drainQueuedMessages(id);
       for (const queued of [...queuedBeforeAbort, ...queuedDuringWait]) {
-        streaming.pushQueuedMessage(id, queued.text, queued.timing, queued.images, queued.subagentMaxDepth);
+        streaming.pushQueuedMessage(
+          id,
+          queued.text,
+          queued.timing,
+          queued.images,
+          queued.subagentMaxDepth,
+          queued.subagentNotificationId,
+        );
       }
       const goalContinuationDuringWait = streaming.consumeGoalContinuationAfterStream(id);
       if (goalContinuationBeforeAbort || goalContinuationDuringWait) {

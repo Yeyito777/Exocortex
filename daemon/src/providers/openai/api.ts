@@ -3,7 +3,7 @@ import { createAbortError, isAbortLikeError } from "../../abort";
 import { log } from "../../log";
 import { readExocortexConfig } from "@exocortex/shared/config";
 import { createHash } from "crypto";
-import { accountScopeForKey, getCurrentAccountKey, getVerifiedSession } from "./auth";
+import { accountScopeForKey, getCurrentAccountKey, getOpenAIAuthSessionRevision, getVerifiedSession } from "./auth";
 import { AuthError, isContextWindowProviderError, isNonRetryableProviderError, NonRetryableProviderError } from "../errors";
 import { OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL } from "./constants";
 import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
@@ -176,6 +176,7 @@ interface OpenAITurnSessionState {
   socket: OpenAIWebSocketConnection | null;
   turnState: string | null;
   requestSession: OpenAIRequestSession | null;
+  authSessionRevision: string | null;
   lastFullRequestBody: Record<string, unknown> | null;
   lastResponseId: string | null;
   lastResponseOutputItems: unknown[] | null;
@@ -191,6 +192,7 @@ function createTurnSessionState(key: string | null = null): OpenAITurnSessionSta
     socket: null,
     turnState: null,
     requestSession: null,
+    authSessionRevision: null,
     lastFullRequestBody: null,
     lastResponseId: null,
     lastResponseOutputItems: null,
@@ -213,6 +215,20 @@ function resetReusableTurnSessionState(state: OpenAITurnSessionState): void {
   state.socket = null;
   state.turnState = null;
   state.requestSession = null;
+  state.authSessionRevision = null;
+  state.lastFullRequestBody = null;
+  state.lastResponseId = null;
+  state.lastResponseOutputItems = null;
+  state.inUse = false;
+}
+
+/** Drop credentials/transport while preserving this logical turn's route. */
+function resetReusableTurnSessionAuthState(state: OpenAITurnSessionState): void {
+  clearReusableTurnSessionTimer(state);
+  state.socket?.destroy();
+  state.socket = null;
+  state.requestSession = null;
+  state.authSessionRevision = null;
   state.lastFullRequestBody = null;
   state.lastResponseId = null;
   state.lastResponseOutputItems = null;
@@ -467,6 +483,7 @@ export async function streamMessageHttpWithSessionForTest(
 export class OpenAITurnSession implements ProviderTurnSession {
   private state = createTurnSessionState();
   private lastPrepareDiagnostics: StreamResult["requestDiagnostics"] | null = null;
+  private lastResolvedAuthSessionRevision: string | null = null;
 
   private adoptReusableState(options: StreamOptions): OpenAIRequestSession | null {
     const key = typeof options.promptCacheKey === "string" && options.promptCacheKey.length > 0
@@ -540,18 +557,47 @@ export class OpenAITurnSession implements ProviderTurnSession {
     opts: { forceRefresh?: boolean } = {},
   ): Promise<OpenAIRequestSession> {
     const currentAccountKey = getCurrentAccountKey();
+    const currentAuthSessionRevision = getOpenAIAuthSessionRevision();
     if (this.state.requestSession && !opts.forceRefresh) {
-      if (!currentAccountKey || this.state.requestSession.accountKey === currentAccountKey) {
+      const accountChanged = !!currentAccountKey && this.state.requestSession.accountKey !== currentAccountKey;
+      if (
+        this.state.authSessionRevision === currentAuthSessionRevision
+        && !accountChanged
+      ) {
+        this.lastResolvedAuthSessionRevision = currentAuthSessionRevision;
         return this.state.requestSession;
       }
 
-      log("info", "openai api: selected account changed; resetting cached OpenAI turn session");
+      const reason = this.state.authSessionRevision !== currentAuthSessionRevision
+        ? "OpenAI authentication changed"
+        : "selected account changed";
+      log("info", `openai api: ${reason}; resetting cached OpenAI turn session`);
+      if (accountChanged) {
+        this.state.socket?.destroy();
+        resetReusableTurnSessionState(this.state);
+      } else {
+        resetReusableTurnSessionAuthState(this.state);
+      }
+      this.state.inUse = true;
+      this.resetIncrementalStateFields();
+    }
+    const previousRequestSession = this.state.requestSession;
+    const previousAuthSessionRevision = this.state.authSessionRevision;
+    const resolvedSession = await getVerifiedSessionWithRetries(callbacks, signal, opts);
+    const resolvedAuthSessionRevision = getOpenAIAuthSessionRevision();
+    if (sessionsHaveDifferentAccounts(previousRequestSession, resolvedSession)) {
       this.state.socket?.destroy();
       resetReusableTurnSessionState(this.state);
       this.state.inUse = true;
       this.resetIncrementalStateFields();
+    } else if (previousRequestSession && previousAuthSessionRevision !== resolvedAuthSessionRevision) {
+      resetReusableTurnSessionAuthState(this.state);
+      this.state.inUse = true;
+      this.resetIncrementalStateFields();
     }
-    this.state.requestSession = await getVerifiedSessionWithRetries(callbacks, signal, opts);
+    this.state.requestSession = resolvedSession;
+    this.state.authSessionRevision = resolvedAuthSessionRevision;
+    this.lastResolvedAuthSessionRevision = this.state.authSessionRevision;
     return this.state.requestSession;
   }
 
@@ -560,14 +606,24 @@ export class OpenAITurnSession implements ProviderTurnSession {
     callbacks: StreamCallbacks,
     options: StreamOptions,
   ): Promise<OpenAIWebSocketLease> {
+    if (this.lastResolvedAuthSessionRevision !== getOpenAIAuthSessionRevision()) {
+      throw new AuthError("OpenAI authentication changed while preparing the request; reconnecting with the updated session.");
+    }
     const previousRequestSession = this.adoptReusableState(options);
-    if (sessionsHaveDifferentAccounts(previousRequestSession, session)) {
+    const reusableAuthChanged = this.state.authSessionRevision !== this.lastResolvedAuthSessionRevision;
+    const accountChanged = sessionsHaveDifferentAccounts(previousRequestSession, session);
+    if (accountChanged) {
       this.state.socket?.destroy();
       resetReusableTurnSessionState(this.state);
       this.state.inUse = true;
       this.resetIncrementalStateFields();
+    } else if (reusableAuthChanged) {
+      resetReusableTurnSessionAuthState(this.state);
+      this.state.inUse = true;
+      this.resetIncrementalStateFields();
     }
     this.state.requestSession = session;
+    this.state.authSessionRevision = this.lastResolvedAuthSessionRevision;
 
     if (this.state.socket && !this.state.socket.isClosed()) {
       return { socket: this.state.socket, reused: true };
@@ -1032,6 +1088,7 @@ export async function streamMessageWithSession(
       if (turnSession) turnSession.resetConnection();
       else socket?.destroy();
       if (signal?.aborted || isAbortLikeError(err)) throw err;
+      if (isOpenAIAuthFailure(err)) throw err;
       const retryableCompactionContextError = options.compaction === true
         && isContextWindowProviderError(err);
       if (isNonRetryableProviderError(err) && !retryableCompactionContextError) throw err;

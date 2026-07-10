@@ -18,6 +18,13 @@ export interface PingCommand {
   reqId?: string;
 }
 
+/** Service wrapper handshake before it sends the daemon its shutdown signal. */
+export interface PrepareShutdownCommand {
+  type: "prepare_shutdown";
+  reqId?: string;
+  mode: "stop" | "restart";
+}
+
 export interface NewConversationCommand {
   type: "new_conversation";
   reqId?: string;
@@ -418,6 +425,7 @@ export interface LogoutCommand {
 
 export type Command =
   | PingCommand
+  | PrepareShutdownCommand
   | NewConversationCommand
   | SendMessageCommand
   | ReplayConversationCommand

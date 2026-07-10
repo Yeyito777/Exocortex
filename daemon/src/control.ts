@@ -2,7 +2,7 @@ import { existsSync } from "fs";
 import { connect as netConnect } from "net";
 import type { Event } from "./protocol";
 import { isWindows, socketPath } from "@exocortex/shared/paths";
-import { readInterruptedStreamIds, writeActiveGoalRestartMarker, writeInterruptedStreamIds } from "./restart-recovery";
+import { clearRestartRecoveryForStop, readInterruptedStreamIds, writeActiveGoalRestartMarker, writeInterruptedStreamIds } from "./restart-recovery";
 
 function makeReqId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -150,6 +150,65 @@ async function abortConversation(convId: string, timeoutMs = 2_000): Promise<voi
   });
 }
 
+async function requestDaemonShutdownMode(mode: "stop" | "restart", timeoutMs = 2_000): Promise<void> {
+  const path = ensureSocketExists();
+  return new Promise((resolve, reject) => {
+    const reqId = makeReqId(`prepare_${mode}`);
+    const socket = netConnect(path);
+    let buffer = "";
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      finish(new Error(`Timed out after ${timeoutMs}ms waiting for exocortexd to prepare ${mode}`));
+    }, timeoutMs);
+
+    socket.on("connect", () => {
+      socket.write(JSON.stringify({ type: "prepare_shutdown", reqId, mode }) + "\n");
+    });
+    socket.on("data", (data) => {
+      buffer += typeof data === "string" ? data : data.toString("utf-8");
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line) {
+          try {
+            const event = JSON.parse(line) as Event;
+            if (event.type === "ack" && event.reqId === reqId) {
+              finish();
+              return;
+            }
+            if (event.type === "error" && event.reqId === reqId) {
+              finish(new Error(event.message));
+              return;
+            }
+          } catch (error) {
+            finish(error instanceof Error ? error : new Error(String(error)));
+            return;
+          }
+        }
+        newlineIndex = buffer.indexOf("\n");
+      }
+    });
+    socket.on("error", (error) => finish(error));
+    socket.on("close", () => {
+      if (!settled) finish(new Error(`Connection closed before exocortexd prepared ${mode}`));
+    });
+  });
+}
+
+export async function prepareStopWithoutReplay(): Promise<void> {
+  await requestDaemonShutdownMode("stop");
+  clearRestartRecoveryForStop();
+}
+
 export interface PrepareRestartResult {
   convIds: string[];
   stillStreaming: string[];
@@ -165,6 +224,16 @@ export interface PrepareRestartResult {
  * enough for the next daemon to replay from the persisted history.
  */
 export async function prepareRestartForReplay(timeoutMs = 30_000): Promise<PrepareRestartResult> {
+  // Quiesce the live daemon before aborting anything. Without this handshake,
+  // aborted turns can drain queues or spawn more subagents while preparation is
+  // trying to converge on an empty running set.
+  try {
+    await requestDaemonShutdownMode("restart");
+  } catch (err) {
+    // One-upgrade compatibility: the currently running daemon may predate the
+    // handshake even though this control process is executing newer source.
+    console.error(`  ⚠ Live daemon did not accept restart quiescing; using legacy preparation: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const interrupted = new Set<string>();
   try {
     for (const id of readInterruptedStreamIds()) interrupted.add(id);

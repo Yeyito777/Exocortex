@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { clearConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
-import { consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getSummary, remove, replaceStreamingDisplayMessages, setGoal, updateGoalStatus } from "./conversations";
+import { consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessages, getSummary, remove, replaceStreamingDisplayMessages, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
+import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
+import { getDaemonShutdownMode, resetDaemonShutdownModeForTest } from "./daemon-lifecycle";
+import { invalidateCredentialsCache } from "./auth";
+import { clearProviderAuth, saveProviderAuth } from "./store";
 
 interface TestAssistantOutcome {
   ok: boolean;
@@ -25,7 +29,7 @@ const makeAssistantOutcome = (overrides: Partial<TestAssistantOutcome> = {}): Te
 });
 
 const orchestrateSendMessage = mock(async () => makeAssistantOutcome());
-const orchestrateReplayConversation = mock(async () => {});
+const orchestrateReplayConversation = mock(async () => makeAssistantOutcome());
 const orchestrateGoalContinuation = mock(async () => {});
 
 mock.module("./orchestrator", () => ({
@@ -45,13 +49,109 @@ function mkId(suffix: string): string {
 }
 
 function cleanupIds(): void {
+  resetDaemonShutdownModeForTest();
   for (const id of IDS.splice(0)) {
     clearActiveJob(id);
+    removePendingSubagentNotificationsForConversation(id);
     remove(id);
   }
   const subagentsFolder = findTopLevelFolderByName("subagents");
   if (subagentsFolder) deleteFolder(subagentsFolder.id);
 }
+
+describe("handler shutdown preparation", () => {
+  afterEach(cleanupIds);
+
+  test("records the service wrapper's shutdown mode before acknowledging it", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "prepare_shutdown", reqId: "prepare-stop", mode: "stop" });
+
+    expect(getDaemonShutdownMode()).toBe("stop");
+    expect(sent).toContainEqual({ type: "ack", reqId: "prepare-stop" });
+  });
+});
+
+describe("handler OpenAI reauthentication", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    clearProviderAuth("openai");
+    invalidateCredentialsCache("openai");
+    cleanupIds();
+  });
+
+  test("allows plain login while an OpenAI conversation is streaming", async () => {
+    saveProviderAuth("openai", {
+      tokens: {
+        accessToken: "valid-access-token",
+        refreshToken: "valid-refresh-token",
+        expiresAt: Date.now() + 60 * 60_000,
+        scopes: [],
+        subscriptionType: "pro",
+        rateLimitTier: null,
+      },
+      profile: {
+        accountUuid: "acct_one",
+        email: "one@example.com",
+        displayName: null,
+        organizationUuid: null,
+        organizationName: null,
+        organizationType: null,
+        organizationRole: null,
+        workspaceRole: null,
+      },
+      updatedAt: new Date().toISOString(),
+      source: "oauth",
+      authMode: null,
+      accountId: "acct_one",
+      idToken: null,
+    });
+    invalidateCredentialsCache("openai");
+    globalThis.fetch = mock(() => Promise.resolve(new Response("{}", { status: 200 }))) as unknown as typeof fetch;
+
+    const convId = mkId("streaming-reauth");
+    create(convId, "openai", "gpt-5.4", "streaming");
+    setActiveJob(convId, new AbortController(), Date.now());
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "login", reqId: "req-streaming-login", provider: "openai" });
+    for (let attempt = 0; attempt < 50 && !sent.some((event) => event.type === "auth_status" && typeof event.message === "string" && event.message.startsWith("Already authenticated")); attempt++) {
+      await Bun.sleep(10);
+    }
+
+    expect(sent).toContainEqual({ type: "ack", reqId: "req-streaming-login" });
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "auth_status",
+      reqId: "req-streaming-login",
+      message: "Already authenticated as one@example.com",
+    }));
+    expect(sent).not.toContainEqual(expect.objectContaining({
+      message: "Cannot change OpenAI accounts while an OpenAI conversation is streaming.",
+    }));
+  });
+});
 
 describe("handler new_conversation defaults", () => {
   beforeEach(() => {
@@ -414,6 +514,65 @@ describe("handler replay_conversation", () => {
       { subagentMaxDepth: null },
     );
     expect(orchestrateSendMessage).not.toHaveBeenCalled();
+  });
+
+  test("manual replay preserves and completes a pre-restart parent notification", async () => {
+    const parentId = mkId("manual-replay-parent");
+    const childId = mkId("manual-replay-child");
+    create(parentId, "openai", "gpt-5.4", "parent");
+    create(childId, "openai", "gpt-5.4", "child");
+    const childStartedAt = 654_321;
+    get(childId)!.messages.push({
+      role: "user",
+      content: "finish after restart",
+      metadata: { startedAt: childStartedAt, endedAt: childStartedAt, model: "gpt-5.4", tokens: 0 },
+    });
+    const pending = beginPendingSubagentNotification(
+      { convId: parentId },
+      childId,
+      "finish after restart",
+      childStartedAt,
+      0,
+    );
+    setActiveJob(parentId, new AbortController(), Date.now());
+
+    const server = {
+      sendTo: mock(() => {}),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    orchestrateReplayConversation.mockResolvedValueOnce(makeAssistantOutcome());
+
+    await handle({} as never, {
+      type: "replay_conversation",
+      reqId: "req-manual-subagent-replay",
+      convId: childId,
+      startedAt: Date.now(),
+    });
+
+    expect(orchestrateReplayConversation).toHaveBeenCalledWith(
+      server,
+      expect.anything(),
+      "req-manual-subagent-replay",
+      childId,
+      expect.any(Number),
+      expect.any(Object),
+      { subagentMaxDepth: 0 },
+    );
+    expect(listPendingSubagentNotifications({ childConvId: childId })).toEqual([
+      expect.objectContaining({ id: pending.id, state: "ready" }),
+    ]);
+    expect(getQueuedMessages(parentId)).toEqual([
+      expect.objectContaining({
+        subagentNotificationId: pending.id,
+        text: expect.stringContaining(`exo:${childId}`),
+      }),
+    ]);
   });
 });
 

@@ -400,11 +400,14 @@ export function createStoredUserMessage(
   model: ModelId,
   startedAt: number,
   images?: ImageAttachment[],
+  options: { subagentNotificationId?: string } = {},
 ): StoredMessage {
+  const metadata = createMessageMetadata(startedAt, model, { endedAt: startedAt });
+  if (options.subagentNotificationId) metadata.subagentNotificationId = options.subagentNotificationId;
   return {
     role: "user",
     content: buildUserContent(text, images),
-    metadata: createMessageMetadata(startedAt, model, { endedAt: startedAt }),
+    metadata,
   };
 }
 

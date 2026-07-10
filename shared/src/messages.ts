@@ -168,6 +168,8 @@ export interface MessageMetadata {
   system?: boolean;
   /** Machine-readable subtype for daemon-authored metadata/system notices. */
   kind?: string;
+  /** Durable id used to deduplicate an accepted subagent completion notification. */
+  subagentNotificationId?: string;
 }
 
 /** Build standard message metadata with sensible defaults. */

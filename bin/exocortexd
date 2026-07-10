@@ -3,6 +3,7 @@
 # Thin wrapper that resolves the project root and runs the daemon entry point.
 # Service subcommands use systemctl on Linux and launchctl on macOS.
 # Restart gracefully interrupts active streams and replays them after boot.
+# Stop flushes/aborts active work but deliberately leaves nothing to resume.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -242,6 +243,20 @@ prepare_restart_for_replay() {
   )
 }
 
+prepare_stop_without_replay() {
+  (
+    cd "$PROJECT_DIR/daemon"
+    bun run src/main.ts prepare-stop
+  )
+}
+
+cancel_stop_recovery() {
+  (
+    cd "$PROJECT_DIR/daemon"
+    bun run src/main.ts cancel-recovery
+  )
+}
+
 join_ids() {
   local joined=""
   local id
@@ -292,6 +307,18 @@ handle_restart() {
   restart_service
 }
 
+handle_stop() {
+  if service_is_active; then
+    if ! prepare_stop_without_replay; then
+      echo "  ⚠ Live daemon did not accept stop preparation; stopping it and clearing recovery state afterwards" >&2
+    fi
+  fi
+  stop_service
+  # Run after the process exits too: this makes the first stop after upgrading
+  # safe even when the old daemon treated SIGTERM as restart-worthy.
+  cancel_stop_recovery
+}
+
 case "${1:-}" in
   start)
     start_service
@@ -301,7 +328,7 @@ case "${1:-}" in
     handle_restart "$@"
     ;;
   stop)
-    stop_service
+    handle_stop
     ;;
   status)
     shift

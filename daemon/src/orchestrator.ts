@@ -35,6 +35,8 @@ import {
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./providers/openai/auth";
 import { buildCodexWindowId } from "./providers/openai/identity";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive } from "./conversation-activity";
+import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
+import { getDaemonShutdownMode } from "./daemon-lifecycle";
 
 // ── Transcript marker helpers ──────────────────────────────────────
 
@@ -143,6 +145,8 @@ export interface AssistantTurnOutcome {
   error?: string;
   aborted?: boolean;
   watchdog?: boolean;
+  /** The abort intentionally handed this stream to restart recovery. */
+  daemonRestart?: boolean;
 }
 
 interface AssistantTurnOptions {
@@ -156,9 +160,11 @@ interface AssistantTurnOptions {
    * conversation's persisted budget for automatic replay/goal continuations.
    */
   subagentMaxDepth?: number | null;
+  /** Durable detached-child notification accepted by this user turn. */
+  subagentNotificationId?: string;
 }
 
-export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth">;
+export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId">;
 
 export async function orchestrateSendMessage(
   server: DaemonServer,
@@ -259,6 +265,13 @@ async function orchestrateAssistantTurn(
     return buildErrorOutcome(text);
   };
 
+  const shutdownModeAtStart = getDaemonShutdownMode();
+  if (shutdownModeAtStart) {
+    const message = `Daemon is shutting down (${shutdownModeAtStart}); refusing to start another turn.`;
+    if (client) server.sendTo(client, { type: "error", reqId, convId, message });
+    return buildErrorOutcome(message);
+  }
+
   if (!hasConfiguredCredentials(conv.provider)) {
     const message = `Not authenticated for provider ${conv.provider}. Run: bun run src/main.ts login ${conv.provider}`;
     if (client) server.sendTo(client, {
@@ -289,7 +302,9 @@ async function orchestrateAssistantTurn(
   // ── Start stream and broadcast initial state ──────────────────────
 
   if (userMessage) {
-    conv.messages.push(createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images));
+    conv.messages.push(createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images, {
+      subagentNotificationId: options.subagentNotificationId,
+    }));
 
     // Notify subscribers about the user message.
     // When client is set, it already added the message locally — skip it.
@@ -329,6 +344,7 @@ async function orchestrateAssistantTurn(
   // A daemon crash before the first streamed block must not lose visible chat.
   convStore.markDirty(convId);
   convStore.flush(convId);
+  if (options.subagentNotificationId) acknowledgeSubagentNotification(options.subagentNotificationId);
 
   const ac = new AbortController();
   convStore.setActiveJob(convId, ac, startedAt);
@@ -838,7 +854,9 @@ async function orchestrateAssistantTurn(
       const injectedStored: StoredMessage[] = [];
       for (const qm of drained) {
         const injectedStartedAt = Date.now();
-        const storedUser = createStoredUserMessage(qm.text, conv.model, injectedStartedAt, qm.images);
+        const storedUser = createStoredUserMessage(qm.text, conv.model, injectedStartedAt, qm.images, {
+          subagentNotificationId: qm.subagentNotificationId,
+        });
         apiMsgs.push({ role: "user", content: storedUser.content, metadata: storedUser.metadata });
         injectedStored.push(storedUser);
         log("info", `orchestrator: injected next-turn message: "${qm.text.slice(0, 50)}"`);
@@ -848,6 +866,9 @@ async function orchestrateAssistantTurn(
       // to the canonical transcript before broadcasting them or returning to the
       // agent; a process kill at any subsequent instruction must not lose them.
       persistCompletedTurnPrefix(injectedStored);
+      for (const qm of drained) {
+        if (qm.subagentNotificationId) acknowledgeSubagentNotification(qm.subagentNotificationId);
+      }
       for (let index = 0; index < drained.length; index++) {
         const qm = drained[index];
         const storedUser = injectedStored[index];
@@ -1174,6 +1195,7 @@ async function orchestrateAssistantTurn(
       error: outcomeError,
       aborted: isAbort,
       watchdog: isWatchdog,
+      daemonRestart: isDaemonRestart,
     };
   } finally {
     if (providerTurnSession) {
@@ -1193,6 +1215,7 @@ async function orchestrateAssistantTurn(
     convStore.clearActiveJob(convId);
     convStore.clearCurrentStreamingBlocks(convId);
     convStore.resetChunkCounter(convId);
+    if (outcome) settlePendingSubagentNotifications(convId, outcome);
     convStore.markDirty(convId);
     convStore.flush(convId);
     server.sendToSubscribers(convId, {
@@ -1233,12 +1256,25 @@ async function orchestrateAssistantTurn(
     // injected mid-stream (e.g. no tool rounds, or queued too late) end up
     // here alongside "message-end" messages. Send the first as a new turn,
     // re-queue the rest — they'll drain on the next streaming_stopped.
-    const allQueued = convStore.drainQueuedMessages(convId);
+    const shutdownMode = getDaemonShutdownMode();
+    if (shutdownMode) {
+      convStore.clearQueuedMessages(convId);
+      convStore.clearGoalContinuationAfterStream(convId);
+      log("info", `orchestrator: discarded autonomous continuations for ${convId} during daemon ${shutdownMode}`);
+    }
+    const allQueued = shutdownMode ? [] : convStore.drainQueuedMessages(convId);
     if (allQueued.length > 0) {
       const first = allQueued[0];
       // Re-queue the rest for the next cycle
       for (let i = 1; i < allQueued.length; i++) {
-        convStore.pushQueuedMessage(convId, allQueued[i].text, allQueued[i].timing, allQueued[i].images, allQueued[i].subagentMaxDepth);
+        convStore.pushQueuedMessage(
+          convId,
+          allQueued[i].text,
+          allQueued[i].timing,
+          allQueued[i].images,
+          allQueued[i].subagentMaxDepth,
+          allQueued[i].subagentNotificationId,
+        );
       }
       log("info", `orchestrator: draining queued message: "${first.text.slice(0, 50)}"`);
       // Kick off a new send cycle — null client so user_message broadcasts to everyone.
@@ -1253,7 +1289,10 @@ async function orchestrateAssistantTurn(
         Date.now(),
         ext,
         first.images,
-        { subagentMaxDepth: first.subagentMaxDepth ?? null },
+        {
+          subagentMaxDepth: first.subagentMaxDepth ?? null,
+          subagentNotificationId: first.subagentNotificationId,
+        },
       );
     } else {
       const resumeRequestedAfterStream = convStore.consumeGoalContinuationAfterStream(convId);
