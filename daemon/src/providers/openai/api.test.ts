@@ -19,6 +19,7 @@ import {
 import { clearProviderAuth, saveProviderAuth } from "../../store";
 import { OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_TOKEN_URL } from "./constants";
 import { clearCloudflareCookiesForTest } from "./cookies";
+import { accountScopeForKey } from "./auth";
 import type { StoredOpenAIAuth } from "./session";
 import { OpenAIWebSocketHttpError, setOpenAIWebSocketConnectorForTest, type OpenAIWebSocketConnection } from "./websocket";
 
@@ -96,6 +97,46 @@ afterEach(() => {
 });
 
 describe("OpenAI replay input", () => {
+  test("refuses encrypted replay when the verified request account or model scope changed", async () => {
+    const accountA = accountScopeForKey("stable-account-a")!;
+    const accountB = accountScopeForKey("stable-account-b")!;
+    const scopedMessages: ApiMessage[] = [{
+      role: "assistant",
+      content: [],
+      providerData: {
+        openai: {
+          replayScope: { model: "gpt-5.6-sol", accountScope: accountA },
+          reasoningItems: [{ id: "reasoning-a", encryptedContent: "opaque-a", summaries: [] }],
+        },
+      },
+    }];
+    const callbacks = { onText: () => {}, onThinking: () => {} };
+
+    await expect(streamMessageWithSession(
+      { accessToken: "token-b", accountId: "acct-b", accountKey: "stable-account-b" },
+      scopedMessages,
+      "gpt-5.6-sol",
+      callbacks,
+      { accountScope: accountB },
+    )).rejects.toThrow(/different model or account scope/i);
+
+    await expect(streamMessageWithSession(
+      { accessToken: "token-b", accountId: "acct-b", accountKey: "stable-account-b" },
+      [{
+        role: "assistant",
+        content: [],
+        providerData: {
+          openai: {
+            reasoningItems: [{ id: "legacy-unscoped", encryptedContent: "opaque", summaries: [] }],
+          },
+        },
+      }],
+      "gpt-5.6-sol",
+      callbacks,
+      { accountScope: accountA },
+    )).rejects.toThrow(/account changed while preparing/i);
+  });
+
   test("does not reuse response ids as assistant item ids", () => {
     const messages: ApiMessage[] = [
       {
@@ -131,6 +172,35 @@ describe("OpenAI replay input", () => {
     ], "gpt-5.4", 1234, {});
 
     expect(body.max_output_tokens).toBeUndefined();
+  });
+
+  test("native compaction appends a trigger and replays opaque payloads without stored response IDs", () => {
+    const body = buildRequestBodyForTest([
+      { role: "user", content: "keep this request" },
+      {
+        role: "assistant",
+        content: [],
+        providerData: {
+          openai: {
+            compactionItems: [{
+              id: "cmp-local-only",
+              encryptedContent: "opaque-checkpoint",
+              internalChatMessageMetadataPassthrough: { turn_id: "turn_checkpoint" },
+            }],
+          },
+        },
+      },
+    ], "gpt-5.6-sol", 1234, { compaction: true });
+
+    expect(body.input).toEqual([
+      { type: "message", role: "user", content: [{ type: "input_text", text: "keep this request" }] },
+      {
+        type: "compaction",
+        encrypted_content: "opaque-checkpoint",
+        internal_chat_message_metadata_passthrough: { turn_id: "turn_checkpoint" },
+      },
+      { type: "compaction_trigger" },
+    ]);
   });
 
   test("fast mode maps to the priority service tier", () => {
@@ -445,6 +515,35 @@ describe("OpenAI replay input", () => {
     expect(retryCalls[0][4]).toEqual({ kind: "transient" });
   });
 
+  test("shares one native compaction budget across websocket transport retries", async () => {
+    const retryCalls: unknown[][] = [];
+    const requestBudget = { maxAttempts: 2, attempts: 0 };
+    const calls = mockOpenAIWebSocket([
+      { error: new OpenAIWebSocketHttpError(503, new Headers(), "first") },
+      { error: new OpenAIWebSocketHttpError(503, new Headers(), "second") },
+    ]);
+
+    await expect(streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [{ role: "user", content: "compact" }],
+      "gpt-5.6-sol",
+      {
+        onText: () => {},
+        onThinking: () => {},
+        onRetry: (...args) => retryCalls.push(args),
+      },
+      {
+        compaction: true,
+        requestBudget,
+      },
+    )).rejects.toThrow(/503|second/i);
+
+    expect(calls).toHaveLength(2);
+    expect(requestBudget.attempts).toBe(2);
+    expect(retryCalls).toHaveLength(1);
+    expect(retryCalls[0].slice(0, 3)).toEqual([1, 1, "HTTP 503"]);
+  });
+
   test("reconnects when the Codex websocket connection limit is reached", async () => {
     const retryCalls: unknown[][] = [];
     const onRetry = mock((...args: unknown[]) => { retryCalls.push(args); });
@@ -643,7 +742,11 @@ describe("OpenAI replay input", () => {
         onText: () => {},
         onThinking: () => {},
       },
-      { promptCacheKey: "conv-1" },
+      {
+        promptCacheKey: "conv-1",
+        codexTurnId: "conv-1:turn-regular",
+        codexTurnStartedAtMs: 1_700_000_000_000,
+      },
     );
 
     expect(calls[0].url).toBe(OPENAI_CODEX_RESPONSES_WS_URL);
@@ -658,7 +761,17 @@ describe("OpenAI replay input", () => {
     expect(headers.get("ChatGPT-Account-ID")).toBe("acct_123");
     expect(headers.get("User-Agent")).toStartWith("codex_cli_rs/");
     expect(headers.get("OpenAI-Beta")).toBe("responses_websockets=2026-02-06");
-    expect(JSON.parse(calls[0].sent[0])).toMatchObject({
+    expect(headers.get("x-codex-beta-features")?.split(",")).toContain("remote_compaction_v2");
+    const turnMetadata = JSON.parse(headers.get("x-codex-turn-metadata") ?? "null");
+    expect(turnMetadata).toMatchObject({
+      request_kind: "turn",
+      turn_id: "conv-1:turn-regular",
+      turn_started_at_unix_ms: 1_700_000_000_000,
+      window_id: "conv-1:0",
+    });
+    expect(turnMetadata.compaction).toBeUndefined();
+    const body = JSON.parse(calls[0].sent[0]);
+    expect(body).toMatchObject({
       type: "response.create",
       stream: true,
       client_metadata: {
@@ -666,6 +779,131 @@ describe("OpenAI replay input", () => {
         "x-codex-window-id": "conv-1:0",
       },
     });
+    expect(JSON.parse(body.client_metadata["x-codex-turn-metadata"])).toEqual(turnMetadata);
+  });
+
+  test("marks native compaction requests with Codex v2 turn metadata", async () => {
+    const calls = mockOpenAIWebSocket([{ events: [
+      { type: "response.created", response: { id: "resp_compact" } },
+      {
+        type: "response.completed",
+        response: {
+          id: "resp_compact",
+          usage: { input_tokens: 100, output_tokens: 1 },
+          output: [{ type: "compaction", encrypted_content: "opaque" }],
+        },
+      },
+    ] }]);
+
+    const result = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: "acct_123" },
+      [{ role: "user", content: "compact me" }],
+      "gpt-5.6-sol",
+      { onText: () => {}, onThinking: () => {} },
+      {
+        promptCacheKey: "conv-compact",
+        codexWindowId: "conv-compact:3",
+        codexTurnId: "turn-compact-123",
+        codexTurnStartedAtMs: 1_700_000_000_000,
+        compaction: true,
+        compactionMetadata: { reason: "context_limit", phase: "mid_turn" },
+      },
+    );
+
+    const headers = new Headers(calls[0].headers);
+    const metadata = JSON.parse(headers.get("x-codex-turn-metadata") ?? "null");
+    expect(metadata).toMatchObject({
+      installation_id: expect.any(String),
+      session_id: "conv-compact",
+      thread_id: "conv-compact",
+      turn_id: "turn-compact-123",
+      turn_started_at_unix_ms: 1_700_000_000_000,
+      request_kind: "compaction",
+      window_id: "conv-compact:3",
+      compaction: {
+        trigger: "auto",
+        reason: "context_limit",
+        implementation: "responses_compaction_v2",
+        phase: "mid_turn",
+        strategy: "memento",
+      },
+    });
+    expect(headers.get("x-codex-window-id")).toBe("conv-compact:3");
+    const requestBody = JSON.parse(calls[0].sent[0]);
+    expect(requestBody.client_metadata["x-codex-window-id"]).toBe("conv-compact:3");
+    expect(JSON.parse(requestBody.client_metadata["x-codex-turn-metadata"])).toEqual(metadata);
+    expect(requestBody.input.at(-1)).toEqual({ type: "compaction_trigger" });
+    expect(result.compactionItems).toEqual([{ encryptedContent: "opaque" }]);
+  });
+
+  test("sends compaction turn metadata in response.create when reusing a websocket", async () => {
+    const calls = mockOpenAIWebSocket([{ events: [
+      { type: "response.created", response: { id: "resp_normal" } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_normal" } },
+      { type: "response.output_text.done", output_index: 0, content_index: 0, text: "normal answer" },
+      {
+        type: "response.completed",
+        response: {
+          id: "resp_normal",
+          usage: { input_tokens: 10, output_tokens: 2 },
+          output: [{ type: "message", id: "msg_normal", content: [{ type: "output_text", text: "normal answer" }] }],
+        },
+      },
+      { type: "response.created", response: { id: "resp_compact" } },
+      {
+        type: "response.completed",
+        response: {
+          id: "resp_compact",
+          usage: { input_tokens: 12, output_tokens: 1 },
+          output: [{ type: "compaction", encrypted_content: "opaque-reused" }],
+        },
+      },
+    ] }]);
+    const turnSession = createOpenAITurnSession();
+    const session = { accessToken: "test-token", accountId: "acct_123", accountKey: "stable-account-a" };
+    const callbacks = { onText: () => {}, onThinking: () => {} };
+
+    const first = await streamMessageWithSession(
+      session,
+      [{ role: "user", content: "hello" }],
+      "gpt-5.6-sol",
+      callbacks,
+      { promptCacheKey: "conv-reused-compact", codexWindowId: "conv-reused-compact:0", turnSession },
+    );
+    const second = await streamMessageWithSession(
+      session,
+      [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: [{ type: "text", text: "normal answer" }], providerData: first.assistantProviderData },
+      ],
+      "gpt-5.6-sol",
+      callbacks,
+      {
+        promptCacheKey: "conv-reused-compact",
+        codexWindowId: "conv-reused-compact:0",
+        turnSession,
+        compaction: true,
+        compactionMetadata: { reason: "context_limit", phase: "mid_turn" },
+      },
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sent).toHaveLength(2);
+    const compactionBody = JSON.parse(calls[0].sent[1]);
+    expect(compactionBody.previous_response_id).toBe("resp_normal");
+    expect(compactionBody.input).toEqual([{ type: "compaction_trigger" }]);
+    expect(JSON.parse(compactionBody.client_metadata["x-codex-turn-metadata"])).toMatchObject({
+      request_kind: "compaction",
+      window_id: "conv-reused-compact:0",
+      compaction: { phase: "mid_turn", implementation: "responses_compaction_v2" },
+    });
+    expect(second.compactionItems).toEqual([{ encryptedContent: "opaque-reused" }]);
+    expect(first.assistantProviderData?.openai.replayScope).toEqual({
+      model: "gpt-5.6-sol",
+      accountScope: accountScopeForKey("stable-account-a")!,
+    });
+    expect(second.assistantProviderData?.openai.replayScope).toEqual(first.assistantProviderData?.openai.replayScope);
+    turnSession.close();
   });
 
   test("stores Cloudflare cookies and reuses them on the next OpenAI request", async () => {
@@ -871,7 +1109,7 @@ describe("OpenAI replay input", () => {
       firstMessages,
       "gpt-5.4",
       callbacks,
-      { promptCacheKey: "conv-1", turnSession: firstSession },
+      { promptCacheKey: "conv-1", codexTurnId: "conv-1:turn-1", turnSession: firstSession },
     );
 
     firstSession.close();
@@ -893,7 +1131,7 @@ describe("OpenAI replay input", () => {
       secondMessages,
       "gpt-5.4",
       callbacks,
-      { promptCacheKey: "conv-1", turnSession: secondSession },
+      { promptCacheKey: "conv-1", codexTurnId: "conv-1:turn-2", turnSession: secondSession },
     );
 
     expect(second.text).toBe("again");
@@ -1099,6 +1337,113 @@ describe("OpenAI replay input", () => {
 });
 
 describe("OpenAI reasoning summaries", () => {
+  test("captures a native compaction item without rendering assistant output", () => {
+    const result = readOpenAIEventsForTest([
+      { type: "response.created", response: { id: "resp_compact" } },
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: {
+          type: "compaction",
+          encrypted_content: "encrypted-context",
+          internal_chat_message_metadata_passthrough: { turn_id: "turn_compact" },
+        },
+      },
+      {
+        type: "response.completed",
+        response: {
+          usage: { input_tokens: 300_000, output_tokens: 1 },
+          output: [{
+            type: "compaction",
+            encrypted_content: "encrypted-context",
+            internal_chat_message_metadata_passthrough: { turn_id: "turn_compact" },
+          }],
+        },
+      },
+    ]);
+
+    expect(result.blocks).toEqual([]);
+    expect(result.toolCalls).toEqual([]);
+    expect(result.compactionItems).toEqual([{
+      encryptedContent: "encrypted-context",
+      internalChatMessageMetadataPassthrough: { turn_id: "turn_compact" },
+    }]);
+    expect(result.responseOutputItems).toEqual([{
+      type: "compaction",
+      encrypted_content: "encrypted-context",
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_compact" },
+    }]);
+    expect(result.assistantProviderData?.openai.compactionItems).toEqual([{
+      encryptedContent: "encrypted-context",
+      internalChatMessageMetadataPassthrough: { turn_id: "turn_compact" },
+    }]);
+  });
+
+  test("captures a compaction-only done item without output_index or duplicated completed output", () => {
+    const result = readOpenAIEventsForTest([
+      { type: "response.created", response: { id: "resp_compact_sparse" } },
+      {
+        type: "response.output_item.done",
+        item: { type: "compaction", encrypted_content: "sparse-encrypted-context" },
+      },
+      {
+        type: "response.completed",
+        response: { id: "resp_compact_sparse", usage: { input_tokens: 300_000, output_tokens: 1 } },
+      },
+    ]);
+
+    expect(result.stopReason).toBe("stop");
+    expect(result.compactionItems).toEqual([{ encryptedContent: "sparse-encrypted-context" }]);
+    expect(result.compactionDoneCount).toBe(1);
+    expect(result.responseCompleted).toBe(true);
+    expect(result.blocks).toEqual([]);
+  });
+
+  test("does not duplicate a compaction item when done omits the added item's output_index", () => {
+    const result = readOpenAIEventsForTest([
+      { type: "response.created", response: { id: "resp_compact_added" } },
+      {
+        type: "response.output_item.added",
+        output_index: 3,
+        item: { type: "compaction", id: "cmp-added", encrypted_content: "opaque-added" },
+      },
+      {
+        type: "response.output_item.done",
+        item: { type: "compaction", id: "cmp-added", encrypted_content: "opaque-added" },
+      },
+      {
+        type: "response.completed",
+        response: { id: "resp_compact_added", usage: { input_tokens: 10, output_tokens: 1 } },
+      },
+    ]);
+
+    expect(result.compactionItems).toEqual([{
+      id: "cmp-added",
+      encryptedContent: "opaque-added",
+    }]);
+    expect(result.compactionDoneCount).toBe(1);
+  });
+
+  test("counts duplicate compaction done events even when they reuse one output slot", () => {
+    const result = readOpenAIEventsForTest([
+      { type: "response.created", response: { id: "resp_compact_duplicate" } },
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { type: "compaction", encrypted_content: "first" },
+      },
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { type: "compaction", encrypted_content: "second" },
+      },
+      { type: "response.completed", response: { id: "resp_compact_duplicate", output: [] } },
+    ]);
+
+    expect(result.compactionDoneCount).toBe(2);
+    expect(result.compactionItems).toEqual([{ encryptedContent: "second" }]);
+  });
+
   test("reads cached input token counts and exact replay output items", () => {
     const result = readOpenAIEventsForTest([
       { type: "response.created", response: { id: "resp_1" } },

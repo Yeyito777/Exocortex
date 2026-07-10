@@ -12,6 +12,14 @@ import { renderMetadata } from "./metadata";
 import { theme } from "./theme";
 import { renderBlockCached, renderSystemMessage, renderUserMessageCached } from "./blockrenderer";
 import { isVisuallyBlankLine, sanitizeUntrustedText } from "./terminaltext";
+
+const COMPACTION_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+const COMPACTION_SPINNER_INTERVAL_MS = 80;
+
+export function compactionSpinnerText(startedAt: number, now = Date.now()): string {
+  const frameIndex = Math.max(0, Math.floor((now - startedAt) / COMPACTION_SPINNER_INTERVAL_MS));
+  return `${COMPACTION_SPINNER_FRAMES[frameIndex % COMPACTION_SPINNER_FRAMES.length]} Compacting...`;
+}
 import { termWidth } from "./textwidth";
 import { wordWrap, type WrapCopyLine, type WrapResult } from "./textwrap";
 import { isNewConversationQueuedMessage, queueTimingLabel } from "./queue";
@@ -330,6 +338,14 @@ export function buildMessageLines(
     for (const block of state.pendingAI.blocks) {
       pushBlock(block, "assistant_block", renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
     }
+    if (state.contextCompactionStartedAt != null) {
+      pushLine(
+        `  ${theme.accent}${compactionSpinnerText(state.contextCompactionStartedAt)}${theme.reset}`,
+        state.pendingAI,
+        "assistant_block",
+        state.pendingAI.blocks.length,
+      );
+    }
     // Terminal stream notices (abort/error/watchdog) arrive just before
     // streaming_stopped. Keep pendingAI around for reconciliation, but do not
     // render metadata-only pending state next to the notice: if no assistant
@@ -337,7 +353,9 @@ export function buildMessageLines(
     const terminalNoticePendingStop = isTerminalStreamNotice(state.messages[state.messages.length - 1])
       && state.pendingAI.metadata?.startedAt === state.suppressPendingAIMetadataStartedAt;
     const shouldRenderPendingMetadata = state.pendingAI.blocks.length > 0 || (
-      state.pendingAICommittedIndex === null && !terminalNoticePendingStop
+      state.contextCompactionStartedAt == null
+      && state.pendingAICommittedIndex === null
+      && !terminalNoticePendingStop
     );
     const metadata = pendingAssistantSegmentMetadata(state) ?? pendingAssistantRunMetadata(state);
     const metadataLines = shouldRenderPendingMetadata ? renderMetadata(metadata) : [];

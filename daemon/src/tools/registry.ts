@@ -16,7 +16,6 @@ import { grep } from "./grep";
 import { edit } from "./edit";
 import { patch } from "./patch";
 import { browse } from "./browse";
-import { context, executeContext, type ContextToolEnv } from "./context";
 import { goal } from "./goal";
 import { computerUseTools } from "./computer-use";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
@@ -24,8 +23,6 @@ import { formatToolAbortMessage, isToolTimeoutReason, toolTimeoutReason } from "
 import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
 import { AbortableSemaphore } from "./semaphore";
 import { log } from "../log";
-
-export type { ContextToolEnv };
 
 // ── Registry ───────────────────────────────────────────────────────
 
@@ -38,7 +35,6 @@ const TOOLS: Tool[] = [
   edit,
   patch,
   browse,
-  context,
   goal,
   ...computerUseTools,
 ];
@@ -223,7 +219,6 @@ export function planToolExecutionBatches(calls: ApiToolCall[]): ToolExecutionBat
 
 async function executeSingleTool(
   call: ApiToolCall,
-  contextEnv?: ContextToolEnv,
   toolContext?: ToolExecutionContext,
   signal?: AbortSignal,
 ): Promise<ToolExecResult> {
@@ -271,11 +266,6 @@ async function executeSingleTool(
     const semaphore = resourceClass ? resourceSemaphores.get(resourceClass) : undefined;
     const release = semaphore ? await semaphore.acquire(deadline.signal) : undefined;
     try {
-      // Context tool — needs conversation access, bypass normal execute().
-      if (call.name === "context" && contextEnv) {
-        return await executeContext(call.input, contextEnv, deadline.signal);
-      }
-
       // Bash tool — use backgroundable executor so long-running commands are
       // detached after TOOL_BACKGROUND_SECONDS instead of blocking.
       if (call.name === "bash") {
@@ -298,7 +288,6 @@ async function executeSingleTool(
 
 async function executeScheduledTools(
   calls: ApiToolCall[],
-  contextEnv?: ContextToolEnv,
   toolContext?: ToolExecutionContext,
   signal?: AbortSignal,
 ): Promise<ToolExecResult[]> {
@@ -306,8 +295,8 @@ async function executeScheduledTools(
 
   for (const batch of planToolExecutionBatches(calls)) {
     const batchResults = batch.mode === "parallel"
-      ? await Promise.all(batch.calls.map(call => executeSingleTool(call, contextEnv, toolContext, signal)))
-      : [await executeSingleTool(batch.calls[0], contextEnv, toolContext, signal)];
+      ? await Promise.all(batch.calls.map(call => executeSingleTool(call, toolContext, signal)))
+      : [await executeSingleTool(batch.calls[0], toolContext, signal)];
     results.push(...batchResults);
   }
 
@@ -317,8 +306,7 @@ async function executeScheduledTools(
 // ── Build executor (injected into the agent loop) ──────────────────
 
 export function buildExecutor(
-  contextEnv?: ContextToolEnv,
   toolContext?: ToolExecutionContext,
 ): (calls: ApiToolCall[], signal?: AbortSignal) => Promise<ToolExecResult[]> {
-  return (calls, signal?) => executeScheduledTools(calls, contextEnv, toolContext, signal);
+  return (calls, signal?) => executeScheduledTools(calls, toolContext, signal);
 }

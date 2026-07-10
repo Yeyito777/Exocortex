@@ -3,8 +3,9 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, mark, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, pin, pinFolder, pinSidebarItems, redoDelete, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete } from "./conversations";
+import { bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, mark, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, pin, pinFolder, pinSidebarItems, redoDelete, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
+import { historyPrefixHash } from "./messages";
 
 const IDS: string[] = [];
 const FOLDER_IDS: string[] = [];
@@ -524,9 +525,27 @@ describe("createWithInitialUserMessage", () => {
 });
 
 describe("setModel", () => {
-  test("switches provider/model atomically, clears stale context, and bumps updatedAt", async () => {
+  test("switches provider/model atomically, preserves replay for bridging, and bumps updatedAt", async () => {
     const id = mkId("switch-provider");
     const conv = create(id, "openai", "gpt-5.4", undefined, "low", true);
+    conv.messages.push({ role: "user", content: "keep full transcript", metadata: null });
+    conv.activeContext = {
+      version: 1,
+      kind: "openai_native",
+      provider: "openai",
+      model: "gpt-5.4",
+      messages: [{
+        role: "assistant",
+        content: [],
+        providerData: { openai: { compactionItems: [{ encryptedContent: "opaque" }] } },
+      }],
+      transcriptHistoryCount: 1,
+      transcriptPrefixHash: historyPrefixHash(conv.messages, 1),
+      windowId: `${id}:1`,
+      windowNumber: 1,
+      compactedAt: 1,
+      compactionCount: 1,
+    };
     conv.lastContextTokens = 123_456;
     const before = conv.updatedAt;
 
@@ -539,6 +558,7 @@ describe("setModel", () => {
     expect(after.effort).toBe("high");
     expect(after.fastMode).toBe(false);
     expect(after.lastContextTokens).toBeNull();
+    expect(after.activeContext?.kind).toBe("openai_native");
     expect(after.updatedAt).toBeGreaterThan(before);
   });
 });
@@ -631,6 +651,24 @@ describe("trimConversation", () => {
     expect(result?.message).toContain("Trimmed 1 tool result");
     expect(get(id)?.messages[0]?.content).toEqual([{ type: "tool_result", tool_use_id: "tool-1", content: "[Output removed by /trim]" }]);
     expect(get(id)?.messages[1]?.content).toEqual([{ type: "tool_result", tool_use_id: "tool-2", content: "second output" }]);
+  });
+});
+
+describe("unwindTo", () => {
+  test("clears context usage measured against the removed transcript suffix", async () => {
+    const id = mkId("unwind-context-usage");
+    const conv = create(id, "openai", "gpt-5.6-sol");
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+      { role: "user", content: "remove", metadata: null },
+      { role: "assistant", content: "removed answer", metadata: null },
+    );
+    conv.lastContextTokens = 350_000;
+
+    expect(await unwindTo(id, 1)).toBe(true);
+    expect(get(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer"]);
+    expect(get(id)?.lastContextTokens).toBeNull();
   });
 });
 

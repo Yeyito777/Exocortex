@@ -15,11 +15,11 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, rename
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
 import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal } from "./messages";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, sortConversations, summarizeConversation } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, isValidActiveContext, sortConversations, summarizeConversation } from "./messages";
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 13;
+const CURRENT_VERSION = 14;
 
 interface ConversationFileV1 {
   version: 1;
@@ -203,7 +203,12 @@ interface ConversationFileV13 {
   goal: ConversationGoal | null;
 }
 
-type ConversationFile = ConversationFileV13;
+interface ConversationFileV14 extends Omit<ConversationFileV13, "version"> {
+  version: 14;
+  activeContext: Conversation["activeContext"];
+}
+
+type ConversationFile = ConversationFileV14;
 
 function normalizeProviderId(provider: unknown): ProviderId {
   return typeof provider === "string" && (DEFAULT_PROVIDER_ORDER as readonly string[]).includes(provider)
@@ -346,6 +351,15 @@ function migrateV12toV13(data: ConversationFileV12): ConversationFileV13 {
   };
 }
 
+/** v13 → v14: Separate compact model replay from the visible transcript. */
+function migrateV13toV14(data: ConversationFileV13): ConversationFileV14 {
+  return {
+    ...data,
+    version: 14,
+    activeContext: null,
+  };
+}
+
 function migrate(raw: Record<string, unknown>): ConversationFile {
   // Progressive migration — each function validates and upgrades one version.
   // `any` is intentional at this deserialization boundary: the data is parsed
@@ -364,6 +378,7 @@ function migrate(raw: Record<string, unknown>): ConversationFile {
   if (data.version < 11) data = migrateV10toV11(data);
   if (data.version < 12) data = migrateV11toV12(data);
   if (data.version < 13) data = migrateV12toV13(data);
+  if (data.version < 14) data = migrateV13toV14(data);
 
   if (data.version !== CURRENT_VERSION) {
     log("warn", `persistence: unknown schema version ${data.version}, attempting to load as v${CURRENT_VERSION}`);
@@ -646,6 +661,7 @@ function toFile(conv: Conversation): ConversationFile {
     effort: conv.effort ?? DEFAULT_EFFORT,
     fastMode: conv.fastMode ?? false,
     messages: conv.messages,
+    activeContext: conv.activeContext ?? null,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
     lastContextTokens: conv.lastContextTokens,
@@ -660,6 +676,12 @@ function toFile(conv: Conversation): ConversationFile {
 
 function fromFile(file: ConversationFile): Conversation {
   const provider = normalizeProviderId(file.provider);
+  const activeContext = isValidActiveContext(file.activeContext, file.messages)
+    ? file.activeContext
+    : null;
+  if (file.activeContext && !activeContext) {
+    log("warn", `persistence: discarded invalid active context for ${file.id}; full transcript will be replayed`);
+  }
   const conv: Conversation = {
     id: file.id,
     provider,
@@ -667,9 +689,12 @@ function fromFile(file: ConversationFile): Conversation {
     effort: file.effort,
     fastMode: file.fastMode,
     messages: file.messages,
+    ...(activeContext ? { activeContext } : {}),
     createdAt: file.createdAt,
     updatedAt: file.updatedAt,
-    lastContextTokens: file.lastContextTokens,
+    // A token total measured against a discarded compact replay is no longer a
+    // meaningful projection for the full transcript fallback.
+    lastContextTokens: file.activeContext && !activeContext ? null : file.lastContextTokens,
     marked: file.marked,
     pinned: file.pinned,
     sortOrder: file.sortOrder,

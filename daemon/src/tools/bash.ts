@@ -16,7 +16,7 @@ import { writeFileSync, createWriteStream, type WriteStream } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
-import { getString, getNumber, safeSlice, summarizeParams } from "./util";
+import { getString, getNumber, getBoolean, safeSlice, summarizeParams } from "./util";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage } from "../abort";
 import { isWindows } from "@exocortex/shared/paths";
@@ -161,8 +161,9 @@ async function executeBash(input: Record<string, unknown>, _context?: ToolExecut
  * partial output + PID + temp file path. The process keeps running —
  * its output is written to the temp file.
  *
- * When the AI passes `await` (seconds), it fully overrides the default
- * background threshold — even if shorter.
+ * `background: true` detaches immediately after spawn. Otherwise, when the AI
+ * passes `await` (seconds), it fully overrides the default background threshold
+ * — even if shorter.
  *
  * Called directly by the registry (bypassing Tool.execute) so it can
  * inject the default background timeout from TOOL_BACKGROUND_SECONDS.
@@ -180,8 +181,21 @@ export async function executeBashBackgroundable(
   context?: ToolExecutionContext,
 ): Promise<ToolResult> {
   const awaitSeconds = getNumber(input, "await");
+  const backgroundImmediately = getBoolean(input, "background") === true;
+  if (backgroundImmediately && awaitSeconds !== undefined) {
+    return {
+      output: "Error: 'background: true' cannot be combined with 'await'. Remove 'await' to background immediately.",
+      isError: true,
+    };
+  }
+  if (awaitSeconds !== undefined && (!Number.isFinite(awaitSeconds) || awaitSeconds <= 0)) {
+    return {
+      output: "Error: 'await' must be greater than 0 seconds. Use 'background: true' to background immediately.",
+      isError: true,
+    };
+  }
   let bgMs: number | undefined;
-  if (awaitSeconds) {
+  if (awaitSeconds !== undefined) {
     bgMs = awaitSeconds * 1000;
   } else {
     const command = getString(input, "command") ?? "";
@@ -189,7 +203,7 @@ export async function executeBashBackgroundable(
     const isLongRunning = LONG_RUNNING_COMMANDS.some(prefix => cmdTrimmed.startsWith(prefix));
     bgMs = isLongRunning ? LONG_RUNNING_BG_MS : defaultBgMs;
   }
-  return executeBashImpl(input, signal, bgMs, context);
+  return executeBashImpl(input, signal, bgMs, context, backgroundImmediately);
 }
 
 async function executeBashImpl(
@@ -197,6 +211,7 @@ async function executeBashImpl(
   signal?: AbortSignal,
   backgroundAfterMs?: number,
   context?: ToolExecutionContext,
+  backgroundImmediately = false,
 ): Promise<ToolResult> {
   const command = getString(input, "command");
   if (!command) return { output: "Error: missing 'command' parameter", isError: true };
@@ -285,7 +300,7 @@ async function executeBashImpl(
     proc.stdout.on("data", collect);
     proc.stderr.on("data", collect);
 
-    function backgroundNow(trigger: "timeout" | "manual"): boolean {
+    function backgroundNow(trigger: "timeout" | "manual" | "explicit"): boolean {
       if (settled || !proc.pid) return false;
       if (bgTimer) {
         clearTimeout(bgTimer);
@@ -324,9 +339,11 @@ async function executeBashImpl(
       const stopCmd = isWindows
         ? `bash "taskkill /T /F /PID ${proc.pid}"`
         : `bash "kill ${proc.pid}"`;
-      const headline = trigger === "manual"
-        ? `⏳ Command backgrounded on user request after ${((Date.now() - startTime) / 1000).toFixed(1)}s (PID ${proc.pid}).`
-        : `⏳ Command backgrounded — still running after ${Math.round((backgroundAfterMs ?? 0) / 1000)}s (PID ${proc.pid}).`;
+      const headline = trigger === "explicit"
+        ? `⏳ Command backgrounded immediately by request (PID ${proc.pid}).`
+        : trigger === "manual"
+          ? `⏳ Command backgrounded on user request after ${((Date.now() - startTime) / 1000).toFixed(1)}s (PID ${proc.pid}).`
+          : `⏳ Command backgrounded — still running after ${Math.round((backgroundAfterMs ?? 0) / 1000)}s (PID ${proc.pid}).`;
       output += [
         headline,
         ...(bgStreamFailed
@@ -438,6 +455,10 @@ async function executeBashImpl(
 
       resolve({ output, isError: code !== 0 && code !== null });
     });
+
+    // Defer until every stdout/stderr/error/close listener is installed, but do
+    // not impose the one-second latency required by the old await=1 workaround.
+    if (backgroundImmediately) queueMicrotask(() => backgroundNow("explicit"));
   });
 }
 
@@ -463,12 +484,13 @@ export const bash: Tool = {
     properties: {
       command: { type: "string", description: `The ${shellName} command to execute` },
       timeout: { type: "number", description: "Timeout in milliseconds (default 3600000)" },
-      await: { type: "number", description: "Seconds to wait before backgrounding this command. Use when you expect a command to take longer than the default threshold (e.g. builds, installs, watching a backgrounded process)." },
+      background: { type: "boolean", description: "Background immediately after spawning and return the PID/output file without waiting. Cannot be combined with await." },
+      await: { type: "number", description: "Seconds greater than 0 to wait before backgrounding this command. Cannot be combined with background=true." },
       max_output_chars: { type: "number", description: `Maximum command-output characters to include inline before spilling full output to a temp file (default ${DEFAULT_INLINE_OUTPUT_CHARS}, min ${MIN_INLINE_OUTPUT_CHARS}, max ${MAX_INLINE_OUTPUT_CHARS}).` },
     },
     required: ["command"],
   },
-  systemHint: `${shellName} commands that run longer than ${TOOL_BACKGROUND_SECONDS}s are automatically backgrounded: the process keeps running but control returns to you with the PID and a temp file where output accumulates. Pass the "await" parameter (seconds) to suppress backgrounding when you expect a command to take longer (builds, installs, sleeps, tailing a backgrounded process). Pass "max_output_chars" to limit inline output; larger output is saved to a temp file with a compact preview.`,
+  systemHint: `${shellName} commands that run longer than ${TOOL_BACKGROUND_SECONDS}s are automatically backgrounded: the process keeps running but control returns to you with the PID and a temp file where output accumulates. Pass background=true to background immediately after spawning. Pass the "await" parameter (seconds greater than 0) to change how long to wait before backgrounding; do not combine background and await. Pass "max_output_chars" to limit inline output; larger output is saved to a temp file with a compact preview.`,
   display: {
     label: "$",
     color: "#d19a66",  // muted amber

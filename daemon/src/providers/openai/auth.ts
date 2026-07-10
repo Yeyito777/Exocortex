@@ -11,6 +11,7 @@ import {
 } from "./session";
 import { AuthError } from "../errors";
 import type { EnsureAuthResult, LoginCallbacks, LoginResult } from "../types";
+import { createHash } from "node:crypto";
 
 export interface StoredOpenAIAuthPool extends StoredOpenAIAuth {
   /**
@@ -464,6 +465,18 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
 export function getCurrentAccountKey(): string | null {
   const stored = loadStoredAuth();
   return stored ? getAccountKey(stored) : null;
+}
+
+/** One-way persisted replay scope for a runtime account identity. */
+export function accountScopeForKey(key: string | null | undefined): string | null {
+  return key
+    ? `sha256:${createHash("sha256").update(key).digest("hex").slice(0, 32)}`
+    : null;
+}
+
+/** Non-secret stable account identity suitable for persisted replay scoping. */
+export function getCurrentAccountScope(): string | null {
+  return accountScopeForKey(getCurrentAccountKey());
 }
 
 export function logout(): boolean {

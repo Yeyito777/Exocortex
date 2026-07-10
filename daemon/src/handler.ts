@@ -39,6 +39,8 @@ const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
 export function createHandler(server: DaemonServer) {
   // ── Local helper functions ────────────────────────────────────────
 
+  let openAIAccountMutationInFlight = false;
+
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     server.broadcast({ type: "usage_update", provider, usage });
   };
@@ -86,6 +88,31 @@ export function createHandler(server: DaemonServer) {
       "",
       "* = current account",
     ].join("\n");
+  };
+  const hasStreamingOpenAIConversation = (): boolean => convStore.listSummaries()
+    .some((conversation) => conversation.provider === "openai" && conversation.streaming);
+  const rejectOpenAIAccountMutationWhileStreaming = (client: ConnectedClient, reqId?: string): boolean => {
+    if (!hasStreamingOpenAIConversation()) return false;
+    server.sendTo(client, {
+      type: "error",
+      reqId,
+      message: "Cannot change OpenAI accounts while an OpenAI conversation is streaming.",
+    });
+    return true;
+  };
+  const rejectDuringOpenAIAccountMutation = (
+    client: ConnectedClient,
+    reqId: string | undefined,
+    convId?: string,
+  ): boolean => {
+    if (!openAIAccountMutationInFlight) return false;
+    server.sendTo(client, {
+      type: "error",
+      reqId,
+      ...(convId ? { convId } : {}),
+      message: "Cannot start or change an OpenAI conversation while account authentication is still in progress.",
+    });
+    return true;
   };
   // ── Outbound status/tool broadcasts ───────────────────────────────
 
@@ -174,6 +201,14 @@ export function createHandler(server: DaemonServer) {
     }
     if (!convStore.get(parent.convId)) {
       log("warn", `handler: parent conversation ${parent.convId} not found for subagent ${childConvId}`);
+      return;
+    }
+    if (openAIAccountMutationInFlight && convStore.get(parent.convId)?.provider === "openai") {
+      log("info", `handler: deferring parent notification ${childConvId} while OpenAI account authentication is in progress`);
+      const timer = setTimeout(() => {
+        deliverParentNotification(parent, childConvId, task, outcome);
+      }, 250);
+      (timer as { unref?: () => void }).unref?.();
       return;
     }
     const text = buildSubagentNotification(childConvId, task, outcome, parent.maxChars ?? 6000);
@@ -375,6 +410,8 @@ export function createHandler(server: DaemonServer) {
         const initialMessage = cmd.initialMessage;
         const goalObjective = cmd.goalObjective?.trim();
         const titleContext = cmd.titleContext?.trim();
+        if (provider === "openai" && (initialMessage || goalObjective)
+            && rejectDuringOpenAIAccountMutation(client, cmd.reqId, id)) break;
         if (goalObjective && !hasConfiguredCredentials(provider)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Not authenticated for provider ${provider}. Run: bun run src/main.ts login ${provider}` });
           break;
@@ -492,7 +529,8 @@ export function createHandler(server: DaemonServer) {
 
       case "prewarm_conversation": {
         const conv = convStore.get(cmd.convId);
-        if (!conv || conv.provider !== "openai" || convStore.isStreaming(cmd.convId)) break;
+        if (!conv || conv.provider !== "openai" || convStore.isStreaming(cmd.convId)
+            || openAIAccountMutationInFlight) break;
         void getProviderAdapter("openai").prewarmConversation?.(cmd.convId)
           .catch((err) => log("debug", `openai prewarm failed for ${cmd.convId}: ${err instanceof Error ? err.message : err}`));
         break;
@@ -504,6 +542,8 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           break;
         }
+        if (conv.provider === "openai" && (cmd.action === "set" || cmd.action === "resume")
+            && rejectDuringOpenAIAccountMutation(client, cmd.reqId, cmd.convId)) break;
 
         if (cmd.action === "set") {
           const objective = cmd.objective?.trim();
@@ -562,6 +602,9 @@ export function createHandler(server: DaemonServer) {
       // ── Assistant turn commands ───────────────────────────────────
 
       case "send_message": {
+        const target = convStore.get(cmd.convId);
+        if (target?.provider === "openai"
+            && rejectDuringOpenAIAccountMutation(client, cmd.reqId, cmd.convId)) break;
         const callbacks = buildOrchestrationCallbacks(cmd.convId);
         if (cmd.detached) {
           if (cmd.notifyParent?.convId === cmd.convId) {
@@ -606,6 +649,9 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "replay_conversation": {
+        const target = convStore.get(cmd.convId);
+        if (target?.provider === "openai"
+            && rejectDuringOpenAIAccountMutation(client, cmd.reqId, cmd.convId)) break;
         await orchestrateReplayConversation(
           server, client, cmd.reqId, cmd.convId, cmd.startedAt,
           buildOrchestrationCallbacks(cmd.convId),
@@ -641,6 +687,11 @@ export function createHandler(server: DaemonServer) {
         }
         const nextEffort = normalizeEffort(nextProvider, cmd.model, conv.effort);
         const nextFastMode = supportsFastMode(nextProvider) ? conv.fastMode : false;
+        // Keep the old checkpoint long enough for the orchestrator to detect an
+        // incompatible replay. On the next turn it rebuilds from the canonical
+        // transcript, sanitizes scoped provider data, and only compacts if the
+        // destination window actually needs it. No hidden handler-side model
+        // request exists outside the normal abort/restart lifecycle.
         const ok = convStore.setModel(cmd.convId, nextProvider, cmd.model, nextEffort, nextFastMode);
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
@@ -1016,6 +1067,7 @@ export function createHandler(server: DaemonServer) {
               startedAt: pendingAI.metadata?.startedAt ?? Date.now(),
               blocks: pendingAI.blocks,
               tokens: pendingAI.metadata?.tokens ?? 0,
+              compactionStartedAt: convStore.getContextCompactionStartedAt(cmd.convId) ?? null,
             });
           }
         }
@@ -1111,23 +1163,30 @@ export function createHandler(server: DaemonServer) {
         const provider = cmd.provider ?? getDefaultProvider().id;
 
         if (provider === "openai" && cmd.action) {
+          if (rejectDuringOpenAIAccountMutation(client, cmd.reqId)) break;
+          if (rejectOpenAIAccountMutationWhileStreaming(client, cmd.reqId)) break;
           if (cmd.action === "remove") {
-            Promise.resolve().then(() => removeOpenAIAccount(cmd.target)).then((removed) => {
+            try {
+              // Account-pool mutations are synchronous. Keep them on this event
+              // loop turn so a new provider stream cannot start in the gap
+              // between the streaming check and the selected-account change.
+              const removed = removeOpenAIAccount(cmd.target);
               invalidateCredentialsCache("openai");
               const label = removed.email ?? removed.displayName ?? removed.accountId ?? `#${removed.index}`;
               server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: `Removed OpenAI account ${label}.\n\n${formatOpenAIAccountList()}` });
               broadcastToolsAvailable();
               refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
-            }).catch((err) => {
+            } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               log("error", `handler: openai account remove failed: ${msg}`);
               server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `OpenAI account remove failed: ${msg}` });
-            });
+            }
             break;
           }
 
           if (cmd.action === "add") {
-            addOpenAIAccount({
+            openAIAccountMutationInFlight = true;
+            void addOpenAIAccount({
               onProgress: (msg) => {
                 server.sendTo(client, {
                   type: "auth_status",
@@ -1161,6 +1220,8 @@ export function createHandler(server: DaemonServer) {
               const msg = err instanceof Error ? err.message : String(err);
               log("error", `handler: openai account add failed: ${msg}`);
               server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `OpenAI account add failed: ${msg}` });
+            }).finally(() => {
+              openAIAccountMutationInFlight = false;
             });
             break;
           }
@@ -1169,7 +1230,12 @@ export function createHandler(server: DaemonServer) {
           break;
         }
 
-        ensureAuthenticated(provider, {
+        if (provider === "openai") {
+          if (rejectDuringOpenAIAccountMutation(client, cmd.reqId)) break;
+          if (rejectOpenAIAccountMutationWhileStreaming(client, cmd.reqId)) break;
+          openAIAccountMutationInFlight = true;
+        }
+        void ensureAuthenticated(provider, {
           onProgress: (msg) => {
             server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: msg });
           },
@@ -1192,6 +1258,8 @@ export function createHandler(server: DaemonServer) {
           const msg = err instanceof Error ? err.message : String(err);
           log("error", `handler: login failed: ${msg}`);
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Login failed: ${msg}` });
+        }).finally(() => {
+          if (provider === "openai") openAIAccountMutationInFlight = false;
         });
         break;
       }
@@ -1209,22 +1277,30 @@ export function createHandler(server: DaemonServer) {
           break;
         }
 
-        Promise.resolve().then(() => switchOpenAIAccount(cmd.target)).then((switched) => {
+        if (rejectOpenAIAccountMutationWhileStreaming(client, cmd.reqId)) break;
+        if (rejectDuringOpenAIAccountMutation(client, cmd.reqId)) break;
+
+        try {
+          // See the account-removal path above: do not yield between checking
+          // active streams and changing the account used by future requests.
+          const switched = switchOpenAIAccount(cmd.target);
           invalidateCredentialsCache("openai");
           const label = switched.email ?? switched.displayName ?? switched.accountId ?? `account-${switched.index}`;
           server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: `Switched OpenAI account to ${label}.\n\n${formatOpenAIAccountList()}` });
           broadcastToolsAvailable();
           refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
-        }).catch((err) => {
+        } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           log("error", `handler: openai account switch failed: ${msg}`);
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `OpenAI account switch failed: ${msg}` });
-        });
+        }
         break;
       }
 
       case "logout": {
         const provider = cmd.provider ?? getDefaultProvider().id;
+        if (provider === "openai" && rejectDuringOpenAIAccountMutation(client, cmd.reqId)) break;
+        if (provider === "openai" && rejectOpenAIAccountMutationWhileStreaming(client, cmd.reqId)) break;
         clearAuth(provider);
         clearUsage(provider);
         broadcastUsage(provider, null);

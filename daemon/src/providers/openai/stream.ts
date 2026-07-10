@@ -3,7 +3,7 @@ import { NonRetryableProviderError } from "../errors";
 import type { ApiToolCall } from "../types";
 import type { ContentBlock, StreamCallbacks, StreamResult } from "../types";
 import { extractReasoningRawContent, extractReasoningSummaries, finalizeReasoningItem, hasPreservableReasoning, hasRenderableReasoning, mergeReasoningSummaries } from "./reasoning";
-import type { OpenAIReasoningItem } from "./types";
+import type { OpenAICompactionItem, OpenAIReasoningItem } from "./types";
 
 export interface OpenAIStreamToolState {
   id: string;
@@ -17,6 +17,8 @@ interface OpenAIReadState {
   cachedInputTokens?: number;
   outputTokens?: number;
   stopReason: string;
+  compactionDoneCount: number;
+  responseCompleted: boolean;
   toolCalls: ApiToolCall[];
   toolCallsByOutputIndex: Map<number, ApiToolCall>;
   textStarted: Set<string>;
@@ -24,6 +26,8 @@ interface OpenAIReadState {
   textOutputIndexesById: Map<string, number>;
   toolStates: Map<number, OpenAIStreamToolState>;
   reasoningStates: Map<number, OpenAIReasoningItem>;
+  compactionStates: Map<number, OpenAICompactionItem>;
+  compactionOutputIndexesById: Map<string, number>;
   reasoningOutputIndexesById: Map<string, number>;
   currentReasoningIndexes: Map<number, number>;
   currentReasoningOutputIndex: number | null;
@@ -33,6 +37,8 @@ interface OpenAIReadState {
 function createReadState(): OpenAIReadState {
   return {
     stopReason: "",
+    compactionDoneCount: 0,
+    responseCompleted: false,
     toolCalls: [],
     toolCallsByOutputIndex: new Map<number, ApiToolCall>(),
     textStarted: new Set<string>(),
@@ -40,6 +46,8 @@ function createReadState(): OpenAIReadState {
     textOutputIndexesById: new Map<string, number>(),
     toolStates: new Map<number, OpenAIStreamToolState>(),
     reasoningStates: new Map<number, OpenAIReasoningItem>(),
+    compactionStates: new Map<number, OpenAICompactionItem>(),
+    compactionOutputIndexesById: new Map<string, number>(),
     reasoningOutputIndexesById: new Map<string, number>(),
     currentReasoningIndexes: new Map<number, number>(),
     currentReasoningOutputIndex: null,
@@ -87,8 +95,37 @@ function buildOpenAIStreamError(error: OpenAIErrorPayload | undefined, fallback:
 
 function nextOutputStateIndex(state: OpenAIReadState): number {
   let index = 0;
-  while (state.reasoningStates.has(index) || state.textStates.has(index) || state.toolStates.has(index)) index++;
+  while (state.reasoningStates.has(index) || state.textStates.has(index) || state.toolStates.has(index) || state.compactionStates.has(index)) index++;
   return index;
+}
+
+function handleCompletedCompactionItem(state: OpenAIReadState, outputIndex: number, item: Record<string, unknown>): void {
+  if (typeof item.encrypted_content !== "string" || item.encrypted_content.length === 0) return;
+  if (typeof item.id === "string" && item.id.length > 0) {
+    state.compactionOutputIndexesById.set(item.id, outputIndex);
+  }
+  state.compactionStates.set(outputIndex, {
+    ...(typeof item.id === "string" && item.id.length > 0 ? { id: item.id } : {}),
+    encryptedContent: item.encrypted_content,
+    ...(item.internal_chat_message_metadata_passthrough !== undefined
+      ? { internalChatMessageMetadataPassthrough: item.internal_chat_message_metadata_passthrough }
+      : {}),
+  });
+}
+
+function isCompactionItem(item: Record<string, unknown>): boolean {
+  return item.type === "compaction" || item.type === "compaction_summary";
+}
+
+function resolveCompactionOutputIndex(state: OpenAIReadState, item: Record<string, unknown>): number | undefined {
+  if (typeof item.id === "string") {
+    const byId = state.compactionOutputIndexesById.get(item.id);
+    if (byId !== undefined) return byId;
+  }
+  if (typeof item.encrypted_content !== "string") return undefined;
+  const matching = [...state.compactionStates.entries()]
+    .filter(([, existing]) => existing.encryptedContent === item.encrypted_content);
+  return matching.length === 1 ? matching[0][0] : undefined;
 }
 
 function resolveTextOutputIndex(state: OpenAIReadState, event: Record<string, unknown>): number | null {
@@ -314,9 +351,11 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
       break;
 
     case "response.output_item.added": {
-      const outputIndex = event.output_index as number;
       const item = event.item as Record<string, unknown> | undefined;
       if (!item) break;
+      const outputIndex = typeof event.output_index === "number" && Number.isFinite(event.output_index)
+        ? event.output_index
+        : nextOutputStateIndex(state);
       if (item.type === "function_call") {
         state.toolStates.set(outputIndex, {
           id: String(item.call_id ?? ""),
@@ -335,6 +374,11 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
         state.reasoningStates.set(outputIndex, reasoningItem);
         state.reasoningOutputIndexesById.set(reasoningItem.id, outputIndex);
         state.currentReasoningOutputIndex = outputIndex;
+      } else if (isCompactionItem(item)) {
+        if (typeof item.id === "string" && item.id.length > 0) {
+          state.compactionOutputIndexesById.set(item.id, outputIndex);
+        }
+        handleCompletedCompactionItem(state, outputIndex, item);
       }
       break;
     }
@@ -436,10 +480,12 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
     }
 
     case "response.output_item.done": {
-      const outputIndex = typeof event.output_index === "number"
-        ? event.output_index
-        : resolveReasoningOutputIndex(state, event);
       const item = event.item as Record<string, unknown> | undefined;
+      const outputIndex = typeof event.output_index === "number" && Number.isFinite(event.output_index)
+        ? event.output_index
+        : item && isCompactionItem(item)
+          ? resolveCompactionOutputIndex(state, item) ?? nextOutputStateIndex(state)
+          : resolveReasoningOutputIndex(state, event);
       if (!item || outputIndex == null) break;
       if (item.type === "function_call") {
         const toolState = state.toolStates.get(outputIndex);
@@ -469,6 +515,9 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
         updateBlocks(state, cb, () => {
           handleCompletedMessageItem(state, item);
         });
+      } else if (isCompactionItem(item)) {
+        state.compactionDoneCount += 1;
+        handleCompletedCompactionItem(state, outputIndex, item);
       }
       break;
     }
@@ -476,6 +525,7 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
     case "response.completed":
     case "response.incomplete": {
       const response = event.response as {
+        id?: string;
         usage?: {
           input_tokens?: number;
           input_tokens_details?: { cached_tokens?: number };
@@ -485,6 +535,7 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
         output?: Array<Record<string, unknown>>;
       } | undefined;
       updateBlocks(state, cb, () => {
+        if (!state.responseId && typeof response?.id === "string") state.responseId = response.id;
         state.inputTokens = response?.usage?.input_tokens;
         state.outputTokens = response?.usage?.output_tokens;
         state.cachedInputTokens = response?.usage?.input_tokens_details?.cached_tokens;
@@ -507,12 +558,15 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
             }
           } else if (item.type === "message") {
             handleCompletedMessageItem(state, item);
+          } else if (isCompactionItem(item)) {
+            handleCompletedCompactionItem(state, outputIndex, item);
           }
         }
       });
       state.stopReason = event.type === "response.completed"
         ? (state.toolCalls.length > 0 ? "tool_use" : "stop")
         : String(response?.incomplete_details?.reason ?? "incomplete");
+      state.responseCompleted = event.type === "response.completed";
       break;
     }
 
@@ -534,14 +588,25 @@ function buildResponseOutputItems(state: OpenAIReadState): unknown[] {
   // then one assistant message containing all rendered text blocks, then tool
   // calls.  Matching the replay shape (rather than the raw provider output
   // shape) is what lets OpenAITurnSession do a strict baseline comparison.
-  const items: unknown[] = [...state.reasoningStates.entries()]
+  const items: unknown[] = [...state.compactionStates.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, item]) => ({
+      type: "compaction",
+      ...(item.id ? { id: item.id } : {}),
+      encrypted_content: item.encryptedContent,
+      ...(item.internalChatMessageMetadataPassthrough !== undefined
+        ? { internal_chat_message_metadata_passthrough: item.internalChatMessageMetadataPassthrough }
+        : {}),
+    }));
+
+  items.push(...[...state.reasoningStates.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([, item]) => ({
         type: "reasoning",
         id: item.id,
         ...(item.encryptedContent !== null ? { encrypted_content: item.encryptedContent } : {}),
         summary: item.summaries.map((text) => ({ type: "summary_text", text })),
-    }));
+    })));
 
   const textParts = [...state.textStates.entries()]
     .sort((a, b) => a[0] - b[0])
@@ -572,6 +637,9 @@ function finalizeReadState(state: OpenAIReadState): StreamResult {
     .sort((a, b) => a[0] - b[0])
     .filter(([, item]) => hasPreservableReasoning(item));
   const orderedReasoningItems = orderedReasoningEntries.map(([, item]) => item);
+  const orderedCompactionItems = [...state.compactionStates.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, item]) => item);
   const orderedTextEntries = [...state.textStates.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([outputIndex, textParts]) => ({ outputIndex, text: joinedTextContent(textParts) }))
@@ -595,10 +663,14 @@ function finalizeReadState(state: OpenAIReadState): StreamResult {
     cachedInputTokens: state.cachedInputTokens,
     outputTokens: state.outputTokens,
     responseOutputItems: buildResponseOutputItems(state),
+    ...(orderedCompactionItems.length > 0 ? { compactionItems: orderedCompactionItems } : {}),
+    compactionDoneCount: state.compactionDoneCount,
+    responseCompleted: state.responseCompleted,
     assistantProviderData: {
       openai: {
         ...(state.responseId ? { responseId: state.responseId } : {}),
         reasoningItems: orderedReasoningItems,
+        ...(orderedCompactionItems.length > 0 ? { compactionItems: orderedCompactionItems } : {}),
       },
     },
   };

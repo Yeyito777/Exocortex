@@ -146,6 +146,8 @@ export interface RenderState {
   messages: Message[];
   /** The AI message currently being streamed (not yet finalized). */
   pendingAI: AIMessage | null;
+  /** Start time for the transient native context-compaction spinner. */
+  contextCompactionStartedAt: number | null;
   /** True when pendingAI was hydrated from a daemon snapshot rather than live local chunks. */
   pendingAIHydratedFromSnapshot: boolean;
   /**
@@ -287,6 +289,7 @@ export function isStreaming(state: RenderState): boolean {
 /** Clear pending AI state — always use this instead of setting pendingAI = null directly. */
 export function clearPendingAI(state: RenderState): void {
   state.pendingAI = null;
+  state.contextCompactionStartedAt = null;
   state.pendingAIHydratedFromSnapshot = false;
   state.pendingAICommittedIndex = null;
   state.suppressPendingAIMetadataStartedAt = null;
@@ -490,8 +493,9 @@ export function createInitialState(): RenderState {
   const hideSensitiveInfo = loadHideSensitiveInfoPreference();
 
   const s: RenderState = {
- 	    messages: [],
+    messages: [],
     pendingAI: null,
+    contextCompactionStartedAt: null,
     pendingAIHydratedFromSnapshot: false,
     suppressPendingAIMetadataStartedAt: null,
 	    provider,

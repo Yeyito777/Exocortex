@@ -11,7 +11,9 @@ export type OpenAIInputItem =
   | { type: "message"; role: "assistant"; content: Array<{ type: "output_text"; text: string }>; id?: string }
   | { type: "function_call"; call_id: string; name: string; arguments: string; id?: string }
   | { type: "function_call_output"; call_id: string; output: string }
-  | { type: "reasoning"; id: string; encrypted_content?: string | null; summary: Array<{ type: "summary_text"; text: string }> };
+  | { type: "reasoning"; id: string; encrypted_content?: string | null; summary: Array<{ type: "summary_text"; text: string }> }
+  | { type: "compaction"; id?: string; encrypted_content: string; internal_chat_message_metadata_passthrough?: unknown }
+  | { type: "compaction_trigger" };
 
 const OPENAI_REASONING_SUMMARY = "detailed" as const;
 const MAX_OPENAI_INPUT_IMAGES = 5;
@@ -198,6 +200,17 @@ export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
     }
 
     const providerData = message.providerData?.openai;
+    for (const compaction of providerData?.compactionItems ?? []) {
+      input.push({
+        type: "compaction",
+        // Keep response item IDs in local checkpoint state, but do not send them
+        // with store:false/item_ids disabled (matching Codex's request cleanup).
+        encrypted_content: compaction.encryptedContent,
+        ...(compaction.internalChatMessageMetadataPassthrough !== undefined
+          ? { internal_chat_message_metadata_passthrough: compaction.internalChatMessageMetadataPassthrough }
+          : {}),
+      });
+    }
     const reasoningItems = providerData?.reasoningItems ?? [];
     for (const reasoning of reasoningItems) {
       input.push({
@@ -290,6 +303,7 @@ export function buildRequestBody(
   options: StreamOptions,
 ): Record<string, unknown> {
   const input = buildOpenAIInput(messages);
+  if (options.compaction) input.push({ type: "compaction_trigger" });
   const shape = buildRequestShape(model, options);
   // Build the canonical full replay body. A turn-scoped websocket session may
   // transform this into a Codex-style incremental request with
@@ -298,7 +312,13 @@ export function buildRequestBody(
   return {
     ...shape,
     input,
-    client_metadata: buildCodexClientMetadata(options.promptCacheKey),
+    client_metadata: buildCodexClientMetadata(
+      options.promptCacheKey,
+      options.codexWindowId,
+      options.compaction ? options.compactionMetadata ?? {} : undefined,
+      options.codexTurnId,
+      options.codexTurnStartedAtMs,
+    ),
     stream: true,
     store: false,
     ...buildPromptCacheBodyFields(options),

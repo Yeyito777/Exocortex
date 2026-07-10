@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { clearProviderAuth, loadProviderAuth, saveProviderAuth } from "../../store";
-import { getVerifiedSession, listAccounts, switchAccount, type StoredOpenAIAuthPool } from "./auth";
+import { getCurrentAccountScope, getVerifiedSession, listAccounts, switchAccount, type StoredOpenAIAuthPool } from "./auth";
 import type { StoredOpenAIAuth } from "./session";
 
 const originalFetch = globalThis.fetch;
@@ -39,6 +39,17 @@ afterEach(() => {
 });
 
 describe("OpenAI multi-account auth", () => {
+  test("derives a non-secret persisted account scope", () => {
+    const auth = makeAuth("one@example.com", "acct_one", "token-one");
+    saveProviderAuth("openai", auth);
+
+    const scope = getCurrentAccountScope();
+    expect(scope).toMatch(/^sha256:[0-9a-f]{32}$/);
+    expect(scope).not.toContain("acct_one");
+    expect(scope).not.toContain("token-one");
+    expect(getCurrentAccountScope()).toBe(scope);
+  });
+
   test("uses the app-wide selected account consistently", async () => {
     globalThis.fetch = mock(() => Promise.resolve(new Response("{}", { status: 200 }))) as unknown as typeof fetch;
 

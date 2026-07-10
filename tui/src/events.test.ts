@@ -26,6 +26,28 @@ describe("auth browser opener", () => {
   });
 });
 
+describe("context compaction status events", () => {
+  test("starts and clears the transient compaction spinner", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+
+    handleEvent({
+      type: "context_compaction_status",
+      convId: "conv-1",
+      active: true,
+      startedAt: 123,
+    }, state, daemon);
+    expect(state.contextCompactionStartedAt).toBe(123);
+
+    handleEvent({
+      type: "context_compaction_status",
+      convId: "conv-1",
+      active: false,
+    }, state, daemon);
+    expect(state.contextCompactionStartedAt).toBeNull();
+  });
+});
+
 function summary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
     id: "conv-1",

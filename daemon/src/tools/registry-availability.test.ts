@@ -7,6 +7,12 @@ afterEach(() => {
 });
 
 describe("tool availability", () => {
+  test("context compaction is daemon-managed and not exposed as a model tool", () => {
+    expect(getToolDefs().map((tool) => tool.name)).not.toContain("context");
+    expect(getToolDisplayInfo().map((tool) => tool.name)).not.toContain("context");
+    expect(buildToolSystemHints()).not.toContain("context list");
+  });
+
   test("image generation and file transcription are external CLI tools, not internal API tools", () => {
     expect(getToolDefs().some((tool) => tool.name === "generate_image")).toBe(false);
     expect(getToolDefs().some((tool) => tool.name === "transcribe_audio")).toBe(false);
@@ -52,13 +58,13 @@ describe("tool availability", () => {
     const defaultTools = getToolDefs().map((tool) => tool.name);
     expect(defaultTools).toContain("goal");
     expect(getToolDisplayInfo().some((tool) => tool.name === "goal")).toBe(true);
-    expect(buildToolSystemHints()).toContain("use the goal tool");
+    expect(buildToolSystemHints()).toContain("Only set a goal when");
 
     writeExocortexConfig({ features: { goalTool: false } });
     const disabledTools = getToolDefs().map((tool) => tool.name);
     expect(disabledTools).not.toContain("goal");
     expect(getToolDisplayInfo().some((tool) => tool.name === "goal")).toBe(false);
-    expect(buildToolSystemHints()).not.toContain("use the goal tool");
+    expect(buildToolSystemHints()).not.toContain("Only set a goal when");
 
     writeExocortexConfig({ features: { goalTool: true } });
     const enabledTools = getToolDefs().map((tool) => tool.name);

@@ -121,9 +121,14 @@ function isParentBashOptionContinuation(text: string): boolean {
   const tokens = text.trimStart().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return false;
 
-  for (let i = 0; i < tokens.length; i += 2) {
+  for (let i = 0; i < tokens.length;) {
+    if (tokens[i] === "--background") {
+      i += 1;
+      continue;
+    }
     if (tokens[i] !== "--timeout" && tokens[i] !== "--await") return false;
     if (i + 1 >= tokens.length || tokens[i + 1].startsWith("--")) return false;
+    i += 2;
   }
 
   return true;

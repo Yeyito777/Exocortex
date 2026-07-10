@@ -33,6 +33,8 @@ const streamingDisplayMessages = new Map<string, StoredMessage[]>();
 const streamingStartedAt = new Map<string, number>();
 /** Accumulated output token count per streaming job (for late-joining clients). */
 const streamingTokens = new Map<string, number>();
+/** Native server-side context compaction currently shown to clients. */
+const contextCompactionStartedAt = new Map<string, number>();
 /** Monotonic event sequence per active stream, used by clients to diagnose missed IPC events. */
 const streamSequences = new Map<string, number>();
 /** Messages queued for delivery during or after streaming. */
@@ -82,6 +84,7 @@ export function clearActiveJob(convId: string): void {
   streamingBlocks.delete(convId);
   streamingStartedAt.delete(convId);
   streamingTokens.delete(convId);
+  contextCompactionStartedAt.delete(convId);
   streamSequences.delete(convId);
   streamingDisplayMessages.delete(convId);
   lastActivityAt.delete(convId);
@@ -122,6 +125,15 @@ export function setStreamingTokens(convId: string, tokens: number): void {
 /** Get the accumulated output token count for an in-flight stream. */
 export function getStreamingTokens(convId: string): number {
   return streamingTokens.get(convId) ?? 0;
+}
+
+export function setContextCompactionStartedAt(convId: string, startedAt: number | null): void {
+  if (startedAt == null) contextCompactionStartedAt.delete(convId);
+  else if (activeJobs.has(convId)) contextCompactionStartedAt.set(convId, startedAt);
+}
+
+export function getContextCompactionStartedAt(convId: string): number | undefined {
+  return contextCompactionStartedAt.get(convId);
 }
 
 // ── Streaming event sequence numbers (diagnostics) ─────────────────

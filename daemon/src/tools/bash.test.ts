@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
-import { executeBashBackgroundable, spillAndPreviewForTest } from "./bash";
+import { existsSync, readFileSync, rmSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+import { bash, executeBashBackgroundable, spillAndPreviewForTest } from "./bash";
 
 function makeLargeOutput(): string {
   const lines: string[] = [];
@@ -112,5 +114,63 @@ describe("bash manual backgrounding", () => {
     const spilled = readFileSync(spillPath!, "utf8");
     expect(spilled).toContain("start");
     expect(spilled).toContain("done");
+  });
+});
+
+describe("bash explicit backgrounding", () => {
+  test("background=true returns immediately while output continues into the spill file", async () => {
+    const markerPath = join(tmpdir(), `exocortex-bash-background-marker-${process.pid}-${Date.now()}`);
+    const promise = executeBashBackgroundable({
+      command: `printf 'start\\n'; sleep 0.3; printf 'done\\n'; touch '${markerPath}'`,
+      background: true,
+    }, undefined, 60_000);
+
+    const result = await promise;
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("Command backgrounded immediately by request");
+    expect(result.output).toContain("Output is being written to:");
+    expect(existsSync(markerPath)).toBe(false);
+
+    const spillPath = result.output.match(/Output is being written to: (\S+)/)?.[1];
+    expect(spillPath).toBeTruthy();
+
+    for (let i = 0; i < 50 && !existsSync(markerPath); i++) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(existsSync(markerPath)).toBe(true);
+    let spilled = "";
+    for (let i = 0; i < 50; i++) {
+      spilled = existsSync(spillPath!) ? readFileSync(spillPath!, "utf8") : "";
+      if (spilled.includes("done")) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(spilled).toContain("start");
+    expect(spilled).toContain("done");
+
+    rmSync(markerPath, { force: true });
+    rmSync(spillPath!, { force: true });
+  });
+
+  test("rejects conflicting background and await parameters before spawning", async () => {
+    const result = await executeBashBackgroundable({
+      command: "echo should-not-run",
+      background: true,
+      await: 10,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("cannot be combined");
+  });
+
+  test("directs await=0 callers to the explicit background parameter", async () => {
+    const result = await executeBashBackgroundable({ command: "echo should-not-run", await: 0 });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Use 'background: true'");
+  });
+
+  test("exposes and summarizes the background flag", () => {
+    expect((bash.inputSchema.properties as Record<string, unknown>).background).toBeDefined();
+    expect(bash.summarize({ command: "sleep 30", background: true }).detail).toBe("sleep 30 --background");
   });
 });

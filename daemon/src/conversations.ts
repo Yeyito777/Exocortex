@@ -22,6 +22,7 @@ import { getProvider, normalizeEffort } from "./providers/registry";
 export {
   isStreaming, setActiveJob, getActiveJob, clearActiveJob, getStreamingStartedAt,
   setStreamingTokens, getStreamingTokens, nextStreamSeq, getStreamSeq,
+  setContextCompactionStartedAt, getContextCompactionStartedAt,
   touchActivity, pauseActivity, resumeActivity,
   setActiveToolBackgrounder, clearActiveToolBackgrounder, backgroundActiveTool,
   resetChunkCounter,
@@ -319,6 +320,7 @@ function loadConversation(id: string): Conversation | undefined {
 
 function applyConversationMutation(id: string, conv: Conversation): void {
   conv.lastContextTokens = null;
+  conv.activeContext = null;
   conv.updatedAt = Date.now();
   markDirty(id);
   flush(id);
@@ -411,6 +413,9 @@ export function clone(id: string): Conversation | null {
     effort: src.effort ?? DEFAULT_EFFORT,
     fastMode: src.fastMode ?? false,
     messages: structuredClone(src.messages),
+    activeContext: src.activeContext
+      ? { ...structuredClone(src.activeContext), windowId: `${newId}:${src.activeContext.windowNumber}` }
+      : null,
     createdAt: now,
     updatedAt: now,
     lastContextTokens: src.lastContextTokens,
@@ -780,7 +785,13 @@ export function redoDelete(): UndoDeleteResult | null {
     return null;
   }
 }
-export function setModel(id: string, provider: ProviderId, model: ModelId, effort: EffortLevel, fastMode: boolean): boolean {
+export function setModel(
+  id: string,
+  provider: ProviderId,
+  model: ModelId,
+  effort: EffortLevel,
+  fastMode: boolean,
+): boolean {
   const conv = get(id);
   if (!conv) return false;
   conv.provider = provider;
@@ -924,20 +935,39 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   }
   if (spliceAt === -1) return false;
 
-  // Clear queued messages first — prevents the orchestrator's finally block
-  // from draining the queue and starting a new stream after we abort.
-  streaming.clearQueuedMessages(id);
-  streaming.clearGoalContinuationAfterStream(id);
+  // Drain queued work first — prevents the orchestrator's finally block from
+  // starting a new stream after we abort. Keep a rollback copy in case the
+  // active stream cannot be stopped and the unwind is refused.
+  const queuedBeforeAbort = streaming.drainQueuedMessages(id);
+  const goalContinuationBeforeAbort = streaming.consumeGoalContinuationAfterStream(id);
 
   // Abort any active stream and wait for it to fully stop
   const ac = streaming.getActiveJob(id);
   if (ac) {
     ac.abort();
     const stopped = await waitForStreamStop(id);
-    if (!stopped) log("warn", `conversations: stream for ${id} did not stop within timeout, unwinding anyway`);
+    if (!stopped) {
+      log("warn", `conversations: stream for ${id} did not stop within timeout; refusing unsafe unwind`);
+      const queuedDuringWait = streaming.drainQueuedMessages(id);
+      for (const queued of [...queuedBeforeAbort, ...queuedDuringWait]) {
+        streaming.pushQueuedMessage(id, queued.text, queued.timing, queued.images);
+      }
+      const goalContinuationDuringWait = streaming.consumeGoalContinuationAfterStream(id);
+      if (goalContinuationBeforeAbort || goalContinuationDuringWait) {
+        streaming.requestGoalContinuationAfterStream(id);
+      }
+      return false;
+    }
   }
 
+  // Also discard work queued during the short abort wait: the explicit unwind
+  // supersedes it and must leave no post-unwind continuation behind.
+  streaming.clearQueuedMessages(id);
+  streaming.clearGoalContinuationAfterStream(id);
+
   conv.messages.splice(spliceAt);
+  conv.activeContext = null;
+  conv.lastContextTokens = null;
   conv.updatedAt = Date.now();
   markDirty(id);
   flush(id);

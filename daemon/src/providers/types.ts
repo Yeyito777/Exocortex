@@ -1,6 +1,7 @@
 import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData, ToolCallBlock, ToolResultBlock, TokenTrackingContext } from "../messages";
 import type { OAuthProfile, StoredTokens } from "../store";
 import type { AssistantProviderData } from "./provider-data";
+import type { OpenAICompactionItem } from "./openai/types";
 
 export type ServiceTier = "fast";
 
@@ -29,6 +30,12 @@ export interface StreamResult {
   responseOutputItems?: unknown[];
   requestDiagnostics?: ModelRequestDiagnostics;
   assistantProviderData?: AssistantProviderData;
+  /** Opaque provider-native context checkpoints returned by a compaction request. */
+  compactionItems?: OpenAICompactionItem[];
+  /** Number of compaction output_item.done events observed on the stream. */
+  compactionDoneCount?: number;
+  /** True only when the provider emitted response.completed (not incomplete). */
+  responseCompleted?: boolean;
 }
 
 export interface ModelRequestDiagnostics {
@@ -83,6 +90,17 @@ export type StreamToolExecutor = (call: ApiToolCall, signal?: AbortSignal) => Pr
 export interface ProviderTurnSession {
   close(): void | Promise<void>;
   destroy?(): void | Promise<void>;
+  /** Drop stale incremental/transport state after active history is replaced. */
+  resetAfterCompaction?(): void | Promise<void>;
+}
+
+/**
+ * Mutable request budget shared by every transport/semantic attempt belonging
+ * to one provider operation. `attempts` counts actual request submissions.
+ */
+export interface StreamRequestBudget {
+  maxAttempts: number;
+  attempts: number;
 }
 
 export interface StreamOptions {
@@ -99,6 +117,22 @@ export interface StreamOptions {
   preferHttp?: boolean;
   /** Provider-created state shared by all model rounds within one assistant turn. */
   turnSession?: ProviderTurnSession;
+  /** Request a provider-native context checkpoint instead of an assistant reply. */
+  compaction?: boolean;
+  /** Shared cap for all native-compaction request submissions and transports. */
+  requestBudget?: StreamRequestBudget;
+  /** Codex telemetry metadata for a native compaction request. */
+  compactionMetadata?: {
+    reason: "context_limit" | "model_downshift";
+    phase: "pre_turn" | "mid_turn";
+  };
+  /** Current logical Codex context-window identifier. */
+  codexWindowId?: string;
+  /** One-way identity of the OpenAI account frozen at turn start. */
+  accountScope?: string;
+  /** Stable identity shared by all provider rounds in one logical assistant turn. */
+  codexTurnId?: string;
+  codexTurnStartedAtMs?: number;
 }
 
 export interface ProviderStreamMessage {

@@ -12,7 +12,7 @@ import { join } from "path";
 import { conversationsDir } from "@exocortex/shared/paths";
 import { save, load, loadAll } from "./persistence";
 import type { Conversation } from "./messages";
-import { DEFAULT_EFFORT } from "./messages";
+import { DEFAULT_EFFORT, historyPrefixHash } from "./messages";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -204,7 +204,7 @@ describe("V5 migration", () => {
       messages: [],
       createdAt: 6_000_000,
       updatedAt: 6_123_456,
-      lastContextTokens: null,
+      lastContextTokens: 99_999,
       marked: false,
       pinned: false,
     });
@@ -528,6 +528,89 @@ describe("error handling", () => {
 });
 
 describe("save / load round-trip", () => {
+  test("persists a valid compact replay separately from the visible transcript", () => {
+    const id = mkId("active-context-roundtrip");
+    const conv: Conversation = {
+      id,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      fastMode: false,
+      messages: [
+        { role: "user", content: "full old prompt", metadata: null },
+        { role: "assistant", content: "full old answer", metadata: null },
+      ],
+      createdAt: 13_500_000,
+      updatedAt: 13_500_001,
+      lastContextTokens: 123,
+      marked: false,
+      pinned: false,
+      sortOrder: -13_500_001,
+      title: "Active context",
+    };
+    conv.activeContext = {
+      version: 1,
+      kind: "openai_native",
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      accountScope: "acct",
+      messages: [{
+        role: "assistant",
+        content: [],
+        providerData: { openai: { compactionItems: [{ encryptedContent: "opaque" }] } },
+      }],
+      transcriptHistoryCount: 2,
+      transcriptPrefixHash: historyPrefixHash(conv.messages, 2),
+      windowId: `${id}:1`,
+      windowNumber: 1,
+      compactedAt: 13_500_001,
+      compactionCount: 1,
+    };
+
+    save(conv);
+    expect(load(id)).toEqual(conv);
+  });
+
+  test("discards a stale compact replay but keeps the full transcript loadable", () => {
+    const id = mkId("stale-active-context");
+    writeFixture(id, {
+      version: 14,
+      id,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      fastMode: false,
+      messages: [{ role: "user", content: "edited transcript", metadata: null }],
+      activeContext: {
+        version: 1,
+        kind: "openai_native",
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        messages: [{ role: "assistant", content: [] }],
+        transcriptHistoryCount: 1,
+        transcriptPrefixHash: "not-the-real-hash",
+        windowId: `${id}:1`,
+        windowNumber: 1,
+        compactedAt: 1,
+        compactionCount: 1,
+      },
+      createdAt: 1,
+      updatedAt: 2,
+      lastContextTokens: null,
+      marked: false,
+      pinned: false,
+      sortOrder: -2,
+      folderId: null,
+      title: "Stale context",
+      goal: null,
+    });
+
+    const loaded = load(id);
+    expect(loaded?.messages[0].content).toBe("edited transcript");
+    expect(loaded?.activeContext).toBeUndefined();
+    expect(loaded?.lastContextTokens).toBeNull();
+  });
+
   test("save then load returns a deeply equal conversation", () => {
     const id = mkId("roundtrip-basic");
     const original: Conversation = {

@@ -424,6 +424,10 @@ function renderDelayForEvent(event: Event): number {
 /** During streaming, re-render on the next exact elapsed-second boundary. */
 function resetStreamTick(): void {
   clearStreamTick();
+  if (state.contextCompactionStartedAt != null) {
+    streamTickTimer = setTimeout(scheduleRender, 80);
+    return;
+  }
   const startedAt = state.pendingAI?.metadata?.startedAt;
   if (isStreaming(state) && typeof startedAt === "number") {
     streamTickTimer = setTimeout(scheduleRender, msUntilNextElapsedSecond(startedAt));

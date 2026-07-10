@@ -505,6 +505,43 @@ describe("handler abort", () => {
   });
 });
 
+describe("handler OpenAI account mutation safety", () => {
+  beforeEach(cleanupIds);
+  afterEach(cleanupIds);
+
+  test("rejects an account switch while any OpenAI conversation is streaming", async () => {
+    const convId = mkId("account-streaming");
+    create(convId, "openai", "gpt-5.6-sol");
+    setActiveJob(convId, new AbortController(), Date.now());
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "account",
+      reqId: "req-account-streaming",
+      provider: "openai",
+      target: "other@example.com",
+    });
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "error",
+      reqId: "req-account-streaming",
+      message: expect.stringContaining("while an OpenAI conversation is streaming"),
+    }));
+    expect(sent).not.toContainEqual(expect.objectContaining({ type: "auth_status" }));
+  });
+});
+
 describe("handler load_conversation late-join streaming snapshots", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();

@@ -5,9 +5,10 @@ import { join } from "node:path";
 describe("browse source", () => {
   const source = readFileSync(join(import.meta.dir, "browse.ts"), "utf8");
 
-  test("uses the current digestor Relevant Links prompt", () => {
+  test("uses the current focused digestor Relevant Links prompt", () => {
     expect(source).toContain("You are a web page digestor");
-    expect(source).toContain("Produce an extensive, and thorough digest");
+    expect(source).toContain("Produce a focused, useful digest");
+    expect(source).toContain("Prefer concise answers; include detail when the prompt asks for it");
     expect(source).toContain("Max 7 links");
     expect(source).toContain("1. [Title](URL)");
   });

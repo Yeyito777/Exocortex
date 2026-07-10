@@ -14,6 +14,7 @@ export * from "@exocortex/shared/messages";
 
 import { DEFAULT_EFFORT, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
+import { createHash } from "crypto";
 
 export interface ContextTokenBreakdown {
   userText: number;
@@ -54,8 +55,7 @@ export interface ApiMessage {
   content: string | ApiContentBlock[];
   /**
    * Optional persistence/display metadata. Provider request builders ignore it;
-   * the daemon uses it for model-visible system notices such as context
-   * pressure warnings.
+   * the daemon uses it for model-visible checkpoint/system notices.
    */
   metadata?: MessageMetadata | null;
   providerData?: AssistantProviderData;
@@ -71,6 +71,31 @@ export interface StoredMessage {
   contextTokens?: MessageContextTokenAttribution | null;
 }
 
+/**
+ * A compact provider replay kept separately from the immutable, user-visible
+ * transcript. History appended after transcriptHistoryCount is replayed as a
+ * tail until the checkpoint is advanced at the end of a turn.
+ */
+export interface ActiveContext {
+  version: 1;
+  kind: "openai_native" | "plaintext";
+  /** Provider/model that created the checkpoint (plaintext remains portable). */
+  provider: ProviderId;
+  model: ModelId;
+  /** Native OpenAI blobs are scoped to the account that created them. */
+  accountScope?: string;
+  messages: ApiMessage[];
+  /** Number of model-history messages represented by messages. */
+  transcriptHistoryCount: number;
+  /** Detect transcript edits/corruption before replaying a derived checkpoint. */
+  transcriptPrefixHash: string;
+  /** Logical provider window installed by the latest compaction. */
+  windowId: string;
+  windowNumber: number;
+  compactedAt: number;
+  compactionCount: number;
+}
+
 // ── Conversation state ──────────────────────────────────────────────
 
 export interface Conversation {
@@ -80,6 +105,8 @@ export interface Conversation {
   effort: EffortLevel;
   fastMode: boolean;
   messages: StoredMessage[];
+  /** Compact model replay; never used to render or count the visible chat. */
+  activeContext?: ActiveContext | null;
   createdAt: number;
   updatedAt: number;
   lastContextTokens: number | null;
@@ -107,8 +134,7 @@ export interface Conversation {
  * into the AI entry.  Without this consistency, unwindTo's
  * user-message index drifts from the TUI's index and the
  * splice can land between a tool_use and its tool_result,
- * bricking the conversation.  Also used by the context tool's
- * snapRange to keep tool_use/tool_result pairs atomic.
+ * bricking the conversation.
  */
 export function isToolResultMessage(msg: StoredMessage): boolean {
   if (typeof msg.content === "string") return false;
@@ -145,6 +171,200 @@ export function createModelVisibleSystemNotice(
 /** True for actual user/assistant API history turns, excluding UI-only daemon entries. */
 export function isHistoryMessage(msg: StoredMessage): msg is StoredMessage & { role: "user" | "assistant" } {
   return msg.role !== "system" && msg.role !== "system_instructions";
+}
+
+/** Provider replay history, excluding obsolete model-directed compaction hints. */
+export function isReplayHistoryMessage(msg: StoredMessage): msg is StoredMessage & { role: "user" | "assistant" } {
+  return isHistoryMessage(msg) && msg.metadata?.kind !== "context_warning";
+}
+
+export function historyPrefixHash(messages: StoredMessage[], historyCount: number): string {
+  const hash = createHash("sha256");
+  let seen = 0;
+  for (const message of messages) {
+    if (seen >= historyCount) break;
+    if (!isReplayHistoryMessage(message)) continue;
+    hash.update(JSON.stringify({
+      role: message.role,
+      content: message.content,
+      providerData: message.providerData ?? null,
+    }));
+    hash.update("\n");
+    seen += 1;
+  }
+  return hash.digest("hex").slice(0, 24);
+}
+
+function validOpenAICompactionItem(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as { id?: unknown; encryptedContent?: unknown };
+  return (item.id === undefined || (typeof item.id === "string" && item.id.length > 0))
+    && typeof item.encryptedContent === "string"
+    && item.encryptedContent.length > 0;
+}
+
+function validToolResultContentPart(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const part = value as Record<string, unknown>;
+  if (part.type === "text") return typeof part.text === "string";
+  if (part.type !== "image" || !part.source || typeof part.source !== "object" || Array.isArray(part.source)) {
+    return false;
+  }
+  const source = part.source as Record<string, unknown>;
+  return source.type === "base64"
+    && typeof source.media_type === "string"
+    && typeof source.data === "string";
+}
+
+function validApiContentBlock(value: unknown, role: ApiMessage["role"]): value is ApiContentBlock {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const block = value as Record<string, unknown>;
+  switch (block.type) {
+    case "text":
+      return typeof block.text === "string";
+    case "image": {
+      if (role !== "user" || !block.source || typeof block.source !== "object" || Array.isArray(block.source)) return false;
+      const source = block.source as Record<string, unknown>;
+      return source.type === "base64"
+        && typeof source.media_type === "string"
+        && typeof source.data === "string";
+    }
+    case "thinking":
+      return role === "assistant"
+        && typeof block.thinking === "string"
+        && typeof block.signature === "string";
+    case "tool_use":
+      return role === "assistant"
+        && typeof block.id === "string"
+        && block.id.length > 0
+        && typeof block.name === "string"
+        && block.name.length > 0
+        && !!block.input
+        && typeof block.input === "object"
+        && !Array.isArray(block.input);
+    case "tool_result":
+      return role === "user"
+        && typeof block.tool_use_id === "string"
+        && block.tool_use_id.length > 0
+        && (typeof block.content === "string"
+          || (Array.isArray(block.content) && block.content.every(validToolResultContentPart)))
+        && (block.is_error === undefined || typeof block.is_error === "boolean");
+    default:
+      return false;
+  }
+}
+
+function validAssistantProviderData(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const openai = (value as Record<string, unknown>).openai;
+  if (!openai || typeof openai !== "object" || Array.isArray(openai)) return false;
+  const data = openai as Record<string, unknown>;
+  if (data.replayScope !== undefined) {
+    if (!data.replayScope || typeof data.replayScope !== "object" || Array.isArray(data.replayScope)) return false;
+    const scope = data.replayScope as Record<string, unknown>;
+    if (typeof scope.model !== "string" || scope.model.length === 0) return false;
+    if (scope.accountScope !== undefined && typeof scope.accountScope !== "string") return false;
+  }
+  if (data.responseId !== undefined && typeof data.responseId !== "string") return false;
+  if (data.compactionItems !== undefined
+      && (!Array.isArray(data.compactionItems) || !data.compactionItems.every(validOpenAICompactionItem))) return false;
+  if (data.reasoningItems !== undefined) {
+    if (!Array.isArray(data.reasoningItems)) return false;
+    for (const raw of data.reasoningItems) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+      const item = raw as Record<string, unknown>;
+      if (typeof item.id !== "string" || item.id.length === 0) return false;
+      if (item.encryptedContent !== null && typeof item.encryptedContent !== "string") return false;
+      if (!Array.isArray(item.summaries) || !item.summaries.every((entry) => typeof entry === "string")) return false;
+      if (item.rawContent !== undefined
+          && (!Array.isArray(item.rawContent) || !item.rawContent.every((entry) => typeof entry === "string"))) return false;
+    }
+  }
+  return true;
+}
+
+function validActiveReplayMessages(value: unknown[]): value is ApiMessage[] {
+  const outstandingToolUses = new Set<string>();
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+    const message = raw as Partial<ApiMessage>;
+    if (message.role !== "user" && message.role !== "assistant") return false;
+    if (typeof message.content !== "string") {
+      if (!Array.isArray(message.content)
+          || !message.content.every((block) => validApiContentBlock(block, message.role!))) return false;
+
+      // Responses replay requires a tool-result container immediately after the
+      // assistant tool calls it resolves. Do not accept a derived checkpoint
+      // that merely resolves orphaned calls at some later point in history.
+      if (outstandingToolUses.size > 0) {
+        if (message.role !== "user" || message.content.length === 0
+            || message.content.some((block) => block.type !== "tool_result")) return false;
+      }
+      for (const block of message.content) {
+        if (block.type === "tool_use") {
+          if (outstandingToolUses.has(block.id)) return false;
+          outstandingToolUses.add(block.id);
+        } else if (block.type === "tool_result") {
+          if (!outstandingToolUses.delete(block.tool_use_id)) return false;
+        }
+      }
+      if (message.role === "user" && outstandingToolUses.size > 0) return false;
+    } else if (outstandingToolUses.size > 0) {
+      return false;
+    }
+    if (!validAssistantProviderData(message.providerData)) return false;
+  }
+  return outstandingToolUses.size === 0;
+}
+
+function countValidNativeCompactionItems(messages: ApiMessage[]): number | null {
+  let count = 0;
+  for (const message of messages) {
+    const openai = message.providerData?.openai;
+    const items = openai?.compactionItems;
+    if (items === undefined) continue;
+    if (message.role !== "assistant" || !Array.isArray(items) || !items.every(validOpenAICompactionItem)) {
+      return null;
+    }
+    count += items.length;
+  }
+  return count;
+}
+
+/** Derived replay is disposable: reject malformed/stale state and use transcript. */
+export function isValidActiveContext(active: unknown, transcript: StoredMessage[]): active is ActiveContext {
+  if (!active || typeof active !== "object") return false;
+  const value = active as Partial<ActiveContext>;
+  if (value.version !== 1) return false;
+  if (value.kind !== "openai_native" && value.kind !== "plaintext") return false;
+  if (typeof value.provider !== "string" || value.provider.length === 0
+      || typeof value.model !== "string" || value.model.length === 0) return false;
+  if (value.accountScope !== undefined
+      && (typeof value.accountScope !== "string" || value.accountScope.length === 0)) return false;
+  if (value.kind === "openai_native" && value.provider !== "openai") return false;
+  if (!Array.isArray(value.messages) || !validActiveReplayMessages(value.messages)) return false;
+  if (value.kind === "openai_native" && countValidNativeCompactionItems(value.messages as ApiMessage[]) !== 1) return false;
+  if (value.kind === "plaintext") {
+    const checkpointCount = (value.messages as ApiMessage[]).filter((message) =>
+      message.role === "user"
+      && message.metadata?.system === true
+      && message.metadata?.kind === "context_checkpoint"
+      && typeof message.content === "string"
+      && message.content.length > 0
+    ).length;
+    if (checkpointCount !== 1) return false;
+  }
+  if (!Number.isSafeInteger(value.transcriptHistoryCount) || value.transcriptHistoryCount! < 0) return false;
+  const historyCount = transcript.filter(isReplayHistoryMessage).length;
+  if (value.transcriptHistoryCount! > historyCount) return false;
+  if (typeof value.transcriptPrefixHash !== "string" || !/^[0-9a-f]{24}$/.test(value.transcriptPrefixHash)) return false;
+  if (historyPrefixHash(transcript, value.transcriptHistoryCount!) !== value.transcriptPrefixHash) return false;
+  if (typeof value.windowId !== "string" || value.windowId.length === 0) return false;
+  if (!Number.isSafeInteger(value.windowNumber) || value.windowNumber! < 1) return false;
+  if (!Number.isSafeInteger(value.compactedAt) || value.compactedAt! < 0
+      || !Number.isSafeInteger(value.compactionCount) || value.compactionCount! < 1) return false;
+  return true;
 }
 
 /** True for user-authored prompts, excluding tool_result containers and model-visible system notices. */

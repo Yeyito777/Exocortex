@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, nextStreamSeq, setActiveJob } from "./streaming";
+import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, nextStreamSeq, setActiveJob, setContextCompactionStartedAt } from "./streaming";
 
 const IDS: string[] = [];
 
@@ -28,6 +28,18 @@ describe("stream event sequence", () => {
 
     setActiveJob(id, new AbortController(), 2);
     expect(nextStreamSeq(id)).toBe(1);
+  });
+});
+
+describe("context compaction status", () => {
+  test("is ephemeral and cleared with the active job", () => {
+    const id = mkId("compaction-status");
+    setActiveJob(id, new AbortController(), 1);
+    setContextCompactionStartedAt(id, 42);
+    expect(getContextCompactionStartedAt(id)).toBe(42);
+
+    clearActiveJob(id);
+    expect(getContextCompactionStartedAt(id)).toBeUndefined();
   });
 });
 

@@ -12,10 +12,11 @@
 import { streamMessage, type ApiToolCall, type ProviderTurnSession } from "./api";
 import { log } from "./log";
 import { recordToolCallDiagnostics } from "./diagnostics";
-import { createModelVisibleSystemNotice, type ProviderId, type ModelId, type EffortLevel, type Block, type ToolCallBlock, type ToolResultBlock, type ApiMessage, type ApiContentBlock, type TokenTrackingContext } from "./messages";
+import { type ProviderId, type ModelId, type EffortLevel, type Block, type ToolCallBlock, type ToolResultBlock, type ApiMessage, type ApiContentBlock, type TokenTrackingContext } from "./messages";
 import type { ContentBlock as ProviderContentBlock, ServiceTier, StreamRetryMetadata } from "./providers/types";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
 import { getMaxContext } from "./providers/registry";
+import { estimateContextTokens, isContextWindowError, shouldAutoCompact, type CompactionReason } from "./context-compaction";
 
 // ── Callbacks ───────────────────────────────────────────────────────
 
@@ -34,8 +35,6 @@ export interface AgentCallbacks {
   onToolCall(block: ToolCallBlock): void;
   /** A tool has finished executing. */
   onToolResult(block: ToolResultBlock): void;
-  /** Expose the mutable current-turn message buffer for context management tools. */
-  onCurrentTurnMessagesUpdate?(messages: ApiMessage[], protectedTailCount: number): void;
   /** Accumulated output token count updated (fires after each API round). */
   onTokensUpdate(tokens: number): void;
   /** Input (context) token count from the latest API round. */
@@ -49,19 +48,16 @@ export interface AgentCallbacks {
   onRetryWaitEnd?(): void;
   /** A tool-use round completed — all tool results received, next API call starting. */
   onRoundComplete?(): void;
+  /** Completed raw messages (including queued injections) are safe to persist. */
+  onRecoveryStateUpdate?(): void;
   /**
    * Drain "next-turn" queued messages between tool rounds.
    * Called after onRoundComplete — returns user messages to inject
    * into the conversation before the next API call.
    */
   drainNextTurnMessages?(): ApiMessage[];
-  /**
-   * Called after tool execution. If the context tool modified the conversation,
-   * returns a rebuilt base message array (historical messages, trimmed).
-   * The agent loop replaces its local messages with: rebuilt + newMessages.
-   * Returns null if no rebuild is needed.
-   */
-  rebuildMessages?(): ApiMessage[] | null;
+  /** Atomically replace active provider replay with an automatic checkpoint. */
+  compactContext?(messages: ApiMessage[], reason: CompactionReason, projectedTokens: number): Promise<ApiMessage[] | null>;
 }
 
 // ── Tool execution ──────────────────────────────────────────────────
@@ -90,7 +86,12 @@ export interface AgentResult {
    *  For a tool-use turn this is: [assistant, user(tool_result), assistant, user(tool_result), assistant].
    *  For a simple response: [assistant]. Persisted as-is — replays correctly. */
   newMessages: ApiMessage[];
+  /** Full active provider replay after any automatic checkpoint replacements. */
+  contextMessages: ApiMessage[];
+  contextCompacted: boolean;
   tokens: number;
+  /** Output tokens from the final provider round (not accumulated tool rounds). */
+  lastOutputTokens: number;
   durationMs: number;
 }
 
@@ -106,6 +107,9 @@ export interface AgentState {
   completedBlocks: Block[];
   /** Accumulated output tokens so far. */
   tokens: number;
+  /** Latest replay known to be internally complete, for abort recovery. */
+  contextMessages: ApiMessage[];
+  contextCompacted: boolean;
 }
 
 // ── Tool summarizer ─────────────────────────────────────────────────
@@ -116,109 +120,6 @@ export type ToolSummarizer = (name: string, input: Record<string, unknown>) => s
 /** Fallback if no summarizer is provided. */
 function defaultSummarizer(name: string, _input: Record<string, unknown>): string {
   return name;
-}
-
-function toolResultOutput(content: string | unknown[]): string {
-  if (typeof content === "string") return content;
-  return content
-    .map((part) => {
-      if (part && typeof part === "object" && "type" in part && (part as { type?: unknown }).type === "text") {
-        return String((part as { text?: unknown }).text ?? "");
-      }
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n") || JSON.stringify(content);
-}
-
-/**
- * Rebuild display blocks from the mutable provider-history messages for the
- * in-progress assistant message. Current-turn compaction mutates ApiMessage
- * content directly; this keeps final message_complete blocks in sync with what
- * is actually persisted/sent to the next model call.
- */
-function rebuildBlocksFromApiMessages(messages: ApiMessage[], summarizer: ToolSummarizer): Block[] {
-  const blocks: Block[] = [];
-  const toolUseNames = new Map<string, string>();
-
-  for (const msg of messages) {
-    if (msg.role === "assistant") {
-      if (typeof msg.content === "string") {
-        if (msg.content.length > 0) blocks.push({ type: "text", text: msg.content });
-        continue;
-      }
-      for (const block of msg.content) {
-        if (block.type === "thinking") {
-          blocks.push({ type: "thinking", text: block.thinking });
-        } else if (block.type === "text") {
-          blocks.push({ type: "text", text: block.text });
-        } else if (block.type === "tool_use") {
-          toolUseNames.set(block.id, block.name);
-          blocks.push({
-            type: "tool_call",
-            toolCallId: block.id,
-            toolName: block.name,
-            input: block.input,
-            summary: summarizer(block.name, block.input),
-          });
-        }
-      }
-      continue;
-    }
-
-    if (Array.isArray(msg.content) && msg.content.some((b) => b.type === "tool_result")) {
-      for (const block of msg.content) {
-        if (block.type !== "tool_result") continue;
-        blocks.push({
-          type: "tool_result",
-          toolCallId: block.tool_use_id,
-          toolName: toolUseNames.get(block.tool_use_id) ?? "unknown",
-          output: toolResultOutput(block.content),
-          isError: block.is_error ?? false,
-        });
-      }
-    } else if (msg.metadata?.system === true) {
-      const text = typeof msg.content === "string"
-        ? msg.content
-        : msg.content.filter((b) => b.type === "text").map((b) => (b as { type: "text"; text: string }).text).join("\n");
-      if (text.length > 0) blocks.push({ type: "text", text });
-    }
-  }
-
-  return blocks;
-}
-
-const CONTEXT_WARNING_FRACTION = 0.8;
-const CONTEXT_TARGET_FRACTION = 0.4;
-
-interface ContextPressureWarning {
-  usage: string;
-  hint: string;
-}
-
-function formatTokenCountInThousands(tokens: number): string {
-  const thousands = tokens / 1000;
-  return Number.isInteger(thousands) ? `${thousands}k` : `${thousands.toFixed(1)}k`;
-}
-
-export function buildContextPressureWarning(inputTokens: number, contextLimit: number): ContextPressureWarning | null {
-  if (contextLimit <= 0) return null;
-
-  const warningAt = Math.floor(contextLimit * CONTEXT_WARNING_FRACTION);
-  if (inputTokens < warningAt) return null;
-
-  const targetTokens = Math.floor(contextLimit * CONTEXT_TARGET_FRACTION);
-  const pct = ((inputTokens / contextLimit) * 100).toFixed(0);
-  const usage = `${Math.round(inputTokens / 1000)}k/${formatTokenCountInThousands(contextLimit)} tokens (${pct}%)`;
-  const freeAtLeast = `${Math.max(0, Math.round((inputTokens - targetTokens) / 1000))}k`;
-  const target = formatTokenCountInThousands(targetTokens);
-  const hint = `[Context: ${usage} — context is getting full. Free at least ~${freeAtLeast} tokens to get to a stable ${target}. Use the context tool now before you run out: context list, then context stage all desired compaction operations with targetTokens=${targetTokens}, then context compact once. Avoid compacting far below the target unless explicitly asked. After compacting, continue the task you were working on.]`;
-
-  return { usage, hint };
-}
-
-export function shouldInjectContextPressureWarning(toolCalls: ApiToolCall[]): boolean {
-  return !toolCalls.some((toolCall) => toolCall.name === "context");
 }
 
 // ── Agent loop ──────────────────────────────────────────────────────
@@ -244,6 +145,14 @@ export async function runAgentLoop(
     turnSession?: ProviderTurnSession;
     /** Mutable state for abort recovery — caller reads on catch. */
     state?: AgentState;
+    /** Test seam for provider streaming. Production always uses streamMessage. */
+    streamMessageFn?: typeof streamMessage;
+    /** Resolve the current logical window after a compaction replacement. */
+    getCodexWindowId?: () => string | undefined;
+    /** One-way provider-account identity frozen by the turn orchestrator. */
+    accountScope?: string;
+    codexTurnId?: string;
+    codexTurnStartedAtMs?: number;
   } = {},
 ): Promise<AgentResult> {
   const allBlocks: Block[] = [];
@@ -252,16 +161,15 @@ export async function runAgentLoop(
   const startTime = Date.now();
   let totalOutputTokens = 0;
   let lastInputTokens = 0;
-
-  // Context pressure warning — injected after qualifying tool-result rounds as
-  // a model-visible synthetic user message (metadata.system=true) while keeping
-  // the same live dim context-hint UI during streaming.
-  // Re-evaluate it after every qualifying tool round while context remains hot.
+  let lastOutputTokens = 0;
+  let contextCompacted = false;
 
   // Expose state for abort recovery
   const state = options.state;
   if (state) {
     state.completedMessages = [];
+    state.contextMessages = [...messages];
+    state.contextCompacted = false;
     state.tokens = 0;
   }
 
@@ -269,30 +177,56 @@ export async function runAgentLoop(
     log("info", `agent: round ${round}, messages=${messages.length}, provider=${provider}, model=${model}`);
 
     // ── Stream one API response ───────────────────────────────────
-    const result = await streamMessage(provider, messages, model, {
-      onText: callbacks.onTextChunk,
-      onThinking: callbacks.onThinkingChunk,
-      onBlockStart: callbacks.onBlockStart,
-      onBlocksUpdate: callbacks.onBlocksUpdate,
-      onSignature: callbacks.onSignature,
-      onToolCall: callbacks.onToolCall,
-      onToolResult: callbacks.onToolResult,
-      onHeaders: callbacks.onHeaders,
-      onRetry: callbacks.onRetry,
-      onRetryWaitStart: callbacks.onRetryWaitStart,
-      onRetryWaitEnd: callbacks.onRetryWaitEnd,
-    }, {
-      system: options.system,
-      signal: options.signal,
-      maxTokens: options.maxTokens,
-      tools: options.tools,
-      effort: options.effort,
-      serviceTier: options.serviceTier,
-      promptCacheKey: options.promptCacheKey,
-      tracking: options.tracking,
-      turnSession: options.turnSession,
-    });
+    let result;
+    let retriedAfterContextError = false;
+    let roundEmittedOutput = false;
+    while (true) {
+      try {
+        result = await (options.streamMessageFn ?? streamMessage)(provider, messages, model, {
+          onText: (text) => { roundEmittedOutput = true; callbacks.onTextChunk(text); },
+          onThinking: (text) => { roundEmittedOutput = true; callbacks.onThinkingChunk(text); },
+          onBlockStart: (type) => { roundEmittedOutput = true; callbacks.onBlockStart(type); },
+          onBlocksUpdate: (blocks) => { if (blocks.length > 0) roundEmittedOutput = true; callbacks.onBlocksUpdate?.(blocks); },
+          onSignature: (signature) => { roundEmittedOutput = true; callbacks.onSignature(signature); },
+          onToolCall: (block) => { roundEmittedOutput = true; callbacks.onToolCall(block); },
+          onToolResult: (block) => { roundEmittedOutput = true; callbacks.onToolResult(block); },
+          onHeaders: callbacks.onHeaders,
+          onRetry: callbacks.onRetry,
+          onRetryWaitStart: callbacks.onRetryWaitStart,
+          onRetryWaitEnd: callbacks.onRetryWaitEnd,
+        }, {
+          system: options.system,
+          signal: options.signal,
+          maxTokens: options.maxTokens,
+          tools: options.tools,
+          effort: options.effort,
+          serviceTier: options.serviceTier,
+          promptCacheKey: options.promptCacheKey,
+          tracking: options.tracking,
+          turnSession: options.turnSession,
+          codexWindowId: options.getCodexWindowId?.(),
+          accountScope: options.accountScope,
+          codexTurnId: options.codexTurnId,
+          codexTurnStartedAtMs: options.codexTurnStartedAtMs,
+        });
+        break;
+      } catch (error) {
+        if (roundEmittedOutput || retriedAfterContextError || !callbacks.compactContext || !isContextWindowError(error)) throw error;
+        retriedAfterContextError = true;
+        const replacement = await callbacks.compactContext(messages, "context_error", Number.POSITIVE_INFINITY);
+        if (!replacement) throw error;
+        messages.length = 0;
+        messages.push(...replacement);
+        contextCompacted = true;
+        if (state) {
+          state.contextMessages = [...messages];
+          state.contextCompacted = true;
+        }
+        log("info", `agent: compacted after context-window error; retrying round ${round}`);
+      }
+    }
 
+    lastOutputTokens = result.outputTokens ?? 0;
     if (result.outputTokens) {
       totalOutputTokens += result.outputTokens;
       callbacks.onTokensUpdate(totalOutputTokens);
@@ -360,12 +294,6 @@ export async function runAgentLoop(
     }
 
     log("info", `agent: round ${round}: ${result.toolCalls.length} tool call(s): ${result.toolCalls.map(tc => tc.name).join(", ")}`);
-    // The just-appended assistant tool_use message is incomplete until this
-    // round's tool results are built, so protect it from context compaction.
-    callbacks.onCurrentTurnMessagesUpdate?.(newMessages, 1);
-
-    const shouldWarnForThisRound = shouldInjectContextPressureWarning(result.toolCalls);
-
     // ── Emit tool call blocks ─────────────────────────────────────
     for (const tc of result.toolCalls) {
       const block: ToolCallBlock = {
@@ -436,64 +364,16 @@ export async function runAgentLoop(
       }
     }
 
-    // ── Context pressure warning ──────────────────────────────────
-    // When the conversation is at or above 80% of the model's maximum
-    // context, inject a separate model-visible synthetic user message after
-    // the tool_result message. Its metadata marks it as system-authored so
-    // clients render/count it like a context notice, not a real user prompt.
-    let contextPressureWarning: ContextPressureWarning | null = null;
-    if (shouldWarnForThisRound && lastInputTokens > 0) {
-      const contextLimit = getMaxContext(provider, model);
-      if (contextLimit == null || contextLimit <= 0) {
-        log("warn", `agent: skipping context pressure warning, unknown max context for ${provider}/${model}`);
-      } else {
-        contextPressureWarning = buildContextPressureWarning(lastInputTokens, contextLimit);
-      }
-    }
-
     const toolResultMsg: ApiMessage = { role: "user", content: toolResultContent };
     messages.push(toolResultMsg);
     newMessages.push(toolResultMsg);
-
-    if (contextPressureWarning) {
-      const warningMsg: ApiMessage = createModelVisibleSystemNotice(
-        contextPressureWarning.hint,
-        model,
-        "context_warning",
-      );
-      messages.push(warningMsg);
-      newMessages.push(warningMsg);
-
-      // Preserve the current live UI affordance: context hints stream as dim
-      // assistant-tail text until the canonical history snapshot replaces them
-      // with a system-style entry after the turn completes.
-      allBlocks.push({ type: "text", text: contextPressureWarning.hint });
-      callbacks.onBlockStart("text");
-      callbacks.onTextChunk(contextPressureWarning.hint);
-      log("info", `agent: injected context pressure warning (threshold=${Math.round(CONTEXT_WARNING_FRACTION * 100)}%, ${contextPressureWarning.usage})`);
-    }
-
-    // The round is now internally complete; older current-turn rounds may be
-    // compacted by a future context tool call.
-    callbacks.onCurrentTurnMessagesUpdate?.(newMessages, 0);
-
-    // ── Context tool rebuild ─────────────────────────────────────
-    const rebuilt = callbacks.rebuildMessages?.();
-    if (rebuilt) {
-      // rebuilt = historical messages (trimmed). Append current loop's new messages.
-      messages.length = 0;
-      messages.push(...rebuilt, ...newMessages);
-      // Current-turn compaction mutates newMessages; keep final/live canonical
-      // display blocks aligned so stripped outputs don't reappear on completion.
-      allBlocks.length = 0;
-      allBlocks.push(...rebuildBlocksFromApiMessages(newMessages, options.summarizer ?? defaultSummarizer));
-      log("info", `agent: context rebuilt, messages=${messages.length} (${rebuilt.length} historical + ${newMessages.length} new)`);
-    }
-
-    // Update recovery state — this round is fully complete
+    // The raw round is now durable recovery state. Do this before clearing
+    // streaming partials or starting a potentially slow compaction request.
     if (state) {
       state.completedMessages = [...newMessages];
       state.completedBlocks = [...allBlocks];
+      state.contextMessages = [...messages];
+      state.contextCompacted = contextCompacted;
       state.tokens = totalOutputTokens;
     }
     callbacks.onRoundComplete?.();
@@ -505,10 +385,38 @@ export async function runAgentLoop(
       newMessages.push(qm);
       log("info", `agent: injected next-turn queued message`);
     }
-    // Update recovery state to include injected messages so abort
-    // persists them in the right order alongside completed rounds.
-    if (state && nextTurn.length > 0) {
+    // Update raw recovery before compaction so cancellation cannot lose the
+    // completed tool round or a queued user message.
+    if (state) {
       state.completedMessages = [...newMessages];
+      state.contextMessages = [...messages];
+    }
+    callbacks.onRecoveryStateUpdate?.();
+
+    const contextLimit = getMaxContext(provider, model);
+    const assistantGrowthTokens = result.outputTokens != null && result.outputTokens > 0
+      ? result.outputTokens
+      : estimateContextTokens([assistantMsg], provider);
+    const projectedTokens = lastInputTokens > 0
+      ? lastInputTokens + assistantGrowthTokens + estimateContextTokens([toolResultMsg, ...nextTurn], provider)
+      : estimateContextTokens(messages, provider);
+    if (callbacks.compactContext && shouldAutoCompact(projectedTokens, contextLimit)) {
+      const replacement = await callbacks.compactContext(messages, "tool_round", projectedTokens);
+      if (replacement) {
+        messages.length = 0;
+        messages.push(...replacement);
+        contextCompacted = true;
+        log("info", `agent: automatic mid-turn compaction complete (projected=${projectedTokens}, limit=${contextLimit})`);
+      }
+    }
+
+    // Update recovery state only after queued messages and any checkpoint are complete.
+    if (state) {
+      state.completedMessages = [...newMessages];
+      state.completedBlocks = [...allBlocks];
+      state.contextMessages = [...messages];
+      state.contextCompacted = contextCompacted;
+      state.tokens = totalOutputTokens;
     }
 
     // Continue loop → next API call with tool results
@@ -517,7 +425,10 @@ export async function runAgentLoop(
   return {
     blocks: allBlocks,
     newMessages,
+    contextMessages: messages,
+    contextCompacted,
     tokens: totalOutputTokens,
+    lastOutputTokens,
     durationMs: Date.now() - startTime,
   };
 }

@@ -8,7 +8,7 @@ import type {
   ProviderId,
   StoredMessage,
 } from "./messages";
-import { isHistoryMessage, isModelVisibleSystemNotice } from "./messages";
+import { isReplayHistoryMessage, isModelVisibleSystemNotice } from "./messages";
 
 export type ContextTokenCategory = keyof ContextTokenBreakdown;
 
@@ -82,10 +82,17 @@ function providerReasoningChars(providerData: ApiMessage["providerData"] | Store
     chars += item.encryptedContent?.length ?? 0;
     for (const summary of item.summaries ?? []) chars += summary.length;
   }
+  for (const item of providerData?.openai?.compactionItems ?? []) {
+    chars += item.id?.length ?? 0;
+    chars += item.encryptedContent.length;
+    chars += item.internalChatMessageMetadataPassthrough === undefined
+      ? 0
+      : jsonLength(item.internalChatMessageMetadataPassthrough);
+  }
   return chars;
 }
 
-function hashProviderReasoning(hash: ReturnType<typeof createHash>, providerData: ApiMessage["providerData"] | StoredMessage["providerData"]): void {
+function hashProviderReplayData(hash: ReturnType<typeof createHash>, providerData: ApiMessage["providerData"] | StoredMessage["providerData"]): void {
   const items = providerData?.openai?.reasoningItems ?? [];
   hash.update(`reasoning:${items.length};`);
   for (const item of items) {
@@ -93,6 +100,13 @@ function hashProviderReasoning(hash: ReturnType<typeof createHash>, providerData
     hashString(hash, item.encryptedContent ?? "");
     hash.update(`summaries:${item.summaries?.length ?? 0};`);
     for (const summary of item.summaries ?? []) hashString(hash, summary);
+  }
+  const compactions = providerData?.openai?.compactionItems ?? [];
+  hash.update(`compactions:${compactions.length};`);
+  for (const item of compactions) {
+    hashString(hash, item.id ?? "");
+    hashString(hash, item.encryptedContent);
+    hashUnknown(hash, item.internalChatMessageMetadataPassthrough ?? null);
   }
 }
 
@@ -270,7 +284,7 @@ export function contextMessageSignature(msg: Pick<StoredMessage, "role" | "conte
     }
   }
 
-  hashProviderReasoning(hash, msg.providerData);
+  hashProviderReplayData(hash, msg.providerData);
   return hash.digest("hex").slice(0, 24);
 }
 
@@ -326,7 +340,7 @@ export function copyContextTokenAttributionsToStoredHistory(storedMessages: Stor
   let apiIndex = 0;
   let copied = 0;
   for (const stored of storedMessages) {
-    if (!isHistoryMessage(stored)) continue;
+    if (!isReplayHistoryMessage(stored)) continue;
     const api = apiMessages[apiIndex++];
     if (!api?.contextTokens) continue;
     if (api.role !== stored.role) continue;

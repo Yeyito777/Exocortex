@@ -62,6 +62,9 @@ function logOrphanToolResult(event: Extract<Event, { type: "tool_result" }>, sta
 }
 
 export function handleStreamingStarted(event: Extract<Event, { type: "streaming_started" }>, state: RenderState): void {
+  if (event.compactionStartedAt !== undefined) {
+    state.contextCompactionStartedAt = event.compactionStartedAt;
+  }
   // Late-joining client: create pendingAI so future chunks are captured.
   // Original client already has pendingAI from handleSubmit.
   if (!state.pendingAI) {
@@ -242,6 +245,13 @@ export function handleStreamRetry(event: Extract<Event, { type: "stream_retry" }
     if (finalized) state.messages.push(finalized);
   }
   pushInlineSystemNotice(state, formatStreamRetryNotice(event), theme.warning);
+}
+
+export function handleContextCompactionStatus(
+  event: Extract<Event, { type: "context_compaction_status" }>,
+  state: RenderState,
+): void {
+  state.contextCompactionStartedAt = event.active ? (event.startedAt ?? Date.now()) : null;
 }
 
 export function handleUserMessage(event: Extract<Event, { type: "user_message" }>, state: RenderState): void {

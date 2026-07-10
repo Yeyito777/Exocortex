@@ -506,6 +506,8 @@ export interface StreamingStartedEvent {
   blocks?: Block[];
   /** Accumulated output tokens so far — included for late-joining clients and periodic catch-up snapshots. */
   tokens?: number;
+  /** Active native-compaction start time for late-join/catch-up status rendering. */
+  compactionStartedAt?: number | null;
 }
 
 export type StreamingStopReason = "daemon-restart";
@@ -734,6 +736,15 @@ export interface StreamRetryEvent {
   resetAt?: number;
 }
 
+export interface ContextCompactionStatusEvent {
+  type: "context_compaction_status";
+  convId: string;
+  /** Monotonic daemon event sequence for the active stream. */
+  streamSeq?: number;
+  active: boolean;
+  startedAt?: number;
+}
+
 export interface SystemMessageEvent {
   type: "system_message";
   convId: string;
@@ -902,6 +913,7 @@ export type Event =
   | ConversationMovedEvent
   | UserMessageEvent
   | StreamRetryEvent
+  | ContextCompactionStatusEvent
   | SystemMessageEvent
   | ToolsAvailableEvent
   | HistoryUpdatedEvent

@@ -389,6 +389,8 @@ function formatTokenSourceLabel(source: TokenUsageSource): string {
       return "browse summary";
     case "context_summary":
       return "context summary";
+    case "context_compaction":
+      return "context compaction";
   }
 }
 

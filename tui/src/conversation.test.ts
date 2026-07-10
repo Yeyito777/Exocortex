@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { buildMessageLines, wordWrap } from "./conversation";
+import { buildMessageLines, compactionSpinnerText, wordWrap } from "./conversation";
 import { theme } from "./theme";
 import { visibleLength } from "./textwidth";
+import { createInitialState } from "./state";
+import { createPendingAI } from "./messages";
 
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
@@ -13,6 +15,21 @@ describe("plain word wrapping", () => {
 
     expect(wrapped.lines.length).toBeGreaterThan(1);
     expect(wrapped.lines.every(line => visibleLength(line) <= 14)).toBe(true);
+  });
+});
+
+describe("context compaction status", () => {
+  test("renders an animated Compacting status without a synthetic assistant block", () => {
+    expect(compactionSpinnerText(1_000, 1_000)).toBe("⠋ Compacting...");
+    expect(compactionSpinnerText(1_000, 1_080)).toBe("⠙ Compacting...");
+
+    const state = createInitialState();
+    state.pendingAI = createPendingAI(Date.now(), state.model);
+    state.contextCompactionStartedAt = Date.now();
+    const rendered = buildMessageLines(state, 100).lines.map(stripAnsi);
+
+    expect(rendered.some((line) => line.includes("Compacting..."))).toBe(true);
+    expect(state.pendingAI.blocks).toEqual([]);
   });
 });
 
@@ -472,7 +489,7 @@ describe("tool call rendering", () => {
     expect(rendered).toContain("  $ fi");
   });
 
-  test("keeps split parent bash timeout and await args attached to prompt-prefixed external tools", () => {
+  test("keeps split parent bash timeout, await, and background args attached to prompt-prefixed external tools", () => {
     const state = {
       messages: [{
         role: "assistant",
@@ -487,6 +504,8 @@ describe("tool call rendering", () => {
             "$ printf '\\n' ;",
             "$ vm status windows",
             "$  --timeout 120000 --await 30",
+            "$ vm status windows",
+            "$  --background",
             "$ set -euo pipefail",
             "$ ps -eo pid,args | grep '[q]emu-system-x86_64' || true --timeout 120000",
           ].join("\n"),
@@ -507,7 +526,9 @@ describe("tool call rendering", () => {
     expect(rendered).toContain("  VM profiles");
     expect(rendered).toContain("  $ printf '\\n' ;");
     expect(rendered).toContain("  VM status windows --timeout 120000 --await 30");
+    expect(rendered).toContain("  VM status windows --background");
     expect(rendered).not.toContain("  $  --timeout 120000 --await 30");
+    expect(rendered).not.toContain("  $  --background");
     expect(rendered).toContain("  $ ps -eo pid,args | grep '[q]emu-system-x86_64' || true --timeout 120000");
   });
 

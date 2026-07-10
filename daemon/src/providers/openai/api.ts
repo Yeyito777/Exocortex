@@ -3,8 +3,8 @@ import { createAbortError, isAbortLikeError } from "../../abort";
 import { log } from "../../log";
 import { readExocortexConfig } from "@exocortex/shared/config";
 import { createHash } from "crypto";
-import { getCurrentAccountKey, getVerifiedSession } from "./auth";
-import { AuthError, isNonRetryableProviderError } from "../errors";
+import { accountScopeForKey, getCurrentAccountKey, getVerifiedSession } from "./auth";
+import { AuthError, isNonRetryableProviderError, NonRetryableProviderError } from "../errors";
 import { OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL } from "./constants";
 import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "./cookies";
@@ -76,7 +76,100 @@ const WEBSOCKET_IDLE_TIMEOUT_MS = 5 * 60_000;
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE = "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.";
 
+class OpenAIWebSocketRetriesExhaustedError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "OpenAIWebSocketRetriesExhaustedError";
+    this.cause = cause;
+  }
+}
+
+class OpenAICompactionRequestBudgetExhaustedError extends NonRetryableProviderError {
+  constructor(cause?: unknown) {
+    const detail = cause instanceof Error ? cause.message : cause == null ? "" : String(cause);
+    super(`OpenAI native compaction exhausted its shared request budget${detail ? `: ${detail}` : ""}`);
+  }
+}
+
+function compactionRequestBudget(options: StreamOptions) {
+  return options.compaction ? options.requestBudget : undefined;
+}
+
+function hasCompactionRequestRemaining(options: StreamOptions): boolean {
+  const budget = compactionRequestBudget(options);
+  return !budget || budget.attempts < budget.maxAttempts;
+}
+
+function consumeCompactionRequestAttempt(options: StreamOptions): void {
+  const budget = compactionRequestBudget(options);
+  if (!budget) return;
+  if (!Number.isSafeInteger(budget.maxAttempts) || budget.maxAttempts < 1
+      || !Number.isSafeInteger(budget.attempts) || budget.attempts < 0) {
+    throw new NonRetryableProviderError("Invalid OpenAI compaction request budget");
+  }
+  if (budget.attempts >= budget.maxAttempts) {
+    throw new OpenAICompactionRequestBudgetExhaustedError();
+  }
+  budget.attempts += 1;
+}
+
+function retryDisplay(
+  options: StreamOptions,
+  fallbackAttempt: number,
+  fallbackMaxAttempts: number,
+): { attempt: number; maxAttempts: number } {
+  const budget = compactionRequestBudget(options);
+  if (!budget) return { attempt: fallbackAttempt, maxAttempts: fallbackMaxAttempts };
+  return {
+    // The initial request is not a retry. After N requests have been consumed,
+    // the next submission is retry N of maxAttempts-1.
+    attempt: Math.max(1, budget.attempts),
+    maxAttempts: Math.max(0, budget.maxAttempts - 1),
+  };
+}
+
 let websocketIdleTimeoutMsForTest: number | null = null;
+
+function stampReplayScope(result: StreamResult, model: ModelId, session: OpenAIRequestSession): void {
+  // Verified production sessions always carry an accountKey. Tests and custom
+  // seams may omit it; do not invent a misleading persisted scope for those.
+  const accountScope = accountScopeForKey(session.accountKey);
+  if (!accountScope || !result.assistantProviderData?.openai) return;
+  result.assistantProviderData.openai.replayScope = { model, accountScope };
+}
+
+function assertReplayScopeForSession(
+  messages: ApiMessage[],
+  model: ModelId,
+  session: OpenAIRequestSession,
+  expectedAccountScope?: string,
+): void {
+  const actualAccountScope = accountScopeForKey(session.accountKey) ?? undefined;
+  const hasLegacyUnscopedReplay = messages.some((message) => {
+    const openai = message.providerData?.openai;
+    const hasEncryptedReplay = (openai?.compactionItems?.length ?? 0) > 0
+      || (openai?.reasoningItems?.length ?? 0) > 0;
+    return hasEncryptedReplay && !openai?.replayScope;
+  });
+  if (hasLegacyUnscopedReplay
+      && expectedAccountScope !== undefined
+      && actualAccountScope !== expectedAccountScope) {
+    throw new NonRetryableProviderError(
+      "OpenAI account changed while preparing this turn; retry the turn with the newly selected account.",
+    );
+  }
+  for (const message of messages) {
+    const openai = message.providerData?.openai;
+    const hasEncryptedReplay = (openai?.compactionItems?.length ?? 0) > 0
+      || (openai?.reasoningItems?.length ?? 0) > 0;
+    if (!hasEncryptedReplay || !openai?.replayScope) continue;
+    if (openai.replayScope.model !== model || openai.replayScope.accountScope !== actualAccountScope) {
+      throw new NonRetryableProviderError(
+        "Refusing to replay OpenAI encrypted state under a different model or account scope.",
+      );
+    }
+  }
+}
 
 interface OpenAITurnSessionState {
   key: string | null;
@@ -175,6 +268,19 @@ function cloneWithoutInput(body: Record<string, unknown>): Record<string, unknow
   return rest;
 }
 
+function shapeForIncrementalComparison(body: Record<string, unknown>): Record<string, unknown> {
+  const shape = cloneWithoutInput(body);
+  if (!isRecord(shape.client_metadata)) return shape;
+  // Turn identity intentionally changes between logical assistant turns while a
+  // parked conversation websocket/previous-response baseline remains reusable.
+  const {
+    "x-codex-turn-metadata": _turnMetadata,
+    turn_id: _turnId,
+    ...stableMetadata
+  } = shape.client_metadata;
+  return { ...shape, client_metadata: stableMetadata };
+}
+
 function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
@@ -197,7 +303,7 @@ function inputStartsWith(input: unknown[], prefix: unknown[]): boolean {
 
 function isKnownPreviousResponseOutputItem(item: unknown): boolean {
   if (!isRecord(item)) return false;
-  if (item.type === "reasoning" || item.type === "function_call") return true;
+  if (item.type === "reasoning" || item.type === "function_call" || item.type === "compaction") return true;
   return item.type === "message" && item.role === "assistant";
 }
 
@@ -270,6 +376,7 @@ async function streamMessageHttpWithSession(
   callbacks: StreamCallbacks,
   options: StreamOptions = {},
 ): Promise<StreamResult> {
+  assertReplayScopeForSession(messages, model, session, options.accountScope);
   const requestCallbacks = callbacksForSession(callbacks, session);
   const requestBody = buildRequestBody(messages, model, options);
   const headers: Record<string, string> = {
@@ -283,6 +390,7 @@ async function streamMessageHttpWithSession(
   const cookieHeader = buildCloudflareCookieHeader(OPENAI_CODEX_RESPONSES_URL);
   if (cookieHeader) headers.Cookie = cookieHeader;
 
+  consumeCompactionRequestAttempt(options);
   const res = await fetch(OPENAI_CODEX_RESPONSES_URL, {
     method: "POST",
     headers,
@@ -300,6 +408,7 @@ async function streamMessageHttpWithSession(
   }
 
   const result = await readOpenAIResponsesHttpSse(res, requestCallbacks, options.signal);
+  stampReplayScope(result, model, session);
   const input = Array.isArray(requestBody.input) ? requestBody.input : [];
   result.requestDiagnostics = {
     usedIncremental: false,
@@ -516,7 +625,10 @@ export class OpenAITurnSession implements ProviderTurnSession {
     };
 
     if (!this.state.lastFullRequestBody || !this.state.lastResponseId) return fullReplay("no_previous_response");
-    if (!valuesEqual(cloneWithoutInput(this.state.lastFullRequestBody), cloneWithoutInput(fullRequestBody))) {
+    if (!valuesEqual(
+      shapeForIncrementalComparison(this.state.lastFullRequestBody),
+      shapeForIncrementalComparison(fullRequestBody),
+    )) {
       return fullReplay("non_input_mismatch");
     }
 
@@ -576,6 +688,12 @@ export class OpenAITurnSession implements ProviderTurnSession {
     this.state.socket?.destroy();
     this.state.socket = null;
     this.resetIncrementalState();
+  }
+
+  resetAfterCompaction(): void {
+    // Replacement history can never extend the previous response baseline.
+    // Reconnect so request headers and body metadata agree on the new window.
+    this.resetConnection();
   }
 
   close(): void {
@@ -749,7 +867,7 @@ function retryBackoff(
   errMsg: string,
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
-  opts: { notify?: boolean; delayMs?: number } = {},
+  opts: { notify?: boolean; delayMs?: number; maxAttempts?: number; displayAttempt?: number } = {},
 ): Promise<void> {
   if (signal?.aborted) {
     return Promise.reject(createAbortError());
@@ -758,7 +876,13 @@ function retryBackoff(
   const delay = opts.delayMs ?? (Math.min(1000 * Math.pow(2, attempt), 30000) + Math.random() * 1000);
   const delaySec = Math.round(delay / 1000);
   if (opts.notify !== false) {
-    callbacks.onRetry?.(attempt + 1, MAX_RETRIES, errMsg, delaySec, { kind: "transient" });
+    callbacks.onRetry?.(
+      opts.displayAttempt ?? attempt + 1,
+      opts.maxAttempts ?? MAX_RETRIES,
+      errMsg,
+      delaySec,
+      { kind: "transient" },
+    );
   }
 
   return new Promise((resolve, reject) => {
@@ -781,13 +905,14 @@ async function waitForUsageLimitReset(
   limit: OpenAIUsageLimitError,
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
+  retry?: { attempt: number; maxAttempts: number },
 ): Promise<void> {
   if (limit.resetDelayMs == null) {
     throw new Error(`${limit.message}; reset time was not provided by OpenAI`);
   }
 
   const delaySec = Math.max(0, Math.ceil(limit.resetDelayMs / 1000));
-  callbacks.onRetry?.(1, 1, formatUsageLimitMessage(limit), delaySec, {
+  callbacks.onRetry?.(retry?.attempt ?? 1, retry?.maxAttempts ?? 1, formatUsageLimitMessage(limit), delaySec, {
     kind: "usage_limit_reset",
     ...(limit.resetAt != null ? { resetAt: limit.resetAt } : {}),
   });
@@ -821,18 +946,37 @@ export async function streamMessageWithSession(
   options: StreamOptions = {},
 ): Promise<StreamResult> {
   const { signal } = options;
+  assertReplayScopeForSession(messages, model, session, options.accountScope);
   const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
   const requestCallbacks = callbacksForSession(callbacks, session);
   let retryAttempt = 0;
   let silentStaleReconnects = 0;
   let retriedWithoutIncremental = false;
+  const maxRetries = options.compaction ? Math.min(MAX_RETRIES, 2) : MAX_RETRIES;
+  // Native compaction uses at most two WebSocket retries before switching to
+  // HTTPS, but every transport draws from the operation-wide shared budget.
+  const retryDisplayMaxAttempts = options.compaction ? maxRetries + 1 : maxRetries;
   const fullRequestBody = buildRequestBody(messages, model, options);
+  const canRetryTransport = () => retryAttempt < maxRetries
+    && hasCompactionRequestRemaining(options);
+  const retryTransport = async (
+    message: string,
+    retryOptions: { notify?: boolean; delayMs?: number } = {},
+  ): Promise<void> => {
+    const display = retryDisplay(options, retryAttempt + 1, retryDisplayMaxAttempts);
+    await retryBackoff(retryAttempt++, message, requestCallbacks, signal, {
+      ...retryOptions,
+      displayAttempt: display.attempt,
+      maxAttempts: display.maxAttempts,
+    });
+  };
 
   while (true) {
     let socket: OpenAIWebSocketConnection | null = null;
     let connectionReused = false;
     let attemptedIncremental = false;
     try {
+      consumeCompactionRequestAttempt(options);
       if (turnSession) {
         const lease = await turnSession.getSocketLease(session, requestCallbacks, options);
         socket = lease.socket;
@@ -860,6 +1004,7 @@ export async function streamMessageWithSession(
         signal,
         onTurnState: turnSession ? (turnState) => turnSession.recordTurnState(turnState) : undefined,
       });
+      stampReplayScope(result, model, session);
       if (turnSession) {
         turnSession.recordSuccessfulRequest(fullRequestBody, result);
       } else {
@@ -887,38 +1032,52 @@ export async function streamMessageWithSession(
       else socket?.destroy();
       if (signal?.aborted || isAbortLikeError(err) || isNonRetryableProviderError(err)) throw err;
       if (turnSession && connectionReused && err instanceof OpenAIWebSocketClosedBeforeResponseStartedError) {
-        if (retryAttempt < MAX_RETRIES) {
+        if (canRetryTransport()) {
           const close = err.code != null ? `code=${err.code}` : "raw close";
           const reason = err.reason ? `, reason=${err.reason}` : "";
           const message = `stale reused OpenAI websocket closed before response started (${close}${reason})`;
-          const notify = silentStaleReconnects > 0;
-          log(notify ? "warn" : "info", `openai api: ${message}; reconnecting${notify ? ` (attempt ${retryAttempt + 1}/${MAX_RETRIES})` : " silently"}`);
+          const notify = options.compaction || silentStaleReconnects > 0;
+          log(notify ? "warn" : "info", `openai api: ${message}; reconnecting${notify ? ` (attempt ${retryAttempt + 1}/${maxRetries})` : " silently"}`);
           silentStaleReconnects += 1;
           // A stale close before response.created means this provider round did
           // not start. Reconnect quickly and full-replay on the new socket; only
           // surface UI retry markers if the supposedly one-off stale reconnect
           // repeats.
-            await retryBackoff(retryAttempt++, message, requestCallbacks, signal, {
+          await retryTransport(message, {
             notify,
             delayMs: notify ? undefined : 250 + Math.random() * 250,
           });
           continue;
         }
-        throw err;
+        throw options.compaction ? new OpenAIWebSocketRetriesExhaustedError(err) : err;
       }
       if (err instanceof OpenAIWebSocketHttpError) {
         const connectionLimitMessage = parseOpenAIWebSocketConnectionLimitError(err.body);
         if (connectionLimitMessage) {
-          if (retryAttempt < MAX_RETRIES) {
-            log("warn", `openai api: websocket connection limit reached; reconnecting (attempt ${retryAttempt + 1}/${MAX_RETRIES})`);
-            await retryBackoff(retryAttempt++, connectionLimitMessage, requestCallbacks, signal);
+          if (canRetryTransport()) {
+            log("warn", `openai api: websocket connection limit reached; reconnecting (attempt ${retryAttempt + 1}/${maxRetries})`);
+            await retryTransport(connectionLimitMessage);
             continue;
           }
-          throw new Error(`${connectionLimitMessage} after ${MAX_RETRIES} retries`);
+          const exhausted = new Error(`${connectionLimitMessage} after ${maxRetries} retries`);
+          throw options.compaction ? new OpenAIWebSocketRetriesExhaustedError(exhausted) : exhausted;
         }
 
         if (turnSession && attemptedIncremental && !retriedWithoutIncremental && (err.status === 400 || err.status === 404)) {
+          if (!hasCompactionRequestRemaining(options)) {
+            throw new OpenAICompactionRequestBudgetExhaustedError(err);
+          }
           log("warn", `openai api: incremental websocket request failed with HTTP ${err.status}; retrying once with full replay`);
+          if (options.compaction) {
+            const display = retryDisplay(options, 1, 1);
+            requestCallbacks.onRetry?.(
+              display.attempt,
+              display.maxAttempts,
+              `OpenAI compaction incremental request failed with HTTP ${err.status}; switching to full replay`,
+              0,
+              { kind: "transient" },
+            );
+          }
           retriedWithoutIncremental = true;
           turnSession.resetIncrementalState();
           continue;
@@ -935,35 +1094,41 @@ export async function streamMessageWithSession(
               const resetHint = usageLimit.resetAt != null ? ` Reset: ${formatResetTime(usageLimit.resetAt)}.` : "";
               throw new Error(`${usageLimit.message}.${resetHint} Enable providers.openai.retryOnUsageLimitReset in config/config.json to keep the stream open until reset.`);
             }
-            await waitForUsageLimitReset(usageLimit, requestCallbacks, signal);
+            if (!hasCompactionRequestRemaining(options)) {
+              throw new OpenAICompactionRequestBudgetExhaustedError(err);
+            }
+            const display = retryDisplay(options, 1, 1);
+            await waitForUsageLimitReset(usageLimit, requestCallbacks, signal, display);
             continue;
           }
 
-          if (retryAttempt < MAX_RETRIES) {
-            await retryBackoff(retryAttempt++, "HTTP 429", requestCallbacks, signal);
+          if (canRetryTransport()) {
+            await retryTransport("HTTP 429");
             continue;
           }
-          throw new Error(`OpenAI API error (429) after ${MAX_RETRIES} retries: ${err.body.slice(0, 200)}`);
+          const exhausted = new Error(`OpenAI API error (429) after ${maxRetries} retries: ${err.body.slice(0, 200)}`);
+          throw options.compaction ? new OpenAIWebSocketRetriesExhaustedError(exhausted) : exhausted;
         }
 
         if (isRetriableOpenAIHttpError(err)) {
-          if (retryAttempt < MAX_RETRIES) {
-            await retryBackoff(retryAttempt++, `HTTP ${err.status}`, requestCallbacks, signal);
+          if (canRetryTransport()) {
+            await retryTransport(`HTTP ${err.status}`);
             continue;
           }
-          throw new Error(`OpenAI API error (${err.status}) after ${MAX_RETRIES} retries: ${formatOpenAIErrorBody(err.body).slice(0, 200)}`);
+          const exhausted = new Error(`OpenAI API error (${err.status}) after ${maxRetries} retries: ${formatOpenAIErrorBody(err.body).slice(0, 200)}`);
+          throw options.compaction ? new OpenAIWebSocketRetriesExhaustedError(exhausted) : exhausted;
         }
 
         throw new Error(`OpenAI API error (${err.status}): ${formatOpenAIErrorBody(err.body)}`);
       }
 
-      if (retryAttempt < MAX_RETRIES) {
+      if (canRetryTransport()) {
         const message = err instanceof Error ? err.message : String(err);
-        log("warn", `openai api: retrying websocket request after ${message} (attempt ${retryAttempt + 1}/${MAX_RETRIES})`);
-        await retryBackoff(retryAttempt++, message, requestCallbacks, signal);
+        log("warn", `openai api: retrying websocket request after ${message} (attempt ${retryAttempt + 1}/${maxRetries})`);
+        await retryTransport(message);
         continue;
       }
-      throw err;
+      throw options.compaction ? new OpenAIWebSocketRetriesExhaustedError(err) : err;
     }
   }
 }
@@ -1000,13 +1165,47 @@ export async function streamMessage(
   const session = turnSession
     ? await turnSession.getVerifiedRequestSession(callbacks, signal)
     : await getVerifiedSessionWithRetries(callbacks, signal);
-  try {
-    if (options.preferHttp && !turnSession && (!options.tools || options.tools.length === 0)) {
-      return await streamMessageHttpWithSession(session, messages, model, callbacks, options);
+  let useHttpFallback = options.preferHttp && !turnSession && (!options.tools || options.tools.length === 0);
+  const sendWithSession = async (requestSession: OpenAIRequestSession): Promise<StreamResult> => {
+    if (useHttpFallback) {
+      return streamMessageHttpWithSession(requestSession, messages, model, callbacks, {
+        ...options,
+        turnSession: undefined,
+        preferHttp: true,
+      });
     }
-    return await streamMessageWithSession(session, messages, model, callbacks, options);
+    try {
+      return await streamMessageWithSession(requestSession, messages, model, callbacks, options);
+    } catch (error) {
+      if (!options.compaction || !(error instanceof OpenAIWebSocketRetriesExhaustedError)) throw error;
+      if (!hasCompactionRequestRemaining(options)) {
+        throw new OpenAICompactionRequestBudgetExhaustedError(error);
+      }
+      useHttpFallback = true;
+      await turnSession?.resetAfterCompaction?.();
+      log("warn", "openai api: websocket retries exhausted for remote compaction; retrying over HTTPS");
+      const display = retryDisplay(options, 3, 3);
+      callbacks.onRetry?.(
+        display.attempt,
+        display.maxAttempts,
+        "OpenAI compaction WebSocket retries exhausted; switching to HTTPS",
+        0,
+        { kind: "transient" },
+      );
+      return streamMessageHttpWithSession(requestSession, messages, model, callbacks, {
+        ...options,
+        turnSession: undefined,
+        preferHttp: true,
+      });
+    }
+  };
+  try {
+    return await sendWithSession(session);
   } catch (err) {
     if (!isOpenAIAuthFailure(err)) throw err;
+    if (!hasCompactionRequestRemaining(options)) {
+      throw new OpenAICompactionRequestBudgetExhaustedError(err);
+    }
 
     const refreshed = await (turnSession
       ? turnSession.getVerifiedRequestSession(callbacks, signal, { forceRefresh: true })
@@ -1016,9 +1215,17 @@ export async function streamMessage(
       throw err;
     }
 
-    if (options.preferHttp && !turnSession && (!options.tools || options.tools.length === 0)) {
-      return streamMessageHttpWithSession(refreshed, messages, model, callbacks, options);
+    if (options.compaction) {
+      const display = retryDisplay(options, 1, 1);
+      callbacks.onRetry?.(
+        display.attempt,
+        display.maxAttempts,
+        "OpenAI authentication was refreshed during server-side compaction",
+        0,
+        { kind: "transient" },
+      );
     }
-    return streamMessageWithSession(refreshed, messages, model, callbacks, options);
+
+    return sendWithSession(refreshed);
   }
 }

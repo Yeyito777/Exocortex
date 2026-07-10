@@ -33,6 +33,7 @@ import { CONV_SCOPED, observeStreamSeq } from "./events/stream-sequence";
 import {
   handleBlockStart,
   handleContextUpdate,
+  handleContextCompactionStatus,
   handleMessageComplete,
   handleStreamRetry,
   handleStreamingStarted,
@@ -169,6 +170,10 @@ export function handleEvent(
 
     case "stream_retry":
       handleStreamRetry(event, state);
+      break;
+
+    case "context_compaction_status":
+      handleContextCompactionStatus(event, state);
       break;
 
     case "user_message":

@@ -386,6 +386,7 @@ export const TOKEN_USAGE_SOURCES = [
   "title_generation",
   "browse_summary",
   "context_summary",
+  "context_compaction",
 ] as const;
 
 export type TokenUsageSource = typeof TOKEN_USAGE_SOURCES[number];
