@@ -479,6 +479,72 @@ describe("handler subagent folder placement", () => {
   });
 });
 
+describe("handler background task notifications", () => {
+  beforeEach(() => {
+    orchestrateSendMessage.mockClear();
+    orchestrateReplayConversation.mockClear();
+    orchestrateGoalContinuation.mockClear();
+    cleanupIds();
+  });
+  afterEach(cleanupIds);
+
+  test("queues a completion for the next turn when its conversation is still streaming", async () => {
+    const convId = mkId("background-completion");
+    create(convId, "openai", "gpt-5.4", "parent");
+    const server = {
+      sendTo: mock(() => {}),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "send_message",
+      reqId: "req-background-completion",
+      convId,
+      text: "start work",
+      startedAt: 123,
+    });
+    const callbacks = (orchestrateSendMessage.mock.calls as unknown[][])[0]?.[6] as {
+      onBackgroundTaskComplete?: (completion: {
+        taskId: string;
+        toolName: string;
+        title: string;
+        startedAt: number;
+        endedAt: number;
+        exitCode: number | null;
+        signal: string | null;
+        outputPath?: string;
+      }) => void;
+    };
+    expect(callbacks.onBackgroundTaskComplete).toBeFunction();
+
+    setActiveJob(convId, new AbortController(), Date.now());
+    callbacks.onBackgroundTaskComplete?.({
+      taskId: "bash:1234",
+      toolName: "bash",
+      title: "bun test tui",
+      startedAt: 1_000,
+      endedAt: 2_500,
+      exitCode: 0,
+      signal: null,
+      outputPath: "/tmp/bash-output.tmp",
+    });
+
+    expect(orchestrateSendMessage).toHaveBeenCalledTimes(1);
+    expect(getQueuedMessages(convId)).toEqual([
+      expect.objectContaining({
+        timing: "next-turn",
+        text: expect.stringContaining("[notification] Background task completed: bash:1234"),
+      }),
+    ]);
+  });
+});
+
 describe("handler replay_conversation", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();

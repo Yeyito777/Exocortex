@@ -259,6 +259,27 @@ async function executeBashImpl(
     let bgStreamError: string | undefined;
     let backgrounderCleared = false;
     let backgroundTaskTracked = false;
+    let wasBackgrounded = false;
+    let completionNotified = false;
+    let backgroundOutputPath: string | undefined;
+    let processFailure: string | undefined;
+
+    function notifyBackgroundTaskCompletion(code: number | null, signal: string | null): void {
+      if (!wasBackgrounded || completionNotified || !proc.pid) return;
+      completionNotified = true;
+      context?.onBackgroundTaskComplete?.({
+        taskId: `bash:${proc.pid}`,
+        toolName: "bash",
+        title: command!,
+        startedAt: startTime,
+        endedAt: Date.now(),
+        exitCode: code,
+        signal,
+        ...(backgroundOutputPath && !bgStreamFailed ? { outputPath: backgroundOutputPath } : {}),
+        ...(bgStreamError ? { outputError: bgStreamError } : {}),
+        ...(processFailure ? { failure: processFailure } : {}),
+      });
+    }
 
     function setBackgroundTaskTracked(active: boolean): void {
       if (!proc.pid || backgroundTaskTracked === active) return;
@@ -318,10 +339,12 @@ async function executeBashImpl(
         bgTimer = undefined;
       }
       settled = true;
+      wasBackgrounded = true;
       clearRegisteredBackgrounder();
       setBackgroundTaskTracked(true);
 
       const spillPath = join(tmpdir(), `exocortex-bash-${proc.pid}-${Date.now()}.tmp`);
+      backgroundOutputPath = spillPath;
       const partial = Buffer.concat(chunks).toString("utf8");
 
       try {
@@ -424,12 +447,13 @@ async function executeBashImpl(
       if (bgTimer) clearTimeout(bgTimer);
       clearRegisteredBackgrounder();
       setBackgroundTaskTracked(false);
+      processFailure = err.message;
       if (settled) return;
       settled = true;
       resolve({ output: `Error: ${err.message}`, isError: true });
     });
 
-    proc.on("close", (code, _sig) => {
+    proc.on("close", (code, sig) => {
       if (bgTimer) clearTimeout(bgTimer);
       if (!bgStream) clearRegisteredBackgrounder();
       setBackgroundTaskTracked(false);
@@ -448,9 +472,11 @@ async function executeBashImpl(
           markBgStreamFailed(err);
         }
         bgStream = undefined;
+        notifyBackgroundTaskCompletion(code, sig);
         return;
       }
 
+      notifyBackgroundTaskCompletion(code, sig);
       if (settled) return;
       settled = true;
 

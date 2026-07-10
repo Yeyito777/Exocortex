@@ -31,7 +31,7 @@ import { getTokenStatsSnapshot } from "./token-stats";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
 import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
-import type { ExocortexToolRuntime } from "./tools/types";
+import type { BackgroundTaskCompletion, ExocortexToolRuntime } from "./tools/types";
 import { getSubagentParentConversationId, setSubagentActive } from "./conversation-activity";
 import {
   acknowledgeSubagentNotification,
@@ -44,6 +44,7 @@ import {
   type PendingSubagentNotification,
 } from "./subagent-notifications";
 import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
+import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
 
 const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
 
@@ -54,6 +55,7 @@ export function createHandler(server: DaemonServer) {
 
   let openAIAccountMutationInFlight = false;
   let exocortexRuntime: ExocortexToolRuntime | undefined;
+  const pendingBackgroundNotifications = new Map<string, { convId: string; completion: BackgroundTaskCompletion }>();
 
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     server.broadcast({ type: "usage_update", provider, usage });
@@ -152,6 +154,11 @@ export function createHandler(server: DaemonServer) {
       refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
       broadcastTokenStats();
     },
+    onBackgroundTaskComplete: (completion: BackgroundTaskCompletion) => {
+      const id = `${convId}:${completion.taskId}:${completion.endedAt}`;
+      pendingBackgroundNotifications.set(id, { convId, completion });
+      deliverPendingBackgroundNotifications();
+    },
     exocortex: exocortexRuntime,
   });
 
@@ -175,9 +182,61 @@ export function createHandler(server: DaemonServer) {
     notificationRetryTimer = setTimeout(() => {
       notificationRetryTimer = null;
       deliverReadyParentNotifications();
+      deliverPendingBackgroundNotifications();
     }, 1_000);
     notificationRetryTimer.unref?.();
   };
+
+  function deliverPendingBackgroundNotifications(): void {
+    for (const [id, pending] of pendingBackgroundNotifications) {
+      const parent = convStore.get(pending.convId);
+      if (!parent) {
+        pendingBackgroundNotifications.delete(id);
+        log("warn", `handler: dropping background task notification for missing conversation ${pending.convId}`);
+        continue;
+      }
+      if (getDaemonShutdownMode()) {
+        pendingBackgroundNotifications.delete(id);
+        continue;
+      }
+
+      const text = buildBackgroundTaskNotificationText(pending.completion);
+      if (convStore.isStreaming(pending.convId)) {
+        convStore.pushQueuedMessage(
+          pending.convId,
+          text,
+          "next-turn",
+          undefined,
+          parent.subagentMaxDepth ?? null,
+        );
+        pendingBackgroundNotifications.delete(id);
+        log("info", `handler: queued background task completion notification ${pending.completion.taskId} for ${pending.convId}`);
+        continue;
+      }
+      if (!hasConfiguredCredentials(parent.provider)
+          || (openAIAccountMutationInFlight && parent.provider === "openai")) {
+        scheduleNotificationRetry();
+        continue;
+      }
+
+      pendingBackgroundNotifications.delete(id);
+      log("info", `handler: sending background task completion notification ${pending.completion.taskId} to ${pending.convId}`);
+      void orchestrateSendMessage(
+        server,
+        null,
+        undefined,
+        pending.convId,
+        text,
+        Date.now(),
+        buildOrchestrationCallbacks(pending.convId),
+        undefined,
+        { subagentMaxDepth: parent.subagentMaxDepth ?? null },
+      ).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        log("error", `handler: background task notification send failed for ${pending.convId}: ${message}`);
+      });
+    }
+  }
 
   const queueReadyParentNotification = (record: PendingSubagentNotification): void => {
     const alreadyQueued = convStore.getQueuedMessages(record.parentConvId)

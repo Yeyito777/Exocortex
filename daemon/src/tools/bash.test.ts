@@ -3,6 +3,7 @@ import { existsSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { bash, executeBashBackgroundable, spillAndPreviewForTest } from "./bash";
+import type { BackgroundTaskCompletion } from "./types";
 
 function makeLargeOutput(): string {
   const lines: string[] = [];
@@ -153,12 +154,14 @@ describe("bash explicit backgrounding", () => {
 
   test("reports the detached process lifecycle to its conversation context", async () => {
     const activity: Array<{ id: string; active: boolean; details?: { title: string; startedAt: number } }> = [];
+    const completions: BackgroundTaskCompletion[] = [];
     const result = await executeBashBackgroundable({
       command: "sleep 0.1",
       background: true,
     }, undefined, 60_000, {
       conversationId: "parent-conversation",
       setBackgroundTaskActive: (id, active, details) => activity.push({ id, active, details }),
+      onBackgroundTaskComplete: (completion) => completions.push(completion),
     });
 
     expect(result.isError).toBe(false);
@@ -176,6 +179,16 @@ describe("bash explicit backgrounding", () => {
       { id: activity[0].id, active: true, details: activity[0].details },
       { id: activity[0].id, active: false, details: undefined },
     ]);
+    expect(completions).toHaveLength(1);
+    expect(completions[0]).toMatchObject({
+      taskId: activity[0].id,
+      toolName: "bash",
+      title: "sleep 0.1",
+      exitCode: 0,
+      signal: null,
+      outputPath: expect.any(String),
+    });
+    expect(completions[0].endedAt).toBeGreaterThanOrEqual(completions[0].startedAt);
 
     const spillPath = result.output.match(/Output is being written to: (\S+)/)?.[1];
     if (spillPath) rmSync(spillPath, { force: true });

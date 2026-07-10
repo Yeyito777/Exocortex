@@ -30,6 +30,20 @@ export interface ExocortexToolRuntime {
   ): Promise<ToolResult>;
 }
 
+/** Result of a detached tool process after it leaves the active task panel. */
+export interface BackgroundTaskCompletion {
+  taskId: string;
+  toolName: string;
+  title: string;
+  startedAt: number;
+  endedAt: number;
+  exitCode: number | null;
+  signal: string | null;
+  outputPath?: string;
+  outputError?: string;
+  failure?: string;
+}
+
 export interface ToolExecutionContext {
   /** Provider backing the active conversation, when the tool is run from one. */
   provider?: ProviderId;
@@ -49,6 +63,8 @@ export interface ToolExecutionContext {
     active: boolean,
     details?: { title: string; startedAt: number },
   ) => void;
+  /** Notify the owning conversation when a detached tool process finishes. */
+  onBackgroundTaskComplete?: (completion: BackgroundTaskCompletion) => void;
   /** Register the currently executing tool as user-backgroundable. */
   registerBackgrounder?: (backgrounder: ActiveToolBackgrounder | null) => void;
 }
