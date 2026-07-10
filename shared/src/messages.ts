@@ -144,6 +144,10 @@ export type Block = ThinkingBlock | TextBlock | ToolCallBlock | ToolResultBlock;
 
 // ── Message metadata ────────────────────────────────────────────────
 
+/** Machine-readable identity and fallback text for persisted compaction dividers. */
+export const CONTEXT_COMPACTION_FINISHED_KIND = "context_compaction_finished";
+export const CONTEXT_COMPACTION_FINISHED_TEXT = "--- Compaction finished ---";
+
 /**
  * Metadata attached to a message. Persisted by the daemon,
  * rendered by the client.

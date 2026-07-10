@@ -6,7 +6,7 @@
  * reach into the tool layer.
  */
 
-import { combineMessageMetadata, type Block, type MessageMetadata, type ImageAttachment } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, type Block, type MessageMetadata, type ImageAttachment } from "./messages";
 import { isModelVisibleSystemNotice, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { ProviderId, ModelId, EffortLevel } from "./messages";
 import type { DisplayEntry, ToolOutputInfo } from "@exocortex/shared/protocol";
@@ -130,8 +130,16 @@ export function buildDisplayData(
     if (msg.role === "system") {
       flushAI();
       const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
-      const color = text.startsWith("⟳") || text.startsWith("OpenAI usage limit reached") ? "warning" : "error";
-      entries.push({ type: "system", text, color });
+      const isCompactionFinished = msg.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND;
+      const color = isCompactionFinished
+        ? "muted"
+        : text.startsWith("⟳") || text.startsWith("OpenAI usage limit reached") ? "warning" : "error";
+      entries.push({
+        type: "system",
+        text,
+        color,
+        ...(msg.metadata ? { metadata: msg.metadata } : {}),
+      });
       continue;
     }
     if (isModelVisibleSystemNotice(msg)) {

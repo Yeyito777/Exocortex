@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { buildMessageLines, compactionSpinnerText, wordWrap } from "./conversation";
+import { buildMessageLines, compactionFinishedDivider, compactionSpinnerText, wordWrap } from "./conversation";
 import { theme } from "./theme";
 import { visibleLength } from "./textwidth";
 import { createInitialState } from "./state";
-import { createPendingAI } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI } from "./messages";
 
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
@@ -25,14 +25,52 @@ describe("context compaction status", () => {
 
     const state = createInitialState();
     state.pendingAI = createPendingAI(Date.now(), state.model);
+    state.pendingAI.blocks.push({ type: "text", text: "Assistant work before compaction\n\n" });
     state.contextCompactionStartedAt = Date.now();
     const rendered = buildMessageLines(state, 100).lines;
     const statusLine = rendered.find((line) => line.includes("Compacting..."));
+    const plain = rendered.map(stripAnsi);
+    const assistantIndex = plain.findIndex((line) => line.includes("Assistant work before compaction"));
+    const statusIndex = plain.findIndex((line) => line.includes("Compacting..."));
 
     expect(statusLine?.startsWith(`  ${theme.dim}`)).toBe(true);
     expect(statusLine?.endsWith(theme.reset)).toBe(true);
     expect(statusLine?.includes(theme.accent)).toBe(false);
-    expect(state.pendingAI.blocks).toEqual([]);
+    expect(statusIndex).toBeGreaterThan(assistantIndex);
+    expect(plain[statusIndex - 1]).toBe("");
+    expect(statusIndex).toBe(plain.length - 1);
+  });
+
+  test("renders a persisted completion marker as a half-width markdown divider", () => {
+    const state = createInitialState();
+    state.messages.push(
+      {
+        role: "assistant",
+        blocks: [{ type: "text", text: "Assistant work before compaction" }],
+        metadata: null,
+      },
+      {
+        role: "system",
+        text: CONTEXT_COMPACTION_FINISHED_TEXT,
+        metadata: {
+          startedAt: 2_000,
+          endedAt: 2_000,
+          model: state.model,
+          tokens: 0,
+          kind: CONTEXT_COMPACTION_FINISHED_KIND,
+        },
+      },
+    );
+
+    const rendered = buildMessageLines(state, 100).lines;
+    const plain = rendered.map(stripAnsi);
+    const dividerIndex = plain.findIndex((line) => line.includes("Compaction finished"));
+
+    expect(rendered[dividerIndex].startsWith(`  ${theme.muted}`)).toBe(true);
+    expect(plain[dividerIndex]).toBe(`  ${compactionFinishedDivider(100)}`);
+    expect(visibleLength(rendered[dividerIndex])).toBe(50);
+    expect(plain[dividerIndex - 1]).toBe("");
+    expect(plain[dividerIndex + 1]).toBe("");
   });
 });
 

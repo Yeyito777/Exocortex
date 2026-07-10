@@ -15,7 +15,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContext, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContext, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ToolExecutionContext } from "./tools/types";
@@ -35,10 +35,10 @@ import {
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./providers/openai/auth";
 import { buildCodexWindowId } from "./providers/openai/identity";
 
-// ── Retry marker helpers ───────────────────────────────────────────
+// ── Transcript marker helpers ──────────────────────────────────────
 
 /**
- * Interleave retry system markers into a message array at the correct positions.
+ * Interleave status markers into a message array at the correct positions.
  * Each marker's `afterIndex` indicates how many messages should precede it.
  *
  * Example: marker at afterIndex=6 goes between messages[5] and messages[6].
@@ -47,6 +47,11 @@ import { buildCodexWindowId } from "./providers/openai/identity";
  * since they're appended chronologically and completed-round counts are
  * monotonically non-decreasing.
  */
+interface TranscriptMarker {
+  afterIndex: number;
+  message: StoredMessage;
+}
+
 function formatRetryNotice(
   attempt: number,
   maxAttempts: number,
@@ -64,23 +69,23 @@ function formatRetryNotice(
   return `⟳ ${errorMessage} — retrying in ${delaySec}s (${attempt}/${maxAttempts})…`;
 }
 
-function interleaveRetryMarkers(
+function interleaveTranscriptMarkers(
   messages: StoredMessage[],
-  markers: Array<{ afterIndex: number; text: string }>,
+  markers: TranscriptMarker[],
 ): StoredMessage[] {
   if (markers.length === 0) return messages;
   const result: StoredMessage[] = [];
   let mi = 0;
   for (let i = 0; i < messages.length; i++) {
     while (mi < markers.length && markers[mi].afterIndex <= i) {
-      result.push({ role: "system", content: markers[mi].text, metadata: null });
+      result.push(markers[mi].message);
       mi++;
     }
     result.push(messages[i]);
   }
   // Trailing markers (after all messages)
   while (mi < markers.length) {
-    result.push({ role: "system", content: markers[mi].text, metadata: null });
+    result.push(markers[mi].message);
     mi++;
   }
   return result;
@@ -349,10 +354,10 @@ async function orchestrateAssistantTurn(
   // rebuilds its display with correct interleaving.
   let hadNextTurnInjections = false;
 
-  // Retry markers — tracked with their position (number of completed
-  // messages at the time of the retry) so they can be interleaved at
-  // the correct spot in conv.messages on the success/error path.
-  const retryMarkers: Array<{ afterIndex: number; text: string }> = [];
+  // Status markers are tracked with their position (number of completed
+  // messages at the time) so retries and compaction boundaries remain in
+  // chronological order in both live snapshots and persisted history.
+  const transcriptMarkers: TranscriptMarker[] = [];
 
   const toolContext: ToolExecutionContext = {
     provider: conv.provider,
@@ -408,13 +413,13 @@ async function orchestrateAssistantTurn(
     const stopNativeStatus = () => {
       if (!nativeStatusActive) return;
       nativeStatusActive = false;
-      setNativeCompactionStatus(false);
+      setContextCompactionStatus(false);
     };
     try {
       log("info", `orchestrator: automatic context compaction starting for ${convId} (reason=${reason}, projected=${Number.isFinite(projectedTokens) ? projectedTokens : "overflow"}, limit=${contextLimit ?? "unknown"})`);
       if (liveConv.provider === "openai") {
         nativeStatusActive = true;
-        setNativeCompactionStatus(true);
+        setContextCompactionStatus(true);
       }
       const result = await compactContextMessages(messages, {
         provider: liveConv.provider,
@@ -440,9 +445,9 @@ async function orchestrateAssistantTurn(
         onPlaintextFallback: (warning) => {
           // Plaintext fallback intentionally has no progress UI of its own.
           stopNativeStatus();
-          retryMarkers.push({
+          transcriptMarkers.push({
             afterIndex: agentState.completedMessages.length,
-            text: warning,
+            message: { role: "system", content: warning, metadata: null },
           });
           // The warning describes a semantic context transition. Persist it
           // before starting the potentially long plaintext summary so a crash
@@ -464,10 +469,33 @@ async function orchestrateAssistantTurn(
       compactionsThisTurn += 1;
       latestCompactionKind = result.kind;
       latestCompactionAccountScope = result.accountScope;
-      latestCompactedAt = Date.now();
+      const completedAt = Date.now();
+      latestCompactedAt = completedAt;
       currentWindowNumber += 1;
       currentWindowId = `${convId}:${currentWindowNumber}`;
       liveConv.lastContextTokens = null;
+      transcriptMarkers.push({
+        afterIndex: agentState.completedMessages.length,
+        message: {
+          role: "system",
+          content: CONTEXT_COMPACTION_FINISHED_TEXT,
+          metadata: {
+            startedAt: completedAt,
+            endedAt: completedAt,
+            model: liveConv.model,
+            tokens: 0,
+            kind: CONTEXT_COMPACTION_FINISHED_KIND,
+          },
+        },
+      });
+      // Make the successful boundary durable before the next provider request,
+      // together with the replay it identifies, then replace the spinner with
+      // the matching live divider.
+      syncActiveContext(result.messages);
+      persistCompletedTurnPrefix();
+      syncCompletedStreamingDisplayMessages();
+      nativeStatusActive = false;
+      setContextCompactionStatus(false, completedAt);
       log("info", `orchestrator: automatic context compaction complete for ${convId} (kind=${result.kind}, messages=${messages.length}->${result.messages.length})`);
       return result.messages;
     } finally {
@@ -504,7 +532,7 @@ async function orchestrateAssistantTurn(
   }
 
   function syncStreamingDisplayMessages(messages: StoredMessage[]): void {
-    convStore.replaceStreamingDisplayMessages(convId, interleaveRetryMarkers(messages, retryMarkers));
+    convStore.replaceStreamingDisplayMessages(convId, interleaveTranscriptMarkers(messages, transcriptMarkers));
   }
 
   function syncCompletedStreamingDisplayMessages(): void {
@@ -513,7 +541,7 @@ async function orchestrateAssistantTurn(
 
   function persistCompletedTurnPrefix(additionalMessages: StoredMessage[] = []): void {
     const completed = [
-      ...interleaveRetryMarkers(completedDisplayMessages(), retryMarkers),
+      ...interleaveTranscriptMarkers(completedDisplayMessages(), transcriptMarkers),
       ...additionalMessages,
     ];
     const turnTranscriptStartIndex = currentTurnTranscriptStartIndex();
@@ -527,7 +555,7 @@ async function orchestrateAssistantTurn(
     convStore.flush(convId);
   }
 
-  function setNativeCompactionStatus(active: boolean): void {
+  function setContextCompactionStatus(active: boolean, completedAt?: number): void {
     const compactionStartedAt = active ? Date.now() : null;
     convStore.setContextCompactionStartedAt(convId, compactionStartedAt);
     server.sendToSubscribers(convId, {
@@ -536,6 +564,7 @@ async function orchestrateAssistantTurn(
       streamSeq: convStore.nextStreamSeq(convId),
       active,
       ...(compactionStartedAt != null ? { startedAt: compactionStartedAt } : {}),
+      ...(completedAt != null ? { completedAt } : {}),
     });
   }
 
@@ -553,7 +582,10 @@ async function orchestrateAssistantTurn(
     partialContent.length = 0;
     convStore.initStreamingState(convId);
     const sysText = formatRetryNotice(attempt, maxAttempts, errorMessage, delaySec, metadata);
-    retryMarkers.push({ afterIndex: agentState.completedMessages.length, text: sysText });
+    transcriptMarkers.push({
+      afterIndex: agentState.completedMessages.length,
+      message: { role: "system", content: sysText, metadata: null },
+    });
     if (persistImmediately) persistCompletedTurnPrefix();
     syncCompletedStreamingDisplayMessages();
     server.sendToSubscribers(convId, {
@@ -932,9 +964,9 @@ async function orchestrateAssistantTurn(
 
     // Push the actual conversation messages — preserves the full
     // multi-turn structure (assistant → user[tool_result] → assistant → ...)
-    // Interleave retry markers at the correct positions so system messages
+    // Interleave status markers at the correct positions so system messages
     // appear between the rounds where they actually occurred.
-    const interleavedMessages = interleaveRetryMarkers(storedMessages, retryMarkers);
+    const interleavedMessages = interleaveTranscriptMarkers(storedMessages, transcriptMarkers);
     const successTurnTranscriptStartIndex = currentTurnTranscriptStartIndex();
     conv.messages.splice(
       successTurnTranscriptStartIndex,
@@ -1017,7 +1049,7 @@ async function orchestrateAssistantTurn(
         };
       }
     }
-    const interleavedCompleted = interleaveRetryMarkers(completedStored, retryMarkers);
+    const interleavedCompleted = interleaveTranscriptMarkers(completedStored, transcriptMarkers);
     const recoveryTurnTranscriptStartIndex = currentTurnTranscriptStartIndex();
     conv.messages.splice(
       recoveryTurnTranscriptStartIndex,
@@ -1140,7 +1172,7 @@ async function orchestrateAssistantTurn(
     // the TUI may be showing an approximate live view. Now that conv.messages
     // has the canonical interleaved structure, send history_updated so every
     // client rebuilds from the persisted ordering.
-    if (agentState.completedMessages.length > 0 || retryMarkers.length > 0 || hadNextTurnInjections) {
+    if (agentState.completedMessages.length > 0 || transcriptMarkers.length > 0 || hadNextTurnInjections) {
       const displayData = convStore.getRenderSnapshot(convId, false);
       if (displayData) {
         server.sendToSubscribers(convId, {

@@ -12,7 +12,7 @@ import { join } from "path";
 import { conversationsDir } from "@exocortex/shared/paths";
 import { save, load, loadAll } from "./persistence";
 import type { Conversation } from "./messages";
-import { DEFAULT_EFFORT, historyPrefixHash } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, DEFAULT_EFFORT, historyPrefixHash } from "./messages";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -539,6 +539,17 @@ describe("save / load round-trip", () => {
       messages: [
         { role: "user", content: "full old prompt", metadata: null },
         { role: "assistant", content: "full old answer", metadata: null },
+        {
+          role: "system",
+          content: CONTEXT_COMPACTION_FINISHED_TEXT,
+          metadata: {
+            startedAt: 13_500_001,
+            endedAt: 13_500_001,
+            model: "gpt-5.6-sol",
+            tokens: 0,
+            kind: CONTEXT_COMPACTION_FINISHED_KIND,
+          },
+        },
       ],
       createdAt: 13_500_000,
       updatedAt: 13_500_001,

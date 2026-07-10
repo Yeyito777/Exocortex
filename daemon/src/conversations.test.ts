@@ -3,9 +3,9 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, mark, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, pin, pinFolder, pinSidebarItems, redoDelete, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
+import { bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getRenderSnapshot, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, mark, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, pin, pinFolder, pinSidebarItems, redoDelete, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
-import { historyPrefixHash } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
 
 const IDS: string[] = [];
 const FOLDER_IDS: string[] = [];
@@ -713,7 +713,7 @@ describe("setSystemInstructions", () => {
 });
 
 describe("getSummary", () => {
-  test("messageCount excludes system_instructions and model-visible system notices", () => {
+  test("messageCount excludes system instructions and compaction/status notices", () => {
     const id = mkId("summary-count");
     create(id, "openai", "gpt-5.5");
     expect(setSystemInstructions(id, "Be terse.")).toBe(true);
@@ -722,6 +722,17 @@ describe("getSummary", () => {
     conv.messages.push({ role: "user", content: "hello", metadata: null });
     conv.messages.push({ role: "user", content: "[Context: getting full]", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.5", tokens: 0, system: true, kind: "context_warning" } });
     conv.messages.push({ role: "assistant", content: "hi", metadata: null });
+    conv.messages.push({
+      role: "system",
+      content: CONTEXT_COMPACTION_FINISHED_TEXT,
+      metadata: {
+        startedAt: 2,
+        endedAt: 2,
+        model: "gpt-5.5",
+        tokens: 0,
+        kind: CONTEXT_COMPACTION_FINISHED_KIND,
+      },
+    });
 
     const summary = getSummary(id)!;
     expect(summary.messageCount).toBe(2);
@@ -763,6 +774,47 @@ describe("listRunningConversationIds", () => {
 });
 
 describe("getDisplayData", () => {
+  test("late-join snapshots retain a durable compaction boundary without duplicating its assistant prefix", () => {
+    const id = mkId("display-compaction-boundary");
+    create(id, "openai", "gpt-5.6-sol");
+    const conv = get(id)!;
+    const completedAt = 2_000;
+    const activeSuffix = [
+      { role: "assistant" as const, content: "Before compaction", metadata: null },
+      {
+        role: "system" as const,
+        content: CONTEXT_COMPACTION_FINISHED_TEXT,
+        metadata: {
+          startedAt: completedAt,
+          endedAt: completedAt,
+          model: "gpt-5.6-sol",
+          tokens: 0,
+          kind: CONTEXT_COMPACTION_FINISHED_KIND,
+        },
+      },
+    ];
+    conv.messages.push(
+      { role: "user", content: "initial", metadata: null },
+      ...structuredClone(activeSuffix),
+    );
+    setActiveJob(id, new AbortController(), 1_000);
+    replaceStreamingDisplayMessages(id, activeSuffix);
+
+    const snapshot = getRenderSnapshot(id)!;
+
+    expect(snapshot.entries).toEqual([
+      { type: "user", text: "initial" },
+      { type: "ai", blocks: [{ type: "text", text: "Before compaction" }], metadata: null },
+      {
+        type: "system",
+        text: CONTEXT_COMPACTION_FINISHED_TEXT,
+        color: "muted",
+        metadata: activeSuffix[1].metadata,
+      },
+    ]);
+    expect(snapshot.pendingAI?.blocks).toEqual([]);
+  });
+
   test("includes transient streaming messages for active conversations", () => {
     const id = mkId("display-transient");
     create(id, "openai", "gpt-5.5");

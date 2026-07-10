@@ -20,7 +20,12 @@ export function pushDisplayEntries(state: RenderState, entries: DisplayEntry[]):
         });
         break;
       case "system":
-        state.messages.push({ role: "system", text: entry.text, color: resolveSystemMessageColor(entry.color), metadata: null });
+        state.messages.push({
+          role: "system",
+          text: entry.text,
+          color: resolveSystemMessageColor(entry.color),
+          metadata: entry.metadata ?? null,
+        });
         break;
       case "system_instructions":
         state.messages.push({ role: "system_instructions", text: entry.text, metadata: null });

@@ -6,7 +6,7 @@
  * in blockrenderer.ts.
  */
 
-import { combineMessageMetadata, type Message, type MessageMetadata } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, type Message, type MessageMetadata } from "./messages";
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { theme } from "./theme";
@@ -19,6 +19,18 @@ const COMPACTION_SPINNER_INTERVAL_MS = 80;
 export function compactionSpinnerText(startedAt: number, now = Date.now()): string {
   const frameIndex = Math.max(0, Math.floor((now - startedAt) / COMPACTION_SPINNER_INTERVAL_MS));
   return `${COMPACTION_SPINNER_FRAMES[frameIndex % COMPACTION_SPINNER_FRAMES.length]} Compacting...`;
+}
+
+/** Build the muted markdown-style completion divider, ending at the screen midpoint. */
+export function compactionFinishedDivider(availableWidth: number): string {
+  const maxWidth = Math.max(1, availableWidth - 2); // two-space assistant indent
+  const prefix = "─── Compaction finished ";
+  if (maxWidth <= prefix.length) return prefix.slice(0, maxWidth);
+
+  const minimumWidth = prefix.length + 3;
+  const midpointWidth = Math.max(1, Math.floor(availableWidth / 2) - 2);
+  const dividerWidth = Math.min(maxWidth, Math.max(minimumWidth, midpointWidth));
+  return prefix + "─".repeat(dividerWidth - prefix.length);
 }
 import { termWidth } from "./textwidth";
 import { wordWrap, type WrapCopyLine, type WrapResult } from "./textwrap";
@@ -145,6 +157,10 @@ export interface MessageBound {
 export type RenderLineSegment =
   | "assistant_block"
   | "assistant_metadata"
+  | "compaction_finished"
+  | "compaction_margin_bottom"
+  | "compaction_margin_top"
+  | "compaction_spinner"
   | "queued_content"
   | "queued_label"
   | "queued_margin_top"
@@ -301,6 +317,13 @@ export function buildMessageLines(
       const contentEnd = lines.length;
       for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], msg, "assistant_metadata", i);
       pushMessageBound(msg.role, start, contentStart, contentEnd);
+    } else if (msg.role === "system" && msg.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND) {
+      pushLine("", msg, "compaction_margin_top");
+      const contentStart = lines.length;
+      pushLine(`  ${theme.muted}${compactionFinishedDivider(availableWidth)}${theme.reset}`, msg, "compaction_finished");
+      const contentEnd = lines.length;
+      pushLine("", msg, "compaction_margin_bottom");
+      pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "system_instructions") {
       if (!msg.text.trim()) {
         pushMessageBound(msg.role, start, start, lines.length);
@@ -338,30 +361,33 @@ export function buildMessageLines(
     for (const block of state.pendingAI.blocks) {
       pushBlock(block, "assistant_block", renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
     }
-    if (state.contextCompactionStartedAt != null) {
-      pushLine(
-        `  ${theme.dim}${compactionSpinnerText(state.contextCompactionStartedAt)}${theme.reset}`,
-        state.pendingAI,
-        "assistant_block",
-        state.pendingAI.blocks.length,
-      );
-    }
     // Terminal stream notices (abort/error/watchdog) arrive just before
     // streaming_stopped. Keep pendingAI around for reconciliation, but do not
     // render metadata-only pending state next to the notice: if no assistant
     // content was persisted, that line disappears one frame later and flickers.
     const terminalNoticePendingStop = isTerminalStreamNotice(state.messages[state.messages.length - 1])
       && state.pendingAI.metadata?.startedAt === state.suppressPendingAIMetadataStartedAt;
-    const shouldRenderPendingMetadata = state.pendingAI.blocks.length > 0 || (
+    const pendingMetadataSuppressed = state.pendingAI.metadata?.startedAt === state.suppressPendingAIMetadataStartedAt;
+    const shouldRenderPendingMetadata = !pendingMetadataSuppressed && (state.pendingAI.blocks.length > 0 || (
       state.contextCompactionStartedAt == null
       && state.pendingAICommittedIndex === null
       && !terminalNoticePendingStop
-    );
+    ));
     const metadata = pendingAssistantSegmentMetadata(state) ?? pendingAssistantRunMetadata(state);
     const metadataLines = shouldRenderPendingMetadata ? renderMetadata(metadata) : [];
-    if (metadataLines.length > 0) trimTrailingBlankAssistantContent(start);
+    const compactionStartedAt = state.contextCompactionStartedAt;
+    const compactionActive = compactionStartedAt != null;
+    if (metadataLines.length > 0 || compactionActive) trimTrailingBlankAssistantContent(start);
     const contentEnd = lines.length;
     for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], state.pendingAI, "assistant_metadata", i);
+    if (compactionActive) {
+      pushLine("", state.pendingAI, "compaction_margin_top");
+      pushLine(
+        `  ${theme.dim}${compactionSpinnerText(compactionStartedAt)}${theme.reset}`,
+        state.pendingAI,
+        "compaction_spinner",
+      );
+    }
     pushMessageBound(state.pendingAI.role, start, start, contentEnd);
   }
 

@@ -3,6 +3,8 @@ import { theme } from "../theme";
 import { clearPendingAI, clearStreamingTailMessages } from "../state";
 import type { RenderState } from "../state";
 import {
+  CONTEXT_COMPACTION_FINISHED_KIND,
+  CONTEXT_COMPACTION_FINISHED_TEXT,
   createMessageMetadata,
   createPendingAI,
   ensureCurrentBlock,
@@ -252,6 +254,32 @@ export function handleContextCompactionStatus(
   state: RenderState,
 ): void {
   state.contextCompactionStartedAt = event.active ? (event.startedAt ?? Date.now()) : null;
+  if (event.completedAt == null) return;
+
+  const alreadyLoaded = state.messages.some((message) =>
+    message.role === "system"
+    && message.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND
+    && message.metadata.startedAt === event.completedAt
+  );
+  if (alreadyLoaded) return;
+
+  if (state.pendingAI) {
+    const pendingStartedAt = state.pendingAI.metadata?.startedAt ?? null;
+    const finalized = splitPendingAI(state.pendingAI);
+    if (finalized) state.messages.push(finalized);
+    // Keep the continuation's metadata placeholder below the divider hidden
+    // until the next real assistant block arrives.
+    state.suppressPendingAIMetadataStartedAt = pendingStartedAt;
+  }
+
+  state.messages.push({
+    role: "system",
+    text: CONTEXT_COMPACTION_FINISHED_TEXT,
+    metadata: {
+      ...createMessageMetadata(event.completedAt, state.model, { endedAt: event.completedAt }),
+      kind: CONTEXT_COMPACTION_FINISHED_KIND,
+    },
+  });
 }
 
 export function handleUserMessage(event: Extract<Event, { type: "user_message" }>, state: RenderState): void {

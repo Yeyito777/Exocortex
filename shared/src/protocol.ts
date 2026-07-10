@@ -632,7 +632,7 @@ export type DisplayEntry =
   | { type: "system_instructions"; text: string }
   | { type: "user"; text: string; images?: ImageAttachment[]; metadata?: MessageMetadata | null }
   | { type: "ai"; blocks: Block[]; metadata: MessageMetadata | null }
-  | { type: "system"; text: string; color?: string };
+  | { type: "system"; text: string; color?: string; metadata?: MessageMetadata | null };
 
 export interface QueuedMessageInfo {
   text: string;
@@ -743,6 +743,8 @@ export interface ContextCompactionStatusEvent {
   streamSeq?: number;
   active: boolean;
   startedAt?: number;
+  /** Successful completion time. When present, clients retain a history divider. */
+  completedAt?: number;
 }
 
 export interface SystemMessageEvent {

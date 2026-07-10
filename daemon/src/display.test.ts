@@ -8,7 +8,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { buildDisplayData } from "./display";
-import type { StoredMessage, ApiContentBlock } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { MessageMetadata } from "./messages";
 import type { ToolSummarizerFn } from "./display";
 
@@ -524,6 +524,27 @@ describe("tool-result folding", () => {
     expect(entries[0].type).toBe("ai");
     expect(entries[1]).toEqual({ type: "system", text: "[Context: 900k/1,000k tokens — context is getting full.]" });
     expect(entries[2].type).toBe("ai");
+  });
+
+  test("persisted compaction completion → retained as a muted typed system entry", () => {
+    const metadata: MessageMetadata = {
+      startedAt: 2_000,
+      endedAt: 2_000,
+      model: "gpt-5.6-sol",
+      tokens: 0,
+      kind: CONTEXT_COMPACTION_FINISHED_KIND,
+    };
+    const { entries } = build([
+      { role: "assistant", content: "Before compaction", metadata: null },
+      { role: "system", content: CONTEXT_COMPACTION_FINISHED_TEXT, metadata },
+      { role: "assistant", content: "After compaction", metadata: null },
+    ]);
+
+    expect(entries).toEqual([
+      { type: "ai", blocks: [{ type: "text", text: "Before compaction" }], metadata: null },
+      { type: "system", text: CONTEXT_COMPACTION_FINISHED_TEXT, color: "muted", metadata },
+      { type: "ai", blocks: [{ type: "text", text: "After compaction" }], metadata: null },
+    ]);
   });
 
   test("orphaned tool_result (no preceding assistant) → renders as ai entry, not user JSON", () => {

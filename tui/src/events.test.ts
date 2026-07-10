@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { browserOpenCommand, handleEvent, type DaemonActions } from "./events";
 import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostics";
-import type { ConversationSummary } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary } from "./messages";
 import { createInitialState } from "./state";
 
 const daemon: DaemonActions = {
@@ -27,9 +27,11 @@ describe("auth browser opener", () => {
 });
 
 describe("context compaction status events", () => {
-  test("starts and clears the transient compaction spinner", () => {
+  test("replaces the spinner with a retained marker below completed assistant content", () => {
     const state = createInitialState();
     state.convId = "conv-1";
+    state.pendingAI = createPendingAI(100, state.model);
+    state.pendingAI.blocks.push({ type: "text", text: "work before compaction" });
 
     handleEvent({
       type: "context_compaction_status",
@@ -43,8 +45,35 @@ describe("context compaction status events", () => {
       type: "context_compaction_status",
       convId: "conv-1",
       active: false,
+      completedAt: 456,
     }, state, daemon);
     expect(state.contextCompactionStartedAt).toBeNull();
+    expect(state.messages).toHaveLength(2);
+    expect(state.messages[0]).toMatchObject({
+      role: "assistant",
+      blocks: [{ type: "text", text: "work before compaction" }],
+    });
+    expect(state.messages[1]).toMatchObject({
+      role: "system",
+      text: CONTEXT_COMPACTION_FINISHED_TEXT,
+      metadata: {
+        startedAt: 456,
+        endedAt: 456,
+        kind: CONTEXT_COMPACTION_FINISHED_KIND,
+      },
+    });
+    expect(state.pendingAI?.blocks).toEqual([]);
+    expect(state.suppressPendingAIMetadataStartedAt).toBe(100);
+
+    // A same-conversation refresh can load the durable marker just before the
+    // matching completion event; do not retain it twice.
+    handleEvent({
+      type: "context_compaction_status",
+      convId: "conv-1",
+      active: false,
+      completedAt: 456,
+    }, state, daemon);
+    expect(state.messages.filter((message) => message.role === "system")).toHaveLength(1);
   });
 });
 

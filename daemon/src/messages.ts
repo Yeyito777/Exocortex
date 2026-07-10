@@ -12,7 +12,7 @@ export * from "@exocortex/shared/messages";
 
 // ── API-level types (for stored conversations / API replay) ─────────
 
-import { DEFAULT_EFFORT, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal } from "@exocortex/shared/messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
 import { createHash } from "crypto";
 
@@ -407,9 +407,13 @@ export function buildHistoryTurnMap(messages: StoredMessage[]): number[] {
   return map;
 }
 
-/** Count messages for summaries/UI, excluding instructions and model-visible system notices. */
+/** Count user-visible turns for summaries/UI, excluding non-turn status entries. */
 export function countConversationMessages(messages: StoredMessage[]): number {
-  return messages.filter((msg) => msg.role !== "system_instructions" && !isModelVisibleSystemNotice(msg)).length;
+  return messages.filter((msg) =>
+    msg.role !== "system_instructions"
+    && !isModelVisibleSystemNotice(msg)
+    && msg.metadata?.kind !== CONTEXT_COMPACTION_FINISHED_KIND
+  ).length;
 }
 
 export type PersistedConversationSummary = Omit<ConversationSummary, "streaming" | "unread">;
