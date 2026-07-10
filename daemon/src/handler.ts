@@ -22,8 +22,6 @@ import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen"
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command } from "./protocol";
-import type { ConversationRenderSnapshot } from "./conversations";
-import type { ImageAttachment } from "./messages";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials, invalidateCredentialsCache } from "./auth";
 import { addAccount as addOpenAIAccount, listAccounts as listOpenAIAccounts, removeAccount as removeOpenAIAccount, switchAccount as switchOpenAIAccount } from "./providers/openai/auth";
 import { getProviderAdapter } from "./providers/catalog";
@@ -44,8 +42,7 @@ import {
   type PendingSubagentNotification,
 } from "./subagent-notifications";
 import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
-
-const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
+import { INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory } from "./history-pagination";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
@@ -306,39 +303,29 @@ export function createHandler(server: DaemonServer) {
 
   // ── Compact conversation payload helpers ─────────────────────────
 
-  const compactImageForHistory = (image: ImageAttachment): ImageAttachment => ({
-    mediaType: image.mediaType,
-    base64: "",
-    sizeBytes: image.sizeBytes,
-  });
-
-  const compactHistoryImages = (data: ConversationRenderSnapshot): ConversationRenderSnapshot => ({
-    ...data,
-    entries: data.entries.map((entry, index) => entry.type === "user"
-      && entry.images?.length
-      && index < data.entries.length - RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES
-      ? { ...entry, images: entry.images.map(compactImageForHistory) }
-      : entry),
-  });
-
-  const sendCompactHistoryUpdated = (convId: string): boolean => {
+  const sendCompactHistoryUpdated = (convId: string, resetHistoryWindow = false): boolean => {
     const data = getRenderSnapshot(convId);
     if (!data) return false;
-    const compactData = compactHistoryImages(data);
-    server.sendToSubscribers(convId, {
-      type: "history_updated",
-      convId,
-      entries: compactData.entries,
-      contextTokens: compactData.contextTokens,
-      toolOutputsIncluded: compactData.toolOutputsIncluded,
-    });
+    const events = buildHistoryUpdatedEvents(data, { resetHistoryWindow });
+    const capabilitySender = (server as DaemonServer & {
+      sendHistoryUpdatedToSubscribers?: DaemonServer["sendHistoryUpdatedToSubscribers"];
+    }).sendHistoryUpdatedToSubscribers;
+    if (capabilitySender) capabilitySender.call(server, convId, events.legacy, events.paginated);
+    else server.sendToSubscribers(convId, events.legacy); // safe compatibility fallback for minimal test doubles
     return true;
   };
 
-  const sendCompactConversationLoaded = (target: ConnectedClient, convId: string, reqId?: string) => {
+  const sendCompactConversationLoaded = (
+    target: ConnectedClient,
+    convId: string,
+    reqId?: string,
+    turns?: number,
+  ) => {
     const data = getRenderSnapshot(convId);
     if (!data) return null;
     const compactData = compactHistoryImages(data);
+    const paginated = target.capabilities?.has("history-pagination") || turns !== undefined;
+    const page = paginated ? pageDisplayHistory(compactData.entries, turns ?? INITIAL_HISTORY_TURNS) : null;
     const queued = convStore.getQueuedMessages(data.convId);
     const conv = convStore.get(data.convId);
     server.sendTo(target, {
@@ -349,7 +336,13 @@ export function createHandler(server: DaemonServer) {
       model: compactData.model,
       effort: compactData.effort,
       fastMode: compactData.fastMode,
-      entries: compactData.entries,
+      entries: page ? [...page.pinnedEntries, ...page.entries] : compactData.entries,
+      ...(page ? {
+        historyStartIndex: page.startIndex,
+        historyStartUserIndex: page.startUserIndex,
+        historyTotalEntries: page.totalEntries,
+        hasOlderHistory: page.hasOlder,
+      } : {}),
       ...(compactData.pendingAI ? { pendingAI: compactData.pendingAI } : {}),
       contextTokens: compactData.contextTokens,
       toolOutputsIncluded: compactData.toolOutputsIncluded,
@@ -357,6 +350,31 @@ export function createHandler(server: DaemonServer) {
       goal: conv?.goal ?? null,
     });
     return data;
+  };
+
+  const sendCompactConversationHistory = (
+    target: ConnectedClient,
+    convId: string,
+    beforeEntryIndex: number,
+    turns: number,
+    reqId?: string,
+  ): boolean => {
+    const data = getRenderSnapshot(convId);
+    if (!data) return false;
+    const compactData = compactHistoryImages(data);
+    const page = pageDisplayHistory(compactData.entries, turns, beforeEntryIndex);
+    server.sendTo(target, {
+      type: "conversation_history_loaded",
+      reqId,
+      convId,
+      entries: page.entries,
+      historyStartIndex: page.startIndex,
+      historyStartUserIndex: page.startUserIndex,
+      historyEndIndex: page.endIndex,
+      historyTotalEntries: page.totalEntries,
+      hasOlderHistory: page.hasOlder,
+    });
+    return true;
   };
 
   const sendGoalUpdated = (convId: string, reqId: string | undefined, message?: string) => {
@@ -845,7 +863,7 @@ export function createHandler(server: DaemonServer) {
         }
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         if (result.changed) {
-          sendCompactHistoryUpdated(cmd.convId);
+          sendCompactHistoryUpdated(cmd.convId, true);
           broadcastConversationUpdated(server, cmd.convId);
           server.sendToSubscribers(cmd.convId, { type: "system_message", convId: cmd.convId, text: result.message });
           log("info", `handler: trimmed ${cmd.mode} (${cmd.count}) for ${cmd.convId}`);
@@ -1153,7 +1171,7 @@ export function createHandler(server: DaemonServer) {
         // open TUIs must discard any local assistant tail that lived past the
         // unwind point.
         sendCompactConversationLoaded(client, cmd.convId, cmd.reqId);
-        sendCompactHistoryUpdated(cmd.convId);
+        sendCompactHistoryUpdated(cmd.convId, true);
         broadcastConversationUpdated(server, cmd.convId);
         break;
       }
@@ -1169,7 +1187,12 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "load_conversation": {
-        const data = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId);
+        if (cmd.turns !== undefined && (!Number.isSafeInteger(cmd.turns) || cmd.turns < 1 || cmd.turns > 100)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid conversation history turn count" });
+          break;
+        }
+        if (cmd.turns !== undefined) client.capabilities?.add("history-pagination");
+        const data = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns);
         if (!data) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           break;
@@ -1199,6 +1222,26 @@ export function createHandler(server: DaemonServer) {
         // Clear unread when a client views the conversation
         if (convStore.clearUnread(data.convId)) {
           broadcastConversationUpdated(server, data.convId);
+        }
+        break;
+      }
+
+      case "load_conversation_history": {
+        if (!Number.isSafeInteger(cmd.beforeEntryIndex) || cmd.beforeEntryIndex < 0
+            || !Number.isSafeInteger(cmd.turns) || cmd.turns < 1 || cmd.turns > 100) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid conversation history page request" });
+          break;
+        }
+        client.capabilities?.add("history-pagination");
+        const sent = sendCompactConversationHistory(
+          client,
+          cmd.convId,
+          cmd.beforeEntryIndex,
+          cmd.turns,
+          cmd.reqId,
+        );
+        if (!sent) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
         }
         break;
       }

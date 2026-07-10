@@ -273,7 +273,13 @@ export class DaemonClient {
   }
 
   loadConversation(convId: string): void {
-    this.send({ type: "load_conversation", convId });
+    this.send({ type: "load_conversation", convId, turns: 5 });
+  }
+
+  loadConversationHistory(convId: string, beforeEntryIndex: number, turns: number): string {
+    const reqId = `history_${++this.nextReqId}_${Date.now()}`;
+    this.send({ type: "load_conversation_history", reqId, convId, beforeEntryIndex, turns });
+    return reqId;
   }
 
   loadToolOutputs(convId: string): void {

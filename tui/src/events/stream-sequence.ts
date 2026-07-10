@@ -8,7 +8,7 @@ export const CONV_SCOPED: ReadonlySet<string> = new Set([
   "tool_call", "tool_result", "tokens_update", "context_update",
   "message_complete", "streaming_stopped", "user_message", "system_message",
   "stream_retry", "history_updated", "tool_outputs_loaded", "goal_updated",
-  "context_compaction_status",
+  "context_compaction_status", "conversation_history_loaded",
 ]);
 
 const STREAM_SEQ_SCOPED: ReadonlySet<string> = new Set([

@@ -53,6 +53,7 @@ interface HistoryRenderCacheEntry {
   voiceMessageRef: RenderState["voiceMessage"];
   voiceMessageFrameIndex: number | null;
   voiceMessagePhase: string | null;
+  historyLoadingFrame: number | null;
   showToolOutput: boolean;
   toolRegistryRef: RenderState["toolRegistry"];
   externalToolStylesRef: RenderState["externalToolStyles"];
@@ -66,6 +67,12 @@ const DEFERRED_HISTORY_INITIAL_MESSAGE_BATCH = 8;
 const DEFERRED_HISTORY_ADVANCE_MESSAGE_BATCH = 8;
 const DEFERRED_HISTORY_GRACE_LINES = 200;
 const AUTOCOMPLETE_MAX_VISIBLE_ROWS = 10;
+const HISTORY_LOADING_FRAME_INTERVAL_MS = 80;
+
+function historyLoadingFrame(state: RenderState): number | null {
+  if (!state.historyLoadingOlder) return null;
+  return Math.max(0, Math.floor((Date.now() - (state.historyLoadingStartedAt ?? Date.now())) / HISTORY_LOADING_FRAME_INTERVAL_MS));
+}
 
 function canReuseHistoryRender(cached: HistoryRenderCacheEntry, state: RenderState, width: number): boolean {
   return cached.width === width
@@ -79,6 +86,7 @@ function canReuseHistoryRender(cached: HistoryRenderCacheEntry, state: RenderSta
     && cached.voiceMessageRef === state.voiceMessage
     && cached.voiceMessageFrameIndex === (state.voiceMessage?.frameIndex ?? null)
     && cached.voiceMessagePhase === (state.voiceMessage?.phase ?? null)
+    && cached.historyLoadingFrame === historyLoadingFrame(state)
     && cached.showToolOutput === state.showToolOutput
     && cached.toolRegistryRef === state.toolRegistry
     && cached.externalToolStylesRef === state.externalToolStyles
@@ -165,6 +173,7 @@ function getHistoryRender(state: RenderState, width: number, targetLines: number
     voiceMessageRef: state.voiceMessage,
     voiceMessageFrameIndex: state.voiceMessage?.frameIndex ?? null,
     voiceMessagePhase: state.voiceMessage?.phase ?? null,
+    historyLoadingFrame: historyLoadingFrame(state),
     showToolOutput: state.showToolOutput,
     toolRegistryRef: state.toolRegistry,
     externalToolStylesRef: state.externalToolStyles,

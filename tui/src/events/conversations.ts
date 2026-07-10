@@ -12,10 +12,12 @@ import {
 import { focusTargetAfterRemovingSidebarItems } from "../sidebar/removal";
 import { focusSidebarItem } from "../sidebar/selection";
 import type { RenderState } from "../state";
+import { preserveViewportAcrossHistoryMutation } from "../chatscroll";
 import {
   clearPendingAI,
   clearStreamingTailMessages,
   resetNewConversationDefaults,
+  resetHistoryPagination,
   resetToolOutputState,
   setLoadedConversationToolOutputState,
 } from "../state";
@@ -53,6 +55,7 @@ export function handleConversationCreated(
   state.effort = event.effort ?? state.effort;
   state.fastMode = event.fastMode ?? state.fastMode;
   state.goal = event.goal ?? null;
+  resetHistoryPagination(state);
   daemon.subscribe(event.convId);
 
   if (state.pendingSystemInstructions !== null) {
@@ -123,6 +126,7 @@ export function handleConversationDeleted(event: Extract<Event, { type: "convers
     state.contextTokens = 0;
     state.goal = null;
     resetToolOutputState(state);
+    resetHistoryPagination(state);
     resetNewConversationDefaults(state);
   }
   clearAllQueuedMessagesForConversation(state, event.convId);
@@ -204,6 +208,14 @@ export function handleConversationLoaded(
   state.goal = event.goal ?? null;
   state.scrollOffset = 0;
   state.contextTokens = event.contextTokens;
+  state.historyStartIndex = event.historyStartIndex ?? 0;
+  state.historyStartUserIndex = event.historyStartUserIndex ?? 0;
+  state.historyTotalEntries = event.historyTotalEntries
+    ?? event.entries.filter((entry) => entry.type !== "system_instructions").length;
+  state.historyHasOlder = event.hasOlderHistory ?? false;
+  state.historyLoadingOlder = false;
+  state.historyLoadingStartedAt = null;
+  state.historyLoadingRequestId = null;
   setLoadedConversationToolOutputState(state, event.toolOutputsIncluded);
 
   // Entries arrive in display order — just map to TUI message types.
@@ -285,4 +297,43 @@ export function handleConversationLoaded(
       });
     }
   }
+}
+
+export function handleConversationHistoryLoaded(
+  event: Extract<Event, { type: "conversation_history_loaded" }>,
+  state: RenderState,
+): void {
+  if (event.convId !== state.convId) return;
+  if (!event.reqId || event.reqId !== state.historyLoadingRequestId) return;
+
+  // A canonical history refresh may have replaced the window while this page
+  // was in flight. Absolute cursors make that stale response safe to discard.
+  if (event.historyEndIndex !== state.historyStartIndex) {
+    state.historyLoadingOlder = false;
+    state.historyLoadingStartedAt = null;
+    state.historyLoadingRequestId = null;
+    return;
+  }
+
+  preserveViewportAcrossHistoryMutation(state, () => {
+    const currentMessages = state.messages;
+    let pinnedCount = 0;
+    while (currentMessages[pinnedCount]?.role === "system_instructions") pinnedCount += 1;
+
+    state.messages = [];
+    pushDisplayEntries(state, event.entries);
+    const olderMessages = state.messages;
+    state.messages = [
+      ...currentMessages.slice(0, pinnedCount),
+      ...olderMessages,
+      ...currentMessages.slice(pinnedCount),
+    ];
+    state.historyStartIndex = event.historyStartIndex;
+    state.historyStartUserIndex = event.historyStartUserIndex;
+    state.historyTotalEntries = event.historyTotalEntries;
+    state.historyHasOlder = event.hasOlderHistory;
+    state.historyLoadingOlder = false;
+    state.historyLoadingStartedAt = null;
+    state.historyLoadingRequestId = null;
+  });
 }

@@ -20,6 +20,7 @@ export interface ConnectedClient {
   socket: Socket;
   subscriptions: Set<string>;
   buffer: string;
+  capabilities: Set<"history-pagination">;
 }
 
 export type CommandHandler = (client: ConnectedClient, command: Command) => void | Promise<void>;
@@ -77,7 +78,7 @@ export class DaemonServer {
 
   private onConnection(socket: Socket): void {
     const id = `c${++clientIdCounter}`;
-    const client: ConnectedClient = { id, socket, subscriptions: new Set(), buffer: "" };
+    const client: ConnectedClient = { id, socket, subscriptions: new Set(), buffer: "", capabilities: new Set() };
     this.clients.set(id, client);
     log("info", `server: ${id} connected (${this.clients.size} total)`);
 
@@ -140,6 +141,18 @@ export class DaemonServer {
   sendToSubscribersExcept(convId: string, event: Event, except: ConnectedClient): void {
     for (const client of this.clients.values()) {
       if (client !== except && client.subscriptions.has(convId)) this.sendTo(client, event);
+    }
+  }
+
+  /** Send capability-appropriate canonical history without breaking older clients. */
+  sendHistoryUpdatedToSubscribers(
+    convId: string,
+    legacyEvent: Extract<Event, { type: "history_updated" }>,
+    paginatedEvent: Extract<Event, { type: "history_updated" }>,
+  ): void {
+    for (const client of this.clients.values()) {
+      if (!client.subscriptions.has(convId)) continue;
+      this.sendTo(client, client.capabilities.has("history-pagination") ? paginatedEvent : legacyEvent);
     }
   }
 

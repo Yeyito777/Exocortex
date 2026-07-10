@@ -4,6 +4,17 @@ import type { UserMessage } from "./messages";
 import { createInitialState } from "./state";
 
 describe("edit message modal", () => {
+  test("uses the absolute user index of a paged history window", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.historyStartUserIndex = 12;
+    state.messages = [{ role: "user", text: "loaded later turn", metadata: null }];
+
+    openEditMessageModal(state);
+
+    expect(state.editMessagePrompt?.items[0]?.userMessageIndex).toBe(12);
+  });
+
   test("Ctrl-W can edit a local pending voice message before a conversation exists", () => {
     const state = createInitialState();
     state.convId = null;

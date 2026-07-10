@@ -37,6 +37,7 @@ import { buildCodexWindowId } from "./providers/openai/identity";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive } from "./conversation-activity";
 import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
+import { buildHistoryUpdatedEvents } from "./history-pagination";
 
 // ── Transcript marker helpers ──────────────────────────────────────
 
@@ -1270,13 +1271,8 @@ async function orchestrateAssistantTurn(
     if (agentState.completedMessages.length > 0 || transcriptMarkers.length > 0 || hadNextTurnInjections) {
       const displayData = convStore.getRenderSnapshot(convId, false);
       if (displayData) {
-        server.sendToSubscribers(convId, {
-          type: "history_updated",
-          convId,
-          entries: displayData.entries,
-          contextTokens: displayData.contextTokens,
-          toolOutputsIncluded: displayData.toolOutputsIncluded,
-        });
+        const events = buildHistoryUpdatedEvents(displayData);
+        server.sendHistoryUpdatedToSubscribers(convId, events.legacy, events.paginated);
       }
     }
 
