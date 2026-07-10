@@ -53,6 +53,8 @@ export interface Theme {
   selectionBg: string;    // Visual mode selection highlight
   searchBg: string;       // Search-match highlight background
   searchFg: string;       // Search-match highlight foreground
+  notificationBg: string; // Unread-count badge background
+  notificationFg: string; // Unread-count badge foreground
   appBg?: string;         // App-wide background (empty = terminal default)
   cursorColor?: string;   // Terminal cursor color as hex (e.g. "#48cae4")
 
