@@ -290,13 +290,19 @@ export function buildMessageLines(
   };
 
   const startMessageIndex = Math.max(0, Math.min(options.startMessageIndex ?? 0, state.messages.length));
-  if (state.historyLoadingOlder) {
+  let historyLoadingInsertIndex = startMessageIndex;
+  if (state.historyLoadingOlder && startMessageIndex === 0) {
+    while (state.messages[historyLoadingInsertIndex]?.role === "system_instructions") {
+      historyLoadingInsertIndex++;
+    }
+  }
+  const pushHistoryLoadingLine = () => {
     pushLine(
       `${theme.dim}${historyLoadingSpinnerText(state.historyLoadingStartedAt ?? Date.now())}${theme.reset}`,
       state,
       "history_loading",
     );
-  }
+  };
   let firstUser = true;
   for (let i = 0; i < startMessageIndex; i++) {
     if (state.messages[i]?.role === "user") {
@@ -306,6 +312,9 @@ export function buildMessageLines(
   }
 
   for (let messageIndex = startMessageIndex; messageIndex < state.messages.length; messageIndex++) {
+    if (state.historyLoadingOlder && messageIndex === historyLoadingInsertIndex) {
+      pushHistoryLoadingLine();
+    }
     const msg = state.messages[messageIndex];
     const start = lines.length;
     if (msg.role === "user") {
@@ -366,6 +375,10 @@ export function buildMessageLines(
       pushBlock(msg, "system_message", renderSystemMessage(msg.text, availableWidth, msg.color));
       pushMessageBound(msg.role, start, start, lines.length);
     }
+  }
+
+  if (state.historyLoadingOlder && historyLoadingInsertIndex === state.messages.length) {
+    pushHistoryLoadingLine();
   }
 
   // Currently streaming AI message — no margins

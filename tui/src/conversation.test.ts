@@ -87,6 +87,25 @@ describe("older history loading status", () => {
     expect(stripAnsi(rendered.lines[0])).toContain("Loading...");
     expect(rendered.lineAnchors[0]?.segment).toBe("history_loading");
   });
+
+  test("renders the Loading row below pinned system instructions", () => {
+    const state = createInitialState();
+    state.historyLoadingOlder = true;
+    state.historyLoadingStartedAt = 1_000;
+    state.messages.push(
+      { role: "system_instructions", text: "Follow these rules.", metadata: null },
+      { role: "user", text: "recent", metadata: null },
+    );
+
+    const rendered = buildMessageLines(state, 80);
+    const loadingIndex = rendered.lineAnchors.findIndex((anchor) => anchor.segment === "history_loading");
+    const instructionsBottomIndex = rendered.lineAnchors.findIndex((anchor) => anchor.segment === "system_instructions_bottom");
+
+    expect(instructionsBottomIndex).toBeGreaterThanOrEqual(0);
+    expect(loadingIndex).toBe(instructionsBottomIndex + 1);
+    expect(stripAnsi(rendered.lines[loadingIndex])).toContain("Loading...");
+    expect(rendered.lineAnchors[loadingIndex + 1]?.segment).toBe("user_content");
+  });
 });
 
 describe("queued message rendering", () => {
