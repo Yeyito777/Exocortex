@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
 import { create, get, remove } from "./conversations";
+import type { StoredMessage } from "./messages";
 import { clearActiveJob, initStreamingState, replaceStreamingDisplayMessages, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
 import { DaemonClient } from "../../tui/src/client";
 import { createInitialState } from "../../tui/src/state";
@@ -46,13 +47,13 @@ describe("late-join streaming integration", () => {
     conv.messages.push({ role: "user", content: "hi", metadata: null });
 
     // Simulate the exact problematic window: the active turn already produced a
-    // completed tool round and explanatory text, but no new tail has started yet.
-    // Before the fix, late joiners loaded the completed assistant prefix in
-    // `entries` and only saw the trailing live tail in `pendingAI`, which made
-    // the in-progress reply look truncated until the stream finished.
+    // completed tool round and explanatory text, persisted it for crash recovery,
+    // and is compacting before a new tail starts. The same completed messages
+    // remain in transient state so late joiners can reconstruct the active reply.
+    // Rendering both copies made the tool round appear twice until completion.
     setActiveJob(convId, new AbortController(), 100);
     initStreamingState(convId);
-    replaceStreamingDisplayMessages(convId, [
+    const completedRound: StoredMessage[] = [
       {
         role: "assistant",
         content: [{ type: "tool_use", id: "call-1", name: "bash", input: { command: "pwd" } }],
@@ -68,7 +69,9 @@ describe("late-join streaming integration", () => {
         content: [{ type: "text", text: "done with the tool round" }],
         metadata: null,
       },
-    ]);
+    ];
+    conv.messages.push(...structuredClone(completedRound));
+    replaceStreamingDisplayMessages(convId, completedRound);
     replaceCurrentStreamingBlocks(convId, []);
 
     const state = createInitialState();

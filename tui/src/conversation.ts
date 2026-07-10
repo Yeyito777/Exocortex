@@ -340,7 +340,7 @@ export function buildMessageLines(
     }
     if (state.contextCompactionStartedAt != null) {
       pushLine(
-        `  ${theme.accent}${compactionSpinnerText(state.contextCompactionStartedAt)}${theme.reset}`,
+        `  ${theme.dim}${compactionSpinnerText(state.contextCompactionStartedAt)}${theme.reset}`,
         state.pendingAI,
         "assistant_block",
         state.pendingAI.blocks.length,

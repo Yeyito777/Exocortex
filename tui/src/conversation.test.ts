@@ -26,9 +26,12 @@ describe("context compaction status", () => {
     const state = createInitialState();
     state.pendingAI = createPendingAI(Date.now(), state.model);
     state.contextCompactionStartedAt = Date.now();
-    const rendered = buildMessageLines(state, 100).lines.map(stripAnsi);
+    const rendered = buildMessageLines(state, 100).lines;
+    const statusLine = rendered.find((line) => line.includes("Compacting..."));
 
-    expect(rendered.some((line) => line.includes("Compacting..."))).toBe(true);
+    expect(statusLine?.startsWith(`  ${theme.dim}`)).toBe(true);
+    expect(statusLine?.endsWith(theme.reset)).toBe(true);
+    expect(statusLine?.includes(theme.accent)).toBe(false);
     expect(state.pendingAI.blocks).toEqual([]);
   });
 });

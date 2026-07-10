@@ -17,6 +17,7 @@ import * as persistence from "./persistence";
 import * as streaming from "./streaming";
 import { log } from "./log";
 import { getProvider, normalizeEffort } from "./providers/registry";
+import { isDeepStrictEqual } from "node:util";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -1547,17 +1548,38 @@ function isCurrentAssistantAlreadyCommitted(conv: Conversation, startedAt: numbe
     && conv.messages.some((msg) => msg.role === "assistant" && msg.metadata?.startedAt === startedAt);
 }
 
+/**
+ * Completed tool rounds are persisted before a potentially long next provider
+ * request or context compaction, while the same messages remain in transient
+ * streaming state so late joiners can reconstruct the complete active reply.
+ * Exclude that identical persisted suffix from an active render snapshot;
+ * otherwise it appears once in `entries` and again in `pendingAI`, then visibly
+ * disappears when the final canonical history update de-duplicates the turn.
+ */
+function withoutPersistedStreamingSuffix(messages: StoredMessage[], transientMessages: StoredMessage[]): StoredMessage[] {
+  if (transientMessages.length === 0 || transientMessages.length > messages.length) return messages;
+  const suffixStart = messages.length - transientMessages.length;
+  for (let index = 0; index < transientMessages.length; index++) {
+    if (!isDeepStrictEqual(messages[suffixStart + index], transientMessages[index])) return messages;
+  }
+  return messages.slice(0, suffixStart);
+}
+
 export function getRenderSnapshot(id: string, includeToolOutputs = true): ConversationRenderSnapshot | null {
   const conv = get(id);
   if (!conv) return null;
 
-  const persisted = buildSnapshotDisplayData(conv, conv.messages, includeToolOutputs);
-  if (!streaming.isStreaming(id)) return persisted;
+  const fullPersisted = buildSnapshotDisplayData(conv, conv.messages, includeToolOutputs);
+  if (!streaming.isStreaming(id)) return fullPersisted;
 
   const startedAt = streaming.getStreamingStartedAt(id);
-  if (isCurrentAssistantAlreadyCommitted(conv, startedAt)) return persisted;
+  if (isCurrentAssistantAlreadyCommitted(conv, startedAt)) return fullPersisted;
 
   const transientMessages = streaming.getStreamingDisplayMessages(id);
+  const snapshotPersistedMessages = withoutPersistedStreamingSuffix(conv.messages, transientMessages);
+  const persisted = snapshotPersistedMessages === conv.messages
+    ? fullPersisted
+    : buildSnapshotDisplayData(conv, snapshotPersistedMessages, includeToolOutputs);
   const transient = buildSnapshotDisplayData(conv, transientMessages, includeToolOutputs, false);
   const transientEntries = [...transient.entries];
   const trailingAssistant = transientEntries.at(-1);
