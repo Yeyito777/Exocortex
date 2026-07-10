@@ -7,14 +7,14 @@ describe("getInnerLlmSummaryOptions", () => {
   test("defaults to the app default provider", () => {
     const options = getInnerLlmSummaryOptions();
     expect(options.provider).toBe(DEFAULT_PROVIDER_ID);
-    expect(options.model).toBe("gpt-5.4-mini");
+    expect(options.model).toBe("gpt-5.6-terra");
     expect(options.effort).toBe("none");
   });
 
-  test("uses OpenAI's mini summary model on the fast tier with no reasoning", () => {
+  test("uses OpenAI's Terra summary model on the fast tier with no reasoning", () => {
     expect(getInnerLlmSummaryOptions({ provider: "openai" })).toEqual({
       provider: "openai",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.6-terra",
       effort: "none",
       preferHttp: true,
       serviceTier: "fast",

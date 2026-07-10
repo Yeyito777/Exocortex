@@ -14,9 +14,9 @@ export interface InnerLlmSummaryOptions {
 const SUMMARY_EFFORT: EffortLevel = "none";
 
 const SUMMARY_MODEL_BY_PROVIDER: Record<ProviderId, ModelId> = {
-  // The Codex ChatGPT-account backend rejects the literal "fast" model id.
-  // Use the smallest accepted OpenAI model, then request the fast service tier.
-  openai: "gpt-5.4-mini",
+  // Browse quality is sensitive to extraction/relevance judgment. Use Terra on
+  // the ChatGPT-account backend and request the fast service tier separately.
+  openai: "gpt-5.6-terra",
   deepseek: "deepseek-v4-flash",
 };
 
