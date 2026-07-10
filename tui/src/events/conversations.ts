@@ -12,10 +12,12 @@ import {
 import { focusTargetAfterRemovingSidebarItems } from "../sidebar/removal";
 import { focusSidebarItem } from "../sidebar/selection";
 import type { RenderState } from "../state";
+import { preserveViewportAcrossHistoryMutation } from "../chatscroll";
 import {
   clearPendingAI,
   clearStreamingTailMessages,
   resetNewConversationDefaults,
+  resetHistoryPagination,
   resetToolOutputState,
   setLoadedConversationToolOutputState,
 } from "../state";
@@ -53,6 +55,7 @@ export function handleConversationCreated(
   state.effort = event.effort ?? state.effort;
   state.fastMode = event.fastMode ?? state.fastMode;
   state.goal = event.goal ?? null;
+  resetHistoryPagination(state);
   daemon.subscribe(event.convId);
 
   if (state.pendingSystemInstructions !== null) {
@@ -123,6 +126,7 @@ export function handleConversationDeleted(event: Extract<Event, { type: "convers
     state.contextTokens = 0;
     state.goal = null;
     resetToolOutputState(state);
+    resetHistoryPagination(state);
     resetNewConversationDefaults(state);
   }
   clearAllQueuedMessagesForConversation(state, event.convId);
@@ -154,10 +158,22 @@ export function handleConversationLoaded(
     pendingAI: event.pendingAI ?? null,
     toolOutputsIncluded: event.toolOutputsIncluded,
   });
-  const preserveLivePendingAI = sameConversation && state.pendingAI !== null;
+  // Once local active-turn segments have been committed into messages, rebuilding
+  // those messages while preserving only their ledger would subtract invisible
+  // content at completion. Rebase fully whenever the daemon supplies a pending
+  // snapshot; this also keeps compatibility with snapshots predating blockOffset.
+  const preserveLivePendingAI = sameConversation
+    && state.pendingAI !== null
+    && !(state.pendingAIPartialCommittedBlocks.length > 0 && event.pendingAI);
+  const preservedPendingAICommittedBlocks = structuredClone(state.pendingAIPartialCommittedBlocks);
+  const legacyRebasedBlockOffset = state.pendingAIBlockOffset + preservedPendingAICommittedBlocks.length;
   const preservedPendingAIBlocks = preserveLivePendingAI
     ? subtractLoadedAssistantPrefix(state.pendingAI!.blocks, event.entries)
     : [];
+  const loadedPendingPrefixBlocks = preserveLivePendingAI
+    ? state.pendingAI!.blocks.length - preservedPendingAIBlocks.length
+    : 0;
+  const preservedPendingAIBlockOffset = state.pendingAIBlockOffset + loadedPendingPrefixBlocks;
   const preservedPendingAI = preserveLivePendingAI && preservedPendingAIBlocks.length > 0
     ? clonePendingAI({ blocks: preservedPendingAIBlocks, metadata: state.pendingAI!.metadata })
     : null;
@@ -204,6 +220,14 @@ export function handleConversationLoaded(
   state.goal = event.goal ?? null;
   state.scrollOffset = 0;
   state.contextTokens = event.contextTokens;
+  state.historyStartIndex = event.historyStartIndex ?? 0;
+  state.historyStartUserIndex = event.historyStartUserIndex ?? 0;
+  state.historyTotalEntries = event.historyTotalEntries
+    ?? event.entries.filter((entry) => entry.type !== "system_instructions").length;
+  state.historyHasOlder = event.hasOlderHistory ?? false;
+  state.historyLoadingOlder = false;
+  state.historyLoadingStartedAt = null;
+  state.historyLoadingRequestId = null;
   setLoadedConversationToolOutputState(state, event.toolOutputsIncluded);
 
   // Entries arrive in display order — just map to TUI message types.
@@ -235,13 +259,19 @@ export function handleConversationLoaded(
       hydratePendingAIFromSnapshot(state, {
         ...event.pendingAI,
         blocks: mergedBlocks,
-      });
+      }, event.pendingAI.blockOffset ?? preservedPendingAIBlockOffset);
     } else {
       state.pendingAI = preservedPendingAI;
+      state.pendingAIBlockOffset = preservedPendingAIBlockOffset;
+      state.pendingAIPartialCommittedBlocks = preservedPendingAICommittedBlocks;
       state.pendingAIHydratedFromSnapshot = false;
     }
   } else if (event.pendingAI) {
-    hydratePendingAIFromSnapshot(state, event.pendingAI);
+    hydratePendingAIFromSnapshot(
+      state,
+      event.pendingAI,
+      event.pendingAI.blockOffset ?? (preservedPendingAICommittedBlocks.length > 0 ? legacyRebasedBlockOffset : 0),
+    );
   }
 
   const preservedToolOutputResult = !event.toolOutputsIncluded && preservedToolOutputs.size > 0
@@ -285,4 +315,43 @@ export function handleConversationLoaded(
       });
     }
   }
+}
+
+export function handleConversationHistoryLoaded(
+  event: Extract<Event, { type: "conversation_history_loaded" }>,
+  state: RenderState,
+): void {
+  if (event.convId !== state.convId) return;
+  if (!event.reqId || event.reqId !== state.historyLoadingRequestId) return;
+
+  // A canonical history refresh may have replaced the window while this page
+  // was in flight. Absolute cursors make that stale response safe to discard.
+  if (event.historyEndIndex !== state.historyStartIndex) {
+    state.historyLoadingOlder = false;
+    state.historyLoadingStartedAt = null;
+    state.historyLoadingRequestId = null;
+    return;
+  }
+
+  preserveViewportAcrossHistoryMutation(state, () => {
+    const currentMessages = state.messages;
+    let pinnedCount = 0;
+    while (currentMessages[pinnedCount]?.role === "system_instructions") pinnedCount += 1;
+
+    state.messages = [];
+    pushDisplayEntries(state, event.entries);
+    const olderMessages = state.messages;
+    state.messages = [
+      ...currentMessages.slice(0, pinnedCount),
+      ...olderMessages,
+      ...currentMessages.slice(pinnedCount),
+    ];
+    state.historyStartIndex = event.historyStartIndex;
+    state.historyStartUserIndex = event.historyStartUserIndex;
+    state.historyTotalEntries = event.historyTotalEntries;
+    state.historyHasOlder = event.hasOlderHistory;
+    state.historyLoadingOlder = false;
+    state.historyLoadingStartedAt = null;
+    state.historyLoadingRequestId = null;
+  });
 }

@@ -7,7 +7,7 @@
  */
 
 import { mkdirSync } from "fs";
-import { externalToolsDir as getExternalToolsDir } from "@exocortex/shared/paths";
+import { externalToolsDir as getExternalToolsDir, worktreeName } from "@exocortex/shared/paths";
 import type { ExternalToolStyle } from "@exocortex/shared/messages";
 import { log } from "./log";
 import { getShellConfigHint, rewriteExternalToolShellCommandForTools, rewriteExternalToolShellCommandForToolsWithAuth } from "./external-tools-shell";
@@ -21,7 +21,7 @@ export type { ManifestShellLiteralArg, ManifestShell } from "./external-tools-sh
 export type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool, Manifest, ManifestAuth, ManifestDaemon } from "./external-tools-types";
 export { getToolReloadKey } from "./external-tools-manifest";
 export { getExternalToolWatchTargets } from "./external-tools-watcher";
-export { buildDaemonSpawnSpec, getDaemonStatePaths, isLikelyManagedDaemonPid, reapStaleManagedDaemonPid } from "./external-tools-daemon-process";
+export { buildDaemonSpawnSpec, getDaemonStatePaths, isLikelyManagedDaemonPid, killProcessGroup, reapStaleManagedDaemonPid } from "./external-tools-daemon-process";
 
 const BASE_PATH = process.env.PATH ?? "";
 const DEBOUNCE_MS = 1_000;
@@ -29,7 +29,22 @@ const DEBOUNCE_MS = 1_000;
 let tools: LoadedTool[] = [];
 let watcher: ExternalToolWatcher | null = null;
 let externalToolsDir: string | null = null;
+let daemonSupervisionEnabled = false;
 const daemonSupervisor = new ExternalToolDaemonSupervisor();
+
+/**
+ * Linked worktrees share the canonical external-tools directories through
+ * symlinks. Starting another supervisor there makes dev/test instances fight
+ * the main daemon over the same PID files, sockets, and authenticated sessions.
+ */
+export function shouldSuperviseExternalToolDaemons(
+  linkedWorktree: string | null = worktreeName(),
+  override = process.env.EXOCORTEX_SUPERVISE_EXTERNAL_DAEMONS,
+): boolean {
+  if (override === "1") return true;
+  if (override === "0") return false;
+  return linkedWorktree === null;
+}
 
 function updatePath(loadedTools: LoadedTool[]): void {
   if (loadedTools.length === 0) {
@@ -46,7 +61,12 @@ function applyTools(nextTools: LoadedTool[]): boolean {
   const newKey = getToolReloadKey(nextTools);
   if (oldKey === newKey) return false;
 
-  daemonSupervisor.applyToolChanges(nextTools);
+  if (daemonSupervisionEnabled) {
+    daemonSupervisor.applyToolChanges(nextTools);
+  } else {
+    // Keep management metadata current without starting/stopping shared daemons.
+    daemonSupervisor.setInitialTools(nextTools);
+  }
   tools = nextTools;
   updatePath(nextTools);
   return true;
@@ -82,6 +102,7 @@ export function initExternalTools(onUpdate?: () => void): void {
 
   tools = scanExternalTools(externalToolsDir);
   daemonSupervisor.setInitialTools(tools);
+  daemonSupervisionEnabled = shouldSuperviseExternalToolDaemons();
   updatePath(tools);
 
   if (tools.length > 0) {
@@ -89,9 +110,13 @@ export function initExternalTools(onUpdate?: () => void): void {
   }
 
   const daemonTools = tools.filter((tool) => tool.manifest.daemon);
-  daemonSupervisor.startConfiguredDaemons();
-  if (daemonTools.length > 0) {
+  if (daemonSupervisionEnabled) {
+    daemonSupervisor.startConfiguredDaemons();
+  }
+  if (daemonTools.length > 0 && daemonSupervisionEnabled) {
     log("info", `external-tools: supervising ${daemonTools.length} daemon(s): ${daemonTools.map((tool) => tool.manifest.name).join(", ")}`);
+  } else if (daemonTools.length > 0) {
+    log("info", `external-tools: linked worktree instance — leaving ${daemonTools.length} shared daemon(s) to the main instance`);
   }
 
   // Watch for changes. Keep watches shallow so tool runtime artifacts
@@ -116,6 +141,11 @@ export async function stopExternalToolsAsync(): Promise<void> {
 }
 
 export async function manageExternalToolDaemon(toolName: string, action: ExternalToolDaemonAction): Promise<ExternalToolDaemonStatus> {
+  if (!daemonSupervisionEnabled) {
+    throw new Error(
+      `External-tool daemon management is disabled in linked worktree instances; use the main Exocortex instance`
+    );
+  }
   return await daemonSupervisor.manage(toolName, action);
 }
 

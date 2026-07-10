@@ -194,6 +194,7 @@ export class ExternalToolDaemonSupervisor {
       });
 
       child.on("exit", (code, signal) => {
+        const exitedPid = child.pid;
         managed.child = null;
         clearDaemonPidFile(managed.toolDir);
 
@@ -205,9 +206,16 @@ export class ExternalToolDaemonSupervisor {
         const shouldRestart =
           policy === "always" || (policy === "on-failure" && code !== 0);
 
-        if (shouldRestart) {
-          this.scheduleDaemonRestart(managed);
-        }
+        // A shell/package-manager wrapper can exit while descendants in its
+        // detached process group keep running. Clean the whole group before a
+        // replacement starts, otherwise the replacement collides with the
+        // orphan's PID file/socket/authenticated session.
+        const cleanup = exitedPid
+          ? killProcessGroup(exitedPid, `orphaned descendants of daemon '${managed.toolName}'`)
+          : Promise.resolve();
+        void cleanup.then(() => {
+          if (!managed.stopping && shouldRestart) this.scheduleDaemonRestart(managed);
+        });
       });
     } finally {
       // Parent closes its copy — child inherited the fd on spawn

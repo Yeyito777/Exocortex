@@ -9,14 +9,13 @@ import {
   createPendingAI,
   ensureCurrentBlock,
   replacePendingStreamingTail,
-  splitPendingAI,
   truncateToCompletedRounds,
 } from "../messages";
 import { syncChosenProvider } from "../providerselection";
 import type { Event } from "../protocol";
 import { removeLocalQueueEntry } from "../queue";
 import { formatStreamRetryNotice, pushInlineSystemNotice, shouldReconcileInlineSystemNoticeOnStop } from "./notices";
-import { hydratePendingAIFromSnapshot, markPendingAILive } from "./pending-ai";
+import { commitPendingAISegment, hydratePendingAIFromSnapshot, markPendingAILive, subtractPartialCommittedBlocks } from "./pending-ai";
 import { fallbackProvider } from "./provider";
 import {
   blockStats,
@@ -71,7 +70,7 @@ export function handleStreamingStarted(event: Extract<Event, { type: "streaming_
   // Original client already has pendingAI from handleSubmit.
   if (!state.pendingAI) {
     syncChosenProvider(state, event.provider ?? fallbackProvider(state));
-    hydratePendingAIFromSnapshot(state, createPendingAI(event.startedAt, event.model));
+    hydratePendingAIFromSnapshot(state, createPendingAI(event.startedAt, event.model), event.blockOffset ?? 0);
   } else if (!state.pendingAI.metadata) {
     state.pendingAI.metadata = createMessageMetadata(event.startedAt, event.model);
   } else {
@@ -81,6 +80,10 @@ export function handleStreamingStarted(event: Extract<Event, { type: "streaming_
   }
   const pending = state.pendingAI;
   if (!pending) return;
+  if (event.snapshotKind === "start") {
+    state.pendingAIBlockOffset = event.blockOffset ?? 0;
+    state.pendingAIPartialCommittedBlocks = [];
+  }
   if (pending.metadata?.startedAt !== state.suppressPendingAIMetadataStartedAt || event.snapshotKind === "start") {
     state.suppressPendingAIMetadataStartedAt = null;
   }
@@ -103,6 +106,13 @@ export function handleStreamingStarted(event: Extract<Event, { type: "streaming_
       const wasHydratedFromSnapshot = state.pendingAIHydratedFromSnapshot;
       const mergedBlocks = mergeSnapshotBlocksPreservingLocalDetails(localBlocks, event.blocks, alignment);
       pending.blocks = mergedBlocks;
+      // Heartbeats describe a daemon-side history base that is not included in
+      // this event. If local blocks have already been committed around an inline
+      // event, keep the older base and consume that ledger from message_complete.
+      // conversation_loaded carries entries and performs a full safe rebase.
+      if (event.blockOffset !== undefined && state.pendingAIPartialCommittedBlocks.length === 0) {
+        state.pendingAIBlockOffset = event.blockOffset;
+      }
       state.pendingAIHydratedFromSnapshot = true;
       if (alignment?.strictlyNewer && localBlocks.length > 0) {
         logStreamingRepair(
@@ -192,8 +202,20 @@ export function handleContextUpdate(event: Extract<Event, { type: "context_updat
 export function handleMessageComplete(event: Extract<Event, { type: "message_complete" }>, state: RenderState): void {
   if (state.pendingAI) {
     // Use the daemon's canonical blocks — catches anything a late-joining
-    // client missed during streaming.
-    state.pendingAI.blocks = event.blocks;
+    // client missed during streaming. message_complete describes the whole
+    // active turn, while retries/compaction/injected user messages may already
+    // have committed a prefix into state.messages.
+    const offset = state.pendingAIBlockOffset;
+    if (offset <= event.blocks.length) {
+      state.pendingAI.blocks = subtractPartialCommittedBlocks(state, event.blocks.slice(offset));
+    } else {
+      log("warn", `tui: completion block offset exceeded canonical turn ${JSON.stringify({
+        convId: event.convId,
+        offset,
+        canonicalBlocks: event.blocks.length,
+        pending: blockStats(state.pendingAI.blocks),
+      })}`);
+    }
     state.pendingAI.metadata!.endedAt = event.endedAt;
     state.pendingAI.metadata!.tokens = event.tokens;
     state.messages.push(state.pendingAI);
@@ -209,7 +231,15 @@ export function handleStreamingStopped(event: Extract<Event, { type: "streaming_
     if (committedIndex !== null) {
       const committed = state.messages[committedIndex];
       if (committed?.role === "assistant") {
-        if (event.persistedBlocks !== undefined) committed.blocks = event.persistedBlocks;
+        if (event.persistedBlocks !== undefined) {
+          const offset = state.pendingAICommittedBlockOffset ?? 0;
+          const localIndex = state.pendingAICommittedLocalBlockIndex ?? 0;
+          committed.blocks = subtractPartialCommittedBlocks(
+            state,
+            event.persistedBlocks.slice(offset),
+            state.pendingAIPartialCommittedBlocks.slice(0, localIndex),
+          );
+        }
         if (state.pendingAI.metadata) {
           committed.metadata = {
             ...state.pendingAI.metadata,
@@ -219,7 +249,10 @@ export function handleStreamingStopped(event: Extract<Event, { type: "streaming_
       }
     } else {
       if (event.persistedBlocks !== undefined) {
-        state.pendingAI.blocks = event.persistedBlocks;
+        state.pendingAI.blocks = subtractPartialCommittedBlocks(
+          state,
+          event.persistedBlocks.slice(state.pendingAIBlockOffset),
+        );
       }
       if (state.pendingAI.blocks.length > 0) {
         state.pendingAI.metadata!.endedAt ??= Date.now();
@@ -243,7 +276,7 @@ export function handleStreamRetry(event: Extract<Event, { type: "stream_retry" }
   // continues streaming.
   if (state.pendingAI) {
     truncateToCompletedRounds(state.pendingAI);
-    const finalized = splitPendingAI(state.pendingAI);
+    const finalized = commitPendingAISegment(state);
     if (finalized) state.messages.push(finalized);
   }
   pushInlineSystemNotice(state, formatStreamRetryNotice(event), theme.warning);
@@ -280,7 +313,7 @@ export function handleContextCompactionStatus(
 
   if (state.pendingAI) {
     const pendingStartedAt = state.pendingAI.metadata?.startedAt ?? null;
-    const finalized = splitPendingAI(state.pendingAI);
+    const finalized = commitPendingAISegment(state);
     if (finalized) state.messages.push(finalized);
     // Keep the continuation's metadata placeholder below the divider hidden
     // until the next real assistant block arrives.
@@ -303,7 +336,7 @@ export function handleUserMessage(event: Extract<Event, { type: "user_message" }
   // visual correctness during streaming — after completion, history_updated
   // rebuilds from canonical daemon state.
   if (state.pendingAI) {
-    const finalized = splitPendingAI(state.pendingAI);
+    const finalized = commitPendingAISegment(state);
     if (finalized) state.messages.push(finalized);
   }
 

@@ -1,7 +1,7 @@
-import { splitPendingAI } from "../messages";
 import type { Event, SystemMessageEvent } from "../protocol";
 import type { RenderState } from "../state";
 import { resolveSystemMessageColor } from "../state";
+import { commitPendingAISegment } from "./pending-ai";
 
 export function pushInlineSystemNotice(
   state: RenderState,
@@ -9,18 +9,34 @@ export function pushInlineSystemNotice(
   color: string | undefined,
   reconcileOnStop = false,
 ): void {
+  const notice = { role: "system" as const, text, color: resolveSystemMessageColor(color), metadata: null };
+  // An ordinary notice can arrive halfway through a provider block. Splitting
+  // there makes later canonical rewrites impossible to reconcile without
+  // rewriting history around the notice. Keep it in the live tail instead.
+  // Retry notices still arrive after their completed prefix was explicitly
+  // committed, so their pending block list is empty and they remain inline.
+  if (state.pendingAI && !reconcileOnStop && state.pendingAI.blocks.length > 0) {
+    state.streamingTailMessages.push(notice);
+    return;
+  }
   if (state.pendingAI) {
     const startedAt = state.pendingAI.metadata?.startedAt ?? null;
-    const finalized = splitPendingAI(state.pendingAI);
+    const segmentBlockOffset = state.pendingAIBlockOffset;
+    const localBlockIndex = state.pendingAIPartialCommittedBlocks.length;
+    const finalized = commitPendingAISegment(state);
     if (finalized) {
       if (reconcileOnStop) finalized.metadata = state.pendingAI.metadata ? { ...state.pendingAI.metadata } : null;
       state.messages.push(finalized);
-      if (reconcileOnStop) state.pendingAICommittedIndex = state.messages.length - 1;
+      if (reconcileOnStop) {
+        state.pendingAICommittedIndex = state.messages.length - 1;
+        state.pendingAICommittedBlockOffset = segmentBlockOffset;
+        state.pendingAICommittedLocalBlockIndex = localBlockIndex;
+      }
     } else if (reconcileOnStop) {
       state.suppressPendingAIMetadataStartedAt = startedAt;
     }
   }
-  state.messages.push({ role: "system", text, color: resolveSystemMessageColor(color), metadata: null });
+  state.messages.push(notice);
 }
 
 export function formatStreamRetryNotice(event: Extract<Event, { type: "stream_retry" }>): string {

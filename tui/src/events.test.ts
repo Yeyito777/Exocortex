@@ -26,6 +26,143 @@ describe("auth browser opener", () => {
   });
 });
 
+describe("paged conversation history events", () => {
+  test("prepends a matching older page and advances the absolute rewind cursor", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages = [
+      { role: "system_instructions", text: "rules", metadata: null },
+      { role: "user", text: "u3", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "a3" }], metadata: null },
+    ];
+    state.historyStartIndex = 4;
+    state.historyStartUserIndex = 2;
+    state.historyTotalEntries = 6;
+    state.historyHasOlder = true;
+    state.historyLoadingOlder = true;
+    state.historyLoadingStartedAt = 100;
+    state.historyLoadingRequestId = "history-1";
+
+    handleEvent({
+      type: "conversation_history_loaded",
+      reqId: "history-1",
+      convId: "conv-1",
+      entries: [
+        { type: "user", text: "u1" },
+        { type: "ai", blocks: [{ type: "text", text: "a1" }], metadata: null },
+        { type: "user", text: "u2" },
+        { type: "ai", blocks: [{ type: "text", text: "a2" }], metadata: null },
+      ],
+      historyStartIndex: 0,
+      historyStartUserIndex: 0,
+      historyEndIndex: 4,
+      historyTotalEntries: 6,
+      hasOlderHistory: false,
+    }, state, daemon);
+
+    expect(state.messages.map((message) => message.role === "user" ? message.text : message.role)).toEqual([
+      "system_instructions", "u1", "assistant", "u2", "assistant", "u3", "assistant",
+    ]);
+    expect(state.historyStartIndex).toBe(0);
+    expect(state.historyStartUserIndex).toBe(0);
+    expect(state.historyHasOlder).toBe(false);
+    expect(state.historyLoadingOlder).toBe(false);
+  });
+
+  test("ignores a stale page without clearing the newer in-flight request", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.historyStartIndex = 20;
+    state.historyStartUserIndex = 10;
+    state.historyTotalEntries = 40;
+    state.historyHasOlder = true;
+    state.historyLoadingOlder = true;
+    state.historyLoadingRequestId = "history-new";
+
+    handleEvent({
+      type: "conversation_history_loaded",
+      reqId: "history-old",
+      convId: "conv-1",
+      entries: [{ type: "user", text: "stale" }],
+      historyStartIndex: 10,
+      historyStartUserIndex: 5,
+      historyEndIndex: 20,
+      historyTotalEntries: 40,
+      hasOlderHistory: true,
+    }, state, daemon);
+
+    expect(state.messages).toEqual([]);
+    expect(state.historyLoadingOlder).toBe(true);
+    expect(state.historyLoadingRequestId).toBe("history-new");
+  });
+
+  test("keeps already-loaded older entries across a non-destructive canonical update", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages = [
+      { role: "user", text: "u1", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "a1" }], metadata: null },
+      { role: "user", text: "u2 old", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "a2 old" }], metadata: null },
+      { role: "user", text: "u3 old", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "a3 old" }], metadata: null },
+    ];
+    state.historyStartIndex = 0;
+    state.historyStartUserIndex = 0;
+    state.historyTotalEntries = 6;
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-1",
+      entries: [
+        { type: "user", text: "u2 canonical" },
+        { type: "ai", blocks: [{ type: "text", text: "a2 canonical" }], metadata: null },
+        { type: "user", text: "u3 canonical" },
+        { type: "ai", blocks: [{ type: "text", text: "a3 canonical" }], metadata: null },
+      ],
+      historyStartIndex: 2,
+      historyStartUserIndex: 1,
+      historyTotalEntries: 6,
+      hasOlderHistory: true,
+      contextTokens: 10,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(state.messages.map((message) => message.role === "user"
+      ? message.text
+      : message.role === "assistant" ? message.blocks[0]?.type === "text" && message.blocks[0].text : message.role))
+      .toEqual(["u1", "a1", "u2 canonical", "a2 canonical", "u3 canonical", "a3 canonical"]);
+    expect(state.historyStartIndex).toBe(0);
+    expect(state.historyStartUserIndex).toBe(0);
+  });
+
+  test("drops invalid ranges and resets scroll after a destructive canonical rewrite", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages = [{ role: "user", text: "removed old turn", metadata: null }];
+    state.historyStartIndex = 0;
+    state.historyHasOlder = false;
+    state.scrollOffset = 50;
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-1",
+      entries: [{ type: "user", text: "remaining" }],
+      historyStartIndex: 4,
+      historyStartUserIndex: 2,
+      historyTotalEntries: 5,
+      hasOlderHistory: true,
+      resetHistoryWindow: true,
+      contextTokens: 10,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(state.messages).toMatchObject([{ role: "user", text: "remaining" }]);
+    expect(state.historyStartIndex).toBe(4);
+    expect(state.scrollOffset).toBe(0);
+  });
+});
+
 describe("context compaction status events", () => {
   test("replaces the spinner with a retained marker below completed assistant content", () => {
     const state = createInitialState();
@@ -415,6 +552,198 @@ describe("disk sync assistant diagnostics", () => {
 });
 
 describe("streaming assistant metadata", () => {
+  test("heartbeat offsets do not invalidate locally committed completion blocks", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    const completedPrefix = [
+      { type: "tool_call" as const, toolCallId: "call-1", toolName: "bash", input: {}, summary: "pwd" },
+      { type: "tool_result" as const, toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
+    ];
+    state.pendingAI = {
+      role: "assistant",
+      blocks: structuredClone(completedPrefix),
+      metadata: { startedAt: 1, endedAt: null, model: "gpt-5.5", tokens: 0 },
+    };
+    handleEvent({ type: "user_message", convId: "conv-1", text: "next", startedAt: 2 }, state, daemon);
+
+    handleEvent({
+      type: "streaming_started",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.5",
+      snapshotKind: "heartbeat",
+      startedAt: 1,
+      blocks: [],
+      blockOffset: completedPrefix.length,
+    }, state, daemon);
+    expect(state.pendingAIBlockOffset).toBe(0);
+
+    handleEvent({ type: "text_chunk", convId: "conv-1", text: "foo" }, state, daemon);
+    handleEvent({ type: "system_message", convId: "conv-1", text: "notice", color: "warning" }, state, daemon);
+    handleEvent({ type: "text_chunk", convId: "conv-1", text: "bar" }, state, daemon);
+    handleEvent({
+      type: "message_complete",
+      convId: "conv-1",
+      blocks: [...completedPrefix, { type: "text", text: "foobar" }],
+      endedAt: 3,
+      tokens: 10,
+    }, state, daemon);
+
+    expect(state.messages.flatMap((message) => message.role === "assistant" ? message.blocks : [])).toEqual([
+      ...completedPrefix,
+      { type: "text", text: "foobar" },
+    ]);
+  });
+
+  test("late-join completion honors the active-turn block offset from the daemon", () => {
+    const state = createInitialState();
+    state.model = "gpt-5.5";
+    const completedPrefix = [
+      { type: "thinking" as const, text: "checking" },
+      { type: "tool_call" as const, toolCallId: "call-1", toolName: "bash", input: { command: "pwd" }, summary: "pwd" },
+      { type: "tool_result" as const, toolCallId: "call-1", toolName: "", output: "", isError: false },
+    ];
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      entries: [
+        { type: "ai", blocks: completedPrefix, metadata: null },
+        { type: "user", text: "also check tests" },
+      ],
+      pendingAI: {
+        blocks: [{ type: "text", text: "done" }],
+        blockOffset: completedPrefix.length,
+        metadata: { startedAt: 1, endedAt: null, model: "gpt-5.5", tokens: 0 },
+      },
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+    expect(state.pendingAIBlockOffset).toBe(3);
+
+    handleEvent({
+      type: "message_complete",
+      convId: "conv-1",
+      blocks: [...completedPrefix, { type: "text", text: "done" }],
+      endedAt: 3,
+      tokens: 10,
+    }, state, daemon);
+
+    expect(state.messages.flatMap((message) => message.role === "assistant" ? message.blocks : [])).toEqual([
+      ...completedPrefix,
+      { type: "text", text: "done" },
+    ]);
+  });
+
+  test("legacy reload derives a completion offset from locally committed blocks", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    const completedPrefix = [
+      { type: "tool_call" as const, toolCallId: "call-1", toolName: "bash", input: {}, summary: "pwd" },
+      { type: "tool_result" as const, toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
+    ];
+    state.pendingAI = {
+      role: "assistant",
+      blocks: structuredClone(completedPrefix),
+      metadata: { startedAt: 1, endedAt: null, model: "gpt-5.5", tokens: 0 },
+    };
+    handleEvent({ type: "user_message", convId: "conv-1", text: "next", startedAt: 2 }, state, daemon);
+    handleEvent({ type: "text_chunk", convId: "conv-1", text: "done" }, state, daemon);
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      entries: [
+        { type: "ai", blocks: completedPrefix, metadata: null },
+        { type: "user", text: "next" },
+      ],
+      pendingAI: {
+        blocks: [{ type: "text", text: "done" }],
+        metadata: state.pendingAI!.metadata,
+      },
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+    expect(state.pendingAIBlockOffset).toBe(completedPrefix.length);
+
+    handleEvent({
+      type: "message_complete",
+      convId: "conv-1",
+      blocks: [...completedPrefix, { type: "text", text: "done" }],
+      endedAt: 3,
+      tokens: 10,
+    }, state, daemon);
+    expect(state.messages.flatMap((message) => message.role === "assistant" ? message.blocks : [])).toEqual([
+      ...completedPrefix,
+      { type: "text", text: "done" },
+    ]);
+  });
+
+  test("message_complete does not duplicate a prefix committed around an injected user message", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    const completedPrefix = [
+      { type: "thinking" as const, text: "checking" },
+      { type: "tool_call" as const, toolCallId: "call-1", toolName: "bash", input: { command: "pwd" }, summary: "pwd" },
+      { type: "tool_result" as const, toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
+    ];
+    state.pendingAI = {
+      role: "assistant",
+      blocks: structuredClone(completedPrefix),
+      metadata: { startedAt: 1, endedAt: null, model: "gpt-5.5", tokens: 0 },
+    };
+
+    handleEvent({
+      type: "user_message",
+      convId: "conv-1",
+      text: "also check tests",
+      startedAt: 2,
+    }, state, daemon);
+    expect(state.pendingAIBlockOffset).toBe(0);
+    expect(state.pendingAIPartialCommittedBlocks).toEqual(completedPrefix);
+
+    handleEvent({
+      type: "text_chunk",
+      convId: "conv-1",
+      text: "done",
+    }, state, daemon);
+    handleEvent({
+      type: "message_complete",
+      convId: "conv-1",
+      blocks: [...completedPrefix, { type: "text", text: "done" }],
+      endedAt: 3,
+      tokens: 10,
+    }, state, daemon);
+
+    expect(state.messages).toEqual([
+      { role: "assistant", blocks: completedPrefix, metadata: null },
+      {
+        role: "user",
+        text: "also check tests",
+        images: undefined,
+        metadata: { startedAt: 2, endedAt: 2, model: "gpt-5.5", tokens: 0 },
+      },
+      {
+        role: "assistant",
+        blocks: [{ type: "text", text: "done" }],
+        metadata: { startedAt: 1, endedAt: 3, model: "gpt-5.5", tokens: 10 },
+      },
+    ]);
+    expect(state.pendingAI).toBeNull();
+    expect(state.pendingAIBlockOffset).toBe(0);
+  });
+
   test("message_complete keeps adjacent goal-continuation assistant messages separate", () => {
     const state = createInitialState();
     state.convId = "conv-1";

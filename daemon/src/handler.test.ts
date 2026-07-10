@@ -851,6 +851,69 @@ describe("handler load_conversation late-join streaming snapshots", () => {
   });
   afterEach(cleanupIds);
 
+  test("opens with five turns and serves older turns before the returned cursor", async () => {
+    const convId = mkId("paged-history");
+    create(convId, "openai", "gpt-5.4");
+    const conv = get(convId)!;
+    for (let turn = 1; turn <= 7; turn++) {
+      conv.messages.push({ role: "user", content: `u${turn}`, metadata: null });
+      conv.messages.push({ role: "assistant", content: `a${turn}`, metadata: null });
+    }
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const client = { capabilities: new Set<string>() };
+
+    await handle(client as never, { type: "load_conversation", convId, turns: 5 });
+
+    expect(sent[0]).toMatchObject({
+      type: "conversation_loaded",
+      historyStartIndex: 4,
+      historyStartUserIndex: 2,
+      historyTotalEntries: 14,
+      hasOlderHistory: true,
+    });
+    expect((sent[0].entries as Array<{ type: string; text?: string }>)
+      .filter((entry) => entry.type === "user").map((entry) => entry.text))
+      .toEqual(["u3", "u4", "u5", "u6", "u7"]);
+
+    sent.length = 0;
+    await handle(client as never, {
+      type: "load_conversation_history",
+      convId,
+      beforeEntryIndex: 4,
+      turns: 2,
+    });
+
+    expect(sent[0]).toMatchObject({
+      type: "conversation_history_loaded",
+      historyStartIndex: 0,
+      historyStartUserIndex: 0,
+      historyEndIndex: 4,
+      historyTotalEntries: 14,
+      hasOlderHistory: false,
+    });
+    expect((sent[0].entries as Array<{ type: string; text?: string }>)
+      .filter((entry) => entry.type === "user").map((entry) => entry.text))
+      .toEqual(["u1", "u2"]);
+
+    sent.length = 0;
+    const legacyClient = { capabilities: new Set<string>() };
+    await handle(legacyClient as never, { type: "load_conversation", convId });
+    expect((sent[0].entries as Array<{ type: string; text?: string }>)
+      .filter((entry) => entry.type === "user")).toHaveLength(7);
+    expect(sent[0]).not.toHaveProperty("historyStartIndex");
+  });
+
   test("does not send streaming_started after the final assistant reply is already committed", async () => {
     const convId = mkId("finished-window");
     create(convId, "openai", "gpt-5.4");

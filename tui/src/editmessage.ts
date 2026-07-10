@@ -46,22 +46,22 @@ export function openEditMessageModal(state: RenderState): void {
   }
 
   // Collect sent user messages
-  let userIdx = 0;
+  let userIdx = state.historyStartUserIndex;
   for (const msg of state.messages) {
     if (msg.role === "user") {
+      const absoluteUserIdx = userIdx;
+      userIdx += 1;
       // Native/plaintext compaction is irreversible. The daemon exposes only
       // post-checkpoint user messages as rewindable and enforces the same rule.
       if (msg.contextCheckpoint?.editable === false) {
-        userIdx++;
         continue;
       }
       const itemMessage = isSameSubmittedVoiceMessage(msg) ? submittedVoiceMessage! : msg;
       if (includedMessages.has(itemMessage)) {
-        userIdx++;
         continue;
       }
       items.push({
-        userMessageIndex: userIdx,
+        userMessageIndex: absoluteUserIdx,
         text: itemMessage.text,
         isQueued: false,
         images: itemMessage.images,
@@ -69,7 +69,6 @@ export function openEditMessageModal(state: RenderState): void {
         sourceMessage: msg,
       });
       includedMessages.add(itemMessage);
-      userIdx++;
     }
   }
 

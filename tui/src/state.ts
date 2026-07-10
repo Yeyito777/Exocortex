@@ -9,7 +9,7 @@ import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
 import { configuredConversationDefaults, effectiveConversationDefaults, productConversationDefaults, type ConversationDefaults } from "@exocortex/shared/config";
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage } from "./messages";
 import { DEFAULT_MODEL_BY_PROVIDER, defaultEffortForModelId, supportsImageInputsForModel } from "./messages";
-import type { Message, AIMessage, SystemMessage } from "./messages";
+import type { Message, AIMessage, SystemMessage, Block } from "./messages";
 import { loadPreferredProvider } from "./preferences";
 import { loadHideSensitiveInfoPreference } from "./privacy";
 import { theme } from "./theme";
@@ -144,6 +144,20 @@ export interface FolderInstructionsDocumentState {
 
 export interface RenderState {
   messages: Message[];
+  /** Absolute index of the oldest currently loaded non-instructions display entry. */
+  historyStartIndex: number;
+  /** Absolute index of the first user message in the loaded window. */
+  historyStartUserIndex: number;
+  /** Total non-instructions display entries reported by the latest canonical snapshot. */
+  historyTotalEntries: number;
+  /** Whether another page exists before historyStartIndex. */
+  historyHasOlder: boolean;
+  /** True while an older-history page request is in flight. */
+  historyLoadingOlder: boolean;
+  /** Start time used to animate the older-history loading row. */
+  historyLoadingStartedAt: number | null;
+  /** Request id of the one older-history page currently in flight. */
+  historyLoadingRequestId: string | null;
   /** The AI message currently being streamed (not yet finalized). */
   pendingAI: AIMessage | null;
   /** Start time for the transient native context-compaction spinner. */
@@ -211,12 +225,20 @@ export interface RenderState {
    * inserted inline instead.
    */
   streamingTailMessages: SystemMessage[];
+  /** Canonical active-turn blocks already committed into state.messages. */
+  pendingAIBlockOffset: number;
+  /** Local active-turn blocks already committed into messages, including partial blocks. */
+  pendingAIPartialCommittedBlocks: Block[];
   /**
    * Index of an assistant message that was committed inline before the daemon
    * sent streaming_stopped. Used to reconcile persisted abort/error blocks at
    * the correct history position instead of appending a second assistant turn.
    */
   pendingAICommittedIndex: number | null;
+  /** Canonical block offset of pendingAICommittedIndex within the active turn. */
+  pendingAICommittedBlockOffset: number | null;
+  /** Index in pendingAIPartialCommittedBlocks immediately before that message. */
+  pendingAICommittedLocalBlockIndex: number | null;
   /** Last daemon streamSeq observed per conversation, used to diagnose missed stream events. */
   lastStreamSeqByConv: Record<string, number | undefined>;
   /** Available tools reported by the daemon on connect. */
@@ -292,12 +314,26 @@ export function clearPendingAI(state: RenderState): void {
   state.contextCompactionStartedAt = null;
   state.pendingAIHydratedFromSnapshot = false;
   state.pendingAICommittedIndex = null;
+  state.pendingAICommittedBlockOffset = null;
+  state.pendingAICommittedLocalBlockIndex = null;
+  state.pendingAIBlockOffset = 0;
+  state.pendingAIPartialCommittedBlocks = [];
   state.suppressPendingAIMetadataStartedAt = null;
 }
 
 /** Clear the live streaming tail used for user-invoked notices. */
 export function clearStreamingTailMessages(state: RenderState): void {
   state.streamingTailMessages = [];
+}
+
+export function resetHistoryPagination(state: RenderState): void {
+  state.historyStartIndex = 0;
+  state.historyStartUserIndex = 0;
+  state.historyTotalEntries = 0;
+  state.historyHasOlder = false;
+  state.historyLoadingOlder = false;
+  state.historyLoadingStartedAt = null;
+  state.historyLoadingRequestId = null;
 }
 
 /** Fully reset historical tool-output state (used when clearing/switching chats). */
@@ -372,6 +408,7 @@ export function renderFolderInstructionsDocument(state: RenderState, text: strin
   clearStreamingTailMessages(state);
   state.scrollOffset = 0;
   resetToolOutputState(state);
+  resetHistoryPagination(state);
 }
 
 export function currentFolderEffectiveInstructions(state: RenderState): string {
@@ -419,6 +456,7 @@ export function openFolderInstructionsDocument(state: RenderState, folderId: str
   clearStreamingTailMessages(state);
   state.scrollOffset = 0;
   resetToolOutputState(state);
+  resetHistoryPagination(state);
 }
 
 export function setFolderInstructionsDocumentText(state: RenderState, folderId: string, text: string): void {
@@ -508,6 +546,13 @@ export function createInitialState(): RenderState {
 
   const s: RenderState = {
     messages: [],
+    historyStartIndex: 0,
+    historyStartUserIndex: 0,
+    historyTotalEntries: 0,
+    historyHasOlder: false,
+    historyLoadingOlder: false,
+    historyLoadingStartedAt: null,
+    historyLoadingRequestId: null,
     pendingAI: null,
     contextCompactionStartedAt: null,
     pendingAIHydratedFromSnapshot: false,
@@ -551,7 +596,11 @@ export function createInitialState(): RenderState {
     pendingGenerateTitleOnCreate: false,
     pendingQueuedDraftConvId: null,
     streamingTailMessages: [],
+    pendingAIBlockOffset: 0,
+    pendingAIPartialCommittedBlocks: [],
     pendingAICommittedIndex: null,
+    pendingAICommittedBlockOffset: null,
+    pendingAICommittedLocalBlockIndex: null,
     lastStreamSeqByConv: {},
     toolRegistry: [],
     providerRegistry: [],

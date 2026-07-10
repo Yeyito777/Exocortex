@@ -36,16 +36,33 @@ function plainLines(width = 80) {
 }
 
 describe("streaming system-message tail", () => {
-  test("inserts daemon system messages inline instead of buffering them in the live tail", () => {
+  test("buffers ordinary daemon notices without splitting an in-progress canonical block", () => {
     const { state, render } = plainLines();
-    state.pendingAI!.blocks.push({ type: "text", text: "streaming reply" });
+    state.pendingAI!.blocks.push({ type: "text", text: "streaming " });
 
     handleEvent({ type: "system_message", convId: "conv-1", text: "tail notice", color: "warning" }, state, null as never);
 
-    expect(state.messages).toHaveLength(2);
-    expect(state.messages[0]).toMatchObject({ role: "assistant" });
-    expect(state.messages[1]).toMatchObject({ role: "system", text: "tail notice", color: theme.warning });
-    expect(state.streamingTailMessages).toHaveLength(0);
+    expect(state.messages).toHaveLength(0);
+    expect(state.streamingTailMessages).toEqual([
+      { role: "system", text: "tail notice", color: theme.warning, metadata: null },
+    ]);
+
+    handleEvent({ type: "text_chunk", convId: "conv-1", text: "reply" }, state, null as never);
+    handleEvent({
+      type: "message_complete",
+      convId: "conv-1",
+      blocks: [{ type: "text", text: "streaming reply" }],
+      endedAt: Date.now(),
+      tokens: 1,
+    }, state, null as never);
+    handleEvent({ type: "streaming_stopped", convId: "conv-1" }, state, null as never);
+
+    expect(state.messages.flatMap((message) =>
+      message.role === "assistant"
+        ? message.blocks.filter((block) => block.type === "text").map((block) => block.text)
+        : []
+    ).join("")).toBe("streaming reply");
+    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "tail notice" });
 
     const lines = render().join("\n");
     expect(lines.indexOf("streaming reply")).toBeGreaterThanOrEqual(0);

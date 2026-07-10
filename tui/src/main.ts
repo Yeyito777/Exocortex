@@ -21,7 +21,7 @@ import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, inv
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetNewConversationDefaults, resetToolOutputState } from "./state";
+import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
@@ -54,6 +54,7 @@ import { startReplayConversation } from "./replay";
 import { isConversationInSubagentsFolder, runStreamFinishedPing, shouldPingForBackgroundStreamCompletion, shouldPingForStreamStopped } from "./ping";
 import { stripStartupLaunchEcho } from "./startupinput";
 import { focusedConversationTasks } from "./activitypanel";
+import { beginOlderHistoryLoad, INITIAL_BUFFER_ADDITIONAL_TURNS, OLDER_HISTORY_PAGE_TURNS, shouldLoadOlderHistory } from "./historypagination";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -88,6 +89,7 @@ let lastPrewarmKey: string | null = null;
 let lastPrewarmAt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnecting = false;
+let reconnectNavigationTarget: string | null = null;
 let terminalSetUp = false;
 let voiceInput: VoiceInputController | null = null;
 let pendingVoiceQueuePrompt = false;
@@ -429,7 +431,7 @@ function renderDelayForEvent(event: Event): number {
 /** Re-render active stream/task durations on the next exact second boundary. */
 function resetStreamTick(): void {
   clearStreamTick();
-  if (state.contextCompactionStartedAt != null) {
+  if (state.contextCompactionStartedAt != null || state.historyLoadingOlder) {
     streamTickTimer = setTimeout(scheduleRender, 80);
     return;
   }
@@ -446,9 +448,30 @@ function resetStreamTick(): void {
   }
 }
 
+function requestOlderHistory(turns: number): boolean {
+  const request = beginOlderHistoryLoad(state, turns);
+  if (!request) return false;
+  state.historyLoadingRequestId = daemon.loadConversationHistory(request.convId, request.beforeEntryIndex, request.turns);
+  return true;
+}
+
+function maybeRequestOlderHistory(): void {
+  if (shouldLoadOlderHistory(state)) requestOlderHistory(OLDER_HISTORY_PAGE_TURNS);
+}
+
 // ── Event handler (daemon → TUI) ───────────────────────────────────
 
 function onDaemonEvent(event: Event): void {
+  if (event.type === "conversation_loaded" && event.convId === reconnectNavigationTarget) {
+    reconnectNavigationTarget = null;
+  } else if (event.type === "error" && event.convId === reconnectNavigationTarget) {
+    // A conversation selected while disconnected may have been deleted before
+    // reconnect. Restore the previously active socket subscription instead of
+    // leaving this TUI detached from every conversation.
+    reconnectNavigationTarget = null;
+    if (state.convId && state.convId !== event.convId) daemon.loadConversation(state.convId);
+  }
+
   if (event.type === "conversation_created" && event.convId === pendingNewConversationConvId) {
     if (state.pendingQueuedDraftConvId === event.convId) state.pendingQueuedDraftConvId = null;
     pendingNewConversationConvId = null;
@@ -533,6 +556,15 @@ function onDaemonEvent(event: Event): void {
 
   if (event.type === "streaming_started" && event.convId === state.convId && event.snapshotKind !== "heartbeat") {
     renderImmediately();
+    scheduleGlobalIdleQueuePump();
+    return;
+  }
+
+  if (event.type === "conversation_loaded") {
+    // Paint the five-turn opening window before beginning the silent expansion
+    // to the normal fifteen-turn in-chat buffer.
+    renderImmediately();
+    if (requestOlderHistory(INITIAL_BUFFER_ADDITIONAL_TURNS)) scheduleRender(0);
     scheduleGlobalIdleQueuePump();
     return;
   }
@@ -703,6 +735,7 @@ function handleSubmit(): void {
         case "create_conversation_for_instructions":
           if (state.convId) unsubscribeUnlessWaitingForQueuedMessages(state.convId);
           state.convId = null;
+          resetHistoryPagination(state);
           state.contextTokens = 0;
           resetNewConversationDefaults(state);
           state.pendingSystemInstructions = cmdResult.text;
@@ -1315,7 +1348,8 @@ function handleKey(key: KeyEvent): void {
     case "load_conversation":
       state.folderInstructionsDoc = null;
       daemon.loadConversation(result.convId);
-      break;
+      renderAfterLocalUiMutation();
+      return;
     case "open_folder_instructions":
       if (state.convId) unsubscribeUnlessWaitingForQueuedMessages(state.convId);
       openFolderInstructionsDocument(state, result.folderId);
@@ -1338,6 +1372,7 @@ function handleKey(key: KeyEvent): void {
         state.contextTokens = 0;
         state.goal = null;
         resetToolOutputState(state);
+        resetHistoryPagination(state);
         resetNewConversationDefaults(state);
       }
       break;
@@ -1351,6 +1386,7 @@ function handleKey(key: KeyEvent): void {
         state.contextTokens = 0;
         state.goal = null;
         resetToolOutputState(state);
+        resetHistoryPagination(state);
       }
       break;
     }
@@ -1400,6 +1436,7 @@ function handleKey(key: KeyEvent): void {
       break;
   }
 
+  maybeRequestOlderHistory();
   renderAfterLocalUiMutation();
 }
 
@@ -1426,7 +1463,8 @@ function handleMouse(ev: MouseEvent): void {
     case "load_conversation":
       state.folderInstructionsDoc = null;
       daemon.loadConversation(result.convId);
-      break;
+      renderAfterLocalUiMutation();
+      return;
     case "open_folder_instructions":
       if (state.convId) unsubscribeUnlessWaitingForQueuedMessages(state.convId);
       openFolderInstructionsDocument(state, result.folderId);
@@ -1442,6 +1480,7 @@ function handleMouse(ev: MouseEvent): void {
       break;
   }
 
+  maybeRequestOlderHistory();
   renderAfterLocalUiMutation();
 }
 
@@ -1454,24 +1493,35 @@ function scheduleReconnectAttempt(): void {
   }, RECONNECT_DELAY_MS);
 }
 
-function restoreDaemonSessionAfterReconnect(hadPendingCommands: boolean): void {
+function restoreDaemonSessionAfterReconnect(conversationWillReload: boolean): void {
   pushSystemMessage(state, "✓ Reconnected to daemon.", "success");
 
-  // Always refresh daemon-derived top-level state. If commands were queued while
-  // disconnected, let those replayed commands drive any conversation-specific
-  // reloads to avoid issuing duplicate loads.
+  // Always refresh daemon-derived top-level state. A replayed load/unwind for
+  // the active conversation provides the canonical reload itself; other queued
+  // commands still need a load to restore this new socket's subscription.
   daemon.ping();
-  if (!hadPendingCommands && state.convId) daemon.loadConversation(state.convId);
+  if (!conversationWillReload && state.convId) daemon.loadConversation(state.convId);
   scheduleGlobalIdleQueuePump();
 }
 
 async function reconnectToDaemon(): Promise<void> {
   if (!running || reconnecting) return;
   reconnecting = true;
-  const hadPendingCommands = daemon.hasPendingCommands;
 
   try {
-    await daemon.connect();
+    const { replayedCommands } = await daemon.connect();
+    const replayedNavigation = [...replayedCommands].reverse().find((command) => command.type === "load_conversation");
+    reconnectNavigationTarget = replayedNavigation?.type === "load_conversation" ? replayedNavigation.convId : null;
+    const conversationWillReload = replayedCommands.some((command) =>
+      // Any queued navigation load is newer than the conversation that was
+      // active when reconnect began. Do not race it with a stale automatic load.
+      command.type === "load_conversation"
+      || (command.type === "unwind_conversation" && command.convId === state.convId)
+    );
+    reconnecting = false;
+    clearReconnectTimer();
+    restoreDaemonSessionAfterReconnect(conversationWillReload);
+    scheduleRender();
   } catch {
     if (!running) {
       reconnecting = false;
@@ -1481,11 +1531,6 @@ async function reconnectToDaemon(): Promise<void> {
     scheduleRender();
     return;
   }
-
-  reconnecting = false;
-  clearReconnectTimer();
-  restoreDaemonSessionAfterReconnect(hadPendingCommands);
-  scheduleRender();
 }
 
 function handleDaemonConnectionLost(): void {
@@ -1496,6 +1541,9 @@ function handleDaemonConnectionLost(): void {
   clearStreamFinishedPingTimer();
   clearGlobalIdleQueuePumpTimer();
   clearPrewarmTimer();
+  state.historyLoadingOlder = false;
+  state.historyLoadingStartedAt = null;
+  state.historyLoadingRequestId = null;
   pushSystemMessage(state, "✗ Lost connection to daemon.", theme.error);
   scheduleRender();
   void reconnectToDaemon();

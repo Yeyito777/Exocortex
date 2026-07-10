@@ -21,6 +21,11 @@ export function compactionSpinnerText(startedAt: number, now = Date.now()): stri
   return `${COMPACTION_SPINNER_FRAMES[frameIndex % COMPACTION_SPINNER_FRAMES.length]} Compacting...`;
 }
 
+export function historyLoadingSpinnerText(startedAt: number, now = Date.now()): string {
+  const frameIndex = Math.max(0, Math.floor((now - startedAt) / COMPACTION_SPINNER_INTERVAL_MS));
+  return `${COMPACTION_SPINNER_FRAMES[frameIndex % COMPACTION_SPINNER_FRAMES.length]} Loading...`;
+}
+
 /** Build the muted markdown-style completion divider, ending at the screen midpoint. */
 export function compactionFinishedDivider(availableWidth: number): string {
   const maxWidth = Math.max(1, availableWidth - 2); // two-space assistant indent
@@ -161,6 +166,7 @@ export type RenderLineSegment =
   | "compaction_margin_bottom"
   | "compaction_margin_top"
   | "compaction_spinner"
+  | "history_loading"
   | "queued_content"
   | "queued_label"
   | "queued_margin_top"
@@ -284,6 +290,13 @@ export function buildMessageLines(
   };
 
   const startMessageIndex = Math.max(0, Math.min(options.startMessageIndex ?? 0, state.messages.length));
+  if (state.historyLoadingOlder) {
+    pushLine(
+      `${theme.dim}${historyLoadingSpinnerText(state.historyLoadingStartedAt ?? Date.now())}${theme.reset}`,
+      state,
+      "history_loading",
+    );
+  }
   let firstUser = true;
   for (let i = 0; i < startMessageIndex; i++) {
     if (state.messages[i]?.role === "user") {
