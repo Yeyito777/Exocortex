@@ -4,12 +4,24 @@ import { consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLeve
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
 
-const makeAssistantOutcome = () => ({
-  ok: true as const,
+interface TestAssistantOutcome {
+  ok: boolean;
+  blocks: never[];
+  tokens: number;
+  durationMs: number;
+  endedAt: number;
+  error?: string;
+  aborted?: boolean;
+  watchdog?: boolean;
+}
+
+const makeAssistantOutcome = (overrides: Partial<TestAssistantOutcome> = {}): TestAssistantOutcome => ({
+  ok: true,
   blocks: [],
   tokens: 0,
   durationMs: 0,
   endedAt: Date.now(),
+  ...overrides,
 });
 
 const orchestrateSendMessage = mock(async () => makeAssistantOutcome());
@@ -316,6 +328,46 @@ describe("handler subagent folder placement", () => {
     finishChild(makeAssistantOutcome());
     await Promise.resolve();
     expect(getSummary(parentId)?.subagentCount).toBe(0);
+  });
+
+  test("does not notify the parent when a detached subagent is deliberately aborted", async () => {
+    const parentId = mkId("aborted-parent");
+    const childId = mkId("aborted-child");
+    create(parentId, "openai", "gpt-5.4", "parent");
+    create(childId, "openai", "gpt-5.4", "child");
+
+    const server = {
+      sendTo: mock(() => {}),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    let finishChild!: (outcome: ReturnType<typeof makeAssistantOutcome>) => void;
+    orchestrateSendMessage.mockImplementationOnce(() => new Promise((resolve) => {
+      finishChild = resolve;
+    }));
+
+    await handle({} as never, {
+      type: "send_message",
+      reqId: "req-aborted-child",
+      convId: childId,
+      text: "cancel this task",
+      startedAt: 123,
+      detached: true,
+      notifyParent: { convId: parentId },
+    });
+    expect(orchestrateSendMessage).toHaveBeenCalledTimes(1);
+
+    finishChild(makeAssistantOutcome({ ok: false, error: "✗ Interrupted", aborted: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getSummary(parentId)?.subagentCount).toBe(0);
+    expect(orchestrateSendMessage).toHaveBeenCalledTimes(1);
   });
 });
 

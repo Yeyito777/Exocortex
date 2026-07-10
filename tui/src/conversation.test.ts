@@ -200,7 +200,7 @@ describe("tool call rendering", () => {
 
   test("line-wraps long native Exocortex tool calls without losing their tail", () => {
     const availableWidth = 52;
-    const summary = `send: ${"Inspect every relevant file and report the exact behavior. ".repeat(5)}TAIL_SENTINEL`;
+    const summary = `send: ${"Inspect every relevant file and report the exact behavior. ".repeat(5)}TAIL_SENTINEL --max_depth 2 --mode detach`;
     const state = {
       messages: [{
         role: "assistant",
@@ -226,6 +226,8 @@ describe("tool call rendering", () => {
     expect(rendered.length).toBeGreaterThan(1);
     expect(rendered.every(line => visibleLength(line) <= availableWidth)).toBe(true);
     expect(rendered.some(line => line.includes("TAIL_SENTINEL"))).toBe(true);
+    expect(rendered.some(line => line.includes("--max_depth 2"))).toBe(true);
+    expect(rendered.some(line => line.includes("--mode detach"))).toBe(true);
     expect(rendered.every(line => !line.includes("…"))).toBe(true);
   });
 

@@ -77,10 +77,13 @@ describe("native exo tool contract", () => {
     expect(schema).not.toContain("system_prompt");
     expect(schema).not.toContain('"title"');
     expect(schema).toContain("max_depth");
-    expect(schema).toContain("How many nested subagents you think the target turn should use to complete the task, if any");
+    expect(schema).toContain("Maximum number of additional subagent generations permitted");
+    expect(schema).toContain("not a target. Use 0 unless the target clearly needs to delegate");
     expect(exo.description).toContain("Transcription and cross-instance targeting are intentionally excluded");
     expect(exo.systemHint).toBe([
       "Use the native `exo` tool for the current daemon and its subagents.",
+      "Use subagents only when parallel work would materially improve speed or quality; otherwise, do not use them.",
+      "Set max_depth=0 unless a subagent clearly needs to delegate further.",
       "Subagents start in the daemon's working directory, so include the target absolute directory in tasks when relevant.",
     ].join("\n"));
   });
@@ -90,6 +93,35 @@ describe("native exo tool contract", () => {
 
     expect(text.length).toBeGreaterThan(180);
     expect(exo.summarize({ action: "send", text }).detail).toBe(`send: ${text}`);
+  });
+
+  test("includes supplied arguments in summaries", () => {
+    expect(exo.summarize({
+      action: "send",
+      text: "Inspect the renderer",
+      conversation_id: "child-1",
+      max_depth: 2,
+      provider: "openai",
+      model: "gpt-5.6-terra",
+      mode: "detach",
+      notify_parent: false,
+      full: true,
+    }).detail).toBe(
+      "send: Inspect the renderer --conversation_id child-1 --max_depth 2 --provider openai "
+      + "--model gpt-5.6-terra --mode detach --notify_parent false --full",
+    );
+    expect(exo.summarize({
+      action: "history",
+      conversation_id: "child-1",
+      limit: 20,
+      offset: 5,
+      full: true,
+    }).detail).toBe("history: child-1 --limit 20 --offset 5 --full");
+    expect(exo.summarize({
+      action: "commands",
+      command: "help",
+      args: { command: "rename", verbose: false },
+    }).detail).toBe('commands: help --args {"command":"rename","verbose":false}');
   });
 
   test("forwards calls through the daemon-injected runtime with the active parent id", async () => {

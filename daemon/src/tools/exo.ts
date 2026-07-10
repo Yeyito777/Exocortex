@@ -27,8 +27,30 @@ function detailValue(input: Record<string, unknown>, key: string): string | unde
   return undefined;
 }
 
+function summaryValue(value: unknown): string {
+  if (typeof value !== "object") return String(value);
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function summarizeExoParams(primary: string, input: Record<string, unknown>, skip: string[]): string {
+  const parts = [primary];
+  for (const [key, value] of Object.entries(input)) {
+    if (skip.includes(key) || value == null) continue;
+    const flag = key.startsWith("-") ? key : `--${key}`;
+    if (value === true) parts.push(flag);
+    else parts.push(`${flag} ${summaryValue(value)}`);
+  }
+  return parts.join(" ");
+}
+
 const EXO_SYSTEM_HINT = [
   "Use the native `exo` tool for the current daemon and its subagents.",
+  "Use subagents only when parallel work would materially improve speed or quality; otherwise, do not use them.",
+  "Set max_depth=0 unless a subagent clearly needs to delegate further.",
   "Subagents start in the daemon's working directory, so include the target absolute directory in tasks when relevant.",
 ].join("\n");
 
@@ -56,7 +78,7 @@ export const exo: Tool = {
         type: "integer",
         minimum: 0,
         maximum: MAX_EXO_SUBAGENT_DEPTH,
-        description: `Required for send and queue. How many nested subagents you think the target turn should use to complete the task, if any (0-${MAX_EXO_SUBAGENT_DEPTH}); a spawned caller may set at most its own remaining depth minus one.`,
+        description: `Required for send and queue. Maximum number of additional subagent generations permitted (0-${MAX_EXO_SUBAGENT_DEPTH}), not a target. Use 0 unless the target clearly needs to delegate; a spawned caller may set at most its own max_depth minus one.`,
       },
       query: {
         type: "string",
@@ -127,12 +149,14 @@ export const exo: Tool = {
   summarize(input) {
     const action = actionFromInput(input);
     if (!action) return { label: "Exocortex", detail: "invalid action" };
-    const detail = action === "send" || action === "queue"
-      ? detailValue(input, "text")
+    const detailKey = action === "send" || action === "queue"
+      ? "text"
       : action === "commands"
-          ? detailValue(input, "command")
-          : detailValue(input, "conversation_id");
-    return { label: "Exocortex", detail: detail ? `${action}: ${detail}` : action };
+          ? "command"
+          : "conversation_id";
+    const detail = detailValue(input, detailKey);
+    const primary = detail ? `${action}: ${detail}` : action;
+    return { label: "Exocortex", detail: summarizeExoParams(primary, input, ["action", detailKey]) };
   },
   async execute(input, context, signal) {
     if (!context?.exocortex) {

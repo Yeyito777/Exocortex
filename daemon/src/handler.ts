@@ -199,6 +199,10 @@ export function createHandler(server: DaemonServer) {
     task: string,
     outcome: AssistantTurnOutcome,
   ): void => {
+    if (outcome.aborted && !outcome.watchdog) {
+      log("info", `handler: skipping notification for deliberately aborted subagent ${childConvId}`);
+      return;
+    }
     if (parent.convId === childConvId) {
       log("warn", `handler: skipping self-notification for ${childConvId}`);
       return;
