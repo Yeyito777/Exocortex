@@ -48,7 +48,7 @@ export function goalContinuationUserMessage(goal: ConversationGoal): string {
     goalCanComplete(goal) || goalCanPause(goal) ? "Otherwise, keep working." : null,
   ].filter((instruction): instruction is string => Boolean(instruction));
   return [
-    "Continue the active goal:",
+    "[notification] Continue the active goal:",
     goal.objective,
     lifecycle.join(" "),
   ].filter(Boolean).join("\n\n");

@@ -32,6 +32,92 @@ const MIN_INLINE_OUTPUT_CHARS = 1_000;
 const MAX_INLINE_OUTPUT_CHARS = 30_000;
 const HEAD_PREVIEW_FRACTION = 0.7;
 
+interface TrackedBackgroundProcess {
+  conversationId?: string;
+  suppressCompletionNotification: boolean;
+}
+
+/** Detached bash processes that may later be stopped by another bash tool call. */
+const trackedBackgroundProcesses = new Map<number, TrackedBackgroundProcess>();
+
+/**
+ * Extract literal PIDs from direct process-termination commands.
+ *
+ * This intentionally stays conservative: it recognizes the `kill`/`taskkill`
+ * commands shown in bash's own background-task instructions (plus common signal
+ * variants), but not arbitrary shell expansion. In particular, `kill -0 PID`
+ * is only a status probe and must never suppress the eventual notification.
+ */
+export function intentionalBackgroundTaskStopPidsForTest(command: string): number[] {
+  const pids = new Set<number>();
+  const segments = command.split(/(?:\r?\n|;|&&|\|\||\|)/);
+
+  for (const rawSegment of segments) {
+    const segment = rawSegment.trim().replace(/^[({]\s*/, "");
+    const taskkillMatch = segment.match(/^(?:(?:command|sudo(?:\s+-\S+)*)\s+)*(?:[^\s]*[\\/])?taskkill(?:\.exe)?(?:\s+|$)(.*)$/i);
+    if (taskkillMatch) {
+      const args = taskkillMatch[1].trim().split(/\s+/).filter(Boolean);
+      for (let index = 0; index < args.length - 1; index++) {
+        if (args[index].toUpperCase() !== "/PID" || !/^\d+$/.test(args[index + 1])) continue;
+        const pid = Number(args[index + 1]);
+        if (Number.isSafeInteger(pid) && pid > 0) pids.add(pid);
+      }
+      continue;
+    }
+
+    const match = segment.match(/^(?:(?:command|builtin|sudo(?:\s+-\S+)*)\s+)*(?:(?:\/usr)?\/bin\/)?kill(?:\s+|$)(.*)$/);
+    if (!match) continue;
+
+    const args = match[1].trim().split(/\s+/).filter(Boolean);
+    const isProbe = args.some((arg, index) => (
+      arg === "-0"
+      || arg === "--signal=0"
+      || ((arg === "-s" || arg === "-n" || arg === "--signal") && args[index + 1] === "0")
+    ));
+    if (isProbe || args.includes("-l") || args.includes("--list")) continue;
+
+    let afterOptions = false;
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index];
+      if (arg === "--") {
+        afterOptions = true;
+        continue;
+      }
+      if (!afterOptions && (arg === "-s" || arg === "-n" || arg === "--signal")) {
+        index += 1;
+        continue;
+      }
+      if (!afterOptions && arg.startsWith("-")) continue;
+      if (!/^-?\d+$/.test(arg)) continue;
+      const pid = Math.abs(Number(arg));
+      if (Number.isSafeInteger(pid) && pid > 0) pids.add(pid);
+    }
+  }
+
+  return [...pids];
+}
+
+function markIntentionalBackgroundTaskStops(command: string, conversationId?: string): number[] {
+  if (!conversationId) return [];
+  const marked: number[] = [];
+  for (const pid of intentionalBackgroundTaskStopPidsForTest(command)) {
+    const tracked = trackedBackgroundProcesses.get(pid);
+    if (tracked?.conversationId === conversationId) {
+      tracked.suppressCompletionNotification = true;
+      marked.push(pid);
+      log("info", `bash: suppressing redundant completion notification for intentionally stopped background task bash:${pid}`);
+    }
+  }
+  return marked;
+}
+
+function restoreBackgroundTaskNotifications(pids: number[]): void {
+  for (const pid of pids) {
+    const tracked = trackedBackgroundProcesses.get(pid);
+    if (tracked) tracked.suppressCompletionNotification = false;
+  }
+}
+
 // ── Output limiting ───────────────────────────────────────────────
 
 /** Truncate a single line if it exceeds the per-line budget. */
@@ -226,6 +312,8 @@ async function executeBashImpl(
   }
   const timeout = getNumber(input, "timeout") ?? DEFAULT_TIMEOUT_MS;
 
+  const intentionalStops = markIntentionalBackgroundTaskStops(command, context?.conversationId);
+
   const startTime = Date.now();
 
   return new Promise((resolve) => {
@@ -267,6 +355,9 @@ async function executeBashImpl(
     function notifyBackgroundTaskCompletion(code: number | null, signal: string | null): void {
       if (!wasBackgrounded || completionNotified || !proc.pid) return;
       completionNotified = true;
+      const tracked = trackedBackgroundProcesses.get(proc.pid);
+      trackedBackgroundProcesses.delete(proc.pid);
+      if (tracked?.suppressCompletionNotification) return;
       context?.onBackgroundTaskComplete?.({
         taskId: `bash:${proc.pid}`,
         toolName: "bash",
@@ -340,6 +431,10 @@ async function executeBashImpl(
       }
       settled = true;
       wasBackgrounded = true;
+      trackedBackgroundProcesses.set(proc.pid, {
+        conversationId: context?.conversationId,
+        suppressCompletionNotification: false,
+      });
       clearRegisteredBackgrounder();
       setBackgroundTaskTracked(true);
 
@@ -412,6 +507,7 @@ async function executeBashImpl(
       const onAbort = () => {
         if (bgTimer) clearTimeout(bgTimer);
         clearRegisteredBackgrounder();
+        restoreBackgroundTaskNotifications(intentionalStops);
         if (proc.pid) killProcessGroup(proc.pid);
         if (bgStream) { bgStream.end(); bgStream = undefined; }
         if (settled) return;
@@ -446,6 +542,7 @@ async function executeBashImpl(
     proc.on("error", (err) => {
       if (bgTimer) clearTimeout(bgTimer);
       clearRegisteredBackgrounder();
+      restoreBackgroundTaskNotifications(intentionalStops);
       setBackgroundTaskTracked(false);
       processFailure = err.message;
       if (settled) return;
@@ -455,6 +552,7 @@ async function executeBashImpl(
 
     proc.on("close", (code, sig) => {
       if (bgTimer) clearTimeout(bgTimer);
+      if (code !== 0) restoreBackgroundTaskNotifications(intentionalStops);
       if (!bgStream) clearRegisteredBackgrounder();
       setBackgroundTaskTracked(false);
 

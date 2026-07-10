@@ -147,7 +147,7 @@ describe("goal continuation messages", () => {
     const result = setGoal(convId, "ship the thing");
 
     expect(goalContinuationUserMessage(result.goal!)).toBe(
-      "Continue the active goal:\n\nship the thing\n\n"
+      "[notification] Continue the active goal:\n\nship the thing\n\n"
       + "If the goal is finished, mark it complete. "
       + "If you are blocked or need user input or review, pause it. "
       + "Otherwise, keep working.",
@@ -160,7 +160,7 @@ describe("goal continuation messages", () => {
 
     const message = goalContinuationUserMessage(result.goal!);
     expect(message).toBe(
-      "Continue the active goal:\n\nship the thing\n\n"
+      "[notification] Continue the active goal:\n\nship the thing\n\n"
       + "If the goal is finished, mark it complete. Otherwise, keep working.",
     );
     expect(message).not.toContain("pause");
@@ -170,6 +170,6 @@ describe("goal continuation messages", () => {
     const convId = makeConversation("continue-work-only");
     const result = setGoal(convId, "ship the thing", { completable: false });
 
-    expect(goalContinuationUserMessage(result.goal!)).toBe("Continue the active goal:\n\nship the thing");
+    expect(goalContinuationUserMessage(result.goal!)).toBe("[notification] Continue the active goal:\n\nship the thing");
   });
 });

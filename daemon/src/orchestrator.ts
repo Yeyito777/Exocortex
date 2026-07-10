@@ -239,7 +239,14 @@ async function orchestrateAssistantTurn(
   }
   const subagentMaxDepth = conv.subagentMaxDepth ?? null;
 
-  const { userMessage, goalContinuation = false } = options;
+  const { userMessage: requestedUserMessage, goalContinuation = false } = options;
+  // Goal continuations are daemon-authored notification turns, just like
+  // background-task and subagent completion notifications. Persist and
+  // broadcast them through the ordinary user-message path so the TUI shows
+  // the prompt instead of keeping it as provider-only synthetic context.
+  const userMessage = goalContinuation && conv.goal?.status === "active"
+    ? { text: goalContinuationUserMessage(conv.goal) }
+    : requestedUserMessage;
   const replaying = !userMessage;
 
   // ── Preflight/error helpers ───────────────────────────────────────
@@ -384,13 +391,6 @@ async function orchestrateAssistantTurn(
   const accountScope = conv.provider === "openai" ? getCurrentOpenAIAccountScope() ?? undefined : undefined;
   const initialContext = buildConversationApiContext(conv, accountScope);
   let apiMessages: ApiMessage[] = initialContext.messages;
-  if (goalContinuation && conv.goal) {
-    apiMessages.push({
-      role: "user",
-      content: goalContinuationUserMessage(conv.goal),
-      metadata: null,
-    });
-  }
 
   // Track whether any next-turn messages were injected mid-stream.
   // When true, the success path sends history_updated so the TUI

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { bash, executeBashBackgroundable, spillAndPreviewForTest } from "./bash";
+import { bash, executeBashBackgroundable, intentionalBackgroundTaskStopPidsForTest, spillAndPreviewForTest } from "./bash";
 import type { BackgroundTaskCompletion } from "./types";
 
 function makeLargeOutput(): string {
@@ -194,6 +194,33 @@ describe("bash explicit backgrounding", () => {
     if (spillPath) rmSync(spillPath, { force: true });
   });
 
+  test("does not notify the model about a background task it deliberately stops", async () => {
+    const completions: BackgroundTaskCompletion[] = [];
+    const activity: boolean[] = [];
+    const context = {
+      conversationId: "intentional-stop-conversation",
+      setBackgroundTaskActive: (_id: string, active: boolean) => activity.push(active),
+      onBackgroundTaskComplete: (completion: BackgroundTaskCompletion) => completions.push(completion),
+    };
+    const background = await executeBashBackgroundable({
+      command: "sleep 30",
+      background: true,
+    }, undefined, 60_000, context);
+    const pid = Number(background.output.match(/PID (\d+)/)?.[1]);
+    const spillPath = background.output.match(/Output is being written to: (\S+)/)?.[1];
+
+    expect(pid).toBeGreaterThan(0);
+    const stopped = await executeBashBackgroundable({ command: `kill ${pid}` }, undefined, 60_000, context);
+    expect(stopped.isError).toBe(false);
+
+    for (let index = 0; index < 50 && !activity.includes(false); index++) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(activity).toEqual([true, false]);
+    expect(completions).toHaveLength(0);
+    if (spillPath) rmSync(spillPath, { force: true });
+  });
+
   test("rejects conflicting background and await parameters before spawning", async () => {
     const result = await executeBashBackgroundable({
       command: "echo should-not-run",
@@ -215,5 +242,20 @@ describe("bash explicit backgrounding", () => {
   test("exposes and summarizes the background flag", () => {
     expect((bash.inputSchema.properties as Record<string, unknown>).background).toBeDefined();
     expect(bash.summarize({ command: "sleep 30", background: true }).detail).toBe("sleep 30 --background");
+  });
+});
+
+describe("bash intentional background-task stop detection", () => {
+  test("recognizes direct kill commands and signal variants", () => {
+    expect(intentionalBackgroundTaskStopPidsForTest("kill 1234")).toEqual([1234]);
+    expect(intentionalBackgroundTaskStopPidsForTest("kill -TERM 1234; rm -f output.tmp")).toEqual([1234]);
+    expect(intentionalBackgroundTaskStopPidsForTest("/bin/kill -9 1234 5678")).toEqual([1234, 5678]);
+    expect(intentionalBackgroundTaskStopPidsForTest("kill -- -1234")).toEqual([1234]);
+    expect(intentionalBackgroundTaskStopPidsForTest("taskkill /T /F /PID 1234")).toEqual([1234]);
+  });
+
+  test("does not treat status probes or incidental text as stop commands", () => {
+    expect(intentionalBackgroundTaskStopPidsForTest("kill -0 1234 && echo running || echo exited")).toEqual([]);
+    expect(intentionalBackgroundTaskStopPidsForTest("echo kill 1234")).toEqual([]);
   });
 });
