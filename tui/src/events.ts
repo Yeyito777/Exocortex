@@ -13,6 +13,7 @@ import { censorKnownAuthEmails } from "./privacy";
 import type { Event } from "./protocol";
 import {
   handleConversationCreated,
+  handleConversationHistoryLoaded,
   handleConversationDeleted,
   handleConversationLoaded,
   handleConversationMoved,
@@ -29,6 +30,7 @@ import {
   preserveLocalAssistantExtensionAfterDiskSync,
 } from "./events/disk-sync-diagnostics";
 import { pushDisplayEntries } from "./events/display";
+import { preserveViewportAcrossHistoryMutation } from "./chatscroll";
 import { CONV_SCOPED, observeStreamSeq } from "./events/stream-sequence";
 import {
   handleBlockStart,
@@ -121,6 +123,11 @@ export function handleEvent(
     case "error":
       // Only show errors for the current conversation (or unscoped errors).
       if (event.convId && event.convId !== state.convId) break;
+      if (event.convId === state.convId && event.reqId === state.historyLoadingRequestId) {
+        state.historyLoadingOlder = false;
+        state.historyLoadingStartedAt = null;
+        state.historyLoadingRequestId = null;
+      }
       if (event.convId === state.convId && state.pendingAI && state.pendingAI.blocks.length === 0) clearPendingAI(state);
       pushSystemMessage(state, `✗ ${event.message}`, theme.error);
       break;
@@ -168,6 +175,10 @@ export function handleEvent(
       handleConversationLoaded(event, state, daemon);
       break;
 
+    case "conversation_history_loaded":
+      handleConversationHistoryLoaded(event, state);
+      break;
+
     case "stream_retry":
       handleStreamRetry(event, state);
       break;
@@ -205,11 +216,53 @@ export function handleEvent(
         pendingAI: state.pendingAI,
         toolOutputsIncluded: event.toolOutputsIncluded,
       });
-      state.messages = [];
-      clearStreamingTailMessages(state);
-      state.contextTokens = event.contextTokens;
-      setCurrentConversationToolOutputAvailability(state, event.toolOutputsIncluded);
-      pushDisplayEntries(state, event.entries);
+      const previousHistoryStartIndex = state.historyStartIndex;
+      const previousHistoryStartUserIndex = state.historyStartUserIndex;
+      const previousHistoryHasOlder = state.historyHasOlder;
+      const eventHistoryStartIndex = event.historyStartIndex ?? 0;
+      const canPreserveLoadedPrefix = !event.resetHistoryWindow
+        && event.historyStartIndex !== undefined
+        && previousHistoryStartIndex < eventHistoryStartIndex;
+      const prefixEntryCount = canPreserveLoadedPrefix
+        ? eventHistoryStartIndex - previousHistoryStartIndex
+        : 0;
+      const currentMessages = state.messages;
+      let currentPinnedCount = 0;
+      while (currentMessages[currentPinnedCount]?.role === "system_instructions") currentPinnedCount += 1;
+      const preservedPrefix = prefixEntryCount > 0
+        ? currentMessages.slice(currentPinnedCount, currentPinnedCount + prefixEntryCount)
+        : [];
+
+      preserveViewportAcrossHistoryMutation(state, () => {
+        state.messages = [];
+        clearStreamingTailMessages(state);
+        state.contextTokens = event.contextTokens;
+        setCurrentConversationToolOutputAvailability(state, event.toolOutputsIncluded);
+        pushDisplayEntries(state, event.entries);
+
+        if (preservedPrefix.length === prefixEntryCount && prefixEntryCount > 0) {
+          let incomingPinnedCount = 0;
+          while (state.messages[incomingPinnedCount]?.role === "system_instructions") incomingPinnedCount += 1;
+          state.messages = [
+            ...state.messages.slice(0, incomingPinnedCount),
+            ...preservedPrefix,
+            ...state.messages.slice(incomingPinnedCount),
+          ];
+          state.historyStartIndex = previousHistoryStartIndex;
+          state.historyStartUserIndex = previousHistoryStartUserIndex;
+          state.historyHasOlder = previousHistoryHasOlder;
+        } else {
+          state.historyStartIndex = eventHistoryStartIndex;
+          state.historyStartUserIndex = event.historyStartUserIndex ?? 0;
+          state.historyHasOlder = event.hasOlderHistory ?? false;
+          if (event.resetHistoryWindow) state.scrollOffset = 0;
+        }
+        state.historyTotalEntries = event.historyTotalEntries
+          ?? event.entries.filter((entry) => entry.type !== "system_instructions").length;
+        state.historyLoadingOlder = false;
+        state.historyLoadingStartedAt = null;
+        state.historyLoadingRequestId = null;
+      });
       const preservedToolOutputResult = !event.toolOutputsIncluded && preservedToolOutputs.size > 0
         ? applyPreservedToolResultOutputs(state, preservedToolOutputs)
         : { patchedOutputs: 0, patchedToolNames: 0 };

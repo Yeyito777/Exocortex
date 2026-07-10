@@ -144,6 +144,20 @@ export interface FolderInstructionsDocumentState {
 
 export interface RenderState {
   messages: Message[];
+  /** Absolute index of the oldest currently loaded non-instructions display entry. */
+  historyStartIndex: number;
+  /** Absolute index of the first user message in the loaded window. */
+  historyStartUserIndex: number;
+  /** Total non-instructions display entries reported by the latest canonical snapshot. */
+  historyTotalEntries: number;
+  /** Whether another page exists before historyStartIndex. */
+  historyHasOlder: boolean;
+  /** True while an older-history page request is in flight. */
+  historyLoadingOlder: boolean;
+  /** Start time used to animate the older-history loading row. */
+  historyLoadingStartedAt: number | null;
+  /** Request id of the one older-history page currently in flight. */
+  historyLoadingRequestId: string | null;
   /** The AI message currently being streamed (not yet finalized). */
   pendingAI: AIMessage | null;
   /** Start time for the transient native context-compaction spinner. */
@@ -312,6 +326,16 @@ export function clearStreamingTailMessages(state: RenderState): void {
   state.streamingTailMessages = [];
 }
 
+export function resetHistoryPagination(state: RenderState): void {
+  state.historyStartIndex = 0;
+  state.historyStartUserIndex = 0;
+  state.historyTotalEntries = 0;
+  state.historyHasOlder = false;
+  state.historyLoadingOlder = false;
+  state.historyLoadingStartedAt = null;
+  state.historyLoadingRequestId = null;
+}
+
 /** Fully reset historical tool-output state (used when clearing/switching chats). */
 export function resetToolOutputState(state: RenderState): void {
   state.showToolOutput = false;
@@ -384,6 +408,7 @@ export function renderFolderInstructionsDocument(state: RenderState, text: strin
   clearStreamingTailMessages(state);
   state.scrollOffset = 0;
   resetToolOutputState(state);
+  resetHistoryPagination(state);
 }
 
 export function currentFolderEffectiveInstructions(state: RenderState): string {
@@ -431,6 +456,7 @@ export function openFolderInstructionsDocument(state: RenderState, folderId: str
   clearStreamingTailMessages(state);
   state.scrollOffset = 0;
   resetToolOutputState(state);
+  resetHistoryPagination(state);
 }
 
 export function setFolderInstructionsDocumentText(state: RenderState, folderId: string, text: string): void {
@@ -520,6 +546,13 @@ export function createInitialState(): RenderState {
 
   const s: RenderState = {
     messages: [],
+    historyStartIndex: 0,
+    historyStartUserIndex: 0,
+    historyTotalEntries: 0,
+    historyHasOlder: false,
+    historyLoadingOlder: false,
+    historyLoadingStartedAt: null,
+    historyLoadingRequestId: null,
     pendingAI: null,
     contextCompactionStartedAt: null,
     pendingAIHydratedFromSnapshot: false,

@@ -20,7 +20,7 @@ import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
 import { broadcastConversationUpdated } from "./conversation-events";
-import { goalContinuationSystemPrompt, goalContinuationUserMessage } from "./goals";
+import { goalContinuationUserMessage } from "./goals";
 import { createProviderTurnSession } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
 import type { StreamingStopReason } from "./protocol";
@@ -37,6 +37,7 @@ import { buildCodexWindowId } from "./providers/openai/identity";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive } from "./conversation-activity";
 import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
+import { buildHistoryUpdatedEvents } from "./history-pagination";
 
 // ── Transcript marker helpers ──────────────────────────────────────
 
@@ -365,21 +366,9 @@ async function orchestrateAssistantTurn(
     startedAt,
   });
 
-  // Extract effective folder + per-conversation system instructions (if present)
-  const baseSystemInstructionsText = convStore.getEffectiveSystemInstructions(convId);
-  const goalInstructionsText = goalContinuation && conv.goal
-    ? (() => {
-      const prompt = goalContinuationSystemPrompt(conv.goal!);
-      return [
-        prompt,
-        `Active goal objective:\n${conv.goal!.objective}`,
-        `Continuation directive:\n${goalContinuationUserMessage(conv.goal!)}`,
-      ].filter((part): part is string => Boolean(part)).join("\n\n");
-    })()
-    : null;
-  const systemInstructionsText = [baseSystemInstructionsText, goalInstructionsText]
-    .filter((part): part is string => Boolean(part?.trim()))
-    .join("\n\n");
+  // Goal-specific content belongs in the synthetic user turn below. Keeping it
+  // out of the system prompt preserves the stable prefix used by prompt caches.
+  const systemInstructionsText = convStore.getEffectiveSystemInstructions(convId);
 
   // The visible transcript remains append-only. Provider replay may start from
   // a compact checkpoint and append only the transcript tail written since it.
@@ -393,6 +382,13 @@ async function orchestrateAssistantTurn(
   const accountScope = conv.provider === "openai" ? getCurrentOpenAIAccountScope() ?? undefined : undefined;
   const initialContext = buildConversationApiContext(conv, accountScope);
   let apiMessages: ApiMessage[] = initialContext.messages;
+  if (goalContinuation && conv.goal) {
+    apiMessages.push({
+      role: "user",
+      content: goalContinuationUserMessage(conv.goal),
+      metadata: null,
+    });
+  }
 
   // Track whether any next-turn messages were injected mid-stream.
   // When true, the success path sends history_updated so the TUI
@@ -1273,13 +1269,8 @@ async function orchestrateAssistantTurn(
     if (agentState.completedMessages.length > 0 || transcriptMarkers.length > 0 || hadNextTurnInjections) {
       const displayData = convStore.getRenderSnapshot(convId, false);
       if (displayData) {
-        server.sendToSubscribers(convId, {
-          type: "history_updated",
-          convId,
-          entries: displayData.entries,
-          contextTokens: displayData.contextTokens,
-          toolOutputsIncluded: displayData.toolOutputsIncluded,
-        });
+        const events = buildHistoryUpdatedEvents(displayData);
+        server.sendHistoryUpdatedToSubscribers(convId, events.legacy, events.paginated);
       }
     }
 

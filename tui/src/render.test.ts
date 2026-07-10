@@ -83,6 +83,18 @@ describe("render caching and frame diffing", () => {
     expect(state.historyMessageBounds).toBe(firstBounds);
   });
 
+  test("invalidates cached history when the older-history loading row appears", () => {
+    const state = makeState();
+    renderSilently(state);
+    expect(state.historyLines.some((line) => stripAnsi(line).includes("Loading..."))).toBe(false);
+
+    state.historyLoadingOlder = true;
+    state.historyLoadingStartedAt = Date.now();
+    renderSilently(state);
+
+    expect(state.historyLines.some((line) => stripAnsi(line).includes("Loading..."))).toBe(true);
+  });
+
   test("does not reuse the static history cache while streaming", () => {
     const state = makeState();
     state.pendingAI = createPendingAI(Date.now(), state.model);

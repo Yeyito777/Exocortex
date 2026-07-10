@@ -26,6 +26,143 @@ describe("auth browser opener", () => {
   });
 });
 
+describe("paged conversation history events", () => {
+  test("prepends a matching older page and advances the absolute rewind cursor", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages = [
+      { role: "system_instructions", text: "rules", metadata: null },
+      { role: "user", text: "u3", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "a3" }], metadata: null },
+    ];
+    state.historyStartIndex = 4;
+    state.historyStartUserIndex = 2;
+    state.historyTotalEntries = 6;
+    state.historyHasOlder = true;
+    state.historyLoadingOlder = true;
+    state.historyLoadingStartedAt = 100;
+    state.historyLoadingRequestId = "history-1";
+
+    handleEvent({
+      type: "conversation_history_loaded",
+      reqId: "history-1",
+      convId: "conv-1",
+      entries: [
+        { type: "user", text: "u1" },
+        { type: "ai", blocks: [{ type: "text", text: "a1" }], metadata: null },
+        { type: "user", text: "u2" },
+        { type: "ai", blocks: [{ type: "text", text: "a2" }], metadata: null },
+      ],
+      historyStartIndex: 0,
+      historyStartUserIndex: 0,
+      historyEndIndex: 4,
+      historyTotalEntries: 6,
+      hasOlderHistory: false,
+    }, state, daemon);
+
+    expect(state.messages.map((message) => message.role === "user" ? message.text : message.role)).toEqual([
+      "system_instructions", "u1", "assistant", "u2", "assistant", "u3", "assistant",
+    ]);
+    expect(state.historyStartIndex).toBe(0);
+    expect(state.historyStartUserIndex).toBe(0);
+    expect(state.historyHasOlder).toBe(false);
+    expect(state.historyLoadingOlder).toBe(false);
+  });
+
+  test("ignores a stale page without clearing the newer in-flight request", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.historyStartIndex = 20;
+    state.historyStartUserIndex = 10;
+    state.historyTotalEntries = 40;
+    state.historyHasOlder = true;
+    state.historyLoadingOlder = true;
+    state.historyLoadingRequestId = "history-new";
+
+    handleEvent({
+      type: "conversation_history_loaded",
+      reqId: "history-old",
+      convId: "conv-1",
+      entries: [{ type: "user", text: "stale" }],
+      historyStartIndex: 10,
+      historyStartUserIndex: 5,
+      historyEndIndex: 20,
+      historyTotalEntries: 40,
+      hasOlderHistory: true,
+    }, state, daemon);
+
+    expect(state.messages).toEqual([]);
+    expect(state.historyLoadingOlder).toBe(true);
+    expect(state.historyLoadingRequestId).toBe("history-new");
+  });
+
+  test("keeps already-loaded older entries across a non-destructive canonical update", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages = [
+      { role: "user", text: "u1", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "a1" }], metadata: null },
+      { role: "user", text: "u2 old", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "a2 old" }], metadata: null },
+      { role: "user", text: "u3 old", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "a3 old" }], metadata: null },
+    ];
+    state.historyStartIndex = 0;
+    state.historyStartUserIndex = 0;
+    state.historyTotalEntries = 6;
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-1",
+      entries: [
+        { type: "user", text: "u2 canonical" },
+        { type: "ai", blocks: [{ type: "text", text: "a2 canonical" }], metadata: null },
+        { type: "user", text: "u3 canonical" },
+        { type: "ai", blocks: [{ type: "text", text: "a3 canonical" }], metadata: null },
+      ],
+      historyStartIndex: 2,
+      historyStartUserIndex: 1,
+      historyTotalEntries: 6,
+      hasOlderHistory: true,
+      contextTokens: 10,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(state.messages.map((message) => message.role === "user"
+      ? message.text
+      : message.role === "assistant" ? message.blocks[0]?.type === "text" && message.blocks[0].text : message.role))
+      .toEqual(["u1", "a1", "u2 canonical", "a2 canonical", "u3 canonical", "a3 canonical"]);
+    expect(state.historyStartIndex).toBe(0);
+    expect(state.historyStartUserIndex).toBe(0);
+  });
+
+  test("drops invalid ranges and resets scroll after a destructive canonical rewrite", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages = [{ role: "user", text: "removed old turn", metadata: null }];
+    state.historyStartIndex = 0;
+    state.historyHasOlder = false;
+    state.scrollOffset = 50;
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-1",
+      entries: [{ type: "user", text: "remaining" }],
+      historyStartIndex: 4,
+      historyStartUserIndex: 2,
+      historyTotalEntries: 5,
+      hasOlderHistory: true,
+      resetHistoryWindow: true,
+      contextTokens: 10,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(state.messages).toMatchObject([{ role: "user", text: "remaining" }]);
+    expect(state.historyStartIndex).toBe(4);
+    expect(state.scrollOffset).toBe(0);
+  });
+});
+
 describe("context compaction status events", () => {
   test("replaces the spinner with a retained marker below completed assistant content", () => {
     const state = createInitialState();

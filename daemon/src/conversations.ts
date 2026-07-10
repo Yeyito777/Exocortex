@@ -1089,11 +1089,16 @@ function estimateCurrentReplayTokens(conv: Conversation): number {
   const history = conv.messages.filter(isReplayHistoryMessage);
   const replay = conv.activeContext && isValidActiveContext(conv.activeContext, conv.messages)
     ? [
-        ...conv.activeContext.messages,
+        ...conv.activeContext.messages.map((message) => ({
+          role: message.role,
+          content: message.content,
+          metadata: message.metadata ?? null,
+          providerData: message.providerData,
+        })),
         ...history.slice(conv.activeContext.transcriptHistoryCount).map((message) => ({
           role: message.role as "user" | "assistant",
           content: message.content,
-          metadata: message.metadata,
+          metadata: message.metadata ?? null,
           providerData: message.providerData,
         })),
       ]

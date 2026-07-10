@@ -132,6 +132,18 @@ export interface LoadConversationCommand {
   type: "load_conversation";
   reqId?: string;
   convId: string;
+  /** Number of newest user turns to include in the opening payload. */
+  turns?: number;
+}
+
+export interface LoadConversationHistoryCommand {
+  type: "load_conversation_history";
+  reqId?: string;
+  convId: string;
+  /** Absolute entry cursor returned by the preceding history payload. */
+  beforeEntryIndex: number;
+  /** Maximum number of user turns to load before the cursor. */
+  turns: number;
 }
 
 export interface LoadToolOutputsCommand {
@@ -442,6 +454,7 @@ export type Command =
   | UnsubscribeCommand
   | ListConversationsCommand
   | LoadConversationCommand
+  | LoadConversationHistoryCommand
   | LoadToolOutputsCommand
   | DeleteConversationCommand
   | DeleteConversationsCommand
@@ -665,8 +678,16 @@ export interface ConversationLoadedEvent {
   model: ModelId;
   effort: EffortLevel;
   fastMode: boolean;
-  /** All messages in display order, excluding the currently in-flight assistant tail. */
+  /** The requested newest history window in display order, plus pinned system instructions. */
   entries: DisplayEntry[];
+  /** Absolute index of the first included non-instructions history entry. */
+  historyStartIndex?: number;
+  /** Absolute index of the first loaded user message. */
+  historyStartUserIndex?: number;
+  /** Total number of non-instructions history entries in the snapshot. */
+  historyTotalEntries?: number;
+  /** Whether older history can be requested before historyStartIndex. */
+  hasOlderHistory?: boolean;
   /** Live assistant snapshot for actively streaming conversations. */
   pendingAI?: AIMessagePayload;
   /** Last known input token count for this conversation. */
@@ -677,6 +698,24 @@ export interface ConversationLoadedEvent {
   queuedMessages?: QueuedMessageInfo[];
   /** Persistent objective attached to this conversation, if any. */
   goal?: ConversationGoal | null;
+}
+
+export interface ConversationHistoryLoadedEvent {
+  type: "conversation_history_loaded";
+  reqId?: string;
+  convId: string;
+  /** Older entries immediately preceding the client's current history window. */
+  entries: DisplayEntry[];
+  /** Absolute index of the first returned entry. */
+  historyStartIndex: number;
+  /** Absolute index of the first returned user message. */
+  historyStartUserIndex: number;
+  /** Absolute exclusive end cursor for this page. */
+  historyEndIndex: number;
+  /** Total entries in the snapshot used to build this page. */
+  historyTotalEntries: number;
+  /** Whether more history exists before historyStartIndex. */
+  hasOlderHistory: boolean;
 }
 
 export interface GoalUpdatedEvent {
@@ -812,8 +851,18 @@ export interface HistoryUpdatedEvent {
   convId: string;
   /** Monotonic daemon event sequence when emitted inside an active stream (diagnostics). */
   streamSeq?: number;
-  /** The full message history after modification (same format as conversation_loaded). */
+  /** The newest buffered history window after modification. */
   entries: DisplayEntry[];
+  /** Absolute index of the first included non-instructions history entry. */
+  historyStartIndex?: number;
+  /** Absolute index of the first loaded user message. */
+  historyStartUserIndex?: number;
+  /** Total number of non-instructions history entries in the snapshot. */
+  historyTotalEntries?: number;
+  /** Whether older history can be requested before historyStartIndex. */
+  hasOlderHistory?: boolean;
+  /** True when a destructive rewrite invalidated previously loaded absolute ranges. */
+  resetHistoryWindow?: boolean;
   /** Updated input token count. */
   contextTokens: number | null;
   /** Whether tool_result block outputs are present in entries. */
@@ -918,6 +967,7 @@ export type Event =
   | TokenStatsEvent
   | ConversationsListEvent
   | ConversationLoadedEvent
+  | ConversationHistoryLoadedEvent
   | GoalUpdatedEvent
   | ConversationUpdatedEvent
   | ConversationDeletedEvent

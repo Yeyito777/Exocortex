@@ -74,6 +74,21 @@ describe("context compaction status", () => {
   });
 });
 
+describe("older history loading status", () => {
+  test("renders the animated Loading row above the loaded window", () => {
+    const state = createInitialState();
+    state.historyLoadingOlder = true;
+    state.historyLoadingStartedAt = 1_000;
+    state.messages.push({ role: "user", text: "recent", metadata: null });
+
+    const rendered = buildMessageLines(state, 80);
+
+    expect(stripAnsi(rendered.lines[0])).toMatch(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/u);
+    expect(stripAnsi(rendered.lines[0])).toContain("Loading...");
+    expect(rendered.lineAnchors[0]?.segment).toBe("history_loading");
+  });
+});
+
 describe("queued message rendering", () => {
   test("uses a distinct label for TUI-only global idle queue entries", () => {
     const state = {
