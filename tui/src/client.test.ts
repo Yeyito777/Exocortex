@@ -1,5 +1,19 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { createServer, type Server } from "net";
+import { unlinkSync } from "fs";
 import { DaemonClient } from "./client";
+
+const testServers: Server[] = [];
+const testSockets: string[] = [];
+
+afterEach(async () => {
+  for (const server of testServers.splice(0)) {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+  for (const path of testSockets.splice(0)) {
+    try { unlinkSync(path); } catch { /* already removed */ }
+  }
+});
 
 describe("DaemonClient request-scoped events", () => {
   test("does not forward transcription callback errors to the global handler", () => {
@@ -152,13 +166,52 @@ describe("DaemonClient reconnect behavior", () => {
       },
     };
     internal._connected = true;
-    internal.flushPendingCommands();
+    const replayedCommands = internal.flushPendingCommands();
 
     expect(writes).toEqual([
       JSON.stringify({ type: "ping" }) + "\n",
       JSON.stringify({ type: "list_conversations" }) + "\n",
     ]);
     expect(internal.pendingCommands).toEqual([]);
+    expect(replayedCommands).toEqual([
+      { type: "ping" },
+      { type: "list_conversations" },
+    ]);
+  });
+
+  test("reports commands queued while the socket connection is in flight", async () => {
+    const socketPath = `/tmp/exocortex-client-race-${process.pid}-${Date.now()}.sock`;
+    testSockets.push(socketPath);
+    const received: string[] = [];
+    const server = createServer((socket) => {
+      socket.on("data", (data) => received.push(data.toString("utf8")));
+    });
+    testServers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+
+    const client = new DaemonClient(() => {}, socketPath);
+    const connecting = client.connect();
+    // This command is queued after connect() starts but before its asynchronous
+    // socket callback marks the client connected.
+    client.unwindConversation("conv-1", 2);
+
+    const result = await connecting;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    client.disconnect();
+
+    expect(result).toEqual({ replayedCommands: [{
+      type: "unwind_conversation",
+      convId: "conv-1",
+      userMessageIndex: 2,
+    }] });
+    expect(received.join("")).toContain(JSON.stringify({
+      type: "unwind_conversation",
+      convId: "conv-1",
+      userMessageIndex: 2,
+    }) + "\n");
   });
 
   test("manual disconnect does not fire the connection-lost callback", () => {

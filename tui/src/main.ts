@@ -87,6 +87,7 @@ let lastPrewarmKey: string | null = null;
 let lastPrewarmAt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnecting = false;
+let reconnectNavigationTarget: string | null = null;
 let terminalSetUp = false;
 let voiceInput: VoiceInputController | null = null;
 let pendingVoiceQueuePrompt = false;
@@ -441,6 +442,16 @@ function resetStreamTick(): void {
 // ── Event handler (daemon → TUI) ───────────────────────────────────
 
 function onDaemonEvent(event: Event): void {
+  if (event.type === "conversation_loaded" && event.convId === reconnectNavigationTarget) {
+    reconnectNavigationTarget = null;
+  } else if (event.type === "error" && event.convId === reconnectNavigationTarget) {
+    // A conversation selected while disconnected may have been deleted before
+    // reconnect. Restore the previously active socket subscription instead of
+    // leaving this TUI detached from every conversation.
+    reconnectNavigationTarget = null;
+    if (state.convId && state.convId !== event.convId) daemon.loadConversation(state.convId);
+  }
+
   if (event.type === "conversation_created" && event.convId === pendingNewConversationConvId) {
     if (state.pendingQueuedDraftConvId === event.convId) state.pendingQueuedDraftConvId = null;
     pendingNewConversationConvId = null;
@@ -1446,24 +1457,35 @@ function scheduleReconnectAttempt(): void {
   }, RECONNECT_DELAY_MS);
 }
 
-function restoreDaemonSessionAfterReconnect(hadPendingCommands: boolean): void {
+function restoreDaemonSessionAfterReconnect(conversationWillReload: boolean): void {
   pushSystemMessage(state, "✓ Reconnected to daemon.", "success");
 
-  // Always refresh daemon-derived top-level state. If commands were queued while
-  // disconnected, let those replayed commands drive any conversation-specific
-  // reloads to avoid issuing duplicate loads.
+  // Always refresh daemon-derived top-level state. A replayed load/unwind for
+  // the active conversation provides the canonical reload itself; other queued
+  // commands still need a load to restore this new socket's subscription.
   daemon.ping();
-  if (!hadPendingCommands && state.convId) daemon.loadConversation(state.convId);
+  if (!conversationWillReload && state.convId) daemon.loadConversation(state.convId);
   scheduleGlobalIdleQueuePump();
 }
 
 async function reconnectToDaemon(): Promise<void> {
   if (!running || reconnecting) return;
   reconnecting = true;
-  const hadPendingCommands = daemon.hasPendingCommands;
 
   try {
-    await daemon.connect();
+    const { replayedCommands } = await daemon.connect();
+    const replayedNavigation = [...replayedCommands].reverse().find((command) => command.type === "load_conversation");
+    reconnectNavigationTarget = replayedNavigation?.type === "load_conversation" ? replayedNavigation.convId : null;
+    const conversationWillReload = replayedCommands.some((command) =>
+      // Any queued navigation load is newer than the conversation that was
+      // active when reconnect began. Do not race it with a stale automatic load.
+      command.type === "load_conversation"
+      || (command.type === "unwind_conversation" && command.convId === state.convId)
+    );
+    reconnecting = false;
+    clearReconnectTimer();
+    restoreDaemonSessionAfterReconnect(conversationWillReload);
+    scheduleRender();
   } catch {
     if (!running) {
       reconnecting = false;
@@ -1473,11 +1495,6 @@ async function reconnectToDaemon(): Promise<void> {
     scheduleRender();
     return;
   }
-
-  reconnecting = false;
-  clearReconnectTimer();
-  restoreDaemonSessionAfterReconnect(hadPendingCommands);
-  scheduleRender();
 }
 
 function handleDaemonConnectionLost(): void {

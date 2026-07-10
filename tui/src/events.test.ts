@@ -415,6 +415,198 @@ describe("disk sync assistant diagnostics", () => {
 });
 
 describe("streaming assistant metadata", () => {
+  test("heartbeat offsets do not invalidate locally committed completion blocks", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    const completedPrefix = [
+      { type: "tool_call" as const, toolCallId: "call-1", toolName: "bash", input: {}, summary: "pwd" },
+      { type: "tool_result" as const, toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
+    ];
+    state.pendingAI = {
+      role: "assistant",
+      blocks: structuredClone(completedPrefix),
+      metadata: { startedAt: 1, endedAt: null, model: "gpt-5.5", tokens: 0 },
+    };
+    handleEvent({ type: "user_message", convId: "conv-1", text: "next", startedAt: 2 }, state, daemon);
+
+    handleEvent({
+      type: "streaming_started",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.5",
+      snapshotKind: "heartbeat",
+      startedAt: 1,
+      blocks: [],
+      blockOffset: completedPrefix.length,
+    }, state, daemon);
+    expect(state.pendingAIBlockOffset).toBe(0);
+
+    handleEvent({ type: "text_chunk", convId: "conv-1", text: "foo" }, state, daemon);
+    handleEvent({ type: "system_message", convId: "conv-1", text: "notice", color: "warning" }, state, daemon);
+    handleEvent({ type: "text_chunk", convId: "conv-1", text: "bar" }, state, daemon);
+    handleEvent({
+      type: "message_complete",
+      convId: "conv-1",
+      blocks: [...completedPrefix, { type: "text", text: "foobar" }],
+      endedAt: 3,
+      tokens: 10,
+    }, state, daemon);
+
+    expect(state.messages.flatMap((message) => message.role === "assistant" ? message.blocks : [])).toEqual([
+      ...completedPrefix,
+      { type: "text", text: "foobar" },
+    ]);
+  });
+
+  test("late-join completion honors the active-turn block offset from the daemon", () => {
+    const state = createInitialState();
+    state.model = "gpt-5.5";
+    const completedPrefix = [
+      { type: "thinking" as const, text: "checking" },
+      { type: "tool_call" as const, toolCallId: "call-1", toolName: "bash", input: { command: "pwd" }, summary: "pwd" },
+      { type: "tool_result" as const, toolCallId: "call-1", toolName: "", output: "", isError: false },
+    ];
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      entries: [
+        { type: "ai", blocks: completedPrefix, metadata: null },
+        { type: "user", text: "also check tests" },
+      ],
+      pendingAI: {
+        blocks: [{ type: "text", text: "done" }],
+        blockOffset: completedPrefix.length,
+        metadata: { startedAt: 1, endedAt: null, model: "gpt-5.5", tokens: 0 },
+      },
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+    expect(state.pendingAIBlockOffset).toBe(3);
+
+    handleEvent({
+      type: "message_complete",
+      convId: "conv-1",
+      blocks: [...completedPrefix, { type: "text", text: "done" }],
+      endedAt: 3,
+      tokens: 10,
+    }, state, daemon);
+
+    expect(state.messages.flatMap((message) => message.role === "assistant" ? message.blocks : [])).toEqual([
+      ...completedPrefix,
+      { type: "text", text: "done" },
+    ]);
+  });
+
+  test("legacy reload derives a completion offset from locally committed blocks", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    const completedPrefix = [
+      { type: "tool_call" as const, toolCallId: "call-1", toolName: "bash", input: {}, summary: "pwd" },
+      { type: "tool_result" as const, toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
+    ];
+    state.pendingAI = {
+      role: "assistant",
+      blocks: structuredClone(completedPrefix),
+      metadata: { startedAt: 1, endedAt: null, model: "gpt-5.5", tokens: 0 },
+    };
+    handleEvent({ type: "user_message", convId: "conv-1", text: "next", startedAt: 2 }, state, daemon);
+    handleEvent({ type: "text_chunk", convId: "conv-1", text: "done" }, state, daemon);
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      entries: [
+        { type: "ai", blocks: completedPrefix, metadata: null },
+        { type: "user", text: "next" },
+      ],
+      pendingAI: {
+        blocks: [{ type: "text", text: "done" }],
+        metadata: state.pendingAI!.metadata,
+      },
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+    expect(state.pendingAIBlockOffset).toBe(completedPrefix.length);
+
+    handleEvent({
+      type: "message_complete",
+      convId: "conv-1",
+      blocks: [...completedPrefix, { type: "text", text: "done" }],
+      endedAt: 3,
+      tokens: 10,
+    }, state, daemon);
+    expect(state.messages.flatMap((message) => message.role === "assistant" ? message.blocks : [])).toEqual([
+      ...completedPrefix,
+      { type: "text", text: "done" },
+    ]);
+  });
+
+  test("message_complete does not duplicate a prefix committed around an injected user message", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    const completedPrefix = [
+      { type: "thinking" as const, text: "checking" },
+      { type: "tool_call" as const, toolCallId: "call-1", toolName: "bash", input: { command: "pwd" }, summary: "pwd" },
+      { type: "tool_result" as const, toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
+    ];
+    state.pendingAI = {
+      role: "assistant",
+      blocks: structuredClone(completedPrefix),
+      metadata: { startedAt: 1, endedAt: null, model: "gpt-5.5", tokens: 0 },
+    };
+
+    handleEvent({
+      type: "user_message",
+      convId: "conv-1",
+      text: "also check tests",
+      startedAt: 2,
+    }, state, daemon);
+    expect(state.pendingAIBlockOffset).toBe(0);
+    expect(state.pendingAIPartialCommittedBlocks).toEqual(completedPrefix);
+
+    handleEvent({
+      type: "text_chunk",
+      convId: "conv-1",
+      text: "done",
+    }, state, daemon);
+    handleEvent({
+      type: "message_complete",
+      convId: "conv-1",
+      blocks: [...completedPrefix, { type: "text", text: "done" }],
+      endedAt: 3,
+      tokens: 10,
+    }, state, daemon);
+
+    expect(state.messages).toEqual([
+      { role: "assistant", blocks: completedPrefix, metadata: null },
+      {
+        role: "user",
+        text: "also check tests",
+        images: undefined,
+        metadata: { startedAt: 2, endedAt: 2, model: "gpt-5.5", tokens: 0 },
+      },
+      {
+        role: "assistant",
+        blocks: [{ type: "text", text: "done" }],
+        metadata: { startedAt: 1, endedAt: 3, model: "gpt-5.5", tokens: 10 },
+      },
+    ]);
+    expect(state.pendingAI).toBeNull();
+    expect(state.pendingAIBlockOffset).toBe(0);
+  });
+
   test("message_complete keeps adjacent goal-continuation assistant messages separate", () => {
     const state = createInitialState();
     state.convId = "conv-1";

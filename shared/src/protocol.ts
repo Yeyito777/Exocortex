@@ -512,6 +512,8 @@ export interface StreamingStartedEvent {
   startedAt: number;
   /** Accumulated blocks so far — included for late-joining clients and periodic catch-up snapshots. */
   blocks?: Block[];
+  /** Canonical active-turn blocks represented by history before this live tail. */
+  blockOffset?: number;
   /** Accumulated output tokens so far — included for late-joining clients and periodic catch-up snapshots. */
   tokens?: number;
   /** Active native-compaction start time for late-join/catch-up status rendering. */
@@ -634,6 +636,8 @@ export interface ConversationsListEvent {
 export interface AIMessagePayload {
   blocks: Block[];
   metadata: MessageMetadata | null;
+  /** Canonical active-turn blocks represented by entries before this live tail. */
+  blockOffset?: number;
 }
 
 export type DisplayEntry =

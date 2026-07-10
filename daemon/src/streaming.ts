@@ -33,6 +33,8 @@ const chunkCounters = new Map<string, number>();
 const streamingBlocks = new Map<string, Block[]>();
 /** Completed display messages from the active stream that are not yet persisted. */
 const streamingDisplayMessages = new Map<string, StoredMessage[]>();
+/** Canonical block count in structurally completed rounds of the active turn. */
+const streamingCommittedBlockCounts = new Map<string, number>();
 /** Original startedAt timestamp per streaming job (for late-joining clients). */
 const streamingStartedAt = new Map<string, number>();
 /** Accumulated output token count per streaming job (for late-joining clients). */
@@ -91,6 +93,7 @@ export function clearActiveJob(convId: string): void {
   contextCompactionStartedAt.delete(convId);
   streamSequences.delete(convId);
   streamingDisplayMessages.delete(convId);
+  streamingCommittedBlockCounts.delete(convId);
   lastActivityAt.delete(convId);
   pausedStreams.delete(convId);
   activeToolBackgrounders.delete(convId);
@@ -224,6 +227,7 @@ export function resetChunkCounter(convId: string): void {
 export function initStreamingState(convId: string): void {
   streamingBlocks.set(convId, []);
   streamingDisplayMessages.set(convId, []);
+  streamingCommittedBlockCounts.set(convId, 0);
 }
 
 /** Get the current in-flight assistant blocks for a late-joining client. */
@@ -239,6 +243,15 @@ export function replaceStreamingDisplayMessages(convId: string, messages: Stored
 /** Get the completed, not-yet-persisted display messages for a stream. */
 export function getStreamingDisplayMessages(convId: string): StoredMessage[] {
   return [...(streamingDisplayMessages.get(convId) ?? [])];
+}
+
+/** Record how much of the eventual message_complete block stream is committed. */
+export function setStreamingCommittedBlockCount(convId: string, count: number): void {
+  streamingCommittedBlockCounts.set(convId, Math.max(0, count));
+}
+
+export function getStreamingCommittedBlockCount(convId: string): number {
+  return streamingCommittedBlockCounts.get(convId) ?? 0;
 }
 
 /** Push a new block to the current in-flight assistant accumulator. */

@@ -30,6 +30,7 @@ export {
   setActiveToolBackgrounder, clearActiveToolBackgrounder, backgroundActiveTool,
   resetChunkCounter,
   initStreamingState, getCurrentStreamingBlocks, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, getStreamingDisplayMessages,
+  setStreamingCommittedBlockCount, getStreamingCommittedBlockCount,
   pushStreamingBlock, appendToStreamingBlock, clearCurrentStreamingBlocks,
   getQueuedMessages, pushQueuedMessage, drainQueuedMessages, clearQueuedMessages, removeQueuedMessage,
   requestGoalContinuationAfterStream, consumeGoalContinuationAfterStream, clearGoalContinuationAfterStream,
@@ -1645,6 +1646,8 @@ export interface ConversationRenderSnapshot extends ConversationDisplayData {
   pendingAI?: {
     blocks: Block[];
     metadata: MessageMetadata | null;
+    /** Blocks from this active turn already represented by entries. */
+    blockOffset: number;
   };
 }
 
@@ -1696,7 +1699,14 @@ function withoutPersistedStreamingSuffix(messages: StoredMessage[], transientMes
   if (transientMessages.length === 0 || transientMessages.length > messages.length) return messages;
   const suffixStart = messages.length - transientMessages.length;
   for (let index = 0; index < transientMessages.length; index++) {
-    if (!isDeepStrictEqual(messages[suffixStart + index], transientMessages[index])) return messages;
+    const { contextTokens: _persistedContextTokens, ...persistedTranscript } = messages[suffixStart + index];
+    const { contextTokens: _transientContextTokens, ...transientTranscript } = transientMessages[index];
+    // Context-token attribution is mutable bookkeeping. The persisted recovery
+    // copy can receive newer attribution during the next provider round while
+    // the transient display copy still describes the exact same transcript.
+    // Comparing that bookkeeping duplicated the completed round in both entries
+    // and pendingAI until the final history refresh.
+    if (!isDeepStrictEqual(persistedTranscript, transientTranscript)) return messages;
   }
   return messages.slice(0, suffixStart);
 }
@@ -1721,6 +1731,8 @@ export function getRenderSnapshot(id: string, includeToolOutputs = true): Conver
   const trailingAssistant = transientEntries.at(-1);
   const currentBlocks = streaming.getCurrentStreamingBlocks(id) ?? [];
   const livePrefix = trailingAssistant?.type === "ai" ? trailingAssistant.blocks : [];
+  const completedBlockCount = streaming.getStreamingCommittedBlockCount(id);
+  const blockOffset = Math.max(0, completedBlockCount - livePrefix.length);
 
   if (trailingAssistant?.type === "ai") transientEntries.pop();
 
@@ -1729,6 +1741,7 @@ export function getRenderSnapshot(id: string, includeToolOutputs = true): Conver
     entries: [...persisted.entries, ...transientEntries],
     pendingAI: {
       blocks: [...livePrefix, ...currentBlocks],
+      blockOffset,
       metadata: createMessageMetadata(
         startedAt ?? Date.now(),
         conv.model,

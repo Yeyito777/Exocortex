@@ -4,7 +4,7 @@
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import { bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getRenderSnapshot, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, mark, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, pin, pinFolder, pinSidebarItems, redoDelete, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
-import { setActiveJob, replaceStreamingDisplayMessages, clearActiveJob } from "./streaming";
+import { setActiveJob, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
 
 const IDS: string[] = [];
@@ -984,6 +984,48 @@ describe("listRunningConversationIds", () => {
 });
 
 describe("getDisplayData", () => {
+  test("does not duplicate a persisted streaming suffix when only context attribution changed", () => {
+    const id = mkId("display-context-attribution-drift");
+    create(id, "openai", "gpt-5.5");
+    const conv = get(id)!;
+    const completedRound = [
+      {
+        role: "assistant" as const,
+        content: [
+          { type: "thinking" as const, thinking: "checking", signature: "" },
+          { type: "tool_use" as const, id: "call-1", name: "bash", input: { command: "pwd" } },
+        ],
+        metadata: null,
+      },
+      {
+        role: "user" as const,
+        content: [{ type: "tool_result" as const, tool_use_id: "call-1", content: "/tmp" }],
+        metadata: null,
+      },
+    ];
+    conv.messages.push(
+      { role: "user", content: "initial", metadata: null },
+      ...structuredClone(completedRound),
+    );
+    // The persisted copy is annotated independently after the next round starts.
+    // A null/undefined difference is sufficient to model the bookkeeping drift;
+    // it must not make identical transcript content appear twice.
+    conv.messages[1].contextTokens = null;
+    setActiveJob(id, new AbortController(), 100);
+    replaceStreamingDisplayMessages(id, completedRound);
+
+    const snapshot = getRenderSnapshot(id, false)!;
+
+    expect(snapshot.entries).toEqual([
+      { type: "user", text: "initial" },
+    ]);
+    expect(snapshot.pendingAI?.blocks).toEqual([
+      { type: "thinking", text: "checking" },
+      { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "pwd" }, summary: "pwd" },
+      { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
+    ]);
+  });
+
   test("late-join snapshots retain a durable compaction boundary without duplicating its assistant prefix", () => {
     const id = mkId("display-compaction-boundary");
     create(id, "openai", "gpt-5.6-sol");
@@ -1041,6 +1083,7 @@ describe("getDisplayData", () => {
       { role: "assistant", content: "First tool round done", metadata: null },
       { role: "user", content: "queued next turn", metadata: null },
     ]);
+    setStreamingCommittedBlockCount(id, 1);
 
     const data = getDisplayData(id)!;
     expect(data.entries).toHaveLength(3);
@@ -1049,6 +1092,9 @@ describe("getDisplayData", () => {
     if (data.entries[1].type !== "ai") throw new Error("expected ai entry");
     expect(data.entries[1].blocks).toEqual([{ type: "text", text: "First tool round done" }]);
     expect(data.entries[2]).toEqual({ type: "user", text: "queued next turn" });
+
+    const snapshot = getRenderSnapshot(id)!;
+    expect(snapshot.pendingAI).toMatchObject({ blocks: [], blockOffset: 1 });
   });
 
   test("can omit historical tool_result payloads while still exposing patch data", () => {

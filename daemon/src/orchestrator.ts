@@ -646,6 +646,7 @@ async function orchestrateAssistantTurn(
     // Completed rounds stay visible via streamingDisplayMessages.
     partialContent.length = 0;
     convStore.initStreamingState(convId);
+    convStore.setStreamingCommittedBlockCount(convId, agentState.completedBlocks.length);
     const sysText = formatRetryNotice(attempt, maxAttempts, errorMessage, delaySec, metadata);
     transcriptMarkers.push({
       afterIndex: agentState.completedMessages.length,
@@ -681,6 +682,7 @@ async function orchestrateAssistantTurn(
       snapshotKind: "heartbeat",
       startedAt: pendingAI.metadata?.startedAt ?? startedAt,
       blocks: pendingAI.blocks,
+      blockOffset: pendingAI.blockOffset,
       tokens: pendingAI.metadata?.tokens ?? 0,
       compactionStartedAt: convStore.getContextCompactionStartedAt(convId) ?? null,
     });
@@ -852,6 +854,7 @@ async function orchestrateAssistantTurn(
       partialContent.length = 0;
       convStore.clearCurrentStreamingBlocks(convId);
       syncCompletedStreamingDisplayMessages();
+      convStore.setStreamingCommittedBlockCount(convId, agentState.completedBlocks.length);
       // Persist the structurally complete tool-call/result prefix before any
       // potentially long mid-turn compaction or next provider request.
       persistCompletedTurnPrefix();

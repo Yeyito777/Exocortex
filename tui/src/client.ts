@@ -16,6 +16,11 @@ export type LlmErrorCallback = (message: string) => void;
 export type TranscriptionCallback = (text: string) => void;
 export type TranscriptionErrorCallback = (message: string) => void;
 
+export interface ConnectResult {
+  /** Commands that entered the offline queue before this socket became ready. */
+  replayedCommands: Command[];
+}
+
 export class DaemonClient {
   private socket: Socket | null = null;
   private buffer = "";
@@ -37,9 +42,8 @@ export class DaemonClient {
   }
 
   get connected(): boolean { return this._connected; }
-  get hasPendingCommands(): boolean { return this.pendingCommands.length > 0; }
 
-  async connect(): Promise<void> {
+  async connect(): Promise<ConnectResult> {
     return new Promise((resolve, reject) => {
       // Named pipes on Windows don't exist as files — skip the filesystem check
       if (!isWindows && !existsSync(this.socketPath)) {
@@ -57,8 +61,11 @@ export class DaemonClient {
         this.socket = socket;
         this._connected = true;
         resolved = true;
-        this.flushPendingCommands();
-        resolve();
+        // Report the queue state atomically with the flush. Input can enqueue a
+        // command while the socket attempt is still in flight, so a pre-connect
+        // queue snapshot would already be stale here.
+        const replayedCommands = this.flushPendingCommands();
+        resolve({ replayedCommands });
       });
       socket.on("data", (data) => this.onData(data));
       socket.on("close", () => {
@@ -327,11 +334,12 @@ export class DaemonClient {
     );
   }
 
-  private flushPendingCommands(): void {
-    if (!this.socket || !this._connected || this.pendingCommands.length === 0) return;
+  private flushPendingCommands(): Command[] {
+    if (!this.socket || !this._connected || this.pendingCommands.length === 0) return [];
     const pending = this.pendingCommands;
     this.pendingCommands = [];
     for (const command of pending) this.send(command);
+    return pending;
   }
 
   private onData(data: Buffer | string): void {

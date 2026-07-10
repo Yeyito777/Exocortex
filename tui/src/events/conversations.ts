@@ -154,10 +154,22 @@ export function handleConversationLoaded(
     pendingAI: event.pendingAI ?? null,
     toolOutputsIncluded: event.toolOutputsIncluded,
   });
-  const preserveLivePendingAI = sameConversation && state.pendingAI !== null;
+  // Once local active-turn segments have been committed into messages, rebuilding
+  // those messages while preserving only their ledger would subtract invisible
+  // content at completion. Rebase fully whenever the daemon supplies a pending
+  // snapshot; this also keeps compatibility with snapshots predating blockOffset.
+  const preserveLivePendingAI = sameConversation
+    && state.pendingAI !== null
+    && !(state.pendingAIPartialCommittedBlocks.length > 0 && event.pendingAI);
+  const preservedPendingAICommittedBlocks = structuredClone(state.pendingAIPartialCommittedBlocks);
+  const legacyRebasedBlockOffset = state.pendingAIBlockOffset + preservedPendingAICommittedBlocks.length;
   const preservedPendingAIBlocks = preserveLivePendingAI
     ? subtractLoadedAssistantPrefix(state.pendingAI!.blocks, event.entries)
     : [];
+  const loadedPendingPrefixBlocks = preserveLivePendingAI
+    ? state.pendingAI!.blocks.length - preservedPendingAIBlocks.length
+    : 0;
+  const preservedPendingAIBlockOffset = state.pendingAIBlockOffset + loadedPendingPrefixBlocks;
   const preservedPendingAI = preserveLivePendingAI && preservedPendingAIBlocks.length > 0
     ? clonePendingAI({ blocks: preservedPendingAIBlocks, metadata: state.pendingAI!.metadata })
     : null;
@@ -235,13 +247,19 @@ export function handleConversationLoaded(
       hydratePendingAIFromSnapshot(state, {
         ...event.pendingAI,
         blocks: mergedBlocks,
-      });
+      }, event.pendingAI.blockOffset ?? preservedPendingAIBlockOffset);
     } else {
       state.pendingAI = preservedPendingAI;
+      state.pendingAIBlockOffset = preservedPendingAIBlockOffset;
+      state.pendingAIPartialCommittedBlocks = preservedPendingAICommittedBlocks;
       state.pendingAIHydratedFromSnapshot = false;
     }
   } else if (event.pendingAI) {
-    hydratePendingAIFromSnapshot(state, event.pendingAI);
+    hydratePendingAIFromSnapshot(
+      state,
+      event.pendingAI,
+      event.pendingAI.blockOffset ?? (preservedPendingAICommittedBlocks.length > 0 ? legacyRebasedBlockOffset : 0),
+    );
   }
 
   const preservedToolOutputResult = !event.toolOutputsIncluded && preservedToolOutputs.size > 0

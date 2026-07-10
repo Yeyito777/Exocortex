@@ -1141,6 +1141,10 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "unwind_conversation": {
+        // Reconnecting clients can replay this before restoring their socket
+        // subscription. Subscribe even if validation later rejects the unwind so
+        // an error cannot leave the active TUI detached from future events.
+        server.subscribe(client, cmd.convId);
         const ok = await convStore.unwindTo(cmd.convId, cmd.userMessageIndex);
         if (!ok) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Cannot unwind conversation ${cmd.convId}` });
@@ -1191,6 +1195,7 @@ export function createHandler(server: DaemonServer) {
               snapshotKind: "catchup",
               startedAt: pendingAI.metadata?.startedAt ?? Date.now(),
               blocks: pendingAI.blocks,
+              blockOffset: pendingAI.blockOffset,
               tokens: pendingAI.metadata?.tokens ?? 0,
               compactionStartedAt: convStore.getContextCompactionStartedAt(cmd.convId) ?? null,
             });
