@@ -155,6 +155,7 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "visual", context: "history", key: "{",  command: { type: "action", action: "history_prev_message" } },
   { mode: "visual", context: "history", key: "}",  command: { type: "action", action: "history_next_message" } },
   { mode: "visual", context: "history", key: "y",  command: { type: "action", action: "history_visual_yank" } },
+  { mode: "visual", context: "history", key: ";",  command: { type: "action", action: "history_append_selection" } },
 
   // ── Visual-line mode: same as visual but for line selection ─────
   { mode: "visual-line", context: "prompt", key: "j",  command: { type: "motion", name: "line_down" } },
@@ -175,6 +176,7 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "visual-line", context: "history", key: "{",  command: { type: "action", action: "history_prev_message" } },
   { mode: "visual-line", context: "history", key: "}",  command: { type: "action", action: "history_next_message" } },
   { mode: "visual-line", context: "history", key: "y",  command: { type: "action", action: "history_visual_yank" } },
+  { mode: "visual-line", context: "history", key: ";",  command: { type: "action", action: "history_append_selection" } },
 
   // ── Insert mode: only Esc is captured ────────────────────────────
   // (everything else passes through to existing promptline.ts)

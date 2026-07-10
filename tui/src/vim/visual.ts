@@ -72,6 +72,11 @@ export function handleVisualMode(
     return { type: "pending" };
   }
   if (ks === ";" || ks === ",") {
+    // An exact context binding takes precedence over the built-in repeat-find
+    // keys. History uses visual `;` to append the selection to the prompt.
+    const boundCommand = lookupCommand(vim.mode, context, ks);
+    if (boundCommand) return executeVisualCommand(boundCommand, vim, context, buffer, cursor);
+
     if (!vim.lastFind) return { type: "noop" };
     const dir = ks === ";" ? vim.lastFind.direction
       : (vim.lastFind.direction === "f" ? "F" : "f") as "f" | "F";

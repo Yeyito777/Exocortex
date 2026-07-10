@@ -9,7 +9,7 @@
 
 import type { MouseEvent } from "./input";
 import type { RenderState } from "./state";
-import { focusPrompt, focusSidebar } from "./state";
+import { focusHistory, focusPrompt, focusSidebar } from "./state";
 import type { KeyResult } from "./focus";
 import { scrollBy, getViewStart } from "./chat";
 import { activateSidebarItem, sidebarHitTest, scrollSidebar, SIDEBAR_WIDTH } from "./sidebar";
@@ -171,8 +171,7 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
     // Click in message area → start visual selection at clicked position
     const pos = screenToHistoryPos(col, row, state);
     if (pos) {
-      state.panelFocus = "chat";
-      state.chatFocus = "history";
+      focusHistory(state);
       state.vim.mode = "visual";
       state.historyCursor = pos;
       state.historyVisualAnchor = { ...pos };
