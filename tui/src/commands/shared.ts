@@ -101,7 +101,7 @@ export function applyProviderModelSelection(state: RenderState, provider: Provid
   state.model = model;
   normalizeStateEffort(state, provider, model);
   if (!providerSupportsFastMode(state, provider)) state.fastMode = false;
-  state.contextTokens = null;
+  state.contextTokens = previousContextTokens === 0 ? 0 : null;
 
   return {
     effortChanged: state.effort !== previousEffort,

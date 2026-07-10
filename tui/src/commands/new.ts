@@ -11,7 +11,7 @@ export const NEW_COMMAND: SlashCommand = {
     clearStreamingTailMessages(state);
     clearPrompt(state);
     state.scrollOffset = 0;
-    state.contextTokens = null;
+    state.contextTokens = 0;
     resetNewConversationDefaults(state);
     return { type: "new_conversation" };
   },

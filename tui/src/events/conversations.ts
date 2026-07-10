@@ -88,7 +88,7 @@ export function handleConversationUpdated(event: Extract<Event, { type: "convers
     state.effort = summary.effort ?? state.effort;
     state.fastMode = summary.fastMode ?? state.fastMode;
     state.goal = summary.goal ?? null;
-    if (providerOrModelChanged) state.contextTokens = null;
+    if (providerOrModelChanged && state.contextTokens !== 0) state.contextTokens = null;
   }
 }
 
@@ -120,7 +120,7 @@ export function handleConversationDeleted(event: Extract<Event, { type: "convers
     state.messages = [];
     clearPendingAI(state);
     delete state.lastStreamSeqByConv[event.convId];
-    state.contextTokens = null;
+    state.contextTokens = 0;
     state.goal = null;
     resetToolOutputState(state);
     resetNewConversationDefaults(state);

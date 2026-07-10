@@ -695,6 +695,7 @@ function handleSubmit(): void {
         case "create_conversation_for_instructions":
           if (state.convId) unsubscribeUnlessWaitingForQueuedMessages(state.convId);
           state.convId = null;
+          state.contextTokens = 0;
           resetNewConversationDefaults(state);
           state.pendingSystemInstructions = cmdResult.text;
           state.pendingGenerateTitleOnCreate = false;
@@ -1326,7 +1327,7 @@ function handleKey(key: KeyEvent): void {
         state.convId = null;
         state.messages = [];
         clearPendingAI(state);
-        state.contextTokens = null;
+        state.contextTokens = 0;
         state.goal = null;
         resetToolOutputState(state);
         resetNewConversationDefaults(state);
@@ -1339,7 +1340,7 @@ function handleKey(key: KeyEvent): void {
         state.convId = null;
         state.messages = [];
         clearPendingAI(state);
-        state.contextTokens = null;
+        state.contextTokens = 0;
         state.goal = null;
         resetToolOutputState(state);
       }
