@@ -14,6 +14,7 @@ import {
   getSearchableConversationTitle,
   getSidebarSearchBarViewport,
 } from "../sidebarsearch";
+import { SUBAGENTS_FOLDER_NAME, type FolderSummary } from "../messages";
 import { theme } from "../theme";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 
@@ -22,13 +23,14 @@ interface FolderAggregate {
   streaming: boolean;
   globalIdle: boolean;
   unread: boolean;
+  unreadCount: number;
 }
 
 function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: ReadonlySet<string>): Map<string, FolderAggregate> {
   const aggregates = new Map<string, FolderAggregate>();
   const parentById = new Map<string, string | null>();
   for (const folder of sidebar.folders) {
-    aggregates.set(folder.id, { count: 0, streaming: false, globalIdle: false, unread: false });
+    aggregates.set(folder.id, { count: 0, streaming: false, globalIdle: false, unread: false, unreadCount: 0 });
     parentById.set(folder.id, folder.parentId ?? null);
   }
 
@@ -43,11 +45,45 @@ function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: Readonl
       aggregate.streaming ||= conv.streaming;
       aggregate.globalIdle ||= hasGlobalIdle;
       aggregate.unread ||= conv.unread;
+      if (conv.unread) aggregate.unreadCount++;
       folderId = parentById.get(folderId) ?? null;
     }
   }
 
   return aggregates;
+}
+
+function subagentsFolderIds(folders: readonly FolderSummary[]): Set<string> {
+  const result = new Set<string>();
+  const byId = new Map(folders.map(folder => [folder.id, folder]));
+  for (const folder of folders) {
+    const path: string[] = [];
+    const seen = new Set<string>();
+    let current: FolderSummary | undefined = folder;
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
+      path.push(current.id);
+      if ((current.parentId ?? null) === null) {
+        if (current.name.trim().toLocaleLowerCase() === SUBAGENTS_FOLDER_NAME) {
+          for (const id of path) result.add(id);
+        }
+        break;
+      }
+      const parentId: string | null = current.parentId;
+      current = parentId ? byId.get(parentId) : undefined;
+    }
+  }
+  return result;
+}
+
+function renderNotificationBadge(count: number): { text: string; width: number } | null {
+  if (count <= 0) return null;
+  const label = count > 99 ? "99+" : String(count);
+  const rawText = ` ${label} `;
+  return {
+    text: `${theme.notificationBg}${theme.notificationFg}${rawText}${theme.reset}`,
+    width: termWidth(rawText),
+  };
 }
 
 function truncateSidebarTitle(text: string, maxWidth: number): string {
@@ -89,6 +125,7 @@ export function renderSidebar(
   const convs = sidebar.conversations;
   const displayRows = buildDisplayRows(sidebar);
   const folderAggregates = sidebar.folders.length > 0 ? buildFolderAggregates(sidebar, globalIdleConvIds) : null;
+  const suppressedBadgeFolderIds = sidebar.folders.length > 0 ? subagentsFolderIds(sidebar.folders) : new Set<string>();
   // Compute visual selection once per render. Calling selectedVisualItems() per
   // row rebuilds displayRows each time; with an active /? filter this made `v`
   // feel very laggy on large conversation lists.
@@ -167,6 +204,7 @@ export function renderSidebar(
     let rawTitle = "";
     let isCurrent = false;
     let itemFg = theme.muted;
+    let notificationCount = 0;
 
     if (item?.type === "up") {
       rawTitle = "..";
@@ -183,6 +221,7 @@ export function renderSidebar(
       const hasUnread = aggregate?.unread ?? false;
       streamIcon = hasStreaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = hasStreaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
+      notificationCount = folder && !suppressedBadgeFolderIds.has(folder.id) ? aggregate?.unreadCount ?? 0 : 0;
       itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "conversation") {
       const conv = convs[dr.convIdx ?? -1];
@@ -200,7 +239,10 @@ export function renderSidebar(
 
     const iconsWidth = termWidth(starIcon) + termWidth(emojiIcon);
     const prefixWidth = termWidth(prefix) + termWidth(streamIcon) + iconsWidth;
-    const maxTitle = Math.max(0, innerWidth - prefixWidth);
+    const notificationBadge = renderNotificationBadge(notificationCount);
+    const badgeGap = notificationBadge ? 1 : 0;
+    const badgeWidth = notificationBadge?.width ?? 0;
+    const maxTitle = Math.max(0, innerWidth - prefixWidth - badgeGap - badgeWidth);
     const title = truncateSidebarTitle(rawTitle, maxTitle);
     const bg = isSelected ? theme.sidebarSelBg : isVisual ? theme.sidebarSelBg : theme.sidebarBg;
     const fg = isPendingDelete ? theme.error : itemFg;
@@ -216,6 +258,7 @@ export function renderSidebar(
     rows.push(
       theme.reset + bg + fg +
       prefixText + streamIconColored + starIconColored + emojiIconColored + titleText +
+      (notificationBadge ? ` ${notificationBadge.text}` : "") +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   }

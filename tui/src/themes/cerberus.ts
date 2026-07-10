@@ -46,6 +46,8 @@ export const cerberus: Theme = {
   selectionBg:   `${ESC}48;2;74;74;74m`,     // #4a4a4a
   searchBg:      `${ESC}48;2;252;224;148m`,  // #fce094
   searchFg:      `${ESC}38;2;20;20;20m`,     // dark text on search
+  notificationBg: `${ESC}48;2;183;28;28m`,   // #b71c1c
+  notificationFg: `${ESC}38;2;255;255;255m`, // #ffffff
   appBg:         `${ESC}48;2;20;20;20m`,     // #141414
   cursorColor:   "#d32f2f",                  // matches accent / cursorBg
 

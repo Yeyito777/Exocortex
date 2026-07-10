@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { createSidebarState, renderSidebar } from "./sidebar";
 import type { ConversationSummary } from "./messages";
+import { SIDEBAR_WIDTH } from "./sidebar/layout";
 import { theme } from "./theme";
+import { visibleLength } from "./textwidth";
 
 function conversation(id: string, sortOrder: number, overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
@@ -68,5 +70,45 @@ describe("sidebar rendering", () => {
     const folderRow = rows.find(row => row.includes("Work"));
 
     expect(folderRow).toContain(`${theme.warning}◉ `);
+  });
+
+  test("renders a right-aligned badge counting unread conversations in a folder tree", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [
+      { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
+      { id: "nested", name: "Nested", parentId: "work", createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
+    ];
+    sidebar.conversations = [
+      conversation("read", 0, { folderId: "work" }),
+      conversation("unread-direct", 1, { folderId: "work", unread: true }),
+      conversation("unread-nested", 2, { folderId: "nested", unread: true }),
+      conversation("unread-root", 3, { unread: true }),
+    ];
+
+    const rows = renderSidebar(sidebar, 8, true, null);
+    const folderRow = rows.find(row => row.includes("Work"));
+
+    expect(folderRow).toBeDefined();
+    expect(folderRow).toContain(`${theme.notificationBg}${theme.notificationFg} 2 ${theme.reset}`);
+    expect(visibleLength(folderRow!)).toBe(SIDEBAR_WIDTH);
+  });
+
+  test("does not render unread-count badges anywhere under top-level subagents", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [
+      { id: "subagents", name: " SubAgents ", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
+      { id: "batch", name: "Batch", parentId: "subagents", createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
+    ];
+    sidebar.conversations = [
+      conversation("direct-agent", 0, { folderId: "subagents", unread: true }),
+      conversation("nested-agent", 1, { folderId: "batch", unread: true }),
+    ];
+
+    let rows = renderSidebar(sidebar, 8, true, null);
+    expect(rows.find(row => row.includes("SubAgents"))).not.toContain(theme.notificationBg);
+
+    sidebar.currentFolderId = "subagents";
+    rows = renderSidebar(sidebar, 8, true, null);
+    expect(rows.find(row => row.includes("Batch"))).not.toContain(theme.notificationBg);
   });
 });
