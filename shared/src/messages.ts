@@ -170,6 +170,8 @@ export interface MessageMetadata {
   kind?: string;
   /** Durable id used to deduplicate an accepted subagent completion notification. */
   subagentNotificationId?: string;
+  /** Durable id used to deduplicate a user message accepted from the persistent queue. */
+  queueEntryId?: string;
 }
 
 /** Build standard message metadata with sensible defaults. */

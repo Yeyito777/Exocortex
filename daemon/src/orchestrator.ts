@@ -166,9 +166,11 @@ interface AssistantTurnOptions {
   subagentMaxDepth?: number | null;
   /** Durable detached-child notification accepted by this user turn. */
   subagentNotificationId?: string;
+  /** Durable daemon queue identity accepted by this user turn. */
+  queueEntryId?: string;
 }
 
-export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId">;
+export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId">;
 
 export async function orchestrateSendMessage(
   server: DaemonServer,
@@ -316,6 +318,7 @@ async function orchestrateAssistantTurn(
     const contextCheckpoint = createStoredUserContextCheckpoint(conv);
     conv.messages.push(createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images, {
       subagentNotificationId: options.subagentNotificationId,
+      queueEntryId: options.queueEntryId,
       contextCheckpoint,
     }));
 
@@ -329,6 +332,7 @@ async function orchestrateAssistantTurn(
         text: userMessage.text,
         startedAt,
         images: userMessage.images,
+        ...(options.queueEntryId ? { queueId: options.queueEntryId } : {}),
       }, client);
     } else {
       server.sendToSubscribers(convId, {
@@ -337,6 +341,7 @@ async function orchestrateAssistantTurn(
         text: userMessage.text,
         startedAt,
         images: userMessage.images,
+        ...(options.queueEntryId ? { queueId: options.queueEntryId } : {}),
       });
     }
   }
@@ -357,6 +362,9 @@ async function orchestrateAssistantTurn(
   // A daemon crash before the first streamed block must not lose visible chat.
   convStore.markDirty(convId);
   convStore.flush(convId);
+  // The transcript now durably records this queue identity. Removing the queue
+  // only after that flush closes the message-loss window on daemon crashes.
+  if (options.queueEntryId) convStore.removeQueuedMessageById(options.queueEntryId);
   if (options.subagentNotificationId) acknowledgeSubagentNotification(options.subagentNotificationId);
 
   const ac = new AbortController();
@@ -859,7 +867,9 @@ async function orchestrateAssistantTurn(
       persistCompletedTurnPrefix();
     },
     drainNextTurnMessages() {
-      const drained = convStore.drainQueuedMessages(convId, "next-turn");
+      // Peek first. Queue entries are removed only after their user messages are
+      // durably committed below, preventing a crash between dequeue and history.
+      const drained = convStore.getQueuedMessages(convId).filter(message => message.timing === "next-turn");
       if (drained.length === 0) return [];
 
       hadNextTurnInjections = true;
@@ -882,6 +892,7 @@ async function orchestrateAssistantTurn(
         );
         const storedUser = createStoredUserMessage(qm.text, conv.model, injectedStartedAt, qm.images, {
           subagentNotificationId: qm.subagentNotificationId,
+          queueEntryId: qm.id,
           contextCheckpoint,
         });
         apiMsgs.push({
@@ -896,10 +907,10 @@ async function orchestrateAssistantTurn(
         log("info", `orchestrator: injected next-turn message: "${qm.text.slice(0, 50)}"`);
       }
 
-      // Draining removes the only queue copy. Commit the accepted user prompts
-      // to the canonical transcript before broadcasting them or returning to the
-      // agent; a process kill at any subsequent instruction must not lose them.
+      // Commit the accepted user prompts before removing their durable queue
+      // copies or broadcasting them.
       persistCompletedTurnPrefix(injectedStored);
+      convStore.removeQueuedMessagesById(drained.map(message => message.id));
       for (const qm of drained) {
         if (qm.subagentNotificationId) acknowledgeSubagentNotification(qm.subagentNotificationId);
       }
@@ -913,6 +924,7 @@ async function orchestrateAssistantTurn(
           text: qm.text,
           startedAt: storedUser.metadata?.startedAt ?? Date.now(),
           images: qm.images,
+          queueId: qm.id,
         });
       }
       syncStreamingDisplayMessages([...toStoredMessages(agentState.completedMessages), ...injectedStored]);
@@ -1283,30 +1295,17 @@ async function orchestrateAssistantTurn(
 
     ext.onComplete();
 
-    // Drain remaining queued messages. "next-turn" messages that weren't
-    // injected mid-stream (e.g. no tool rounds, or queued too late) end up
-    // here alongside "message-end" messages. Send the first as a new turn,
-    // re-queue the rest — they'll drain on the next streaming_stopped.
+    // Start the first remaining queued message as a new turn. "next-turn"
+    // messages that arrived too late join message-end messages here. The entry
+    // remains durable until orchestrateSendMessage persists its user message.
     const shutdownMode = getDaemonShutdownMode();
     if (shutdownMode) {
-      convStore.clearQueuedMessages(convId);
       convStore.clearGoalContinuationAfterStream(convId);
-      log("info", `orchestrator: discarded autonomous continuations for ${convId} during daemon ${shutdownMode}`);
+      log("info", `orchestrator: preserved queued messages for ${convId} during daemon ${shutdownMode}`);
     }
-    const allQueued = shutdownMode ? [] : convStore.drainQueuedMessages(convId);
+    const allQueued = shutdownMode ? [] : convStore.getQueuedMessages(convId);
     if (allQueued.length > 0) {
       const first = allQueued[0];
-      // Re-queue the rest for the next cycle
-      for (let i = 1; i < allQueued.length; i++) {
-        convStore.pushQueuedMessage(
-          convId,
-          allQueued[i].text,
-          allQueued[i].timing,
-          allQueued[i].images,
-          allQueued[i].subagentMaxDepth,
-          allQueued[i].subagentNotificationId,
-        );
-      }
       log("info", `orchestrator: draining queued message: "${first.text.slice(0, 50)}"`);
       // Kick off a new send cycle — null client so user_message broadcasts to everyone.
       // Await to keep the chain in a single promise so errors propagate and
@@ -1323,6 +1322,7 @@ async function orchestrateAssistantTurn(
         {
           subagentMaxDepth: first.subagentMaxDepth ?? null,
           subagentNotificationId: first.subagentNotificationId,
+          queueEntryId: first.id,
         },
       );
     } else {

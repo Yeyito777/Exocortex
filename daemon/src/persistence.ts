@@ -16,6 +16,7 @@ import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
 import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal } from "./messages";
 import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, MAX_EXO_SUBAGENT_DEPTH, activeContextCompactionHistoryCount, historyPrefixHash, isValidActiveContext, sortConversations, summarizeConversation } from "./messages";
+import type { QueuedMessageInfo } from "./protocol";
 
 // ── Schema version ──────────────────────────────────────────────────
 
@@ -443,6 +444,7 @@ const INDEX_FILE = join(DATA_DIR, "conversations-index.json");
 const FOLDERS_FILE = join(DATA_DIR, "folders.json");
 const FOLDER_INSTRUCTIONS_FILE = join(DATA_DIR, "folder-instructions.json");
 const UNREAD_FILE = join(DATA_DIR, "unread.json");
+const MESSAGE_QUEUE_FILE = join(DATA_DIR, "message-queue.json");
 let lastConversationSaveMtime = 0;
 
 /** Reject IDs that contain path separators or parent-directory traversal sequences. */
@@ -931,6 +933,86 @@ export function saveUnreadConversationIds(conversationIds: Iterable<string>): vo
   const tmp = `${UNREAD_FILE}.tmp`;
   writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
   renameSync(tmp, UNREAD_FILE);
+}
+
+// ── Persistent daemon-owned message queue ───────────────────────────
+
+export interface PersistedQueuedMessage extends QueuedMessageInfo {
+  /** Delegation budget installed if this queue entry starts a later turn. */
+  subagentMaxDepth?: number | null;
+  /** Durable completion notification represented by this queue item. */
+  subagentNotificationId?: string;
+}
+
+interface MessageQueueFile {
+  version: 1;
+  updatedAt: number;
+  messages: PersistedQueuedMessage[];
+}
+
+function normalizeQueuedMessage(raw: unknown): PersistedQueuedMessage | null {
+  if (!raw || typeof raw !== "object") return null;
+  const entry = raw as Record<string, unknown>;
+  if (typeof entry.id !== "string" || !entry.id) return null;
+  if (typeof entry.convId !== "string" || !entry.convId) return null;
+  if (typeof entry.text !== "string") return null;
+  if (entry.timing !== "next-turn" && entry.timing !== "message-end") return null;
+  if (entry.source !== "daemon" && entry.source !== "global-idle") return null;
+
+  const normalized: PersistedQueuedMessage = {
+    id: entry.id,
+    convId: entry.convId,
+    text: entry.text,
+    timing: entry.timing,
+    source: entry.source,
+    createdAt: Number.isFinite(entry.createdAt) ? Number(entry.createdAt) : Date.now(),
+  };
+  if (Array.isArray(entry.images)) normalized.images = entry.images as PersistedQueuedMessage["images"];
+  if (entry.target === "conversation" || entry.target === "new-conversation") normalized.target = entry.target;
+  if (typeof entry.provider === "string") normalized.provider = entry.provider as ProviderId;
+  if (typeof entry.model === "string") normalized.model = entry.model;
+  if (typeof entry.effort === "string") normalized.effort = entry.effort as EffortLevel;
+  if (typeof entry.fastMode === "boolean") normalized.fastMode = entry.fastMode;
+  if (typeof entry.folderId === "string" || entry.folderId === null) normalized.folderId = entry.folderId;
+  if (entry.waitTarget && typeof entry.waitTarget === "object") {
+    const target = entry.waitTarget as Record<string, unknown>;
+    if (target.type === "global") normalized.waitTarget = { type: "global" };
+    else if (target.type === "conversation" && typeof target.convId === "string" && typeof target.label === "string") {
+      normalized.waitTarget = { type: "conversation", convId: target.convId, label: target.label };
+    } else if (target.type === "folder" && typeof target.folderId === "string" && typeof target.label === "string") {
+      normalized.waitTarget = { type: "folder", folderId: target.folderId, label: target.label };
+    }
+  }
+  if (typeof entry.subagentMaxDepth === "number" || entry.subagentMaxDepth === null) {
+    normalized.subagentMaxDepth = entry.subagentMaxDepth;
+  }
+  if (typeof entry.subagentNotificationId === "string") normalized.subagentNotificationId = entry.subagentNotificationId;
+  return normalized;
+}
+
+/** Load the durable queue. Invalid entries are ignored; corrupt files are treated as empty. */
+export function loadQueuedMessages(): PersistedQueuedMessage[] {
+  ensureDataDir();
+  try {
+    if (!existsSync(MESSAGE_QUEUE_FILE)) return [];
+    const parsed = JSON.parse(readFileSync(MESSAGE_QUEUE_FILE, "utf-8")) as Partial<MessageQueueFile>;
+    if (parsed.version !== 1 || !Array.isArray(parsed.messages)) return [];
+    return parsed.messages
+      .map(normalizeQueuedMessage)
+      .filter((entry): entry is PersistedQueuedMessage => entry !== null);
+  } catch (err) {
+    log("warn", `persistence: failed to read message queue: ${err instanceof Error ? err.message : err}`);
+    return [];
+  }
+}
+
+/** Atomically replace the durable queue snapshot. */
+export function saveQueuedMessages(messages: PersistedQueuedMessage[]): void {
+  ensureDataDir();
+  const file: MessageQueueFile = { version: 1, updatedAt: Date.now(), messages };
+  const tmp = `${MESSAGE_QUEUE_FILE}.tmp`;
+  writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
+  renameSync(tmp, MESSAGE_QUEUE_FILE);
 }
 
 /** Load summaries from the index, repairing stale/missing entries by parsing only those conversation files. */

@@ -9,16 +9,16 @@
  *
  * j/k and arrow keys toggle the selection. Enter confirms, Escape cancels.
  *
- * The actual queue lives in the daemon — the TUI sends a queue_message
- * command and keeps a local shadow copy for display (dimmed bubbles).
+ * The actual persistent queue and scheduler live in the daemon. The TUI sends
+ * queue commands and keeps only optimistic shadows for immediate display.
  */
 
 import type { KeyEvent } from "./input";
+import { randomUUID } from "node:crypto";
 import type { ImageAttachment } from "./messages";
 import type { RenderState, QueueTiming, QueueWaitTarget, QueuedMessage } from "./state";
 import { expandMacros } from "./macros";
 import { isStreaming } from "./state";
-import { folderDescendantConversations } from "./sidebar/folders";
 
 export const GLOBAL_IDLE_QUEUE_LABEL = "queued: global idle";
 
@@ -30,7 +30,7 @@ export function isNewConversationQueuedMessage(message: QueuedMessage): boolean 
   return isGlobalIdleQueuedMessage(message) && message.target === "new-conversation";
 }
 
-export type GlobalIdleQueueOptions = Pick<QueuedMessage, "target" | "provider" | "model" | "effort" | "fastMode" | "folderId" | "waitTarget">;
+export type GlobalIdleQueueOptions = Pick<QueuedMessage, "id" | "target" | "provider" | "model" | "effort" | "fastMode" | "folderId" | "waitTarget">;
 
 export function queueWaitTargetOf(message: QueuedMessage): QueueWaitTarget {
   return message.waitTarget ?? { type: "global" };
@@ -46,8 +46,6 @@ export function queueTimingLabel(message: QueuedMessage): string {
   return message.timing === "next-turn" ? "queued: next turn" : "queued: message end";
 }
 
-export type QueueWaitStatus = "ready" | "waiting" | "missing-target";
-
 export function enqueueGlobalIdleMessage(
   state: RenderState,
   convId: string,
@@ -56,10 +54,13 @@ export function enqueueGlobalIdleMessage(
   options: GlobalIdleQueueOptions = {},
 ): QueuedMessage {
   const queued: QueuedMessage = {
+    id: options.id ?? randomUUID(),
+    optimistic: true,
     convId,
     text,
     timing: "message-end",
     source: "global-idle",
+    createdAt: Date.now(),
     ...(options.target ? { target: options.target } : {}),
     ...(options.provider ? { provider: options.provider } : {}),
     ...(options.model ? { model: options.model } : {}),
@@ -73,62 +74,6 @@ export function enqueueGlobalIdleMessage(
   return queued;
 }
 
-function isConversationKnown(state: RenderState, convId: string): boolean {
-  return convId === state.convId || state.sidebar.conversations.some(conversation => conversation.id === convId);
-}
-
-function isConversationStreamingInState(state: RenderState, convId: string): boolean {
-  if (convId === state.convId) return isStreaming(state);
-  return state.sidebar.conversations.some(conversation => conversation.id === convId && conversation.streaming);
-}
-
-function hasAnyTuiConversationStreaming(state: RenderState): boolean {
-  return isStreaming(state) || state.sidebar.conversations.some(conversation => conversation.streaming);
-}
-
-export function queueWaitStatus(state: RenderState, waitTarget: QueueWaitTarget): QueueWaitStatus {
-  if (waitTarget.type === "global") {
-    if (hasAnyTuiConversationStreaming(state)) return "waiting";
-    if (hasDaemonQueuedMessageShadows(state)) return "waiting";
-    return "ready";
-  }
-
-  if (waitTarget.type === "conversation") {
-    if (!isConversationKnown(state, waitTarget.convId)) return "missing-target";
-    if (isConversationStreamingInState(state, waitTarget.convId)) return "waiting";
-    if (hasDaemonQueuedMessageShadowsForConversation(state, waitTarget.convId)) return "waiting";
-    return "ready";
-  }
-
-  const folder = state.sidebar.folders.find(candidate => candidate.id === waitTarget.folderId);
-  if (!folder) return "missing-target";
-  for (const conversation of folderDescendantConversations(state.sidebar, waitTarget.folderId)) {
-    if (isConversationStreamingInState(state, conversation.id)) return "waiting";
-    if (hasDaemonQueuedMessageShadowsForConversation(state, conversation.id)) return "waiting";
-  }
-  return "ready";
-}
-
-export function queuedMessageWaitStatus(state: RenderState, message: QueuedMessage): QueueWaitStatus {
-  return queueWaitStatus(state, queueWaitTargetOf(message));
-}
-
-export function peekGlobalIdleQueuedMessage(state: RenderState): QueuedMessage | null {
-  return state.queuedMessages.find(isGlobalIdleQueuedMessage) ?? null;
-}
-
-export function hasGlobalIdleQueuedMessages(state: RenderState): boolean {
-  return state.queuedMessages.some(isGlobalIdleQueuedMessage);
-}
-
-export function hasDaemonQueuedMessageShadows(state: RenderState): boolean {
-  return state.queuedMessages.some(qm => !isGlobalIdleQueuedMessage(qm));
-}
-
-export function hasDaemonQueuedMessageShadowsForConversation(state: RenderState, convId: string): boolean {
-  return state.queuedMessages.some(qm => !isGlobalIdleQueuedMessage(qm) && qm.convId === convId);
-}
-
 export function removeQueuedMessageByReference(state: RenderState, message: QueuedMessage): boolean {
   const idx = state.queuedMessages.indexOf(message);
   if (idx === -1) return false;
@@ -138,13 +83,6 @@ export function removeQueuedMessageByReference(state: RenderState, message: Queu
 
 export function removeNewConversationQueuedMessage(state: RenderState, convId: string): boolean {
   const idx = state.queuedMessages.findIndex(qm => isNewConversationQueuedMessage(qm) && qm.convId === convId);
-  if (idx === -1) return false;
-  state.queuedMessages.splice(idx, 1);
-  return true;
-}
-
-export function removeFirstDaemonQueuedMessageForConversation(state: RenderState, convId: string): boolean {
-  const idx = state.queuedMessages.findIndex(qm => !isGlobalIdleQueuedMessage(qm) && qm.convId === convId);
   if (idx === -1) return false;
   state.queuedMessages.splice(idx, 1);
   return true;
@@ -215,7 +153,7 @@ export function handleQueuePromptKey(key: KeyEvent, state: RenderState): QueueKe
 
 export type ConfirmResult =
   | { action: "send_direct"; text: string; images?: ImageAttachment[] }
-  | { action: "queue"; convId: string; text: string; timing: QueueTiming; images?: ImageAttachment[] }
+  | { action: "queue"; queueId: string; convId: string; text: string; timing: QueueTiming; images?: ImageAttachment[] }
   | { action: "cancel" };
 
 /**
@@ -254,13 +192,14 @@ export function confirmQueueMessage(state: RenderState): ConfirmResult {
   // the shadow matches what the daemon will later echo back as a user message.
   const images = qp.images;
   const text = expandMacros(qp.text);
-  const queued: QueuedMessage = { convId, text, timing, images };
+  const queueId = randomUUID();
+  const queued: QueuedMessage = { id: queueId, optimistic: true, convId, text, timing, images, source: "daemon", createdAt: Date.now() };
   if (images?.length) state.pendingImages = [];
   state.queuedMessages.push(queued);
   state.queuePrompt = null;
   state.inputBuffer = "";
   state.cursorPos = 0;
-  return { action: "queue", convId, text, timing, images };
+  return { action: "queue", queueId, convId, text, timing, images };
 }
 
 /**
@@ -283,27 +222,14 @@ export function cancelQueuePrompt(state: RenderState): void {
  * Called when the daemon consumes a queued message (user_message event)
  * or when the user manually unqueues one (edit_message_confirm).
  */
-export function removeLocalQueueEntry(state: RenderState, convId: string, text: string): void {
+export function removeLocalQueueEntry(state: RenderState, convId: string, text: string, queueId?: string): void {
   const idx = state.queuedMessages.findIndex(
-    qm => !isGlobalIdleQueuedMessage(qm) && qm.convId === convId && qm.text === text,
+    qm => queueId ? qm.id === queueId : (!isGlobalIdleQueuedMessage(qm) && qm.convId === convId && qm.text === text),
   );
   if (idx !== -1) state.queuedMessages.splice(idx, 1);
 }
 
-/**
- * Remove daemon-owned local shadow entries for a conversation.
- * Called on conversation refresh/reload — NOT on streaming_stopped,
- * since the daemon drains queued messages one at a time (each
- * removal is handled individually by the user_message event handler).
- *
- * TUI-only /queue entries intentionally survive conversation switches because
- * they are owned by this client and may target a background conversation.
- */
-export function clearLocalQueue(state: RenderState, convId: string): void {
-  state.queuedMessages = state.queuedMessages.filter(qm => qm.convId !== convId || isGlobalIdleQueuedMessage(qm));
-}
-
-/** Remove every queued shadow for a conversation, including TUI-only /queue. */
+/** Optimistically remove every queued shadow for a deleted conversation. */
 export function clearAllQueuedMessagesForConversation(state: RenderState, convId: string): void {
   state.queuedMessages = state.queuedMessages.filter(qm => qm.convId !== convId);
 }

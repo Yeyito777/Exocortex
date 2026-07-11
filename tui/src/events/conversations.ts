@@ -1,7 +1,7 @@
 import { log } from "../log";
 import type { Event } from "../protocol";
 import { syncChosenProvider } from "../providerselection";
-import { clearAllQueuedMessagesForConversation, clearLocalQueue, hasDaemonQueuedMessageShadowsForConversation } from "../queue";
+import { clearAllQueuedMessagesForConversation } from "../queue";
 import {
   focusConversationById,
   rememberEnteredConversation,
@@ -191,14 +191,10 @@ export function handleConversationLoaded(
       preservedPending: preservedPendingAI ? blockStats(preservedPendingAI.blocks) : null,
     })}`);
   }
-  // Unsubscribe from old conversation before switching unless it still has
-  // local daemon-queue shadows. In that case, keep the subscription just long
-  // enough to hear the background user_message events that remove those shadows,
-  // so TUI-only /queue can wait for queued turns in other conversations exactly.
+  // Queue synchronization is global, so background subscriptions are no longer
+  // needed merely to observe queued-message consumption.
   if (previousConvId && previousConvId !== event.convId) {
-    if (!hasDaemonQueuedMessageShadowsForConversation(state, previousConvId)) {
-      daemon.unsubscribe(previousConvId);
-    }
+    daemon.unsubscribe(previousConvId);
     delete state.lastStreamSeqByConv[previousConvId];
   }
   state.messages = [];
@@ -309,16 +305,8 @@ export function handleConversationLoaded(
     assistantBlocksAfterPreserve: preservedAssistantExtensionResult.mergedBlocks,
   });
 
-  // Rebuild local queue shadows from daemon state.
-  clearLocalQueue(state, event.convId);
-  if (event.queuedMessages && event.queuedMessages.length > 0) {
-    for (const qm of event.queuedMessages) {
-      state.queuedMessages.push({
-        convId: event.convId, text: qm.text, timing: qm.timing,
-        ...(qm.images?.length ? { images: qm.images } : {}),
-      });
-    }
-  }
+  // Queue state is synchronized independently through queue_updated so every
+  // client sees all conversations' entries, not only the one being loaded.
 }
 
 export function handleConversationHistoryLoaded(

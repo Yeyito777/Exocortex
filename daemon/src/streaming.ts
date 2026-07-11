@@ -9,21 +9,8 @@
  * Conversation data and persistence live in conversations.ts.
  */
 
-import type { Block, ImageAttachment, StoredMessage } from "./messages";
-import type { QueueTiming } from "./protocol";
+import type { Block, StoredMessage } from "./messages";
 import type { ActiveToolBackgrounder } from "./tools/types";
-
-// ── Types ──────────────────────────────────────────────────────────
-
-export interface QueuedMessage {
-  text: string;
-  timing: QueueTiming;
-  images?: ImageAttachment[];
-  /** Delegation budget installed if this queue entry starts a later turn. */
-  subagentMaxDepth?: number | null;
-  /** Durable completion notification represented by this ephemeral queue item. */
-  subagentNotificationId?: string;
-}
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -43,8 +30,6 @@ const streamingTokens = new Map<string, number>();
 const contextCompactionStartedAt = new Map<string, number>();
 /** Monotonic event sequence per active stream, used by clients to diagnose missed IPC events. */
 const streamSequences = new Map<string, number>();
-/** Messages queued for delivery during or after streaming. */
-const messageQueues = new Map<string, QueuedMessage[]>();
 /** Goal continuations requested while a stream was already active. */
 const pendingGoalContinuations = new Set<string>();
 /** Last meaningful activity timestamp per streaming job (for stale stream detection). */
@@ -292,72 +277,6 @@ export function clearCurrentStreamingBlocks(convId: string): void {
   } else {
     streamingBlocks.delete(convId);
   }
-}
-
-// ── Message queue (queued messages for delivery during/after streaming) ─
-
-/** Peek at queued messages without removing them (returns a shallow copy). */
-export function getQueuedMessages(convId: string): QueuedMessage[] {
-  return [...(messageQueues.get(convId) ?? [])];
-}
-
-/** Push a message onto a conversation's queue. */
-export function pushQueuedMessage(
-  convId: string,
-  text: string,
-  timing: QueueTiming,
-  images?: ImageAttachment[],
-  subagentMaxDepth?: number | null,
-  subagentNotificationId?: string,
-): void {
-  let queue = messageQueues.get(convId);
-  if (!queue) {
-    queue = [];
-    messageQueues.set(convId, queue);
-  }
-  queue.push({ text, timing, images, subagentMaxDepth, subagentNotificationId });
-}
-
-/**
- * Drain queued messages. Removes and returns them.
- * If timing is given, only drains messages with that timing.
- * If omitted, drains all.
- */
-export function drainQueuedMessages(convId: string, timing?: QueueTiming): QueuedMessage[] {
-  const queue = messageQueues.get(convId);
-  if (!queue || queue.length === 0) return [];
-
-  if (timing === undefined) {
-    messageQueues.delete(convId);
-    return queue;
-  }
-
-  const drained: QueuedMessage[] = [];
-  const remaining: QueuedMessage[] = [];
-  for (const qm of queue) {
-    if (qm.timing === timing) drained.push(qm);
-    else remaining.push(qm);
-  }
-
-  if (remaining.length === 0) messageQueues.delete(convId);
-  else messageQueues.set(convId, remaining);
-  return drained;
-}
-
-/** Remove the first queued message with matching text. Returns true if found. */
-export function removeQueuedMessage(convId: string, text: string): boolean {
-  const queue = messageQueues.get(convId);
-  if (!queue) return false;
-  const idx = queue.findIndex(qm => qm.text === text);
-  if (idx === -1) return false;
-  queue.splice(idx, 1);
-  if (queue.length === 0) messageQueues.delete(convId);
-  return true;
-}
-
-/** Clear all queued messages for a conversation. */
-export function clearQueuedMessages(convId: string): void {
-  messageQueues.delete(convId);
 }
 
 // ── Goal continuation queue ───────────────────────────────────────────

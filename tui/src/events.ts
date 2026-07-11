@@ -175,6 +175,36 @@ export function handleEvent(
       handleConversationLoaded(event, state, daemon);
       break;
 
+    case "queue_updated":
+      // Canonical daemon snapshot. Locally-created entries were already rendered
+      // optimistically; stable ids make this replacement duplicate-safe.
+      // Pending voice transcription placeholders have no id because they are not
+      // sent to the daemon until final text exists; retain those local-only rows.
+      {
+        const canonicalIds = new Set(event.messages.map(message => message.id));
+        const settledIds = new Set(event.settledQueueIds ?? []);
+        for (const id of settledIds) {
+          // The same id may settle an idempotently replayed enqueue while a later
+          // unqueue is still unresolved. Canonical presence proves this was not
+          // yet the unqueue settlement, so keep its optimistic removal tombstone.
+          if (!canonicalIds.has(id)) state.pendingQueueRemovalIds.delete(id);
+        }
+        const pendingLocal = state.queuedMessages.filter(message =>
+          !message.id || (message.optimistic && !canonicalIds.has(message.id) && !settledIds.has(message.id)),
+        );
+        state.queuedMessages = [
+          ...event.messages
+            .filter(message => !state.pendingQueueRemovalIds.has(message.id))
+            .map(message => ({ ...message })),
+          ...pendingLocal,
+        ];
+      }
+      break;
+
+    case "queue_notice":
+      pushSystemMessage(state, `✗ ${event.message}`, event.level === "error" ? theme.error : theme.warning);
+      break;
+
     case "conversation_history_loaded":
       handleConversationHistoryLoaded(event, state);
       break;

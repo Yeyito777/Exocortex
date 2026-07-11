@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { clearConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
-import { consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessages, getSummary, remove, replaceStreamingDisplayMessages, setGoal, updateGoalStatus } from "./conversations";
+import { consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, replaceStreamingDisplayMessages, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
 import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
@@ -79,6 +79,209 @@ describe("handler shutdown preparation", () => {
 
     expect(getDaemonShutdownMode()).toBe("stop");
     expect(sent).toContainEqual({ type: "ack", reqId: "prepare-stop" });
+  });
+});
+
+describe("handler daemon-owned queue", () => {
+  afterEach(cleanupIds);
+
+  test("starts an ordinary queued message even when the conversation was already idle", async () => {
+    const id = mkId("queue-idle");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const callsBefore = orchestrateSendMessage.mock.calls.length;
+
+    await handle({} as never, { type: "queue_message", queueId: "idle-dispatch", convId: id, text: "run me", timing: "message-end" });
+    await new Promise(resolve => setTimeout(resolve, 180));
+
+    expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 1);
+    const lastCall = orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[];
+    expect(lastCall[4]).toBe("run me");
+    expect(lastCall[8]).toEqual(expect.objectContaining({ queueEntryId: "idle-dispatch" }));
+    removeQueuedMessageById("idle-dispatch");
+  });
+
+  test("waits in the daemon for a targeted conversation to become idle", async () => {
+    const targetId = mkId("queue-target");
+    const dependencyId = mkId("queue-dependency");
+    create(targetId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    create(dependencyId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    setActiveJob(dependencyId, new AbortController(), Date.now());
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const callsBefore = orchestrateSendMessage.mock.calls.length;
+
+    await handle({} as never, {
+      type: "queue_message",
+      queueId: "targeted-idle",
+      convId: targetId,
+      text: "after dependency",
+      timing: "message-end",
+      source: "global-idle",
+      target: "conversation",
+      waitTarget: { type: "conversation", convId: dependencyId, label: "Dependency" },
+    });
+    await new Promise(resolve => setTimeout(resolve, 170));
+    expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore);
+
+    clearActiveJob(dependencyId);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 1);
+    expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("after dependency");
+    removeQueuedMessageById("targeted-idle");
+  });
+
+  test("keeps the global-idle FIFO blocked until the accepted head turn finishes", async () => {
+    const firstId = mkId("queue-global-first");
+    const secondId = mkId("queue-global-second");
+    create(firstId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    create(secondId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const callsBefore = orchestrateSendMessage.mock.calls.length;
+    let finishFirst!: (outcome: ReturnType<typeof makeAssistantOutcome>) => void;
+    orchestrateSendMessage.mockImplementationOnce(() => new Promise((resolve) => {
+      finishFirst = resolve;
+    }));
+
+    await handle({} as never, {
+      type: "queue_message",
+      queueId: "global-fifo-first",
+      convId: firstId,
+      text: "first global turn",
+      timing: "message-end",
+      source: "global-idle",
+      target: "conversation",
+    });
+    await handle({} as never, {
+      type: "queue_message",
+      queueId: "global-fifo-second",
+      convId: secondId,
+      text: "second global turn",
+      timing: "message-end",
+      source: "global-idle",
+      target: "conversation",
+    });
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 1);
+    expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("first global turn");
+
+    // Real orchestration removes the durable entry immediately after accepting
+    // its user message, while the assistant turn is still in flight.
+    removeQueuedMessageById("global-fifo-first");
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 1);
+
+    finishFirst(makeAssistantOutcome());
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 2);
+    expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("second global turn");
+    removeQueuedMessageById("global-fifo-second");
+  });
+
+  test("atomically creates queued draft conversations and broadcasts the shared queue", async () => {
+    const id = `${Date.now()}-abc123`;
+    IDS.push(id);
+    const sent: Array<Record<string, unknown>> = [];
+    const broadcasts: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock((event: Record<string, unknown>) => { broadcasts.push(event); }),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "queue_message",
+      queueId: "shared-queue-id",
+      convId: id,
+      text: "start after idle",
+      timing: "message-end",
+      source: "global-idle",
+      target: "new-conversation",
+      provider: "openai",
+      model: DEFAULT_MODEL_BY_PROVIDER.openai,
+      effort: "medium",
+      fastMode: false,
+      waitTarget: { type: "global" },
+    });
+
+    expect(get(id)).not.toBeNull();
+    expect(getQueuedMessageById("shared-queue-id")).toEqual(expect.objectContaining({
+      convId: id,
+      text: "start after idle",
+      source: "global-idle",
+      target: "new-conversation",
+    }));
+    expect(sent.some(event => event.type === "conversation_created" && event.convId === id)).toBe(true);
+    expect(broadcasts.some(event => event.type === "queue_updated"
+      && (event.messages as Array<{ id: string }>).some(message => message.id === "shared-queue-id"))).toBe(true);
+    removeQueuedMessageById("shared-queue-id");
+  });
+
+  test("reconstructs a draft if the daemon restarts after queue persistence but before conversation creation", async () => {
+    const id = `${Date.now()}-def456`;
+    IDS.push(id);
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    createHandler(server as never);
+    pushGlobalIdleQueuedMessage(id, "recover draft", undefined, {
+      id: "recover-draft-id",
+      target: "new-conversation",
+      provider: DEFAULT_PROVIDER_ID,
+      model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID],
+      effort: "medium",
+      fastMode: false,
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 180));
+
+    expect(get(id)).toEqual(expect.objectContaining({ id, provider: DEFAULT_PROVIDER_ID }));
+    expect(getQueuedMessageById("recover-draft-id")).not.toBeUndefined();
+    removeQueuedMessageById("recover-draft-id");
+  });
+
+  test("bootstraps another client with the same authoritative queue snapshot", async () => {
+    const id = mkId("queue-bootstrap");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    setActiveJob(id, new AbortController(), Date.now());
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "queue_message", queueId: "bootstrap-id", convId: id, text: "later", timing: "next-turn" });
+    sent.length = 0;
+    await handle({} as never, { type: "list_conversations" });
+
+    const snapshot = sent.find(event => event.type === "queue_updated");
+    expect((snapshot?.messages as Array<Record<string, unknown>>).some(message =>
+      message.id === "bootstrap-id" && message.convId === id && message.text === "later",
+    )).toBe(true);
+    expect(listQueuedMessages().some(message => message.id === "bootstrap-id")).toBe(true);
   });
 });
 

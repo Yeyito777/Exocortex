@@ -16,6 +16,7 @@ import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
 import { getConversationActivityCounts, getConversationTasks } from "./conversation-activity";
 import * as streaming from "./streaming";
+import * as messageQueue from "./message-queue";
 import { log } from "./log";
 import { getProvider, normalizeEffort } from "./providers/registry";
 import { isDeepStrictEqual } from "node:util";
@@ -32,9 +33,16 @@ export {
   initStreamingState, getCurrentStreamingBlocks, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, getStreamingDisplayMessages,
   setStreamingCommittedBlockCount, getStreamingCommittedBlockCount,
   pushStreamingBlock, appendToStreamingBlock, clearCurrentStreamingBlocks,
-  getQueuedMessages, pushQueuedMessage, drainQueuedMessages, clearQueuedMessages, removeQueuedMessage,
   requestGoalContinuationAfterStream, consumeGoalContinuationAfterStream, clearGoalContinuationAfterStream,
 } from "./streaming";
+export {
+  getQueuedMessages, getQueuedMessageById, listQueuedMessages, listInternalQueuedMessages,
+  pushQueuedMessage, pushGlobalIdleQueuedMessage, drainQueuedMessages,
+  clearQueuedMessages, clearAllQueuedMessages, removeQueuedMessage, removeQueuedMessageById,
+  removeQueuedMessagesById, updateQueuedMessage, moveQueuedMessage,
+  suspendQueuedMessageDelivery, resumeQueuedMessageDelivery, isQueuedMessageDeliverySuspended,
+  loadQueuedMessagesFromDisk, setQueuedMessagesChangedListener,
+} from "./message-queue";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -514,7 +522,7 @@ function removeConversationState(id: string): boolean {
   const wasUnread = unread.delete(id);
   streaming.clearActiveJob(id);
   streaming.resetChunkCounter(id);
-  streaming.clearQueuedMessages(id);
+  messageQueue.clearQueuedMessages(id);
   streaming.clearGoalContinuationAfterStream(id);
   return wasUnread;
 }
@@ -982,10 +990,10 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   // a non-destructive refusal rather than a fallback to the full transcript.
   const hadActiveContextBeforeAbort = conv.activeContext != null;
 
-  // Drain queued work first — prevents the orchestrator's finally block from
-  // starting a new stream after we abort. Keep a rollback copy in case the
-  // active stream cannot be stopped and the unwind is refused.
-  const queuedBeforeAbort = streaming.drainQueuedMessages(id);
+  // Gate delivery without removing durable entries. If the process crashes
+  // during the abort wait, suspension disappears on restart and the queue is
+  // still intact; a successful unwind explicitly clears it below.
+  messageQueue.suspendQueuedMessageDelivery(id);
   const goalContinuationBeforeAbort = streaming.consumeGoalContinuationAfterStream(id);
 
   // Abort any active stream and wait for it to fully stop
@@ -995,17 +1003,7 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
     const stopped = await waitForStreamStop(id);
     if (!stopped) {
       log("warn", `conversations: stream for ${id} did not stop within timeout; refusing unsafe unwind`);
-      const queuedDuringWait = streaming.drainQueuedMessages(id);
-      for (const queued of [...queuedBeforeAbort, ...queuedDuringWait]) {
-        streaming.pushQueuedMessage(
-          id,
-          queued.text,
-          queued.timing,
-          queued.images,
-          queued.subagentMaxDepth,
-          queued.subagentNotificationId,
-        );
-      }
+      messageQueue.resumeQueuedMessageDelivery(id);
       const goalContinuationDuringWait = streaming.consumeGoalContinuationAfterStream(id);
       if (goalContinuationBeforeAbort || goalContinuationDuringWait) {
         streaming.requestGoalContinuationAfterStream(id);
@@ -1024,17 +1022,7 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   if (lostCheckpointDuringAbort
       || (conv.activeContext != null
         && (postAbortCompactionHistoryCount == null || targetHistoryCount < postAbortCompactionHistoryCount))) {
-    const queuedDuringWait = streaming.drainQueuedMessages(id);
-    for (const queued of [...queuedBeforeAbort, ...queuedDuringWait]) {
-      streaming.pushQueuedMessage(
-        id,
-        queued.text,
-        queued.timing,
-        queued.images,
-        queued.subagentMaxDepth,
-        queued.subagentNotificationId,
-      );
-    }
+    messageQueue.resumeQueuedMessageDelivery(id);
     const goalContinuationDuringWait = streaming.consumeGoalContinuationAfterStream(id);
     if (goalContinuationBeforeAbort || goalContinuationDuringWait) {
       streaming.requestGoalContinuationAfterStream(id);
@@ -1045,7 +1033,8 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
 
   // Also discard work queued during the short abort wait: the explicit unwind
   // supersedes it and must leave no post-unwind continuation behind.
-  streaming.clearQueuedMessages(id);
+  messageQueue.clearQueuedMessages(id);
+  messageQueue.resumeQueuedMessageDelivery(id);
   streaming.clearGoalContinuationAfterStream(id);
 
   conv.messages.splice(spliceAt);
@@ -1619,7 +1608,7 @@ export function deleteFolder(folderId: string, mode: "recursive" | "unwrap" = "r
     unreadChanged = unread.delete(convId) || unreadChanged;
     streaming.clearActiveJob(convId);
     streaming.resetChunkCounter(convId);
-    streaming.clearQueuedMessages(convId);
+    messageQueue.clearQueuedMessages(convId);
     streaming.clearGoalContinuationAfterStream(convId);
   }
   for (const id of folderIds) folders.delete(id);

@@ -347,20 +347,74 @@ export interface RedoDeleteCommand {
 
 export type QueueTiming = "next-turn" | "message-end";
 
-export interface QueueMessageCommand {
-  type: "queue_message";
-  reqId?: string;
+export type QueueWaitTarget =
+  | { type: "global" }
+  | { type: "conversation"; convId: string; label: string }
+  | { type: "folder"; folderId: string; label: string };
+
+/** Canonical daemon-owned queue entry shared by every connected client. */
+export interface QueuedMessageInfo {
+  /** Stable client- or daemon-generated identity used for optimistic reconciliation. */
+  id: string;
   convId: string;
   text: string;
   timing: QueueTiming;
   images?: ImageAttachment[];
+  /** Ordinary stream queues are delivered next-turn/message-end; global-idle entries wait on waitTarget. */
+  source: "daemon" | "global-idle";
+  target?: "conversation" | "new-conversation";
+  /** Captured settings used when target=new-conversation is created atomically with enqueue. */
+  provider?: ProviderId;
+  model?: ModelId;
+  effort?: EffortLevel;
+  fastMode?: boolean;
+  folderId?: string | null;
+  waitTarget?: QueueWaitTarget;
+  createdAt: number;
+}
+
+export interface QueueMessageCommand {
+  type: "queue_message";
+  reqId?: string;
+  /** Stable optimistic id. The daemon generates one when omitted by non-UI callers. */
+  queueId?: string;
+  convId: string;
+  text: string;
+  timing: QueueTiming;
+  images?: ImageAttachment[];
+  source?: "daemon" | "global-idle";
+  target?: "conversation" | "new-conversation";
+  provider?: ProviderId;
+  model?: ModelId;
+  effort?: EffortLevel;
+  fastMode?: boolean;
+  folderId?: string | null;
+  waitTarget?: QueueWaitTarget;
 }
 
 export interface UnqueueMessageCommand {
   type: "unqueue_message";
   reqId?: string;
-  convId: string;
+  /** Stable id is authoritative. convId/text remain optional for daemon-internal/legacy callers. */
+  queueId?: string;
+  convId?: string;
+  text?: string;
+}
+
+export interface UpdateQueuedMessageCommand {
+  type: "update_queued_message";
+  reqId?: string;
+  queueId: string;
   text: string;
+  timing: QueueTiming;
+  images?: ImageAttachment[];
+}
+
+export interface MoveQueuedMessageCommand {
+  type: "move_queued_message";
+  reqId?: string;
+  queueId: string;
+  direction: "up" | "down";
 }
 
 export interface UnwindConversationCommand {
@@ -477,6 +531,8 @@ export type Command =
   | RedoDeleteCommand
   | QueueMessageCommand
   | UnqueueMessageCommand
+  | UpdateQueuedMessageCommand
+  | MoveQueuedMessageCommand
   | UnwindConversationCommand
   | SetSystemInstructionsCommand
   | LlmCompleteCommand
@@ -659,12 +715,6 @@ export type DisplayEntry =
   | { type: "ai"; blocks: Block[]; metadata: MessageMetadata | null }
   | { type: "system"; text: string; color?: string; metadata?: MessageMetadata | null };
 
-export interface QueuedMessageInfo {
-  text: string;
-  timing: QueueTiming;
-  images?: ImageAttachment[];
-}
-
 export interface ToolOutputInfo {
   toolCallId: string;
   output: string;
@@ -771,6 +821,29 @@ export interface UserMessageEvent {
   /** Client-originated timestamp when available; daemon-generated for queued sends. */
   startedAt?: number;
   images?: ImageAttachment[];
+  /** Queue identity when this user message was accepted from the daemon-owned queue. */
+  queueId?: string;
+}
+
+/** Authoritative full queue snapshot, broadcast after every mutation and during bootstrap. */
+export interface QueueUpdatedEvent {
+  type: "queue_updated";
+  messages: QueuedMessageInfo[];
+  /**
+   * Queue ids conclusively touched for the requesting client. Enqueues settle
+   * regardless of presence (an absent id may already be delivered/rejected);
+   * unqueues settle only when the id is absent from `messages`.
+   */
+  settledQueueIds?: string[];
+}
+
+/** Asynchronous queue delivery/drop notice (for example a deleted wait target). */
+export interface QueueNoticeEvent {
+  type: "queue_notice";
+  queueId: string;
+  convId?: string;
+  message: string;
+  level: "warning" | "error";
 }
 
 export interface StreamRetryEvent {
@@ -975,6 +1048,8 @@ export type Event =
   | ConversationMarkedEvent
   | ConversationPinnedEvent
   | ConversationMovedEvent
+  | QueueUpdatedEvent
+  | QueueNoticeEvent
   | UserMessageEvent
   | StreamRetryEvent
   | ContextCompactionStatusEvent

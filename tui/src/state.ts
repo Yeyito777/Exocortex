@@ -27,27 +27,27 @@ import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
 import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
-import type { ConversationGoal, ProviderAuthInfo, QueueTiming } from "./protocol";
+import type { ConversationGoal, ProviderAuthInfo, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 
 // ── Queue types ────────────────────────────────────────────────────
 
 export type { QueueTiming } from "./protocol";
 
-export type QueueWaitTarget =
-  | { type: "global" }
-  | { type: "conversation"; convId: string; label: string }
-  | { type: "folder"; folderId: string; label: string };
+export type QueueWaitTarget = ProtocolQueueWaitTarget;
 
 export interface QueuedMessage {
+  /** Stable daemon queue identity. Optional only for transient test/voice placeholders. */
+  id?: string;
+  /** Local shadow awaiting its first authoritative daemon snapshot. */
+  optimistic?: boolean;
   convId: string;
   text: string;
   timing: QueueTiming;
   images?: ImageAttachment[];
   /**
-   * Omitted/"daemon" means the daemon owns delivery timing (message-end/next-turn).
-   * "global-idle" is the TUI-only /queue FIFO that waits for every visible
-   * conversation and daemon-owned queued turn to finish before sending.
+   * The daemon owns both stream-relative delivery and the global-idle `/queue`
+   * FIFO. The TUI retains only an optimistic/display projection.
    */
   source?: "daemon" | "global-idle";
   /** New-conversation /queue entries reserve a client conversation id here. */
@@ -58,8 +58,9 @@ export interface QueuedMessage {
   effort?: EffortLevel;
   fastMode?: boolean;
   folderId?: string | null;
-  /** For TUI-owned queue entries, what must be idle before delivery. */
+  /** Daemon-evaluated dependency that must be idle before delivery. */
   waitTarget?: QueueWaitTarget;
+  createdAt?: number;
 }
 
 export interface QueuePromptState {
@@ -287,6 +288,8 @@ export interface RenderState {
   search: SearchState | null;
   /** Messages queued for delivery at a specific timing. */
   queuedMessages: QueuedMessage[];
+  /** Optimistic unqueues awaiting an authoritative settled snapshot. */
+  pendingQueueRemovalIds: Set<string>;
   /** Edit message modal — non-null when the modal is showing. */
   editMessagePrompt: EditMessageState | null;
   /** Images pasted from clipboard, waiting to be sent with the next message. */
@@ -625,6 +628,7 @@ export function createInitialState(): RenderState {
     queuePrompt: null,
     search: null,
     queuedMessages: [],
+    pendingQueueRemovalIds: new Set(),
     editMessagePrompt: null,
     pendingImages: [],
     voicePrompt: null,

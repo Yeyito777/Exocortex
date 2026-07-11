@@ -26,6 +26,65 @@ describe("auth browser opener", () => {
   });
 });
 
+describe("daemon queue synchronization", () => {
+  test("replaces queue shadows from the shared snapshot while retaining unsent voice placeholders", () => {
+    const state = createInitialState();
+    state.queuedMessages = [
+      { id: "stale", convId: "conv-1", text: "stale", timing: "message-end", source: "daemon", createdAt: 1 },
+      { convId: "conv-1", text: "Transcribing…", timing: "message-end" },
+    ];
+
+    handleEvent({
+      type: "queue_updated",
+      messages: [{
+        id: "shared",
+        convId: "conv-2",
+        text: "from another client",
+        timing: "next-turn",
+        source: "daemon",
+        createdAt: 2,
+      }],
+    }, state, daemon);
+
+    expect(state.queuedMessages).toEqual([
+      { id: "shared", convId: "conv-2", text: "from another client", timing: "next-turn", source: "daemon", createdAt: 2 },
+      { convId: "conv-1", text: "Transcribing…", timing: "message-end" },
+    ]);
+  });
+
+  test("keeps unrelated optimistic entries until the daemon settles their ids", () => {
+    const state = createInitialState();
+    state.queuedMessages = [{ id: "optimistic", optimistic: true, convId: "conv-1", text: "pending", timing: "message-end", source: "daemon", createdAt: 1 }];
+
+    handleEvent({ type: "queue_updated", messages: [] }, state, daemon);
+    expect(state.queuedMessages).toHaveLength(1);
+
+    handleEvent({ type: "queue_updated", messages: [], settledQueueIds: ["optimistic"] }, state, daemon);
+    expect(state.queuedMessages).toEqual([]);
+  });
+
+  test("does not reintroduce an optimistically removed entry before its command settles", () => {
+    const state = createInitialState();
+    state.pendingQueueRemovalIds.add("removing");
+    const canonical = {
+      id: "removing", convId: "conv-1", text: "remove me", timing: "message-end" as const,
+      source: "daemon" as const, createdAt: 1,
+    };
+
+    handleEvent({ type: "queue_updated", messages: [canonical] }, state, daemon);
+    expect(state.queuedMessages).toEqual([]);
+
+    // An enqueue replay can settle this id while it remains canonical; that must
+    // not expose the entry or clear the later unqueue tombstone.
+    handleEvent({ type: "queue_updated", messages: [canonical], settledQueueIds: ["removing"] }, state, daemon);
+    expect(state.queuedMessages).toEqual([]);
+    expect(state.pendingQueueRemovalIds.has("removing")).toBe(true);
+
+    handleEvent({ type: "queue_updated", messages: [], settledQueueIds: ["removing"] }, state, daemon);
+    expect(state.pendingQueueRemovalIds.size).toBe(0);
+  });
+});
+
 describe("paged conversation history events", () => {
   test("prepends a matching older page and advances the absolute rewind cursor", () => {
     const state = createInitialState();

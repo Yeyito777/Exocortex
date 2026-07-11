@@ -191,6 +191,18 @@ async function startDaemon(): Promise<void> {
   // Load persisted conversations
   const conversationLoadStats = convStore.loadFromDisk();
   profileMark("conversations_loaded", conversationLoadStats);
+  const queuedMessageCount = convStore.loadQueuedMessagesFromDisk();
+  // If the daemon crashed after persisting a queued user message but before
+  // removing its queue copy, the transcript's durable queueEntryId wins.
+  const deliveredQueueIds = new Set<string>();
+  for (const queued of convStore.listQueuedMessages()) {
+    const conversation = convStore.get(queued.convId);
+    if (conversation?.messages.some(message => message.metadata?.queueEntryId === queued.id)) {
+      deliveredQueueIds.add(queued.id);
+    }
+  }
+  if (deliveredQueueIds.size > 0) convStore.removeQueuedMessagesById(deliveredQueueIds);
+  profileMark("message_queue_loaded", { queuedMessageCount, deduplicated: deliveredQueueIds.size });
   recoverPendingTitles(server);
   profileMark("pending_titles_recovered");
 

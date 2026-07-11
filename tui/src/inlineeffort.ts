@@ -32,7 +32,7 @@ export interface InlineCommandApplication {
   text: string;
   efforts: EffortLevel[];
   fastModes: boolean[];
-  /** Present when the prompt contained /queue and should enter the TUI-owned queue. */
+  /** Present when the prompt contained /queue and should enter the daemon-owned idle queue. */
   queue?: QueueWaitTarget;
 }
 

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, clearQueuedMessages, drainQueuedMessages, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, nextStreamSeq, pushQueuedMessage, setActiveJob, setContextCompactionStartedAt } from "./streaming";
+import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, nextStreamSeq, setActiveJob, setContextCompactionStartedAt } from "./streaming";
+import { clearQueuedMessages, drainQueuedMessages, pushQueuedMessage } from "./message-queue";
 
 const IDS: string[] = [];
 
@@ -52,10 +53,15 @@ describe("queued-message delegation policy", () => {
     pushQueuedMessage(id, "follow up", "message-end", undefined, 2);
 
     expect(drainQueuedMessages(id)).toEqual([{
+      id: expect.any(String),
+      convId: id,
       text: "follow up",
       timing: "message-end",
       images: undefined,
+      source: "daemon",
+      createdAt: expect.any(Number),
       subagentMaxDepth: 2,
+      subagentNotificationId: undefined,
     }]);
   });
 });

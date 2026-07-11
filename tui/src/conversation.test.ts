@@ -109,7 +109,7 @@ describe("older history loading status", () => {
 });
 
 describe("queued message rendering", () => {
-  test("uses a distinct label for TUI-only global idle queue entries", () => {
+  test("uses a distinct label for daemon-owned global idle queue entries", () => {
     const state = {
       messages: [],
       pendingAI: null,

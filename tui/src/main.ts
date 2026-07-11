@@ -9,6 +9,7 @@
  */
 
 import { spawn } from "child_process";
+import { randomUUID } from "node:crypto";
 import { DaemonClient } from "./client";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
 import { handleFocusedKey } from "./focus";
@@ -31,14 +32,7 @@ import {
   confirmQueueMessage,
   cancelQueuePrompt,
   enqueueGlobalIdleMessage,
-  hasDaemonQueuedMessageShadowsForConversation,
-  hasGlobalIdleQueuedMessages,
-  isGlobalIdleQueuedMessage,
-  isNewConversationQueuedMessage,
   openQueuePrompt,
-  peekGlobalIdleQueuedMessage,
-  queuedMessageWaitStatus,
-  removeLocalQueueEntry,
   removeNewConversationQueuedMessage,
   removeQueuedMessageByReference,
 } from "./queue";
@@ -82,7 +76,6 @@ let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let renderDueAt = 0;
 let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
 let streamFinishedPingTimer: ReturnType<typeof setTimeout> | null = null;
-let globalIdleQueuePumpTimer: ReturnType<typeof setTimeout> | null = null;
 let prewarmTimer: ReturnType<typeof setTimeout> | null = null;
 let deferredHistoryRenderTimer: ReturnType<typeof setTimeout> | null = null;
 let lastPrewarmKey: string | null = null;
@@ -95,13 +88,11 @@ let voiceInput: VoiceInputController | null = null;
 let pendingVoiceQueuePrompt = false;
 let pendingNewConversationConvId: string | null = null;
 let pendingLocalInterruptConvId: string | null = null;
-let globalIdleQueueInFlight: { convId: string; observedStreaming: boolean } | null = null;
 // Local-only user-message echoes whose audio jobs are still transcribing. They
 // are intentionally withheld from the daemon until the TUI has final text.
 const pendingVoiceSubmissions = new Set<SubmittedVoiceTranscription>();
 const PREWARM_DEBOUNCE_MS = 700;
 const PREWARM_COOLDOWN_MS = 30_000;
-const GLOBAL_IDLE_QUEUE_PUMP_DELAY_MS = 120;
 
 function generateClientConversationId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -206,146 +197,13 @@ function clearStreamFinishedPingTimer(): void {
   streamFinishedPingTimer = null;
 }
 
-function clearGlobalIdleQueuePumpTimer(): void {
-  if (!globalIdleQueuePumpTimer) return;
-  clearTimeout(globalIdleQueuePumpTimer);
-  globalIdleQueuePumpTimer = null;
-}
-
 function isConversationStreaming(convId: string): boolean {
   if (convId === state.convId) return isStreaming(state);
   return state.sidebar.conversations.some((conversation) => conversation.id === convId && conversation.streaming);
 }
 
-function releaseBackgroundQueueSubscriptionIfIdle(convId: string): void {
-  if (convId === state.convId) return;
-  if (hasDaemonQueuedMessageShadowsForConversation(state, convId)) return;
+function unsubscribeConversation(convId: string): void {
   daemon.unsubscribe(convId);
-}
-
-function unsubscribeUnlessWaitingForQueuedMessages(convId: string): void {
-  if (hasDaemonQueuedMessageShadowsForConversation(state, convId)) return;
-  daemon.unsubscribe(convId);
-}
-
-function scheduleGlobalIdleQueuePump(delayMs = GLOBAL_IDLE_QUEUE_PUMP_DELAY_MS): void {
-  if (!hasGlobalIdleQueuedMessages(state)) return;
-  if (globalIdleQueuePumpTimer) return;
-  globalIdleQueuePumpTimer = setTimeout(() => {
-    globalIdleQueuePumpTimer = null;
-    pumpGlobalIdleQueue();
-  }, delayMs);
-}
-
-function pumpGlobalIdleQueue(): void {
-  if (!daemon?.connected) return;
-  if (globalIdleQueueInFlight) return;
-
-  const next = peekGlobalIdleQueuedMessage(state);
-  if (!next) return;
-
-  const waitStatus = queuedMessageWaitStatus(state, next);
-  if (waitStatus === "waiting") return;
-  if (waitStatus === "missing-target") {
-    removeQueuedMessageByReference(state, next);
-    pushSystemMessage(state, "✗ Dropped queued message because its wait target no longer exists.", theme.error);
-    scheduleGlobalIdleQueuePump();
-    scheduleRender();
-    return;
-  }
-
-  const targetStillKnown = next.convId === state.convId
-    || state.sidebar.conversations.some((conversation) => conversation.id === next.convId);
-  if (!targetStillKnown) {
-    if (isNewConversationQueuedMessage(next)) {
-      // Creation was requested when the draft was queued; wait for the daemon's
-      // conversation_created/conversation_updated events before sending.
-      scheduleGlobalIdleQueuePump();
-      return;
-    }
-    removeQueuedMessageByReference(state, next);
-    pushSystemMessage(state, "✗ Dropped queued message because its conversation no longer exists.", theme.error);
-    scheduleGlobalIdleQueuePump();
-    scheduleRender();
-    return;
-  }
-
-  if (isConversationStreaming(next.convId) || hasDaemonQueuedMessageShadowsForConversation(state, next.convId)) return;
-
-  if (next.convId === state.convId && !canSendImages(next.images)) {
-    removeQueuedMessageByReference(state, next);
-    scheduleGlobalIdleQueuePump();
-    scheduleRender();
-    return;
-  }
-
-  removeQueuedMessageByReference(state, next);
-
-  const startedAt = Date.now();
-  if (next.convId === state.convId) {
-    if (!state.authByProvider[state.provider]) {
-      sendDirectly(next.text, next.images, { startedAt });
-      scheduleGlobalIdleQueuePump();
-      return;
-    }
-    globalIdleQueueInFlight = { convId: next.convId, observedStreaming: false };
-    sendDirectly(next.text, next.images, { startedAt });
-  } else {
-    globalIdleQueueInFlight = { convId: next.convId, observedStreaming: false };
-    daemon.sendMessage(next.convId, next.text, startedAt, next.images);
-    scheduleRender();
-  }
-}
-
-function updateGlobalIdleQueueInFlightFromEvent(event: Event): void {
-  const inFlight = globalIdleQueueInFlight;
-  if (!inFlight) return;
-
-  if (event.type === "streaming_started" && event.convId === inFlight.convId) {
-    inFlight.observedStreaming = true;
-    return;
-  }
-
-  if (event.type === "conversation_updated" && event.summary.id === inFlight.convId) {
-    if (event.summary.streaming) {
-      inFlight.observedStreaming = true;
-      return;
-    }
-    if (inFlight.observedStreaming) {
-      globalIdleQueueInFlight = null;
-      scheduleGlobalIdleQueuePump();
-    }
-    return;
-  }
-
-  if (event.type === "streaming_stopped" && event.convId === inFlight.convId && inFlight.observedStreaming) {
-    globalIdleQueueInFlight = null;
-    scheduleGlobalIdleQueuePump();
-    return;
-  }
-
-  if (event.type === "error" && event.convId === inFlight.convId) {
-    globalIdleQueueInFlight = null;
-    if (event.convId !== state.convId) {
-      const title = state.sidebar.conversations.find((conversation) => conversation.id === event.convId)?.title || event.convId;
-      pushSystemMessage(state, `✗ Queued send failed for ${title}: ${event.message}`, theme.error);
-    }
-    scheduleGlobalIdleQueuePump();
-    return;
-  }
-
-  if (event.type === "conversation_deleted" && event.convId === inFlight.convId) {
-    globalIdleQueueInFlight = null;
-    scheduleGlobalIdleQueuePump();
-  }
-}
-
-function removeBackgroundDaemonQueueShadowFromEvent(event: Event): void {
-  if (event.type !== "user_message") return;
-  if (event.convId === state.convId) return;
-  removeLocalQueueEntry(state, event.convId, event.text);
-  releaseBackgroundQueueSubscriptionIfIdle(event.convId);
-  scheduleGlobalIdleQueuePump();
 }
 
 function isBackgroundConversationScopedEvent(event: Event): boolean {
@@ -493,9 +351,6 @@ function onDaemonEvent(event: Event): void {
   }
 
   if (isBackgroundConversationScopedEvent(event)) {
-    removeBackgroundDaemonQueueShadowFromEvent(event);
-    updateGlobalIdleQueueInFlightFromEvent(event);
-    scheduleGlobalIdleQueuePump();
     return;
   }
 
@@ -506,8 +361,6 @@ function onDaemonEvent(event: Event): void {
 
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
-  removeBackgroundDaemonQueueShadowFromEvent(event);
-  updateGlobalIdleQueueInFlightFromEvent(event);
   reattachVisiblePendingVoiceSubmissions();
 
   if (event.type === "conversations_list") {
@@ -550,13 +403,11 @@ function onDaemonEvent(event: Event): void {
   }
 
   if (maybeFlushPendingAuthQueue()) {
-    scheduleGlobalIdleQueuePump();
     return;
   }
 
   if (event.type === "streaming_started" && event.convId === state.convId && event.snapshotKind !== "heartbeat") {
     renderImmediately();
-    scheduleGlobalIdleQueuePump();
     return;
   }
 
@@ -565,11 +416,9 @@ function onDaemonEvent(event: Event): void {
     // to the normal fifteen-turn in-chat buffer.
     renderImmediately();
     if (requestOlderHistory(INITIAL_BUFFER_ADDITIONAL_TURNS)) scheduleRender(0);
-    scheduleGlobalIdleQueuePump();
     return;
   }
 
-  scheduleGlobalIdleQueuePump();
   scheduleRender(renderDelayForEvent(event));
 }
 
@@ -674,7 +523,7 @@ function startNewConversation(): void {
   const wasFolderInstructionsDoc = state.folderInstructionsDoc !== null;
   pendingNewConversationConvId = null;
   if (state.convId) {
-    unsubscribeUnlessWaitingForQueuedMessages(state.convId);
+    unsubscribeConversation(state.convId);
   }
   resetDraftConversationState(state);
   if (wasFolderInstructionsDoc) {
@@ -733,7 +582,7 @@ function handleSubmit(): void {
           startNewConversation();
           break;
         case "create_conversation_for_instructions":
-          if (state.convId) unsubscribeUnlessWaitingForQueuedMessages(state.convId);
+          if (state.convId) unsubscribeConversation(state.convId);
           state.convId = null;
           resetHistoryPagination(state);
           state.contextTokens = 0;
@@ -844,7 +693,7 @@ function handleSubmit(): void {
       const convId = state.convId ?? generateClientConversationId();
       const folderId = state.sidebar.currentFolderId;
       const waitTarget = inlineCommands.queue;
-      enqueueGlobalIdleMessage(state, convId, messageText, images, queueingDraftConversation ? {
+      const queued = enqueueGlobalIdleMessage(state, convId, messageText, images, queueingDraftConversation ? {
         target: "new-conversation",
         provider: state.provider,
         model: state.model,
@@ -858,25 +707,21 @@ function handleSubmit(): void {
       if (queueingDraftConversation) {
         pendingNewConversationConvId = convId;
         state.pendingQueuedDraftConvId = convId;
-        daemon.createConversation(
-          state.provider,
-          state.model,
-          PENDING_TITLE,
-          state.effort,
-          state.fastMode,
-          undefined,
-          folderId,
-          undefined,
-          convId,
-          undefined,
-          undefined,
-          messageText,
-        );
       }
+      daemon.queueMessage(convId, messageText, "message-end", images, {
+        queueId: queued.id,
+        source: "global-idle",
+        target: queued.target ?? "conversation",
+        provider: queued.provider,
+        model: queued.model,
+        effort: queued.effort,
+        fastMode: queued.fastMode,
+        folderId: queued.folderId,
+        waitTarget: queued.waitTarget,
+      });
       clearPrompt(state);
       state.pendingImages = [];
       state.scrollOffset = 0;
-      scheduleGlobalIdleQueuePump();
       scheduleRender();
       return;
     }
@@ -954,10 +799,11 @@ function confirmPendingVoiceQueuePrompt(): boolean {
   }
 
   if (state.convId && isStreaming(state)) {
-    state.queuedMessages.push({ convId: state.convId, text: messageText, timing, images });
+    const queueId = randomUUID();
+    state.queuedMessages.push({ id: queueId, optimistic: true, convId: state.convId, text: messageText, timing, images, source: "daemon", createdAt: Date.now() });
     clearPrompt(state);
     state.pendingImages = [];
-    daemon.queueMessage(state.convId, messageText, timing, images);
+    daemon.queueMessage(state.convId, messageText, timing, images, { queueId });
   } else {
     clearPrompt(state);
     state.pendingImages = [];
@@ -1141,7 +987,12 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
         state.pendingAI = createPendingAI(submission.startedAt, submission.model);
         daemon.sendMessage(submission.convId, messageText, submission.startedAt, submission.images);
       } else {
-        daemon.queueMessage(submission.convId, messageText, submission.queuedMessage.timing, submission.images);
+        const queueId = submission.queuedMessage.id ?? randomUUID();
+        submission.queuedMessage.id = queueId;
+        submission.queuedMessage.optimistic = true;
+        submission.queuedMessage.source = "daemon";
+        submission.queuedMessage.createdAt ??= Date.now();
+        daemon.queueMessage(submission.convId, messageText, submission.queuedMessage.timing, submission.images, { queueId });
       }
     }
     scheduleRender();
@@ -1152,10 +1003,11 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
   const targetStreaming = submission.wasStreaming || (visible && isStreaming(state));
   if (submission.convId && targetStreaming) {
     removePendingVoiceEcho(submission);
+    const queueId = randomUUID();
     if (visible) {
-      state.queuedMessages.push({ convId: submission.convId, text: messageText, timing: "message-end", images: submission.images });
+      state.queuedMessages.push({ id: queueId, optimistic: true, convId: submission.convId, text: messageText, timing: "message-end", images: submission.images, source: "daemon", createdAt: Date.now() });
     }
-    daemon.queueMessage(submission.convId, messageText, "message-end", submission.images);
+    daemon.queueMessage(submission.convId, messageText, "message-end", submission.images, { queueId });
     scheduleRender();
     return;
   }
@@ -1246,12 +1098,12 @@ function confirmSelectedEditMessage(): void {
 
   const er = confirmEditMessage(state);
   if (er.action === "edit_queued") {
-    if (er.queuedMessage && isGlobalIdleQueuedMessage(er.queuedMessage)) {
+    if (er.queuedMessage) {
       removeQueuedMessageByReference(state, er.queuedMessage);
-      scheduleGlobalIdleQueuePump();
-    } else if (state.convId) {
-      removeLocalQueueEntry(state, state.convId, er.text);
-      daemon.unqueueMessage(state.convId, er.text);
+      if (er.queuedMessage.id) {
+        state.pendingQueueRemovalIds.add(er.queuedMessage.id);
+        daemon.unqueueMessage(er.queuedMessage.id);
+      }
     }
   } else if (er.action === "edit_sent" && state.convId) {
     // The daemon's unwindTo handles abort internally if streaming,
@@ -1309,7 +1161,7 @@ function handleKey(key: KeyEvent): void {
         state.scrollOffset = 0;
         sendDirectly(qr.text, qr.images);
       } else if (qr.action === "queue") {
-        daemon.queueMessage(qr.convId, qr.text, qr.timing, qr.images);
+        daemon.queueMessage(qr.convId, qr.text, qr.timing, qr.images, { queueId: qr.queueId });
       }
       break;
     }
@@ -1351,7 +1203,7 @@ function handleKey(key: KeyEvent): void {
       renderAfterLocalUiMutation();
       return;
     case "open_folder_instructions":
-      if (state.convId) unsubscribeUnlessWaitingForQueuedMessages(state.convId);
+      if (state.convId) unsubscribeConversation(state.convId);
       openFolderInstructionsDocument(state, result.folderId);
       daemon.loadFolderInstructions(result.folderId);
       break;
@@ -1466,7 +1318,7 @@ function handleMouse(ev: MouseEvent): void {
       renderAfterLocalUiMutation();
       return;
     case "open_folder_instructions":
-      if (state.convId) unsubscribeUnlessWaitingForQueuedMessages(state.convId);
+      if (state.convId) unsubscribeConversation(state.convId);
       openFolderInstructionsDocument(state, result.folderId);
       daemon.loadFolderInstructions(result.folderId);
       break;
@@ -1501,7 +1353,6 @@ function restoreDaemonSessionAfterReconnect(conversationWillReload: boolean): vo
   // commands still need a load to restore this new socket's subscription.
   daemon.ping();
   if (!conversationWillReload && state.convId) daemon.loadConversation(state.convId);
-  scheduleGlobalIdleQueuePump();
 }
 
 async function reconnectToDaemon(): Promise<void> {
@@ -1539,7 +1390,6 @@ function handleDaemonConnectionLost(): void {
   clearStreamingTailMessages(state);
   clearStreamTick();
   clearStreamFinishedPingTimer();
-  clearGlobalIdleQueuePumpTimer();
   clearPrewarmTimer();
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
@@ -1651,7 +1501,6 @@ function cleanup(): void {
   clearRenderTimer();
   clearStreamTick();
   clearStreamFinishedPingTimer();
-  clearGlobalIdleQueuePumpTimer();
   clearPrewarmTimer();
   clearReconnectTimer();
   voiceInput?.cleanup();

@@ -507,11 +507,13 @@ export function createStoredUserMessage(
   images?: ImageAttachment[],
   options: {
     subagentNotificationId?: string;
+    queueEntryId?: string;
     contextCheckpoint?: StoredUserContextCheckpoint;
   } = {},
 ): StoredMessage {
   const metadata = createMessageMetadata(startedAt, model, { endedAt: startedAt });
   if (options.subagentNotificationId) metadata.subagentNotificationId = options.subagentNotificationId;
+  if (options.queueEntryId) metadata.queueEntryId = options.queueEntryId;
   return {
     role: "user",
     content: buildUserContent(text, images),

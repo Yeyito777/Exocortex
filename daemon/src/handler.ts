@@ -47,6 +47,8 @@ import { INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages,
 
 // ── Handler ─────────────────────────────────────────────────────────
 
+let queueSchedulerGeneration = 0;
+
 export function createHandler(server: DaemonServer) {
   // ── Local helper functions ────────────────────────────────────────
 
@@ -485,6 +487,214 @@ export function createHandler(server: DaemonServer) {
 
   const isSafeClientConversationId = (id: string): boolean => /^\d+-[a-z0-9]{6}$/.test(id);
 
+  // ── Daemon-owned queue scheduler ──────────────────────────────────
+
+  let queuePumpTimer: ReturnType<typeof setTimeout> | null = null;
+  const schedulerGeneration = ++queueSchedulerGeneration;
+  const dispatchingQueueIds = new Set<string>();
+  const dispatchingConversationIds = new Set<string>();
+  /**
+   * `/queue` is one global FIFO, so accepting/removing its head from durable
+   * storage must not release the next entry while the accepted turn streams.
+   * The per-entry dispatch set cannot provide that gate after removal because
+   * the new head has a different id.
+   */
+  let globalIdleDispatchInFlight = false;
+  const queueRetryAfter = new Map<string, number>();
+
+  const scheduleQueuePump = (delayMs = 120): void => {
+    if (schedulerGeneration !== queueSchedulerGeneration || getDaemonShutdownMode() || queuePumpTimer) return;
+    queuePumpTimer = setTimeout(() => {
+      queuePumpTimer = null;
+      if (schedulerGeneration !== queueSchedulerGeneration) return;
+      pumpQueuedMessages();
+    }, delayMs);
+  };
+
+  const queueWaitStatus = (entry: import("./message-queue").QueuedMessage): "ready" | "waiting" | "missing-target" => {
+    const waitTarget = entry.waitTarget ?? { type: "global" as const };
+    const sidebar = convStore.listSidebarState();
+    const hasStreamQueue = (convId: string) => convStore.isQueuedMessageDeliverySuspended(convId)
+      || convStore.getQueuedMessages(convId).length > 0;
+
+    if (waitTarget.type === "global") {
+      if (sidebar.conversations.some(conversation => conversation.streaming)) return "waiting";
+      if (convStore.listInternalQueuedMessages().some(message => message.source === "daemon")) return "waiting";
+      return "ready";
+    }
+    if (waitTarget.type === "conversation") {
+      const conversation = sidebar.conversations.find(candidate => candidate.id === waitTarget.convId);
+      if (!conversation) return "missing-target";
+      return conversation.streaming || hasStreamQueue(conversation.id) ? "waiting" : "ready";
+    }
+
+    const folderIds = new Set<string>([waitTarget.folderId]);
+    if (!sidebar.folders.some(folder => folder.id === waitTarget.folderId)) return "missing-target";
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const folder of sidebar.folders) {
+        if (folder.parentId && folderIds.has(folder.parentId) && !folderIds.has(folder.id)) {
+          folderIds.add(folder.id);
+          changed = true;
+        }
+      }
+    }
+    return sidebar.conversations.some(conversation => conversation.folderId && folderIds.has(conversation.folderId)
+      && (conversation.streaming || hasStreamQueue(conversation.id))) ? "waiting" : "ready";
+  };
+
+  const dispatchQueuedMessage = async (entry: import("./message-queue").QueuedMessage): Promise<void> => {
+    if (dispatchingQueueIds.has(entry.id) || dispatchingConversationIds.has(entry.convId)) return;
+    if (convStore.isQueuedMessageDeliverySuspended(entry.convId)) return;
+    if ((queueRetryAfter.get(entry.id) ?? 0) > Date.now()) return;
+    dispatchingQueueIds.add(entry.id);
+    dispatchingConversationIds.add(entry.convId);
+    if (entry.source === "global-idle") globalIdleDispatchInFlight = true;
+    try {
+      const outcome = await orchestrateSendMessage(
+        server,
+        null,
+        undefined,
+        entry.convId,
+        entry.text,
+        Date.now(),
+        buildOrchestrationCallbacks(entry.convId),
+        entry.images,
+        {
+          subagentMaxDepth: entry.subagentMaxDepth ?? null,
+          subagentNotificationId: entry.subagentNotificationId,
+          queueEntryId: entry.id,
+        },
+      );
+      // Preflight failures happen before orchestrateSendMessage accepts/removes
+      // the queue entry. Drop it with an explicit shared notice rather than
+      // retrying forever and blocking FIFO progress.
+      if (!outcome.ok && convStore.getQueuedMessageById(entry.id)) {
+        const error = outcome.error ?? "unknown error";
+        const retryable = error.includes("Not authenticated")
+          || error.includes("Already streaming")
+          || error.includes("shutting down")
+          || error.includes("account authentication");
+        if (retryable) {
+          // Authentication/account mutation is recoverable user state. Keep the
+          // durable queue entry and retry at a low cadence instead of dropping
+          // accepted intent or hot-looping while no client is connected.
+          queueRetryAfter.set(entry.id, Date.now() + 5_000);
+          log("info", `handler: preserving queued message ${entry.id} after retryable preflight: ${error}`);
+        } else {
+          queueRetryAfter.delete(entry.id);
+          convStore.removeQueuedMessageById(entry.id);
+          server.broadcast({
+            type: "queue_notice",
+            queueId: entry.id,
+            convId: entry.convId,
+            message: `Queued send failed: ${error}`,
+            level: "error",
+          });
+        }
+      }
+    } catch (err) {
+      log("error", `handler: queued send failed for ${entry.id}: ${err instanceof Error ? err.message : String(err)}`);
+      if (convStore.getQueuedMessageById(entry.id)) queueRetryAfter.set(entry.id, Date.now() + 5_000);
+    } finally {
+      dispatchingQueueIds.delete(entry.id);
+      dispatchingConversationIds.delete(entry.convId);
+      if (entry.source === "global-idle") globalIdleDispatchInFlight = false;
+      scheduleQueuePump();
+    }
+  };
+
+  const pumpQueuedMessages = (): void => {
+    if (getDaemonShutdownMode()) return;
+    const queued = convStore.listInternalQueuedMessages();
+    const queuedIds = new Set(queued.map(entry => entry.id));
+    for (const id of queueRetryAfter.keys()) {
+      if (!queuedIds.has(id)) queueRetryAfter.delete(id);
+    }
+    if (queued.length === 0) return;
+
+    const now = Date.now();
+    let needsReadinessPoll = false;
+    let earliestRetryAt = Number.POSITIVE_INFINITY;
+    const retryIsDeferred = (id: string): boolean => {
+      const retryAt = queueRetryAfter.get(id) ?? 0;
+      if (retryAt <= now) return false;
+      earliestRetryAt = Math.min(earliestRetryAt, retryAt);
+      return true;
+    };
+
+    // Ordinary per-conversation FIFO queues can make progress concurrently.
+    const seenConversations = new Set<string>();
+    for (const entry of queued) {
+      if (entry.source !== "daemon" || seenConversations.has(entry.convId)) continue;
+      seenConversations.add(entry.convId);
+      if (!convStore.get(entry.convId)) {
+        convStore.removeQueuedMessageById(entry.id);
+        server.broadcast({ type: "queue_notice", queueId: entry.id, convId: entry.convId, message: "Dropped queued message because its conversation no longer exists.", level: "error" });
+        continue;
+      }
+      if (!convStore.isStreaming(entry.convId) && !convStore.isQueuedMessageDeliverySuspended(entry.convId)) {
+        if (!retryIsDeferred(entry.id)) void dispatchQueuedMessage(entry);
+      } else {
+        needsReadinessPoll = true;
+      }
+    }
+
+    // `/queue` intentionally remains one global FIFO. Its first entry blocks
+    // later idle-wait entries until its dependency is ready and its turn ends.
+    const idleEntry = queued.find(entry => entry.source === "global-idle");
+    if (idleEntry && !globalIdleDispatchInFlight && !dispatchingQueueIds.has(idleEntry.id)) {
+      if (!convStore.get(idleEntry.convId) && idleEntry.target === "new-conversation") {
+        const defaults = effectiveConversationDefaults();
+        const provider = idleEntry.provider ?? defaults.provider;
+        const providerInfo = getProvider(provider);
+        if (providerInfo) {
+          const model = idleEntry.model && (isKnownModel(provider, idleEntry.model) || allowsCustomModels(provider))
+            ? idleEntry.model
+            : (provider === defaults.provider ? defaults.model : getDefaultModel(provider));
+          const effort = normalizeEffort(provider, model, idleEntry.effort);
+          const fastMode = idleEntry.fastMode === true && supportsFastMode(provider);
+          const folderId = idleEntry.folderId
+            && convStore.listSidebarState().folders.some(folder => folder.id === idleEntry.folderId)
+            ? idleEntry.folderId
+            : null;
+          convStore.create(idleEntry.convId, provider, model, PENDING_TITLE, effort, fastMode, folderId);
+          broadcastConversationUpdated(server, idleEntry.convId);
+          startTitleGeneration(server, idleEntry.convId, { extraContext: idleEntry.text });
+          log("info", `handler: recovered queued draft conversation ${idleEntry.convId} from durable queue ${idleEntry.id}`);
+        }
+      }
+      const status = queueWaitStatus(idleEntry);
+      if (status === "missing-target" || !convStore.get(idleEntry.convId)) {
+        convStore.removeQueuedMessageById(idleEntry.id);
+        server.broadcast({
+          type: "queue_notice",
+          queueId: idleEntry.id,
+          convId: idleEntry.convId,
+          message: status === "missing-target"
+            ? "Dropped queued message because its wait target no longer exists."
+            : "Dropped queued message because its conversation no longer exists.",
+          level: "error",
+        });
+      } else if (status === "ready"
+          && !convStore.isStreaming(idleEntry.convId)
+          && !convStore.isQueuedMessageDeliverySuspended(idleEntry.convId)) {
+        if (!retryIsDeferred(idleEntry.id)) void dispatchQueuedMessage(idleEntry);
+      } else {
+        needsReadinessPoll = true;
+      }
+    }
+
+    if (needsReadinessPoll) scheduleQueuePump();
+    else if (Number.isFinite(earliestRetryAt)) scheduleQueuePump(Math.max(120, earliestRetryAt - Date.now()));
+  };
+
+  convStore.setQueuedMessagesChangedListener((messages) => {
+    server.broadcast({ type: "queue_updated", messages });
+    scheduleQueuePump();
+  });
+
   return async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
     switch (cmd.type) {
 
@@ -507,6 +717,7 @@ export function createHandler(server: DaemonServer) {
         }
         server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
         server.sendTo(client, { type: "conversations_list", ...convStore.listSidebarState() });
+        server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages() });
         for (const provider of getProviders()) {
           if (!hasConfiguredCredentials(provider.id)) continue;
           refreshUsage(provider.id, (usage) => broadcastUsage(provider.id, usage));
@@ -996,6 +1207,7 @@ export function createHandler(server: DaemonServer) {
 
       case "list_conversations": {
         server.sendTo(client, { type: "conversations_list", reqId: cmd.reqId, ...convStore.listSidebarState() });
+        server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages() });
         break;
       }
 
@@ -1167,16 +1379,133 @@ export function createHandler(server: DaemonServer) {
       // ── Queue/system/history commands ─────────────────────────────
 
       case "queue_message": {
-        convStore.pushQueuedMessage(cmd.convId, cmd.text, cmd.timing, cmd.images);
+        const queueId = cmd.queueId?.trim();
+        let queuedDraftSettings: {
+          provider: import("./messages").ProviderId;
+          model: import("./messages").ModelId;
+          effort: import("./messages").EffortLevel;
+          fastMode: boolean;
+          folderId: string | null;
+        } | null = null;
+        if (queueId && (queueId.length > 200 || /[\r\n]/.test(queueId))) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid queue id" });
+          server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), settledQueueIds: [queueId] });
+          break;
+        }
+        if (queueId && convStore.getQueuedMessageById(queueId)) {
+          // Idempotent replay after a socket reconnect.
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+          server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), settledQueueIds: [queueId] });
+          break;
+        }
+        if (queueId && convStore.get(cmd.convId)?.messages.some(message => message.metadata?.queueEntryId === queueId)) {
+          // The daemon may have accepted and removed this entry before the
+          // caller observed its acknowledgement. Durable history deduplicates
+          // that replay as well as queue-file crash recovery.
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+          server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), settledQueueIds: [queueId] });
+          break;
+        }
+
+        if (cmd.source === "global-idle" && cmd.target === "new-conversation") {
+          if (!isSafeClientConversationId(cmd.convId) || convStore.get(cmd.convId)) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid or duplicate client-supplied conversation id" });
+            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            break;
+          }
+          const defaults = effectiveConversationDefaults();
+          const provider = cmd.provider ?? inferProviderForModel(cmd.model) ?? defaults.provider;
+          if (!getProvider(provider)) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Unknown provider: ${provider}` });
+            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            break;
+          }
+          if (cmd.model && !isKnownModel(provider, cmd.model) && !allowsCustomModels(provider)) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: unknownModelMessage(provider, cmd.model) });
+            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            break;
+          }
+          const model = cmd.model ?? (provider === defaults.provider ? defaults.model : getDefaultModel(provider));
+          const effort = normalizeEffort(provider, model, cmd.effort ?? effortDefaultForSelection(provider, model));
+          if (cmd.fastMode === true && !supportsFastMode(provider)) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Fast mode is only available for ${provider} conversations that support it.` });
+            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            break;
+          }
+          const fastMode = (cmd.fastMode ?? fastDefaultForSelection(provider, model)) && supportsFastMode(provider);
+          const folderId = cmd.folderId ?? null;
+          if (folderId && !convStore.listSidebarState().folders.some(folder => folder.id === folderId)) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Folder ${folderId} not found` });
+            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            break;
+          }
+          queuedDraftSettings = { provider, model, effort, fastMode, folderId };
+        } else if (!convStore.get(cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+          break;
+        }
+
+        if (cmd.source === "global-idle") {
+          convStore.pushGlobalIdleQueuedMessage(cmd.convId, cmd.text, cmd.images, {
+            id: queueId,
+            target: cmd.target ?? "conversation",
+            provider: queuedDraftSettings?.provider ?? cmd.provider,
+            model: queuedDraftSettings?.model ?? cmd.model,
+            effort: queuedDraftSettings?.effort ?? cmd.effort,
+            fastMode: queuedDraftSettings?.fastMode ?? cmd.fastMode,
+            folderId: queuedDraftSettings?.folderId ?? cmd.folderId,
+            waitTarget: cmd.waitTarget,
+          });
+        } else {
+          convStore.pushQueuedMessage(cmd.convId, cmd.text, cmd.timing, cmd.images, undefined, undefined, queueId);
+        }
+        if (queuedDraftSettings) {
+          const { provider, model, effort, fastMode, folderId } = queuedDraftSettings;
+          // Queue persistence happens first. If the daemon dies before creation,
+          // the scheduler reconstructs this draft from the captured settings.
+          convStore.create(cmd.convId, provider, model, PENDING_TITLE, effort, fastMode, folderId);
+          server.sendTo(client, {
+            type: "conversation_created",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            provider,
+            model,
+            effort,
+            fastMode,
+          });
+          broadcastConversationUpdated(server, cmd.convId);
+          startTitleGeneration(server, cmd.convId, { extraContext: cmd.text });
+        }
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         log("info", `handler: queued ${cmd.timing} message for ${cmd.convId}: "${cmd.text.slice(0, 50)}"`);
         break;
       }
 
       case "unqueue_message": {
-        const ok = convStore.removeQueuedMessage(cmd.convId, cmd.text);
-        server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-        if (ok) log("info", `handler: unqueued message for ${cmd.convId}: "${cmd.text.slice(0, 50)}"`);
+        const ok = cmd.queueId
+          ? convStore.removeQueuedMessageById(cmd.queueId)
+          : (cmd.convId && cmd.text ? convStore.removeQueuedMessage(cmd.convId, cmd.text) : false);
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId, ...(cmd.convId ? { convId: cmd.convId } : {}) });
+        if (cmd.queueId) {
+          server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), settledQueueIds: [cmd.queueId] });
+        }
+        if (ok) log("info", `handler: unqueued message ${cmd.queueId ?? `${cmd.convId}: ${cmd.text?.slice(0, 50)}`}`);
+        break;
+      }
+
+      case "update_queued_message": {
+        const ok = convStore.updateQueuedMessage(cmd.queueId, cmd.text, cmd.timing, cmd.images);
+        if (ok) server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+        else server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Queued message ${cmd.queueId} not found` });
+        break;
+      }
+
+      case "move_queued_message": {
+        const exists = !!convStore.getQueuedMessageById(cmd.queueId);
+        const moved = convStore.moveQueuedMessage(cmd.queueId, cmd.direction);
+        if (moved || exists) server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+        else server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Queued message ${cmd.queueId} not found` });
         break;
       }
 

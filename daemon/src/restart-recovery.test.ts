@@ -129,7 +129,7 @@ describe("restart recovery file", () => {
     expect(readInterruptedStreamIds()).toEqual([convId]);
   });
 
-  test("explicit stop aborts and flushes active work without leaving anything resumable", async () => {
+  test("explicit stop aborts active work while preserving queued user intent", async () => {
     const parentConvId = makeConversation("stop-parent");
     const childConvId = makeConversation("stop-child");
     const ac = new AbortController();
@@ -156,7 +156,14 @@ describe("restart recovery file", () => {
     expect(readInterruptedStreamIds()).toEqual([]);
     expect(hasActiveGoalRestartMarker()).toBe(false);
     expect(listPendingSubagentNotifications()).toEqual([]);
-    expect(getQueuedMessages(childConvId)).toEqual([]);
+    expect(getQueuedMessages(childConvId)).toEqual([
+      expect.objectContaining({
+        convId: childConvId,
+        text: "do not run after start",
+        timing: "next-turn",
+        source: "daemon",
+      }),
+    ]);
     expect(consumeGoalContinuationAfterStream(childConvId)).toBe(false);
   });
 

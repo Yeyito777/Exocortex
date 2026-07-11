@@ -218,7 +218,8 @@ export async function prepareCatchableShutdownWithoutReplay(timeoutMs = 5_000): 
   const stopRunning = (ids: string[]): void => {
     for (const id of ids) {
       interrupted.add(id);
-      convStore.clearQueuedMessages(id);
+      // Queued user intent is durable and survives both stop and restart. Only
+      // autonomous goal continuation state is intentionally discarded here.
       convStore.clearGoalContinuationAfterStream(id);
       const ac = convStore.getActiveJob(id);
       if (ac && !ac.signal.aborted) ac.abort("daemon-stop");

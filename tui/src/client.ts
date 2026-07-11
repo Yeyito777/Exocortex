@@ -6,7 +6,7 @@
 
 import { connect, type Socket } from "net";
 import { existsSync } from "fs";
-import type { Command, Event, GoalAction, MoveSidebarItemsOptions, QueueTiming, TrimMode, SidebarItemRef } from "./protocol";
+import type { Command, Event, GoalAction, MoveSidebarItemsOptions, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 
@@ -21,6 +21,14 @@ export interface ConnectResult {
   replayedCommands: Command[];
 }
 
+type ReplayableQueueCommand = Extract<Command, { type: "queue_message" | "unqueue_message" }>;
+
+function replayableQueueCommandKey(command: Command): string | null {
+  if (command.type === "queue_message" && command.queueId) return `enqueue:${command.queueId}`;
+  if (command.type === "unqueue_message" && command.queueId) return `unqueue:${command.queueId}`;
+  return null;
+}
+
 export class DaemonClient {
   private socket: Socket | null = null;
   private buffer = "";
@@ -32,6 +40,16 @@ export class DaemonClient {
   // Commands issued while the daemon is unavailable are replayed on the next
   // successful connect so the TUI can keep accepting input during reconnect.
   private pendingCommands: Command[] = [];
+  /**
+   * Enqueue/unqueue mutations remain unresolved after socket.write(): the daemon
+   * may disconnect before durably applying them or before its canonical response
+   * reaches us. Stable queue ids make replay idempotent, so retain these commands
+   * until a queue snapshot conclusively settles them.
+   */
+  private unresolvedQueueCommands = new Map<string, { command: ReplayableQueueCommand; sequence: number }>();
+  /** Original issuance order shared by connected-unresolved and offline commands. */
+  private commandSequences = new WeakMap<Command, number>();
+  private nextCommandSequence = 0;
   private llmCallbacks = new Map<string, { onSuccess: LlmCompleteCallback; onError?: LlmErrorCallback }>();
   private transcriptionCallbacks = new Map<string, { onSuccess: TranscriptionCallback; onError?: TranscriptionErrorCallback }>();
   private nextReqId = 0;
@@ -105,11 +123,17 @@ export class DaemonClient {
   }
 
   send(command: Command): void {
+    const sequence = ++this.nextCommandSequence;
+    this.commandSequences.set(command, sequence);
+    const queueCommandKey = replayableQueueCommandKey(command);
+    if (queueCommandKey) {
+      this.unresolvedQueueCommands.set(queueCommandKey, { command: command as ReplayableQueueCommand, sequence });
+    }
     if (!this.socket || !this._connected) {
       this.pendingCommands.push(command);
       return;
     }
-    this.socket.write(JSON.stringify(command) + "\n");
+    this.writeCommand(command);
   }
 
   // ── Convenience methods ─────────────────────────────────────────
@@ -259,12 +283,36 @@ export class DaemonClient {
     this.send({ type: "generate_title", convId });
   }
 
-  queueMessage(convId: string, text: string, timing: QueueTiming, images?: ImageAttachment[]): void {
-    this.send({ type: "queue_message", convId, text, timing, ...(images?.length ? { images } : {}) });
+  queueMessage(
+    convId: string,
+    text: string,
+    timing: QueueTiming,
+    images?: ImageAttachment[],
+    options: {
+      queueId?: string;
+      source?: "daemon" | "global-idle";
+      target?: "conversation" | "new-conversation";
+      provider?: ProviderId;
+      model?: ModelId;
+      effort?: EffortLevel;
+      fastMode?: boolean;
+      folderId?: string | null;
+      waitTarget?: QueueWaitTarget;
+    } = {},
+  ): void {
+    this.send({ type: "queue_message", convId, text, timing, ...(images?.length ? { images } : {}), ...options });
   }
 
-  unqueueMessage(convId: string, text: string): void {
-    this.send({ type: "unqueue_message", convId, text });
+  unqueueMessage(queueId: string): void {
+    this.send({ type: "unqueue_message", queueId });
+  }
+
+  updateQueuedMessage(queueId: string, text: string, timing: QueueTiming, images?: ImageAttachment[]): void {
+    this.send({ type: "update_queued_message", queueId, text, timing, ...(images?.length ? { images } : {}) });
+  }
+
+  moveQueuedMessage(queueId: string, direction: "up" | "down"): void {
+    this.send({ type: "move_queued_message", queueId, direction });
   }
 
   unwindConversation(convId: string, userMessageIndex: number): void {
@@ -340,12 +388,46 @@ export class DaemonClient {
     );
   }
 
+  private writeCommand(command: Command): void {
+    this.socket?.write(JSON.stringify(command) + "\n");
+  }
+
   private flushPendingCommands(): Command[] {
-    if (!this.socket || !this._connected || this.pendingCommands.length === 0) return [];
+    if (!this.socket || !this._connected) return [];
     const pending = this.pendingCommands;
     this.pendingCommands = [];
-    for (const command of pending) this.send(command);
-    return pending;
+
+    // Queue mutations in the offline list may be stale duplicates of the latest
+    // unresolved command for that key. Merge the canonical unresolved mutations
+    // with ordinary offline work by original issuance order. This preserves
+    // causality such as queue → unwind → unqueue across a disconnect.
+    const ordinary = pending
+      .filter(command => replayableQueueCommandKey(command) === null)
+      .map(command => ({ command, sequence: this.commandSequences.get(command) ?? ++this.nextCommandSequence }));
+    const replayed = [...ordinary, ...this.unresolvedQueueCommands.values()]
+      .sort((a, b) => a.sequence - b.sequence)
+      .map(entry => entry.command);
+    for (const command of replayed) this.writeCommand(command);
+    return replayed;
+  }
+
+  private settleQueueCommands(event: Event): void {
+    if (event.type !== "queue_updated") return;
+    const canonicalIds = new Set(event.messages.map(message => message.id));
+    const settledIds = new Set(event.settledQueueIds ?? []);
+    for (const [key, pending] of this.unresolvedQueueCommands) {
+      const { command } = pending;
+      const queueId = command.queueId;
+      if (!queueId) continue;
+      if (command.type === "queue_message") {
+        if (canonicalIds.has(queueId) || settledIds.has(queueId)) this.unresolvedQueueCommands.delete(key);
+      } else if (settledIds.has(queueId) && !canonicalIds.has(queueId)) {
+        // An idempotent enqueue response can settle the same id while the entry
+        // remains canonical. Only absence plus the targeted settlement proves
+        // that an unqueue was applied.
+        this.unresolvedQueueCommands.delete(key);
+      }
+    }
   }
 
   private onData(data: Buffer | string): void {
@@ -358,6 +440,7 @@ export class DaemonClient {
       if (!line) continue;
       try {
         const event = JSON.parse(line) as Event;
+        this.settleQueueCommands(event);
         let handledByCallback = false;
 
         // Intercept request-scoped responses so they do not also surface as

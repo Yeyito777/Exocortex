@@ -350,7 +350,7 @@ export function handleUserMessage(event: Extract<Event, { type: "user_message" }
   });
 
   // Remove matching local shadow — the daemon already injected it.
-  removeLocalQueueEntry(state, event.convId, event.text);
+  removeLocalQueueEntry(state, event.convId, event.text, event.queueId);
 
   state.scrollOffset = 0;
 }

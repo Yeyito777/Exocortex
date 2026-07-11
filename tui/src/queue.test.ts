@@ -1,17 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { createPendingAI, type ConversationSummary, type FolderSummary, type ImageAttachment } from "./messages";
+import { createPendingAI, type ImageAttachment } from "./messages";
 import {
   clearAllQueuedMessagesForConversation,
-  clearLocalQueue,
   confirmQueueMessage,
   enqueueGlobalIdleMessage,
-  hasDaemonQueuedMessageShadows,
   isGlobalIdleQueuedMessage,
   openQueuePrompt,
-  queuedMessageWaitStatus,
   queueTimingLabel,
-  queueWaitStatus,
-  removeFirstDaemonQueuedMessageForConversation,
   removeLocalQueueEntry,
   cancelQueuePrompt,
 } from "./queue";
@@ -22,40 +17,6 @@ function makeImage(): ImageAttachment {
     mediaType: "image/png",
     base64: "i-am-base64",
     sizeBytes: 1234,
-  };
-}
-
-function conversation(id: string, overrides: Partial<ConversationSummary> = {}): ConversationSummary {
-  return {
-    id,
-    provider: "openai",
-    model: "gpt-5.4",
-    effort: "medium",
-    fastMode: false,
-    createdAt: 1,
-    updatedAt: 1,
-    messageCount: 0,
-    title: id,
-    goal: null,
-    marked: false,
-    pinned: false,
-    streaming: false,
-    unread: false,
-    sortOrder: 1,
-    ...overrides,
-  };
-}
-
-function folder(id: string, overrides: Partial<FolderSummary> = {}): FolderSummary {
-  return {
-    id,
-    name: id,
-    parentId: null,
-    createdAt: 1,
-    updatedAt: 1,
-    pinned: false,
-    sortOrder: 1,
-    ...overrides,
   };
 }
 
@@ -92,6 +53,7 @@ describe("queue prompt image handling", () => {
 
     expect(result).toEqual({
       action: "queue",
+      queueId: expect.any(String),
       convId: "conv-1",
       text: "caption",
       timing: "message-end",
@@ -100,7 +62,7 @@ describe("queue prompt image handling", () => {
     expect(state.pendingImages).toEqual([]);
     expect(state.queuePrompt).toBeNull();
     expect(state.queuedMessages).toEqual([
-      { convId: "conv-1", text: "caption", timing: "message-end", images: [img] },
+      expect.objectContaining({ id: expect.any(String), convId: "conv-1", text: "caption", timing: "message-end", images: [img], source: "daemon" }),
     ]);
   });
 
@@ -141,18 +103,21 @@ describe("queue prompt image handling", () => {
 
     expect(result).toEqual({
       action: "queue",
+      queueId: expect.any(String),
       convId: "conv-1",
       text: "Go ahead and implement that please",
       timing: "message-end",
       images: undefined,
     });
     expect(state.queuedMessages).toEqual([
-      {
+      expect.objectContaining({
+        id: expect.any(String),
         convId: "conv-1",
         text: "Go ahead and implement that please",
         timing: "message-end",
         images: undefined,
-      },
+        source: "daemon",
+      }),
     ]);
   });
 
@@ -176,17 +141,16 @@ describe("queue prompt image handling", () => {
   });
 });
 
-describe("global idle /queue shadow handling", () => {
-  test("enqueues TUI-only global idle messages separately from daemon queue shadows", () => {
+describe("global idle /queue optimistic display", () => {
+  test("creates a stable optimistic global-idle shadow", () => {
     const state = createInitialState();
 
     const queued = enqueueGlobalIdleMessage(state, "conv-1", "later");
 
     expect(isGlobalIdleQueuedMessage(queued)).toBe(true);
     expect(state.queuedMessages).toEqual([
-      { convId: "conv-1", text: "later", timing: "message-end", source: "global-idle" },
+      expect.objectContaining({ id: expect.any(String), convId: "conv-1", text: "later", timing: "message-end", source: "global-idle" }),
     ]);
-    expect(hasDaemonQueuedMessageShadows(state)).toBe(false);
   });
 
   test("captures draft settings for queued new conversations", () => {
@@ -201,7 +165,8 @@ describe("global idle /queue shadow handling", () => {
       folderId: "folder-1",
     });
 
-    expect(queued).toEqual({
+    expect(queued).toEqual(expect.objectContaining({
+      id: expect.any(String),
       convId: "reserved-conv",
       text: "start later",
       timing: "message-end",
@@ -212,65 +177,25 @@ describe("global idle /queue shadow handling", () => {
       effort: "high",
       fastMode: true,
       folderId: "folder-1",
-    });
+    }));
   });
 
-  test("stores conversation wait targets on TUI-owned queued messages", () => {
+  test("stores conversation wait targets for the daemon command", () => {
     const state = createInitialState();
 
     const queued = enqueueGlobalIdleMessage(state, "conv-1", "later", undefined, {
       waitTarget: { type: "conversation", convId: "dependency", label: "Build" },
     });
 
-    expect(queued).toEqual({
+    expect(queued).toEqual(expect.objectContaining({
+      id: expect.any(String),
       convId: "conv-1",
       text: "later",
       timing: "message-end",
       source: "global-idle",
       waitTarget: { type: "conversation", convId: "dependency", label: "Build" },
-    });
+    }));
     expect(queueTimingLabel(queued)).toBe("queued: after Build");
-  });
-
-  test("waits for a targeted conversation to stop streaming", () => {
-    const state = createInitialState();
-    state.sidebar.conversations = [conversation("dependency", { streaming: true })];
-    const queued = enqueueGlobalIdleMessage(state, "conv-1", "later", undefined, {
-      waitTarget: { type: "conversation", convId: "dependency", label: "Build" },
-    });
-
-    expect(queuedMessageWaitStatus(state, queued)).toBe("waiting");
-
-    state.sidebar.conversations[0]!.streaming = false;
-    expect(queuedMessageWaitStatus(state, queued)).toBe("ready");
-  });
-
-  test("waits for all descendant conversations in a target folder", () => {
-    const state = createInitialState();
-    state.sidebar.folders = [
-      folder("work", { name: "Work" }),
-      folder("clients", { name: "Clients", parentId: "work" }),
-    ];
-    state.sidebar.conversations = [
-      conversation("idle", { folderId: "work" }),
-      conversation("busy", { folderId: "clients", streaming: true }),
-      conversation("outside", { folderId: null, streaming: true }),
-    ];
-
-    expect(queueWaitStatus(state, { type: "folder", folderId: "work", label: "Work" })).toBe("waiting");
-
-    state.sidebar.conversations[1]!.streaming = false;
-    expect(queueWaitStatus(state, { type: "folder", folderId: "work", label: "Work" })).toBe("ready");
-  });
-
-  test("daemon queue reload cleanup preserves global idle queue entries", () => {
-    const state = createInitialState();
-    state.queuedMessages.push({ convId: "conv-1", text: "daemon", timing: "message-end" });
-    const global = enqueueGlobalIdleMessage(state, "conv-1", "global");
-
-    clearLocalQueue(state, "conv-1");
-
-    expect(state.queuedMessages).toEqual([global]);
   });
 
   test("daemon user_message cleanup does not remove a same-text global idle entry", () => {
@@ -283,20 +208,6 @@ describe("global idle /queue shadow handling", () => {
     expect(state.queuedMessages).toEqual([global]);
   });
 
-  test("background daemon queue reconciliation removes one daemon shadow at a time", () => {
-    const state = createInitialState();
-    state.queuedMessages.push({ convId: "conv-1", text: "first", timing: "message-end" });
-    state.queuedMessages.push({ convId: "conv-1", text: "second", timing: "message-end" });
-    const global = enqueueGlobalIdleMessage(state, "conv-1", "global");
-
-    expect(removeFirstDaemonQueuedMessageForConversation(state, "conv-1")).toBe(true);
-
-    expect(state.queuedMessages).toEqual([
-      { convId: "conv-1", text: "second", timing: "message-end" },
-      global,
-    ]);
-  });
-
   test("conversation deletion clears global idle queue entries too", () => {
     const state = createInitialState();
     enqueueGlobalIdleMessage(state, "conv-1", "global");
@@ -305,7 +216,7 @@ describe("global idle /queue shadow handling", () => {
     clearAllQueuedMessagesForConversation(state, "conv-1");
 
     expect(state.queuedMessages).toEqual([
-      { convId: "conv-2", text: "keep", timing: "message-end", source: "global-idle" },
+      expect.objectContaining({ id: expect.any(String), convId: "conv-2", text: "keep", timing: "message-end", source: "global-idle" }),
     ]);
   });
 });

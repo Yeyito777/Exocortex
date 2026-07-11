@@ -64,6 +64,156 @@ describe("DaemonClient request-scoped events", () => {
 });
 
 describe("DaemonClient commands", () => {
+  test("sends stable daemon-owned queue metadata", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.queueMessage("conv-1", "later", "message-end", undefined, {
+      queueId: "queue-1",
+      source: "global-idle",
+      target: "conversation",
+      waitTarget: { type: "conversation", convId: "dependency", label: "Build" },
+    });
+    client.unqueueMessage("queue-1");
+    client.updateQueuedMessage("queue-1", "edited", "next-turn");
+    client.moveQueuedMessage("queue-1", "up");
+
+    expect(internal.pendingCommands).toEqual([
+      {
+        type: "queue_message",
+        convId: "conv-1",
+        text: "later",
+        timing: "message-end",
+        queueId: "queue-1",
+        source: "global-idle",
+        target: "conversation",
+        waitTarget: { type: "conversation", convId: "dependency", label: "Build" },
+      },
+      { type: "unqueue_message", queueId: "queue-1" },
+      { type: "update_queued_message", queueId: "queue-1", text: "edited", timing: "next-turn" },
+      { type: "move_queued_message", queueId: "queue-1", direction: "up" },
+    ]);
+  });
+
+  test("replays a connected enqueue after socket loss until a canonical snapshot settles it", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    const firstWrites: string[] = [];
+    internal.socket = { write: (value: string) => { firstWrites.push(value); } };
+    internal._connected = true;
+
+    client.queueMessage("conv-1", "durable intent", "message-end", undefined, { queueId: "queue-replay" });
+    expect(firstWrites.map(line => JSON.parse(line))).toEqual([expect.objectContaining({
+      type: "queue_message",
+      queueId: "queue-replay",
+    })]);
+    expect(internal.unresolvedQueueCommands.size).toBe(1);
+
+    const reconnectWrites: string[] = [];
+    internal.socket = { write: (value: string) => { reconnectWrites.push(value); } };
+    const replayed = internal.flushPendingCommands();
+    expect(replayed).toEqual([expect.objectContaining({ type: "queue_message", queueId: "queue-replay" })]);
+    expect(reconnectWrites.map(line => JSON.parse(line))).toEqual([expect.objectContaining({
+      type: "queue_message",
+      queueId: "queue-replay",
+    })]);
+
+    internal.onData(Buffer.from(JSON.stringify({
+      type: "queue_updated",
+      messages: [{
+        id: "queue-replay",
+        convId: "conv-1",
+        text: "durable intent",
+        timing: "message-end",
+        source: "daemon",
+        createdAt: 1,
+      }],
+    }) + "\n"));
+    expect(internal.unresolvedQueueCommands.size).toBe(0);
+  });
+
+  test("replays unqueue until a targeted settled snapshot confirms removal", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    const writes: string[] = [];
+    internal.socket = { write: (value: string) => { writes.push(value); } };
+    internal._connected = true;
+
+    client.unqueueMessage("queue-remove-replay");
+    internal.onData(Buffer.from(JSON.stringify({ type: "queue_updated", messages: [] }) + "\n"));
+    expect(internal.unresolvedQueueCommands.size).toBe(1);
+
+    writes.length = 0;
+    const replayed = internal.flushPendingCommands();
+    expect(replayed).toEqual([{ type: "unqueue_message", queueId: "queue-remove-replay" }]);
+    expect(writes.map(line => JSON.parse(line))).toEqual(replayed);
+
+    internal.onData(Buffer.from(JSON.stringify({
+      type: "queue_updated",
+      messages: [],
+      settledQueueIds: ["queue-remove-replay"],
+    }) + "\n"));
+    expect(internal.unresolvedQueueCommands.size).toBe(0);
+  });
+
+  test("preserves queue and ordinary command issuance order while replaying", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    internal.socket = { write: () => {} };
+    internal._connected = true;
+    client.queueMessage("conv-1", "before unwind", "message-end", undefined, { queueId: "queue-ordered" });
+
+    internal.socket = null;
+    internal._connected = false;
+    client.send({ type: "unwind_conversation", convId: "conv-1", userMessageIndex: 0 });
+    client.unqueueMessage("queue-ordered");
+
+    const writes: string[] = [];
+    internal.socket = { write: (value: string) => { writes.push(value); } };
+    internal._connected = true;
+    const replayed = internal.flushPendingCommands();
+    expect(replayed.map((command: { type: string }) => command.type)).toEqual([
+      "queue_message",
+      "unwind_conversation",
+      "unqueue_message",
+    ]);
+    expect(writes.map(line => JSON.parse(line).type)).toEqual([
+      "queue_message",
+      "unwind_conversation",
+      "unqueue_message",
+    ]);
+  });
+
+  test("does not let an enqueue settlement prematurely settle an unqueue for the same id", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    internal.socket = { write: () => {} };
+    internal._connected = true;
+    client.queueMessage("conv-1", "cancel me", "message-end", undefined, { queueId: "queue-cancel-race" });
+    client.unqueueMessage("queue-cancel-race");
+
+    internal.onData(Buffer.from(JSON.stringify({
+      type: "queue_updated",
+      messages: [{
+        id: "queue-cancel-race",
+        convId: "conv-1",
+        text: "cancel me",
+        timing: "message-end",
+        source: "daemon",
+        createdAt: 1,
+      }],
+      settledQueueIds: ["queue-cancel-race"],
+    }) + "\n"));
+    expect([...internal.unresolvedQueueCommands.keys()]).toEqual(["unqueue:queue-cancel-race"]);
+
+    internal.onData(Buffer.from(JSON.stringify({
+      type: "queue_updated",
+      messages: [],
+      settledQueueIds: ["queue-cancel-race"],
+    }) + "\n"));
+    expect(internal.unresolvedQueueCommands.size).toBe(0);
+  });
+
   test("can create a conversation with an atomic initial message", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;

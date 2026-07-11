@@ -51,7 +51,7 @@ interface VoiceTranscribeClient {
 
 export interface SubmittedVoiceTranscription {
   message: UserMessage;
-  queuedMessage?: { convId: string; text: string; timing: QueueTiming; images?: ImageAttachment[] };
+  queuedMessage?: QueuedMessage;
   startedAt: number;
   images?: ImageAttachment[];
   convId: string | null;
