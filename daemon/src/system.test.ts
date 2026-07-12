@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { buildSystemPrompt } from "./system";
+import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
+import { configDir } from "@exocortex/shared/paths";
+import { buildSystemPrompt, getUserAddendum, reloadUserAddendum, setUserAddendum } from "./system";
 
 describe("system prompt", () => {
   test("includes Exocortex-owned tool/runtime guidance", () => {
@@ -30,5 +33,24 @@ describe("system prompt", () => {
 
     expect(prompt).not.toContain("Exocortex conversation ID:");
     expect(prompt).not.toContain("Native exo subagent depth:");
+  });
+
+  test("preserves live app instructions on read errors and rejects stale writes", () => {
+    const original = getUserAddendum();
+    const path = join(configDir(), "system.md");
+    try {
+      setUserAddendum("Loaded instructions");
+      writeFileSync(path, "External instructions\n");
+      expect(() => setUserAddendum("Stale replacement", "Loaded instructions")).toThrow("App instructions changed since they were read");
+      expect(reloadUserAddendum()).toBe("External instructions");
+
+      rmSync(path, { force: true });
+      mkdirSync(path);
+      expect(() => reloadUserAddendum()).toThrow();
+      expect(getUserAddendum()).toBe("External instructions");
+    } finally {
+      rmSync(path, { recursive: true, force: true });
+      setUserAddendum(original);
+    }
   });
 });

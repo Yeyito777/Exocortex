@@ -1181,7 +1181,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       broadcastFolderInstructionsUpdated(server, folderId, nextText);
       effectiveInstructions = convStore.getEffectiveFolderInstructions(folderId);
     } else if (changed) {
-      setUserAddendum(nextText);
+      setUserAddendum(nextText, currentText);
     }
 
     return ok(pretty({

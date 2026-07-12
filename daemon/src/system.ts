@@ -14,9 +14,18 @@ function userAddendumPath(): string {
   return join(configDir(), "system.md");
 }
 
+function readUserAddendumFile(): string {
+  try {
+    return readFileSync(userAddendumPath(), "utf8").trim();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  }
+}
+
 function loadUserAddendum(): void {
   try {
-    _userAddendum = readFileSync(userAddendumPath(), "utf8").trim();
+    _userAddendum = readUserAddendumFile();
   } catch {
     _userAddendum = "";
   }
@@ -29,16 +38,20 @@ export function getUserAddendum(): string {
 
 /** Reload the app-wide addendum before a compare-and-set operation. */
 export function reloadUserAddendum(): string {
-  loadUserAddendum();
+  const text = readUserAddendumFile();
+  _userAddendum = text;
   return _userAddendum;
 }
 
 /** Persist and immediately activate the app-wide user instruction addendum. */
-export function setUserAddendum(text: string): void {
+export function setUserAddendum(text: string, expectedText?: string): void {
   const normalized = text.trim();
   const path = userAddendumPath();
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   mkdirSync(configDir(), { recursive: true });
+  if (expectedText !== undefined && readUserAddendumFile() !== expectedText) {
+    throw new Error("App instructions changed since they were read");
+  }
   try {
     writeFileSync(tmp, normalized ? `${normalized}\n` : "", { mode: 0o644 });
     renameSync(tmp, path);
