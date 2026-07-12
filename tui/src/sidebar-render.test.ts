@@ -98,11 +98,12 @@ describe("sidebar rendering", () => {
     expect(rows.find(row => row.includes("Worker"))).toContain(`${theme.warning}$99+ `);
   });
 
-  test("renders shell, Chrono, and active-goal indicators after the streaming indicator", () => {
+  test("renders subagent, shell, Chrono, and active-goal indicators after the streaming indicator", () => {
     const sidebar = createSidebarState();
     sidebar.conversations = [conversation("worker", 0, {
       title: "Worker",
       streaming: true,
+      subagentCount: 2,
       backgroundTaskCount: 2,
       tasks: [
         { id: "child", kind: "subagent", title: "Child", startedAt: 0 },
@@ -115,16 +116,18 @@ describe("sidebar rendering", () => {
 
     const row = renderSidebar(sidebar, 8, true, null).find(candidate => candidate.includes("Worker"));
     expect(row).toContain(`${theme.accent}◉ `);
+    expect(row).toContain(`${theme.accent}◆2 `);
     expect(row).toContain(`${theme.warning}$2 `);
     expect(row).toContain(`${theme.success}◷2 `);
     expect(row).toContain(`${theme.tool}◆ `);
-    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("$2 "));
+    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("◆2 "));
+    expect(row!.indexOf("◆2 ")).toBeLessThan(row!.indexOf("$2 "));
     expect(row!.indexOf("$2 ")).toBeLessThan(row!.indexOf("◷2 "));
     expect(row!.indexOf("◷2 ")).toBeLessThan(row!.indexOf("◆ "));
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
   });
 
-  test("renders paused goals distinctly and aggregates Chronos and goals through folder trees", () => {
+  test("renders paused goals distinctly and aggregates subagents, Chronos, and goals through folder trees", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -134,6 +137,7 @@ describe("sidebar rendering", () => {
       conversation("active", 0, {
         title: "Active",
         folderId: "nested",
+        subagentCount: 2,
         tasks: [
           { id: "chrono-1", kind: "chrono", title: "Wake one", startedAt: 0 },
           { id: "chrono-2", kind: "chrono", title: "Wake two", startedAt: 0 },
@@ -143,6 +147,7 @@ describe("sidebar rendering", () => {
       conversation("paused", 1, {
         title: "Paused",
         folderId: "work",
+        subagentCount: 1,
         tasks: [{ id: "chrono-3", kind: "chrono", title: "Wake three", startedAt: 0 }],
         goal: { objective: "Paused goal", status: "paused", createdAt: 0, updatedAt: 0, turns: 0 },
       }),
@@ -150,13 +155,16 @@ describe("sidebar rendering", () => {
 
     let rows = renderSidebar(sidebar, 8, true, null);
     const workRow = rows.find(row => row.includes("Work"));
+    expect(workRow).toContain(`${theme.accent}◆3 `);
     expect(workRow).toContain(`${theme.success}◷3 `);
     expect(workRow).toContain(`${theme.tool}◆2 `);
 
     sidebar.currentFolderId = "work";
     rows = renderSidebar(sidebar, 8, true, null);
+    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.accent}◆2 `);
     expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.success}◷2 `);
     expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.tool}◆ `);
+    expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.accent}◆ `);
     expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.success}◷ `);
     expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.tool}◇ `);
     expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);

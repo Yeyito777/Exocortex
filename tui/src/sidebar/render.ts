@@ -24,6 +24,7 @@ interface FolderAggregate {
   globalIdle: boolean;
   unread: boolean;
   unreadCount: number;
+  subagentCount: number;
   backgroundTaskCount: number;
   chronoTaskCount: number;
   activeGoalCount: number;
@@ -48,6 +49,7 @@ function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: Readonl
       globalIdle: false,
       unread: false,
       unreadCount: 0,
+      subagentCount: 0,
       backgroundTaskCount: 0,
       chronoTaskCount: 0,
       activeGoalCount: 0,
@@ -71,6 +73,7 @@ function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: Readonl
       aggregate.globalIdle ||= hasGlobalIdle;
       aggregate.unread ||= conv.unread;
       if (conv.unread) aggregate.unreadCount++;
+      aggregate.subagentCount += conv.subagentCount ?? 0;
       aggregate.backgroundTaskCount += conv.backgroundTaskCount ?? 0;
       aggregate.chronoTaskCount += chronoTaskCount;
       if (hasActiveGoal) aggregate.activeGoalCount++;
@@ -96,6 +99,10 @@ function countedActivityIndicator(symbol: string, count: number): string {
   if (count <= 0) return "";
   if (count === 1) return `${symbol} `;
   return count > 99 ? `${symbol}99+ ` : `${symbol}${count} `;
+}
+
+function subagentIndicator(count: number): string {
+  return countedActivityIndicator("◆", count);
 }
 
 function backgroundTaskIndicator(count: number): string {
@@ -224,6 +231,7 @@ export function renderSidebar(
 
     let streamIcon = "";
     let streamIconColor = "";
+    let subagentIcon = "";
     let backgroundTaskIcon = "";
     let chronoTaskIcon = "";
     let goalIcon = "";
@@ -249,6 +257,7 @@ export function renderSidebar(
       const hasUnread = (aggregate?.unread ?? false) && !(folder && subagentFolderIds.has(folder.id));
       streamIcon = hasStreaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = hasStreaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
+      subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
       chronoTaskIcon = chronoTaskIndicator(aggregate?.chronoTaskCount ?? 0);
       goalIcon = goalIndicator(aggregate?.activeGoalCount ?? 0, aggregate?.pausedGoalCount ?? 0);
@@ -262,6 +271,7 @@ export function renderSidebar(
       const hasUnread = conv.unread && !(conv.folderId && subagentFolderIds.has(conv.folderId));
       streamIcon = conv.streaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = conv.streaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
+      subagentIcon = subagentIndicator(conv.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(conv.backgroundTaskCount ?? 0);
       chronoTaskIcon = chronoTaskIndicator(countChronoTasks(conv.tasks));
       goalIcon = goalIndicator(conv.goal?.status === "active" ? 1 : 0, conv.goal?.status === "paused" ? 1 : 0);
@@ -272,8 +282,8 @@ export function renderSidebar(
       itemFg = (isSelected || isCurrent) ? theme.text : theme.muted;
     }
 
-    const iconsWidth = termWidth(backgroundTaskIcon) + termWidth(chronoTaskIcon) + termWidth(goalIcon)
-      + termWidth(starIcon) + termWidth(emojiIcon);
+    const iconsWidth = termWidth(subagentIcon) + termWidth(backgroundTaskIcon) + termWidth(chronoTaskIcon)
+      + termWidth(goalIcon) + termWidth(starIcon) + termWidth(emojiIcon);
     const prefixWidth = termWidth(prefix) + termWidth(streamIcon) + iconsWidth;
     const notificationBadge = renderNotificationBadge(notificationCount);
     const badgeGap = notificationBadge ? 1 : 0;
@@ -288,6 +298,7 @@ export function renderSidebar(
       ? theme.muted + prefix + fg
       : prefix;
     const streamIconColored = streamIcon ? streamIconColor + streamIcon + fg : "";
+    const subagentIconColored = subagentIcon ? theme.accent + subagentIcon + fg : "";
     const backgroundTaskIconColored = backgroundTaskIcon ? theme.warning + backgroundTaskIcon + fg : "";
     const chronoTaskIconColored = chronoTaskIcon ? theme.success + chronoTaskIcon + fg : "";
     const goalIconColored = goalIcon ? theme.tool + goalIcon + fg : "";
@@ -296,7 +307,7 @@ export function renderSidebar(
 
     rows.push(
       theme.reset + bg + fg +
-      prefixText + streamIconColored + backgroundTaskIconColored + chronoTaskIconColored + goalIconColored + starIconColored + emojiIconColored + titleText +
+      prefixText + streamIconColored + subagentIconColored + backgroundTaskIconColored + chronoTaskIconColored + goalIconColored + starIconColored + emojiIconColored + titleText +
       (notificationBadge ? ` ${notificationBadge.text}` : "") +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
