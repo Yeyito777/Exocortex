@@ -22,6 +22,9 @@ import {
   focusConversationAt,
   focusConversationById,
   focusPreviousEnteredConversation,
+  createConversationActionMenu,
+  handleConversationActionMenuKey,
+  handleSidebarConversationAction,
   handleSidebarKey,
   handleSidebarMark,
   handleSidebarPromptKey,
@@ -48,6 +51,7 @@ import { theme } from "./theme";
 import { graphemeBoundaryAtOrAfter } from "./graphemes";
 import { sanitizePromptTextForInsertion } from "./prompttext";
 import { log } from "./log";
+import { copyToClipboard } from "./vim/clipboard";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -126,6 +130,36 @@ function focusSidebarShortcutTarget(state: RenderState, focus: () => boolean): K
   return focus() ? loadSelectedConversation(state) : { type: "handled" };
 }
 
+function openSelectedConversationActionMenu(state: RenderState): void {
+  const item = state.sidebar.selectedItem;
+  if (item?.type !== "conversation") return;
+  const conv = state.sidebar.conversations.find(candidate => candidate.id === item.id);
+  if (!conv) return;
+
+  state.sidebar.visualAnchor = null;
+  state.sidebar.pendingDeleteId = null;
+  state.sidebar.pendingDeleteItem = null;
+  state.sidebar.conversationActionMenu = createConversationActionMenu(conv.id, conv.marked, conv.pinned);
+}
+
+function handleConversationActionMenuFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
+  const menu = state.sidebar.conversationActionMenu;
+  if (!menu) return { type: "handled" };
+  const result = handleConversationActionMenuKey(menu, key);
+  if (result.type === "close") {
+    state.sidebar.conversationActionMenu = null;
+    return { type: "handled" };
+  }
+  if (result.type !== "action") return { type: "handled" };
+
+  state.sidebar.conversationActionMenu = null;
+  if (result.action === "copy_id") {
+    copyToClipboard(menu.convId);
+    return { type: "handled" };
+  }
+  return mapSidebarResult(handleSidebarConversationAction(result.action, menu.convId, state.sidebar));
+}
+
 export function handleFocusedKey(
   key: KeyEvent,
   state: RenderState,
@@ -141,6 +175,11 @@ export function handleFocusedKey(
   // Ctrl-Shift-R always requests a daemon restart, regardless of focused panel,
   // prompt/modal, or vim state.
   if (key.type === "ctrl-shift-r") return { type: "restart_daemon" };
+
+  // ── Sidebar conversation action menu — intercept all keys ──────
+  if (state.sidebar.conversationActionMenu) {
+    return handleConversationActionMenuFocusedKey(key, state);
+  }
 
   // ── Queue prompt modal — intercept all keys when showing ──────
   if (state.queuePrompt) {
@@ -351,6 +390,17 @@ export function handleFocusedKey(
       && state.vim.mode === "normal"
       && key.type === "char" && key.char && /^[0-9]$/.test(key.char)) {
     return mapSidebarResult(handleSidebarMark(state.sidebar, parseInt(key.char, 10)));
+  }
+
+  // ── Sidebar conversation actions ────────────────────────────────
+  // Like Record's server/item menu, semicolon opens a small menu beside
+  // the currently hovered/selected sidebar row instead of repeating Vim find.
+  if (state.panelFocus === "sidebar" && state.sidebar.open
+      && state.vim.mode === "normal"
+      && !vimHasPendingInput(state)
+      && key.type === "char" && key.char === ";") {
+    openSelectedConversationActionMenu(state);
+    return { type: "handled" };
   }
 
   // ── Sidebar folder shortcuts that would otherwise be eaten by vim find/replace ──

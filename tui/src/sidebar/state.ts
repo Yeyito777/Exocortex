@@ -2,6 +2,7 @@ import type { ConversationSummary, FolderSummary, SidebarItemRef } from "../mess
 import type { SidebarSelectableItem } from "./items";
 import type { SidebarPromptState } from "./prompt";
 import type { SidebarSearchState } from "../sidebarsearch";
+import type { ConversationActionMenuState } from "./conversationactions";
 
 export interface SidebarState {
   open: boolean;
@@ -20,6 +21,7 @@ export interface SidebarState {
   pendingFocusFolder: { name: string; parentId: string | null } | null;
   prompt: SidebarPromptState | null;
   search: SidebarSearchState | null;
+  conversationActionMenu: ConversationActionMenuState | null;
 }
 
 export function createSidebarState(): SidebarState {
@@ -40,5 +42,6 @@ export function createSidebarState(): SidebarState {
     pendingFocusFolder: null,
     prompt: null,
     search: null,
+    conversationActionMenu: null,
   };
 }

@@ -1300,10 +1300,12 @@ function handleMouse(ev: MouseEvent): void {
   // Motion events: only render if something visual changed (focus switch, drag selection)
   if (ev.action === "motion") {
     const prevFocus = state.panelFocus;
+    const prevSidebarItem = state.sidebar.selectedItem;
     const prevCursorRow = state.historyCursor.row;
     const prevCursorCol = state.historyCursor.col;
     handleMouseEvent(ev, state);
     if (state.panelFocus !== prevFocus
+        || state.sidebar.selectedItem !== prevSidebarItem
         || state.historyCursor.row !== prevCursorRow
         || state.historyCursor.col !== prevCursorCol) {
       renderAfterLocalUiMutation();

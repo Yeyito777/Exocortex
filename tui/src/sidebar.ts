@@ -23,6 +23,7 @@ import {
 import { sameSidebarItem as sameItem } from "./sidebar/items";
 import { moveSelection, moveToMarked, moveToStreaming } from "./sidebar/navigation";
 import {
+  focusConversationAt,
   focusSidebarItem,
   getSelectedSidebarItem,
   getSelectedVisibleConversation,
@@ -33,6 +34,16 @@ import type { SidebarState } from "./sidebar/state";
 import type { SidebarKeyResult } from "./sidebar/types";
 
 export { activateSidebarItem } from "./sidebar/folderactions";
+export {
+  createConversationActionMenu,
+  handleConversationActionMenuKey,
+  renderConversationActionMenu,
+} from "./sidebar/conversationactions";
+export type {
+  ConversationAction,
+  ConversationActionMenuState,
+  ConversationActionMenuKeyResult,
+} from "./sidebar/conversationactions";
 export { sidebarHitTest } from "./sidebar/hit";
 export { SIDEBAR_WIDTH } from "./sidebar/layout";
 export { handleSidebarMark } from "./sidebar/marks";
@@ -57,6 +68,27 @@ export { createSidebarState } from "./sidebar/state";
 export type { SidebarState } from "./sidebar/state";
 export type { SidebarKeyResult } from "./sidebar/types";
 export { syncSelectedIndex, updateConversation, updateConversationList } from "./sidebar/updates";
+
+/** Run an action against a specific conversation selected by an action menu. */
+export function handleSidebarConversationAction(
+  action: "toggle_star" | "toggle_pin" | "delete",
+  convId: string,
+  sidebar: SidebarState,
+): SidebarKeyResult {
+  const index = sidebar.conversations.findIndex(conv => conv.id === convId);
+  if (index === -1) return { type: "handled" };
+  focusConversationAt(sidebar, index);
+
+  if (action === "toggle_star") return handleSidebarAction("mark", sidebar);
+  if (action === "toggle_pin") return handleSidebarAction("pin", sidebar);
+
+  // The action menu owns the visible destructive confirmation, so prime the
+  // existing delete path and let it perform the normal optimistic removal and
+  // focus-target calculation immediately.
+  sidebar.pendingDeleteItem = { type: "conversation", id: convId };
+  sidebar.pendingDeleteId = convId;
+  return handleSidebarAction("delete", sidebar);
+}
 
 type PlacementEntry = { id: string; pinned: boolean; sortOrder: number };
 type PinSidebarItemMutation = { item: SidebarItemRef; pinned: boolean };

@@ -15,7 +15,7 @@ import type { RenderState } from "./state";
 import type { ImageAttachment } from "./messages";
 import { getViewStart } from "./chatscroll";
 import { renderTopbar } from "./topbar";
-import { renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
+import { buildDisplayRows, renderConversationActionMenu, renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { isGlobalIdleQueuedMessage } from "./queue";
 import { getSidebarSearchBarViewport } from "./sidebarsearch";
 import { buildMessageLines, type BuildMessageLinesResult } from "./conversation";
@@ -831,6 +831,24 @@ export function render(state: RenderState): void {
   // ── Edit message overlay ──────────────────────────────────────
   if (state.editMessagePrompt) {
     appendPositionedPayload(ctx, renderEditMessageOverlay(state.editMessagePrompt, chatW, chatCol, bottomStartRow, messageAreaHeight));
+  }
+
+  // ── Sidebar conversation action menu ──────────────────────────
+  if (sidebarOpen && state.sidebar.conversationActionMenu) {
+    const menu = state.sidebar.conversationActionMenu;
+    const displayRow = buildDisplayRows(state.sidebar).findIndex(row => (
+      row.type === "entry"
+      && row.item?.type === "conversation"
+      && row.item.id === menu.convId
+    ));
+    const anchorRow = displayRow === -1 ? 3 : 3 + displayRow - state.sidebar.scrollOffset;
+    appendPositionedPayload(ctx, renderConversationActionMenu(
+      menu,
+      anchorRow,
+      SIDEBAR_WIDTH + 1,
+      rows,
+      cols,
+    ));
   }
 
   const canScrollMessageRegion = !sidebarOpen

@@ -98,6 +98,10 @@ export function updateConversationList(sidebar: SidebarState, conversations: Con
     : null;
   sidebar.conversations = conversations;
   sidebar.folders = folders;
+  const actionMenuConvId = sidebar.conversationActionMenu?.convId;
+  if (actionMenuConvId && !sidebar.conversations.some(conv => conv.id === actionMenuConvId)) {
+    sidebar.conversationActionMenu = null;
+  }
   if (sidebar.currentFolderId && !sidebar.folders.some(f => f.id === sidebar.currentFolderId)) {
     sidebar.currentFolderId = null;
   }

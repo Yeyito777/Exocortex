@@ -16,6 +16,8 @@ import { activateSidebarItem, sidebarHitTest, scrollSidebar, SIDEBAR_WIDTH } fro
 import { mouse_cursor_pointer, mouse_cursor_text, mouse_cursor_hand } from "./terminal";
 import { clampCol, ensureCursorVisible } from "./historycursor";
 import { editMessageItemIndexAtMouse } from "./editmessage";
+import { sameSidebarItem } from "./sidebar/items";
+import { focusSidebarItem } from "./sidebar/selection";
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -111,6 +113,7 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
     return { type: "handled" };
   }
   if (state.queuePrompt) return { type: "handled" };
+  if (state.sidebar.conversationActionMenu) return { type: "handled" };
 
   const { col, row, button, action } = ev;
   const { layout, sidebar } = state;
@@ -122,6 +125,16 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
     focusSidebar(state);
   } else if (!inSidebar && state.panelFocus === "sidebar") {
     state.panelFocus = "chat";
+  }
+
+  // Sidebar selection follows the pointer. This makes keyboard actions such
+  // as `;` apply to the conversation currently under the mouse without loading
+  // it; clicking still performs the existing activation behavior below.
+  if (inSidebar && action === "motion") {
+    const hovered = sidebarHitTest(row, state.rows, sidebar);
+    if (hovered && !sameSidebarItem(sidebar.selectedItem, hovered)) {
+      focusSidebarItem(sidebar, hovered);
+    }
   }
 
   // ── Drag (motion with left button held) — extend visual selection ──
