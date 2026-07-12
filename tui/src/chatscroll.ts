@@ -6,6 +6,7 @@ import { buildMessageLines, type RenderLineAnchor, type RenderLineSegment } from
 import { computeBottomLayout } from "./chatlayout";
 import { SIDEBAR_WIDTH } from "./sidebar";
 import type { RenderState } from "./state";
+import { isVisuallyBlankLine } from "./terminaltext";
 
 /**
  * First historyLines index visible in the message area.
@@ -32,6 +33,7 @@ export function getViewStart(state: RenderState): number {
 
 type AnchorRowMap = Map<number, number>;
 type AnchorIndex = WeakMap<object, Map<RenderLineSegment, Map<number, AnchorRowMap>>>;
+type RenderedLineIndex = Map<string, number[]>;
 
 function buildAnchorIndex(anchors: RenderLineAnchor[]): AnchorIndex {
   const byOwner = new WeakMap<object, Map<RenderLineSegment, Map<number, AnchorRowMap>>>();
@@ -55,6 +57,75 @@ function buildAnchorIndex(anchors: RenderLineAnchor[]): AnchorIndex {
     bySubIndex.set(anchor.subIndex, row);
   }
   return byOwner;
+}
+
+function buildRenderedLineIndex(lines: string[]): RenderedLineIndex {
+  const index: RenderedLineIndex = new Map();
+  for (let row = 0; row < lines.length; row++) {
+    const line = lines[row];
+    if (isVisuallyBlankLine(line)) continue;
+    const rows = index.get(line);
+    if (rows) rows.push(row);
+    else index.set(line, [row]);
+  }
+  return index;
+}
+
+/**
+ * Match a rendered row by its visible content when a canonical history rebuild
+ * replaced all message/block objects and therefore invalidated owner anchors.
+ * Nearby rows disambiguate repeated lines; the closest position is only a
+ * tiebreaker so insertions before the viewport can still be followed.
+ */
+function findRenderedLineRow(
+  oldRow: number,
+  oldLines: string[],
+  newLines: string[],
+  newLineIndex: RenderedLineIndex,
+): number {
+  if (oldLines.length === 0 || newLines.length === 0) return -1;
+  const clamped = Math.max(0, Math.min(oldRow, oldLines.length - 1));
+
+  for (let distance = 0; distance < oldLines.length; distance++) {
+    const sourceRows = distance === 0
+      ? [clamped]
+      : [clamped + distance, clamped - distance];
+
+    for (const sourceRow of sourceRows) {
+      if (sourceRow < 0 || sourceRow >= oldLines.length) continue;
+      const sourceLine = oldLines[sourceRow];
+      if (isVisuallyBlankLine(sourceLine)) continue;
+      const candidates = newLineIndex.get(sourceLine);
+      if (!candidates) continue;
+
+      let bestRow = -1;
+      let bestContextScore = -1;
+      let bestPositionDistance = Number.POSITIVE_INFINITY;
+      for (const candidate of candidates) {
+        let contextScore = 0;
+        for (let delta = -4; delta <= 4; delta++) {
+          const oldContextRow = sourceRow + delta;
+          const newContextRow = candidate + delta;
+          if (oldContextRow < 0 || oldContextRow >= oldLines.length) continue;
+          if (newContextRow < 0 || newContextRow >= newLines.length) continue;
+          if (oldLines[oldContextRow] === newLines[newContextRow]) contextScore++;
+        }
+        const positionDistance = Math.abs(candidate - sourceRow);
+        if (contextScore > bestContextScore
+          || (contextScore === bestContextScore && positionDistance < bestPositionDistance)) {
+          bestRow = candidate;
+          bestContextScore = contextScore;
+          bestPositionDistance = positionDistance;
+        }
+      }
+
+      if (bestRow !== -1) {
+        const mapped = bestRow - (sourceRow - clamped);
+        return Math.max(0, Math.min(mapped, newLines.length - 1));
+      }
+    }
+  }
+  return -1;
 }
 
 function findAnchorRow(index: AnchorIndex, anchor: RenderLineAnchor | undefined): number {
@@ -84,11 +155,21 @@ function findAnchorRow(index: AnchorIndex, anchor: RenderLineAnchor | undefined)
  * a tool_result line that was just hidden), walk outward to find the nearest
  * still-rendered neighbor so the viewport stays near the same content.
  */
-function remapRenderedRow(oldRow: number, oldAnchors: RenderLineAnchor[], newAnchorIndex: AnchorIndex): number {
-  if (oldAnchors.length === 0) return 0;
+function remapRenderedRow(
+  oldRow: number,
+  oldLines: string[],
+  oldAnchors: RenderLineAnchor[],
+  newLines: string[],
+  newAnchorIndex: AnchorIndex,
+  newLineIndex: RenderedLineIndex,
+): number {
+  if (oldAnchors.length === 0) return Math.max(0, Math.min(oldRow, newLines.length - 1));
   const clamped = Math.max(0, Math.min(oldRow, oldAnchors.length - 1));
   const exact = findAnchorRow(newAnchorIndex, oldAnchors[clamped]);
   if (exact !== -1) return exact;
+
+  const contentMatch = findRenderedLineRow(clamped, oldLines, newLines, newLineIndex);
+  if (contentMatch !== -1) return contentMatch;
 
   for (let row = clamped + 1; row < oldAnchors.length; row++) {
     const mapped = findAnchorRow(newAnchorIndex, oldAnchors[row]);
@@ -98,7 +179,7 @@ function remapRenderedRow(oldRow: number, oldAnchors: RenderLineAnchor[], newAnc
     const mapped = findAnchorRow(newAnchorIndex, oldAnchors[row]);
     if (mapped !== -1) return mapped;
   }
-  return 0;
+  return Math.max(0, Math.min(clamped, newLines.length - 1));
 }
 
 export function preserveViewportAcrossResize(state: RenderState, nextCols: number, nextRows: number): void {
@@ -117,20 +198,28 @@ export function preserveViewportAcrossResize(state: RenderState, nextCols: numbe
   const oldRender = buildMessageLines(state, oldChatW);
   const newRender = buildMessageLines(state, newChatW);
   const newAnchorIndex = buildAnchorIndex(newRender.lineAnchors);
+  const newLineIndex = buildRenderedLineIndex(newRender.lines);
 
   if (state.scrollOffset > 0) {
     const oldViewStart = getViewStartFor(oldRender.lines.length, oldMessageAreaHeight, state.scrollOffset);
-    const newViewStart = remapRenderedRow(oldViewStart, oldRender.lineAnchors, newAnchorIndex);
+    const newViewStart = remapRenderedRow(
+      oldViewStart,
+      oldRender.lines,
+      oldRender.lineAnchors,
+      newRender.lines,
+      newAnchorIndex,
+      newLineIndex,
+    );
     state.scrollOffset = getScrollOffsetForViewStart(newRender.lines.length, newMessageAreaHeight, newViewStart);
   }
 
   state.historyCursor = {
     ...state.historyCursor,
-    row: remapRenderedRow(state.historyCursor.row, oldRender.lineAnchors, newAnchorIndex),
+    row: remapRenderedRow(state.historyCursor.row, oldRender.lines, oldRender.lineAnchors, newRender.lines, newAnchorIndex, newLineIndex),
   };
   state.historyVisualAnchor = {
     ...state.historyVisualAnchor,
-    row: remapRenderedRow(state.historyVisualAnchor.row, oldRender.lineAnchors, newAnchorIndex),
+    row: remapRenderedRow(state.historyVisualAnchor.row, oldRender.lines, oldRender.lineAnchors, newRender.lines, newAnchorIndex, newLineIndex),
   };
 
   state.historyLines = newRender.lines;
@@ -168,14 +257,28 @@ export function preserveViewportAcrossHistoryMutation(state: RenderState, mutate
 
   const newRender = buildMessageLines(state, chatW);
   const newAnchorIndex = buildAnchorIndex(newRender.lineAnchors);
+  const newLineIndex = buildRenderedLineIndex(newRender.lines);
 
   if (state.scrollOffset > 0) {
-    const newViewStart = remapRenderedRow(oldViewStart, oldRender.lineAnchors, newAnchorIndex);
+    const newViewStart = remapRenderedRow(
+      oldViewStart,
+      oldRender.lines,
+      oldRender.lineAnchors,
+      newRender.lines,
+      newAnchorIndex,
+      newLineIndex,
+    );
     state.scrollOffset = getScrollOffsetForViewStart(newRender.lines.length, messageAreaHeight, newViewStart);
   }
 
-  state.historyCursor = { ...state.historyCursor, row: remapRenderedRow(oldCursorRow, oldRender.lineAnchors, newAnchorIndex) };
-  state.historyVisualAnchor = { ...state.historyVisualAnchor, row: remapRenderedRow(oldVisualAnchorRow, oldRender.lineAnchors, newAnchorIndex) };
+  state.historyCursor = {
+    ...state.historyCursor,
+    row: remapRenderedRow(oldCursorRow, oldRender.lines, oldRender.lineAnchors, newRender.lines, newAnchorIndex, newLineIndex),
+  };
+  state.historyVisualAnchor = {
+    ...state.historyVisualAnchor,
+    row: remapRenderedRow(oldVisualAnchorRow, oldRender.lines, oldRender.lineAnchors, newRender.lines, newAnchorIndex, newLineIndex),
+  };
 
   // Prime render caches so the next frame doesn't apply the generic
   // total-line delta adjustment on top of this semantic remap.

@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { buildMessageLines } from "./conversation";
 import { computeBottomLayout } from "./chatlayout";
-import { preserveViewportAcrossResize, getScrollOffsetForViewStart, getViewStartFor } from "./chatscroll";
+import {
+  preserveViewportAcrossHistoryMutation,
+  preserveViewportAcrossResize,
+  getScrollOffsetForViewStart,
+  getViewStartFor,
+} from "./chatscroll";
 import { stripAnsi } from "./historycursor";
 import { createInitialState } from "./state";
 import type { RenderState } from "./state";
@@ -92,5 +97,36 @@ describe("resize scroll preservation", () => {
     preserveViewportAcrossResize(state, 44, 16);
 
     expect(state.scrollOffset).toBe(0);
+  });
+});
+
+describe("history replacement scroll preservation", () => {
+  test("keeps the same top line when canonical history replaces message identities", () => {
+    const state = createInitialState();
+    state.cols = 60;
+    state.rows = 20;
+    state.messages = Array.from({ length: 20 }, (_, i) => ([
+      { role: "user" as const, text: `user-${i}`, metadata: null },
+      {
+        role: "assistant" as const,
+        blocks: [{ type: "text" as const, text: `answer-${i}` }],
+        metadata: null,
+      },
+    ])).flat();
+
+    const oldRender = buildMessageLines(state, state.cols);
+    const targetRow = oldRender.lines.findIndex(line => stripAnsi(line).includes("user-10"));
+    expect(targetRow).toBeGreaterThanOrEqual(0);
+    state.layout.totalLines = oldRender.lines.length;
+    state.layout.messageAreaHeight = 10;
+    state.scrollOffset = getScrollOffsetForViewStart(oldRender.lines.length, 10, targetRow);
+
+    preserveViewportAcrossHistoryMutation(state, () => {
+      state.messages = structuredClone(state.messages);
+    });
+
+    const newRender = buildMessageLines(state, state.cols);
+    const newViewStart = getViewStartFor(newRender.lines.length, 10, state.scrollOffset);
+    expect(stripAnsi(newRender.lines[newViewStart])).toContain("user-10");
   });
 });
