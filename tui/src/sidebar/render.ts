@@ -15,6 +15,7 @@ import {
   getSidebarSearchBarViewport,
 } from "../sidebarsearch";
 import { theme } from "../theme";
+import { shouldDisplayConversationTask } from "../taskvisibility";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import type { ConversationTaskSummary } from "../messages";
 
@@ -33,7 +34,7 @@ interface FolderAggregate {
 function countChronoTasks(tasks: readonly ConversationTaskSummary[] | undefined): number {
   let count = 0;
   for (const task of tasks ?? []) {
-    if (task.kind === "chrono") count++;
+    if (task.kind === "chrono" && shouldDisplayConversationTask(task)) count++;
   }
   return count;
 }
