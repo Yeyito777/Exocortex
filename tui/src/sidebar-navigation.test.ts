@@ -91,4 +91,44 @@ describe("sidebar streaming navigation", () => {
     expect(sidebar.currentFolderId).toBe("work");
     expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "client" });
   });
+
+  test("skips completed subagents whose unread indicators are hidden", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [
+      folder("subagents", 1, { name: " SubAgents " }),
+      folder("batch", 1, { parentId: "subagents" }),
+    ];
+    sidebar.conversations = [
+      conversation("start", 0),
+      conversation("direct-agent", 0, { folderId: "subagents", unread: true }),
+      conversation("nested-agent", 0, { folderId: "batch", unread: true }),
+      conversation("ordinary-complete", 2, { unread: true }),
+    ];
+    sidebar.selectedItem = { type: "conversation", id: "start" };
+    sidebar.selectedId = "start";
+    sidebar.selectedIndex = 0;
+
+    expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
+    expect(sidebar.selectedItem).toEqual({ type: "conversation", id: "ordinary-complete" });
+
+    sidebar.currentFolderId = "subagents";
+    sidebar.selectedItem = { type: "up" };
+    expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
+    expect(sidebar.selectedItem).toEqual({ type: "up" });
+  });
+
+  test("still jumps to subagents while they are actively streaming", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [folder("subagents", 1, { name: "subagents" })];
+    sidebar.conversations = [
+      conversation("start", 0),
+      conversation("agent", 0, { folderId: "subagents", streaming: true, unread: true }),
+    ];
+    sidebar.selectedItem = { type: "conversation", id: "start" };
+    sidebar.selectedId = "start";
+    sidebar.selectedIndex = 0;
+
+    expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
+    expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "subagents" });
+  });
 });

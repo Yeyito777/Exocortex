@@ -1,6 +1,6 @@
 /** Folder/path helpers for the conversations sidebar. */
 
-import type { ConversationSummary, FolderSummary, SidebarItemRef } from "../messages";
+import { SUBAGENTS_FOLDER_NAME, type ConversationSummary, type FolderSummary, type SidebarItemRef } from "../messages";
 import type { CompletionItem } from "../commands";
 
 export interface SidebarFolderViewState {
@@ -53,6 +53,30 @@ export function descendantFolderIds(state: SidebarFolderViewState, folderId: str
 export function folderDescendantConversations(state: SidebarFolderViewState, folderId: string): ConversationSummary[] {
   const ids = descendantFolderIds(state, folderId);
   return state.conversations.filter(c => c.folderId && ids.has(c.folderId));
+}
+
+/** Folder ids directly or transitively inside the reserved top-level subagents/ tree. */
+export function subagentsFolderIds(folders: readonly FolderSummary[]): Set<string> {
+  const result = new Set<string>();
+  const byId = new Map(folders.map(folder => [folder.id, folder]));
+  for (const folder of folders) {
+    const path: string[] = [];
+    const seen = new Set<string>();
+    let current: FolderSummary | undefined = folder;
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
+      path.push(current.id);
+      if ((current.parentId ?? null) === null) {
+        if (current.name.trim().toLocaleLowerCase() === SUBAGENTS_FOLDER_NAME) {
+          for (const id of path) result.add(id);
+        }
+        break;
+      }
+      const parentId: string | null = current.parentId;
+      current = parentId ? byId.get(parentId) : undefined;
+    }
+  }
+  return result;
 }
 
 export function normalizeMoveDestinationInput(input: string): string {

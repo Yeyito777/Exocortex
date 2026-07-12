@@ -1,5 +1,5 @@
 import { getMarkFromTitle } from "../marks";
-import { currentFolder } from "./folders";
+import { currentFolder, subagentsFolderIds } from "./folders";
 import { sameSidebarItem as sameItem, sidebarItemKey as itemKey } from "./items";
 import { SIDEBAR_WIDTH } from "./layout";
 import {
@@ -14,7 +14,6 @@ import {
   getSearchableConversationTitle,
   getSidebarSearchBarViewport,
 } from "../sidebarsearch";
-import { SUBAGENTS_FOLDER_NAME, type FolderSummary } from "../messages";
 import { theme } from "../theme";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 
@@ -53,29 +52,6 @@ function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: Readonl
   }
 
   return aggregates;
-}
-
-function subagentsFolderIds(folders: readonly FolderSummary[]): Set<string> {
-  const result = new Set<string>();
-  const byId = new Map(folders.map(folder => [folder.id, folder]));
-  for (const folder of folders) {
-    const path: string[] = [];
-    const seen = new Set<string>();
-    let current: FolderSummary | undefined = folder;
-    while (current && !seen.has(current.id)) {
-      seen.add(current.id);
-      path.push(current.id);
-      if ((current.parentId ?? null) === null) {
-        if (current.name.trim().toLocaleLowerCase() === SUBAGENTS_FOLDER_NAME) {
-          for (const id of path) result.add(id);
-        }
-        break;
-      }
-      const parentId: string | null = current.parentId;
-      current = parentId ? byId.get(parentId) : undefined;
-    }
-  }
-  return result;
 }
 
 function renderNotificationBadge(count: number): { text: string; width: number } | null {
