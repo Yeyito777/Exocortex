@@ -15,7 +15,7 @@ export interface KeyEvent {
       | "ctrl-a" | "ctrl-b" | "ctrl-c" | "ctrl-d" | "ctrl-e" | "ctrl-f"
       | "ctrl-j" | "ctrl-k" | "ctrl-l" | "ctrl-m" | "ctrl-n"
       | "ctrl-o" | "ctrl-p" | "ctrl-q" | "ctrl-r" | "ctrl-s" | "ctrl-u" | "ctrl-v" | "ctrl-w" | "ctrl-y"
-      | "ctrl-shift-o"
+      | "ctrl-shift-o" | "ctrl-shift-r"
       | "shift-enter"
       | "f14" | "f15" | "f16" | "f17" | "f18" | "f19"
       | "f20" | "f21" | "f22" | "f23" | "f24"
@@ -85,6 +85,7 @@ const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
 
   // Modified keys — only distinguishable via CSI u
   "111;6": "ctrl-shift-o",   // Ctrl+Shift+O (o=111)
+  "114;6": "ctrl-shift-r",   // Ctrl+Shift+R (r=114)
   "13;2":  "shift-enter",    // Shift+Enter (CR=13, shift=2)
 };
 
@@ -141,6 +142,7 @@ function csiUKeyType(keyCode: number, modifiers: number): KeyEvent["type"] | nul
     }
   }
   if (keyCode === 111 && modifiers === 6) return "ctrl-shift-o";
+  if (keyCode === 114 && modifiers === 6) return "ctrl-shift-r";
   return null;
 }
 

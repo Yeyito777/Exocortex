@@ -100,20 +100,31 @@ test("Ctrl-A backgrounds the current tool even when a modal has focus", () => {
   expect(handleFocusedKey({ type: "ctrl-a" }, state)).toEqual({ type: "background_tool" });
 });
 
-test("Ctrl-R requests a daemon restart even when the sidebar is focused", () => {
+test("Ctrl-R redoes a deletion when the sidebar is focused", () => {
   const state = createInitialState();
   state.panelFocus = "sidebar";
   state.sidebar.open = true;
   state.vim.mode = "normal";
 
-  expect(handleFocusedKey({ type: "ctrl-r" }, state)).toEqual({ type: "restart_daemon" });
+  expect(handleFocusedKey({ type: "ctrl-r" }, state)).toEqual({ type: "redo_delete" });
 });
 
-test("Ctrl-R requests a daemon restart even when a modal has focus", () => {
+test("Ctrl-R redoes a prompt edit in normal mode", () => {
+  const state = createInitialState();
+  typePromptText(state, "draft");
+  expect(handleFocusedKey({ type: "escape" }, state)).toEqual({ type: "handled" });
+  expect(handleFocusedKey({ type: "char", char: "u" }, state)).toEqual({ type: "handled" });
+  expect(state.inputBuffer).toBe("");
+
+  expect(handleFocusedKey({ type: "ctrl-r" }, state)).toEqual({ type: "handled" });
+  expect(state.inputBuffer).toBe("draft");
+});
+
+test("Ctrl-Shift-R requests a daemon restart even when a modal has focus", () => {
   const state = createInitialState();
   state.queuePrompt = { text: "queued", selection: "next-turn" };
 
-  expect(handleFocusedKey({ type: "ctrl-r" }, state)).toEqual({ type: "restart_daemon" });
+  expect(handleFocusedKey({ type: "ctrl-shift-r" }, state)).toEqual({ type: "restart_daemon" });
 });
 
 test("a Ctrl-N history round trip preserves the prompt insert session for undo", () => {

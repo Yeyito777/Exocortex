@@ -102,8 +102,7 @@ function handleNormalMode(
 ): VimResult {
   const ks = keyString(key);
 
-  // Ctrl+R in prompt normal mode → redo when the engine is used directly.
-  // The TUI focus layer reserves Ctrl+R for daemon restart before vim runs.
+  // Ctrl+R in prompt normal mode → redo.
   if (key.type === "ctrl-r" && context === "prompt") {
     resetPending(vim);
     return { type: "redo" };

@@ -141,7 +141,8 @@ export function createVoiceInputController(
   }
 
   function isVoicePassthroughKey(key: KeyEvent): boolean {
-    return key.type === "ctrl-c" || key.type === "ctrl-a" || key.type === "ctrl-r";
+    return key.type === "ctrl-c" || key.type === "ctrl-a"
+      || key.type === "ctrl-r" || key.type === "ctrl-shift-r";
   }
 
   function stopVoiceAnimation(): void {

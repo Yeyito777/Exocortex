@@ -138,9 +138,9 @@ export function handleFocusedKey(
   // when a prompt/search/modal has focus.
   if (key.type === "ctrl-a") return { type: "background_tool" };
 
-  // Ctrl-R always requests a daemon restart, regardless of focused panel,
+  // Ctrl-Shift-R always requests a daemon restart, regardless of focused panel,
   // prompt/modal, or vim state.
-  if (key.type === "ctrl-r") return { type: "restart_daemon" };
+  if (key.type === "ctrl-shift-r") return { type: "restart_daemon" };
 
   // ── Queue prompt modal — intercept all keys when showing ──────
   if (state.queuePrompt) {

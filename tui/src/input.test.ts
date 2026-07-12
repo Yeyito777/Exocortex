@@ -15,6 +15,15 @@ describe("kitty keyboard protocol parsing", () => {
     expect(parseInput("\x1b[13u")).toEqual([{ type: "enter" }]);
   });
 
+  test("distinguishes Ctrl+Shift+R from Ctrl+R", () => {
+    expect(parseInput("\x1b[114;6:1u")).toEqual([
+      { type: "ctrl-shift-r", event: "press" },
+    ]);
+    expect(parseInput("\x1b[114;5:1u")).toEqual([
+      { type: "ctrl-r", event: "press" },
+    ]);
+  });
+
   test("treats shift+backspace like regular backspace", () => {
     expect(parseInput("\x1b[127;2u")).toEqual([{ type: "backspace", event: "press" }]);
     expect(parseInput("\x1b[127;2:2u")).toEqual([{ type: "backspace", event: "repeat" }]);
