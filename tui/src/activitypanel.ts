@@ -2,13 +2,14 @@
  * Focused-conversation task panel.
  *
  * Renders the current goal, active subagents, detached background commands, and
- * Chrono waits/sleeps/wakes as a compact top-right overlay. The daemon supplies
+ * displayable Chrono work as a compact top-right overlay. The daemon supplies
  * conversation summaries; this module adds the focused conversation's durable
  * goal and owns all visual formatting for the panel.
  */
 
 import type { ConversationGoalStatus, ConversationTaskSummary } from "./messages";
 import type { RenderState } from "./state";
+import { shouldDisplayConversationTask } from "./taskvisibility";
 import { padRightToWidth, termWidth } from "./textwidth";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
 
@@ -33,7 +34,8 @@ export interface TaskPanelRender {
 
 export function focusedConversationTasks(state: RenderState): TaskPanelEntry[] {
   if (!state.convId || state.folderInstructionsDoc) return [];
-  const activityTasks = state.sidebar.conversations.find(conversation => conversation.id === state.convId)?.tasks ?? [];
+  const activityTasks = (state.sidebar.conversations.find(conversation => conversation.id === state.convId)?.tasks ?? [])
+    .filter(shouldDisplayConversationTask);
   const goal = state.goal;
   const goalTask: TaskPanelEntry[] = goal && goal.status !== "complete"
     ? [{

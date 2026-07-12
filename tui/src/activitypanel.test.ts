@@ -109,7 +109,7 @@ describe("focused conversation task panel", () => {
     expect(renderTaskPanel(state, 100, 20, 43_000)).toBeNull();
   });
 
-  test("renders Chrono rows with their configured color, countdown, and wait elapsed time", () => {
+  test("renders scheduled Chrono rows but omits explicit waits", () => {
     const state = stateWithTasks();
     state.sidebar.conversations[0].tasks = [
       { id: "chrono:sleep", kind: "chrono", title: "Resume the build", startedAt: 1_000, dueAt: 12 * 60_000, chronoMode: "sleep" },
@@ -121,11 +121,11 @@ describe("focused conversation task panel", () => {
     const plain = panel!.lines.map(stripAnsi).join("\n");
     expect(plain).toContain("◷ Chrono Resume the build");
     expect(plain).toContain("in 12m");
-    expect(plain).toContain("Wait for confirmation");
-    expect(plain).toContain("0s");
+    expect(plain).not.toContain("Wait for confirmation");
     expect(plain).toContain("Late wake");
     expect(plain).toContain("due");
-    expect(panel!.lines.slice(1, 4).every(line => line.includes(hexToAnsi("#11ccaa")))).toBe(true);
+    expect(panel!.lines).toHaveLength(4);
+    expect(panel!.lines.slice(1, 3).every(line => line.includes(hexToAnsi("#11ccaa")))).toBe(true);
     expect(panel!.lines.every(line => visibleLength(line) === panel!.width)).toBe(true);
   });
 
@@ -133,7 +133,7 @@ describe("focused conversation task panel", () => {
     const state = stateWithTasks();
     state.toolRegistry = state.toolRegistry.filter(tool => tool.name !== "chrono");
     state.sidebar.conversations[0].tasks = [
-      { id: "chrono:wait", kind: "chrono", title: "Wait", startedAt: 1_000, chronoMode: "wait" },
+      { id: "chrono:sleep", kind: "chrono", title: "Sleep", startedAt: 1_000, chronoMode: "sleep" },
     ];
 
     expect(renderTaskPanel(state, 100, 20, 43_000)?.lines[1]).toContain(hexToAnsi("#4ec9b0"));

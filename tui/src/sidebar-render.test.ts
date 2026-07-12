@@ -132,8 +132,9 @@ describe("sidebar rendering", () => {
       tasks: [
         { id: "child", kind: "subagent", title: "Child", startedAt: 0 },
         { id: "shell", kind: "background", title: "Build", startedAt: 0 },
-        { id: "chrono-1", kind: "chrono", title: "Wake one", startedAt: 0 },
-        { id: "chrono-2", kind: "chrono", title: "Wake two", startedAt: 0 },
+        { id: "chrono-1", kind: "chrono", title: "Wake one", startedAt: 0, chronoMode: "wake" },
+        { id: "chrono-2", kind: "chrono", title: "Sleep", startedAt: 0, chronoMode: "sleep" },
+        { id: "chrono-wait", kind: "chrono", title: "Wait for shell", startedAt: 0, chronoMode: "wait" },
       ],
       goal: { objective: "Ship it", status: "active", createdAt: 0, updatedAt: 0, turns: 0 },
     })];
@@ -149,6 +150,23 @@ describe("sidebar rendering", () => {
     expect(row!.indexOf("◆2 ")).toBeLessThan(row!.indexOf("$2 "));
     expect(row!.indexOf("$2 ")).toBeLessThan(row!.indexOf("◆ "));
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
+  });
+
+  test("omits explicit Chrono waits from conversation and folder indicators", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
+    sidebar.conversations = [conversation("waiting", 0, {
+      title: "Waiting",
+      folderId: "folder",
+      tasks: [{ id: "chrono-wait", kind: "chrono", title: "Wait for build", startedAt: 0, chronoMode: "wait" }],
+    })];
+
+    let rows = renderSidebar(sidebar, 8, true, null);
+    expect(rows.find(row => row.includes("Work"))).not.toContain("◷");
+
+    sidebar.currentFolderId = "folder";
+    rows = renderSidebar(sidebar, 8, true, null);
+    expect(rows.find(row => row.includes("Waiting"))).not.toContain("◷");
   });
 
   test("omits paused goal badges and aggregates only active goals through folder trees", () => {
