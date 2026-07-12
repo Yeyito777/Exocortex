@@ -20,7 +20,7 @@ import type { ConversationTaskSummary } from "../messages";
 
 interface FolderAggregate {
   count: number;
-  streaming: boolean;
+  streamingCount: number;
   globalIdle: boolean;
   unread: boolean;
   unreadCount: number;
@@ -28,7 +28,6 @@ interface FolderAggregate {
   backgroundTaskCount: number;
   chronoTaskCount: number;
   activeGoalCount: number;
-  pausedGoalCount: number;
 }
 
 function countChronoTasks(tasks: readonly ConversationTaskSummary[] | undefined): number {
@@ -45,7 +44,7 @@ function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: Readonl
   for (const folder of sidebar.folders) {
     aggregates.set(folder.id, {
       count: 0,
-      streaming: false,
+      streamingCount: 0,
       globalIdle: false,
       unread: false,
       unreadCount: 0,
@@ -53,7 +52,6 @@ function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: Readonl
       backgroundTaskCount: 0,
       chronoTaskCount: 0,
       activeGoalCount: 0,
-      pausedGoalCount: 0,
     });
     parentById.set(folder.id, folder.parentId ?? null);
   }
@@ -62,14 +60,13 @@ function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: Readonl
     const hasGlobalIdle = globalIdleConvIds.has(conv.id);
     const chronoTaskCount = countChronoTasks(conv.tasks);
     const hasActiveGoal = conv.goal?.status === "active";
-    const hasPausedGoal = conv.goal?.status === "paused";
     let folderId = conv.folderId ?? null;
     const seen = new Set<string>();
     while (folderId && aggregates.has(folderId) && !seen.has(folderId)) {
       seen.add(folderId);
       const aggregate = aggregates.get(folderId)!;
       aggregate.count++;
-      aggregate.streaming ||= conv.streaming;
+      if (conv.streaming) aggregate.streamingCount++;
       aggregate.globalIdle ||= hasGlobalIdle;
       aggregate.unread ||= conv.unread;
       if (conv.unread) aggregate.unreadCount++;
@@ -77,7 +74,6 @@ function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: Readonl
       aggregate.backgroundTaskCount += conv.backgroundTaskCount ?? 0;
       aggregate.chronoTaskCount += chronoTaskCount;
       if (hasActiveGoal) aggregate.activeGoalCount++;
-      if (hasPausedGoal) aggregate.pausedGoalCount++;
       folderId = parentById.get(folderId) ?? null;
     }
   }
@@ -113,9 +109,13 @@ function chronoTaskIndicator(count: number): string {
   return countedActivityIndicator("◷", count);
 }
 
-function goalIndicator(activeCount: number, pausedCount: number): string {
-  const count = activeCount + pausedCount;
-  return countedActivityIndicator(activeCount > 0 ? "◆" : "◇", count);
+function goalIndicator(activeCount: number): string {
+  return countedActivityIndicator("◆", activeCount);
+}
+
+function folderStreamingIndicator(count: number): string {
+  if (count <= 0) return "";
+  return count > 99 ? "◉99+ " : `◉${count} `;
 }
 
 function truncateSidebarTitle(text: string, maxWidth: number): string {
@@ -252,15 +252,15 @@ export function renderSidebar(
       const folder = sidebar.folders[dr.folderIdx ?? -1];
       const aggregate = folder ? folderAggregates?.get(folder.id) : null;
       rawTitle = folder ? `📁 ${folder.name}/ ${aggregate?.count ?? 0}` : "📁 folder/";
-      const hasStreaming = aggregate?.streaming ?? false;
+      const streamingCount = aggregate?.streamingCount ?? 0;
       const hasGlobalIdle = aggregate?.globalIdle ?? false;
       const hasUnread = (aggregate?.unread ?? false) && !(folder && subagentFolderIds.has(folder.id));
-      streamIcon = hasStreaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
-      streamIconColor = hasStreaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
+      streamIcon = streamingCount > 0 ? folderStreamingIndicator(streamingCount) : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
+      streamIconColor = streamingCount > 0 ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
       chronoTaskIcon = chronoTaskIndicator(aggregate?.chronoTaskCount ?? 0);
-      goalIcon = goalIndicator(aggregate?.activeGoalCount ?? 0, aggregate?.pausedGoalCount ?? 0);
+      goalIcon = goalIndicator(aggregate?.activeGoalCount ?? 0);
       notificationCount = folder && !subagentFolderIds.has(folder.id) ? aggregate?.unreadCount ?? 0 : 0;
       itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "conversation") {
@@ -274,7 +274,7 @@ export function renderSidebar(
       subagentIcon = subagentIndicator(conv.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(conv.backgroundTaskCount ?? 0);
       chronoTaskIcon = chronoTaskIndicator(countChronoTasks(conv.tasks));
-      goalIcon = goalIndicator(conv.goal?.status === "active" ? 1 : 0, conv.goal?.status === "paused" ? 1 : 0);
+      goalIcon = goalIndicator(conv.goal?.status === "active" ? 1 : 0);
       starIcon = conv.marked ? "★ " : "";
       const mark = getMarkFromTitle(conv.title);
       emojiIcon = mark ? mark.emoji + " " : "";

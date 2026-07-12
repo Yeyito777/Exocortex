@@ -72,6 +72,29 @@ describe("sidebar rendering", () => {
     expect(folderRow).toContain(`${theme.warning}◉ `);
   });
 
+  test("counts streaming conversations recursively on folder indicators", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [
+      { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
+      { id: "nested", name: "Nested", parentId: "work", createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
+    ];
+    sidebar.conversations = [
+      conversation("direct", 0, { title: "Direct", folderId: "work", streaming: true }),
+      conversation("nested-stream", 1, { title: "Nested stream", folderId: "nested", streaming: true }),
+      conversation("nested-idle", 2, { title: "Nested idle", folderId: "nested" }),
+    ];
+
+    let rows = renderSidebar(sidebar, 8, true, null);
+    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.accent}◉2 `);
+
+    sidebar.currentFolderId = "work";
+    rows = renderSidebar(sidebar, 8, true, null);
+    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.accent}◉1 `);
+    expect(rows.find(row => row.includes("Direct"))).toContain(`${theme.accent}◉ `);
+    expect(rows.find(row => row.includes("Direct"))).not.toContain("◉1 ");
+    expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
+  });
+
   test("renders managed background task counts on conversations and containing folders", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
@@ -127,7 +150,7 @@ describe("sidebar rendering", () => {
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
   });
 
-  test("renders paused goals distinctly and aggregates subagents, Chronos, and goals through folder trees", () => {
+  test("omits paused goal badges and aggregates only active goals through folder trees", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -157,7 +180,8 @@ describe("sidebar rendering", () => {
     const workRow = rows.find(row => row.includes("Work"));
     expect(workRow).toContain(`${theme.accent}◆3 `);
     expect(workRow).toContain(`${theme.success}◷3 `);
-    expect(workRow).toContain(`${theme.tool}◆2 `);
+    expect(workRow).toContain(`${theme.tool}◆ `);
+    expect(workRow).not.toContain(`${theme.tool}◆2 `);
 
     sidebar.currentFolderId = "work";
     rows = renderSidebar(sidebar, 8, true, null);
@@ -166,7 +190,8 @@ describe("sidebar rendering", () => {
     expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.tool}◆ `);
     expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.accent}◆ `);
     expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.success}◷ `);
-    expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.tool}◇ `);
+    expect(rows.find(row => row.includes("Paused"))).not.toContain(`${theme.tool}◆ `);
+    expect(rows.find(row => row.includes("Paused"))).not.toContain(`${theme.tool}◇ `);
     expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
   });
 
