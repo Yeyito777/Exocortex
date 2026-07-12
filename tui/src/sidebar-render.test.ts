@@ -89,7 +89,8 @@ describe("sidebar rendering", () => {
 
     sidebar.currentFolderId = "work";
     rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.accent}◉1 `);
+    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.accent}◉ `);
+    expect(rows.find(row => row.includes("Nested"))).not.toContain("◉1 ");
     expect(rows.find(row => row.includes("Direct"))).toContain(`${theme.accent}◉ `);
     expect(rows.find(row => row.includes("Direct"))).not.toContain("◉1 ");
     expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);

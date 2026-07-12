@@ -115,6 +115,7 @@ function goalIndicator(activeCount: number): string {
 
 function folderStreamingIndicator(count: number): string {
   if (count <= 0) return "";
+  if (count === 1) return "◉ ";
   return count > 99 ? "◉99+ " : `◉${count} `;
 }
 
