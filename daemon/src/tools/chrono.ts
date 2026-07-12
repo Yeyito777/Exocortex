@@ -68,19 +68,51 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
   if (selected === "wait") {
     const taskId = typeof input.task_id === "string" ? input.task_id.trim() : "";
     if (!taskId) return { output: "wait requires task_id.", isError: true };
-    const ownTaskId = `chrono:wait:${context.toolCallId ?? Date.now()}`;
+    const maxWaitMs = parseDurationMs(input.max_wait);
+    if (maxWaitMs === null) {
+      return { output: "wait requires max_wait as a positive duration such as '30s', '20m', '2h', or '1d'.", isError: true };
+    }
+
+    const maxWait = String(input.max_wait).trim();
+    const startedAt = Date.now();
+    const ownTaskId = `chrono:wait:${context.toolCallId ?? startedAt}`;
+    const waitController = new AbortController();
+    const limitController = new AbortController();
+    let limitReached = false;
+    const abort = () => {
+      waitController.abort();
+      limitController.abort();
+    };
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+    const limit = abortableSleep(maxWaitMs, limitController.signal)
+      .then(() => {
+        limitReached = true;
+        waitController.abort();
+      })
+      .catch((err) => {
+        if (!(err instanceof DOMException && err.name === "AbortError")) throw err;
+      });
+
     context.setChronoTaskActive?.(ownTaskId, true, {
-      title: `Waiting for ${taskId}`,
-      startedAt: Date.now(),
+      title: `Waiting up to ${maxWait} for ${taskId}`,
+      startedAt,
+      dueAt: startedAt + maxWaitMs,
       chronoMode: "wait",
     });
     try {
-      const completed = await waitForConversationTask(taskId, signal);
+      const completed = await waitForConversationTask(taskId, waitController.signal);
       return { output: `Task finished: ${completed.id} (${completed.title})`, isError: false };
     } catch (err) {
+      if (limitReached && err instanceof DOMException && err.name === "AbortError") {
+        return { output: `Wait limit reached after ${maxWait} before task completion was observed: ${taskId}`, isError: false };
+      }
       if (err instanceof DOMException && err.name === "AbortError") throw err;
       return { output: err instanceof Error ? err.message : String(err), isError: true };
     } finally {
+      limitController.abort();
+      await limit;
+      signal?.removeEventListener("abort", abort);
       context.setChronoTaskActive?.(ownTaskId, false);
     }
   }
@@ -180,13 +212,14 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
 
 export const chrono: Tool = {
   name: "chrono",
-  description: "Wait for an active task, sleep the current model turn, or manage durable one-shot/recurring wakes. A message is a hard wake that starts the model. A command is a soft wake that runs without a model and can escalate to a hard wake on failure or a script-defined non-zero exit.",
-  systemHint: "Use Chrono instead of shell sleep, polling background tasks, or cron. `wait` wakes immediately when an active task finishes. `sleep` pauses this turn for a duration. `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions. `adopt` attaches an ownerless daemon command schedule to this conversation and configures its hard wake. Command occurrences are at-least-once across crash windows and receive CHRONO_OCCURRENCE_ID, so side-effecting commands should deduplicate that id. Use list/cancel to manage owned schedules.",
+  description: "Wait for an active task up to a required limit, sleep the current model turn, or manage durable one-shot/recurring wakes. A message is a hard wake that starts the model. A command is a soft wake that runs without a model and can escalate to a hard wake on failure or a script-defined non-zero exit.",
+  systemHint: "Use Chrono instead of shell sleep, polling background tasks, or cron. `wait` requires a `max_wait` safety limit and wakes immediately when the task finishes or that limit is reached. `sleep` pauses this turn for a duration. `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions. `adopt` attaches an ownerless daemon command schedule to this conversation and configures its hard wake. Command occurrences are at-least-once across crash windows and receive CHRONO_OCCURRENCE_ID, so side-effecting commands should deduplicate that id. Use list/cancel to manage owned schedules.",
   inputSchema: {
     type: "object",
     properties: {
       action: { type: "string", enum: ["wait", "sleep", "wake", "list", "adopt", "cancel"], description: "Chrono operation." },
       task_id: { type: "string", description: "For wait: exact active task id from the Tasks UI or exo tasks." },
+      max_wait: { type: "string", description: "Required for wait: maximum duration to wait, such as 30s, 20m, 2h, or 1d." },
       duration: { type: "string", description: "For sleep: positive duration such as 30s, 20m, 2h, or 1d." },
       at: { type: "string", description: "For wake: future ISO-8601 date/time with an explicit timezone offset." },
       after_seconds: { type: "number", exclusiveMinimum: 0, description: "For wake: relative delay; cannot be combined with at." },

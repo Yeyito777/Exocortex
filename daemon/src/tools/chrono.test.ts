@@ -16,17 +16,42 @@ describe("Chrono tool", () => {
     expect(chronoToolInternalsForTest.parseDurationMs("later")).toBeNull();
   });
 
+  test("wait requires an explicit maximum duration", async () => {
+    const result = await chrono.execute(
+      { action: "wait", task_id: "bash:42" },
+      { conversationId: "parent" },
+    );
+    expect(result).toEqual(expect.objectContaining({ isError: true }));
+    expect(result.output).toContain("requires max_wait");
+  });
+
   test("wait resolves on task completion and reports its own Tasks UI lifecycle", async () => {
     setBackgroundTaskActive("parent", "bash:42", true, { title: "test job", startedAt: 1 });
     const activity = mock(() => {});
     const resultPromise = chrono.execute(
-      { action: "wait", task_id: "bash:42" },
+      { action: "wait", task_id: "bash:42", max_wait: "5m" },
       { conversationId: "parent", toolCallId: "call-1", setChronoTaskActive: activity },
     );
     setBackgroundTaskActive("parent", "bash:42", false);
     await expect(resultPromise).resolves.toEqual(expect.objectContaining({ isError: false }));
-    expect(activity).toHaveBeenNthCalledWith(1, "chrono:wait:call-1", true, expect.objectContaining({ chronoMode: "wait" }));
+    expect(activity).toHaveBeenNthCalledWith(1, "chrono:wait:call-1", true, expect.objectContaining({
+      title: "Waiting up to 5m for bash:42",
+      chronoMode: "wait",
+      dueAt: expect.any(Number),
+    }));
     expect(activity).toHaveBeenLastCalledWith("chrono:wait:call-1", false);
+  });
+
+  test("wait returns when its maximum duration is reached and clears its Tasks UI row", async () => {
+    setBackgroundTaskActive("parent", "bash:slow", true, { title: "slow job", startedAt: 1 });
+    const activity = mock(() => {});
+    const result = await chrono.execute(
+      { action: "wait", task_id: "bash:slow", max_wait: "5ms" },
+      { conversationId: "parent", toolCallId: "call-limit", setChronoTaskActive: activity },
+    );
+    expect(result).toEqual(expect.objectContaining({ isError: false }));
+    expect(result.output).toContain("Wait limit reached after 5ms");
+    expect(activity).toHaveBeenLastCalledWith("chrono:wait:call-limit", false);
   });
 
   test("sleep is abortable and always clears its Tasks UI row", async () => {
