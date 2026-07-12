@@ -127,6 +127,11 @@ describe("focused conversation task panel", () => {
     expect(panel!.lines).toHaveLength(4);
     expect(panel!.lines.slice(1, 3).every(line => line.includes(hexToAnsi("#11ccaa")))).toBe(true);
     expect(panel!.lines.every(line => visibleLength(line) === panel!.width)).toBe(true);
+
+    state.sidebar.conversations[0].tasks = [
+      { id: "chrono:wait-only", kind: "chrono", title: "Wait for confirmation", startedAt: 1_000, chronoMode: "wait" },
+    ];
+    expect(renderTaskPanel(state, 100, 20, 0)).toBeNull();
   });
 
   test("uses Chrono's fallback color when it is absent from the tool registry", () => {
