@@ -98,6 +98,70 @@ describe("sidebar rendering", () => {
     expect(rows.find(row => row.includes("Worker"))).toContain(`${theme.warning}$99+ `);
   });
 
+  test("renders shell, Chrono, and active-goal indicators after the streaming indicator", () => {
+    const sidebar = createSidebarState();
+    sidebar.conversations = [conversation("worker", 0, {
+      title: "Worker",
+      streaming: true,
+      backgroundTaskCount: 2,
+      tasks: [
+        { id: "child", kind: "subagent", title: "Child", startedAt: 0 },
+        { id: "shell", kind: "background", title: "Build", startedAt: 0 },
+        { id: "chrono-1", kind: "chrono", title: "Wake one", startedAt: 0 },
+        { id: "chrono-2", kind: "chrono", title: "Wake two", startedAt: 0 },
+      ],
+      goal: { objective: "Ship it", status: "active", createdAt: 0, updatedAt: 0, turns: 0 },
+    })];
+
+    const row = renderSidebar(sidebar, 8, true, null).find(candidate => candidate.includes("Worker"));
+    expect(row).toContain(`${theme.accent}◉ `);
+    expect(row).toContain(`${theme.warning}$2 `);
+    expect(row).toContain(`${theme.success}◷2 `);
+    expect(row).toContain(`${theme.tool}◆ `);
+    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("$2 "));
+    expect(row!.indexOf("$2 ")).toBeLessThan(row!.indexOf("◷2 "));
+    expect(row!.indexOf("◷2 ")).toBeLessThan(row!.indexOf("◆ "));
+    expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
+  });
+
+  test("renders paused goals distinctly and aggregates Chronos and goals through folder trees", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [
+      { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
+      { id: "nested", name: "Nested", parentId: "work", createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
+    ];
+    sidebar.conversations = [
+      conversation("active", 0, {
+        title: "Active",
+        folderId: "nested",
+        tasks: [
+          { id: "chrono-1", kind: "chrono", title: "Wake one", startedAt: 0 },
+          { id: "chrono-2", kind: "chrono", title: "Wake two", startedAt: 0 },
+        ],
+        goal: { objective: "Active goal", status: "active", createdAt: 0, updatedAt: 0, turns: 0 },
+      }),
+      conversation("paused", 1, {
+        title: "Paused",
+        folderId: "work",
+        tasks: [{ id: "chrono-3", kind: "chrono", title: "Wake three", startedAt: 0 }],
+        goal: { objective: "Paused goal", status: "paused", createdAt: 0, updatedAt: 0, turns: 0 },
+      }),
+    ];
+
+    let rows = renderSidebar(sidebar, 8, true, null);
+    const workRow = rows.find(row => row.includes("Work"));
+    expect(workRow).toContain(`${theme.success}◷3 `);
+    expect(workRow).toContain(`${theme.tool}◆2 `);
+
+    sidebar.currentFolderId = "work";
+    rows = renderSidebar(sidebar, 8, true, null);
+    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.success}◷2 `);
+    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.tool}◆ `);
+    expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.success}◷ `);
+    expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.tool}◇ `);
+    expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
+  });
+
   test("renders a right-aligned badge counting unread conversations in a folder tree", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [
