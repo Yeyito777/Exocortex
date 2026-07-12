@@ -130,6 +130,16 @@ export interface CreateScheduleInput {
   };
 }
 
+export interface AdoptScheduleInput {
+  scheduleId: string;
+  ownerConversationId: string;
+  hardWake?: {
+    when?: "failure" | "always";
+    message?: string;
+    includeOutput?: boolean;
+  };
+}
+
 type ConversationChanged = (conversationId: string) => void;
 
 const schedules = new Map<string, ChronoSchedule>();
@@ -546,6 +556,49 @@ export function installMigratedSchedule(schedule: ChronoSchedule): boolean {
   publishSchedule(schedule, true);
   armTimer();
   return true;
+}
+
+/**
+ * Attach an ownerless daemon command schedule to the active conversation.
+ * Adoption is deliberately limited to idle command schedules: conversation
+ * wakes already have an owner, and mutating an in-flight occurrence would make
+ * its escalation destination timing-dependent.
+ */
+export function adoptChronoSchedule(input: AdoptScheduleInput): { schedule?: ChronoSchedule; error?: string } {
+  const schedule = schedules.get(input.scheduleId);
+  if (!schedule) return { error: `Chrono schedule not found: ${input.scheduleId}` };
+  if (schedule.ownerConversationId) {
+    return { error: schedule.ownerConversationId === input.ownerConversationId
+      ? `Chrono schedule is already owned by this conversation: ${input.scheduleId}`
+      : `Chrono schedule is owned by another conversation: ${input.scheduleId}` };
+  }
+  if (schedule.target.kind !== "command") {
+    return { error: "Only ownerless command schedules can be adopted." };
+  }
+  if ([...pending.values()].some(occurrence => occurrence.scheduleId === schedule.id)) {
+    return { error: "Chrono schedule is currently running or pending; retry after this occurrence finishes." };
+  }
+
+  const adopted: ChronoSchedule = {
+    ...schedule,
+    ownerConversationId: input.ownerConversationId,
+    source: "model",
+    target: {
+      ...schedule.target,
+      hardWake: {
+        conversationId: input.ownerConversationId,
+        when: input.hardWake?.when ?? "failure",
+        message: input.hardWake?.message?.trim()
+          || `The Chrono automation '${schedule.title}' failed. Investigate and recover it.`,
+        includeOutput: input.hardWake?.includeOutput ?? true,
+      },
+    },
+  };
+  schedules.set(adopted.id, adopted);
+  persist();
+  publishSchedule(adopted, true);
+  armTimer();
+  return { schedule: structuredClone(adopted) };
 }
 
 export function listChronoSchedules(ownerConversationId?: string): ChronoSchedule[] {

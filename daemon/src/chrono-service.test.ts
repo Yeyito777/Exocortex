@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { create, getQueuedMessages, remove } from "./conversations";
 import {
+  adoptChronoSchedule,
   chronoInternalsForTest,
   cancelChronoSchedule,
   createChronoSchedule,
+  installMigratedSchedule,
   listChronoSchedules,
   startChronoService,
 } from "./chrono-service";
@@ -126,6 +128,41 @@ describe("Chrono scheduler", () => {
     expect(wake).toContain("[chrono hard wake:");
     expect(wake).toContain("Investigate health.");
     expect(wake).toContain("unhealthy");
+  });
+
+  test("adopts an ownerless command schedule and assigns failure escalation", () => {
+    const owner = makeConversation("adopt");
+    const id = "chrono:migrated:test-adopt";
+    expect(installMigratedSchedule({
+      id,
+      title: "Global health probe",
+      createdAt: Date.now(),
+      nextAt: Date.now() + 60_000,
+      recurrence: { kind: "cron", expression: "*/15 * * * *" },
+      target: { kind: "command", command: "exit 1", timeoutMs: 30_000 },
+      source: "legacy-cron",
+    })).toBe(true);
+
+    const result = adoptChronoSchedule({
+      scheduleId: id,
+      ownerConversationId: owner,
+      hardWake: { message: "Investigate the recorder." },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.schedule).toMatchObject({
+      id,
+      ownerConversationId: owner,
+      target: {
+        kind: "command",
+        hardWake: {
+          conversationId: owner,
+          when: "failure",
+          message: "Investigate the recorder.",
+          includeOutput: true,
+        },
+      },
+    });
+    expect(listChronoSchedules(owner).map(schedule => schedule.id)).toEqual([id]);
   });
 
   test("cancel stops an already-running soft-wake before it can escalate", async () => {

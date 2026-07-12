@@ -1,5 +1,5 @@
 import type { Tool, ToolResult } from "./types";
-import { createChronoSchedule, cancelChronoSchedule, listChronoSchedules, type RepeatInput } from "../chrono-service";
+import { adoptChronoSchedule, createChronoSchedule, cancelChronoSchedule, listChronoSchedules, type RepeatInput } from "../chrono-service";
 import { waitForConversationTask } from "../conversation-activity";
 
 const DURATION_RE = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)\s*$/i;
@@ -145,6 +145,27 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
     };
   }
 
+  if (selected === "adopt") {
+    const scheduleId = typeof input.schedule_id === "string" ? input.schedule_id.trim() : "";
+    if (!scheduleId) return { output: "adopt requires schedule_id.", isError: true };
+    const hardWakeRaw = input.hard_wake;
+    const hardWake = hardWakeRaw && typeof hardWakeRaw === "object" && !Array.isArray(hardWakeRaw)
+      ? hardWakeRaw as { when?: "failure" | "always"; message?: string; include_output?: boolean }
+      : undefined;
+    const result = adoptChronoSchedule({
+      scheduleId,
+      ownerConversationId: convId,
+      hardWake: hardWake ? {
+        when: hardWake.when,
+        message: hardWake.message,
+        includeOutput: hardWake.include_output,
+      } : undefined,
+    });
+    return result.schedule
+      ? { output: `Adopted Chrono schedule:\n${formatSchedule(result.schedule)}`, isError: false }
+      : { output: result.error ?? "Could not adopt Chrono schedule.", isError: true };
+  }
+
   if (selected === "cancel") {
     const scheduleId = typeof input.schedule_id === "string" ? input.schedule_id.trim() : "";
     if (!scheduleId) return { output: "cancel requires schedule_id.", isError: true };
@@ -154,17 +175,17 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
       : { output: result.error ?? "Chrono schedule not found.", isError: true };
   }
 
-  return { output: "Invalid Chrono action. Use wait, sleep, wake, list, or cancel.", isError: true };
+  return { output: "Invalid Chrono action. Use wait, sleep, wake, list, adopt, or cancel.", isError: true };
 }
 
 export const chrono: Tool = {
   name: "chrono",
-  description: "Wait for an active task, sleep the current model turn, or schedule durable one-shot/recurring wakes. A message is a hard wake that starts the model. A command is a soft wake that runs without a model and can escalate to a hard wake on failure or a script-defined non-zero exit.",
-  systemHint: "Use Chrono instead of shell sleep, polling background tasks, or cron. `wait` wakes immediately when an active task finishes. `sleep` pauses this turn for a duration. `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions. Command occurrences are at-least-once across crash windows and receive CHRONO_OCCURRENCE_ID, so side-effecting commands should deduplicate that id. Use list/cancel to manage schedules.",
+  description: "Wait for an active task, sleep the current model turn, or manage durable one-shot/recurring wakes. A message is a hard wake that starts the model. A command is a soft wake that runs without a model and can escalate to a hard wake on failure or a script-defined non-zero exit.",
+  systemHint: "Use Chrono instead of shell sleep, polling background tasks, or cron. `wait` wakes immediately when an active task finishes. `sleep` pauses this turn for a duration. `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions. `adopt` attaches an ownerless daemon command schedule to this conversation and configures its hard wake. Command occurrences are at-least-once across crash windows and receive CHRONO_OCCURRENCE_ID, so side-effecting commands should deduplicate that id. Use list/cancel to manage owned schedules.",
   inputSchema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["wait", "sleep", "wake", "list", "cancel"], description: "Chrono operation." },
+      action: { type: "string", enum: ["wait", "sleep", "wake", "list", "adopt", "cancel"], description: "Chrono operation." },
       task_id: { type: "string", description: "For wait: exact active task id from the Tasks UI or exo tasks." },
       duration: { type: "string", description: "For sleep: positive duration such as 30s, 20m, 2h, or 1d." },
       at: { type: "string", description: "For wake: future ISO-8601 date/time with an explicit timezone offset." },
@@ -195,7 +216,7 @@ export const chrono: Tool = {
         },
         additionalProperties: false,
       },
-      schedule_id: { type: "string", description: "For cancel: exact Chrono schedule id." },
+      schedule_id: { type: "string", description: "For adopt/cancel: exact Chrono schedule id. Adopt transfers an ownerless command schedule to this conversation and configures failure escalation." },
     },
     required: ["action"],
     additionalProperties: false,
@@ -209,7 +230,7 @@ export const chrono: Tool = {
     const detail = selected === "wait" ? String(input.task_id ?? "")
       : selected === "sleep" ? String(input.duration ?? "")
         : selected === "wake" ? String(input.title ?? input.message ?? input.command ?? input.at ?? "")
-          : selected === "cancel" ? String(input.schedule_id ?? "")
+          : selected === "adopt" || selected === "cancel" ? String(input.schedule_id ?? "")
             : "";
     return { label: "Chrono", detail: detail ? `${selected}: ${detail}` : selected };
   },

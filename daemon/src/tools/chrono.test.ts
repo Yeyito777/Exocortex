@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { chrono, chronoToolInternalsForTest } from "./chrono";
-import { chronoInternalsForTest } from "../chrono-service";
+import { chronoInternalsForTest, installMigratedSchedule } from "../chrono-service";
 import { resetConversationActivityForTest, setBackgroundTaskActive } from "../conversation-activity";
 
 afterEach(() => {
@@ -54,5 +54,26 @@ describe("Chrono tool", () => {
 
     const listed = await chrono.execute({ action: "list" }, { conversationId: "parent" });
     expect(listed.output).toContain("Check inbox");
+  });
+
+  test("adopts an ownerless daemon command schedule", async () => {
+    installMigratedSchedule({
+      id: "chrono:migrated:tool-adopt",
+      title: "Recorder monitor",
+      createdAt: Date.now(),
+      nextAt: Date.now() + 60_000,
+      target: { kind: "command", command: "exit 1", timeoutMs: 30_000 },
+      source: "legacy-cron",
+    });
+    const adopted = await chrono.execute({
+      action: "adopt",
+      schedule_id: "chrono:migrated:tool-adopt",
+      hard_wake: { message: "Investigate PMV4." },
+    }, { conversationId: "pmv4-owner" });
+    expect(adopted).toEqual(expect.objectContaining({ isError: false }));
+    expect(adopted.output).toContain("soft wake → hard wake");
+
+    const listed = await chrono.execute({ action: "list" }, { conversationId: "pmv4-owner" });
+    expect(listed.output).toContain("Recorder monitor");
   });
 });
