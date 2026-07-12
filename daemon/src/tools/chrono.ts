@@ -1,4 +1,5 @@
 import type { Tool, ToolResult } from "./types";
+import { summarizeParams } from "./util";
 import { adoptChronoSchedule, createChronoSchedule, cancelChronoSchedule, listChronoSchedules, type RepeatInput } from "../chrono-service";
 import { waitForConversationTask } from "../conversation-activity";
 
@@ -260,11 +261,15 @@ export const chrono: Tool = {
   display: { label: "Chrono", color: "#4ec9b0" },
   summarize(input) {
     const selected = action(input) || "invalid";
-    const detail = selected === "wait" ? String(input.task_id ?? "")
-      : selected === "sleep" ? String(input.duration ?? "")
-        : selected === "wake" ? String(input.title ?? input.message ?? input.command ?? input.at ?? "")
-          : selected === "adopt" || selected === "cancel" ? String(input.schedule_id ?? "")
-            : "";
+    if (selected === "wait") {
+      const taskId = String(input.task_id ?? "");
+      const primary = taskId ? `wait: ${taskId}` : "wait";
+      return { label: "Chrono", detail: summarizeParams(primary, input, ["action", "task_id"]) };
+    }
+    const detail = selected === "sleep" ? String(input.duration ?? "")
+      : selected === "wake" ? String(input.title ?? input.message ?? input.command ?? input.at ?? "")
+        : selected === "adopt" || selected === "cancel" ? String(input.schedule_id ?? "")
+          : "";
     return { label: "Chrono", detail: detail ? `${selected}: ${detail}` : selected };
   },
   execute,

@@ -16,6 +16,11 @@ describe("Chrono tool", () => {
     expect(chronoToolInternalsForTest.parseDurationMs("later")).toBeNull();
   });
 
+  test("shows the wait limit as a flag in TUI summaries", () => {
+    expect(chrono.summarize({ action: "wait", task_id: "bash:42", max_wait: "20m" }).detail)
+      .toBe("wait: bash:42 --max_wait 20m");
+  });
+
   test("wait requires an explicit maximum duration", async () => {
     const result = await chrono.execute(
       { action: "wait", task_id: "bash:42" },
