@@ -433,6 +433,8 @@ function compactTask(task: ActiveConversationTask): Record<string, unknown> {
     owner_title: owner?.title ?? "",
     title: task.title,
     started_at: task.startedAt,
+    ...(task.dueAt !== undefined ? { due_at: task.dueAt } : {}),
+    ...(task.chronoMode ? { chrono_mode: task.chronoMode } : {}),
     ...(task.kind === "subagent" ? { child_conversation_id: task.id } : {}),
     ...(task.toolName ? { tool: task.toolName } : {}),
     ...(task.pid !== undefined ? { pid: task.pid } : {}),
@@ -768,8 +770,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }
 
     const kind = input.kind ?? "all";
-    if (kind !== "all" && kind !== "subagent" && kind !== "background") {
-      throw new Error("kind must be all, subagent, or background");
+    if (kind !== "all" && kind !== "subagent" && kind !== "background" && kind !== "chrono") {
+      throw new Error("kind must be all, subagent, background, or chrono");
     }
     const query = stringInput(input, "query");
     const queryLower = query?.toLowerCase();
@@ -1123,7 +1125,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     if (!task) throw new Error(`Active task ${taskId} not found`);
     if (operation === "info") return ok(pretty(compactTask(task)));
     if (operation !== "stop") throw new Error("operation must be info or stop");
-    if (task.kind !== "background") throw new Error(`Task ${taskId} is a subagent; abort conversation ${task.id} instead.`);
+    if (task.kind === "subagent") throw new Error(`Task ${taskId} is a subagent; abort conversation ${task.id} instead.`);
+    if (task.kind === "chrono") throw new Error(`Task ${taskId} is managed by Chrono; use the chrono tool to list/cancel schedules, or abort its conversation for an active wait/sleep.`);
 
     const stopped = stopBackgroundTask(taskId, task.ownerConversationId === parentConversationId);
     if (stopped.result === "not-found") throw new Error(`Active task ${taskId} not found`);

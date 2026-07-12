@@ -19,7 +19,7 @@ export interface ConversationActivityCounts {
   backgroundTaskCount: number;
 }
 
-type TaskDetails = Pick<ConversationTaskSummary, "title" | "startedAt">;
+type TaskDetails = Pick<ConversationTaskSummary, "title" | "startedAt" | "dueAt" | "chronoMode">;
 type BackgroundTaskStop = (suppressCompletionNotification: boolean) => boolean;
 
 export interface BackgroundTaskRuntimeDetails extends TaskDetails {
@@ -57,12 +57,16 @@ const subagentsByParent = new Map<string, TaskMap>();
 /** Last parent that spawned each child during this daemon session. */
 const subagentParentByChild = new Map<string, string>();
 const backgroundTasksByConversation = new Map<string, TaskMap>();
+const chronoTasksByConversation = new Map<string, TaskMap>();
+const taskCompletionWaiters = new Map<string, Set<() => void>>();
 
 function recordsEqual(a: InternalTaskRecord, b: InternalTaskRecord): boolean {
   return a.id === b.id
     && a.kind === b.kind
     && a.title === b.title
     && a.startedAt === b.startedAt
+    && a.dueAt === b.dueAt
+    && a.chronoMode === b.chronoMode
     && a.status === b.status
     && a.toolName === b.toolName
     && a.pid === b.pid
@@ -93,6 +97,8 @@ function setEntry(
       kind,
       title: details?.title ?? existing?.title ?? taskId,
       startedAt: details?.startedAt ?? existing?.startedAt ?? Date.now(),
+      ...(details?.dueAt !== undefined ? { dueAt: details.dueAt } : existing?.dueAt !== undefined ? { dueAt: existing.dueAt } : {}),
+      ...(details?.chronoMode ? { chronoMode: details.chronoMode } : existing?.chronoMode ? { chronoMode: existing.chronoMode } : {}),
       status: existing?.status ?? "running",
       ...(background?.toolName ? { toolName: background.toolName } : existing?.toolName ? { toolName: existing.toolName } : {}),
       ...(background?.pid !== undefined ? { pid: background.pid } : existing?.pid !== undefined ? { pid: existing.pid } : {}),
@@ -111,6 +117,11 @@ function setEntry(
   const tasks = map.get(ownerId);
   if (!tasks || !tasks.delete(taskId)) return false;
   if (tasks.size === 0) map.delete(ownerId);
+  const waiters = taskCompletionWaiters.get(taskId);
+  if (waiters) {
+    taskCompletionWaiters.delete(taskId);
+    for (const resolve of waiters) resolve();
+  }
   return true;
 }
 
@@ -152,6 +163,52 @@ export function setBackgroundTaskActive(
   return setEntry(backgroundTasksByConversation, convId, taskId, "background", active, details);
 }
 
+export function setChronoTaskActive(
+  convId: string,
+  taskId: string,
+  active: boolean,
+  details?: TaskDetails,
+): boolean {
+  return setEntry(chronoTasksByConversation, convId, taskId, "chrono", active, details);
+}
+
+function findActiveTask(taskId: string): InternalTaskRecord | undefined {
+  for (const catalog of [subagentsByParent, backgroundTasksByConversation, chronoTasksByConversation]) {
+    for (const tasks of catalog.values()) {
+      const task = tasks.get(taskId);
+      if (task) return task;
+    }
+  }
+  return undefined;
+}
+
+/** Event-driven wait for an active task to leave the daemon task catalog. */
+export function waitForConversationTask(taskId: string, signal?: AbortSignal): Promise<ConversationTaskSummary> {
+  const task = findActiveTask(taskId);
+  if (!task) return Promise.reject(new Error(`Active task not found: ${taskId}`));
+  const snapshot = summaryProjection(task);
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      signal?.removeEventListener("abort", abort);
+      resolve(snapshot);
+    };
+    const abort = () => {
+      const waiters = taskCompletionWaiters.get(taskId);
+      waiters?.delete(finish);
+      if (waiters?.size === 0) taskCompletionWaiters.delete(taskId);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    let waiters = taskCompletionWaiters.get(taskId);
+    if (!waiters) {
+      waiters = new Set();
+      taskCompletionWaiters.set(taskId, waiters);
+    }
+    waiters.add(finish);
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
 export function getConversationActivityCounts(convId: string): ConversationActivityCounts {
   return {
     subagentCount: subagentsByParent.get(convId)?.size ?? 0,
@@ -169,6 +226,8 @@ function summaryProjection(task: InternalTaskRecord): ConversationTaskSummary {
     kind: task.kind,
     title: task.title,
     startedAt: task.startedAt,
+    ...(task.dueAt !== undefined ? { dueAt: task.dueAt } : {}),
+    ...(task.chronoMode ? { chronoMode: task.chronoMode } : {}),
   };
 }
 
@@ -177,6 +236,7 @@ export function getConversationTasks(convId: string): ConversationTaskSummary[] 
   return [
     ...[...(subagentsByParent.get(convId)?.values() ?? [])].sort(byStart),
     ...[...(backgroundTasksByConversation.get(convId)?.values() ?? [])].sort(byStart),
+    ...[...(chronoTasksByConversation.get(convId)?.values() ?? [])].sort(byStart),
   ].map(summaryProjection);
 }
 
@@ -203,9 +263,11 @@ export function listActiveConversationTasks(ownerConversationId?: string): Activ
   if (ownerConversationId) {
     append(ownerConversationId, subagentsByParent.get(ownerConversationId));
     append(ownerConversationId, backgroundTasksByConversation.get(ownerConversationId));
+    append(ownerConversationId, chronoTasksByConversation.get(ownerConversationId));
   } else {
     for (const [ownerId, tasks] of subagentsByParent) append(ownerId, tasks);
     for (const [ownerId, tasks] of backgroundTasksByConversation) append(ownerId, tasks);
+    for (const [ownerId, tasks] of chronoTasksByConversation) append(ownerId, tasks);
   }
 
   return records.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
@@ -275,4 +337,6 @@ export function resetConversationActivityForTest(): void {
   subagentsByParent.clear();
   subagentParentByChild.clear();
   backgroundTasksByConversation.clear();
+  chronoTasksByConversation.clear();
+  taskCompletionWaiters.clear();
 }

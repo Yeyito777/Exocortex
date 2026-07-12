@@ -34,7 +34,7 @@ import {
 } from "./context-compaction";
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./providers/openai/auth";
 import { buildCodexWindowId } from "./providers/openai/identity";
-import { setBackgroundTaskActive as setConversationBackgroundTaskActive } from "./conversation-activity";
+import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
 import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
 import { buildHistoryUpdatedEvents } from "./history-pagination";
@@ -418,6 +418,11 @@ async function orchestrateAssistantTurn(
     exocortex: ext.exocortex,
     setBackgroundTaskActive: (taskId, active, details) => {
       if (setConversationBackgroundTaskActive(convId, taskId, active, details)) {
+        broadcastConversationUpdated(server, convId);
+      }
+    },
+    setChronoTaskActive: (taskId, active, details) => {
+      if (setConversationChronoTaskActive(convId, taskId, active, details)) {
         broadcastConversationUpdated(server, convId);
       }
     },

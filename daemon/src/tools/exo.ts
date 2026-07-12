@@ -109,7 +109,7 @@ export const exo: Tool = {
       },
       kind: {
         type: "string",
-        enum: ["all", "subagent", "background"],
+        enum: ["all", "subagent", "background", "chrono"],
         description: "For action=tasks, filter active work by kind. Defaults to all.",
       },
       provider: {

@@ -13,7 +13,7 @@
  *   secrets/            env, credentials.json (never tracked)
  *   data/               conversations/, trash/, trash/external-tools/ (bulk data, never tracked)
  *   runtime/            PID, socket, logs, usage.json (ephemeral)
- *   cron/               scheduled job scripts (persistent, not tracked)
+ *   chrono/             durable automation scripts (persistent, not tracked)
  *   storage/            fix-auth.md, token-stats/ (persistent user-local, not tracked)
  *
  * When running from a linked git worktree, runtime paths (socket, PID, logs)
@@ -150,9 +150,9 @@ export function dataDir(): string {
     : join(CONFIG_DIR, "data");
 }
 
-/** Cron directory — scheduled job scripts. */
-export function cronDir(): string {
-  return join(CONFIG_DIR, "cron");
+/** Chrono directory — durable command-automation scripts. */
+export function chronoDir(): string {
+  return join(CONFIG_DIR, "chrono");
 }
 
 /** Storage directory — docs, misc persistent user-local files. */

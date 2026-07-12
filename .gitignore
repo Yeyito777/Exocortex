@@ -20,9 +20,10 @@ config/storage/
 config/secrets/
 config/secrets
 
-# User cron jobs are local by default; keep the placeholder tracked
+# Legacy cron jobs are local migration input. Chrono scripts remain local.
 config/cron/*
-!config/cron/.gitkeep
+config/chrono/*
+!config/chrono/.gitkeep
 
 # External tools are installed/generated locally; keep documentation tracked
 external-tools/*

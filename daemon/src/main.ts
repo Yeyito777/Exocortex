@@ -24,7 +24,7 @@ import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
 import { getRunningConversationIds, prepareRestartForReplay, prepareStopWithoutReplay } from "./control";
 import { clearRestartRecoveryForStop, deliverPendingSubagentNotifications, hasActiveGoalRestartMarker, prepareCatchableShutdownForReplay, prepareCatchableShutdownWithoutReplay, recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
-import { startScheduler, stopScheduler, getCronDir, getJobs } from "./scheduler";
+import { startChronoService, stopChronoService, listChronoSchedules } from "./chrono-service";
 import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
 import { recoverPendingTitles } from "./titlegen";
@@ -126,7 +126,7 @@ async function startDaemon(): Promise<void> {
       const shutdownMode = beginDaemonShutdown(requestedMode);
       log("info", `exocortexd: shutting down (${reason}, mode=${shutdownMode})`);
       stopWatchdog();
-      if (!isWindows) stopScheduler();
+      stopChronoService();
 
       if (shutdownMode === "restart") {
         const replayPrep = await prepareCatchableShutdownForReplay();
@@ -213,6 +213,8 @@ async function startDaemon(): Promise<void> {
   }
   if (deliveredQueueIds.size > 0) convStore.removeQueuedMessagesById(deliveredQueueIds);
   profileMark("message_queue_loaded", { queuedMessageCount, deduplicated: deliveredQueueIds.size });
+  const chronoScheduleCount = await startChronoService();
+  profileMark("chrono_started", { scheduleCount: chronoScheduleCount });
   recoverPendingTitles(server);
   profileMark("pending_titles_recovered");
 
@@ -244,10 +246,7 @@ async function startDaemon(): Promise<void> {
     log("warn", `exocortexd: initial provider refresh failed: ${err instanceof Error ? err.message : err}`);
   });
 
-  // Start cron scheduler + stale stream watchdog
-  if (!isWindows) {
-    startScheduler();
-  }
+  // Start stale stream watchdog. Durable scheduling is owned by Chrono.
   startWatchdog();
 
   // Check auth status
@@ -257,18 +256,18 @@ async function startDaemon(): Promise<void> {
   profileMark("auth_checked", { authSummary });
 
   const wt = worktreeName();
-  const cronJobs = isWindows ? [] : getJobs();
+  const chronoSchedules = listChronoSchedules();
   const extToolCount = isWindows ? 0 : getExternalToolCount();
   const supervisedCount = isWindows ? 0 : getSupervisedDaemonCount();
   console.log(`\n  exocortexd running (pid ${process.pid})${wt ? ` [worktree: ${wt}]` : ""}`);
   console.log(`  socket: ${SOCKET_PATH}`);
   console.log(`  auth:   ${authSummary || "none configured"}`);
-  console.log(`  cron:   ${cronJobs.length} job(s) in ${getCronDir()}`);
+  console.log(`  chrono: ${chronoSchedules.length} durable schedule(s)`);
   console.log(`  tools:  ${extToolCount} external tool(s)${supervisedCount > 0 ? `, ${supervisedCount} supervised daemon(s)` : ""}`);
   console.log(`\n  Waiting for connections...\n`);
 
-  log("info", `exocortexd: ready on ${SOCKET_PATH} (auth=${authSummary}, cron=${cronJobs.length})`);
-  profileMark("ready", { cronJobs: cronJobs.length, externalToolCount: extToolCount, supervisedDaemonCount: supervisedCount });
+  log("info", `exocortexd: ready on ${SOCKET_PATH} (auth=${authSummary}, chrono=${chronoSchedules.length})`);
+  profileMark("ready", { chronoSchedules: chronoSchedules.length, externalToolCount: extToolCount, supervisedDaemonCount: supervisedCount });
 
   const recoveredStreams = recoverInterruptedStreams(server);
   if (recoveredStreams.length > 0) {

@@ -1,18 +1,7 @@
 External tools are in your PATH call them directly through bash. No need to cd anywhere or run binaries directly.
 
-# Cron jobs
-You can create scheduled tasks by writing bash scripts to exocortex/config/cron/. The daemon picks them up automatically (no restart needed).
-
-Required header:
-  # schedule: <5-field cron expression>    (e.g. "0 9 * * 1-5" for weekdays at 9am)
-
-Optional headers:
-  # description: <text>
-  # timeout: <seconds>                     (default 300)
-
-Scripts must be executable (chmod +x). Remove the execute bit to disable without deleting.
-Scripts can use exo, gmail, twitter, whatsapp, or any CLI tool.
-See daemon/src/cron-example.sh for a full reference.
+# Chrono scheduling
+Use the native Chrono tool for waits, sleeps, and durable one-shot or recurring schedules. Message schedules hard-wake the model. Command schedules are model-free soft-wakes and can escalate to a hard wake on failure or a script-defined non-zero condition. Do not create cron files.
 
 # PSA
 Do not, under any circumstance restart the main instance of exocortexd. You're running under it! Restarting it NUKES yourself which is not good.

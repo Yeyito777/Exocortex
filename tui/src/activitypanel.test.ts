@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { renderTaskPanel, formatTaskElapsed } from "./activitypanel";
+import { renderTaskPanel, formatTaskCountdown, formatTaskElapsed } from "./activitypanel";
 import { stripAnsi } from "./historycursor";
 import { createInitialState } from "./state";
 import { termWidth, visibleLength } from "./textwidth";
@@ -13,6 +13,7 @@ function stateWithTasks() {
     { name: "exo", label: "Exocortex", color: "#1122ee" },
     { name: "bash", label: "$", color: "#ee9911" },
     { name: "goal", label: "Goal", color: "#cc77dd" },
+    { name: "chrono", label: "Chrono", color: "#11ccaa" },
   ];
   state.sidebar.conversations = [{
     id: "parent",
@@ -107,6 +108,36 @@ describe("focused conversation task panel", () => {
     state.goal.status = "complete";
     expect(renderTaskPanel(state, 100, 20, 43_000)).toBeNull();
   });
+
+  test("renders Chrono rows with their configured color, countdown, and wait elapsed time", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].tasks = [
+      { id: "chrono:sleep", kind: "chrono", title: "Resume the build", startedAt: 1_000, dueAt: 12 * 60_000, chronoMode: "sleep" },
+      { id: "chrono:wait", kind: "chrono", title: "Wait for confirmation", startedAt: 1_000, dueAt: 12 * 60_000, chronoMode: "wait" },
+      { id: "chrono:wake", kind: "chrono", title: "Late wake", startedAt: 1_000, dueAt: 0, chronoMode: "wake" },
+    ];
+
+    const panel = renderTaskPanel(state, 100, 20, 0);
+    const plain = panel!.lines.map(stripAnsi).join("\n");
+    expect(plain).toContain("◷ Chrono Resume the build");
+    expect(plain).toContain("in 12m");
+    expect(plain).toContain("Wait for confirmation");
+    expect(plain).toContain("0s");
+    expect(plain).toContain("Late wake");
+    expect(plain).toContain("due");
+    expect(panel!.lines.slice(1, 4).every(line => line.includes(hexToAnsi("#11ccaa")))).toBe(true);
+    expect(panel!.lines.every(line => visibleLength(line) === panel!.width)).toBe(true);
+  });
+
+  test("uses Chrono's fallback color when it is absent from the tool registry", () => {
+    const state = stateWithTasks();
+    state.toolRegistry = state.toolRegistry.filter(tool => tool.name !== "chrono");
+    state.sidebar.conversations[0].tasks = [
+      { id: "chrono:wait", kind: "chrono", title: "Wait", startedAt: 1_000, chronoMode: "wait" },
+    ];
+
+    expect(renderTaskPanel(state, 100, 20, 43_000)?.lines[1]).toContain(hexToAnsi("#4ec9b0"));
+  });
 });
 
 describe("task elapsed formatting", () => {
@@ -116,5 +147,10 @@ describe("task elapsed formatting", () => {
     expect(formatTaskElapsed(0, (3 * 60 + 4) * 60_000)).toBe("3h 4m");
     expect(formatTaskElapsed(0, (2 * 24 + 3) * 60 * 60_000)).toBe("2d 3h");
     expect(formatTaskElapsed(0, 9 * 24 * 60 * 60_000)).toBe("1w 2d");
+  });
+
+  test("renders scheduled Chrono times as a compact countdown or due", () => {
+    expect(formatTaskCountdown(12 * 60_000, 0)).toBe("in 12m");
+    expect(formatTaskCountdown(0, 0)).toBe("due");
   });
 });

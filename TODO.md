@@ -52,7 +52,7 @@ ready to go. Alternatively, a `.bat` wrapper works for v1.
 
 ### ~~8. Skip non-essential Linux features for v1~~ ✅
 These can be left as no-ops or skipped entirely on Windows:
-- **Cron scheduler** — scripts are `.sh`, needs bash. Disable on Windows.
+- **Chrono command soft-wakes** — shell command automations need a platform-specific executor on Windows.
 - **External tools** (discord-cli, gmail-cli, etc.) — Linux-specific. Disable on Windows.
 - **systemd integration** — not applicable. Daemon is managed by the launcher.
 - **OSC 777 mouseshape** — st-specific, harmlessly ignored by Windows Terminal.

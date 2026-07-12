@@ -7,8 +7,10 @@ import {
   listActiveConversationTasks,
   resetConversationActivityForTest,
   setBackgroundTaskActive,
+  setChronoTaskActive,
   setSubagentActive,
   stopBackgroundTask,
+  waitForConversationTask,
 } from "./conversation-activity";
 import { create, createFolder, deleteFolder, getSummary, moveConversationToFolder, remove, setActiveJob } from "./conversations";
 
@@ -55,6 +57,30 @@ describe("focused conversation activity", () => {
     setSubagentActive("parent-b", "child", true);
     expect(getSubagentConversationIds("parent-a")).toEqual([]);
     expect(getSubagentConversationIds("parent-b")).toEqual(["child"]);
+  });
+
+  test("publishes Chrono timing details and wakes event-driven task waiters", async () => {
+    setChronoTaskActive("parent", "chrono:wake:1", true, {
+      title: "Daily inbox check",
+      startedAt: 100,
+      dueAt: 5_000,
+      chronoMode: "wake",
+    });
+    setBackgroundTaskActive("parent", "bash:waited", true, { title: "bun test", startedAt: 200 });
+
+    expect(getConversationTasks("parent")).toContainEqual({
+      id: "chrono:wake:1",
+      kind: "chrono",
+      title: "Daily inbox check",
+      startedAt: 100,
+      dueAt: 5_000,
+      chronoMode: "wake",
+    });
+
+    const waiting = waitForConversationTask("bash:waited");
+    setBackgroundTaskActive("parent", "bash:waited", false);
+    await expect(waiting).resolves.toMatchObject({ id: "bash:waited", kind: "background" });
+    await expect(waitForConversationTask("missing")).rejects.toThrow("Active task not found");
   });
 
   test("projects ephemeral counts and task details onto conversation summaries", () => {

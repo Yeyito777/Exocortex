@@ -1,8 +1,8 @@
 /**
  * Focused-conversation task panel.
  *
- * Renders the current goal, active subagents, and detached background commands
- * as a compact top-right overlay. The daemon supplies ephemeral task details on
+ * Renders the current goal, active subagents, detached background commands, and
+ * Chrono waits/sleeps/wakes as a compact top-right overlay. The daemon supplies
  * conversation summaries; this module adds the focused conversation's durable
  * goal and owns all visual formatting for the panel.
  */
@@ -19,6 +19,7 @@ const PANEL_BG_HEX = "#00050f";
 const EXOCORTEX_FALLBACK_HEX = "#1d9bf0";
 const BASH_FALLBACK_HEX = "#d19a66";
 const GOAL_FALLBACK_HEX = "#c792ea";
+const CHRONO_FALLBACK_HEX = "#4ec9b0";
 
 export interface TaskPanelEntry extends Omit<ConversationTaskSummary, "kind"> {
   kind: ConversationTaskSummary["kind"] | "goal";
@@ -63,7 +64,19 @@ export function formatTaskElapsed(startedAt: number, now = Date.now()): string {
   return `${Math.floor(totalDays / 7)}w ${totalDays % 7}d`;
 }
 
-function taskColor(state: RenderState, toolName: "exo" | "bash" | "goal", fallback: string): string {
+/** Compact remaining time for a scheduled Chrono task. */
+export function formatTaskCountdown(dueAt: number, now = Date.now()): string {
+  const remainingSeconds = Math.ceil((dueAt - now) / 1000);
+  if (remainingSeconds <= 0) return "due";
+  if (remainingSeconds < 60) return `in ${remainingSeconds}s`;
+  const remainingMinutes = Math.ceil(remainingSeconds / 60);
+  if (remainingMinutes < 60) return `in ${remainingMinutes}m`;
+  const remainingHours = Math.ceil(remainingMinutes / 60);
+  if (remainingHours < 24) return `in ${remainingHours}h`;
+  return `in ${Math.ceil(remainingHours / 24)}d`;
+}
+
+function taskColor(state: RenderState, toolName: "exo" | "bash" | "goal" | "chrono", fallback: string): string {
   const color = state.toolRegistry.find(tool => tool.name === toolName)?.color ?? fallback;
   return hexToAnsi(color);
 }
@@ -110,6 +123,7 @@ export function renderTaskPanel(
   const exocortex = taskColor(state, "exo", EXOCORTEX_FALLBACK_HEX);
   const bash = taskColor(state, "bash", BASH_FALLBACK_HEX);
   const goal = taskColor(state, "goal", GOAL_FALLBACK_HEX);
+  const chrono = taskColor(state, "chrono", CHRONO_FALLBACK_HEX);
 
   const withPanelBg = (line: string) => {
     const persistentBg = line.replaceAll(theme.reset, `${theme.reset}${panelBg}`);
@@ -131,14 +145,17 @@ export function renderTaskPanel(
   for (const task of visibleTasks) {
     const isSubagent = task.kind === "subagent";
     const isGoal = task.kind === "goal";
-    const color = isGoal ? goal : isSubagent ? exocortex : bash;
+    const isChrono = task.kind === "chrono";
+    const color = isGoal ? goal : isSubagent ? exocortex : isChrono ? chrono : bash;
     const label = panelWidth >= 38
-      ? (isGoal ? `${task.goalStatus === "paused" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exocortex" : "$ Bash")
-      : (isGoal ? `${task.goalStatus === "paused" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exo" : "$ Bash");
-    const fallbackTitle = isGoal ? "Conversation goal" : isSubagent ? "Subagent task" : "Background task";
+      ? (isGoal ? `${task.goalStatus === "paused" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exocortex" : isChrono ? "◷ Chrono" : "$ Bash")
+      : (isGoal ? `${task.goalStatus === "paused" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exo" : isChrono ? "◷ Chrono" : "$ Bash");
+    const fallbackTitle = isGoal ? "Conversation goal" : isSubagent ? "Subagent task" : isChrono ? "Chrono task" : "Background task";
     const title = cleanTaskTitle(task.title) || fallbackTitle;
     const elapsed = isGoal && task.goalStatus === "paused"
       ? "paused"
+      : isChrono && task.chronoMode !== "wait" && task.dueAt !== undefined
+        ? formatTaskCountdown(task.dueAt, now)
       : formatTaskElapsed(task.startedAt, now);
     const titleWidth = innerWidth - termWidth(label) - ELAPSED_WIDTH - 3;
     lines.push(withPanelBg(

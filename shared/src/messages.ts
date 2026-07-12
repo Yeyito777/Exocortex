@@ -291,11 +291,15 @@ export interface ConversationGoal {
 export interface ConversationTaskSummary {
   /** Child conversation id for subagents, or the tool-owned task id for background work. */
   id: string;
-  kind: "subagent" | "background";
+  kind: "subagent" | "background" | "chrono";
   /** Short subagent conversation title or a compact background-command description. */
   title: string;
   /** Unix epoch milliseconds when this work started. */
   startedAt: number;
+  /** Next due time for sleeping/scheduled Chrono work. */
+  dueAt?: number;
+  /** Chrono lifecycle shown by the focused-conversation Tasks UI. */
+  chronoMode?: "wait" | "sleep" | "wake";
 }
 
 export interface ConversationSummary {

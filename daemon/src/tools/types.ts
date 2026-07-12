@@ -77,6 +77,12 @@ export interface ToolExecutionContext {
     active: boolean,
     details?: BackgroundTaskActivityDetails,
   ) => void;
+  /** Report native Chrono waits/sleeps in the focused conversation Tasks UI. */
+  setChronoTaskActive?: (
+    taskId: string,
+    active: boolean,
+    details?: Pick<import("@exocortex/shared/messages").ConversationTaskSummary, "title" | "startedAt" | "dueAt" | "chronoMode">,
+  ) => void;
   /** Notify the owning conversation when a detached tool process finishes. */
   onBackgroundTaskComplete?: (completion: BackgroundTaskCompletion) => void;
   /** Register the currently executing tool as user-backgroundable. */

@@ -43,6 +43,7 @@ import {
 } from "./subagent-notifications";
 import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
+import { configureChronoService } from "./chrono-service";
 import { INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory } from "./history-pagination";
 
 // ── Handler ─────────────────────────────────────────────────────────
@@ -55,6 +56,7 @@ export function createHandler(server: DaemonServer) {
   let openAIAccountMutationInFlight = false;
   let exocortexRuntime: ExocortexToolRuntime | undefined;
   const pendingBackgroundNotifications = new Map<string, { convId: string; completion: BackgroundTaskCompletion }>();
+  configureChronoService((convId) => broadcastConversationUpdated(server, convId));
 
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     server.broadcast({ type: "usage_update", provider, usage });

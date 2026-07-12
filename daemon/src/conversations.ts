@@ -18,6 +18,7 @@ import { getConversationActivityCounts, getConversationTasks, stopBackgroundTask
 import * as streaming from "./streaming";
 import * as messageQueue from "./message-queue";
 import { log } from "./log";
+import { notifyConversationRemoved } from "./conversation-lifecycle";
 import { getProvider, normalizeEffort } from "./providers/registry";
 import { isDeepStrictEqual } from "node:util";
 import { contextMessageChars } from "./context-token-attribution";
@@ -520,6 +521,7 @@ function removeConversationState(id: string): boolean {
   // before discarding its controller so their tool signal can terminate them.
   streaming.getActiveJob(id)?.abort();
   stopBackgroundTasksForConversation(id);
+  notifyConversationRemoved(id);
   conversations.delete(id);
   summaries.delete(id);
   dirty.delete(id);

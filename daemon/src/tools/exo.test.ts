@@ -13,7 +13,7 @@ import {
   remove,
   setActiveJob,
 } from "../conversations";
-import { resetConversationActivityForTest, setBackgroundTaskActive, setSubagentActive } from "../conversation-activity";
+import { resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive, setSubagentActive } from "../conversation-activity";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "../messages";
 import { EXO_ACTIONS, exo } from "./exo";
 
@@ -167,6 +167,12 @@ describe("native exo daemon runtime", () => {
       backgroundedAt: 350,
       outputPath: "/tmp/bash-43.tmp",
     });
+    setChronoTaskActive(parentId, "chrono:wake:one", true, {
+      title: "Wake for inbox",
+      startedAt: 400,
+      dueAt: 4_000,
+      chronoMode: "wake",
+    });
     const runtime = createExocortexToolRuntime({
       server: fakeServer() as never,
       runTurn: async () => successfulOutcome(),
@@ -192,6 +198,15 @@ describe("native exo daemon runtime", () => {
     const all = JSON.parse((await runtime.execute({ action: "tasks", scope: "all", query: "bun test", limit: 10 }, parentId)).output);
     expect(all).toMatchObject({ scope: "all", total: 2, returned: 2 });
     expect(all.tasks.map((task: { id: string }) => task.id)).toEqual(["bash:43:two", "bash:42:one"]);
+
+    const chrono = JSON.parse((await runtime.execute({ action: "tasks", kind: "chrono" }, parentId)).output);
+    expect(chrono).toMatchObject({ scope: "conversation", kind: "chrono", total: 1 });
+    expect(chrono.tasks[0]).toMatchObject({
+      id: "chrono:wake:one",
+      kind: "chrono",
+      due_at: 4_000,
+      chrono_mode: "wake",
+    });
   });
 
   test("discovers and stops exact managed background tasks through the command registry", async () => {
