@@ -124,6 +124,7 @@ export function handleConversationDeleted(event: Extract<Event, { type: "convers
   // If this was the current conversation, clear the chat.
   if (state.convId === event.convId) {
     state.convId = null;
+    state.draftFolderId = state.sidebar.currentFolderId;
     state.messages = [];
     clearPendingAI(state);
     delete state.lastStreamSeqByConv[event.convId];

@@ -179,6 +179,8 @@ export interface RenderState {
   fastMode: boolean;
   goal: ConversationGoal | null;
   convId: string | null;
+  /** Folder captured when the current blank draft was started. Sidebar browsing must not retarget it. */
+  draftFolderId: string | null;
   inputBuffer: string;
   cursorPos: number;
   /** Preferred prompt column for repeated vertical movement (Vim curswant). */
@@ -414,19 +416,22 @@ export function renderFolderInstructionsDocument(state: RenderState, text: strin
   resetHistoryPagination(state);
 }
 
-export function currentFolderEffectiveInstructions(state: RenderState): string {
-  const folderId = state.sidebar.currentFolderId;
+export function draftFolderEffectiveInstructions(state: RenderState): string {
+  const folderId = state.draftFolderId;
   if (!folderId) return "";
   return state.sidebar.folders.find(folder => folder.id === folderId)?.effectiveInstructions ?? "";
 }
 
-export function renderCurrentFolderDraftInstructions(state: RenderState): void {
-  renderFolderInstructionsDocument(state, currentFolderEffectiveInstructions(state));
+export function renderDraftFolderInstructions(state: RenderState): void {
+  renderFolderInstructionsDocument(state, draftFolderEffectiveInstructions(state));
 }
 
 export function resetDraftConversationState(state: RenderState): void {
   state.folderInstructionsDoc = null;
   state.convId = null;
+  // Starting a draft chooses its destination. Navigating the sidebar afterward
+  // is only browsing and must not silently move the eventual conversation.
+  state.draftFolderId = state.sidebar.currentFolderId;
   state.messages = [];
   clearPendingAI(state);
   clearStreamingTailMessages(state);
@@ -440,7 +445,7 @@ export function resetDraftConversationState(state: RenderState): void {
   state.pendingSystemInstructions = null;
   state.pendingGenerateTitleOnCreate = false;
   state.pendingQueuedDraftConvId = null;
-  renderCurrentFolderDraftInstructions(state);
+  renderDraftFolderInstructions(state);
 }
 
 export function openFolderInstructionsDocument(state: RenderState, folderId: string): void {
@@ -567,6 +572,7 @@ export function createInitialState(): RenderState {
 	    fastMode: defaults.fastMode,
     goal: null,
     convId: null,
+    draftFolderId: null,
     inputBuffer: "",
     cursorPos: 0,
     promptCurswant: null,

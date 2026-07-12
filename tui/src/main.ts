@@ -589,7 +589,7 @@ function handleSubmit(): void {
           resetNewConversationDefaults(state);
           state.pendingSystemInstructions = cmdResult.text;
           state.pendingGenerateTitleOnCreate = false;
-          daemon.createConversation(state.provider, state.model, "", state.effort, state.fastMode, undefined, state.sidebar.currentFolderId);
+          daemon.createConversation(state.provider, state.model, "", state.effort, state.fastMode, undefined, state.draftFolderId);
           break;
         case "replay_requested":
           if (startReplayConversation(state, daemon)) {
@@ -624,7 +624,7 @@ function handleSubmit(): void {
               state.effort,
               state.fastMode,
               undefined,
-              state.sidebar.currentFolderId,
+              state.draftFolderId,
               objective,
               undefined,
               cmdResult.pausable,
@@ -691,7 +691,7 @@ function handleSubmit(): void {
       const messageText = expandMacros(text);
       const queueingDraftConversation = !state.convId;
       const convId = state.convId ?? generateClientConversationId();
-      const folderId = state.sidebar.currentFolderId;
+      const folderId = state.draftFolderId;
       const waitTarget = inlineCommands.queue;
       const queued = enqueueGlobalIdleMessage(state, convId, messageText, images, queueingDraftConversation ? {
         target: "new-conversation",
@@ -897,7 +897,7 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
       text: messageText,
       startedAt,
       images,
-    }, options.folderId ?? state.sidebar.currentFolderId, undefined, convId);
+    }, options.folderId === undefined ? state.draftFolderId : options.folderId, undefined, convId);
   } else {
     daemon.sendMessage(state.convId, messageText, startedAt, images);
   }
@@ -945,7 +945,7 @@ function submitPendingVoiceTranscription(
     model: state.model,
     effort: state.effort,
     fastMode: state.fastMode,
-    folderId: state.sidebar.currentFolderId,
+    folderId: state.convId ? state.sidebar.currentFolderId : state.draftFolderId,
     wasStreaming: isStreaming(state),
   };
   pendingVoiceSubmissions.add(submission);
@@ -1219,6 +1219,7 @@ function handleKey(key: KeyEvent): void {
       // If deleting the current conversation, clear the chat
       if (state.convId === result.convId) {
         state.convId = null;
+        state.draftFolderId = state.sidebar.currentFolderId;
         state.messages = [];
         clearPendingAI(state);
         state.contextTokens = 0;
@@ -1233,6 +1234,7 @@ function handleKey(key: KeyEvent): void {
       for (const convId of result.convIds) clearAllQueuedMessagesForConversation(state, convId);
       if (state.convId && result.convIds.includes(state.convId)) {
         state.convId = null;
+        state.draftFolderId = state.sidebar.currentFolderId;
         state.messages = [];
         clearPendingAI(state);
         state.contextTokens = 0;

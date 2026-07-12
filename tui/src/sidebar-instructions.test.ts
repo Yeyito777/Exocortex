@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { buildDisplayRows, handleSidebarAction, renderSidebar, updateConversationList } from "./sidebar";
 import { createSidebarState } from "./sidebar/state";
-import { createInitialState, openFolderInstructionsDocument, resetDraftConversationState, setFolderInstructionsDocumentText } from "./state";
+import { createInitialState, draftFolderEffectiveInstructions, openFolderInstructionsDocument, resetDraftConversationState, setFolderInstructionsDocumentText } from "./state";
 import type { FolderSummary } from "./messages";
+import { leaveFolder } from "./sidebar/folderactions";
 
 function folder(id: string, name: string, parentId: string | null = null, effectiveInstructions = ""): FolderSummary {
   return {
@@ -104,5 +105,19 @@ describe("folder AGENTS.md sidebar entry", () => {
     resetDraftConversationState(state);
 
     expect(state.messages).toEqual([]);
+  });
+
+  test("a folder draft keeps its destination after the sidebar leaves that folder", () => {
+    const state = createInitialState();
+    state.sidebar.currentFolderId = "folder-a";
+    state.sidebar.folders = [folder("folder-a", "Project", null, "Stay in this project.")];
+
+    // This is the state transition performed by Ctrl+P.
+    resetDraftConversationState(state);
+    leaveFolder(state.sidebar);
+
+    expect(state.sidebar.currentFolderId).toBeNull();
+    expect(state.draftFolderId).toBe("folder-a");
+    expect(draftFolderEffectiveInstructions(state)).toBe("Stay in this project.");
   });
 });
