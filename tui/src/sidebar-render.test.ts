@@ -122,7 +122,7 @@ describe("sidebar rendering", () => {
     expect(rows.find(row => row.includes("Worker"))).toContain(`${theme.warning}$99+ `);
   });
 
-  test("renders subagent, shell, Chrono, and active-goal indicators after the streaming indicator", () => {
+  test("renders Chrono, subagent, shell, and active-goal indicators after the streaming indicator", () => {
     const sidebar = createSidebarState();
     sidebar.conversations = [conversation("worker", 0, {
       title: "Worker",
@@ -144,10 +144,10 @@ describe("sidebar rendering", () => {
     expect(row).toContain(`${theme.warning}$2 `);
     expect(row).toContain(`${theme.success}◷2 `);
     expect(row).toContain(`${theme.tool}◆ `);
-    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("◆2 "));
+    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("◷2 "));
+    expect(row!.indexOf("◷2 ")).toBeLessThan(row!.indexOf("◆2 "));
     expect(row!.indexOf("◆2 ")).toBeLessThan(row!.indexOf("$2 "));
-    expect(row!.indexOf("$2 ")).toBeLessThan(row!.indexOf("◷2 "));
-    expect(row!.indexOf("◷2 ")).toBeLessThan(row!.indexOf("◆ "));
+    expect(row!.indexOf("$2 ")).toBeLessThan(row!.indexOf("◆ "));
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
   });
 

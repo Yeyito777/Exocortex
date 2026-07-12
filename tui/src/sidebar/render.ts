@@ -283,7 +283,7 @@ export function renderSidebar(
       itemFg = (isSelected || isCurrent) ? theme.text : theme.muted;
     }
 
-    const iconsWidth = termWidth(subagentIcon) + termWidth(backgroundTaskIcon) + termWidth(chronoTaskIcon)
+    const iconsWidth = termWidth(chronoTaskIcon) + termWidth(subagentIcon) + termWidth(backgroundTaskIcon)
       + termWidth(goalIcon) + termWidth(starIcon) + termWidth(emojiIcon);
     const prefixWidth = termWidth(prefix) + termWidth(streamIcon) + iconsWidth;
     const notificationBadge = renderNotificationBadge(notificationCount);
@@ -308,7 +308,7 @@ export function renderSidebar(
 
     rows.push(
       theme.reset + bg + fg +
-      prefixText + streamIconColored + subagentIconColored + backgroundTaskIconColored + chronoTaskIconColored + goalIconColored + starIconColored + emojiIconColored + titleText +
+      prefixText + streamIconColored + chronoTaskIconColored + subagentIconColored + backgroundTaskIconColored + goalIconColored + starIconColored + emojiIconColored + titleText +
       (notificationBadge ? ` ${notificationBadge.text}` : "") +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
