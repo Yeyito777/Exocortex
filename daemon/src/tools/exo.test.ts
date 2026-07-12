@@ -13,7 +13,7 @@ import {
   remove,
   setActiveJob,
 } from "../conversations";
-import { resetConversationActivityForTest, setSubagentActive } from "../conversation-activity";
+import { resetConversationActivityForTest, setBackgroundTaskActive, setSubagentActive } from "../conversation-activity";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "../messages";
 import { EXO_ACTIONS, exo } from "./exo";
 
@@ -64,7 +64,7 @@ afterEach(() => {
 describe("native exo tool contract", () => {
   test("keeps a compact top-level orchestration surface", () => {
     expect(EXO_ACTIONS).toEqual([
-      "send", "list", "jobs", "info", "history", "abort", "queue", "commands",
+      "send", "list", "jobs", "tasks", "info", "history", "abort", "queue", "commands",
     ]);
     expect(EXO_ACTIONS).not.toContain("transcribe" as never);
     expect(EXO_ACTIONS).not.toContain("llm" as never);
@@ -144,6 +144,92 @@ describe("native exo tool contract", () => {
 });
 
 describe("native exo daemon runtime", () => {
+  test("lists active tasks for the current, selected, or all conversations", async () => {
+    const parentId = id("task-parent");
+    const otherId = id("task-other");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "Task parent");
+    create(otherId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "Task other");
+    setSubagentActive(parentId, "child-task", true, { title: "Inspect child", startedAt: 100 });
+    setBackgroundTaskActive(parentId, "bash:42:one", true, {
+      title: "bun test daemon",
+      startedAt: 200,
+      toolName: "bash",
+      pid: 42,
+      backgroundedAt: 250,
+      outputPath: "/tmp/bash-42.tmp",
+      cwd: "/workspace",
+    });
+    setBackgroundTaskActive(otherId, "bash:43:two", true, {
+      title: "bun test tui",
+      startedAt: 300,
+      toolName: "bash",
+      pid: 43,
+      backgroundedAt: 350,
+      outputPath: "/tmp/bash-43.tmp",
+    });
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn: async () => successfulOutcome(),
+      hasCredentials: () => true,
+    });
+
+    const own = JSON.parse((await runtime.execute({ action: "tasks", kind: "background" }, parentId)).output);
+    expect(own).toMatchObject({ scope: "conversation", owner_conversation_id: parentId, kind: "background", total: 1 });
+    expect(own.tasks[0]).toMatchObject({
+      id: "bash:42:one",
+      kind: "background",
+      status: "running",
+      owner_conversation_id: parentId,
+      owner_title: "Task parent",
+      tool: "bash",
+      pid: 42,
+      output_path: "/tmp/bash-42.tmp",
+    });
+
+    const selected = JSON.parse((await runtime.execute({ action: "tasks", conversation_id: otherId }, parentId)).output);
+    expect(selected.tasks.map((task: { id: string }) => task.id)).toEqual(["bash:43:two"]);
+
+    const all = JSON.parse((await runtime.execute({ action: "tasks", scope: "all", query: "bun test", limit: 10 }, parentId)).output);
+    expect(all).toMatchObject({ scope: "all", total: 2, returned: 2 });
+    expect(all.tasks.map((task: { id: string }) => task.id)).toEqual(["bash:43:two", "bash:42:one"]);
+  });
+
+  test("discovers and stops exact managed background tasks through the command registry", async () => {
+    const parentId = id("task-stop-parent");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "Task parent");
+    const stop = mock(() => true);
+    setBackgroundTaskActive(parentId, "bash:44:stop", true, {
+      title: "sleep 30",
+      startedAt: 200,
+      toolName: "bash",
+      pid: 44,
+      backgroundedAt: 250,
+      outputPath: "/tmp/bash-44.tmp",
+      stop,
+    });
+    const server = fakeServer();
+    const runtime = createExocortexToolRuntime({
+      server: server as never,
+      runTurn: async () => successfulOutcome(),
+      hasCredentials: () => true,
+    });
+
+    const help = await runtime.execute({ action: "commands", command: "help", args: { command: "task" } }, parentId);
+    expect(help.output).toContain('"stop"');
+    const result = await runtime.execute({
+      action: "commands",
+      command: "task",
+      args: { operation: "stop", task_id: "bash:44:stop" },
+    }, parentId);
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.output)).toMatchObject({ task_id: "bash:44:stop", status: "stopping" });
+    expect(stop).toHaveBeenCalledWith(true);
+    expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({
+      type: "conversation_updated",
+      summary: expect.objectContaining({ id: parentId }),
+    }));
+  });
+
   test("spawns detached subagents directly and notifies their parent", async () => {
     const parentId = id("parent");
     create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
@@ -360,7 +446,7 @@ describe("native exo daemon runtime", () => {
 
     const listed = JSON.parse((await runtime.execute({ action: "commands" }, undefined)).output);
     expect(listed.commands.map((command: { name: string }) => command.name)).toEqual([
-      "folder", "mark", "pin", "reorder", "rename", "delete", "llm", "clone", "system_prompt", "stats", "status",
+      "folder", "mark", "pin", "reorder", "rename", "delete", "llm", "clone", "system_prompt", "stats", "task", "status",
     ]);
 
     const help = JSON.parse((await runtime.execute({

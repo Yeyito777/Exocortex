@@ -24,13 +24,14 @@ interface FolderAggregate {
   globalIdle: boolean;
   unread: boolean;
   unreadCount: number;
+  backgroundTaskCount: number;
 }
 
 function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: ReadonlySet<string>): Map<string, FolderAggregate> {
   const aggregates = new Map<string, FolderAggregate>();
   const parentById = new Map<string, string | null>();
   for (const folder of sidebar.folders) {
-    aggregates.set(folder.id, { count: 0, streaming: false, globalIdle: false, unread: false, unreadCount: 0 });
+    aggregates.set(folder.id, { count: 0, streaming: false, globalIdle: false, unread: false, unreadCount: 0, backgroundTaskCount: 0 });
     parentById.set(folder.id, folder.parentId ?? null);
   }
 
@@ -46,6 +47,7 @@ function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: Readonl
       aggregate.globalIdle ||= hasGlobalIdle;
       aggregate.unread ||= conv.unread;
       if (conv.unread) aggregate.unreadCount++;
+      aggregate.backgroundTaskCount += conv.backgroundTaskCount ?? 0;
       folderId = parentById.get(folderId) ?? null;
     }
   }
@@ -84,6 +86,12 @@ function renderNotificationBadge(count: number): { text: string; width: number }
     text: `${theme.notificationBg}${theme.notificationFg}${rawText}${theme.reset}`,
     width: termWidth(rawText),
   };
+}
+
+function backgroundTaskIndicator(count: number): string {
+  if (count <= 0) return "";
+  if (count === 1) return "$ ";
+  return count > 99 ? "$99+ " : `$${count} `;
 }
 
 function truncateSidebarTitle(text: string, maxWidth: number): string {
@@ -199,6 +207,7 @@ export function renderSidebar(
 
     let streamIcon = "";
     let streamIconColor = "";
+    let taskIcon = "";
     let starIcon = "";
     let emojiIcon = "";
     let rawTitle = "";
@@ -221,6 +230,7 @@ export function renderSidebar(
       const hasUnread = (aggregate?.unread ?? false) && !(folder && subagentFolderIds.has(folder.id));
       streamIcon = hasStreaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = hasStreaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
+      taskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
       notificationCount = folder && !subagentFolderIds.has(folder.id) ? aggregate?.unreadCount ?? 0 : 0;
       itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "conversation") {
@@ -231,6 +241,7 @@ export function renderSidebar(
       const hasUnread = conv.unread && !(conv.folderId && subagentFolderIds.has(conv.folderId));
       streamIcon = conv.streaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = conv.streaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
+      taskIcon = backgroundTaskIndicator(conv.backgroundTaskCount ?? 0);
       starIcon = conv.marked ? "★ " : "";
       const mark = getMarkFromTitle(conv.title);
       emojiIcon = mark ? mark.emoji + " " : "";
@@ -239,7 +250,7 @@ export function renderSidebar(
     }
 
     const iconsWidth = termWidth(starIcon) + termWidth(emojiIcon);
-    const prefixWidth = termWidth(prefix) + termWidth(streamIcon) + iconsWidth;
+    const prefixWidth = termWidth(prefix) + termWidth(streamIcon) + termWidth(taskIcon) + iconsWidth;
     const notificationBadge = renderNotificationBadge(notificationCount);
     const badgeGap = notificationBadge ? 1 : 0;
     const badgeWidth = notificationBadge?.width ?? 0;
@@ -253,12 +264,13 @@ export function renderSidebar(
       ? theme.muted + prefix + fg
       : prefix;
     const streamIconColored = streamIcon ? streamIconColor + streamIcon + fg : "";
+    const taskIconColored = taskIcon ? theme.warning + taskIcon + fg : "";
     const starIconColored = starIcon ? theme.warning + starIcon + fg : "";
     const emojiIconColored = emojiIcon ? theme.warning + emojiIcon + fg : "";
 
     rows.push(
       theme.reset + bg + fg +
-      prefixText + streamIconColored + starIconColored + emojiIconColored + titleText +
+      prefixText + streamIconColored + taskIconColored + starIconColored + emojiIconColored + titleText +
       (notificationBadge ? ` ${notificationBadge.text}` : "") +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
     );

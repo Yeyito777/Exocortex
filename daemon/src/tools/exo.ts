@@ -5,6 +5,7 @@ export const EXO_ACTIONS = [
   "send",
   "list",
   "jobs",
+  "tasks",
   "info",
   "history",
   "abort",
@@ -58,7 +59,7 @@ const EXO_SYSTEM_HINT = [
 
 export const exo: Tool = {
   name: "exo",
-  description: "Manage the current Exocortex daemon directly. Frequent conversation and subagent operations are direct actions. Use action=commands to discover lower-frequency management commands on demand. Transcription and cross-instance targeting are intentionally excluded.",
+  description: "Manage the current Exocortex daemon directly. Frequent conversation, subagent, and active-task inspection operations are direct actions. Use action=commands to discover lower-frequency management commands on demand. Transcription and cross-instance targeting are intentionally excluded.",
   systemHint: EXO_SYSTEM_HINT,
   inputSchema: {
     type: "object",
@@ -74,7 +75,7 @@ export const exo: Tool = {
       },
       conversation_id: {
         type: "string",
-        description: "Conversation targeted by send, info, history, abort, or queue. Omit for send to create a new subagent.",
+        description: "Conversation targeted by send, tasks, info, history, abort, or queue. For tasks, omit to inspect work owned by the active conversation. Omit for send to create a new subagent.",
       },
       title: {
         type: "string",
@@ -88,23 +89,28 @@ export const exo: Tool = {
       },
       query: {
         type: "string",
-        description: "Optional case-insensitive ID/title/provider/model filter for list or jobs.",
+        description: "Optional case-insensitive filter for list, jobs, or tasks.",
       },
       limit: {
         type: "integer",
         minimum: 1,
         maximum: 200,
-        description: "Maximum results for list, jobs, or history. Defaults to 25 for list/jobs and 50 for history; list/jobs cap at 100 and history at 200.",
+        description: "Maximum results for list, jobs, tasks, or history. Defaults to 25 for list/jobs/tasks and 50 for history; list/jobs/tasks cap at 100 and history at 200.",
       },
       offset: {
         type: "integer",
         minimum: 0,
-        description: "Pagination offset for list/jobs, or number of newest entries to skip for history. Defaults to 0.",
+        description: "Pagination offset for list/jobs/tasks, or number of newest entries to skip for history. Defaults to 0.",
       },
       scope: {
         type: "string",
         enum: ["children", "all"],
-        description: "For jobs/list, restrict to subagents spawned by the active conversation or include all conversations. Jobs defaults to children; list defaults to all.",
+        description: "For jobs/list, restrict to child conversations or include all. For tasks, children means work owned by the selected/active conversation and all means daemon-wide. Jobs/tasks default to children; list defaults to all.",
+      },
+      kind: {
+        type: "string",
+        enum: ["all", "subagent", "background"],
+        description: "For action=tasks, filter active work by kind. Defaults to all.",
       },
       provider: {
         type: "string",

@@ -44,6 +44,20 @@ export interface BackgroundTaskCompletion {
   failure?: string;
 }
 
+/** Runtime metadata registered once a tool process detaches from its turn. */
+export interface BackgroundTaskActivityDetails {
+  title: string;
+  startedAt: number;
+  toolName: string;
+  pid: number;
+  backgroundedAt: number;
+  outputPath?: string;
+  cwd?: string;
+  /** Stop the exact managed process. The boolean controls the owner notification. */
+  /** Return false when the stop signal could not be sent, allowing retries. */
+  stop?: (suppressCompletionNotification: boolean) => boolean;
+}
+
 export interface ToolExecutionContext {
   /** Provider backing the active conversation, when the tool is run from one. */
   provider?: ProviderId;
@@ -61,7 +75,7 @@ export interface ToolExecutionContext {
   setBackgroundTaskActive?: (
     taskId: string,
     active: boolean,
-    details?: { title: string; startedAt: number },
+    details?: BackgroundTaskActivityDetails,
   ) => void;
   /** Notify the owning conversation when a detached tool process finishes. */
   onBackgroundTaskComplete?: (completion: BackgroundTaskCompletion) => void;

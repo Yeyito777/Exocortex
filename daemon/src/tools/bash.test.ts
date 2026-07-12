@@ -170,7 +170,15 @@ describe("bash explicit backgrounding", () => {
       active: true,
       details: { title: "sleep 0.1", startedAt: expect.any(Number) },
     });
-    expect(activity[0].id).toMatch(/^bash:\d+$/);
+    expect(activity[0].id).toMatch(/^bash:\d+:[a-z0-9]+$/);
+    expect(activity[0].details).toMatchObject({
+      toolName: "bash",
+      pid: expect.any(Number),
+      backgroundedAt: expect.any(Number),
+      outputPath: expect.any(String),
+      cwd: expect.any(String),
+      stop: expect.any(Function),
+    });
 
     for (let i = 0; i < 50 && activity.length < 2; i++) {
       await new Promise(resolve => setTimeout(resolve, 10));

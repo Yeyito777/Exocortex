@@ -14,7 +14,7 @@ import { trimConversationInPlace, type TrimConversationResult } from "./conversa
 import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
-import { getConversationActivityCounts, getConversationTasks } from "./conversation-activity";
+import { getConversationActivityCounts, getConversationTasks, stopBackgroundTasksForConversation } from "./conversation-activity";
 import * as streaming from "./streaming";
 import * as messageQueue from "./message-queue";
 import { log } from "./log";
@@ -516,6 +516,10 @@ export function incrementGoalTurns(id: string): ConversationGoal | null {
 function removeConversationState(id: string): boolean {
   const existed = summaries.has(id) || conversations.has(id);
   if (!existed) return false;
+  // Foreground tools are not yet in the detached-task registry. Abort the turn
+  // before discarding its controller so their tool signal can terminate them.
+  streaming.getActiveJob(id)?.abort();
+  stopBackgroundTasksForConversation(id);
   conversations.delete(id);
   summaries.delete(id);
   dirty.delete(id);
@@ -1602,14 +1606,7 @@ export function deleteFolder(folderId: string, mode: "recursive" | "unwrap" = "r
 
   let unreadChanged = false;
   for (const convId of conversationIds) {
-    conversations.delete(convId);
-    summaries.delete(convId);
-    dirty.delete(convId);
-    unreadChanged = unread.delete(convId) || unreadChanged;
-    streaming.clearActiveJob(convId);
-    streaming.resetChunkCounter(convId);
-    messageQueue.clearQueuedMessages(convId);
-    streaming.clearGoalContinuationAfterStream(convId);
+    unreadChanged = removeConversationState(convId) || unreadChanged;
   }
   for (const id of folderIds) folders.delete(id);
   saveFolderState();

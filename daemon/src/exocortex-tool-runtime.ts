@@ -44,7 +44,10 @@ import {
   getActiveSubagentCount,
   getConversationActivityCounts,
   getSubagentConversationIds,
+  listActiveConversationTasks,
   setSubagentActive,
+  stopBackgroundTask,
+  type ActiveConversationTask,
 } from "./conversation-activity";
 import { buildSystemPrompt } from "./system";
 import { getLastUsage } from "./usage";
@@ -420,6 +423,25 @@ function compactConversation(conversation: SidebarState["conversations"][number]
   };
 }
 
+function compactTask(task: ActiveConversationTask): Record<string, unknown> {
+  const owner = convStore.getSummary(task.ownerConversationId);
+  return {
+    id: task.id,
+    kind: task.kind,
+    status: task.status,
+    owner_conversation_id: task.ownerConversationId,
+    owner_title: owner?.title ?? "",
+    title: task.title,
+    started_at: task.startedAt,
+    ...(task.kind === "subagent" ? { child_conversation_id: task.id } : {}),
+    ...(task.toolName ? { tool: task.toolName } : {}),
+    ...(task.pid !== undefined ? { pid: task.pid } : {}),
+    ...(task.backgroundedAt !== undefined ? { backgrounded_at: task.backgroundedAt } : {}),
+    ...(task.cwd ? { cwd: task.cwd } : {}),
+    ...(task.outputPath ? { output_path: task.outputPath } : {}),
+  };
+}
+
 function childCount(state: SidebarState, parentId: string | null): number {
   return directFolders(state, parentId).length + directConversations(state, parentId).length;
 }
@@ -726,6 +748,58 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       truncated: offset > 0 || offset + jobs.length < matches.length,
       next_offset: offset + jobs.length < matches.length ? offset + jobs.length : null,
       jobs,
+    }));
+  };
+
+  const executeTasks = (input: Record<string, unknown>, parentConvId: string | undefined): ToolResult => {
+    const scopeValue = input.scope ?? "children";
+    if (scopeValue !== "children" && scopeValue !== "all") throw new Error("scope must be children or all");
+    const scope: "children" | "all" = scopeValue;
+    const requestedConversationId = stringInput(input, "conversation_id");
+    if (scope === "all" && requestedConversationId) {
+      throw new Error("conversation_id cannot be combined with scope=all for action=tasks");
+    }
+    const ownerConversationId = requestedConversationId ?? parentConvId;
+    if (scope === "children" && !ownerConversationId) {
+      throw new Error("action=tasks requires an active conversation, conversation_id, or scope=all");
+    }
+    if (ownerConversationId && !convStore.getSummary(ownerConversationId)) {
+      throw new Error(`Conversation ${ownerConversationId} not found`);
+    }
+
+    const kind = input.kind ?? "all";
+    if (kind !== "all" && kind !== "subagent" && kind !== "background") {
+      throw new Error("kind must be all, subagent, or background");
+    }
+    const query = stringInput(input, "query");
+    const queryLower = query?.toLowerCase();
+    const limit = boundedIntegerInput(input, "limit", DEFAULT_LIST_LIMIT, 1, MAX_LIST_LIMIT);
+    const offset = boundedIntegerInput(input, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
+    const matches = listActiveConversationTasks(scope === "all" ? undefined : ownerConversationId)
+      .filter(task => kind === "all" || task.kind === kind)
+      .filter(task => {
+        if (!queryLower) return true;
+        const owner = convStore.getSummary(task.ownerConversationId);
+        return [task.id, task.kind, task.title, task.toolName, task.ownerConversationId, owner?.title]
+          .filter(Boolean)
+          .join("\n")
+          .toLowerCase()
+          .includes(queryLower);
+      })
+      .sort((a, b) => b.startedAt - a.startedAt || a.id.localeCompare(b.id));
+    const tasks = matches.slice(offset, offset + limit).map(compactTask);
+    return ok(pretty({
+      scope: scope === "all" ? "all" : "conversation",
+      owner_conversation_id: scope === "all" ? null : ownerConversationId,
+      kind,
+      query: query ?? null,
+      total: matches.length,
+      returned: tasks.length,
+      offset,
+      limit,
+      truncated: offset > 0 || offset + tasks.length < matches.length,
+      next_offset: offset + tasks.length < matches.length ? offset + tasks.length : null,
+      tasks,
     }));
   };
 
@@ -1042,6 +1116,27 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }));
   };
 
+  const executeTaskCommand = (args: Record<string, unknown>, parentConversationId: string | undefined): ToolResult => {
+    const operation = stringInput(args, "operation", true)?.toLowerCase();
+    const taskId = stringInput(args, "task_id", true)!;
+    const task = listActiveConversationTasks().find(candidate => candidate.id === taskId);
+    if (!task) throw new Error(`Active task ${taskId} not found`);
+    if (operation === "info") return ok(pretty(compactTask(task)));
+    if (operation !== "stop") throw new Error("operation must be info or stop");
+    if (task.kind !== "background") throw new Error(`Task ${taskId} is a subagent; abort conversation ${task.id} instead.`);
+
+    const stopped = stopBackgroundTask(taskId, task.ownerConversationId === parentConversationId);
+    if (stopped.result === "not-found") throw new Error(`Active task ${taskId} not found`);
+    if (stopped.result === "not-stoppable") throw new Error(`Task ${taskId} cannot be stopped by the daemon`);
+    if (stopped.result === "failed") throw new Error(`Failed to signal task ${taskId}; it remains running and can be retried.`);
+    broadcastConversationUpdated(server, task.ownerConversationId);
+    return ok(pretty({
+      task_id: taskId,
+      owner_conversation_id: task.ownerConversationId,
+      status: stopped.result === "already-stopping" ? "stopping" : stopped.result,
+    }));
+  };
+
   const executeFolderCommand = async (args: Record<string, unknown>, parentConversationId: string | undefined, signal?: AbortSignal): Promise<ToolResult> => {
     const operation = stringInput(args, "operation", true)?.toLowerCase();
     switch (operation) {
@@ -1186,6 +1281,19 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       execute: executeStatsCommand,
     },
     {
+      name: "task",
+      description: "Inspect or stop one exact active managed task without accepting raw operating-system PIDs.",
+      inputSchema: commandSchema({
+        operation: { type: "string", enum: ["info", "stop"] },
+        task_id: { type: "string", description: "Stable task id returned by action=tasks." },
+      }, ["operation", "task_id"]),
+      examples: [
+        { operation: "info", task_id: "bash:<pid>:<nonce>" },
+        { operation: "stop", task_id: "bash:<pid>:<nonce>" },
+      ],
+      execute: executeTaskCommand,
+    },
+    {
       name: "status",
       description: "Inspect current-daemon health and aggregate conversation activity.",
       inputSchema: commandSchema({}),
@@ -1241,6 +1349,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           case "send": return await executeSend(input, parentConversationId, callerMaxDepth, signal);
           case "list": return executeList(input, parentConversationId);
           case "jobs": return executeJobs(input, parentConversationId);
+          case "tasks": return executeTasks(input, parentConversationId);
           case "info": return executeInfo(input);
           case "history": return executeHistory(input);
           case "delete": return await executeDelete(input, parentConversationId, signal);

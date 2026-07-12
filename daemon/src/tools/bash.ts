@@ -222,14 +222,20 @@ const KILL_GRACE_MS = 200;
  * On Windows, uses `taskkill /T /F` to kill the process tree (negative
  * PIDs are meaningless on Windows).
  */
-function killProcessGroup(pid: number): void {
+function killProcessGroup(pid: number): boolean {
   if (isWindows) {
-    try { spawn("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore" }); } catch { /* process already exited */ }
+    try {
+      spawn("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
   } else {
-    try { process.kill(-pid, "SIGTERM"); } catch { /* process already exited */ }
+    try { process.kill(-pid, "SIGTERM"); } catch { return false; }
     setTimeout(() => {
       try { process.kill(-pid, "SIGKILL"); } catch { /* process already exited */ }
     }, KILL_GRACE_MS);
+    return true;
   }
 }
 
@@ -351,6 +357,7 @@ async function executeBashImpl(
     let completionNotified = false;
     let backgroundOutputPath: string | undefined;
     let processFailure: string | undefined;
+    const backgroundTaskId = proc.pid ? `bash:${proc.pid}:${startTime.toString(36)}` : "bash:unknown";
 
     function notifyBackgroundTaskCompletion(code: number | null, signal: string | null): void {
       if (!wasBackgrounded || completionNotified || !proc.pid) return;
@@ -359,7 +366,7 @@ async function executeBashImpl(
       trackedBackgroundProcesses.delete(proc.pid);
       if (tracked?.suppressCompletionNotification) return;
       context?.onBackgroundTaskComplete?.({
-        taskId: `bash:${proc.pid}`,
+        taskId: backgroundTaskId,
         toolName: "bash",
         title: command!,
         startedAt: startTime,
@@ -372,13 +379,26 @@ async function executeBashImpl(
       });
     }
 
-    function setBackgroundTaskTracked(active: boolean): void {
+    function setBackgroundTaskTracked(active: boolean, backgroundedAt?: number): void {
       if (!proc.pid || backgroundTaskTracked === active) return;
       backgroundTaskTracked = active;
       context?.setBackgroundTaskActive?.(
-        `bash:${proc.pid}`,
+        backgroundTaskId,
         active,
-        active ? { title: command!, startedAt: startTime } : undefined,
+        active ? {
+          title: command!,
+          startedAt: startTime,
+          toolName: "bash",
+          pid: proc.pid,
+          backgroundedAt: backgroundedAt ?? Date.now(),
+          ...(backgroundOutputPath ? { outputPath: backgroundOutputPath } : {}),
+          cwd: process.cwd(),
+          stop: (suppressCompletionNotification) => {
+            const tracked = trackedBackgroundProcesses.get(proc.pid!);
+            if (tracked && suppressCompletionNotification) tracked.suppressCompletionNotification = true;
+            return killProcessGroup(proc.pid!);
+          },
+        } : undefined,
       );
     }
 
@@ -436,9 +456,9 @@ async function executeBashImpl(
         suppressCompletionNotification: false,
       });
       clearRegisteredBackgrounder();
-      setBackgroundTaskTracked(true);
 
-      const spillPath = join(tmpdir(), `exocortex-bash-${proc.pid}-${Date.now()}.tmp`);
+      const backgroundedAt = Date.now();
+      const spillPath = join(tmpdir(), `exocortex-bash-${proc.pid}-${backgroundedAt}.tmp`);
       backgroundOutputPath = spillPath;
       const partial = Buffer.concat(chunks).toString("utf8");
 
@@ -451,6 +471,8 @@ async function executeBashImpl(
       } catch (err) {
         markBgStreamFailed(err);
       }
+      // Publish only after the output path and exact stop handle are available.
+      setBackgroundTaskTracked(true, backgroundedAt);
 
       let preview = partial.trimEnd();
       if (preview.length > maxOutputChars) {

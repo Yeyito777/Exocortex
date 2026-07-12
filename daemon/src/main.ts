@@ -32,6 +32,7 @@ import { beginDaemonShutdown, resolveDaemonShutdownMode } from "./daemon-lifecyc
 import { getToolDisplayInfo } from "./tools/registry";
 import { getProviders, refreshProviders } from "./providers/registry";
 import { socketPath, pidPath, runtimeDir, worktreeName, isWindows } from "@exocortex/shared/paths";
+import { stopAllBackgroundTasks, waitForBackgroundTasksToStop } from "./conversation-activity";
 
 // ── Startup profiling ────────────────────────────────────────────────
 
@@ -143,6 +144,15 @@ async function startDaemon(): Promise<void> {
         if (stopPrep.stillStreaming.length > 0) {
           log("warn", `exocortexd: ${stopPrep.stillStreaming.length} conversation(s) still shutting down after stop timeout: ${stopPrep.stillStreaming.join(", ")}`);
         }
+      }
+
+      const stoppedBackgroundTasks = stopAllBackgroundTasks();
+      if (stoppedBackgroundTasks > 0) {
+        const remaining = await waitForBackgroundTasksToStop();
+        log(
+          remaining > 0 ? "warn" : "info",
+          `exocortexd: requested stop for ${stoppedBackgroundTasks} managed background task(s)${remaining > 0 ? `; ${remaining} still closing` : ""}`,
+        );
       }
 
       if (!isWindows) {

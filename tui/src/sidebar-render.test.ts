@@ -72,6 +72,32 @@ describe("sidebar rendering", () => {
     expect(folderRow).toContain(`${theme.warning}◉ `);
   });
 
+  test("renders managed background task counts on conversations and containing folders", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
+    sidebar.conversations = [
+      conversation("worker", 0, { title: "Worker", folderId: "folder", backgroundTaskCount: 2 }),
+      conversation("plain", 1, { title: "Plain", folderId: "folder" }),
+    ];
+
+    let rows = renderSidebar(sidebar, 8, true, null);
+    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.warning}$2 `);
+
+    sidebar.currentFolderId = "folder";
+    rows = renderSidebar(sidebar, 8, true, null);
+    expect(rows.find(row => row.includes("Worker"))).toContain(`${theme.warning}$2 `);
+    expect(rows.find(row => row.includes("Plain"))).not.toContain("$2 ");
+    expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
+  });
+
+  test("marks overflowing background task counts explicitly", () => {
+    const sidebar = createSidebarState();
+    sidebar.conversations = [conversation("worker", 0, { title: "Worker", backgroundTaskCount: 100 })];
+
+    const rows = renderSidebar(sidebar, 8, true, null);
+    expect(rows.find(row => row.includes("Worker"))).toContain(`${theme.warning}$99+ `);
+  });
+
   test("renders a right-aligned badge counting unread conversations in a folder tree", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [

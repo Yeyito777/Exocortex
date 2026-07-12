@@ -2,9 +2,14 @@
  * Ephemeral work spawned by a conversation.
  *
  * Subagents are keyed by their child conversation id. Background tasks are
- * keyed by a tool-owned id (currently bash:<pid>). Activity is normally
- * ephemeral. Restart recovery reconstructs notification-linked subagents and
- * their task details from its durable lifecycle sidecar before replaying them.
+ * keyed by a tool-owned stable id. The richer background records in this
+ * module are the daemon's canonical catalog for task inspection and control;
+ * conversation summaries receive only the compact UI projection.
+ *
+ * Activity is normally ephemeral. Restart recovery reconstructs
+ * notification-linked subagents and their task details from its durable
+ * lifecycle sidecar before replaying them. Managed background processes are
+ * stopped during graceful daemon shutdown and are not recovered after a crash.
  */
 
 import type { ConversationTaskSummary } from "@exocortex/shared/messages";
@@ -15,12 +20,57 @@ export interface ConversationActivityCounts {
 }
 
 type TaskDetails = Pick<ConversationTaskSummary, "title" | "startedAt">;
-type TaskMap = Map<string, ConversationTaskSummary>;
+type BackgroundTaskStop = (suppressCompletionNotification: boolean) => boolean;
+
+export interface BackgroundTaskRuntimeDetails extends TaskDetails {
+  toolName: string;
+  pid: number;
+  backgroundedAt: number;
+  outputPath?: string;
+  cwd?: string;
+  stop?: BackgroundTaskStop;
+}
+
+interface InternalTaskRecord extends ConversationTaskSummary {
+  status: "running" | "stopping";
+  toolName?: string;
+  pid?: number;
+  backgroundedAt?: number;
+  outputPath?: string;
+  cwd?: string;
+  stop?: BackgroundTaskStop;
+}
+
+export interface ActiveConversationTask extends ConversationTaskSummary {
+  ownerConversationId: string;
+  status: "running" | "stopping";
+  toolName?: string;
+  pid?: number;
+  backgroundedAt?: number;
+  outputPath?: string;
+  cwd?: string;
+}
+
+type TaskMap = Map<string, InternalTaskRecord>;
 
 const subagentsByParent = new Map<string, TaskMap>();
 /** Last parent that spawned each child during this daemon session. */
 const subagentParentByChild = new Map<string, string>();
 const backgroundTasksByConversation = new Map<string, TaskMap>();
+
+function recordsEqual(a: InternalTaskRecord, b: InternalTaskRecord): boolean {
+  return a.id === b.id
+    && a.kind === b.kind
+    && a.title === b.title
+    && a.startedAt === b.startedAt
+    && a.status === b.status
+    && a.toolName === b.toolName
+    && a.pid === b.pid
+    && a.backgroundedAt === b.backgroundedAt
+    && a.outputPath === b.outputPath
+    && a.cwd === b.cwd
+    && a.stop === b.stop;
+}
 
 function setEntry(
   map: Map<string, TaskMap>,
@@ -28,7 +78,7 @@ function setEntry(
   taskId: string,
   kind: ConversationTaskSummary["kind"],
   active: boolean,
-  details?: TaskDetails,
+  details?: TaskDetails | BackgroundTaskRuntimeDetails,
 ): boolean {
   if (active) {
     let tasks = map.get(ownerId);
@@ -37,16 +87,23 @@ function setEntry(
       map.set(ownerId, tasks);
     }
     const existing = tasks.get(taskId);
-    const task: ConversationTaskSummary = {
+    const background = kind === "background" ? details as BackgroundTaskRuntimeDetails | undefined : undefined;
+    const task: InternalTaskRecord = {
       id: taskId,
       kind,
       title: details?.title ?? existing?.title ?? taskId,
       startedAt: details?.startedAt ?? existing?.startedAt ?? Date.now(),
+      status: existing?.status ?? "running",
+      ...(background?.toolName ? { toolName: background.toolName } : existing?.toolName ? { toolName: existing.toolName } : {}),
+      ...(background?.pid !== undefined ? { pid: background.pid } : existing?.pid !== undefined ? { pid: existing.pid } : {}),
+      ...(background?.backgroundedAt !== undefined
+        ? { backgroundedAt: background.backgroundedAt }
+        : existing?.backgroundedAt !== undefined ? { backgroundedAt: existing.backgroundedAt } : {}),
+      ...(background?.outputPath ? { outputPath: background.outputPath } : existing?.outputPath ? { outputPath: existing.outputPath } : {}),
+      ...(background?.cwd ? { cwd: background.cwd } : existing?.cwd ? { cwd: existing.cwd } : {}),
+      ...(background?.stop ? { stop: background.stop } : existing?.stop ? { stop: existing.stop } : {}),
     };
-    if (existing
-        && existing.kind === task.kind
-        && existing.title === task.title
-        && existing.startedAt === task.startedAt) return false;
+    if (existing && recordsEqual(existing, task)) return false;
     tasks.set(taskId, task);
     return true;
   }
@@ -90,7 +147,7 @@ export function setBackgroundTaskActive(
   convId: string,
   taskId: string,
   active: boolean,
-  details?: TaskDetails,
+  details?: BackgroundTaskRuntimeDetails | TaskDetails,
 ): boolean {
   return setEntry(backgroundTasksByConversation, convId, taskId, "background", active, details);
 }
@@ -102,14 +159,109 @@ export function getConversationActivityCounts(convId: string): ConversationActiv
   };
 }
 
-/** Task details for the focused-conversation activity panel. */
+function byStart(a: InternalTaskRecord, b: InternalTaskRecord): number {
+  return a.startedAt - b.startedAt || a.id.localeCompare(b.id);
+}
+
+function summaryProjection(task: InternalTaskRecord): ConversationTaskSummary {
+  return {
+    id: task.id,
+    kind: task.kind,
+    title: task.title,
+    startedAt: task.startedAt,
+  };
+}
+
+/** Compact task details for the focused-conversation activity panel. */
 export function getConversationTasks(convId: string): ConversationTaskSummary[] {
-  const byStart = (a: ConversationTaskSummary, b: ConversationTaskSummary) =>
-    a.startedAt - b.startedAt || a.id.localeCompare(b.id);
   return [
     ...[...(subagentsByParent.get(convId)?.values() ?? [])].sort(byStart),
     ...[...(backgroundTasksByConversation.get(convId)?.values() ?? [])].sort(byStart),
-  ].map(task => ({ ...task }));
+  ].map(summaryProjection);
+}
+
+function publicRecord(ownerConversationId: string, task: InternalTaskRecord): ActiveConversationTask {
+  return {
+    ownerConversationId,
+    ...summaryProjection(task),
+    status: task.status,
+    ...(task.toolName ? { toolName: task.toolName } : {}),
+    ...(task.pid !== undefined ? { pid: task.pid } : {}),
+    ...(task.backgroundedAt !== undefined ? { backgroundedAt: task.backgroundedAt } : {}),
+    ...(task.outputPath ? { outputPath: task.outputPath } : {}),
+    ...(task.cwd ? { cwd: task.cwd } : {}),
+  };
+}
+
+/** Rich active-task snapshots for native daemon inspection. */
+export function listActiveConversationTasks(ownerConversationId?: string): ActiveConversationTask[] {
+  const records: ActiveConversationTask[] = [];
+  const append = (ownerId: string, tasks: TaskMap | undefined) => {
+    for (const task of tasks?.values() ?? []) records.push(publicRecord(ownerId, task));
+  };
+
+  if (ownerConversationId) {
+    append(ownerConversationId, subagentsByParent.get(ownerConversationId));
+    append(ownerConversationId, backgroundTasksByConversation.get(ownerConversationId));
+  } else {
+    for (const [ownerId, tasks] of subagentsByParent) append(ownerId, tasks);
+    for (const [ownerId, tasks] of backgroundTasksByConversation) append(ownerId, tasks);
+  }
+
+  return records.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
+}
+
+export type StopBackgroundTaskResult = "stopping" | "already-stopping" | "failed" | "not-found" | "not-stoppable";
+
+/** Request an exact managed background process to stop without accepting raw PIDs. */
+export function stopBackgroundTask(
+  taskId: string,
+  suppressCompletionNotification: boolean,
+): { result: StopBackgroundTaskResult; task?: ActiveConversationTask } {
+  for (const [ownerId, tasks] of backgroundTasksByConversation) {
+    const task = tasks.get(taskId);
+    if (!task) continue;
+    const snapshot = publicRecord(ownerId, task);
+    if (task.status === "stopping") return { result: "already-stopping", task: snapshot };
+    if (!task.stop) return { result: "not-stoppable", task: snapshot };
+    task.status = "stopping";
+    try {
+      if (!task.stop(suppressCompletionNotification)) {
+        task.status = "running";
+        return { result: "failed", task: publicRecord(ownerId, task) };
+      }
+      return { result: "stopping", task: publicRecord(ownerId, task) };
+    } catch {
+      task.status = "running";
+      return { result: "failed", task: publicRecord(ownerId, task) };
+    }
+  }
+  return { result: "not-found" };
+}
+
+/** Stop every background process owned by a conversation, e.g. before deletion. */
+export function stopBackgroundTasksForConversation(convId: string): number {
+  const ids = [...(backgroundTasksByConversation.get(convId)?.keys() ?? [])];
+  for (const id of ids) stopBackgroundTask(id, true);
+  return ids.length;
+}
+
+/** Stop every managed background process during graceful daemon shutdown. */
+export function stopAllBackgroundTasks(): number {
+  const ids = [...backgroundTasksByConversation.values()].flatMap(tasks => [...tasks.keys()]);
+  for (const id of ids) stopBackgroundTask(id, true);
+  return ids.length;
+}
+
+/** Wait briefly for close listeners to clear the active background catalog. */
+export async function waitForBackgroundTasksToStop(timeoutMs = 1_000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remaining = [...backgroundTasksByConversation.values()].reduce((sum, tasks) => sum + tasks.size, 0);
+    if (remaining === 0) return 0;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  return [...backgroundTasksByConversation.values()].reduce((sum, tasks) => sum + tasks.size, 0);
 }
 
 export function getActiveSubagentCount(): number {

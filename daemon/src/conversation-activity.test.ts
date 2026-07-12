@@ -1,14 +1,16 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import {
   getActiveSubagentCount,
   getConversationActivityCounts,
   getConversationTasks,
   getSubagentConversationIds,
+  listActiveConversationTasks,
   resetConversationActivityForTest,
   setBackgroundTaskActive,
   setSubagentActive,
+  stopBackgroundTask,
 } from "./conversation-activity";
-import { create, getSummary, remove } from "./conversations";
+import { create, createFolder, deleteFolder, getSummary, moveConversationToFolder, remove, setActiveJob } from "./conversations";
 
 const ids: string[] = [];
 
@@ -70,5 +72,102 @@ describe("focused conversation activity", () => {
         { id: "bash:42", kind: "background", title: "bun test daemon", startedAt: 200 },
       ],
     });
+  });
+
+  test("keeps rich process metadata private from summaries and stops exact task ids", () => {
+    const stop = mock(() => true);
+    setBackgroundTaskActive("parent", "bash:42:nonce", true, {
+      title: "bun test daemon",
+      startedAt: 200,
+      toolName: "bash",
+      pid: 42,
+      backgroundedAt: 250,
+      outputPath: "/tmp/bash-42.tmp",
+      cwd: "/workspace",
+      stop,
+    });
+
+    expect(getConversationTasks("parent")).toEqual([
+      { id: "bash:42:nonce", kind: "background", title: "bun test daemon", startedAt: 200 },
+    ]);
+    expect(listActiveConversationTasks("parent")).toEqual([
+      {
+        id: "bash:42:nonce",
+        kind: "background",
+        ownerConversationId: "parent",
+        status: "running",
+        title: "bun test daemon",
+        startedAt: 200,
+        toolName: "bash",
+        pid: 42,
+        backgroundedAt: 250,
+        outputPath: "/tmp/bash-42.tmp",
+        cwd: "/workspace",
+      },
+    ]);
+
+    expect(stopBackgroundTask("bash:42:nonce", true).result).toBe("stopping");
+    expect(stop).toHaveBeenCalledWith(true);
+    expect(listActiveConversationTasks("parent")[0].status).toBe("stopping");
+    expect(stopBackgroundTask("bash:42:nonce", true).result).toBe("already-stopping");
+  });
+
+  test("keeps failed stop attempts retryable", () => {
+    const stop = mock(() => false);
+    setBackgroundTaskActive("parent", "bash:43:retry", true, {
+      title: "sleep 30",
+      startedAt: 200,
+      toolName: "bash",
+      pid: 43,
+      backgroundedAt: 250,
+      stop,
+    });
+
+    expect(stopBackgroundTask("bash:43:retry", false).result).toBe("failed");
+    expect(listActiveConversationTasks("parent")[0].status).toBe("running");
+    expect(stopBackgroundTask("bash:43:retry", false).result).toBe("failed");
+    expect(stop).toHaveBeenCalledTimes(2);
+  });
+
+  test("aborts foreground turns and stops managed tasks when their conversation is deleted", () => {
+    const id = `activity-delete-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    ids.push(id);
+    create(id, "openai", "gpt-5.4", "activity");
+    const controller = new AbortController();
+    setActiveJob(id, controller, Date.now());
+    const stop = mock(() => true);
+    setBackgroundTaskActive(id, "bash:44:delete", true, {
+      title: "sleep 30",
+      startedAt: 200,
+      toolName: "bash",
+      pid: 44,
+      backgroundedAt: 250,
+      stop,
+    });
+
+    expect(remove(id)).toBe(true);
+    expect(controller.signal.aborted).toBe(true);
+    expect(stop).toHaveBeenCalledWith(true);
+  });
+
+  test("stops managed tasks during recursive folder deletion", () => {
+    const id = `activity-folder-delete-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    ids.push(id);
+    create(id, "openai", "gpt-5.4", "activity");
+    const folder = createFolder("activity-folder", null, []);
+    expect(folder).not.toBeNull();
+    expect(moveConversationToFolder(id, folder!.id)).toBe(true);
+    const stop = mock(() => true);
+    setBackgroundTaskActive(id, "bash:45:folder", true, {
+      title: "sleep 30",
+      startedAt: 200,
+      toolName: "bash",
+      pid: 45,
+      backgroundedAt: 250,
+      stop,
+    });
+
+    expect(deleteFolder(folder!.id, "recursive")).toBe(true);
+    expect(stop).toHaveBeenCalledWith(true);
   });
 });
