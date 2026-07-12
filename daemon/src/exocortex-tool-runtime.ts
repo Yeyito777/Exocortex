@@ -7,6 +7,7 @@
  */
 
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
+import { createHash } from "crypto";
 import type { DisplayEntry, QueueTiming } from "@exocortex/shared/protocol";
 import {
   MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL,
@@ -34,7 +35,11 @@ import {
   supportsFastMode,
 } from "./providers/registry";
 import { hasConfiguredCredentials } from "./auth";
-import { broadcastConversationUpdated } from "./conversation-events";
+import {
+  broadcastConversationInstructionsUpdated,
+  broadcastConversationUpdated,
+  broadcastFolderInstructionsUpdated,
+} from "./conversation-events";
 import type { DaemonServer } from "./server";
 import type { AssistantTurnOutcome } from "./orchestrator";
 import type { ExocortexToolRuntime, ToolResult } from "./tools/types";
@@ -49,7 +54,7 @@ import {
   stopBackgroundTask,
   type ActiveConversationTask,
 } from "./conversation-activity";
-import { buildSystemPrompt } from "./system";
+import { buildSystemPrompt, reloadUserAddendum, setUserAddendum } from "./system";
 import { getLastUsage } from "./usage";
 
 const runtimeByServer = new WeakMap<DaemonServer, ExocortexToolRuntime>();
@@ -117,6 +122,10 @@ function fail(output: string): ToolResult {
 
 function pretty(value: unknown): string {
   return JSON.stringify(value, null, 2);
+}
+
+function instructionRevision(text: string): string {
+  return `sha256:${createHash("sha256").update(text).digest("hex")}`;
 }
 
 function stringInput(input: Record<string, unknown>, key: string, required = false): string | undefined {
@@ -1090,6 +1099,105 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }));
   };
 
+  const executeInstructionsCommand = (args: Record<string, unknown>, parentConversationId: string | undefined): ToolResult => {
+    const allowedKeys = new Set(["operation", "scope", "conversation_id", "folder_id", "text", "expected_revision"]);
+    const unknownKeys = Object.keys(args).filter(key => !allowedKeys.has(key));
+    if (unknownKeys.length > 0) throw new Error(`Unknown instruction argument${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}`);
+
+    const operation = stringInput(args, "operation", true)!.toLowerCase();
+    if (operation !== "get" && operation !== "set" && operation !== "clear") {
+      throw new Error("operation must be get, set, or clear");
+    }
+    const scope = stringInput(args, "scope", true)!.toLowerCase();
+    if (scope !== "conversation" && scope !== "folder" && scope !== "app") {
+      throw new Error("scope must be conversation, folder, or app");
+    }
+    if (operation === "get" && (args.text !== undefined || args.expected_revision !== undefined)) {
+      throw new Error("text and expected_revision are not accepted for operation=get");
+    }
+    if (operation === "set" && args.text === undefined) throw new Error("text is required for operation=set");
+    if (operation === "clear" && args.text !== undefined) throw new Error("text is not accepted for operation=clear");
+
+    let currentText: string;
+    let effectiveInstructions: string | null = null;
+    let affectedConversationIds: string[];
+    let target: Record<string, unknown>;
+
+    if (scope === "conversation") {
+      if (args.folder_id !== undefined) throw new Error("folder_id is only accepted for scope=folder");
+      const convId = conversationIdInput(args, parentConversationId);
+      if (!convStore.get(convId)) throw new Error(`Conversation ${convId} not found`);
+      currentText = convStore.getSystemInstructions(convId) ?? "";
+      effectiveInstructions = convStore.getEffectiveSystemInstructions(convId);
+      affectedConversationIds = [convId];
+      target = { conversation_id: convId };
+    } else if (scope === "folder") {
+      if (args.conversation_id !== undefined) throw new Error("conversation_id is only accepted for scope=conversation");
+      const folderId = stringInput(args, "folder_id", true)!;
+      const folder = convStore.listSidebarState().folders.find(candidate => candidate.id === folderId);
+      const folderText = convStore.getFolderInstructions(folderId);
+      if (!folder || folderText === null) throw new Error(`Folder ${folderId} not found`);
+      currentText = folderText;
+      effectiveInstructions = convStore.getEffectiveFolderInstructions(folderId);
+      affectedConversationIds = convStore.listFolderConversationIds(folderId);
+      target = { folder_id: folderId, name: folder.name };
+    } else {
+      if (args.conversation_id !== undefined || args.folder_id !== undefined) {
+        throw new Error("conversation_id and folder_id are not accepted for scope=app");
+      }
+      currentText = reloadUserAddendum();
+      affectedConversationIds = convStore.listSummaries().map(conversation => conversation.id);
+      target = { app: true };
+    }
+
+    const currentRevision = instructionRevision(currentText);
+    if (operation === "get") {
+      return ok(pretty({
+        scope,
+        target,
+        text: currentText,
+        revision: currentRevision,
+        ...(effectiveInstructions !== null ? { effective_instructions: effectiveInstructions } : {}),
+        affected_conversations: affectedConversationIds.length,
+        active_streams: affectedConversationIds.filter(convId => convStore.isStreaming(convId)).length,
+      }));
+    }
+
+    const expectedRevision = stringInput(args, "expected_revision", true)!;
+    if (expectedRevision !== currentRevision) {
+      throw new Error(`Instructions changed since they were read (expected ${expectedRevision}, current ${currentRevision})`);
+    }
+    const nextText = operation === "clear" ? "" : stringInput(args, "text", true)!;
+    const changed = nextText !== currentText;
+
+    if (changed && scope === "conversation") {
+      const convId = target.conversation_id as string;
+      if (!convStore.setSystemInstructions(convId, nextText)) throw new Error(`Conversation ${convId} not found`);
+      broadcastConversationInstructionsUpdated(server, convId, nextText);
+      effectiveInstructions = convStore.getEffectiveSystemInstructions(convId);
+    } else if (changed && scope === "folder") {
+      const folderId = target.folder_id as string;
+      if (!convStore.setFolderInstructions(folderId, nextText)) throw new Error(`Folder ${folderId} not found`);
+      broadcastFolderInstructionsUpdated(server, folderId, nextText);
+      effectiveInstructions = convStore.getEffectiveFolderInstructions(folderId);
+    } else if (changed) {
+      setUserAddendum(nextText);
+    }
+
+    return ok(pretty({
+      scope,
+      target,
+      changed,
+      text: nextText,
+      previous_revision: currentRevision,
+      revision: instructionRevision(nextText),
+      ...(effectiveInstructions !== null ? { effective_instructions: effectiveInstructions } : {}),
+      affected_conversations: affectedConversationIds.length,
+      active_streams: affectedConversationIds.filter(convId => convStore.isStreaming(convId)).length,
+      applies_from: "next_turn",
+    }));
+  };
+
   const executeStatsCommand = (args: Record<string, unknown>, parentConversationId: string | undefined): ToolResult => {
     const requestedProvider = providerInput(args.provider);
     if (requestedProvider && !getProvider(requestedProvider)) throw new Error(`Unknown provider: ${requestedProvider}`);
@@ -1271,6 +1379,23 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       }),
       examples: [{}],
       execute: executeSystemPromptCommand,
+    },
+    {
+      name: "instructions",
+      description: "View or change persistent instructions. Only use when the user explicitly asks.",
+      inputSchema: commandSchema({
+        operation: { type: "string", enum: ["get", "set", "clear"] },
+        scope: { type: "string", enum: ["conversation", "folder", "app"] },
+        conversation_id: { type: "string", description: "Conversation target. Defaults to the current conversation." },
+        folder_id: { type: "string", description: "Folder target." },
+        text: { type: "string", description: "Replacement text for set." },
+        expected_revision: { type: "string", description: "Revision returned by get. Required for set or clear." },
+      }, ["operation", "scope"]),
+      examples: [
+        { operation: "get", scope: "conversation" },
+        { operation: "set", scope: "folder", folder_id: "<folder-id>", text: "Folder instructions", expected_revision: "sha256:<revision>" },
+      ],
+      execute: executeInstructionsCommand,
     },
     {
       name: "stats",

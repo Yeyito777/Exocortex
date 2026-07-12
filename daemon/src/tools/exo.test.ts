@@ -1,14 +1,21 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { readFileSync, writeFileSync } from "fs";
+import { join } from "path";
+import { configDir } from "@exocortex/shared/paths";
 import { createExocortexToolRuntime } from "../exocortex-tool-runtime";
 import {
   clearActiveJob,
   create,
+  createFolder,
   createWithInitialUserMessage,
   deleteFolder,
   findTopLevelFolderByName,
   get,
+  getEffectiveSystemInstructions,
+  getFolderInstructions,
   getQueuedMessages,
   getSummary,
+  getSystemInstructions,
   listSidebarState,
   remove,
   setActiveJob,
@@ -16,6 +23,7 @@ import {
 import { resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive, setSubagentActive } from "../conversation-activity";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "../messages";
 import { EXO_ACTIONS, exo } from "./exo";
+import { buildSystemPrompt, getUserAddendum, setUserAddendum } from "../system";
 
 const conversationIds: string[] = [];
 const folderIds: string[] = [];
@@ -31,6 +39,7 @@ function fakeServer() {
     broadcast: mock(() => {}),
     sendTo: mock(() => {}),
     sendToSubscribers: mock(() => {}),
+    sendHistoryUpdatedToSubscribers: mock(() => {}),
     sendToSubscribersExcept: mock(() => {}),
     subscribe: mock(() => {}),
     unsubscribe: mock(() => {}),
@@ -461,7 +470,7 @@ describe("native exo daemon runtime", () => {
 
     const listed = JSON.parse((await runtime.execute({ action: "commands" }, undefined)).output);
     expect(listed.commands.map((command: { name: string }) => command.name)).toEqual([
-      "folder", "mark", "pin", "reorder", "rename", "delete", "llm", "clone", "system_prompt", "stats", "task", "status",
+      "folder", "mark", "pin", "reorder", "rename", "delete", "llm", "clone", "system_prompt", "instructions", "stats", "task", "status",
     ]);
 
     const help = JSON.parse((await runtime.execute({
@@ -479,6 +488,140 @@ describe("native exo daemon runtime", () => {
       },
       examples: expect.any(Array),
     });
+  });
+
+  test("manages conversation, folder, and app instruction layers with revisions", async () => {
+    const parentId = id("instructions-parent");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "Instructions parent");
+    const folder = createFolder(`instructions-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`)!;
+    folderIds.push(folder.id);
+    const folderConvId = id("instructions-folder-child");
+    create(folderConvId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "Folder child", undefined, false, folder.id);
+    const server = fakeServer();
+    const runtime = createExocortexToolRuntime({
+      server: server as never,
+      runTurn: async () => successfulOutcome(),
+      notifyParent: () => {},
+      hasCredentials: () => true,
+    });
+
+    const help = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "help",
+      args: { command: "instructions" },
+    }, parentId)).output);
+    expect(help).toMatchObject({
+      command: "instructions",
+      description: "View or change persistent instructions. Only use when the user explicitly asks.",
+      input_schema: {
+        properties: {
+          operation: { enum: ["get", "set", "clear"] },
+          scope: { enum: ["conversation", "folder", "app"] },
+        },
+        required: ["operation", "scope"],
+        additionalProperties: false,
+      },
+    });
+
+    const conversationGet = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "instructions",
+      args: { operation: "get", scope: "conversation" },
+    }, parentId)).output);
+    expect(conversationGet).toMatchObject({ scope: "conversation", target: { conversation_id: parentId }, text: "", affected_conversations: 1 });
+
+    const conversationSet = await runtime.execute({
+      action: "commands",
+      command: "instructions",
+      args: {
+        operation: "set",
+        scope: "conversation",
+        text: "Be precise.",
+        expected_revision: conversationGet.revision,
+      },
+    }, parentId);
+    expect(conversationSet.isError).toBe(false);
+    expect(getSystemInstructions(parentId)).toBe("Be precise.");
+    expect(server.broadcast).toHaveBeenCalledWith({ type: "system_instructions_updated", convId: parentId, text: "Be precise." });
+    expect(server.sendHistoryUpdatedToSubscribers).toHaveBeenCalled();
+
+    const stale = await runtime.execute({
+      action: "commands",
+      command: "instructions",
+      args: { operation: "clear", scope: "conversation", expected_revision: conversationGet.revision },
+    }, parentId);
+    expect(stale.isError).toBe(true);
+    expect(stale.output).toContain("Instructions changed since they were read");
+
+    const folderGet = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "instructions",
+      args: { operation: "get", scope: "folder", folder_id: folder.id },
+    }, parentId)).output);
+    expect(folderGet).toMatchObject({ target: { folder_id: folder.id }, affected_conversations: 1 });
+    server.sendHistoryUpdatedToSubscribers.mockClear();
+    const folderSet = await runtime.execute({
+      action: "commands",
+      command: "instructions",
+      args: {
+        operation: "set",
+        scope: "folder",
+        folder_id: folder.id,
+        text: "Use folder rules.",
+        expected_revision: folderGet.revision,
+      },
+    }, parentId);
+    expect(folderSet.isError).toBe(false);
+    expect(getFolderInstructions(folder.id)).toBe("Use folder rules.");
+    expect(getEffectiveSystemInstructions(folderConvId)).toContain("Use folder rules.");
+    expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({ type: "folder_instructions_updated", folderId: folder.id }));
+    expect(server.sendHistoryUpdatedToSubscribers).toHaveBeenCalledWith(folderConvId, expect.any(Object), expect.any(Object));
+
+    const originalAppInstructions = getUserAddendum();
+    try {
+      const appGet = JSON.parse((await runtime.execute({
+        action: "commands",
+        command: "instructions",
+        args: { operation: "get", scope: "app" },
+      }, parentId)).output);
+      const appText = `App instruction ${Date.now()}`;
+      const appSet = await runtime.execute({
+        action: "commands",
+        command: "instructions",
+        args: {
+          operation: "set",
+          scope: "app",
+          text: appText,
+          expected_revision: appGet.revision,
+        },
+      }, parentId);
+      expect(appSet.isError).toBe(false);
+      expect(getUserAddendum()).toBe(appText);
+      expect(buildSystemPrompt()).toContain(appText);
+      expect(readFileSync(join(configDir(), "system.md"), "utf8")).toBe(`${appText}\n`);
+
+      const externalText = `External app instruction ${Date.now()}`;
+      writeFileSync(join(configDir(), "system.md"), `${externalText}\n`);
+      const staleAppSet = await runtime.execute({
+        action: "commands",
+        command: "instructions",
+        args: {
+          operation: "set",
+          scope: "app",
+          text: "Should not overwrite external edit",
+          expected_revision: JSON.parse(appSet.output).revision,
+        },
+      }, parentId);
+      expect(staleAppSet.isError).toBe(true);
+      const freshAppGet = JSON.parse((await runtime.execute({
+        action: "commands",
+        command: "instructions",
+        args: { operation: "get", scope: "app" },
+      }, parentId)).output);
+      expect(freshAppGet.text).toBe(externalText);
+    } finally {
+      setUserAddendum(originalAppInstructions);
+    }
   });
 
   test("manages conversations, jobs, history, and folders without IPC", async () => {

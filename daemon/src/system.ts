@@ -2,7 +2,7 @@
  * System prompt builders for exocortexd.
  */
 
-import { readFileSync } from "fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { buildToolSystemHints } from "./tools/registry";
 import { getExternalToolHints } from "./external-tools";
@@ -10,14 +10,43 @@ import { configDir } from "@exocortex/shared/paths";
 
 let _userAddendum = "";
 
+function userAddendumPath(): string {
+  return join(configDir(), "system.md");
+}
+
 function loadUserAddendum(): void {
   try {
-    _userAddendum = readFileSync(join(configDir(), "system.md"), "utf8").trim();
+    _userAddendum = readFileSync(userAddendumPath(), "utf8").trim();
   } catch {
     _userAddendum = "";
   }
 }
 loadUserAddendum();
+
+export function getUserAddendum(): string {
+  return _userAddendum;
+}
+
+/** Reload the app-wide addendum before a compare-and-set operation. */
+export function reloadUserAddendum(): string {
+  loadUserAddendum();
+  return _userAddendum;
+}
+
+/** Persist and immediately activate the app-wide user instruction addendum. */
+export function setUserAddendum(text: string): void {
+  const normalized = text.trim();
+  const path = userAddendumPath();
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  mkdirSync(configDir(), { recursive: true });
+  try {
+    writeFileSync(tmp, normalized ? `${normalized}\n` : "", { mode: 0o644 });
+    renameSync(tmp, path);
+    _userAddendum = normalized;
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
 
 function buildEnvironmentHeader(conversationId?: string): string {
   const cwd = process.cwd();

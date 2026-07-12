@@ -26,7 +26,11 @@ import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvide
 import { addAccount as addOpenAIAccount, listAccounts as listOpenAIAccounts, removeAccount as removeOpenAIAccount, switchAccount as switchOpenAIAccount } from "./providers/openai/auth";
 import { getProviderAdapter } from "./providers/catalog";
 import { getTokenStatsSnapshot } from "./token-stats";
-import { broadcastConversationUpdated } from "./conversation-events";
+import {
+  broadcastConversationInstructionsUpdated,
+  broadcastConversationUpdated,
+  broadcastFolderInstructionsUpdated,
+} from "./conversation-events";
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
 import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime } from "./tools/types";
@@ -1515,10 +1519,7 @@ export function createHandler(server: DaemonServer) {
         const ok = convStore.setSystemInstructions(cmd.convId, cmd.text);
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-          server.broadcast({ type: "system_instructions_updated", convId: cmd.convId, text: cmd.text });
-          broadcastConversationUpdated(server, cmd.convId);
-          // Rebuild display for subscribers so the TUI shows the instructions entry
-          sendCompactHistoryUpdated(cmd.convId);
+          broadcastConversationInstructionsUpdated(server, cmd.convId, cmd.text);
           log("info", `handler: system instructions ${cmd.text ? "set" : "cleared"} for ${cmd.convId}`);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
@@ -1539,11 +1540,7 @@ export function createHandler(server: DaemonServer) {
       case "set_folder_instructions": {
         const ok = convStore.setFolderInstructions(cmd.folderId, cmd.text);
         if (ok) {
-          server.broadcast({ type: "folder_instructions_updated", reqId: cmd.reqId, folderId: cmd.folderId, text: cmd.text.trim() });
-          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
-          for (const convId of convStore.listFolderConversationIds(cmd.folderId)) {
-            sendCompactHistoryUpdated(convId);
-          }
+          broadcastFolderInstructionsUpdated(server, cmd.folderId, cmd.text.trim(), cmd.reqId);
           log("info", `handler: folder instructions ${cmd.text.trim() ? "set" : "cleared"} for ${cmd.folderId}`);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Folder ${cmd.folderId} not found` });
