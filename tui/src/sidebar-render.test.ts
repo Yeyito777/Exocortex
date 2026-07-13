@@ -143,22 +143,26 @@ describe("sidebar rendering", () => {
     expect(row).toContain(`${theme.accent}◉ `);
     expect(row).toContain(`${theme.accent}◆2 `);
     expect(row).toContain(`${theme.warning}$2 `);
-    expect(row).toContain(`${theme.success}◷2 `);
+    expect(row).toContain(`${theme.success}◷ `);
+    expect(row).not.toContain(`${theme.success}◷2 `);
     expect(row).toContain(`${theme.tool}◆ `);
-    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("◷2 "));
-    expect(row!.indexOf("◷2 ")).toBeLessThan(row!.indexOf("◆2 "));
+    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("◷ "));
+    expect(row!.indexOf("◷ ")).toBeLessThan(row!.indexOf("◆2 "));
     expect(row!.indexOf("◆2 ")).toBeLessThan(row!.indexOf("$2 "));
     expect(row!.indexOf("$2 ")).toBeLessThan(row!.indexOf("◆ "));
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
   });
 
-  test("omits explicit Chrono waits from conversation and folder indicators", () => {
+  test("omits Chrono waits and sleeps from conversation and folder indicators", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
     sidebar.conversations = [conversation("waiting", 0, {
       title: "Waiting",
       folderId: "folder",
-      tasks: [{ id: "chrono-wait", kind: "chrono", title: "Wait for build", startedAt: 0, chronoMode: "wait" }],
+      tasks: [
+        { id: "chrono-wait", kind: "chrono", title: "Wait for build", startedAt: 0, chronoMode: "wait" },
+        { id: "chrono-sleep", kind: "chrono", title: "Sleep briefly", startedAt: 0, chronoMode: "sleep" },
+      ],
     })];
 
     let rows = renderSidebar(sidebar, 8, true, null);

@@ -34,7 +34,9 @@ interface FolderAggregate {
 function countChronoTasks(tasks: readonly ConversationTaskSummary[] | undefined): number {
   let count = 0;
   for (const task of tasks ?? []) {
-    if (task.kind === "chrono" && shouldDisplayConversationTask(task)) count++;
+    // A native sleep is useful in the focused Tasks panel, but should not mark
+    // the conversation or its folders as having scheduled Chrono work.
+    if (task.kind === "chrono" && task.chronoMode !== "sleep" && shouldDisplayConversationTask(task)) count++;
   }
   return count;
 }
