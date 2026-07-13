@@ -15,7 +15,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, rename
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
 import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal } from "./messages";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, MAX_EXO_SUBAGENT_DEPTH, activeContextCompactionHistoryCount, historyPrefixHash, isValidActiveContext, sortConversations, summarizeConversation } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, MAX_EXO_SUBAGENT_DEPTH, activeContextCompactionHistoryCount, historyPrefixHash, isValidActiveContext, isValidActiveContextCached, sortConversations, summarizeConversation } from "./messages";
 import type { QueuedMessageInfo } from "./protocol";
 
 // ── Schema version ──────────────────────────────────────────────────
@@ -724,7 +724,8 @@ function toFile(conv: Conversation): ConversationFile {
 
 function fromFile(file: ConversationFile): Conversation {
   const provider = normalizeProviderId(file.provider);
-  const activeContext = isValidActiveContext(file.activeContext, file.messages)
+  const activeContext = file.activeContext
+    && isValidActiveContextCached(file.activeContext, file.messages)
     ? file.activeContext
     : null;
   if (file.activeContext && !activeContext) {

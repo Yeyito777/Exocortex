@@ -1221,6 +1221,47 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     expect(userEntry?.images?.[0]).toEqual({ mediaType: "image/png", base64: recentImageBase64, sizeBytes: 768 });
   });
 
+  test("defers tool-result bodies until the client explicitly loads them", async () => {
+    const convId = mkId("compact-tool-results");
+    create(convId, "openai", "gpt-5.4");
+    const conv = get(convId)!;
+    conv.messages.push({
+      role: "assistant",
+      content: [{ type: "tool_use", id: "call-1", name: "bash", input: { command: "pwd" } }],
+      metadata: null,
+    }, {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "call-1", content: "large result body", is_error: false }],
+      metadata: null,
+    });
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({ capabilities: new Set<string>() } as never, { type: "load_conversation", convId, turns: 5 });
+
+    expect(sent[0]).toMatchObject({
+      type: "conversation_loaded",
+      toolOutputsIncluded: false,
+      entries: [{
+        type: "ai",
+        blocks: [
+          { type: "tool_call", toolCallId: "call-1" },
+          { type: "tool_result", toolCallId: "call-1", output: "" },
+        ],
+      }],
+    });
+  });
+
   test("includes the live assistant snapshot in conversation_loaded and still sends streaming_started for catch-up", async () => {
     const convId = mkId("live-window");
     create(convId, "openai", "gpt-5.4");

@@ -237,6 +237,168 @@ export function historyPrefixHash(messages: StoredMessage[], historyCount: numbe
 }
 
 /**
+ * Hash several replay-history prefixes in one transcript pass.
+ *
+ * Active contexts normally keep transcriptHistoryCount and
+ * compactionHistoryCount at the same immutable boundary. Older contexts can
+ * have two different cursors. Validating them independently used to stringify
+ * every (potentially very large) retained tool result and image once per cursor.
+ */
+function historyPrefixHashes(messages: StoredMessage[], historyCounts: number[]): Map<number, string> {
+  const targets = [...new Set(historyCounts)].sort((a, b) => a - b);
+  const hashes = new Map<number, string>();
+  if (targets.length === 0) return hashes;
+
+  const hash = createHash("sha256");
+  let seen = 0;
+  let targetIndex = 0;
+  const finishTargetsAtCurrentCount = () => {
+    while (targets[targetIndex] === seen) {
+      hashes.set(seen, hash.copy().digest("hex").slice(0, 24));
+      targetIndex += 1;
+    }
+  };
+  finishTargetsAtCurrentCount();
+
+  for (const message of messages) {
+    if (targetIndex >= targets.length) break;
+    if (!isReplayHistoryMessage(message)) continue;
+    hash.update(JSON.stringify({
+      role: message.role,
+      content: message.content,
+      providerData: message.providerData ?? null,
+    }));
+    hash.update("\n");
+    seen += 1;
+    finishTargetsAtCurrentCount();
+  }
+  return hashes;
+}
+
+// A successfully validated active context represents an immutable transcript
+// prefix. Canonical history may only append after that prefix; rewind/compaction
+// installs a new ActiveContext object. Cache that expensive integrity check by
+// active-context + transcript identity so opening a chat, immediately preloading
+// its next TUI page, and then starting a model turn do not repeatedly hash tens
+// of megabytes of retained audit history. Disk loads use new object identities,
+// so persisted corruption is still checked once on every daemon load.
+interface ActiveContextValidationFingerprint {
+  activeMessages: Array<{
+    message: ApiMessage;
+    role: ApiMessage["role"];
+    content: ApiMessage["content"];
+    metadata: ApiMessage["metadata"];
+    providerData: ApiMessage["providerData"];
+  }>;
+  activeMessagesArray: ApiMessage[];
+  compactionHistoryCount: number | undefined;
+  compactionPrefixHash: string | undefined;
+  transcriptHistoryCount: number;
+  transcriptPrefixHash: string;
+  transcriptPrefix: Array<{
+    message: StoredMessage;
+    role: StoredMessage["role"];
+    content: StoredMessage["content"];
+    providerData: StoredMessage["providerData"];
+  }>;
+}
+
+const validatedActiveContexts = new WeakMap<ActiveContext, WeakMap<StoredMessage[], ActiveContextValidationFingerprint>>();
+
+function activeContextValidationFingerprint(
+  active: ActiveContext,
+  transcript: StoredMessage[],
+): ActiveContextValidationFingerprint {
+  const transcriptPrefix: ActiveContextValidationFingerprint["transcriptPrefix"] = [];
+  for (const message of transcript) {
+    if (!isReplayHistoryMessage(message)) continue;
+    if (transcriptPrefix.length >= active.transcriptHistoryCount) break;
+    transcriptPrefix.push({
+      message,
+      role: message.role,
+      content: message.content,
+      providerData: message.providerData,
+    });
+  }
+  return {
+    activeMessages: active.messages.map((message) => ({
+      message,
+      role: message.role,
+      content: message.content,
+      metadata: message.metadata,
+      providerData: message.providerData,
+    })),
+    activeMessagesArray: active.messages,
+    compactionHistoryCount: active.compactionHistoryCount,
+    compactionPrefixHash: active.compactionPrefixHash,
+    transcriptHistoryCount: active.transcriptHistoryCount,
+    transcriptPrefixHash: active.transcriptPrefixHash,
+    transcriptPrefix,
+  };
+}
+
+function activeContextValidationFingerprintMatches(
+  active: ActiveContext,
+  transcript: StoredMessage[],
+  fingerprint: ActiveContextValidationFingerprint,
+): boolean {
+  if (active.messages !== fingerprint.activeMessagesArray
+      || active.compactionHistoryCount !== fingerprint.compactionHistoryCount
+      || active.compactionPrefixHash !== fingerprint.compactionPrefixHash
+      || active.transcriptHistoryCount !== fingerprint.transcriptHistoryCount
+      || active.transcriptPrefixHash !== fingerprint.transcriptPrefixHash
+      || active.messages.length !== fingerprint.activeMessages.length) return false;
+  for (let index = 0; index < active.messages.length; index++) {
+    const message = active.messages[index];
+    const saved = fingerprint.activeMessages[index];
+    if (message !== saved.message || message.role !== saved.role
+        || message.content !== saved.content || message.metadata !== saved.metadata
+        || message.providerData !== saved.providerData) return false;
+  }
+
+  let prefixIndex = 0;
+  for (const message of transcript) {
+    if (!isReplayHistoryMessage(message)) continue;
+    if (prefixIndex >= fingerprint.transcriptPrefix.length) break;
+    const saved = fingerprint.transcriptPrefix[prefixIndex++];
+    if (message !== saved.message || message.role !== saved.role
+        || message.content !== saved.content || message.providerData !== saved.providerData) return false;
+  }
+  return prefixIndex === fingerprint.transcriptPrefix.length;
+}
+
+/**
+ * Validate an immutable active context, reusing a successful check for the same
+ * in-memory transcript. Invalid state is deliberately not cached.
+ */
+export function isValidActiveContextCached(
+  active: ActiveContext,
+  transcript: StoredMessage[],
+): boolean {
+  const cached = validatedActiveContexts.get(active)?.get(transcript);
+  if (cached && activeContextValidationFingerprintMatches(active, transcript, cached)) return true;
+  if (!isValidActiveContext(active, transcript)) return false;
+  let byTranscript = validatedActiveContexts.get(active);
+  if (!byTranscript) {
+    byTranscript = new WeakMap();
+    validatedActiveContexts.set(active, byTranscript);
+  }
+  byTranscript.set(transcript, activeContextValidationFingerprint(active, transcript));
+  return true;
+}
+
+/** Validate an active context and return its fixed compaction boundary. */
+export function validatedActiveContextCompactionHistoryCount(
+  active: ActiveContext,
+  transcript: StoredMessage[],
+): number | null {
+  if (!isValidActiveContextCached(active, transcript)) return null;
+  return active.compactionHistoryCount !== undefined
+    ? active.compactionHistoryCount
+    : activeContextCompactionHistoryCount(active, transcript);
+}
+
+/**
  * Resolve the immutable transcript cursor represented by the latest compaction.
  * Legacy checkpoints derive it from the persisted compaction divider.
  */
@@ -433,7 +595,6 @@ export function isValidActiveContext(active: unknown, transcript: StoredMessage[
   const historyCount = transcript.filter(isReplayHistoryMessage).length;
   if (value.transcriptHistoryCount! > historyCount) return false;
   if (typeof value.transcriptPrefixHash !== "string" || !/^[0-9a-f]{24}$/.test(value.transcriptPrefixHash)) return false;
-  if (historyPrefixHash(transcript, value.transcriptHistoryCount!) !== value.transcriptPrefixHash) return false;
   const hasCompactionCount = value.compactionHistoryCount !== undefined;
   const hasCompactionHash = value.compactionPrefixHash !== undefined;
   if (hasCompactionCount !== hasCompactionHash) return false;
@@ -442,13 +603,19 @@ export function isValidActiveContext(active: unknown, transcript: StoredMessage[
         || value.compactionHistoryCount! < 0
         || value.compactionHistoryCount! > value.transcriptHistoryCount!
         || typeof value.compactionPrefixHash !== "string"
-        || !/^[0-9a-f]{24}$/.test(value.compactionPrefixHash)
-        || historyPrefixHash(transcript, value.compactionHistoryCount!) !== value.compactionPrefixHash) return false;
+        || !/^[0-9a-f]{24}$/.test(value.compactionPrefixHash)) return false;
     // Every replay message after the fixed compaction boundary is a suffix of
     // active.messages. Without this invariant a rewind could cut into the opaque
     // checkpoint itself.
     if (value.transcriptHistoryCount! - value.compactionHistoryCount! > value.messages.length) return false;
   }
+  const prefixHashes = historyPrefixHashes(transcript, [
+    value.transcriptHistoryCount!,
+    ...(hasCompactionCount ? [value.compactionHistoryCount!] : []),
+  ]);
+  if (prefixHashes.get(value.transcriptHistoryCount!) !== value.transcriptPrefixHash) return false;
+  if (hasCompactionCount
+      && prefixHashes.get(value.compactionHistoryCount!) !== value.compactionPrefixHash) return false;
   if (typeof value.windowId !== "string" || value.windowId.length === 0) return false;
   if (!Number.isSafeInteger(value.windowNumber) || value.windowNumber! < 1) return false;
   if (!Number.isSafeInteger(value.compactedAt) || value.compactedAt! < 0
@@ -529,7 +696,7 @@ export function createStoredUserContextCheckpoint(
   contextTokens: number | null = conv.lastContextTokens,
 ): StoredUserContextCheckpoint {
   const transcriptHistoryCount = transcript.filter(isReplayHistoryMessage).length;
-  const active = conv.activeContext && isValidActiveContext(conv.activeContext, transcript)
+  const active = conv.activeContext && isValidActiveContextCached(conv.activeContext, transcript)
     ? conv.activeContext
     : null;
   return {

@@ -4,7 +4,7 @@ import {
   createModelVisibleSystemNotice,
   isReplayHistoryMessage,
   isModelVisibleSystemNotice,
-  isValidActiveContext,
+  isValidActiveContextCached,
   type ActiveContext,
   type ApiContentBlock,
   type ApiMessage,
@@ -202,18 +202,19 @@ export function buildConversationApiContext(conv: Conversation, accountScope?: s
   tailMessages: ApiMessage[];
 } {
   const active = conv.activeContext;
-  const history = conv.messages.filter(isReplayHistoryMessage);
-  const activeValid = active != null && isValidActiveContext(active, conv.messages);
-  const activeCompatible = activeValid
+  const activeValid = active != null && isValidActiveContextCached(active, conv.messages);
+  const activeCompatible = active != null && activeValid
     && isActiveContextCompatible(active, conv.provider, conv.model, accountScope);
   if (!active || !activeValid || !activeCompatible) {
     // Provider data is scoped independently on every assistant response. This
     // also protects ordinary, never-compacted transcripts after model/account
     // switches and conservatively sanitizes legacy unscoped encrypted data.
-    const messages = history.map((message) => asApiMessage(
-      message,
-      !isMessageProviderDataCompatible(message, conv.provider, conv.model, accountScope, false),
-    ));
+    const messages = conv.messages
+      .filter(isReplayHistoryMessage)
+      .map((message) => asApiMessage(
+        message,
+        !isMessageProviderDataCompatible(message, conv.provider, conv.model, accountScope, false),
+      ));
     return { messages, usedActiveContext: false, tailMessages: messages };
   }
 
@@ -225,9 +226,12 @@ export function buildConversationApiContext(conv: Conversation, accountScope?: s
     active.model,
     active.accountScope,
   );
-  const tailMessages = history
-    .slice(active.transcriptHistoryCount)
-    .map((message) => asApiMessage(
+  const tailMessages: ApiMessage[] = [];
+  let historyIndex = 0;
+  for (const message of conv.messages) {
+    if (!isReplayHistoryMessage(message)) continue;
+    if (historyIndex++ < active.transcriptHistoryCount) continue;
+    tailMessages.push(asApiMessage(
       message,
       !isMessageProviderDataCompatible(
         message,
@@ -239,6 +243,7 @@ export function buildConversationApiContext(conv: Conversation, accountScope?: s
         exactActiveScope,
       ),
     ));
+  }
   return {
     messages: [...structuredClone(active.messages), ...tailMessages],
     usedActiveContext: true,

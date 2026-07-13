@@ -410,8 +410,10 @@ describe("folders", () => {
     FOLDER_IDS.push(folder.id);
     const id = mkId("folder-instructions");
     create(id, "openai", "gpt-5.4", "child", undefined, false, folder.id);
+    const snapshotWithoutFolderInstructions = getRenderSnapshot(id);
 
     expect(setFolderInstructions(folder.id, "Use repo-local conventions.")).toBe(true);
+    expect(getRenderSnapshot(id)).not.toBe(snapshotWithoutFolderInstructions);
     expect(getFolderInstructions(folder.id)).toBe("Use repo-local conventions.");
     expect(setSystemInstructions(id, "Be terse.")).toBe(true);
 
@@ -984,6 +986,17 @@ describe("listRunningConversationIds", () => {
 });
 
 describe("getDisplayData", () => {
+  test("reuses a quiet render snapshot until conversation history changes", () => {
+    const id = mkId("display-snapshot-cache");
+    create(id, "openai", "gpt-5.4", "cached snapshot");
+
+    const first = getRenderSnapshot(id);
+    expect(getRenderSnapshot(id)).toBe(first);
+
+    setSystemInstructions(id, "new instructions");
+    expect(getRenderSnapshot(id)).not.toBe(first);
+  });
+
   test("does not duplicate a persisted streaming suffix when only context attribution changed", () => {
     const id = mkId("display-context-attribution-drift");
     create(id, "openai", "gpt-5.5");

@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus } from "./messages";
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, activeContextCompactionHistoryCount, createConversation, createMessageMetadata, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContext, rewindActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, activeContextCompactionHistoryCount, createConversation, createMessageMetadata, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
@@ -53,6 +53,7 @@ const folders = new Map<string, PersistedFolderSummary>();
 const folderInstructions = new Map<string, string>();
 const dirty = new Set<string>();
 const unread = new Set<string>();
+const renderSnapshotCache = new Map<string, Map<boolean, ConversationRenderSnapshot>>();
 
 function saveUnreadState(): void {
   persistence.saveUnreadConversationIds([...unread].filter((id) => summaries.has(id) || conversations.has(id)));
@@ -157,10 +158,13 @@ function nextPinnedOrderInFolder(folderId: string | null, excludeId?: string): n
 }
 
 function saveFolderState(): void {
+  // Folder ancestry determines the instructions pinned into render snapshots.
+  renderSnapshotCache.clear();
   persistence.saveFolders(sortSidebarEntries([...folders.values()]));
 }
 
 function saveFolderInstructionsState(): void {
+  renderSnapshotCache.clear();
   persistence.saveFolderInstructions(folderInstructions);
 }
 
@@ -523,6 +527,7 @@ function removeConversationState(id: string): boolean {
   stopBackgroundTasksForConversation(id);
   notifyConversationRemoved(id);
   conversations.delete(id);
+  renderSnapshotCache.delete(id);
   summaries.delete(id);
   dirty.delete(id);
   const wasUnread = unread.delete(id);
@@ -1133,6 +1138,7 @@ export interface LoadFromDiskStats {
 export function loadFromDisk(): LoadFromDiskStats {
   const startedAt = performance.now();
   const index = persistence.loadConversationIndex();
+  renderSnapshotCache.clear();
   summaries.clear();
   folders.clear();
   folderInstructions.clear();
@@ -1217,6 +1223,7 @@ export function loadFromDisk(): LoadFromDiskStats {
 
 /** Mark a conversation as needing a save. */
 export function markDirty(id: string): void {
+  renderSnapshotCache.delete(id);
   dirty.add(id);
 }
 
@@ -1656,13 +1663,15 @@ function buildSnapshotDisplayData(
   const displayMessages = folderInstructionsText
     ? [{ role: "system_instructions" as const, content: folderInstructionsText, metadata: null }, ...messages]
     : messages;
-  const validActiveContext = conv.activeContext && isValidActiveContext(conv.activeContext, conv.messages)
-    ? conv.activeContext
-    : null;
+  const validActiveContext = conv.activeContext != null
+    && isValidActiveContextCached(conv.activeContext, conv.messages);
+  const editableUserHistoryStart = validActiveContext
+    ? validatedActiveContextCompactionHistoryCount(conv.activeContext!, conv.messages)
+    : undefined;
   const hasLostCompactionBoundary = !validActiveContext
     && conv.messages.some((message) => message.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND);
-  const editableUserHistoryStart = validActiveContext
-    ? activeContextCompactionHistoryCount(validActiveContext, conv.messages)
+  const editableHistoryStart = validActiveContext
+    ? editableUserHistoryStart
     : hasLostCompactionBoundary ? null : undefined;
   return buildDisplayData(
     conv.id,
@@ -1673,7 +1682,7 @@ function buildSnapshotDisplayData(
     displayMessages,
     conv.lastContextTokens,
     summarizeTool,
-    { includeToolOutputs, editableUserHistoryStart },
+    { includeToolOutputs, editableUserHistoryStart: editableHistoryStart },
   );
 }
 
@@ -1710,8 +1719,21 @@ export function getRenderSnapshot(id: string, includeToolOutputs = true): Conver
   const conv = get(id);
   if (!conv) return null;
 
+  if (!streaming.isStreaming(id)) {
+    const cached = renderSnapshotCache.get(id)?.get(includeToolOutputs);
+    if (cached) return cached;
+  }
+
   const fullPersisted = buildSnapshotDisplayData(conv, conv.messages, includeToolOutputs);
-  if (!streaming.isStreaming(id)) return fullPersisted;
+  if (!streaming.isStreaming(id)) {
+    let variants = renderSnapshotCache.get(id);
+    if (!variants) {
+      variants = new Map();
+      renderSnapshotCache.set(id, variants);
+    }
+    variants.set(includeToolOutputs, fullPersisted);
+    return fullPersisted;
+  }
 
   const startedAt = streaming.getStreamingStartedAt(id);
   if (isCurrentAssistantAlreadyCommitted(conv, startedAt)) return fullPersisted;
