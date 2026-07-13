@@ -122,7 +122,7 @@ describe("sidebar rendering", () => {
     expect(rows.find(row => row.includes("Worker"))).toContain(`${theme.warning}$99+ `);
   });
 
-  test("renders Chrono, subagent, shell, and active-goal indicators after the streaming indicator", () => {
+  test("renders Chrono, subagent, and shell indicators after the streaming indicator without a goal badge", () => {
     const sidebar = createSidebarState();
     sidebar.conversations = [conversation("worker", 0, {
       title: "Worker",
@@ -145,11 +145,10 @@ describe("sidebar rendering", () => {
     expect(row).toContain(`${theme.warning}$2 `);
     expect(row).toContain(`${theme.success}◷ `);
     expect(row).not.toContain(`${theme.success}◷2 `);
-    expect(row).toContain(`${theme.tool}◆ `);
+    expect(row).not.toContain(`${theme.tool}◆ `);
     expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("◷ "));
     expect(row!.indexOf("◷ ")).toBeLessThan(row!.indexOf("◆2 "));
     expect(row!.indexOf("◆2 ")).toBeLessThan(row!.indexOf("$2 "));
-    expect(row!.indexOf("$2 ")).toBeLessThan(row!.indexOf("◆ "));
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
   });
 
@@ -173,7 +172,7 @@ describe("sidebar rendering", () => {
     expect(rows.find(row => row.includes("Waiting"))).not.toContain("◷");
   });
 
-  test("omits paused goal badges and aggregates only active goals through folder trees", () => {
+  test("omits goal badges while aggregating other activity through folder trees", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -203,14 +202,13 @@ describe("sidebar rendering", () => {
     const workRow = rows.find(row => row.includes("Work"));
     expect(workRow).toContain(`${theme.accent}◆3 `);
     expect(workRow).toContain(`${theme.success}◷3 `);
-    expect(workRow).toContain(`${theme.tool}◆ `);
-    expect(workRow).not.toContain(`${theme.tool}◆2 `);
+    expect(workRow).not.toContain(`${theme.tool}◆ `);
 
     sidebar.currentFolderId = "work";
     rows = renderSidebar(sidebar, 8, true, null);
     expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.accent}◆2 `);
     expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.success}◷2 `);
-    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.tool}◆ `);
+    expect(rows.find(row => row.includes("Nested"))).not.toContain(`${theme.tool}◆ `);
     expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.accent}◆ `);
     expect(rows.find(row => row.includes("Paused"))).toContain(`${theme.success}◷ `);
     expect(rows.find(row => row.includes("Paused"))).not.toContain(`${theme.tool}◆ `);

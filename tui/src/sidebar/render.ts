@@ -28,7 +28,6 @@ interface FolderAggregate {
   subagentCount: number;
   backgroundTaskCount: number;
   chronoTaskCount: number;
-  activeGoalCount: number;
 }
 
 function countChronoTasks(tasks: readonly ConversationTaskSummary[] | undefined): number {
@@ -54,7 +53,6 @@ function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: Readonl
       subagentCount: 0,
       backgroundTaskCount: 0,
       chronoTaskCount: 0,
-      activeGoalCount: 0,
     });
     parentById.set(folder.id, folder.parentId ?? null);
   }
@@ -62,7 +60,6 @@ function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: Readonl
   for (const conv of sidebar.conversations) {
     const hasGlobalIdle = globalIdleConvIds.has(conv.id);
     const chronoTaskCount = countChronoTasks(conv.tasks);
-    const hasActiveGoal = conv.goal?.status === "active";
     let folderId = conv.folderId ?? null;
     const seen = new Set<string>();
     while (folderId && aggregates.has(folderId) && !seen.has(folderId)) {
@@ -76,7 +73,6 @@ function buildFolderAggregates(sidebar: SidebarState, globalIdleConvIds: Readonl
       aggregate.subagentCount += conv.subagentCount ?? 0;
       aggregate.backgroundTaskCount += conv.backgroundTaskCount ?? 0;
       aggregate.chronoTaskCount += chronoTaskCount;
-      if (hasActiveGoal) aggregate.activeGoalCount++;
       folderId = parentById.get(folderId) ?? null;
     }
   }
@@ -110,10 +106,6 @@ function backgroundTaskIndicator(count: number): string {
 
 function chronoTaskIndicator(count: number): string {
   return countedActivityIndicator("◷", count);
-}
-
-function goalIndicator(activeCount: number): string {
-  return countedActivityIndicator("◆", activeCount);
 }
 
 function folderStreamingIndicator(count: number): string {
@@ -238,7 +230,6 @@ export function renderSidebar(
     let subagentIcon = "";
     let backgroundTaskIcon = "";
     let chronoTaskIcon = "";
-    let goalIcon = "";
     let starIcon = "";
     let emojiIcon = "";
     let rawTitle = "";
@@ -264,7 +255,6 @@ export function renderSidebar(
       subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
       chronoTaskIcon = chronoTaskIndicator(aggregate?.chronoTaskCount ?? 0);
-      goalIcon = goalIndicator(aggregate?.activeGoalCount ?? 0);
       notificationCount = folder && !subagentFolderIds.has(folder.id) ? aggregate?.unreadCount ?? 0 : 0;
       itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "conversation") {
@@ -278,7 +268,6 @@ export function renderSidebar(
       subagentIcon = subagentIndicator(conv.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(conv.backgroundTaskCount ?? 0);
       chronoTaskIcon = chronoTaskIndicator(countChronoTasks(conv.tasks));
-      goalIcon = goalIndicator(conv.goal?.status === "active" ? 1 : 0);
       starIcon = conv.marked ? "★ " : "";
       const mark = getMarkFromTitle(conv.title);
       emojiIcon = mark ? mark.emoji + " " : "";
@@ -287,7 +276,7 @@ export function renderSidebar(
     }
 
     const iconsWidth = termWidth(chronoTaskIcon) + termWidth(subagentIcon) + termWidth(backgroundTaskIcon)
-      + termWidth(goalIcon) + termWidth(starIcon) + termWidth(emojiIcon);
+      + termWidth(starIcon) + termWidth(emojiIcon);
     const prefixWidth = termWidth(prefix) + termWidth(streamIcon) + iconsWidth;
     const notificationBadge = renderNotificationBadge(notificationCount);
     const badgeGap = notificationBadge ? 1 : 0;
@@ -305,13 +294,12 @@ export function renderSidebar(
     const subagentIconColored = subagentIcon ? theme.accent + subagentIcon + fg : "";
     const backgroundTaskIconColored = backgroundTaskIcon ? theme.warning + backgroundTaskIcon + fg : "";
     const chronoTaskIconColored = chronoTaskIcon ? theme.success + chronoTaskIcon + fg : "";
-    const goalIconColored = goalIcon ? theme.tool + goalIcon + fg : "";
     const starIconColored = starIcon ? theme.warning + starIcon + fg : "";
     const emojiIconColored = emojiIcon ? theme.warning + emojiIcon + fg : "";
 
     rows.push(
       theme.reset + bg + fg +
-      prefixText + streamIconColored + chronoTaskIconColored + subagentIconColored + backgroundTaskIconColored + goalIconColored + starIconColored + emojiIconColored + titleText +
+      prefixText + streamIconColored + chronoTaskIconColored + subagentIconColored + backgroundTaskIconColored + starIconColored + emojiIconColored + titleText +
       (notificationBadge ? ` ${notificationBadge.text}` : "") +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
