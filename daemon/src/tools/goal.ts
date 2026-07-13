@@ -19,7 +19,7 @@ export function isGoalToolFeatureEnabled(config: ExocortexConfig = readExocortex
 
 export const goal: Tool = {
   name: "goal",
-  description: "Manage the active conversation goal. Mirrors the user's /goal command: set a goal, pause when user input is required, resume when no longer blocked, or complete and clear the goal.",
+  description: "Set a goal that lets you work on a task for 100+ hours, only use when the user explicitly tells you to set a goal.",
   systemHint: GOAL_TOOL_SYSTEM_HINT,
   isAvailable: isGoalToolFeatureEnabled,
   inputSchema: {
