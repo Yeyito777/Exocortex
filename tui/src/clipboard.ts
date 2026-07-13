@@ -4,18 +4,46 @@
  * Reads image data from the system clipboard and returns it
  * as a base64-encoded ImageAttachment for provider vision inputs.
  *
- * Supports X11 (xclip), Wayland (wl-paste), and Windows (PowerShell).
+ * Supports macOS (AppleScript), X11 (xclip), Wayland (wl-paste), and
+ * Windows (PowerShell).
  */
 
 import { spawnSync, type SpawnSyncReturns } from "child_process";
 import { readFileSync, unlinkSync } from "fs";
-import { isWindows } from "@exocortex/shared/paths";
+import { tmpdir } from "os";
+import { join } from "path";
+import { randomUUID } from "crypto";
 import type { ImageAttachment, ImageMediaType } from "./messages";
 import { log } from "./log";
 
 // ── Backend detection ────────────────────────────────────────────
 
-type ImageClipboardBackend = "xclip" | "wl" | "powershell" | null;
+type ImageClipboardBackend = "osascript" | "xclip" | "wl" | "powershell" | null;
+
+interface ClipboardSystem {
+  spawnSync: typeof spawnSync;
+  readFileSync: typeof readFileSync;
+  unlinkSync: typeof unlinkSync;
+  platform: NodeJS.Platform;
+  env: NodeJS.ProcessEnv;
+  tmpPath: () => string;
+}
+
+const defaultClipboardSystem: ClipboardSystem = {
+  spawnSync,
+  readFileSync,
+  unlinkSync,
+  platform: process.platform,
+  env: process.env,
+  tmpPath: () => join(tmpdir(), `exocortex-clipboard-${process.pid}-${Date.now()}-${randomUUID()}.png`),
+};
+
+let clipboardSystem: ClipboardSystem = defaultClipboardSystem;
+
+export function setClipboardSystemForTest(overrides: Partial<ClipboardSystem> | null): void {
+  clipboardSystem = overrides ? { ...defaultClipboardSystem, ...overrides } : defaultClipboardSystem;
+  backend = undefined;
+}
 
 let backend: ImageClipboardBackend | undefined;
 
@@ -23,19 +51,27 @@ function detectBackend(): ImageClipboardBackend {
   if (backend !== undefined) return backend;
 
   // Windows — PowerShell is always available
-  if (isWindows) { backend = "powershell"; return backend; }
+  if (clipboardSystem.platform === "win32") { backend = "powershell"; return backend; }
+
+  // macOS — AppleScript can coerce clipboard images into PNG without extra deps.
+  if (clipboardSystem.platform === "darwin") {
+    try {
+      const r = clipboardSystem.spawnSync("which", ["osascript"], { timeout: 1000 });
+      if (r.status === 0) { backend = "osascript"; return backend; }
+    } catch { /* osascript not available */ }
+  }
 
   // Check for Wayland first
-  if (process.env.WAYLAND_DISPLAY) {
+  if (clipboardSystem.env.WAYLAND_DISPLAY) {
     try {
-      const r = spawnSync("which", ["wl-paste"], { timeout: 1000 });
+      const r = clipboardSystem.spawnSync("which", ["wl-paste"], { timeout: 1000 });
       if (r.status === 0) { backend = "wl"; return backend; }
     } catch { /* wl-paste not available */ }
   }
 
   // X11
   try {
-    const r = spawnSync("which", ["xclip"], { timeout: 1000 });
+    const r = clipboardSystem.spawnSync("which", ["xclip"], { timeout: 1000 });
     if (r.status === 0) { backend = "xclip"; return backend; }
   } catch { /* xclip not available */ }
 
@@ -85,6 +121,10 @@ function logImagePasteFailure(reason: string): void {
   log("warn", `tui: clipboard image paste failed: ${reason}`);
 }
 
+function appleScriptString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
 // ── Image formats ────────────────────────────────────────────────
 
 const IMAGE_FORMATS: { mime: ImageMediaType; target: string }[] = [
@@ -132,7 +172,7 @@ function invalidImageReason(expected: ImageMediaType, buf: Buffer): string | nul
 // ── Backend implementations ──────────────────────────────────────
 
 function readImageXclip(): ImageAttachment | null {
-  const targets = spawnSync("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], { timeout: 1000 });
+  const targets = clipboardSystem.spawnSync("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], { timeout: 1000 });
   if (targets.status !== 0) {
     logImagePasteFailure(`xclip TARGETS query failed (${spawnFailureSummary(targets)})`);
     return null;
@@ -147,7 +187,7 @@ function readImageXclip(): ImageAttachment | null {
   for (const fmt of IMAGE_FORMATS) {
     if (!available.includes(fmt.target)) continue;
     attempted.push(fmt.target);
-    const result = spawnSync("xclip", ["-selection", "clipboard", "-t", fmt.target, "-o"], {
+    const result = clipboardSystem.spawnSync("xclip", ["-selection", "clipboard", "-t", fmt.target, "-o"], {
       timeout: 5000,
       maxBuffer: 50 * 1024 * 1024,  // 50 MB
     });
@@ -177,7 +217,7 @@ function readImageXclip(): ImageAttachment | null {
 }
 
 function readImageWayland(): ImageAttachment | null {
-  const targets = spawnSync("wl-paste", ["--list-types"], { timeout: 1000 });
+  const targets = clipboardSystem.spawnSync("wl-paste", ["--list-types"], { timeout: 1000 });
   if (targets.status !== 0) {
     logImagePasteFailure(`wl-paste --list-types failed (${spawnFailureSummary(targets)})`);
     return null;
@@ -192,7 +232,7 @@ function readImageWayland(): ImageAttachment | null {
   for (const fmt of IMAGE_FORMATS) {
     if (!available.includes(fmt.target)) continue;
     attempted.push(fmt.target);
-    const result = spawnSync("wl-paste", ["--type", fmt.target], {
+    const result = clipboardSystem.spawnSync("wl-paste", ["--type", fmt.target], {
       timeout: 5000,
       maxBuffer: 50 * 1024 * 1024,  // 50 MB
     });
@@ -237,7 +277,7 @@ function readImagePowerShell(): ImageAttachment | null {
     "}",
   ].join("\n");
 
-  const result = spawnSync("powershell", ["-NoProfile", "-Command", script], { timeout: 5000 });
+  const result = clipboardSystem.spawnSync("powershell", ["-NoProfile", "-Command", script], { timeout: 5000 });
   if (result.status !== 0) {
     logImagePasteFailure(`PowerShell clipboard image extraction failed (${spawnFailureSummary(result)})`);
     return null;
@@ -254,7 +294,7 @@ function readImagePowerShell(): ImageAttachment | null {
   }
 
   try {
-    const buf = readFileSync(tmpPath);
+    const buf = clipboardSystem.readFileSync(tmpPath);
     if (buf.length === 0) {
       logImagePasteFailure(`PowerShell clipboard image extraction wrote an empty temp file: ${tmpPath}`);
       return null;
@@ -266,7 +306,51 @@ function readImagePowerShell(): ImageAttachment | null {
     }
     return buildImageAttachment("image/png", buf);
   } finally {
-    try { unlinkSync(tmpPath); } catch { /* already gone */ }
+    try { clipboardSystem.unlinkSync(tmpPath); } catch { /* already gone */ }
+  }
+}
+
+function readImageAppleScript(): ImageAttachment | null {
+  const tmpPath = clipboardSystem.tmpPath();
+  const script = [
+    "set outFile to missing value",
+    "try",
+    "  set pngData to the clipboard as «class PNGf»",
+    `  set outFile to open for access (POSIX file "${appleScriptString(tmpPath)}") with write permission`,
+    "  set eof outFile to 0",
+    "  write pngData to outFile",
+    "  close access outFile",
+    "on error errMsg number errNo",
+    "  try",
+    "    if outFile is not missing value then close access outFile",
+    "  end try",
+    "  error errMsg number errNo",
+    "end try",
+  ];
+
+  try {
+    const result = clipboardSystem.spawnSync("osascript", script.flatMap(line => ["-e", line]), {
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+    });
+    if (result.status !== 0) {
+      logImagePasteFailure(`AppleScript clipboard image extraction failed (${spawnFailureSummary(result)})`);
+      return null;
+    }
+
+    const buf = clipboardSystem.readFileSync(tmpPath);
+    if (buf.length === 0) {
+      logImagePasteFailure(`AppleScript clipboard image extraction wrote an empty temp file: ${tmpPath}`);
+      return null;
+    }
+    const invalidReason = invalidImageReason("image/png", buf);
+    if (invalidReason) {
+      logImagePasteFailure(`AppleScript ${invalidReason}`);
+      return null;
+    }
+    return buildImageAttachment("image/png", buf);
+  } finally {
+    try { clipboardSystem.unlinkSync(tmpPath); } catch { /* already gone */ }
   }
 }
 
@@ -277,9 +361,10 @@ export function readClipboardImage(): ImageAttachment | null {
   try {
     const be = detectBackend();
     if (!be) {
-      logImagePasteFailure("no clipboard image backend available (need xclip on X11, wl-paste on Wayland, or PowerShell on Windows)");
+      logImagePasteFailure("no clipboard image backend available (need osascript on macOS, xclip on X11, wl-paste on Wayland, or PowerShell on Windows)");
       return null;
     }
+    if (be === "osascript") return readImageAppleScript();
     if (be === "powershell") return readImagePowerShell();
     return be === "wl" ? readImageWayland() : readImageXclip();
   } catch (err) {

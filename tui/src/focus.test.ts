@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { handleFocusedKey } from "./focus";
 import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
@@ -8,6 +8,12 @@ import { theme } from "./theme";
 import { createInitialState } from "./state";
 import { clearPrompt } from "./promptstate";
 import type { ConversationSummary, FolderSummary, ProviderInfo } from "./messages";
+import { setClipboardSystemForTest } from "./clipboard";
+
+const PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+  "base64",
+);
 
 const providers: ProviderInfo[] = [
   {
@@ -200,6 +206,8 @@ describe("openable file path activation", () => {
 });
 
 describe("image paste guard", () => {
+  afterEach(() => setClipboardSystemForTest(null));
+
   test("Ctrl+V reports an error instead of attaching an image for unsupported models", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
@@ -214,6 +222,38 @@ describe("image paste guard", () => {
       role: "system",
       text: expect.stringContaining("Image inputs are not supported by openai/gpt-5.3-codex-spark"),
     });
+  });
+
+  test("Ctrl+V attaches a macOS clipboard image for vision-capable models", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "openai";
+    state.model = "gpt-5.4";
+
+    setClipboardSystemForTest({
+      platform: "darwin",
+      env: {},
+      tmpPath: () => "/tmp/exocortex-focus-clipboard.png",
+      spawnSync: ((command: string) => (
+        command === "which"
+          ? { status: 0, stdout: Buffer.from("/usr/bin/osascript\n"), stderr: Buffer.alloc(0), output: [], signal: null, pid: 0 }
+          : { status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), output: [], signal: null, pid: 0 }
+      )) as unknown as typeof import("child_process").spawnSync,
+      readFileSync: (() => PNG_BYTES) as unknown as typeof import("fs").readFileSync,
+      unlinkSync: (() => {}) as typeof import("fs").unlinkSync,
+    });
+
+    const result = handleFocusedKey({ type: "ctrl-v" }, state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(state.pendingImages).toEqual([{
+      mediaType: "image/png",
+      base64: PNG_BYTES.toString("base64"),
+      sizeBytes: PNG_BYTES.length,
+    }]);
+    expect(state.panelFocus).toBe("chat");
+    expect(state.chatFocus).toBe("prompt");
+    expect(state.vim.mode).toBe("insert");
   });
 });
 
