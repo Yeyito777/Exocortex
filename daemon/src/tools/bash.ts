@@ -11,10 +11,12 @@
  * temp file. The AI can check on it, read its output, or kill it.
  */
 
-import { spawn } from "child_process";
-import { writeFileSync, createWriteStream, type WriteStream } from "fs";
+import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
+import { writeFileSync } from "fs";
+import { open, rm } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
+import { randomUUID } from "crypto";
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
 import { getString, getNumber, getBoolean, safeSlice, summarizeParams } from "./util";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
@@ -317,16 +319,18 @@ async function executeBashImpl(
     return { output: `Error preparing external tool command: ${msg}`, isError: true };
   }
   const timeout = getNumber(input, "timeout") ?? DEFAULT_TIMEOUT_MS;
+  if (timeout <= 0) return { output: "Error: 'timeout' must be greater than 0 milliseconds", isError: true };
 
   const intentionalStops = markIntentionalBackgroundTaskStops(command, context?.conversationId);
 
   const startTime = Date.now();
+  const capturePath = join(tmpdir(), `exocortex-bash-${process.pid}-${randomUUID()}.tmp`);
 
   return new Promise((resolve) => {
-    const proc = spawn(
-      isWindows ? "powershell" : "bash",
-      isWindows ? ["-NoProfile", "-Command", rewrittenCommand] : ["-c", rewrittenCommand],
-      {
+    const runnerPath = join(import.meta.dir, "bash-runner.ts");
+    let runner: ChildProcessWithoutNullStreams;
+    try {
+      runner = spawn(process.execPath, [runnerPath], {
         cwd: process.cwd(),
         env: {
           ...process.env,
@@ -334,69 +338,116 @@ async function executeBashImpl(
           ...(context?.provider ? { EXOCORTEX_PARENT_PROVIDER: context.provider } : {}),
           ...(context?.model ? { EXOCORTEX_PARENT_MODEL: context.model } : {}),
         },
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout,
-        detached: !isWindows,   // own process group so we can kill the entire tree (breaks on Windows)
+        stdio: ["pipe", "pipe", "pipe"],
         windowsHide: isWindows,
-      },
-    );
+      });
+    } catch (err) {
+      restoreBackgroundTaskNotifications(intentionalStops);
+      const message = err instanceof Error ? err.message : String(err);
+      resolve({ output: `Error starting isolated bash runner: ${message}`, isError: true });
+      return;
+    }
 
-    const chunks: Buffer[] = [];
-    let totalBytes = 0;
-    let byteTruncated = false;
+    let commandPid: number | undefined;
     let settled = false;
+    let finalReceived = false;
     let bgTimer: ReturnType<typeof setTimeout> | undefined;
-
-    // When backgrounded, output is redirected to this write stream.
-    let bgStream: WriteStream | undefined;
-    let bgStreamFailed = false;
-    let bgStreamError: string | undefined;
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+    let helperKillTimer: ReturnType<typeof setTimeout> | undefined;
     let backgrounderCleared = false;
     let backgroundTaskTracked = false;
+    let backgroundRequested = false;
+    let backgroundTrigger: "timeout" | "manual" | "explicit" = "timeout";
     let wasBackgrounded = false;
     let completionNotified = false;
-    let backgroundOutputPath: string | undefined;
     let processFailure: string | undefined;
-    const backgroundTaskId = proc.pid ? `bash:${proc.pid}:${startTime.toString(36)}` : "bash:unknown";
+    let timedOut = false;
+    let runnerStderr = "";
+
+    const backgroundTaskId = () => commandPid
+      ? `bash:${commandPid}:${startTime.toString(36)}`
+      : "bash:unknown";
+
+    async function readCapturedOutput(): Promise<string> {
+      let handle: Awaited<ReturnType<typeof open>> | undefined;
+      try {
+        handle = await open(capturePath, "r");
+        const stat = await handle.stat();
+        const length = Math.min(MAX_OUTPUT_BYTES, Math.max(0, stat.size));
+        const buffer = Buffer.allocUnsafe(length);
+        let offset = 0;
+        while (offset < length) {
+          const { bytesRead } = await handle.read(buffer, offset, length - offset, offset);
+          if (bytesRead === 0) break;
+          offset += bytesRead;
+        }
+        return buffer.subarray(0, offset).toString("utf8");
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") processFailure ??= `could not read command output: ${err instanceof Error ? err.message : String(err)}`;
+        return "";
+      } finally {
+        await handle?.close().catch(() => {});
+      }
+    }
+
+    function removeCapture(): void {
+      void rm(capturePath, { force: true }).catch(() => {});
+    }
+
+    function formatCapturedOutput(output: string, byteTruncated: boolean, outputError?: string): string {
+      if (output.length > maxOutputChars) {
+        return buildSpillPreview(
+          output,
+          byteTruncated,
+          maxOutputChars,
+          outputError ? undefined : capturePath,
+          outputError,
+        );
+      }
+      if (byteTruncated) return `${output}\n... (output byte-truncated at 1MB)`;
+      removeCapture();
+      return output;
+    }
 
     function notifyBackgroundTaskCompletion(code: number | null, signal: string | null): void {
-      if (!wasBackgrounded || completionNotified || !proc.pid) return;
+      if (!wasBackgrounded || completionNotified || !commandPid) return;
       completionNotified = true;
-      const tracked = trackedBackgroundProcesses.get(proc.pid);
-      trackedBackgroundProcesses.delete(proc.pid);
+      const tracked = trackedBackgroundProcesses.get(commandPid);
+      trackedBackgroundProcesses.delete(commandPid);
       if (tracked?.suppressCompletionNotification) return;
       context?.onBackgroundTaskComplete?.({
-        taskId: backgroundTaskId,
+        taskId: backgroundTaskId(),
         toolName: "bash",
         title: command!,
         startedAt: startTime,
         endedAt: Date.now(),
         exitCode: code,
         signal,
-        ...(backgroundOutputPath && !bgStreamFailed ? { outputPath: backgroundOutputPath } : {}),
-        ...(bgStreamError ? { outputError: bgStreamError } : {}),
+        ...(processFailure ? {} : { outputPath: capturePath }),
+        ...(processFailure ? { outputError: processFailure } : {}),
         ...(processFailure ? { failure: processFailure } : {}),
       });
     }
 
     function setBackgroundTaskTracked(active: boolean, backgroundedAt?: number): void {
-      if (!proc.pid || backgroundTaskTracked === active) return;
+      if (!commandPid || backgroundTaskTracked === active) return;
       backgroundTaskTracked = active;
       context?.setBackgroundTaskActive?.(
-        backgroundTaskId,
+        backgroundTaskId(),
         active,
         active ? {
           title: command!,
           startedAt: startTime,
           toolName: "bash",
-          pid: proc.pid,
+          pid: commandPid,
           backgroundedAt: backgroundedAt ?? Date.now(),
-          ...(backgroundOutputPath ? { outputPath: backgroundOutputPath } : {}),
+          outputPath: capturePath,
           cwd: process.cwd(),
           stop: (suppressCompletionNotification) => {
-            const tracked = trackedBackgroundProcesses.get(proc.pid!);
+            const tracked = trackedBackgroundProcesses.get(commandPid!);
             if (tracked && suppressCompletionNotification) tracked.suppressCompletionNotification = true;
-            return killProcessGroup(proc.pid!);
+            return killProcessGroup(commandPid!);
           },
         } : undefined,
       );
@@ -408,117 +459,39 @@ async function executeBashImpl(
       context?.registerBackgrounder?.(null);
     }
 
-    function markBgStreamFailed(err: unknown): void {
-      const message = err instanceof Error ? err.message : String(err);
-      log("warn", `bash: background output stream failed: ${message}`);
-      bgStreamFailed = true;
-      bgStreamError = message;
-      if (bgStream) {
-        bgStream.destroy();
-        bgStream = undefined;
+    function writeRunnerRequest(request: object): boolean {
+      if (runner.stdin.destroyed) return false;
+      try {
+        runner.stdin.write(`${JSON.stringify(request)}\n`);
+        return true;
+      } catch {
+        return false;
       }
     }
 
-    function collect(data: Buffer): void {
-      // After backgrounding, write to temp file instead of in-memory buffer.
-      // If the temp file becomes unavailable, drop additional output rather than crashing.
-      if (bgStream) {
-        try {
-          bgStream.write(data);
-        } catch (err) {
-          markBgStreamFailed(err);
-        }
-        return;
-      }
-      if (bgStreamFailed || byteTruncated) return;
-      totalBytes += data.length;
-      if (totalBytes > MAX_OUTPUT_BYTES) {
-        byteTruncated = true;
-        chunks.push(data.subarray(0, MAX_OUTPUT_BYTES - (totalBytes - data.length)));
-      } else {
-        chunks.push(data);
-      }
+    function scheduleRunnerFallbackKill(): void {
+      if (helperKillTimer) return;
+      helperKillTimer = setTimeout(() => {
+        try { runner.kill("SIGKILL"); } catch { /* already exited */ }
+      }, 1_500);
+      helperKillTimer.unref?.();
     }
-
-    proc.stdout.on("data", collect);
-    proc.stderr.on("data", collect);
 
     function backgroundNow(trigger: "timeout" | "manual" | "explicit"): boolean {
-      if (settled || !proc.pid) return false;
+      if (settled || backgroundRequested || !commandPid) return false;
       if (bgTimer) {
         clearTimeout(bgTimer);
         bgTimer = undefined;
       }
-      settled = true;
-      wasBackgrounded = true;
-      trackedBackgroundProcesses.set(proc.pid, {
-        conversationId: context?.conversationId,
-        suppressCompletionNotification: false,
-      });
+      backgroundRequested = true;
+      backgroundTrigger = trigger;
       clearRegisteredBackgrounder();
-
-      const backgroundedAt = Date.now();
-      const spillPath = join(tmpdir(), `exocortex-bash-${proc.pid}-${backgroundedAt}.tmp`);
-      backgroundOutputPath = spillPath;
-      const partial = Buffer.concat(chunks).toString("utf8");
-
-      try {
-        // Open write stream and flush accumulated output to it.
-        bgStream = createWriteStream(spillPath);
-        bgStream.on("error", markBgStreamFailed);
-        bgStream.write(partial);
-        // New data events will now append to bgStream via collect()
-      } catch (err) {
-        markBgStreamFailed(err);
+      if (!writeRunnerRequest({ type: "background" })) {
+        backgroundRequested = false;
+        processFailure ??= "isolated bash runner closed before backgrounding";
+        return false;
       }
-      // Publish only after the output path and exact stop handle are available.
-      setBackgroundTaskTracked(true, backgroundedAt);
-
-      let preview = partial.trimEnd();
-      if (preview.length > maxOutputChars) {
-        preview = buildSpillPreview(
-          preview,
-          byteTruncated,
-          maxOutputChars,
-          bgStreamFailed ? undefined : spillPath,
-          bgStreamError,
-        );
-      }
-      let output = preview ? `${preview}\n\n` : "";
-      const checkCmd = isWindows
-        ? `bash "if (Get-Process -Id ${proc.pid} -ErrorAction SilentlyContinue) { 'running' } else { 'exited' }"`
-        : `bash "kill -0 ${proc.pid} 2>/dev/null && echo running || echo exited"`;
-      const stopCmd = isWindows
-        ? `bash "taskkill /T /F /PID ${proc.pid}"`
-        : `bash "kill ${proc.pid}"`;
-      const headline = trigger === "explicit"
-        ? `⏳ Command backgrounded immediately by request (PID ${proc.pid}).`
-        : trigger === "manual"
-          ? `⏳ Command backgrounded on user request after ${((Date.now() - startTime) / 1000).toFixed(1)}s (PID ${proc.pid}).`
-          : `⏳ Command backgrounded — still running after ${Math.round((backgroundAfterMs ?? 0) / 1000)}s (PID ${proc.pid}).`;
-      output += [
-        headline,
-        ...(bgStreamFailed
-          ? [`Output could not be redirected to a temp file. Additional output may be unavailable.`]
-          : [
-              `Output is being written to: ${spillPath}`,
-              `• View output so far → read tool on that file`,
-              `• Wait for it to finish → ${isWindows ? `bash with command "Get-Content -Path '${spillPath}' -Wait -Tail 50" and await=N` : `bash with command "tail -f ${spillPath}" and await=N`} (where N is how long you're willing to wait in seconds, prevents hangs)`,
-            ]),
-        `• Check if still running → ${checkCmd}`,
-        `• Stop it → ${stopCmd}`,
-      ].join("\n");
-
-      resolve({ output, isError: false });
       return true;
-    }
-
-    if (context?.registerBackgrounder) {
-      context.registerBackgrounder({
-        toolName: "bash",
-        toolCallId: context.toolCallId,
-        background: () => backgroundNow("manual"),
-      });
     }
 
     // ── Abort handling: kill entire process group on signal ────
@@ -528,97 +501,198 @@ async function executeBashImpl(
     if (signal) {
       const onAbort = () => {
         if (bgTimer) clearTimeout(bgTimer);
+        if (timeoutTimer) clearTimeout(timeoutTimer);
         clearRegisteredBackgrounder();
         restoreBackgroundTaskNotifications(intentionalStops);
-        if (proc.pid) killProcessGroup(proc.pid);
-        if (bgStream) { bgStream.end(); bgStream = undefined; }
+        if (commandPid) killProcessGroup(commandPid);
+        else try { runner.kill(); } catch { /* already exited */ }
+        scheduleRunnerFallbackKill();
         if (settled) return;
         settled = true;
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        let partial = Buffer.concat(chunks).toString("utf8").trimEnd();
-        if (partial.length > maxOutputChars) {
-          partial = spillAndPreviewForTest(partial, byteTruncated, writeFileSync, maxOutputChars);
-        }
-        const reason = formatToolAbortMessage(signal, elapsed);
-        let output = reason;
-        if (partial) output += ` Partial output captured:\n${partial}`;
-        resolve({ output, isError: false });
+        void readCapturedOutput().then((captured) => {
+          const partial = formatCapturedOutput(captured.trimEnd(), captured.length >= MAX_OUTPUT_BYTES);
+          const reason = formatToolAbortMessage(signal, elapsed);
+          resolve({ output: partial ? `${reason} Partial output captured:\n${partial}` : reason, isError: false });
+        });
       };
       if (signal.aborted) {
         onAbort();
       } else {
         signal.addEventListener("abort", onAbort, { once: true });
-        proc.on("close", () => signal.removeEventListener("abort", onAbort));
+        runner.on("close", () => signal.removeEventListener("abort", onAbort));
       }
     }
 
-    // ── Background handling: detach after timeout ─────────────
-    // The process keeps running. Output is redirected to a temp file.
-    // The promise resolves with partial output + instructions for the AI.
-    if (backgroundAfterMs && backgroundAfterMs > 0) {
-      bgTimer = setTimeout(() => {
-        backgroundNow("timeout");
-      }, backgroundAfterMs);
-    }
-
-    proc.on("error", (err) => {
+    async function handleFinal(code: number | null, sig: string | null, byteTruncated: boolean, outputError?: string): Promise<void> {
+      finalReceived = true;
       if (bgTimer) clearTimeout(bgTimer);
-      clearRegisteredBackgrounder();
-      restoreBackgroundTaskNotifications(intentionalStops);
-      setBackgroundTaskTracked(false);
-      processFailure = err.message;
-      if (settled) return;
-      settled = true;
-      resolve({ output: `Error: ${err.message}`, isError: true });
-    });
-
-    proc.on("close", (code, sig) => {
-      if (bgTimer) clearTimeout(bgTimer);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (helperKillTimer) clearTimeout(helperKillTimer);
       if (code !== 0) restoreBackgroundTaskNotifications(intentionalStops);
-      if (!bgStream) clearRegisteredBackgrounder();
+      clearRegisteredBackgrounder();
       setBackgroundTaskTracked(false);
-
-      // If backgrounded, append exit status to the temp file and close.
-      // Stream failures are already reported via markBgStreamFailed; don't crash here.
-      if (bgStream) {
-        try {
-          if (code !== 0 && code !== null) {
-            bgStream.write(`\n[process exited with code ${code}]\n`);
-          } else {
-            bgStream.write(`\n[process exited successfully]\n`);
-          }
-          bgStream.end();
-        } catch (err) {
-          markBgStreamFailed(err);
-        }
-        bgStream = undefined;
-        notifyBackgroundTaskCompletion(code, sig);
-        return;
-      }
-
+      if (outputError) processFailure ??= outputError;
       notifyBackgroundTaskCompletion(code, sig);
       if (settled) return;
       settled = true;
 
-      let output = Buffer.concat(chunks).toString("utf8");
-
-      // If output exceeds the inline budget, spill to file and return a compact preview.
-      if (output.length > maxOutputChars) {
-        output = spillAndPreviewForTest(output, byteTruncated, writeFileSync, maxOutputChars);
-      } else if (byteTruncated) {
-        output += "\n... (output byte-truncated at 1MB)";
+      let output = formatCapturedOutput(await readCapturedOutput(), byteTruncated, outputError);
+      if (timedOut) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        output = `Error: command timed out after ${elapsed}s${output ? `\n${output}` : ""}`;
+      } else if (processFailure && !output) {
+        output = `Error: ${processFailure}`;
       }
-
       if (code !== 0 && code !== null) {
         output += `\n(exit code ${code})`;
       }
+      resolve({ output, isError: timedOut || Boolean(processFailure) || (code !== 0 && code !== null) });
+    }
 
-      resolve({ output, isError: code !== 0 && code !== null });
+    async function handleBackgrounded(byteTruncated: boolean, outputError?: string): Promise<void> {
+      if (settled || !commandPid) return;
+      wasBackgrounded = true;
+      settled = true;
+      if (outputError) processFailure ??= outputError;
+      trackedBackgroundProcesses.set(commandPid, {
+        conversationId: context?.conversationId,
+        suppressCompletionNotification: false,
+      });
+      const backgroundedAt = Date.now();
+      setBackgroundTaskTracked(true, backgroundedAt);
+
+      let preview = (await readCapturedOutput()).trimEnd();
+      if (preview.length > maxOutputChars) {
+        preview = buildSpillPreview(preview, byteTruncated, maxOutputChars, outputError ? undefined : capturePath, outputError);
+      }
+      let output = preview ? `${preview}\n\n` : "";
+      const checkCmd = isWindows
+        ? `bash "if (Get-Process -Id ${commandPid} -ErrorAction SilentlyContinue) { 'running' } else { 'exited' }"`
+        : `bash "kill -0 -- -${commandPid} 2>/dev/null && echo running || echo exited"`;
+      const stopCmd = isWindows
+        ? `bash "taskkill /T /F /PID ${commandPid}"`
+        : `bash "kill -- -${commandPid}"`;
+      const headline = backgroundTrigger === "explicit"
+        ? `⏳ Command backgrounded immediately by request (PID ${commandPid}).`
+        : backgroundTrigger === "manual"
+          ? `⏳ Command backgrounded on user request after ${((Date.now() - startTime) / 1000).toFixed(1)}s (PID ${commandPid}).`
+          : `⏳ Command backgrounded — still running after ${Math.round((backgroundAfterMs ?? 0) / 1000)}s (PID ${commandPid}).`;
+      output += [
+        headline,
+        ...(outputError
+          ? ["Output could not be redirected to a temp file. Additional output may be unavailable."]
+          : [
+              `Output is being written to: ${capturePath}`,
+              "• View output so far → read tool on that file",
+              `• Wait for it to finish → ${isWindows ? `bash with command "Get-Content -Path '${capturePath}' -Wait -Tail 50" and await=N` : `bash with command "tail -f ${capturePath}" and await=N`} (where N is how long you're willing to wait in seconds, prevents hangs)`,
+            ]),
+        `• Check if still running → ${checkCmd}`,
+        `• Stop it → ${stopCmd}`,
+      ].join("\n");
+      resolve({ output, isError: false });
+    }
+
+    interface RunnerEvent {
+      type: "started" | "backgrounded" | "error" | "close";
+      pid?: number;
+      message?: string;
+      code?: number | null;
+      signal?: string | null;
+      byteTruncated?: boolean;
+      outputError?: string;
+    }
+
+    function handleRunnerEvent(event: RunnerEvent): void {
+      if (event.type === "started" && event.pid) {
+        commandPid = event.pid;
+        if (context?.registerBackgrounder) {
+          context.registerBackgrounder({
+            toolName: "bash",
+            toolCallId: context.toolCallId,
+            background: () => backgroundNow("manual"),
+          });
+        }
+        if (backgroundImmediately) queueMicrotask(() => backgroundNow("explicit"));
+        else if (backgroundAfterMs && backgroundAfterMs > 0) {
+          const remaining = Math.max(1, backgroundAfterMs - (Date.now() - startTime));
+          bgTimer = setTimeout(() => backgroundNow("timeout"), remaining);
+        }
+        return;
+      }
+      if (event.type === "backgrounded") {
+        void handleBackgrounded(Boolean(event.byteTruncated), event.outputError);
+        return;
+      }
+      if (event.type === "error") {
+        processFailure = event.message ?? "isolated bash runner failed";
+        return;
+      }
+      if (event.type === "close") {
+        void handleFinal(event.code ?? null, event.signal ?? null, Boolean(event.byteTruncated), event.outputError);
+      }
+    }
+
+    let protocolBuffer = "";
+    runner.stdout.on("data", (data: Buffer) => {
+      protocolBuffer += data.toString("utf8");
+      let newline: number;
+      while ((newline = protocolBuffer.indexOf("\n")) !== -1) {
+        const line = protocolBuffer.slice(0, newline);
+        protocolBuffer = protocolBuffer.slice(newline + 1);
+        if (!line) continue;
+        try { handleRunnerEvent(JSON.parse(line) as RunnerEvent); }
+        catch { processFailure = "isolated bash runner emitted invalid protocol data"; }
+      }
+    });
+    runner.stderr.on("data", (data: Buffer) => {
+      if (runnerStderr.length < 2_000) runnerStderr += data.toString("utf8").slice(0, 2_000 - runnerStderr.length);
+    });
+    runner.stdin.on("error", () => { /* runner lifecycle handles the failure */ });
+    runner.on("error", (err) => {
+      processFailure = err.message;
+      if (commandPid) killProcessGroup(commandPid);
+      if (wasBackgrounded) {
+        setBackgroundTaskTracked(false);
+        notifyBackgroundTaskCompletion(null, null);
+      }
+      if (settled) return;
+      settled = true;
+      removeCapture();
+      resolve({ output: `Error: ${err.message}`, isError: true });
+    });
+    runner.on("close", (_code, runnerSignal) => {
+      if (finalReceived) return;
+      if (bgTimer) clearTimeout(bgTimer);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      clearRegisteredBackgrounder();
+      restoreBackgroundTaskNotifications(intentionalStops);
+      processFailure ??= timedOut
+        ? "command timed out before the isolated runner completed startup"
+        : "isolated bash runner exited unexpectedly";
+      if (commandPid) killProcessGroup(commandPid);
+      if (wasBackgrounded) {
+        setBackgroundTaskTracked(false);
+        notifyBackgroundTaskCompletion(null, runnerSignal);
+      }
+      if (settled) return;
+      settled = true;
+      removeCapture();
+      const detail = runnerStderr.trim() || processFailure;
+      resolve({ output: `Error: ${detail}`, isError: true });
     });
 
-    // Defer until every stdout/stderr/error/close listener is installed, but do
-    // not impose the one-second latency required by the old await=1 workaround.
-    if (backgroundImmediately) queueMicrotask(() => backgroundNow("explicit"));
+    writeRunnerRequest({ type: "start", command: rewrittenCommand, outputPath: capturePath, windows: isWindows });
+
+    timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      if (bgTimer) clearTimeout(bgTimer);
+      clearRegisteredBackgrounder();
+      if (commandPid) killProcessGroup(commandPid);
+      else try { runner.kill(); } catch { /* already exited */ }
+      scheduleRunnerFallbackKill();
+    }, timeout);
+    timeoutTimer.unref?.();
   });
 }
 

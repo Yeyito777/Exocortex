@@ -64,6 +64,8 @@ describe("bash inline output budget", () => {
     expect(result.isError).toBe(false);
     expect(result.output).toContain("Full output: ");
     expect(result.output).toContain("Use the read tool with offset/limit to browse.");
+    const spillPath = result.output.match(/Full output: (\S+)/)?.[1];
+    if (spillPath) rmSync(spillPath, { force: true });
   });
 
   test("allows larger inline output when max_output_chars is raised", async () => {
@@ -76,6 +78,45 @@ describe("bash inline output budget", () => {
     expect(result.isError).toBe(false);
     expect(result.output).not.toContain("Full output: ");
     expect(result.output.length).toBe(13_000);
+  });
+});
+
+describe("bash process-tree timeout", () => {
+  test("times out and kills descendants in the isolated command process group", async () => {
+    if (process.platform === "win32") return;
+    const result = await executeBashBackgroundable({
+      command: "(trap '' TERM; sleep 30) & child=$!; echo $child; wait",
+      timeout: 100,
+      await: 10,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("command timed out");
+    const descendantPid = Number(result.output.match(/\n(\d+)\n/)?.[1]);
+    expect(descendantPid).toBeGreaterThan(0);
+    expect(() => process.kill(descendantPid, 0)).toThrow();
+  });
+
+  test("rejects a non-positive timeout before spawning", async () => {
+    const result = await executeBashBackgroundable({ command: "echo should-not-run", timeout: 0 });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("greater than 0 milliseconds");
+  });
+
+  test("does not orphan commands when timeout wins the runner startup race", async () => {
+    if (process.platform === "win32") return;
+    const markerPath = join(tmpdir(), `exocortex-bash-timeout-race-${process.pid}-${Date.now()}`);
+    const calls = Array.from({ length: 20 }, () => executeBashBackgroundable({
+      command: `(sleep 0.15; echo leaked >> '${markerPath}') & wait`,
+      timeout: 1,
+      await: 10,
+    }));
+
+    const results = await Promise.all(calls);
+    expect(results.every((result) => result.isError)).toBe(true);
+    await Bun.sleep(400);
+    expect(existsSync(markerPath)).toBe(false);
+    rmSync(markerPath, { force: true });
   });
 });
 
@@ -116,6 +157,70 @@ describe("bash manual backgrounding", () => {
     expect(spilled).toContain("start");
     expect(spilled).toContain("done");
   });
+
+  test("isolates command output handling from the daemon event loop process", async () => {
+    if (process.platform === "win32") return;
+
+    let background: (() => boolean) | null = null;
+    const promise = executeBashBackgroundable(
+      { command: "sleep 2", await: 60 },
+      undefined,
+      60_000,
+      {
+        toolCallId: "call-bash-isolation",
+        registerBackgrounder: (entry) => { background = entry?.background ?? null; },
+      },
+    );
+
+    for (let i = 0; i < 40 && !background; i++) await Bun.sleep(5);
+    expect(background).toBeTruthy();
+    expect(background!()).toBe(true);
+
+    const result = await promise;
+    const commandPid = Number(result.output.match(/PID (\d+)/)?.[1]);
+    const status = readFileSync(`/proc/${commandPid}/status`, "utf8");
+    const parentPid = Number(status.match(/^PPid:\s+(\d+)/m)?.[1]);
+
+    // The command is owned by bash-runner, not by this daemon/test process. Its
+    // high-volume stdout/stderr callbacks therefore cannot monopolize our loop.
+    expect(parentPid).toBeGreaterThan(0);
+    expect(parentPid).not.toBe(process.pid);
+    process.kill(-commandPid, "SIGTERM");
+    await Bun.sleep(100);
+    const spillPath = result.output.match(/Output is being written to: (\S+)/)?.[1];
+    if (spillPath) rmSync(spillPath, { force: true });
+  });
+
+  test("runner failure stops a backgrounded command and clears lifecycle state", async () => {
+    if (process.platform === "win32") return;
+    const activity: boolean[] = [];
+    const completions: BackgroundTaskCompletion[] = [];
+    const result = await executeBashBackgroundable(
+      { command: "sleep 30", background: true },
+      undefined,
+      60_000,
+      {
+        conversationId: "runner-failure-conversation",
+        setBackgroundTaskActive: (_id, active) => activity.push(active),
+        onBackgroundTaskComplete: (completion) => completions.push(completion),
+      },
+    );
+    const commandPid = Number(result.output.match(/PID (\d+)/)?.[1]);
+    const status = readFileSync(`/proc/${commandPid}/status`, "utf8");
+    const runnerPid = Number(status.match(/^PPid:\s+(\d+)/m)?.[1]);
+    expect(runnerPid).toBeGreaterThan(0);
+
+    process.kill(runnerPid, "SIGKILL");
+    for (let i = 0; i < 50 && activity.length < 2; i++) await Bun.sleep(10);
+    await Bun.sleep(250);
+
+    expect(activity).toEqual([true, false]);
+    expect(completions).toHaveLength(1);
+    expect(completions[0].failure).toContain("runner exited unexpectedly");
+    expect(() => process.kill(-commandPid, 0)).toThrow();
+    const spillPath = result.output.match(/Output is being written to: (\S+)/)?.[1];
+    if (spillPath) rmSync(spillPath, { force: true });
+  });
 });
 
 describe("bash explicit backgrounding", () => {
@@ -130,6 +235,10 @@ describe("bash explicit backgrounding", () => {
     expect(result.isError).toBe(false);
     expect(result.output).toContain("Command backgrounded immediately by request");
     expect(result.output).toContain("Output is being written to:");
+    if (process.platform !== "win32") {
+      expect(result.output).toContain("kill -0 -- -");
+      expect(result.output).toContain("kill -- -");
+    }
     expect(existsSync(markerPath)).toBe(false);
 
     const spillPath = result.output.match(/Output is being written to: (\S+)/)?.[1];
