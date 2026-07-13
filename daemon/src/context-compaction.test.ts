@@ -12,6 +12,7 @@ import {
   activeContextCompactionHistoryCount,
   historyPrefixHash,
   isValidActiveContext,
+  isValidActiveContextCached,
   rewindActiveContextToHistoryCount,
   type ActiveContext,
   type StoredMessage,
@@ -77,6 +78,24 @@ describe("automatic context compaction state", () => {
     messages.unshift({ role: "system_instructions", content: "added later", metadata: null });
 
     expect(isValidActiveContext(active, messages)).toBe(true);
+  });
+
+  test("reuses validation while canonical history only appends after the immutable prefix", () => {
+    const messages = history();
+    const active = activeContext(messages);
+
+    expect(isValidActiveContextCached(active, messages)).toBe(true);
+    messages.push({ role: "assistant", content: "later answer", metadata: null });
+    expect(isValidActiveContextCached(active, messages)).toBe(true);
+  });
+
+  test("cached validation does not hide replacement of compacted transcript content", () => {
+    const messages = history();
+    const active = activeContext(messages);
+    expect(isValidActiveContextCached(active, messages)).toBe(true);
+
+    messages[1] = { ...messages[1], content: "tampered old question" };
+    expect(isValidActiveContextCached(active, messages)).toBe(false);
   });
 
   test("keeps legacy pressure notices visible but stops replaying their removed-tool instructions", () => {

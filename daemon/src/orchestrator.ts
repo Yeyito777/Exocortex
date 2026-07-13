@@ -15,7 +15,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContext, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
@@ -389,7 +389,7 @@ async function orchestrateAssistantTurn(
 
   // The visible transcript remains append-only. Provider replay may start from
   // a compact checkpoint and append only the transcript tail written since it.
-  if (conv.activeContext && !isValidActiveContext(conv.activeContext, conv.messages)) {
+  if (conv.activeContext && !isValidActiveContextCached(conv.activeContext, conv.messages)) {
     log("warn", `orchestrator: discarded invalid active context for ${convId}; replaying the complete transcript`);
     conv.activeContext = null;
     conv.lastContextTokens = null;
@@ -758,8 +758,10 @@ async function orchestrateAssistantTurn(
       }
       // Track for late-joining clients
       convStore.pushStreamingBlock(convId, { type: blockType, text: "" });
-      convStore.markDirty(convId);
-      convStore.flush(convId);
+      // The user turn was already flushed before streaming started. The empty
+      // live block exists only in streaming state, so rewriting the complete
+      // retained audit transcript here neither improves crash recovery nor
+      // helps late joiners.
       convStore.resetChunkCounter(convId);
     },
     onTextChunk(chunk) {

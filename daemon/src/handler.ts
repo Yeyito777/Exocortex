@@ -388,6 +388,7 @@ export function createHandler(server: DaemonServer) {
     reqId?: string,
     turns?: number,
   ) => {
+    // Tool-result bodies are fetched separately only when the TUI expands them.
     const data = getRenderSnapshot(convId);
     if (!data) return null;
     const compactData = compactHistoryImages(data);
