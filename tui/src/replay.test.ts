@@ -59,6 +59,30 @@ describe("startReplayConversation", () => {
     expect(lines.some(line => line.includes("Gpt-5.4 | 0 tokens |"))).toBe(true);
   });
 
+  test("does not count idle time between an interrupted turn and its replay", () => {
+    const minute = 60_000;
+    const replayStartedAt = 21 * minute;
+    const state = createInitialState();
+    state.convId = "conv-replay";
+    state.model = "gpt-5.4";
+    state.messages.push(
+      {
+        role: "assistant",
+        blocks: [{ type: "text", text: "Partial answer" }],
+        metadata: { startedAt: 0, endedAt: 11 * minute, model: "gpt-5.4", tokens: 500 },
+      },
+      { role: "system", text: "✗ Interrupted", color: "error", metadata: null },
+    );
+    const calls: Array<{ convId: string; startedAt: number }> = [];
+
+    startReplayConversation(state, fakeDaemon(calls), replayStartedAt);
+    state.pendingAI!.metadata!.endedAt = replayStartedAt + 1_000;
+
+    const lines = buildMessageLines(state, 120).lines.map(stripAnsi);
+    expect(lines).toContain("  Gpt-5.4 | 500 tokens | 11m 0s");
+    expect(lines.at(-1)).toBe("  Gpt-5.4 | 0 tokens | 1s");
+  });
+
   test("shows daemon-started replay metadata immediately after a historical terminal notice", () => {
     const state = createInitialState();
     state.convId = "conv-replay";

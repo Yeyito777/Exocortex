@@ -114,12 +114,19 @@ function isRealUserMessage(msg: Message): boolean {
   return msg.role === "user" && msg.metadata?.system !== true;
 }
 
+function isAssistantMetadataBoundary(msg: Message): boolean {
+  // A replay is a fresh request even though it has no new user message. The
+  // terminal notice is its only durable boundary from the interrupted request;
+  // crossing it would charge the idle time before /replay as active model time.
+  return isRealUserMessage(msg) || isTerminalStreamNotice(msg);
+}
+
 function assistantSegmentMetadata(messages: Message[], endIndex: number): MessageMetadata | null {
   const current = messages[endIndex];
   if (current?.role !== "assistant") return null;
 
   let startIndex = endIndex;
-  while (startIndex > 0 && !isRealUserMessage(messages[startIndex - 1])) startIndex--;
+  while (startIndex > 0 && !isAssistantMetadataBoundary(messages[startIndex - 1])) startIndex--;
 
   let metadata: MessageMetadata | null = null;
   for (let i = startIndex; i <= endIndex; i++) {
@@ -133,7 +140,7 @@ function pendingAssistantSegmentMetadata(state: RenderState): MessageMetadata | 
   if (!state.pendingAI) return null;
 
   let startIndex = state.messages.length;
-  while (startIndex > 0 && !isRealUserMessage(state.messages[startIndex - 1])) startIndex--;
+  while (startIndex > 0 && !isAssistantMetadataBoundary(state.messages[startIndex - 1])) startIndex--;
 
   let metadata: MessageMetadata | null = null;
   for (let i = startIndex; i < state.messages.length; i++) {
