@@ -7,6 +7,7 @@
     "./messages": "./src/messages.ts",
     "./config": "./src/config.ts",
     "./model-display": "./src/model-display.ts",
+    "./token-pricing": "./src/token-pricing.ts",
     "./protocol": "./src/protocol.ts",
     "./paths": "./src/paths.ts"
   },

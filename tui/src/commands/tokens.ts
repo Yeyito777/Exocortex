@@ -2,6 +2,7 @@ import { clearPrompt } from "../promptstate";
 import { pushSystemMessage } from "../state";
 import { terminalColorLevel, theme } from "../theme";
 import { ansiColorToRgb, rgbToAnsi as terminalRgbToAnsi } from "../terminalcolors";
+import { resolveModelTokenPricing, type ModelTokenPricing } from "@exocortex/shared/token-pricing";
 import {
   createTokenUsageTotals,
   formatModelDisplayName,
@@ -9,6 +10,7 @@ import {
   type TokenUsageSource,
   type TokenUsageTotals,
   type ProviderId,
+  type ProviderInfo,
   type ModelId,
 } from "../messages";
 import { parsePositiveInt } from "./shared";
@@ -53,15 +55,8 @@ const TOKEN_SOURCES_ARG: CompletionItem = {
 
 const TOKEN_COST_ARG: CompletionItem = {
   name: "cost",
-  desc: "Estimate token spend using hardcoded model pricing",
+  desc: "Estimate token spend using provider-family pricing",
 };
-
-interface ModelPricing {
-  provider: ProviderId;
-  inputUsdPerMillion: number;
-  cachedInputUsdPerMillion: number;
-  outputUsdPerMillion: number;
-}
 
 interface CostTotals {
   inputUsd: number;
@@ -72,22 +67,11 @@ interface CostTotals {
   unmeasuredInputTokens: number;
 }
 
-/**
- * Pricing references checked 2026-04-19:
- * - OpenAI API pricing + API docs pricing pages
- * OpenAI does not publish a numeric GPT-5.3-Codex-Spark token rate. We use the
- * published standard gpt-5.3-codex API rate as the closest available baseline.
- */
-const MODEL_PRICING_USD_PER_MILLION: Record<ModelId, ModelPricing> = {
-  // OpenAI has not published separate GPT-5.5 API pricing yet; mirror GPT-5.4
-  // for now so /tokens cost stays useful on the new default model.
-  "gpt-5.5": { provider: "openai", inputUsdPerMillion: 2.5, cachedInputUsdPerMillion: 0.25, outputUsdPerMillion: 15 },
-  "gpt-5.4": { provider: "openai", inputUsdPerMillion: 2.5, cachedInputUsdPerMillion: 0.25, outputUsdPerMillion: 15 },
-  "gpt-5.4-mini": { provider: "openai", inputUsdPerMillion: 0.75, cachedInputUsdPerMillion: 0.075, outputUsdPerMillion: 4.5 },
-  "gpt-5.3-codex-spark": { provider: "openai", inputUsdPerMillion: 1.75, cachedInputUsdPerMillion: 0.175, outputUsdPerMillion: 14 },
-  "deepseek-v4-pro": { provider: "deepseek", inputUsdPerMillion: 0.435, cachedInputUsdPerMillion: 0.003625, outputUsdPerMillion: 0.87 },
-  "deepseek-v4-flash": { provider: "deepseek", inputUsdPerMillion: 0.14, cachedInputUsdPerMillion: 0.0028, outputUsdPerMillion: 0.28 },
-};
+interface ModelCostRow extends CostTotals {
+  provider: ProviderId;
+  model: ModelId;
+  pricingBasisModel: ModelId;
+}
 
 // Fallback for legacy/provider records that do not report cache details.
 const TOKEN_COST_ASSUMED_CACHED_INPUT_RATIO = 0.9;
@@ -282,7 +266,7 @@ function aggregateByRange<T extends string>(
   return { range, totals };
 }
 
-function estimateModelCost(usageTotals: TokenUsageTotals, pricing: ModelPricing): CostTotals {
+function estimateModelCost(usageTotals: TokenUsageTotals, pricing: ModelTokenPricing): CostTotals {
   const measuredCachedInputTokens = Math.max(0, usageTotals.cachedInputTokens);
   const measuredUncachedInputTokens = Math.max(0, usageTotals.uncachedInputTokens);
   const measuredInputTokens = Math.min(usageTotals.inputTokens, measuredCachedInputTokens + measuredUncachedInputTokens);
@@ -303,14 +287,17 @@ function estimateModelCost(usageTotals: TokenUsageTotals, pricing: ModelPricing)
   };
 }
 
-function computeCostTotals(entries: Iterable<[ModelId, TokenUsageTotals]>): CostTotals {
+function computeCostTotals(
+  entries: Iterable<[ModelId, TokenUsageTotals]>,
+  providerRegistry: readonly ProviderInfo[],
+): CostTotals {
   let inputUsd = 0;
   let outputUsd = 0;
   let measuredCachedInputTokens = 0;
   let measuredUncachedInputTokens = 0;
   let unmeasuredInputTokens = 0;
   for (const [model, usageTotals] of entries) {
-    const pricing = MODEL_PRICING_USD_PER_MILLION[model];
+    const pricing = resolveModelTokenPricing(model, providerRegistry);
     if (!pricing) continue;
     const estimate = estimateModelCost(usageTotals, pricing);
     inputUsd += estimate.inputUsd;
@@ -410,28 +397,33 @@ function buildSourceBreakdownMessage(stats: TokenStatsSnapshot, dayCount: number
   return lines.join("\n");
 }
 
-function buildCostBreakdownMessage(stats: TokenStatsSnapshot): string {
-  const lifetimeRows = (Object.entries(stats.lifetime.byModel) as Array<[ModelId, TokenUsageTotals]>)
-    .map(([model, usageTotals]) => {
-      const pricing = MODEL_PRICING_USD_PER_MILLION[model];
-      if (!pricing) return null;
-      const estimate = estimateModelCost(usageTotals, pricing);
-      return {
-        provider: pricing.provider,
-        model,
-        inputUsd: estimate.inputUsd,
-        outputUsd: estimate.outputUsd,
-        totalUsd: estimate.totalUsd,
-        measuredCachedInputTokens: estimate.measuredCachedInputTokens,
-        measuredUncachedInputTokens: estimate.measuredUncachedInputTokens,
-        unmeasuredInputTokens: estimate.unmeasuredInputTokens,
-      };
-    })
-    .filter((row): row is { provider: ProviderId; model: ModelId; inputUsd: number; outputUsd: number; totalUsd: number; measuredCachedInputTokens: number; measuredUncachedInputTokens: number; unmeasuredInputTokens: number } => row !== null);
+function buildCostBreakdownMessage(stats: TokenStatsSnapshot, providerRegistry: readonly ProviderInfo[]): string {
+  const lifetimeRows: ModelCostRow[] = [];
+  const unpricedRows: Array<{ model: ModelId; usageTotals: TokenUsageTotals }> = [];
 
-  const todayCost = computeCostTotals(Object.entries(stats.today.byModel) as Array<[ModelId, TokenUsageTotals]>);
-  const weekCost = computeCostTotals(aggregateByRange(stats, 7, (day) => day.byModel).totals.entries());
-  const lifetimeCost = computeCostTotals(Object.entries(stats.lifetime.byModel) as Array<[ModelId, TokenUsageTotals]>);
+  for (const [model, usageTotals] of Object.entries(stats.lifetime.byModel) as Array<[ModelId, TokenUsageTotals]>) {
+    const pricing = resolveModelTokenPricing(model, providerRegistry);
+    if (!pricing) {
+      unpricedRows.push({ model, usageTotals });
+      continue;
+    }
+    const estimate = estimateModelCost(usageTotals, pricing);
+    lifetimeRows.push({
+      provider: pricing.provider,
+      model,
+      pricingBasisModel: pricing.basisModel,
+      inputUsd: estimate.inputUsd,
+      outputUsd: estimate.outputUsd,
+      totalUsd: estimate.totalUsd,
+      measuredCachedInputTokens: estimate.measuredCachedInputTokens,
+      measuredUncachedInputTokens: estimate.measuredUncachedInputTokens,
+      unmeasuredInputTokens: estimate.unmeasuredInputTokens,
+    });
+  }
+
+  const todayCost = computeCostTotals(Object.entries(stats.today.byModel) as Array<[ModelId, TokenUsageTotals]>, providerRegistry);
+  const weekCost = computeCostTotals(aggregateByRange(stats, 7, (day) => day.byModel).totals.entries(), providerRegistry);
+  const lifetimeCost = computeCostTotals(Object.entries(stats.lifetime.byModel) as Array<[ModelId, TokenUsageTotals]>, providerRegistry);
 
   const grouped = new Map<ProviderId, Array<typeof lifetimeRows[number]>>();
   for (const row of lifetimeRows) {
@@ -462,13 +454,31 @@ function buildCostBreakdownMessage(stats: TokenStatsSnapshot): string {
     `Unmeasured input: ${accentTokenCount(lifetimeCost.unmeasuredInputTokens)} (${Math.round(TOKEN_COST_ASSUMED_CACHED_INPUT_RATIO * 100)}% cached fallback for cost only)`,
   ];
 
-  if (sortedProviders.length === 0) {
+  if (lifetimeRows.length === 0 && unpricedRows.length === 0) {
     lines.push("", "No token usage recorded yet.");
   } else {
     for (const provider of sortedProviders) {
       lines.push("", `${formatProviderLabel(provider)}:`);
       for (const row of grouped.get(provider) ?? []) {
         lines.push(`    ${formatModelDisplayName(row.model)}: ${accentUsd(row.inputUsd)}/${accentUsd(row.outputUsd)} • cache ${accentTokenCount(row.measuredCachedInputTokens)}/${accentTokenCount(row.measuredUncachedInputTokens)} measured`);
+      }
+    }
+
+    const pricingFallbacks = lifetimeRows
+      .filter((row) => row.model !== row.pricingBasisModel)
+      .sort((a, b) => a.model.localeCompare(b.model));
+    if (pricingFallbacks.length > 0) {
+      lines.push("", "Pricing fallbacks:");
+      for (const row of pricingFallbacks) {
+        lines.push(`    ${formatModelDisplayName(row.model)} → ${formatModelDisplayName(row.pricingBasisModel)} rates`);
+      }
+    }
+
+    if (unpricedRows.length > 0) {
+      unpricedRows.sort((a, b) => b.usageTotals.totalTokens - a.usageTotals.totalTokens || a.model.localeCompare(b.model));
+      lines.push("", "Unpriced models (excluded from cost):");
+      for (const row of unpricedRows) {
+        lines.push(`    ${formatModelDisplayName(row.model)}: ${accentTokenCount(row.usageTotals.inputTokens)}/${accentTokenCount(row.usageTotals.outputTokens)}`);
       }
     }
   }
@@ -539,7 +549,7 @@ export const TOKENS_COMMAND: SlashCommand = {
         message = buildSourceBreakdownMessage(state.tokenStats, resolvedDays);
         break;
       case "cost":
-        message = buildCostBreakdownMessage(state.tokenStats);
+        message = buildCostBreakdownMessage(state.tokenStats, state.providerRegistry);
         break;
       default:
         message = buildTokenStatsMessage(state.tokenStats, resolvedDays);

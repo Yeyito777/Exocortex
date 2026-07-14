@@ -633,6 +633,60 @@ describe("/tokens", () => {
     expect(text).toContain("$0.000174");
   });
 
+  test("automatically includes newly advertised GPT-5.6 and custom OpenAI models in cost estimates", () => {
+    const state = createInitialState();
+    const stats = structuredClone(tokenStats);
+    stats.lifetime.byModel = {
+      "gpt-5.6-sol": totals(1_000_000, 1_000_000, 1),
+      "codex-next": totals(1_000_000, 1_000_000, 1),
+    };
+    state.tokenStats = stats;
+    state.providerRegistry = structuredClone(providers);
+    state.providerRegistry[0].models.push({
+      id: "gpt-5.6-sol",
+      label: "Gpt-5.6-sol",
+      maxContext: 372_000,
+      supportedEfforts: [],
+      defaultEffort: "medium",
+    }, {
+      id: "codex-next",
+      label: "Codex-next",
+      maxContext: 372_000,
+      supportedEfforts: [],
+      defaultEffort: "medium",
+    });
+
+    const result = tryCommand("/tokens cost", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("    Gpt-5.6-sol: ");
+    expect(text).toContain("    Codex-next: ");
+    expect(text).toContain("$0.4750");
+    expect(text).toContain("$15.00");
+    expect(text).toContain("Gpt-5.6-sol → Gpt-5.4 rates");
+    expect(text).toContain("Codex-next → Gpt-5.4 rates");
+  });
+
+  test("shows unpriced model usage instead of silently dropping it", () => {
+    const state = createInitialState();
+    const stats = structuredClone(tokenStats);
+    stats.lifetime.byModel = {
+      "unknown-model": totals(123, 45, 1),
+    };
+    state.tokenStats = stats;
+
+    const result = tryCommand("/tokens cost", state);
+
+    expect(result).toEqual({ type: "handled" });
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("Unpriced models (excluded from cost):");
+    expect(text).toContain("Unknown-model:");
+    expect(text).toContain("123");
+    expect(text).toContain("45");
+    expect(text).not.toContain("No token usage recorded yet.");
+  });
+
   test("reports when stats are not available yet", () => {
     const state = createInitialState();
 
