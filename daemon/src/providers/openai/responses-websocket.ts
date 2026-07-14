@@ -76,14 +76,20 @@ function maybeHeadersFromCodexRateLimits(event: Record<string, unknown>): Header
 
   if (primary) {
     if (typeof primary.used_percent === "number") headers.set("x-codex-primary-used-percent", String(primary.used_percent));
+    if (typeof primary.window_minutes === "number") headers.set("x-codex-primary-window-minutes", String(primary.window_minutes));
     if (typeof primary.reset_at === "number") headers.set("x-codex-primary-reset-at", String(primary.reset_at));
   }
   if (secondary) {
     if (typeof secondary.used_percent === "number") headers.set("x-codex-secondary-used-percent", String(secondary.used_percent));
+    if (typeof secondary.window_minutes === "number") headers.set("x-codex-secondary-window-minutes", String(secondary.window_minutes));
     if (typeof secondary.reset_at === "number") headers.set("x-codex-secondary-reset-at", String(secondary.reset_at));
   }
 
   return Array.from(headers.keys()).length > 0 ? headers : null;
+}
+
+export function codexRateLimitHeadersForTest(event: Record<string, unknown>): Headers | null {
+  return maybeHeadersFromCodexRateLimits(event);
 }
 
 function headerValueFromRecord(headers: Record<string, unknown>, name: string): string | null {

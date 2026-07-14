@@ -46,6 +46,11 @@ function windowLineWidth(label: string, pctStr: string, resetStr: string): numbe
   return 2 + label.length + 2 + 1 + BAR_WIDTH + 1 + 1 + pctStr.length + " resets in ".length + resetStr.length;
 }
 
+function unavailableWindowLineWidth(label: string): number {
+  // "  label: [XXXXXXXXXXXXXXXXXXXX] not applicable"
+  return 2 + label.length + 2 + 1 + BAR_WIDTH + 1 + 1 + "not applicable".length;
+}
+
 function renderWindowLine(label: string, window: UsageWindow | null, now: number): { line: string; width: number } {
   const pct = window ? Math.round(window.utilization) : null;
   const pctStr = pct !== null ? `${pct}%` : "?%";
@@ -56,6 +61,12 @@ function renderWindowLine(label: string, window: UsageWindow | null, now: number
   return { line, width };
 }
 
+function renderUnavailableWindowLine(label: string): { line: string; width: number } {
+  const bar = `${theme.dim}${"X".repeat(BAR_WIDTH)}${theme.reset}`;
+  const line = `${theme.muted}  ${label}: ${theme.text}[${bar}${theme.text}] ${theme.dim}${theme.text}not applicable${theme.reset}`;
+  return { line, width: unavailableWindowLineWidth(label) };
+}
+
 export function usageBlock(state: RenderState): StatusBlock | null {
   if (!state.authByProvider[state.provider]) return null;
 
@@ -64,7 +75,9 @@ export function usageBlock(state: RenderState): StatusBlock | null {
 
   const now = Date.now();
 
-  const fiveHour = renderWindowLine("5-Hour", usage?.fiveHour ?? null, now);
+  const fiveHour = usage.fiveHour
+    ? renderWindowLine("5-Hour", usage.fiveHour, now)
+    : renderUnavailableWindowLine("5-Hour");
   const weekly = renderWindowLine("Weekly", usage?.sevenDay ?? null, now);
   const blockWidth = Math.max(fiveHour.width, weekly.width);
 

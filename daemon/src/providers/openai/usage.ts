@@ -9,6 +9,9 @@ const DEFAULT_LIMIT_PREFIX = "x-codex";
 const LEGACY_ACCOUNT_KEY = "__legacy__";
 export const OPENAI_USAGE_ACCOUNT_KEY_HEADER = "x-exocortex-openai-account-key";
 
+const FIVE_HOUR_WINDOW_MINUTES = 5 * 60;
+const SEVEN_DAY_WINDOW_MINUTES = 7 * 24 * 60;
+
 interface UsageStore {
   version: 2;
   byAccount: Record<string, UsageData>;
@@ -115,16 +118,45 @@ function parseHeaders(headers: Headers, accountKey = currentAccountKey()): Usage
   const prefix = resolveLimitPrefix(headers);
   const previous = usageForAccount(accountKey);
 
-  const fiveHour = parseWindow(
+  const primary = parseObservedWindow(
     getFirstPresentHeader(headers, headerCandidates(prefix, PRIMARY_PERCENT_HEADERS)),
     getFirstPresentHeader(headers, headerCandidates(prefix, ["primary-reset-at"])),
-    previous?.fiveHour,
+    getFirstPresentHeader(headers, headerCandidates(prefix, ["primary-window-minutes"])),
   );
-  const sevenDay = parseWindow(
+  const secondary = parseObservedWindow(
     getFirstPresentHeader(headers, headerCandidates(prefix, SECONDARY_PERCENT_HEADERS)),
     getFirstPresentHeader(headers, headerCandidates(prefix, ["secondary-reset-at"])),
-    previous?.sevenDay,
+    getFirstPresentHeader(headers, headerCandidates(prefix, ["secondary-window-minutes"])),
   );
+
+  const hasDurationMetadata = primary?.durationMinutes != null || secondary?.durationMinutes != null;
+  if (hasDurationMetadata) {
+    const observed = [primary, secondary].filter((window): window is ObservedUsageWindow => window !== null);
+    const fiveHour = observed.find((window) => window.durationMinutes === FIVE_HOUR_WINDOW_MINUTES) ?? null;
+    const sevenDay = observed.find((window) => window.durationMinutes === SEVEN_DAY_WINDOW_MINUTES) ?? null;
+
+    // Retain positional compatibility for an unexpected or missing duration,
+    // while preferring the provider's explicit duration whenever it is known.
+    const positionalFiveHour = fiveHour ?? (primary !== sevenDay ? primary : null);
+    const positionalSevenDay = sevenDay ?? (secondary !== fiveHour ? secondary : null);
+    const primaryIsSevenDay = primary?.durationMinutes === SEVEN_DAY_WINDOW_MINUTES;
+    const usage = {
+      fiveHour: positionalFiveHour
+        ? toUsageWindow(positionalFiveHour, previous?.fiveHour)
+        : primaryIsSevenDay ? null : previous?.fiveHour ?? null,
+      sevenDay: positionalSevenDay
+        ? toUsageWindow(positionalSevenDay, previous?.sevenDay)
+        : previous?.sevenDay ?? null,
+    };
+    return usage.fiveHour || usage.sevenDay ? usage : null;
+  }
+
+  const fiveHour = primary
+    ? toUsageWindow(primary, previous?.fiveHour)
+    : previous?.fiveHour ?? null;
+  const sevenDay = secondary
+    ? toUsageWindow(secondary, previous?.sevenDay)
+    : previous?.sevenDay ?? null;
 
   if (!fiveHour && !sevenDay) return null;
   return { fiveHour, sevenDay };
@@ -152,13 +184,25 @@ function getFirstPresentHeader(headers: Headers, names: readonly string[]): stri
   return null;
 }
 
-function parseWindow(percentValue: string | null, resetAtValue: string | null, previous?: UsageWindow | null): UsageWindow | null {
-  if (!percentValue && !resetAtValue) return previous ?? null;
+interface ObservedUsageWindow extends UsageWindow {
+  durationMinutes: number | null;
+}
+
+function parseObservedWindow(percentValue: string | null, resetAtValue: string | null, durationValue: string | null): ObservedUsageWindow | null {
   const utilization = parsePercent(percentValue);
-  if (utilization === null) return previous ?? null;
+  if (utilization === null) return null;
   return {
     utilization,
-    resetsAt: parseResetValue(resetAtValue) ?? previous?.resetsAt ?? null,
+    resetsAt: parseResetValue(resetAtValue),
+    durationMinutes: parseDurationMinutes(durationValue),
+  };
+}
+
+function toUsageWindow(observed: ObservedUsageWindow | null, previous?: UsageWindow | null): UsageWindow | null {
+  if (!observed) return null;
+  return {
+    utilization: observed.utilization,
+    resetsAt: observed.resetsAt ?? previous?.resetsAt ?? null,
   };
 }
 
@@ -174,4 +218,10 @@ function parseResetValue(value: string | null): number | null {
   if (Number.isFinite(parsed)) return parsed < 1e12 ? parsed * 1000 : parsed;
   const asDate = new Date(value);
   return Number.isNaN(asDate.getTime()) ? null : asDate.getTime();
+}
+
+function parseDurationMinutes(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }

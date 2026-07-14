@@ -68,6 +68,8 @@ describe("OpenAI usage header parsing", () => {
     const headers = new Headers({
       "x-codex-primary-used-percent": "12.5",
       "x-codex-secondary-used-percent": "40",
+      "x-codex-primary-window-minutes": "300",
+      "x-codex-secondary-window-minutes": "10080",
       "x-codex-primary-reset-at": "1704069000",
       "x-codex-secondary-reset-at": "1704074400",
     });
@@ -89,6 +91,35 @@ describe("OpenAI usage header parsing", () => {
       sevenDay: {
         utilization: 40,
         resetsAt: 1704074400 * 1000,
+      },
+    });
+  });
+
+  test("maps a lone seven-day primary window and clears the cached five-hour limit", () => {
+    resetUsageStorage();
+
+    handleUsageHeaders(new Headers({
+      "x-codex-primary-used-percent": "12",
+      "x-codex-secondary-used-percent": "34",
+    }), () => {});
+
+    let usage: UsageData | null = null;
+    handleUsageHeaders(new Headers({
+      "x-codex-primary-used-percent": "53",
+      "x-codex-primary-window-minutes": "10080",
+      "x-codex-primary-reset-at": "1784499577",
+    }), (next) => {
+      usage = next;
+    });
+
+    expect(usage).not.toBeNull();
+    if (usage === null) throw new Error("expected usage update");
+    const actual: UsageData = usage;
+    expect(actual).toEqual({
+      fiveHour: null,
+      sevenDay: {
+        utilization: 53,
+        resetsAt: 1784499577 * 1000,
       },
     });
   });
