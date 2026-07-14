@@ -653,7 +653,7 @@ function handleSubmit(): void {
           if (state.convId) daemon.setSystemInstructions(state.convId, cmdResult.text);
           break;
         case "login":
-          daemon.login(cmdResult.provider ?? state.provider, cmdResult.apiKey, cmdResult.action, cmdResult.target);
+          daemon.login(cmdResult.provider ?? state.provider, cmdResult.apiKey, cmdResult.action, cmdResult.target, cmdResult.method);
           break;
         case "account":
           daemon.account(cmdResult.provider ?? "openai", cmdResult.target);

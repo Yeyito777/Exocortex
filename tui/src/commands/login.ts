@@ -3,6 +3,7 @@ import { pushSystemMessage } from "../state";
 import { buildLoginInfoMessage } from "../logininfo";
 import { setChosenProvider } from "../providerselection";
 import { DEFAULT_PROVIDER_ORDER, type ProviderId } from "../messages";
+import type { OpenAILoginMethod } from "../protocol";
 import { availableProviders, defaultModelForProvider, normalizeStateEffort, providerCompletionItems, providerSupportsFastMode } from "./shared";
 import type { SlashCommand } from "./types";
 
@@ -24,10 +25,11 @@ function deepSeekLoginInstruction(): string {
 function openAILoginInstruction(): string {
   return [
     "OpenAI login commands:",
-    "  /login openai        Authenticate if no OpenAI account is connected",
-    "  /login openai add    Connect another OpenAI account",
+    "  /login openai [browser|code]",
+    "  /login openai add [browser|code]",
     "  /login openai remove <email>",
     "",
+    "Use code login on remote or headless machines. Browser login remains the default.",
     "Use /account to list or switch OpenAI accounts.",
   ].join("\n");
 }
@@ -36,6 +38,17 @@ const OPENAI_ACCOUNT_ACTIONS = [
   { name: "add", desc: "Connect another OpenAI account" },
   { name: "remove", desc: "Remove a connected OpenAI account" },
 ] as const;
+
+const OPENAI_LOGIN_METHODS = [
+  { name: "browser", desc: "Authenticate with a localhost browser callback" },
+  { name: "code", desc: "Authenticate on any device with a one-time code" },
+] as const;
+
+function parseOpenAILoginMethod(value: string): OpenAILoginMethod | null {
+  if (value === "browser") return "browser";
+  if (value === "code") return "code";
+  return null;
+}
 
 export const LOGIN_COMMAND: SlashCommand = {
   name: "/login",
@@ -46,7 +59,8 @@ export const LOGIN_COMMAND: SlashCommand = {
   })),
   getArgs: (state) => ({
     "/login": providerCompletionItems(state),
-    "/login openai": [...OPENAI_ACCOUNT_ACTIONS],
+    "/login openai": [...OPENAI_LOGIN_METHODS, ...OPENAI_ACCOUNT_ACTIONS],
+    "/login openai add": [...OPENAI_LOGIN_METHODS],
   }),
   handler: (text, state) => {
     const parts = text.trim().split(/\s+/).filter(Boolean);
@@ -76,6 +90,7 @@ export const LOGIN_COMMAND: SlashCommand = {
     let apiKey: string | undefined;
     let action: "add" | "remove" | undefined;
     let target: string | undefined;
+    let method: OpenAILoginMethod | undefined;
 
     if (provider === "deepseek") {
       apiKey = arg;
@@ -91,13 +106,32 @@ export const LOGIN_COMMAND: SlashCommand = {
       }
     } else if (provider === "openai") {
       if (arg) {
-        if (arg !== "add" && arg !== "remove") {
+        const directMethod = parseOpenAILoginMethod(arg);
+        if (directMethod) {
+          if (extra) {
+            pushSystemMessage(state, openAILoginInstruction());
+            clearPrompt(state);
+            return { type: "handled" };
+          }
+          method = directMethod;
+        } else if (arg !== "add" && arg !== "remove") {
           pushSystemMessage(state, openAILoginInstruction());
           clearPrompt(state);
           return { type: "handled" };
+        } else {
+          action = arg;
+          if (action === "add" && extra) {
+            const addMethod = parseOpenAILoginMethod(extra);
+            if (!addMethod) {
+              pushSystemMessage(state, openAILoginInstruction());
+              clearPrompt(state);
+              return { type: "handled" };
+            }
+            method = addMethod;
+          } else if (action === "remove") {
+            target = extra;
+          }
         }
-        action = arg;
-        target = extra;
       }
     } else if (arg) {
       pushSystemMessage(state, `Extra arguments are only supported for OpenAI account management and DeepSeek API-key login. Use /login ${provider}.`);
@@ -114,6 +148,6 @@ export const LOGIN_COMMAND: SlashCommand = {
     }
 
     clearPrompt(state);
-    return { type: "login", provider, ...(apiKey ? { apiKey } : {}), ...(action ? { action } : {}), ...(target ? { target } : {}) };
+    return { type: "login", provider, ...(apiKey ? { apiKey } : {}), ...(action ? { action } : {}), ...(target ? { target } : {}), ...(method ? { method } : {}) };
   },
 };

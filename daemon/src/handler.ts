@@ -1767,11 +1767,14 @@ export function createHandler(server: DaemonServer) {
                 server.sendTo(client, {
                   type: "auth_status",
                   reqId: cmd.reqId,
-                  message: `Paste this URL into a browser to add an OpenAI account:\n\n${url}`,
+                  message: `Paste this URL into a browser to add an OpenAI account:\n\n${url}\n\nOn a remote or headless machine, use /login openai add code instead.`,
                 });
                 return true;
               },
-            }).then((result) => {
+              onDeviceCode: (deviceCode) => {
+                server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, deviceCode });
+              },
+            }, cmd.method ? { method: cmd.method } : undefined).then((result) => {
               invalidateCredentialsCache("openai");
               const label = result.profile?.email ?? result.profile?.displayName ?? provider;
               server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: `Added OpenAI account ${label}.\n\n${formatOpenAIAccountList()}` });
@@ -1806,11 +1809,11 @@ export function createHandler(server: DaemonServer) {
           // operations remain blocked above while any OpenAI turn is streaming.
           openAIAccountMutationInFlight = true;
         }
-        const loginOptions = cmd.apiKey
-          ? { apiKey: cmd.apiKey }
-          : provider === "openai" && hasStreamingOpenAIConversation()
-            ? { requireSameAccount: true }
-            : undefined;
+        const loginOptions = {
+          ...(cmd.apiKey ? { apiKey: cmd.apiKey } : {}),
+          ...(cmd.method ? { method: cmd.method } : {}),
+          ...(provider === "openai" && hasStreamingOpenAIConversation() ? { requireSameAccount: true } : {}),
+        };
         void ensureAuthenticated(provider, {
           onProgress: (msg) => {
             server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: msg });
@@ -1818,6 +1821,9 @@ export function createHandler(server: DaemonServer) {
           onOpenUrl: (url) => {
             server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, openUrl: url });
             return true;
+          },
+          onDeviceCode: (deviceCode) => {
+            server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, deviceCode });
           },
         }, loginOptions).then(({ status, email }) => {
           const label = email ?? provider;

@@ -7,6 +7,7 @@ import {
   getVerifiedSession,
   listAccounts,
   setOpenAIBrowserOAuthForTest,
+  setOpenAIDeviceOAuthForTest,
   switchAccount,
   type StoredOpenAIAuthPool,
 } from "./auth";
@@ -45,6 +46,7 @@ function makeAuth(email: string, accountId: string, accessToken: string): Stored
 afterEach(() => {
   globalThis.fetch = originalFetch;
   setOpenAIBrowserOAuthForTest(null);
+  setOpenAIDeviceOAuthForTest(null);
   clearProviderAuth("openai");
 });
 
@@ -53,6 +55,42 @@ function jwt(claims: Record<string, unknown>): string {
 }
 
 describe("OpenAI multi-account auth", () => {
+  test("uses device-code OAuth when code login is explicitly requested", async () => {
+    let browserCalls = 0;
+    let deviceCalls = 0;
+    globalThis.fetch = mock(() => Promise.resolve(new Response("", { status: 404 }))) as unknown as typeof fetch;
+    setOpenAIBrowserOAuthForTest(async () => {
+      browserCalls++;
+      throw new Error("browser OAuth should not run");
+    });
+    setOpenAIDeviceOAuthForTest(async () => {
+      deviceCalls++;
+      return {
+        access_token: jwt({ sub: "device-user", email: "device@example.com" }),
+        refresh_token: "device-refresh",
+        expires_in: 3600,
+      };
+    });
+
+    await expect(ensureAuthenticated(undefined, { method: "code" })).resolves.toMatchObject({
+      status: "logged_in",
+      email: "device@example.com",
+    });
+    expect(deviceCalls).toBe(1);
+    expect(browserCalls).toBe(0);
+  });
+
+  test("does not accept device as an alias for code login", async () => {
+    let browserCalls = 0;
+    setOpenAIBrowserOAuthForTest(async () => {
+      browserCalls++;
+      throw new Error("browser OAuth should not run");
+    });
+
+    await expect(ensureAuthenticated(undefined, { method: "device" as never })).rejects.toThrow(/unsupported.*device/i);
+    expect(browserCalls).toBe(0);
+  });
+
   test("replaces a rejected current session with browser OAuth for the same account", async () => {
     const stale = makeAuth("one@example.com", "acct_one", "stale-token");
     stale.tokens.expiresAt = Date.now() - 60_000;

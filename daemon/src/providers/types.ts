@@ -2,6 +2,7 @@ import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData
 import type { OAuthProfile, StoredTokens } from "../store";
 import type { AssistantProviderData } from "./provider-data";
 import type { OpenAICompactionItem } from "./openai/types";
+import type { DeviceCodeAuthPrompt, OpenAILoginMethod } from "@exocortex/shared/protocol";
 
 export type ServiceTier = "fast";
 
@@ -152,11 +153,14 @@ export interface LoginResult {
 export interface LoginCallbacks {
   onProgress?: (msg: string) => void;
   onOpenUrl?: (url: string) => boolean | void | Promise<boolean | void>;
+  onDeviceCode?: (prompt: DeviceCodeAuthPrompt) => void | Promise<void>;
 }
 
 export interface LoginOptions {
   /** Provider-specific secret supplied by the caller. DeepSeek uses this for API-key login. */
   apiKey?: string;
+  /** OpenAI OAuth flow. Defaults to browser for backwards compatibility. */
+  method?: OpenAILoginMethod;
   /**
    * Reauthentication may replace credentials only for the currently selected
    * account. OpenAI uses this while turns are active so OAuth recovery cannot

@@ -1,5 +1,5 @@
 const CHATGPT_BASE_URL = (process.env.OPENAI_CHATGPT_BASE_URL?.trim() || "https://chatgpt.com").replace(/\/+$/, "");
-const OPENAI_AUTH_ISSUER = "https://auth.openai.com";
+export const OPENAI_AUTH_ISSUER = "https://auth.openai.com";
 
 export const OPENAI_AUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 export const OPENAI_AUTH_URL = `${OPENAI_AUTH_ISSUER}/oauth/authorize`;
@@ -8,6 +8,10 @@ export const OPENAI_USERINFO_URL = `${OPENAI_AUTH_ISSUER}/userinfo`;
 
 export const OPENAI_CALLBACK_PORT = 1455;
 export const OPENAI_CALLBACK_PATH = "/auth/callback";
+export const OPENAI_DEVICE_AUTH_USER_CODE_URL = `${OPENAI_AUTH_ISSUER}/api/accounts/deviceauth/usercode`;
+export const OPENAI_DEVICE_AUTH_TOKEN_URL = `${OPENAI_AUTH_ISSUER}/api/accounts/deviceauth/token`;
+export const OPENAI_DEVICE_AUTH_VERIFICATION_URL = `${OPENAI_AUTH_ISSUER}/codex/device`;
+export const OPENAI_DEVICE_AUTH_CALLBACK_URL = `${OPENAI_AUTH_ISSUER}/deviceauth/callback`;
 
 export const OPENAI_ORIGINATOR = "codex_cli_rs";
 export const OPENAI_CODEX_CLIENT_VERSION = process.env.OPENAI_CODEX_CLIENT_VERSION?.trim() || "0.99.0";

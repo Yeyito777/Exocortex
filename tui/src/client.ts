@@ -6,7 +6,7 @@
 
 import { connect, type Socket } from "net";
 import { existsSync } from "fs";
-import type { Command, Event, GoalAction, MoveSidebarItemsOptions, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef } from "./protocol";
+import type { Command, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 
@@ -341,8 +341,8 @@ export class DaemonClient {
     this.send({ type: "load_tool_outputs", convId });
   }
 
-  login(provider?: ProviderId, apiKey?: string, action?: "add" | "remove", target?: string): void {
-    this.send({ type: "login", provider, apiKey, action, target });
+  login(provider?: ProviderId, apiKey?: string, action?: "add" | "remove", target?: string, method?: OpenAILoginMethod): void {
+    this.send({ type: "login", provider, apiKey, action, target, method });
   }
 
   account(provider?: ProviderId, target?: string): void {

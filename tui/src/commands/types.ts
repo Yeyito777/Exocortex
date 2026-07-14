@@ -1,5 +1,5 @@
 import type { RenderState } from "../state";
-import type { GoalAction, TrimMode } from "../protocol";
+import type { GoalAction, OpenAILoginMethod, TrimMode } from "../protocol";
 import type { ProviderId, ModelId, EffortLevel } from "../messages";
 
 export interface CompletionItem {
@@ -24,7 +24,7 @@ export type CommandResult =
   | { type: "goal"; action: GoalAction; objective?: string; pausable?: boolean; completable?: boolean }
   | { type: "rename_conversation"; title: string }
   | { type: "generate_title" }
-  | { type: "login"; provider?: ProviderId; apiKey?: string; action?: "add" | "remove"; target?: string }
+  | { type: "login"; provider?: ProviderId; apiKey?: string; action?: "add" | "remove"; target?: string; method?: OpenAILoginMethod }
   | { type: "account"; provider?: ProviderId; target?: string }
   | { type: "logout"; provider?: ProviderId }
   | { type: "theme_changed" }

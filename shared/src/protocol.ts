@@ -463,6 +463,15 @@ export interface TranscribeAudioCommand {
   mimeType: string;
 }
 
+/** OpenAI OAuth flow selected by the user. Browser remains the default. */
+export type OpenAILoginMethod = "browser" | "code";
+
+export interface DeviceCodeAuthPrompt {
+  verificationUrl: string;
+  userCode: string;
+  expiresInSeconds: number;
+}
+
 export interface LoginCommand {
   type: "login";
   reqId?: string;
@@ -473,6 +482,8 @@ export interface LoginCommand {
   action?: "add" | "remove";
   /** Provider-specific subcommand target. OpenAI remove uses this as email/censored-email. */
   target?: string;
+  /** OpenAI OAuth flow. Omitted for the backwards-compatible browser flow. */
+  method?: OpenAILoginMethod;
 }
 
 export interface AccountCommand {
@@ -1012,6 +1023,8 @@ export interface AuthStatusEvent {
   message?: string;
   /** When set, the TUI should open this URL in the user's browser. */
   openUrl?: string;
+  /** Headless-friendly device authorization instructions. */
+  deviceCode?: DeviceCodeAuthPrompt;
 }
 
 export interface ErrorEvent {

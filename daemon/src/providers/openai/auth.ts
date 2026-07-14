@@ -2,6 +2,7 @@ import { clearProviderAuth, isTokenExpired, loadProviderAuth, saveProviderAuth, 
 import { OPENAI_AUTH_CLIENT_ID, OPENAI_TOKEN_URL } from "./constants";
 import { buildOpenAIJsonHeaders, parseOpenAIJson } from "./http";
 import { runOpenAIBrowserOAuth } from "./oauth";
+import { runOpenAIDeviceOAuth } from "./device-oauth";
 import {
   buildStoredAuth,
   enrichStoredAuth,
@@ -180,6 +181,7 @@ async function enrichAndPersistAuth(auth: StoredOpenAIAuth): Promise<StoredOpenA
 const inflightRefreshes = new Map<string, Promise<StoredOpenAIAuth>>();
 const rejectedRefreshTokens = new Map<string, string>();
 let browserOAuthForTest: typeof runOpenAIBrowserOAuth | null = null;
+let deviceOAuthForTest: typeof runOpenAIDeviceOAuth | null = null;
 
 function refreshTokenFingerprint(refreshToken: string): string {
   return createHash("sha256").update(refreshToken).digest("hex");
@@ -203,8 +205,14 @@ export function setOpenAIBrowserOAuthForTest(override: typeof runOpenAIBrowserOA
   if (override === null) rejectedRefreshTokens.clear();
 }
 
-function runBrowserOAuth(callbacks?: LoginCallbacks) {
-  return (browserOAuthForTest ?? runOpenAIBrowserOAuth)(callbacks);
+export function setOpenAIDeviceOAuthForTest(override: typeof runOpenAIDeviceOAuth | null): void {
+  deviceOAuthForTest = override;
+}
+
+function runOAuth(callbacks?: LoginCallbacks, method: LoginOptions["method"] = "browser") {
+  if (method === "code") return (deviceOAuthForTest ?? runOpenAIDeviceOAuth)(callbacks);
+  if (method === "browser") return (browserOAuthForTest ?? runOpenAIBrowserOAuth)(callbacks);
+  throw new AuthError(`Unsupported OpenAI login method: ${String(method)}`);
 }
 
 export async function refreshTokens(refreshToken: string): Promise<StoredTokens> {
@@ -292,7 +300,7 @@ export async function ensureAuthenticated(callbacks?: LoginCallbacks, options?: 
       saveStoredAuth(refreshed);
       return { status: "refreshed", email: refreshed.profile?.email ?? null };
     } catch {
-      // fall through to browser login
+      // Fall through to the user-selected interactive login flow.
     }
   }
 
@@ -302,22 +310,22 @@ export async function ensureAuthenticated(callbacks?: LoginCallbacks, options?: 
   }
 
   const result = stored
-    ? await replaceCurrentAccount(stored, callbacks, options?.requireSameAccount === true)
-    : await login(callbacks);
+    ? await replaceCurrentAccount(stored, callbacks, options?.requireSameAccount === true, options?.method)
+    : await login(callbacks, options);
   return { status: "logged_in", email: result.profile?.email ?? null };
 }
 
-export async function login(callbacks?: LoginCallbacks | ((msg: string) => void)): Promise<LoginResult> {
+export async function login(callbacks?: LoginCallbacks | ((msg: string) => void), options?: LoginOptions): Promise<LoginResult> {
   if (hasConfiguredCredentials()) {
     throw new AuthError("OpenAI is already authenticated. Use `/login openai add` to connect another account.");
   }
-  return addAccount(callbacks);
+  return addAccount(callbacks, options);
 }
 
-export async function addAccount(callbacks?: LoginCallbacks | ((msg: string) => void)): Promise<LoginResult> {
+export async function addAccount(callbacks?: LoginCallbacks | ((msg: string) => void), options?: LoginOptions): Promise<LoginResult> {
   const cbs = typeof callbacks === "function" ? { onProgress: callbacks } : callbacks ?? {};
 
-  const token = await runBrowserOAuth(cbs);
+  const token = await runOAuth(cbs, options?.method);
   const auth = await buildStoredAuth(token, "oauth");
 
   const pool = loadStoredAuthPool();
@@ -383,24 +391,25 @@ async function replaceCurrentAccount(
   expected: StoredOpenAIAuth,
   callbacks?: LoginCallbacks,
   requireSameAccount = false,
+  method: LoginOptions["method"] = "browser",
 ): Promise<LoginResult> {
   if (requireSameAccount && !hasStableAccountIdentity(expected)) {
     throw new AuthError("Cannot safely re-authenticate an active OpenAI turn because the current account identity is unknown.");
   }
 
-  const token = await runBrowserOAuth(callbacks ?? {});
-  const browserAuth = await buildStoredAuth(token, "oauth");
-  if (hasStableAccountIdentity(expected) && !accountsRepresentSameIdentity(expected, browserAuth)) {
+  const token = await runOAuth(callbacks ?? {}, method);
+  const replacementAuth = await buildStoredAuth(token, "oauth");
+  if (hasStableAccountIdentity(expected) && !accountsRepresentSameIdentity(expected, replacementAuth)) {
     throw new AuthError(
       "Reauthentication returned a different OpenAI account. Sign in with the current account, or use `/login openai add` after active OpenAI turns finish.",
     );
   }
-  if (requireSameAccount && !hasStableAccountIdentity(browserAuth)) {
+  if (requireSameAccount && !hasStableAccountIdentity(replacementAuth)) {
     throw new AuthError("OpenAI did not return enough account information to safely resume active turns.");
   }
-  const auth = preserveCurrentAccountScope(expected, browserAuth);
+  const auth = preserveCurrentAccountScope(expected, replacementAuth);
 
-  // Reload after browser OAuth: active requests may have refreshed the same
+  // Reload after interactive OAuth: active requests may have refreshed the same
   // account while the callback was pending. Account mutations are blocked by
   // the handler, but verify that invariant before replacing anything on disk.
   const pool = loadStoredAuthPool();

@@ -66,6 +66,18 @@ Run the one-time login to connect a model provider account:
 exocortexd login
 ```
 
+Browser OAuth is the default. On a remote or headless machine, use OpenAI's
+code login flow instead; open the displayed URL on any device and enter the
+one-time code:
+
+```bash
+exocortexd login openai code
+```
+
+The same choices are available in the TUI as `/login openai browser` and
+`/login openai code`. Use `/login openai add code` to add another account
+from a headless machine.
+
 #### Launch
 
 ```bash

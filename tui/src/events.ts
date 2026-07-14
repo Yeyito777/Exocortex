@@ -337,7 +337,18 @@ export function handleEvent(
         } catch {
           pushSystemMessage(state, "Could not automatically open a browser. Paste this URL into a browser instead:", theme.warning);
           pushSystemMessage(state, event.openUrl, theme.muted);
+          pushSystemMessage(state, "On a remote or headless machine, use /login openai code instead.", theme.warning);
         }
+      }
+      if (event.deviceCode) {
+        const minutes = Math.round(event.deviceCode.expiresInSeconds / 60);
+        pushSystemMessage(state, [
+          "OpenAI code authorization:",
+          `1. Open ${event.deviceCode.verificationUrl} in any browser and sign in.`,
+          `2. Enter this one-time code: ${event.deviceCode.userCode}`,
+          `The code expires in ${minutes} minutes.`,
+          "Continue only if you started this login in Exocortex.",
+        ].join("\n"), theme.muted);
       }
       break;
 

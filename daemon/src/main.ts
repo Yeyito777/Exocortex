@@ -6,7 +6,7 @@
  *
  * Usage:
  *   bun run src/main.ts          Start the daemon
- *   bun run src/main.ts login [provider]    Authenticate a provider
+ *   bun run src/main.ts login [provider] [browser|code]    Authenticate a provider
  *   bun run src/main.ts prepare-restart     Save/interrupt streams before service restart
  */
 

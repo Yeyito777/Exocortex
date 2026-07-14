@@ -731,6 +731,21 @@ describe("/login", () => {
       action: "remove",
       target: "user@example.com",
     });
+    expect(tryCommand("/login openai add code", state)).toEqual({
+      type: "login",
+      provider: "openai",
+      action: "add",
+      method: "code",
+    });
+  });
+
+  test("returns explicit browser and headless code login methods with no aliases", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    expect(tryCommand("/login openai browser", state)).toEqual({ type: "login", provider: "openai", method: "browser" });
+    expect(tryCommand("/login openai code", state)).toEqual({ type: "login", provider: "openai", method: "code" });
+    expect(tryCommand("/login openai device", state)).toEqual({ type: "handled" });
   });
 
   test("autocompletes OpenAI login lifecycle subcommands", () => {
@@ -738,7 +753,8 @@ describe("/login", () => {
     state.providerRegistry = structuredClone(providers);
 
     const args = getCommandArgs(state);
-    expect(args["/login openai"].map((item) => item.name)).toEqual(["add", "remove"]);
+    expect(args["/login openai"].map((item) => item.name)).toEqual(["browser", "code", "add", "remove"]);
+    expect(args["/login openai add"].map((item) => item.name)).toEqual(["browser", "code"]);
   });
 
   test("returns OpenAI account commands", () => {

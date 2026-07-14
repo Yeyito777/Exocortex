@@ -143,7 +143,7 @@ async function startCallbackServer(
   };
 }
 
-async function exchangeCode(code: string, verifier: string, redirectUri: string): Promise<OpenAITokenResponse> {
+export async function exchangeOpenAIAuthorizationCode(code: string, verifier: string, redirectUri: string): Promise<OpenAITokenResponse> {
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     client_id: OPENAI_AUTH_CLIENT_ID,
@@ -202,11 +202,12 @@ export async function runOpenAIBrowserOAuth(callbacks?: LoginCallbacks): Promise
     if (opened === false) {
       say("Could not automatically open a browser. Paste this URL into a browser instead:");
       say(authUrl);
+      say("On a remote or headless machine, cancel this flow and use the OpenAI code login instead.");
     }
 
     const { code } = await waitForCallback();
     say("Exchanging OpenAI authorization code...");
-    return await exchangeCode(code, verifier, redirectUri);
+    return await exchangeOpenAIAuthorizationCode(code, verifier, redirectUri);
   } finally {
     await shutdown();
   }

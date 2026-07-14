@@ -43,6 +43,16 @@ Then authenticate (one-time):
 exocortexd login
 ```
 
+On a remote or headless machine, use the OpenAI code login flow so no
+localhost browser callback or SSH port forwarding is required:
+
+```bash
+exocortexd login openai code
+```
+
+In the TUI, the equivalent command is `/login openai code` (or
+`/login openai add code` for another account).
+
 Launch the TUI:
 
 ```bash
