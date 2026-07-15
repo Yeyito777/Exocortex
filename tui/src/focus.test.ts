@@ -699,6 +699,74 @@ describe("sidebar top shortcuts", () => {
   });
 });
 
+describe("conversation activity shortcuts", () => {
+  test("t opens the most recently completed conversation outside the subagents tree", () => {
+    const state = createInitialState();
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [
+      folder("subagents", 1, { name: " SubAgents " }),
+      folder("nested-agents", 2, { parentId: "subagents" }),
+      folder("work", 3),
+    ];
+    state.sidebar.conversations = [
+      conversation("older-completed", 1, { unread: true, updatedAt: 100 }),
+      conversation("streaming", 2, { streaming: true, unread: true, updatedAt: 400 }),
+      conversation("direct-agent", 3, { folderId: "subagents", unread: true, updatedAt: 600 }),
+      conversation("nested-agent", 4, { folderId: "nested-agents", unread: true, updatedAt: 700 }),
+      conversation("latest-completed", 5, { folderId: "work", unread: true, updatedAt: 300 }),
+    ];
+
+    const result = handleFocusedKey({ type: "char", char: "t" }, state);
+
+    expect(result).toEqual({ type: "load_conversation", convId: "latest-completed" });
+    expect(state.sidebar.open).toBe(false);
+    expect(state.panelFocus).toBe("chat");
+    expect(state.chatFocus).toBe("history");
+    expect(state.sidebar.currentFolderId).toBe("work");
+    expect(state.sidebar.selectedId).toBe("latest-completed");
+  });
+
+  test("Shift+T opens the most recently updated streaming conversation outside the subagents tree", () => {
+    const state = createInitialState();
+    state.vim.mode = "normal";
+    state.sidebar.folders = [
+      folder("subagents", 1, { name: "subagents" }),
+      folder("work", 2),
+    ];
+    state.sidebar.conversations = [
+      conversation("older-stream", 1, { streaming: true, updatedAt: 100 }),
+      conversation("completed", 2, { unread: true, updatedAt: 500 }),
+      conversation("agent-stream", 3, { folderId: "subagents", streaming: true, updatedAt: 700 }),
+      conversation("latest-stream", 4, { folderId: "work", streaming: true, updatedAt: 300 }),
+    ];
+
+    const result = handleFocusedKey({ type: "char", char: "T" }, state);
+
+    expect(result).toEqual({ type: "load_conversation", convId: "latest-stream" });
+    expect(state.sidebar.open).toBe(false);
+    expect(state.panelFocus).toBe("chat");
+    expect(state.chatFocus).toBe("prompt");
+    expect(state.sidebar.currentFolderId).toBe("work");
+    expect(state.sidebar.selectedId).toBe("latest-stream");
+  });
+
+  test("t and Shift+T remain text input in insert mode", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [
+      conversation("completed", 1, { unread: true, updatedAt: 100 }),
+      conversation("streaming", 2, { streaming: true, updatedAt: 200 }),
+    ];
+
+    expect(handleFocusedKey({ type: "char", char: "t" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({ type: "handled" });
+
+    expect(state.inputBuffer).toBe("tT");
+    expect(state.sidebar.open).toBe(false);
+    expect(state.panelFocus).toBe("chat");
+  });
+});
+
 describe("sidebar folders", () => {
   test("visual f opens a create-folder prompt for the selected conversations", () => {
     const state = createInitialState();

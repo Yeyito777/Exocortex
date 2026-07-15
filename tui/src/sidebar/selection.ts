@@ -6,6 +6,7 @@ import {
   getActiveSidebarSearchQuery,
   getVisibleConversationIndicesForQuery,
 } from "../sidebarsearch";
+import { subagentsFolderIds } from "./folders";
 
 export function focusSidebarItem(sidebar: SidebarState, item: SidebarSelectableItem | null): void {
   sidebar.selectedItem = item;
@@ -58,6 +59,26 @@ export function rememberEnteredConversation(
 export function focusPreviousEnteredConversation(sidebar: SidebarState): boolean {
   if (!sidebar.previousEnteredId) return false;
   return focusConversationById(sidebar, sidebar.previousEnteredId);
+}
+
+/** Focus the most recently updated completed or streaming non-subagent conversation. */
+export function focusLatestActivityConversation(
+  sidebar: SidebarState,
+  status: "completed" | "streaming",
+): boolean {
+  const subagentFolderIdSet = subagentsFolderIds(sidebar.folders);
+  let latest: ConversationSummary | null = null;
+
+  for (const conv of sidebar.conversations) {
+    if (conv.folderId && subagentFolderIdSet.has(conv.folderId)) continue;
+    const matchesStatus = status === "streaming"
+      ? conv.streaming
+      : conv.unread && !conv.streaming;
+    if (!matchesStatus) continue;
+    if (!latest || conv.updatedAt > latest.updatedAt) latest = conv;
+  }
+
+  return latest ? focusConversationById(sidebar, latest.id) : false;
 }
 
 export function selectedDisplayRow(displayRows: DisplayRow[], sidebar: SidebarState): number {

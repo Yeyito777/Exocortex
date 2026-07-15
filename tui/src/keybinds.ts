@@ -69,6 +69,8 @@ export type Action =
   | "sidebar_next"
   | "sidebar_prev"
   | "sidebar_focus_previous"
+  | "sidebar_focus_latest_completed"
+  | "sidebar_focus_latest_streaming"
   | "sidebar_visible_top"
   | "sidebar_visible_middle"
   | "sidebar_visible_bottom"
@@ -127,9 +129,11 @@ const BINDS: Record<string, Action> = {
   // Display toggles
   "ctrl-o":       "toggle_tool_output",
 
-  // Sidebar quick nav (Shift+J/K, Ctrl+1-9, and Ctrl+- from non-typing contexts)
+  // Sidebar quick nav (normal mode for character bindings)
   "char:J":     "sidebar_next",
   "char:K":     "sidebar_prev",
+  "char:t":     "sidebar_focus_latest_completed",
+  "char:T":     "sidebar_focus_latest_streaming",
   "f14":        "sidebar_focus_top_1",
   "f15":        "sidebar_focus_top_2",
   "f16":        "sidebar_focus_top_3",
