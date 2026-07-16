@@ -14,7 +14,7 @@ import type { UserMessage } from "./messages";
 import type { RenderState, EditMessageItem } from "./state";
 import { EDIT_INDEX_INSTRUCTIONS, EDIT_INDEX_QUEUED, focusPrompt } from "./state";
 import { computeEditMessageOverlayLayout, type EditMessageOverlayLayout } from "./editmessage-layout";
-import { isNewConversationQueuedMessage } from "./queue";
+import { isNewConversationQueuedMessage, queuedMessagesInDisplayOrder } from "./queue";
 
 // ── Open modal ────────────────────────────────────────────────────
 
@@ -90,9 +90,11 @@ export function openEditMessageModal(state: RenderState): void {
   }
 
   // Collect queued messages
-  const queued = state.convId
-    ? state.queuedMessages.filter(qm => qm.convId === state.convId)
-    : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId);
+  const queued = queuedMessagesInDisplayOrder(
+    state.convId
+      ? state.queuedMessages.filter(qm => qm.convId === state.convId)
+      : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId),
+  );
   for (const qm of queued) {
     items.push({
       userMessageIndex: EDIT_INDEX_QUEUED,

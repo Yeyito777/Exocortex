@@ -46,6 +46,25 @@ export function queueTimingLabel(message: QueuedMessage): string {
   return message.timing === "next-turn" ? "queued: next turn" : "queued: message end";
 }
 
+function queueDisplayBucket(message: QueuedMessage): number {
+  if (!isGlobalIdleQueuedMessage(message)) {
+    return message.timing === "next-turn" ? 0 : 1;
+  }
+  return queueWaitTargetOf(message).type === "global" ? 3 : 2;
+}
+
+/**
+ * Group queued messages by when they can run while retaining FIFO order inside
+ * each group: next turn, message end, specific idle target, then global idle.
+ * This is deliberately display-only; the daemon's canonical queue stays in
+ * insertion order for scheduling and persistence.
+ */
+export function queuedMessagesInDisplayOrder(messages: readonly QueuedMessage[]): QueuedMessage[] {
+  const buckets: QueuedMessage[][] = [[], [], [], []];
+  for (const message of messages) buckets[queueDisplayBucket(message)].push(message);
+  return buckets.flat();
+}
+
 export function enqueueGlobalIdleMessage(
   state: RenderState,
   convId: string,

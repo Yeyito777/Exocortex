@@ -109,6 +109,55 @@ describe("older history loading status", () => {
 });
 
 describe("queued message rendering", () => {
+  test("groups queue display by timing priority while preserving FIFO within each bucket", () => {
+    const state = {
+      messages: [],
+      pendingAI: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: "conv-1",
+      queuedMessages: [
+        { convId: "conv-1", text: "global idle first", timing: "message-end", source: "global-idle" },
+        {
+          convId: "conv-1",
+          text: "specific idle first",
+          timing: "message-end",
+          source: "global-idle",
+          waitTarget: { type: "conversation", convId: "dependency", label: "Dependency" },
+        },
+        { convId: "conv-1", text: "message end first", timing: "message-end", source: "daemon" },
+        { convId: "conv-1", text: "next turn first", timing: "next-turn", source: "daemon" },
+        {
+          convId: "conv-1",
+          text: "specific idle second",
+          timing: "message-end",
+          source: "global-idle",
+          waitTarget: { type: "folder", folderId: "folder", label: "Folder" },
+        },
+        { convId: "conv-1", text: "next turn second", timing: "next-turn", source: "daemon" },
+        { convId: "conv-1", text: "message end second", timing: "message-end", source: "daemon" },
+        { convId: "conv-1", text: "global idle second", timing: "message-end", source: "global-idle" },
+      ],
+    } as any;
+
+    const rendered = buildMessageLines(state, 80).lines.map(stripAnsi);
+    const queuedTextOrder = rendered
+      .filter(line => /(?:next turn|message end|specific idle|global idle) (?:first|second)/.test(line))
+      .map(line => line.trim());
+
+    expect(queuedTextOrder).toEqual([
+      "next turn first",
+      "next turn second",
+      "message end first",
+      "message end second",
+      "specific idle first",
+      "specific idle second",
+      "global idle first",
+      "global idle second",
+    ]);
+  });
+
   test("uses a distinct label for daemon-owned global idle queue entries", () => {
     const state = {
       messages: [],
