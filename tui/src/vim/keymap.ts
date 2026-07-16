@@ -32,6 +32,12 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "normal", context: "prompt", key: "gg", command: { type: "action", action: "scroll_top" } },
   { mode: "normal", context: "prompt", key: "G",  command: { type: "action", action: "scroll_bottom" } },
 
+  // Chat message navigation (focuses history from the prompt)
+  { mode: "normal", context: "prompt", key: "{",  command: { type: "action", action: "history_prev_message" } },
+  { mode: "normal", context: "prompt", key: "}",  command: { type: "action", action: "history_next_message" } },
+  { mode: "normal", context: "prompt", key: "[",  command: { type: "action", action: "history_prev_ai_message" } },
+  { mode: "normal", context: "prompt", key: "]",  command: { type: "action", action: "history_next_ai_message" } },
+
   // Mode changes
   { mode: "normal", context: "prompt", key: "i",  command: { type: "mode_change", mode: "insert", cursor: "before" } },
   { mode: "normal", context: "prompt", key: "a",  command: { type: "mode_change", mode: "insert", cursor: "after" } },
@@ -83,6 +89,8 @@ const KEYMAP: KeymapEntry[] = [
   // Message navigation
   { mode: "normal", context: "history", key: "{",  command: { type: "action", action: "history_prev_message" } },
   { mode: "normal", context: "history", key: "}",  command: { type: "action", action: "history_next_message" } },
+  { mode: "normal", context: "history", key: "[",  command: { type: "action", action: "history_prev_ai_message" } },
+  { mode: "normal", context: "history", key: "]",  command: { type: "action", action: "history_next_ai_message" } },
 
   // Yank
   { mode: "normal", context: "history", key: "y",  command: { type: "operator", name: "yank" } },

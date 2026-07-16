@@ -22,6 +22,7 @@ import { keyString, resetPending } from "./vim/types";
 import { resolveTextObject, isTextObjectKey } from "./vim/textobjects";
 import { appendPromptQuoteBlock } from "./promptstate";
 import { nextGraphemeEnd } from "./graphemes";
+import { findFinalAssistantTextRows } from "./historymessage";
 import {
   stripAnsi, contentBounds, clampCol, clampCursor,
   logicalLineRange,
@@ -60,6 +61,44 @@ function getUserMessageBounds(state: RenderState): RenderedMessageBound[] {
   return state.historyMessageBounds.filter((bound) => bound.role === "user");
 }
 
+type RenderedAIResponseBound = RenderedMessageBound & { responseStart: number };
+
+function getAIResponseBounds(state: RenderState): RenderedAIResponseBound[] {
+  const responses: RenderedAIResponseBound[] = [];
+  for (const bound of state.historyMessageBounds) {
+    if (bound.role !== "assistant") continue;
+    const finalText = findFinalAssistantTextRows(state, bound.contentStart, bound.contentEnd);
+    if (finalText) responses.push({ ...bound, responseStart: finalText.startRow });
+  }
+  return responses;
+}
+
+function isMessageNavigationAction(action: Action): boolean {
+  return action === "history_prev_message"
+    || action === "history_next_message"
+    || action === "history_prev_ai_message"
+    || action === "history_next_ai_message";
+}
+
+/**
+ * Prompt-focused message navigation has no visible history cursor to start from.
+ * Start at the visible bottom, matching where explicitly focusing history would
+ * place the cursor. Backward jumps use the position just after that row so a
+ * message beginning on the bottom edge is included.
+ */
+function messageNavigationOriginRow(action: Action, state: RenderState, cursorRow: number): number {
+  if (state.chatFocus !== "prompt" || !isMessageNavigationAction(action)) return cursorRow;
+  if (state.layout.messageAreaHeight <= 0 || state.historyLines.length === 0) return cursorRow;
+
+  const viewStart = getViewStart(state);
+  const viewEnd = Math.min(
+    state.historyLines.length - 1,
+    viewStart + state.layout.messageAreaHeight - 1,
+  );
+  const movingBackward = action === "history_prev_message" || action === "history_prev_ai_message";
+  return movingBackward ? viewEnd + 1 : viewEnd;
+}
+
 function jumpHistoryCursorToRow(state: RenderState, row: number): void {
   state.historyCursor = { row, col: clampCol(0, state.historyLines, row) };
   state.historyCurswant = null;
@@ -94,6 +133,7 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
   if (lines.length === 0) return true;
 
   const wrapCont = state.historyWrapContinuation;
+  const navigationRow = messageNavigationOriginRow(action, state, cur.row);
 
   switch (action) {
     case "history_left":    state.historyCursor = charLeft(cur, lines); resetHistoryCurswant(state); break;
@@ -118,7 +158,7 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
       // at that start goes to the previous user message's start.
       let target = -1;
       for (let i = bounds.length - 1; i >= 0; i--) {
-        if (bounds[i].contentStart < cur.row) { target = i; break; }
+        if (bounds[i].contentStart < navigationRow) { target = i; break; }
       }
       if (target >= 0) jumpHistoryCursorToRow(state, bounds[target].contentStart);
       break;
@@ -131,16 +171,41 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
       // anywhere inside the last user message, jump to the conversation bottom.
       let target = -1;
       for (let i = 0; i < bounds.length; i++) {
-        if (bounds[i].contentStart > cur.row) { target = i; break; }
+        if (bounds[i].contentStart > navigationRow) { target = i; break; }
       }
       if (target >= 0) {
         jumpHistoryCursorToRow(state, bounds[target].contentStart);
       } else {
         const lastBound = bounds[bounds.length - 1];
-        if (isRowWithinBound(cur.row, lastBound)) {
+        if (isRowWithinBound(navigationRow, lastBound)) {
           state.historyCursor = bufferEnd(lines);
           resetHistoryCurswant(state);
         }
+      }
+      break;
+    }
+    case "history_prev_ai_message": {
+      const bounds = getAIResponseBounds(state);
+      let target = -1;
+      for (let i = bounds.length - 1; i >= 0; i--) {
+        if (bounds[i].responseStart < navigationRow) { target = i; break; }
+      }
+      if (target >= 0) jumpHistoryCursorToRow(state, bounds[target].responseStart);
+      break;
+    }
+    case "history_next_ai_message": {
+      const bounds = getAIResponseBounds(state);
+      let target = -1;
+      for (let i = 0; i < bounds.length; i++) {
+        if (bounds[i].responseStart > navigationRow) { target = i; break; }
+      }
+      if (target >= 0) {
+        jumpHistoryCursorToRow(state, bounds[target].responseStart);
+      } else {
+        // Unlike forward user-message navigation, ] always falls through to
+        // the conversation end when there is no later AI response text.
+        state.historyCursor = bufferEnd(lines);
+        resetHistoryCurswant(state);
       }
       break;
     }

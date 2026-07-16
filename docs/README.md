@@ -107,6 +107,8 @@ Commands flow client → daemon. Events flow daemon → client.
 | `Escape`         | Normal mode (vim)                   |
 | `i` / `a`        | Insert mode (vim)                   |
 | `v` / `V`        | Visual / visual-line mode           |
+| `{` / `}`        | In chat normal mode, focus history and jump among user-message starts |
+| `[` / `]`        | In chat normal mode, focus history and jump among final AI-response text blocks (`]` falls through to the end) |
 | `;`               | In history visual mode, quote selection into the draft and focus the following line |
 | `/new`           | Start a new conversation            |
 | `/model <provider> <model>` | Switch provider/model for the current conversation |

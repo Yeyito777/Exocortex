@@ -13,7 +13,7 @@
 
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
-import { focusPrompt } from "./state";
+import { focusHistory, focusPrompt } from "./state";
 import type { Action } from "./keybinds";
 import type { KeyResult } from "./focus";
 import {
@@ -32,6 +32,7 @@ import {
   handleHistoryFind as historyFindHandler,
   handleHistoryTextObject as historyTextObjectHandler,
   handleHistoryCursorAction,
+  placeAtVisibleBottom,
   scrollHalfPageWithCursor, scrollFullPageWithCursor, scrollLineWithStickyCursor,
 } from "./historycursor";
 import { movePromptCursorVerticalWithCurswant } from "./promptline";
@@ -207,7 +208,17 @@ export function processVimKey(
 function handleVimAction(action: string, state: RenderState): KeyResult {
   // History cursor actions (including visual yank)
   if ((action as Action).startsWith("history_")) {
+    const focusHistoryAfterMessageJump = state.chatFocus === "prompt"
+      && (action === "history_prev_message"
+        || action === "history_next_message"
+        || action === "history_prev_ai_message"
+        || action === "history_next_ai_message");
+    if (focusHistoryAfterMessageJump) {
+      state.historyCursor = placeAtVisibleBottom(state);
+      state.historyCurswant = null;
+    }
     const result = handleHistoryCursorAction(action as Action, state);
+    if (focusHistoryAfterMessageJump) focusHistory(state);
     if (action === "history_append_selection") focusPrompt(state);
     return result;
   }

@@ -17,6 +17,7 @@ import type { VimContext } from "./types";
 import { keyString, resetPending } from "./types";
 import { copyToClipboard } from "./clipboard";
 import { stripAnsi, contentBounds, ensureCursorVisible, joinLogicalLines } from "../historycursor";
+import { findFinalAssistantTextRows, trimRowsToContent } from "../historymessage";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -96,55 +97,6 @@ function selectPromptMessage(modifier: "i" | "a", state: RenderState): Handled {
 }
 
 // ── History helpers ────────────────────────────────────────────────
-
-function trimRowsToContent(state: RenderState, startRow: number, endRow: number): { startRow: number; endRow: number } | null {
-  const lines = state.historyLines;
-  let start = startRow;
-  let end = endRow;
-  while (start < end && stripAnsi(lines[start]).trim() === "") start++;
-  while (end > start && stripAnsi(lines[end - 1]).trim() === "") end--;
-  return start < end ? { startRow: start, endRow: end } : null;
-}
-
-function findFinalAssistantTextRows(state: RenderState, startRow: number, endRow: number): { startRow: number; endRow: number } | null {
-  const anchors = state.historyLineAnchors ?? [];
-  let currentOwner: object | null = null;
-  let currentStart = -1;
-  let currentEnd = -1;
-  let finalStart = -1;
-  let finalEnd = -1;
-
-  const finishCurrent = () => {
-    if (currentStart >= 0 && currentEnd > currentStart) {
-      finalStart = currentStart;
-      finalEnd = currentEnd;
-    }
-    currentOwner = null;
-    currentStart = -1;
-    currentEnd = -1;
-  };
-
-  for (let row = startRow; row < endRow; row++) {
-    const anchor = anchors[row];
-    const owner = anchor?.owner as ({ type?: string } & object) | undefined;
-    const isTextBlock = anchor?.segment === "assistant_block" && owner?.type === "text";
-    if (!isTextBlock || !owner) {
-      finishCurrent();
-      continue;
-    }
-
-    if (currentOwner !== owner) {
-      finishCurrent();
-      currentOwner = owner;
-      currentStart = row;
-    }
-    currentEnd = row + 1;
-  }
-  finishCurrent();
-
-  if (finalStart >= 0 && finalEnd > finalStart) return trimRowsToContent(state, finalStart, finalEnd);
-  return null;
-}
 
 /**
  * Resolve the effective row range for a message in history.

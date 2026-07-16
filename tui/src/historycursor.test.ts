@@ -39,6 +39,8 @@ function setupHistoryState(): RenderState {
   state.historyLineAnchors = lineAnchors;
   state.layout.totalLines = lines.length;
   state.layout.messageAreaHeight = lines.length;
+  state.chatFocus = "history";
+  state.vim.mode = "normal";
 
   return state;
 }
@@ -126,6 +128,179 @@ describe("history brace navigation", () => {
     state.historyCursor = { row: lastUserBound!.contentEnd - 1, col: 0 };
     applyHistoryAction("history_next_message", state);
 
+    expect(state.historyCursor.row).toBe(state.historyLines.length - 1);
+  });
+
+  test("{ from prompt normal mode focuses history and navigates user messages", () => {
+    const state = setupHistoryState();
+    const userBounds = boundsByRole(state, "user");
+    state.layout.messageAreaHeight = 3;
+    state.historyCursor = { row: 0, col: 0 };
+    state.inputBuffer = "draft";
+    state.cursorPos = 2;
+    state.chatFocus = "prompt";
+    state.vim.mode = "normal";
+
+    expect(handleFocusedKey({ type: "char", char: "{" }, state)).toEqual({ type: "handled" });
+    expect(state.historyCursor.row).toBe(userBounds[1].contentStart);
+
+    expect(handleFocusedKey({ type: "char", char: "{" }, state)).toEqual({ type: "handled" });
+    expect(state.historyCursor.row).toBe(userBounds[0].contentStart);
+
+    expect(handleFocusedKey({ type: "char", char: "}" }, state)).toEqual({ type: "handled" });
+    expect(state.historyCursor.row).toBe(userBounds[1].contentStart);
+    expect(state.chatFocus).toBe("history");
+    expect(state.vim.mode).toBe("normal");
+    expect(state.inputBuffer).toBe("draft");
+    expect(state.cursorPos).toBe(2);
+  });
+
+  test("} from prompt normal mode focuses history at the end when no user message follows", () => {
+    const state = setupHistoryState();
+    state.layout.messageAreaHeight = 3;
+    state.historyCursor = { row: 0, col: 0 };
+    state.chatFocus = "prompt";
+    state.vim.mode = "normal";
+
+    expect(handleFocusedKey({ type: "char", char: "}" }, state)).toEqual({ type: "handled" });
+
+    expect(state.chatFocus).toBe("history");
+    expect(state.historyCursor.row).toBe(state.historyLines.length - 1);
+  });
+});
+
+describe("history bracket navigation", () => {
+  test("[ and ] land on the final assistant text instead of thinking or tool blocks", () => {
+    const state = setupRenderedHistory([
+      { role: "user", text: "Please inspect this", metadata: null },
+      {
+        role: "assistant",
+        blocks: [
+          { type: "thinking", text: "Reasoning before the tool" },
+          { type: "text", text: "I'll inspect it." },
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: {}, summary: "inspect" },
+          { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "result", isError: false },
+          { type: "thinking", text: "Reasoning after the tool" },
+          { type: "text", text: "Final assistant response" },
+        ],
+        metadata: null,
+      },
+      { role: "user", text: "Follow-up", metadata: null },
+    ], 80);
+    const userBounds = boundsByRole(state, "user");
+    const assistantBound = boundsByRole(state, "assistant")[0];
+    const finalResponseRow = state.historyLines.findIndex((line) => stripAnsi(line).includes("Final assistant response"));
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+
+    expect(finalResponseRow).toBeGreaterThan(assistantBound.contentStart);
+
+    state.historyCursor = { row: userBounds[0].contentStart, col: 0 };
+    applyHistoryAction("history_next_ai_message", state);
+    expect(state.historyCursor.row).toBe(finalResponseRow);
+
+    state.historyCursor = { row: userBounds[1].contentStart, col: 0 };
+    applyHistoryAction("history_prev_ai_message", state);
+    expect(state.historyCursor.row).toBe(finalResponseRow);
+  });
+
+  test("AI navigation skips assistant messages that have no response text", () => {
+    const state = setupRenderedHistory([
+      { role: "user", text: "Start", metadata: null },
+      {
+        role: "assistant",
+        blocks: [
+          { type: "thinking", text: "Tool-only reasoning" },
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: {}, summary: "inspect" },
+        ],
+        metadata: null,
+      },
+      { role: "user", text: "Continue", metadata: null },
+      {
+        role: "assistant",
+        blocks: [{ type: "text", text: "Actual response" }],
+        metadata: null,
+      },
+    ], 80);
+    const firstUser = boundsByRole(state, "user")[0];
+    const actualResponseRow = state.historyLines.findIndex((line) => stripAnsi(line).includes("Actual response"));
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.historyCursor = { row: firstUser.contentStart, col: 0 };
+
+    applyHistoryAction("history_next_ai_message", state);
+
+    expect(state.historyCursor.row).toBe(actualResponseRow);
+  });
+
+  test("] jumps to the next AI-response text, skipping user messages", () => {
+    const state = setupHistoryState();
+    const aiBounds = boundsByRole(state, "assistant");
+
+    state.historyCursor = { row: aiBounds[0].contentStart, col: 0 };
+    applyHistoryAction("history_next_ai_message", state);
+
+    expect(state.historyCursor.row).toBe(aiBounds[1].contentStart);
+  });
+
+  test("[ jumps to the previous AI-response text", () => {
+    const state = setupHistoryState();
+    const firstAI = boundsByRole(state, "assistant")[0];
+    const secondUser = boundsByRole(state, "user")[1];
+
+    state.historyCursor = { row: secondUser.contentStart, col: 0 };
+    applyHistoryAction("history_prev_ai_message", state);
+
+    expect(state.historyCursor.row).toBe(firstAI.contentStart);
+  });
+
+  test("] jumps to the conversation end when there is no later AI response", () => {
+    const state = setupHistoryState();
+    const lastAI = boundsByRole(state, "assistant").at(-1)!;
+    state.historyLines.push("trailing line after the final AI bound");
+    state.layout.totalLines = state.historyLines.length;
+    state.layout.messageAreaHeight = state.historyLines.length;
+    state.historyCursor = { row: lastAI.contentStart, col: 0 };
+
+    applyHistoryAction("history_next_ai_message", state);
+
+    expect(state.historyCursor.row).toBe(state.historyLines.length - 1);
+  });
+
+  test("[ from prompt normal mode focuses history and navigates AI messages", () => {
+    const state = setupHistoryState();
+    const aiBounds = boundsByRole(state, "assistant");
+    state.layout.messageAreaHeight = 3;
+    state.historyCursor = { row: 0, col: 0 };
+    state.inputBuffer = "draft";
+    state.cursorPos = 2;
+    state.chatFocus = "prompt";
+    state.vim.mode = "normal";
+
+    expect(handleFocusedKey({ type: "char", char: "[" }, state)).toEqual({ type: "handled" });
+    expect(state.historyCursor.row).toBe(aiBounds[1].contentStart);
+
+    expect(handleFocusedKey({ type: "char", char: "[" }, state)).toEqual({ type: "handled" });
+    expect(state.historyCursor.row).toBe(aiBounds[0].contentStart);
+
+    expect(handleFocusedKey({ type: "char", char: "]" }, state)).toEqual({ type: "handled" });
+    expect(state.historyCursor.row).toBe(aiBounds[1].contentStart);
+    expect(state.chatFocus).toBe("history");
+    expect(state.vim.mode).toBe("normal");
+    expect(state.inputBuffer).toBe("draft");
+    expect(state.cursorPos).toBe(2);
+  });
+
+  test("] from prompt normal mode focuses history at the conversation end", () => {
+    const state = setupHistoryState();
+    state.layout.messageAreaHeight = 3;
+    state.historyCursor = { row: 0, col: 0 };
+    state.chatFocus = "prompt";
+    state.vim.mode = "normal";
+
+    expect(handleFocusedKey({ type: "char", char: "]" }, state)).toEqual({ type: "handled" });
+
+    expect(state.chatFocus).toBe("history");
     expect(state.historyCursor.row).toBe(state.historyLines.length - 1);
   });
 });
