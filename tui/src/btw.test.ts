@@ -1,0 +1,140 @@
+import { describe, expect, test } from "bun:test";
+import { renderBtwPanel } from "./btwpanel";
+import { tryCommand } from "./commands";
+import { handleEvent } from "./events";
+import { handleFocusedKey } from "./focus";
+import { stripAnsi } from "./historycursor";
+import { createInitialState, type BtwPanelState } from "./state";
+import { termWidth } from "./textwidth";
+
+function panelState(overrides: Partial<BtwPanelState> = {}): BtwPanelState {
+  return {
+    sessionId: "btw-1",
+    sourceConvId: "conv-1",
+    query: "What does this code do?",
+    provider: "openai",
+    model: "gpt-5.4",
+    startedAt: 100,
+    endedAt: null,
+    phase: "running",
+    text: "",
+    status: "Thinking…",
+    scrollOffset: 0,
+    maxScroll: 0,
+    viewportRows: 1,
+    ...overrides,
+  };
+}
+
+describe("/btw command", () => {
+  test("starts a one-shot query for the active conversation", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.inputBuffer = "/btw explain the latest answer";
+    state.cursorPos = state.inputBuffer.length;
+
+    expect(tryCommand(state.inputBuffer, state)).toEqual({
+      type: "btw_requested",
+      query: "explain the latest answer",
+    });
+    expect(state.inputBuffer).toBe("");
+  });
+
+  test("requires a query and an active conversation", () => {
+    const state = createInitialState();
+    expect(tryCommand("/btw", state)).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string })?.text).toContain("Usage: /btw");
+
+    state.messages = [];
+    expect(tryCommand("/btw inspect this", state)).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string })?.text).toContain("Open a conversation");
+  });
+
+  test("explicit close only requests daemon interruption when a panel exists", () => {
+    const state = createInitialState();
+    expect(tryCommand("/btw close", state)).toEqual({ type: "handled" });
+    state.btw = panelState();
+    expect(tryCommand("/btw close", state)).toEqual({ type: "btw_close_requested" });
+  });
+});
+
+describe("BTW event projection", () => {
+  test("streams, reconciles, and completes only the matching session", () => {
+    const state = createInitialState();
+    state.btw = panelState({ phase: "starting", text: "" });
+    const daemon = {} as Parameters<typeof handleEvent>[2];
+
+    handleEvent({
+      type: "btw_started",
+      sessionId: "btw-1",
+      convId: "conv-1",
+      query: "What does this code do?",
+      provider: "openai",
+      model: "gpt-5.4",
+      startedAt: 100,
+    }, state, daemon);
+    handleEvent({ type: "btw_text_chunk", sessionId: "stale", text: "wrong" }, state, daemon);
+    handleEvent({ type: "btw_text_chunk", sessionId: "btw-1", text: "partial" }, state, daemon);
+    handleEvent({ type: "btw_content", sessionId: "btw-1", text: "canonical answer" }, state, daemon);
+    handleEvent({ type: "btw_finished", sessionId: "btw-1", endedAt: 200 }, state, daemon);
+
+    expect(state.btw?.text).toBe("canonical answer");
+    expect(state.btw?.phase).toBe("complete");
+    expect(state.btw?.endedAt).toBe(200);
+  });
+
+  test("keeps errors visible until an explicit close event", () => {
+    const state = createInitialState();
+    state.btw = panelState();
+    const daemon = {} as Parameters<typeof handleEvent>[2];
+
+    handleEvent({ type: "btw_error", sessionId: "btw-1", message: "provider failed", endedAt: 200 }, state, daemon);
+    expect(state.btw?.phase).toBe("error");
+    expect(state.btw?.status).toBe("provider failed");
+
+    handleEvent({ type: "btw_closed", sessionId: "btw-1" }, state, daemon);
+    expect(state.btw).toBeNull();
+  });
+});
+
+describe("BTW foreground panel", () => {
+  test("renders above the application with query, answer, model, and close help", () => {
+    const btw = panelState({ phase: "complete", text: "**The answer** is read-only." });
+    const rendered = renderBtwPanel(btw, 100, 30);
+    expect(rendered).not.toBeNull();
+    const plain = stripAnsi(rendered!.payload);
+    expect(plain).toContain("BTW");
+    expect(plain).toContain("Gpt-5.4");
+    expect(plain).toContain("What does this code do?");
+    expect(plain).toContain("The answer");
+    expect(plain).toContain("/btw close");
+    expect(rendered!.left).toBe(2);
+  });
+
+  test("renders a visible Ctrl-Q close fallback in a tiny terminal", () => {
+    const rendered = renderBtwPanel(panelState(), 20, 6);
+    expect(rendered).not.toBeNull();
+    expect(stripAnsi(rendered!.payload)).toContain("BTW · ^Q");
+    expect(rendered!.height).toBe(1);
+  });
+
+  test("keeps every card row within a narrow terminal", () => {
+    const rendered = renderBtwPanel(panelState({ text: "A compact answer." }), 22, 10);
+    expect(rendered).not.toBeNull();
+    const rows = rendered!.payload.split(/\x1b\[\d+;\d+H/).filter(Boolean);
+    expect(rows.every(row => termWidth(stripAnsi(row)) <= rendered!.width)).toBe(true);
+  });
+
+  test("normal-mode q and insert-mode Ctrl-Q close while scrolling keys move the BTW viewport", () => {
+    const state = createInitialState();
+    state.btw = panelState({ scrollOffset: 0, maxScroll: 10, viewportRows: 5 });
+    state.vim.mode = "normal";
+
+    expect(handleFocusedKey({ type: "char", char: "k" }, state)).toEqual({ type: "handled" });
+    expect(state.btw.scrollOffset).toBe(1);
+    expect(handleFocusedKey({ type: "char", char: "q" }, state)).toEqual({ type: "btw_close" });
+
+    state.vim.mode = "insert";
+    expect(handleFocusedKey({ type: "ctrl-q" }, state)).toEqual({ type: "btw_close" });
+  });
+});

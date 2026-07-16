@@ -90,6 +90,7 @@ export type KeyResult =
   | { type: "queue_cancel" }
   | { type: "edit_message_confirm" }
   | { type: "edit_message_cancel" }
+  | { type: "btw_close" }
   | { type: "open_target"; target: string };
 
 // ── Key routing ─────────────────────────────────────────────────────
@@ -209,6 +210,37 @@ export function handleFocusedKey(
     if (er.type === "confirm") return { type: "edit_message_confirm" };
     if (er.type === "cancel")  return { type: "edit_message_cancel" };
     return { type: "handled" };
+  }
+
+  // Ctrl-Q is the always-available BTW interrupt/close key, including while the
+  // main prompt remains in insert mode. With no BTW panel it retains its normal
+  // conversation-abort behavior below.
+  if (state.btw && key.type === "ctrl-q") return { type: "btw_close" };
+
+  // The BTW card is a foreground read-only view while the ordinary prompt stays
+  // usable. In normal/navigation mode, q closes it and familiar scroll keys move
+  // its answer instead of the obscured chat history.
+  if (state.btw
+      && !isPromptTyping(state)
+      && !state.sidebar.prompt
+      && !state.sidebar.search?.barOpen
+      && !state.search?.barOpen) {
+    if (key.type === "char" && key.char === "q") return { type: "btw_close" };
+    const page = Math.max(1, state.btw.viewportRows - 1);
+    const halfPage = Math.max(1, Math.floor(state.btw.viewportRows / 2));
+    let delta = 0;
+    if (key.type === "char" && key.char === "k") delta = 1;
+    else if (key.type === "char" && key.char === "j") delta = -1;
+    else if (key.type === "up" || key.type === "ctrl-y") delta = 1;
+    else if (key.type === "down" || key.type === "ctrl-e") delta = -1;
+    else if (key.type === "ctrl-u") delta = halfPage;
+    else if (key.type === "ctrl-d") delta = -halfPage;
+    else if (key.type === "ctrl-b") delta = page;
+    else if (key.type === "ctrl-f") delta = -page;
+    if (delta !== 0) {
+      state.btw.scrollOffset = Math.max(0, Math.min(state.btw.maxScroll, state.btw.scrollOffset + delta));
+      return { type: "handled" };
+    }
   }
 
   // ── Sidebar folder prompt — intercept all keys while open ─────

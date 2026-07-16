@@ -368,6 +368,8 @@ function formatTokenSourceLabel(source: TokenUsageSource): string {
   switch (source) {
     case "conversation":
       return "conversation";
+    case "btw":
+      return "BTW";
     case "llm_complete":
       return "llm complete";
     case "title_generation":

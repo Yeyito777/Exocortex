@@ -84,19 +84,24 @@ function buildEnvironmentHeader(conversationId?: string): string {
 export interface BuildSystemPromptOptions {
   conversationInstructions?: string;
   conversationId?: string;
+  /** Restrict tool-specific prompt hints to this explicit session allowlist. */
+  toolNames?: readonly string[];
+  /** External tools are shell-backed and can be disabled for restricted sessions. */
+  includeExternalToolHints?: boolean;
+  /** Session-specific behavior placed near the top of the system prompt. */
+  wrapperNote?: string;
 }
 
 function buildPromptParts(options: BuildSystemPromptOptions & {
   includeToolHints: boolean;
   includeExternalHints: boolean;
-  wrapperNote?: string;
 }): string[] {
   const parts = [buildEnvironmentHeader(options.conversationId)];
 
   if (options.wrapperNote) parts.push(options.wrapperNote);
 
   if (options.includeToolHints) {
-    const toolHints = buildToolSystemHints();
+    const toolHints = buildToolSystemHints(options.toolNames);
     if (toolHints) parts.push(toolHints);
   }
 
@@ -114,7 +119,7 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
 export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): string {
   return buildPromptParts({
     includeToolHints: true,
-    includeExternalHints: true,
+    includeExternalHints: options.includeExternalToolHints ?? true,
     ...options,
   }).join("\n\n");
 }

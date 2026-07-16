@@ -63,6 +63,7 @@ import {
   unsubscribeExternalNotification,
   updateExternalNotificationSubscription,
 } from "./external-notifications";
+import { BtwSessionManager } from "./btw";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
@@ -73,6 +74,7 @@ export function createHandler(server: DaemonServer) {
 
   let openAIAccountMutationInFlight = false;
   let exocortexRuntime: ExocortexToolRuntime | undefined;
+  let btwManager: BtwSessionManager;
   const pendingBackgroundNotifications = new Map<string, { convId: string; completion: BackgroundTaskCompletion }>();
   configureChronoService((convId) => broadcastConversationUpdated(server, convId));
   setExternalNotificationsChangedListener((convIds) => {
@@ -127,8 +129,10 @@ export function createHandler(server: DaemonServer) {
       "* = current account",
     ].join("\n");
   };
-  const hasStreamingOpenAIConversation = (): boolean => convStore.listSummaries()
-    .some((conversation) => conversation.provider === "openai" && conversation.streaming);
+  const hasStreamingOpenAIConversation = (): boolean => (
+    convStore.listSummaries().some((conversation) => conversation.provider === "openai" && conversation.streaming)
+    || btwManager?.hasRunningProvider("openai") === true
+  );
   const rejectOpenAIAccountMutationWhileStreaming = (client: ConnectedClient, reqId?: string): boolean => {
     if (!hasStreamingOpenAIConversation()) return false;
     server.sendTo(client, {
@@ -182,6 +186,25 @@ export function createHandler(server: DaemonServer) {
       deliverPendingBackgroundNotifications();
     },
     exocortex: exocortexRuntime,
+  });
+
+  btwManager = new BtwSessionManager(server, {
+    onHeaders: (provider, headers) => {
+      if (provider === "openai") broadcastToolsAvailable();
+      handleUsageHeaders(provider, headers, (usage) => broadcastUsage(provider, usage));
+    },
+    onComplete: (provider) => {
+      refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
+      broadcastTokenStats();
+    },
+    cannotStart: (provider) => {
+      const shutdownMode = getDaemonShutdownMode();
+      if (shutdownMode) return `Daemon is shutting down (${shutdownMode}); refusing to start a BTW session.`;
+      if (provider === "openai" && openAIAccountMutationInFlight) {
+        return "Cannot start an OpenAI BTW session while account authentication is still in progress.";
+      }
+      return null;
+    },
   });
 
   const getRenderSnapshot = (
@@ -983,6 +1006,18 @@ export function createHandler(server: DaemonServer) {
             || openAIAccountMutationInFlight) break;
         void getProviderAdapter("openai").prewarmConversation?.(cmd.convId)
           .catch((err) => log("debug", `openai prewarm failed for ${cmd.convId}: ${err instanceof Error ? err.message : err}`));
+        break;
+      }
+
+      case "btw_query": {
+        btwManager.start(client, cmd);
+        break;
+      }
+
+      case "btw_close": {
+        if (!btwManager.close(client, cmd.sessionId)) {
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+        }
         break;
       }
 

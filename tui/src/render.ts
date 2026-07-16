@@ -33,6 +33,7 @@ import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from ".
 import { padRightToWidth, termWidth } from "./textwidth";
 import { getVoicePromptRanges } from "./voice";
 import { renderTaskPanel } from "./activitypanel";
+import { renderBtwPanel } from "./btwpanel";
 import {
   appendPositionedPayload as appendFramePositionedPayload,
   appendRowWrite as appendFrameRowWrite,
@@ -851,12 +852,19 @@ export function render(state: RenderState): void {
     ));
   }
 
+  // ── Ephemeral BTW panel (foreground, intentionally above sidebar) ──
+  if (state.btw) {
+    const btwPanel = renderBtwPanel(state.btw, cols, rows);
+    if (btwPanel) appendPositionedPayload(ctx, btwPanel.payload);
+  }
+
   const canScrollMessageRegion = !sidebarOpen
     && !state.autocomplete
     && !taskPanel
     && !state.search?.barOpen
     && !state.queuePrompt
     && !state.editMessagePrompt
+    && !state.btw
     && messageAreaHeight > 0;
 
   flushFrame(state, {

@@ -18,6 +18,8 @@ export type CommandResult =
   | { type: "create_conversation_for_instructions"; text: string }
   | { type: "replay_requested" }
   | { type: "compact_requested" }
+  | { type: "btw_requested"; query: string }
+  | { type: "btw_close_requested" }
   | { type: "model_changed"; provider: ProviderId; model: ModelId }
   | { type: "trim_requested"; mode: TrimMode; count: number }
   | { type: "effort_changed"; effort: EffortLevel }

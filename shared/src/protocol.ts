@@ -99,6 +99,25 @@ export interface CompactConversationCommand {
   startedAt: number;
 }
 
+/** Run an isolated, ephemeral one-shot query against a frozen conversation snapshot. */
+export interface BtwQueryCommand {
+  type: "btw_query";
+  reqId?: string;
+  /** Client-generated identity used to reject stale events and closes. */
+  sessionId: string;
+  convId: string;
+  query: string;
+  startedAt: number;
+}
+
+/** Close an ephemeral BTW session, aborting it first when it is still running. */
+export interface BtwCloseCommand {
+  type: "btw_close";
+  reqId?: string;
+  /** Omitted only by non-UI clients that want to close whichever session they own. */
+  sessionId?: string;
+}
+
 export interface AbortCommand {
   type: "abort";
   reqId?: string;
@@ -609,6 +628,8 @@ export type Command =
   | SendMessageCommand
   | ReplayConversationCommand
   | CompactConversationCommand
+  | BtwQueryCommand
+  | BtwCloseCommand
   | SetModelCommand
   | SetEffortCommand
   | SetFastModeCommand
@@ -685,6 +706,54 @@ export interface ConversationCreatedEvent {
   effort: EffortLevel;
   fastMode: boolean;
   goal?: ConversationGoal | null;
+}
+
+export interface BtwStartedEvent {
+  type: "btw_started";
+  sessionId: string;
+  convId: string;
+  query: string;
+  provider: ProviderId;
+  model: ModelId;
+  startedAt: number;
+}
+
+/** Append streamed answer text to the currently displayed BTW content. */
+export interface BtwTextChunkEvent {
+  type: "btw_text_chunk";
+  sessionId: string;
+  text: string;
+}
+
+/** Replace streamed answer text with a canonical snapshot (retry/final reconciliation). */
+export interface BtwContentEvent {
+  type: "btw_content";
+  sessionId: string;
+  text: string;
+}
+
+export interface BtwStatusEvent {
+  type: "btw_status";
+  sessionId: string;
+  status: string;
+}
+
+export interface BtwFinishedEvent {
+  type: "btw_finished";
+  sessionId: string;
+  endedAt: number;
+}
+
+export interface BtwErrorEvent {
+  type: "btw_error";
+  sessionId: string;
+  message: string;
+  endedAt: number;
+}
+
+export interface BtwClosedEvent {
+  type: "btw_closed";
+  sessionId: string;
 }
 
 export type StreamingSnapshotKind = "start" | "catchup" | "heartbeat";
@@ -1194,6 +1263,13 @@ export type Event =
   | PongEvent
   | AckEvent
   | ConversationCreatedEvent
+  | BtwStartedEvent
+  | BtwTextChunkEvent
+  | BtwContentEvent
+  | BtwStatusEvent
+  | BtwFinishedEvent
+  | BtwErrorEvent
+  | BtwClosedEvent
   | StreamingStartedEvent
   | StreamingStoppedEvent
   | BlockStartEvent

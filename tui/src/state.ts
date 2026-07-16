@@ -69,6 +69,26 @@ export interface QueuePromptState {
   images?: ImageAttachment[];
 }
 
+// ── Ephemeral BTW panel ─────────────────────────────────────────────
+
+export interface BtwPanelState {
+  sessionId: string;
+  sourceConvId: string;
+  query: string;
+  provider: ProviderId;
+  model: ModelId;
+  startedAt: number;
+  endedAt: number | null;
+  phase: "starting" | "running" | "complete" | "error";
+  text: string;
+  status: string;
+  /** Visual lines above the bottom of the answer viewport. */
+  scrollOffset: number;
+  /** Renderer-populated bounds used by foreground scrolling keys. */
+  maxScroll: number;
+  viewportRows: number;
+}
+
 export interface AuthQueuedMessage {
   text: string;
   images?: ImageAttachment[];
@@ -286,6 +306,8 @@ export interface RenderState {
   promptScrollOffset: number;
   /** Queue prompt overlay — non-null when the modal is showing. */
   queuePrompt: QueuePromptState | null;
+  /** Ephemeral one-shot answer panel opened by `/btw`. */
+  btw: BtwPanelState | null;
   /** Chat-history search state for vim-style / and ? search. */
   search: SearchState | null;
   /** Messages queued for delivery at a specific timing. */
@@ -632,6 +654,7 @@ export function createInitialState(): RenderState {
     autocomplete: null,
     promptScrollOffset: 0,
     queuePrompt: null,
+    btw: null,
     search: null,
     queuedMessages: [],
     pendingQueueRemovalIds: new Set(),

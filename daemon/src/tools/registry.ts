@@ -62,14 +62,21 @@ function getAvailableTools(): Tool[] {
   return TOOLS.filter(isToolAvailable);
 }
 
+function getSelectedAvailableTools(allowedNames?: readonly string[]): Tool[] {
+  const available = getAvailableTools();
+  if (!allowedNames) return available;
+  const allowed = new Set(allowedNames);
+  return available.filter(tool => allowed.has(tool.name));
+}
+
 export function getRegisteredTools(): Tool[] {
   return [...getAvailableTools()];
 }
 
 // ── API tool definitions (sent to model providers) ─────────────────
 
-export function getToolDefs(): { name: string; description: string; input_schema: Record<string, unknown> }[] {
-  return getAvailableTools().map(t => ({
+export function getToolDefs(allowedNames?: readonly string[]): { name: string; description: string; input_schema: Record<string, unknown> }[] {
+  return getSelectedAvailableTools(allowedNames).map(t => ({
     name: t.name,
     description: t.description,
     input_schema: t.inputSchema,
@@ -88,8 +95,8 @@ export function getToolDisplayInfo(): ToolDisplayInfo[] {
 
 // ── System prompt hints ────────────────────────────────────────────
 
-export function buildToolSystemHints(): string {
-  return getAvailableTools()
+export function buildToolSystemHints(allowedNames?: readonly string[]): string {
+  return getSelectedAvailableTools(allowedNames)
     .filter(t => t.systemHint)
     .map(t => t.systemHint!)
     .join("\n");
@@ -225,10 +232,20 @@ async function executeSingleTool(
   call: ApiToolCall,
   toolContext?: ToolExecutionContext,
   signal?: AbortSignal,
+  allowedTools?: ReadonlySet<string>,
 ): Promise<ToolExecResult> {
   const callToolContext: ToolExecutionContext = toolContext
     ? { ...toolContext, toolCallId: call.id }
     : { toolCallId: call.id };
+
+  if (allowedTools && !allowedTools.has(call.name)) {
+    return {
+      toolCallId: call.id,
+      toolName: call.name,
+      output: `Tool unavailable in this session: ${call.name}`,
+      isError: true,
+    };
+  }
 
   const safety = evaluateToolCallSafety(call.name, call.input);
   if (!safety.allowed) {
@@ -294,13 +311,14 @@ async function executeScheduledTools(
   calls: ApiToolCall[],
   toolContext?: ToolExecutionContext,
   signal?: AbortSignal,
+  allowedTools?: ReadonlySet<string>,
 ): Promise<ToolExecResult[]> {
   const results: ToolExecResult[] = [];
 
   for (const batch of planToolExecutionBatches(calls)) {
     const batchResults = batch.mode === "parallel"
-      ? await Promise.all(batch.calls.map(call => executeSingleTool(call, toolContext, signal)))
-      : [await executeSingleTool(batch.calls[0], toolContext, signal)];
+      ? await Promise.all(batch.calls.map(call => executeSingleTool(call, toolContext, signal, allowedTools)))
+      : [await executeSingleTool(batch.calls[0], toolContext, signal, allowedTools)];
     results.push(...batchResults);
   }
 
@@ -311,6 +329,8 @@ async function executeScheduledTools(
 
 export function buildExecutor(
   toolContext?: ToolExecutionContext,
+  allowedToolNames?: readonly string[],
 ): (calls: ApiToolCall[], signal?: AbortSignal) => Promise<ToolExecResult[]> {
-  return (calls, signal?) => executeScheduledTools(calls, toolContext, signal);
+  const allowedTools = allowedToolNames ? new Set(allowedToolNames) : undefined;
+  return (calls, signal?) => executeScheduledTools(calls, toolContext, signal, allowedTools);
 }

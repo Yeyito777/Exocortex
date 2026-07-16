@@ -451,6 +451,7 @@ export interface UsageData {
 
 export const TOKEN_USAGE_SOURCES = [
   "conversation",
+  "btw",
   "llm_complete",
   "title_generation",
   "browse_summary",

@@ -183,6 +183,14 @@ export class DaemonClient {
     this.send({ type: "compact_conversation", convId, startedAt });
   }
 
+  startBtw(convId: string, sessionId: string, query: string, startedAt: number): void {
+    this.send({ type: "btw_query", convId, sessionId, query, startedAt });
+  }
+
+  closeBtw(sessionId?: string): void {
+    this.send({ type: "btw_close", sessionId });
+  }
+
   ping(): void {
     this.send({ type: "ping" });
   }

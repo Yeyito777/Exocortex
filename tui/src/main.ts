@@ -298,6 +298,8 @@ function renderDelayForEvent(event: Event): number {
     case "thinking_chunk":
     case "streaming_sync":
     case "tokens_update":
+    case "btw_text_chunk":
+    case "btw_content":
       return STREAM_CHUNK_FRAME_DELAY_MS;
     default:
       return FRAME_DELAY_MS;
@@ -581,6 +583,39 @@ function startNewConversation(): void {
   }
 }
 
+function startBtwSession(query: string): void {
+  if (!state.convId) return;
+  const previous = state.btw;
+  if (previous) daemon.closeBtw(previous.sessionId);
+
+  const sessionId = randomUUID();
+  const startedAt = Date.now();
+  state.btw = {
+    sessionId,
+    sourceConvId: state.convId,
+    query,
+    provider: state.provider,
+    model: state.model,
+    startedAt,
+    endedAt: null,
+    phase: "starting",
+    text: "",
+    status: "Starting…",
+    scrollOffset: 0,
+    maxScroll: 0,
+    viewportRows: 1,
+  };
+  daemon.startBtw(state.convId, sessionId, query, startedAt);
+}
+
+function closeBtwSession(): void {
+  const session = state.btw;
+  if (!session) return;
+  // Remove immediately; the daemon-side close aborts a running provider/tool call.
+  state.btw = null;
+  daemon.closeBtw(session.sessionId);
+}
+
 function syncInlineCommandChanges(result: InlineCommandApplication, convId = state.convId): void {
   if (!convId) return;
   for (const effort of result.efforts) {
@@ -651,6 +686,12 @@ function handleSubmit(): void {
             renderImmediately();
             return;
           }
+          break;
+        case "btw_requested":
+          startBtwSession(cmdResult.query);
+          break;
+        case "btw_close_requested":
+          closeBtwSession();
           break;
         case "model_changed":
           if (state.convId) daemon.setModel(state.convId, cmdResult.provider, cmdResult.model);
@@ -1231,6 +1272,9 @@ function handleKey(key: KeyEvent): void {
     case "edit_message_cancel":
       cancelEditMessage(state);
       break;
+    case "btw_close":
+      closeBtwSession();
+      break;
     case "open_target":
       openTargetDetached(result.target);
       break;
@@ -1463,6 +1507,11 @@ function handleDaemonConnectionLost(): void {
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
+  if (state.btw && (state.btw.phase === "starting" || state.btw.phase === "running")) {
+    state.btw.phase = "error";
+    state.btw.status = "Lost connection to daemon";
+    state.btw.endedAt = Date.now();
+  }
   pushSystemMessage(state, "✗ Lost connection to daemon.", theme.error);
   scheduleRender();
   void reconnectToDaemon();

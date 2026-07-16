@@ -72,6 +72,50 @@ export function handleEvent(
   observeStreamSeq(event, state);
 
   switch (event.type) {
+    case "btw_started":
+      if (state.btw?.sessionId !== event.sessionId) break;
+      state.btw.sourceConvId = event.convId;
+      state.btw.query = event.query;
+      state.btw.provider = event.provider;
+      state.btw.model = event.model;
+      state.btw.startedAt = event.startedAt;
+      state.btw.phase = "running";
+      state.btw.status = "Thinking…";
+      break;
+
+    case "btw_text_chunk":
+      if (state.btw?.sessionId !== event.sessionId) break;
+      state.btw.text += event.text;
+      break;
+
+    case "btw_content":
+      if (state.btw?.sessionId !== event.sessionId) break;
+      state.btw.text = event.text;
+      break;
+
+    case "btw_status":
+      if (state.btw?.sessionId !== event.sessionId) break;
+      state.btw.status = event.status;
+      break;
+
+    case "btw_finished":
+      if (state.btw?.sessionId !== event.sessionId) break;
+      state.btw.phase = "complete";
+      state.btw.status = "Complete";
+      state.btw.endedAt = event.endedAt;
+      break;
+
+    case "btw_error":
+      if (state.btw?.sessionId !== event.sessionId) break;
+      state.btw.phase = "error";
+      state.btw.status = event.message;
+      state.btw.endedAt = event.endedAt;
+      break;
+
+    case "btw_closed":
+      if (state.btw?.sessionId === event.sessionId) state.btw = null;
+      break;
+
     case "conversation_created":
       handleConversationCreated(event, state, daemon);
       break;
