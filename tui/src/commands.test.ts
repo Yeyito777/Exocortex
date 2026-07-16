@@ -383,6 +383,64 @@ describe("/replay", () => {
   });
 });
 
+describe("/compact", () => {
+  test("returns a compaction request for the active conversation", () => {
+    const state = createInitialState();
+    state.convId = "conv-compact";
+    state.messages.push(
+      { role: "user", text: "hello", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.4", tokens: 0 } },
+      { role: "assistant", blocks: [{ type: "text", text: "answer" }], metadata: { startedAt: 2, endedAt: 3, model: "gpt-5.4", tokens: 12 } },
+    );
+
+    const result = tryCommand("/compact", state);
+
+    expect(result).toEqual({ type: "compact_requested" });
+    expect(state.messages).toHaveLength(2);
+  });
+
+  test("requires an active conversation", () => {
+    const state = createInitialState();
+
+    const result = tryCommand("/compact", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("No active conversation to compact.");
+  });
+
+  test("rejects compaction while streaming", () => {
+    const state = createInitialState();
+    state.convId = "conv-compact";
+    state.messages.push({ role: "user", text: "hello", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.4", tokens: 0 } });
+    state.pendingAI = { role: "assistant", blocks: [], metadata: null };
+
+    const result = tryCommand("/compact", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.streamingTailMessages.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot compact the conversation while it is streaming.");
+  });
+
+  test("requires existing conversation history", () => {
+    const state = createInitialState();
+    state.convId = "conv-compact";
+
+    const result = tryCommand("/compact", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("No conversation history to compact.");
+  });
+
+  test("shows usage when arguments are provided", () => {
+    const state = createInitialState();
+    state.convId = "conv-compact";
+    state.messages.push({ role: "user", text: "hello", metadata: null });
+
+    const result = tryCommand("/compact now", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Usage: /compact");
+  });
+});
+
 describe("/model", () => {
   test("switches an active conversation across providers and normalizes effort/fast mode", () => {
     const state = createInitialState();

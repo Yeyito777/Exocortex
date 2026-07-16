@@ -26,7 +26,7 @@ import { getConversationExternalIntegrations } from "./external-notifications";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
-  isStreaming, setActiveJob, getActiveJob, clearActiveJob, getStreamingStartedAt,
+  isStreaming, setActiveJob, getActiveJob, isRestartRecoverableJob, clearActiveJob, getStreamingStartedAt,
   setStreamingTokens, getStreamingTokens, nextStreamSeq, getStreamSeq,
   setContextCompactionStartedAt, getContextCompactionStartedAt,
   touchActivity, pauseActivity, resumeActivity,
@@ -1272,6 +1272,7 @@ export function listSummaries(): ConversationSummary[] {
     result.push({
       ...summary,
       streaming: streaming.isStreaming(summary.id),
+      ...(streaming.isStreaming(summary.id) && !streaming.isRestartRecoverableJob(summary.id) ? { restartRecoverable: false } : {}),
       unread: unread.has(summary.id),
       ...getConversationActivityCounts(summary.id),
       tasks: getConversationTasks(summary.id),
@@ -1297,6 +1298,13 @@ export function listSidebarState(): { conversations: ConversationSummary[]; fold
 export function listRunningConversationIds(): string[] {
   return listSummaries()
     .filter((summary) => summary.streaming)
+    .map((summary) => summary.id);
+}
+
+/** Active model turns that should be replayed after a daemon restart. */
+export function listRestartRecoverableConversationIds(): string[] {
+  return listSummaries()
+    .filter((summary) => summary.streaming && summary.restartRecoverable !== false)
     .map((summary) => summary.id);
 }
 
@@ -1636,6 +1644,7 @@ export function getSummary(id: string): ConversationSummary | null {
   return {
     ...summary,
     streaming: streaming.isStreaming(id),
+    ...(streaming.isStreaming(id) && !streaming.isRestartRecoverableJob(id) ? { restartRecoverable: false } : {}),
     unread: unread.has(id),
     ...getConversationActivityCounts(id),
     tasks: getConversationTasks(id),

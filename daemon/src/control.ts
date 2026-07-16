@@ -20,7 +20,7 @@ function ensureSocketExists(): string {
   return path;
 }
 
-export async function getRunningConversationIds(timeoutMs = 2_000): Promise<string[]> {
+export async function getRunningConversationIds(timeoutMs = 2_000, restartRecoverableOnly = false): Promise<string[]> {
   const path = ensureSocketExists();
 
   return new Promise((resolve, reject) => {
@@ -59,7 +59,8 @@ export async function getRunningConversationIds(timeoutMs = 2_000): Promise<stri
             if (event.type === "conversations_list" && event.reqId === reqId) {
               finish({
                 convIds: event.conversations
-                  .filter((conversation) => conversation.streaming)
+                  .filter((conversation) => conversation.streaming
+                    && (!restartRecoverableOnly || conversation.restartRecoverable !== false))
                   .map((conversation) => conversation.id),
               });
               return;
@@ -254,7 +255,8 @@ export async function prepareRestartForReplay(timeoutMs = 30_000): Promise<Prepa
     stillStreaming = running;
     if (running.length === 0) break;
 
-    for (const id of running) interrupted.add(id);
+    const restartRecoverable = await getRunningConversationIds(2_000, true);
+    for (const id of restartRecoverable) interrupted.add(id);
     writeInterruptedStreamIds(interrupted);
 
     await Promise.allSettled(running.map((id) => abortConversation(id)));

@@ -341,6 +341,8 @@ export interface ConversationSummary {
   marked: boolean;
   pinned: boolean;
   streaming: boolean;
+  /** False for maintenance jobs that must be aborted, but not replayed, across daemon restarts. */
+  restartRecoverable?: boolean;
   unread: boolean;
   sortOrder: number;
   /** Folder containing this conversation. Null means the sidebar root. */

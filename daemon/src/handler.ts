@@ -10,7 +10,7 @@
 import { log } from "./log";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import { refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
-import { orchestrateGoalContinuation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
+import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
 import { buildSystemPrompt } from "./system";
 import { getToolDisplayInfo } from "./tools/registry";
@@ -1312,6 +1312,21 @@ export function createHandler(server: DaemonServer) {
               { subagentMaxDepth: pending?.subagentMaxDepth ?? null },
             );
         notificationRuntime.complete(cmd.convId, outcome);
+        break;
+      }
+
+      case "compact_conversation": {
+        const target = convStore.get(cmd.convId);
+        if (target?.provider === "openai"
+            && rejectDuringOpenAIAccountMutation(client, cmd.reqId, cmd.convId)) break;
+        await orchestrateCompactConversation(
+          server,
+          client,
+          cmd.reqId,
+          cmd.convId,
+          cmd.startedAt,
+          buildOrchestrationCallbacks(cmd.convId),
+        );
         break;
       }
 

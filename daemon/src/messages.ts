@@ -730,7 +730,7 @@ export function countConversationMessages(messages: StoredMessage[]): number {
 
 export type PersistedConversationSummary = Omit<
   ConversationSummary,
-  "streaming" | "unread" | "subagentCount" | "backgroundTaskCount" | "tasks" | "integrations"
+  "streaming" | "restartRecoverable" | "unread" | "subagentCount" | "backgroundTaskCount" | "tasks" | "integrations"
 >;
 export type PersistedFolderSummary = Omit<FolderSummary, "effectiveInstructions">;
 

@@ -21,7 +21,7 @@ import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { goalContinuationUserMessage } from "./goals";
-import { createProviderTurnSession } from "./api";
+import { createProviderTurnSession, type streamMessage } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
 import type { StreamingStopReason } from "./protocol";
 import {
@@ -108,6 +108,8 @@ export interface OrchestrationCallbacks {
   exocortex?: ExocortexToolRuntime;
   /** Deliver completion of a detached tool process to its owning conversation. */
   onBackgroundTaskComplete?: (completion: BackgroundTaskCompletion) => void;
+  /** Test seam for provider streaming across compaction and assistant requests. */
+  streamMessageFn?: typeof streamMessage;
 }
 
 // ── Message history/replay helpers ─────────────────────────────────
@@ -168,6 +170,8 @@ interface AssistantTurnOptions {
   subagentNotificationId?: string;
   /** Durable daemon queue identity accepted by this user turn. */
   queueEntryId?: string;
+  /** Force one context compaction without requesting an assistant response. */
+  manualCompaction?: boolean;
 }
 
 export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId">;
@@ -199,6 +203,19 @@ export async function orchestrateReplayConversation(
   policy: SubagentTurnPolicy = {},
 ): Promise<AssistantTurnOutcome> {
   return await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext, policy);
+}
+
+export async function orchestrateCompactConversation(
+  server: DaemonServer,
+  client: ConnectedClient | null,
+  reqId: string | undefined,
+  convId: string,
+  startedAt: number,
+  ext: OrchestrationCallbacks,
+): Promise<AssistantTurnOutcome> {
+  return await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext, {
+    manualCompaction: true,
+  });
 }
 
 export async function orchestrateGoalContinuation(
@@ -241,7 +258,7 @@ async function orchestrateAssistantTurn(
   }
   const subagentMaxDepth = conv.subagentMaxDepth ?? null;
 
-  const { userMessage: requestedUserMessage, goalContinuation = false } = options;
+  const { userMessage: requestedUserMessage, goalContinuation = false, manualCompaction = false } = options;
   // Goal continuations are daemon-authored notification turns, just like
   // background-task and subagent completion notifications. Persist and
   // broadcast them through the ordinary user-message path so the TUI shows
@@ -368,7 +385,10 @@ async function orchestrateAssistantTurn(
   if (options.subagentNotificationId) acknowledgeSubagentNotification(options.subagentNotificationId);
 
   const ac = new AbortController();
-  convStore.setActiveJob(convId, ac, startedAt);
+  // A standalone compaction has no unfinished assistant turn to replay after a
+  // daemon restart. It is still an active job so abort, queueing, and shutdown
+  // can coordinate with it normally.
+  convStore.setActiveJob(convId, ac, startedAt, !manualCompaction);
   convStore.initStreamingState(convId);
 
   // Broadcast sidebar update (streaming indicator)
@@ -472,22 +492,26 @@ async function orchestrateAssistantTurn(
   let latestCompactionAccountScope: string | undefined;
   let latestCompactedAt: number | null = null;
 
-  async function performAutomaticCompaction(
+  async function performContextCompaction(
     messages: ApiMessage[],
     reason: CompactionReason,
     projectedTokens: number,
   ): Promise<ApiMessage[]> {
     convStore.pauseActivity(convId);
-    let nativeStatusActive = false;
-    const stopNativeStatus = () => {
-      if (!nativeStatusActive) return;
-      nativeStatusActive = false;
+    let compactionStatusActive = false;
+    const stopCompactionStatus = () => {
+      if (!compactionStatusActive) return;
+      compactionStatusActive = false;
       setContextCompactionStatus(false);
     };
     try {
-      log("info", `orchestrator: automatic context compaction starting for ${convId} (reason=${reason}, projected=${Number.isFinite(projectedTokens) ? projectedTokens : "overflow"}, limit=${contextLimit ?? "unknown"})`);
-      if (liveConv.provider === "openai") {
-        nativeStatusActive = true;
+      const trigger = reason === "manual" ? "manual" : "automatic";
+      log("info", `orchestrator: ${trigger} context compaction starting for ${convId} (reason=${reason}, projected=${Number.isFinite(projectedTokens) ? projectedTokens : "overflow"}, limit=${contextLimit ?? "unknown"})`);
+      // Automatic plaintext fallback deliberately has no separate progress UI,
+      // but an explicit /compact remains visibly active for every provider and
+      // through an OpenAI native-to-plaintext fallback.
+      if (liveConv.provider === "openai" || reason === "manual") {
+        compactionStatusActive = true;
         setContextCompactionStatus(true);
       }
       const result = await compactContextMessages(messages, {
@@ -512,8 +536,7 @@ async function orchestrateAssistantTurn(
           recordStreamRetry(attempt, maxAttempts, errorMessage, delaySec, metadata, true);
         },
         onPlaintextFallback: (warning) => {
-          // Plaintext fallback intentionally has no progress UI of its own.
-          stopNativeStatus();
+          if (reason !== "manual") stopCompactionStatus();
           transcriptMarkers.push({
             afterIndex: agentState.completedMessages.length,
             message: { role: "system", content: warning, metadata: null },
@@ -531,6 +554,7 @@ async function orchestrateAssistantTurn(
             color: "warning",
           });
         },
+        streamMessageFn: ext.streamMessageFn,
       });
       // Session invalidation is part of the atomic install. If it fails, leave
       // the previous active replay/counters untouched and recover from transcript.
@@ -563,12 +587,12 @@ async function orchestrateAssistantTurn(
       syncActiveContext(result.messages);
       persistCompletedTurnPrefix();
       syncCompletedStreamingDisplayMessages();
-      nativeStatusActive = false;
+      compactionStatusActive = false;
       setContextCompactionStatus(false, completedAt);
-      log("info", `orchestrator: automatic context compaction complete for ${convId} (kind=${result.kind}, messages=${messages.length}->${result.messages.length})`);
+      log("info", `orchestrator: ${trigger} context compaction complete for ${convId} (kind=${result.kind}, messages=${messages.length}->${result.messages.length})`);
       return result.messages;
     } finally {
-      stopNativeStatus();
+      stopCompactionStatus();
       convStore.resumeActivity(convId);
     }
   }
@@ -943,7 +967,7 @@ async function orchestrateAssistantTurn(
       persistCompletedTurnPrefix();
     },
     async compactContext(messages, reason, projectedTokens) {
-      return performAutomaticCompaction(messages, reason, projectedTokens);
+      return performContextCompaction(messages, reason, projectedTokens);
     },
   };
 
@@ -993,13 +1017,18 @@ async function orchestrateAssistantTurn(
 
     const incompatibleCheckpoint = conv.activeContext != null
       && !isActiveContextCompatible(conv.activeContext, conv.provider, conv.model, accountScope);
-    if (incompatibleCheckpoint) {
+    if (manualCompaction) {
+      apiMessages = await performContextCompaction(apiMessages, "manual", projectedTokens);
+      syncActiveContext(apiMessages);
+      convStore.markDirty(convId);
+      convStore.flush(convId);
+    } else if (incompatibleCheckpoint) {
       // Never leak an opaque OpenAI checkpoint into another provider. The
       // context builder returned sanitized transcript history. Preserve that
       // exact transcript when it fits; summarize with the destination provider
       // only when its own window actually requires a checkpoint.
       if (shouldAutoCompact(projectedTokens, contextLimit)) {
-        apiMessages = await performAutomaticCompaction(apiMessages, "provider_switch", projectedTokens);
+        apiMessages = await performContextCompaction(apiMessages, "provider_switch", projectedTokens);
         syncActiveContext(apiMessages);
       } else {
         liveConv.activeContext = null;
@@ -1009,114 +1038,126 @@ async function orchestrateAssistantTurn(
       convStore.markDirty(convId);
       convStore.flush(convId);
     } else if (shouldAutoCompact(projectedTokens, contextLimit)) {
-      apiMessages = await performAutomaticCompaction(apiMessages, "pre_turn", projectedTokens);
+      apiMessages = await performContextCompaction(apiMessages, "pre_turn", projectedTokens);
       syncActiveContext(apiMessages);
       convStore.markDirty(convId);
       convStore.flush(convId);
     }
 
-    const result = await runAgentLoop(apiMessages, conv.provider, conv.model, callbacks, {
-      system: systemPrompt,
-      signal: ac.signal,
-      tools: toolDefs,
-      executor,
-      summarizer: (name, input) => {
-        const s = summarizeTool(name, input);
-        return s.detail || s.label;
-      },
-      effort: conv.effort,
-      serviceTier: conv.fastMode ? "fast" : undefined,
-      promptCacheKey: convId,
-      tracking: { source: "conversation", conversationId: convId },
-      turnSession: providerTurnSession ?? undefined,
-      getCodexWindowId: () => currentWindowId,
-      accountScope,
-      codexTurnId,
-      codexTurnStartedAtMs: startedAt,
-      state: agentState,
-    });
+    if (manualCompaction) {
+      const endedAt = Date.now();
+      outcome = {
+        ok: true,
+        blocks: [],
+        tokens: 0,
+        durationMs: endedAt - startedAt,
+        endedAt,
+      };
+    } else {
+      const result = await runAgentLoop(apiMessages, conv.provider, conv.model, callbacks, {
+        system: systemPrompt,
+        signal: ac.signal,
+        tools: toolDefs,
+        executor,
+        summarizer: (name, input) => {
+          const s = summarizeTool(name, input);
+          return s.detail || s.label;
+        },
+        effort: conv.effort,
+        serviceTier: conv.fastMode ? "fast" : undefined,
+        promptCacheKey: convId,
+        tracking: { source: "conversation", conversationId: convId },
+        turnSession: providerTurnSession ?? undefined,
+        getCodexWindowId: () => currentWindowId,
+        accountScope,
+        codexTurnId,
+        codexTurnStartedAtMs: startedAt,
+        state: agentState,
+        streamMessageFn: ext.streamMessageFn,
+      });
 
-    const endedAt = Date.now();
-    if (conv.lastContextTokens != null && result.lastOutputTokens > 0) {
-      conv.lastContextTokens += result.lastOutputTokens;
+      const endedAt = Date.now();
+      if (conv.lastContextTokens != null && result.lastOutputTokens > 0) {
+        conv.lastContextTokens += result.lastOutputTokens;
+        server.sendToSubscribers(convId, {
+          type: "context_update",
+          convId,
+          streamSeq: convStore.nextStreamSeq(convId),
+          contextTokens: conv.lastContextTokens,
+        });
+      }
+      outcome = {
+        ok: true,
+        blocks: result.blocks,
+        tokens: result.tokens,
+        durationMs: endedAt - startedAt,
+        endedAt,
+      };
+
+      // ── Success path: persist assistant turn ────────────────────────
+
+      // Convert ApiMessage[] → StoredMessage[], stamp metadata on last assistant
+      const storedMessages: StoredMessage[] = result.newMessages.map(m => ({
+        role: m.role,
+        content: m.content,
+        metadata: m.metadata ?? null,
+        providerData: m.providerData,
+        contextTokens: m.contextTokens ?? null,
+        ...(m.contextCheckpoint ? { contextCheckpoint: m.contextCheckpoint } : {}),
+      }));
+      const lastAssistant = [...storedMessages].reverse().find(m => m.role === "assistant");
+      if (lastAssistant) {
+        lastAssistant.metadata = {
+          startedAt,
+          endedAt,
+          model: conv.model,
+          tokens: result.tokens,
+        };
+      }
+
+      // Push the actual conversation messages — preserves the full
+      // multi-turn structure (assistant → user[tool_result] → assistant → ...)
+      // Interleave status markers at the correct positions so system messages
+      // appear between the rounds where they actually occurred.
+      const interleavedMessages = interleaveTranscriptMarkers(storedMessages, transcriptMarkers);
+      const successTurnTranscriptStartIndex = currentTurnTranscriptStartIndex();
+      conv.messages.splice(
+        successTurnTranscriptStartIndex,
+        conv.messages.length - successTurnTranscriptStartIndex,
+        ...interleavedMessages,
+      );
+      syncActiveContext(result.contextMessages);
+      conv.updatedAt = Date.now();
+      // Do not bump on completion. The conversation was already brought to the
+      // top when the user/queued message started; bumping again here can race with
+      // manual sidebar reordering performed while the stream is ending.
+
       server.sendToSubscribers(convId, {
-        type: "context_update",
+        type: "message_complete",
         convId,
         streamSeq: convStore.nextStreamSeq(convId),
-        contextTokens: conv.lastContextTokens,
-      });
-    }
-    outcome = {
-      ok: true,
-      blocks: result.blocks,
-      tokens: result.tokens,
-      durationMs: endedAt - startedAt,
-      endedAt,
-    };
-
-    // ── Success path: persist assistant turn ────────────────────────
-
-    // Convert ApiMessage[] → StoredMessage[], stamp metadata on last assistant
-    const storedMessages: StoredMessage[] = result.newMessages.map(m => ({
-      role: m.role,
-      content: m.content,
-      metadata: m.metadata ?? null,
-      providerData: m.providerData,
-      contextTokens: m.contextTokens ?? null,
-      ...(m.contextCheckpoint ? { contextCheckpoint: m.contextCheckpoint } : {}),
-    }));
-    const lastAssistant = [...storedMessages].reverse().find(m => m.role === "assistant");
-    if (lastAssistant) {
-      lastAssistant.metadata = {
-        startedAt,
+        blocks: result.blocks,
         endedAt,
-        model: conv.model,
         tokens: result.tokens,
-      };
+      });
+
+      log("info", `orchestrator: message complete for ${convId} (${result.tokens} tokens, ${result.blocks.length} blocks, ${endedAt - startedAt}ms)`);
+
+      if (goalContinuation && conv.goal?.status === "active") {
+        conv.goal.turns += 1;
+        conv.goal.updatedAt = endedAt;
+      }
+
+      // Mark unread if no client is viewing this conversation
+      if (!server.hasSubscribers(convId)) {
+        convStore.markUnread(convId);
+      }
+
+      // Persist and notify sidebar
+      convStore.markDirty(convId);
+      convStore.flush(convId);
+      broadcastConversationUpdated(server, convId);
     }
-
-    // Push the actual conversation messages — preserves the full
-    // multi-turn structure (assistant → user[tool_result] → assistant → ...)
-    // Interleave status markers at the correct positions so system messages
-    // appear between the rounds where they actually occurred.
-    const interleavedMessages = interleaveTranscriptMarkers(storedMessages, transcriptMarkers);
-    const successTurnTranscriptStartIndex = currentTurnTranscriptStartIndex();
-    conv.messages.splice(
-      successTurnTranscriptStartIndex,
-      conv.messages.length - successTurnTranscriptStartIndex,
-      ...interleavedMessages,
-    );
-    syncActiveContext(result.contextMessages);
-    conv.updatedAt = Date.now();
-    // Do not bump on completion. The conversation was already brought to the
-    // top when the user/queued message started; bumping again here can race with
-    // manual sidebar reordering performed while the stream is ending.
-
-    server.sendToSubscribers(convId, {
-      type: "message_complete",
-      convId,
-      streamSeq: convStore.nextStreamSeq(convId),
-      blocks: result.blocks,
-      endedAt,
-      tokens: result.tokens,
-    });
-
-    log("info", `orchestrator: message complete for ${convId} (${result.tokens} tokens, ${result.blocks.length} blocks, ${endedAt - startedAt}ms)`);
-
-    if (goalContinuation && conv.goal?.status === "active") {
-      conv.goal.turns += 1;
-      conv.goal.updatedAt = endedAt;
-    }
-
-    // Mark unread if no client is viewing this conversation
-    if (!server.hasSubscribers(convId)) {
-      convStore.markUnread(convId);
-    }
-
-    // Persist and notify sidebar
-    convStore.markDirty(convId);
-    convStore.flush(convId);
-    broadcastConversationUpdated(server, convId);
 
   } catch (err) {
     // ── Error/abort path: persist salvageable state ─────────────────
@@ -1270,7 +1311,7 @@ async function orchestrateAssistantTurn(
     convStore.clearActiveJob(convId);
     convStore.clearCurrentStreamingBlocks(convId);
     convStore.resetChunkCounter(convId);
-    if (outcome) settlePendingSubagentNotifications(convId, outcome);
+    if (outcome && !manualCompaction) settlePendingSubagentNotifications(convId, outcome);
     convStore.markDirty(convId);
     convStore.flush(convId);
     server.sendToSubscribers(convId, {

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, nextStreamSeq, setActiveJob, setContextCompactionStartedAt } from "./streaming";
+import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, isRestartRecoverableJob, nextStreamSeq, setActiveJob, setContextCompactionStartedAt } from "./streaming";
 import { clearQueuedMessages, drainQueuedMessages, pushQueuedMessage } from "./message-queue";
 
 const IDS: string[] = [];
@@ -32,6 +32,22 @@ describe("stream event sequence", () => {
 
     setActiveJob(id, new AbortController(), 2);
     expect(nextStreamSeq(id)).toBe(1);
+  });
+});
+
+describe("restart recovery policy", () => {
+  test("defaults model turns to recoverable and can mark maintenance jobs as non-recoverable", () => {
+    const modelTurnId = mkId("recoverable");
+    const maintenanceId = mkId("maintenance");
+
+    setActiveJob(modelTurnId, new AbortController(), 1);
+    setActiveJob(maintenanceId, new AbortController(), 1, false);
+
+    expect(isRestartRecoverableJob(modelTurnId)).toBe(true);
+    expect(isRestartRecoverableJob(maintenanceId)).toBe(false);
+
+    clearActiveJob(modelTurnId);
+    expect(isRestartRecoverableJob(modelTurnId)).toBe(false);
   });
 });
 

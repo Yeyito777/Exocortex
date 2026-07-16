@@ -17,6 +17,7 @@ export type CommandResult =
   | { type: "new_conversation" }
   | { type: "create_conversation_for_instructions"; text: string }
   | { type: "replay_requested" }
+  | { type: "compact_requested" }
   | { type: "model_changed"; provider: ProviderId; model: ModelId }
   | { type: "trim_requested"; mode: TrimMode; count: number }
   | { type: "effort_changed"; effort: EffortLevel }

@@ -179,6 +179,10 @@ export class DaemonClient {
     this.send({ type: "replay_conversation", convId, startedAt });
   }
 
+  compactConversation(convId: string, startedAt: number): void {
+    this.send({ type: "compact_conversation", convId, startedAt });
+  }
+
   ping(): void {
     this.send({ type: "ping" });
   }

@@ -49,7 +49,7 @@ class InvalidNativeCompactionResponseError extends Error {
   }
 }
 
-export type CompactionReason = "pre_turn" | "tool_round" | "context_error" | "provider_switch";
+export type CompactionReason = "pre_turn" | "tool_round" | "context_error" | "provider_switch" | "manual";
 
 export interface ContextCompactionOptions {
   provider: ProviderId;

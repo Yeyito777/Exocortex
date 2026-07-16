@@ -45,6 +45,7 @@ import type { Event, QueueTiming } from "./protocol";
 import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
 import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
 import { startReplayConversation } from "./replay";
+import { startManualCompaction } from "./compact";
 import { isConversationInSubagentsFolder, runStreamFinishedPing, shouldPingForBackgroundStreamCompletion, shouldPingForStreamStopped } from "./ping";
 import { stripStartupLaunchEcho } from "./startupinput";
 import { focusedConversationTasks } from "./activitypanel";
@@ -641,6 +642,12 @@ function handleSubmit(): void {
           break;
         case "replay_requested":
           if (startReplayConversation(state, daemon)) {
+            renderImmediately();
+            return;
+          }
+          break;
+        case "compact_requested":
+          if (startManualCompaction(state, daemon)) {
             renderImmediately();
             return;
           }

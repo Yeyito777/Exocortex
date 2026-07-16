@@ -266,6 +266,19 @@ describe("DaemonClient commands", () => {
     });
   });
 
+  test("can request a manual conversation compaction", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.compactConversation("conv-1", 123_456);
+
+    expect(internal.pendingCommands[0]).toEqual({
+      type: "compact_conversation",
+      convId: "conv-1",
+      startedAt: 123_456,
+    });
+  });
+
   test("can include goal permission flags when creating a goal conversation", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;

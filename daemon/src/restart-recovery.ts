@@ -185,7 +185,7 @@ export async function prepareCatchableShutdownForReplay(timeoutMs = 30_000): Pro
   };
 
   let stillStreaming = convStore.listRunningConversationIds();
-  record(stillStreaming);
+  record(convStore.listRestartRecoverableConversationIds());
   abortRunning(stillStreaming);
 
   const deadline = Date.now() + timeoutMs;
@@ -193,7 +193,7 @@ export async function prepareCatchableShutdownForReplay(timeoutMs = 30_000): Pro
     const delayMs = Math.min(250, Math.max(0, deadline - Date.now()));
     if (delayMs > 0) await sleep(delayMs);
     stillStreaming = convStore.listRunningConversationIds();
-    record(stillStreaming);
+    record(convStore.listRestartRecoverableConversationIds());
     abortRunning(stillStreaming);
   }
 

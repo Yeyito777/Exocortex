@@ -15,6 +15,8 @@ import type { ActiveToolBackgrounder } from "./tools/types";
 // ── State ───────────────────────────────────────────────────────────
 
 const activeJobs = new Map<string, AbortController>();
+/** Whether an active job represents a model turn that should replay after restart. */
+const restartRecoverableJobs = new Set<string>();
 const chunkCounters = new Map<string, number>();
 /** Current in-flight assistant blocks for late-joining clients. */
 const streamingBlocks = new Map<string, Block[]>();
@@ -26,7 +28,7 @@ const streamingCommittedBlockCounts = new Map<string, number>();
 const streamingStartedAt = new Map<string, number>();
 /** Accumulated output token count per streaming job (for late-joining clients). */
 const streamingTokens = new Map<string, number>();
-/** Native server-side context compaction currently shown to clients. */
+/** Context compaction currently shown to clients. */
 const contextCompactionStartedAt = new Map<string, number>();
 /** Monotonic event sequence per active stream, used by clients to diagnose missed IPC events. */
 const streamSequences = new Map<string, number>();
@@ -59,8 +61,10 @@ export function isStreaming(convId: string): boolean {
   return activeJobs.has(convId);
 }
 
-export function setActiveJob(convId: string, ac: AbortController, startedAt: number): void {
+export function setActiveJob(convId: string, ac: AbortController, startedAt: number, restartRecoverable = true): void {
   activeJobs.set(convId, ac);
+  if (restartRecoverable) restartRecoverableJobs.add(convId);
+  else restartRecoverableJobs.delete(convId);
   streamingStartedAt.set(convId, startedAt);
   streamSequences.set(convId, 0);
   lastActivityAt.set(convId, startedAt);
@@ -70,8 +74,13 @@ export function getActiveJob(convId: string): AbortController | undefined {
   return activeJobs.get(convId);
 }
 
+export function isRestartRecoverableJob(convId: string): boolean {
+  return activeJobs.has(convId) && restartRecoverableJobs.has(convId);
+}
+
 export function clearActiveJob(convId: string): void {
   activeJobs.delete(convId);
+  restartRecoverableJobs.delete(convId);
   streamingBlocks.delete(convId);
   streamingStartedAt.delete(convId);
   streamingTokens.delete(convId);

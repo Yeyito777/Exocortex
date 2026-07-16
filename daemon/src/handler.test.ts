@@ -31,11 +31,13 @@ const makeAssistantOutcome = (overrides: Partial<TestAssistantOutcome> = {}): Te
 
 const orchestrateSendMessage = mock(async () => makeAssistantOutcome());
 const orchestrateReplayConversation = mock(async () => makeAssistantOutcome());
+const orchestrateCompactConversation = mock(async () => makeAssistantOutcome());
 const orchestrateGoalContinuation = mock(async () => {});
 
 mock.module("./orchestrator", () => ({
   orchestrateSendMessage,
   orchestrateReplayConversation,
+  orchestrateCompactConversation,
   orchestrateGoalContinuation,
 }));
 
@@ -967,6 +969,46 @@ describe("handler replay_conversation", () => {
         text: expect.stringContaining(`exo:${childId}`),
       }),
     ]);
+  });
+});
+
+describe("handler compact_conversation", () => {
+  beforeEach(() => {
+    orchestrateCompactConversation.mockClear();
+  });
+
+  test("dispatches manual compaction requests to the compaction orchestrator", async () => {
+    const server = {
+      sendTo: mock(() => {}),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const client = {} as never;
+
+    await handle(client, {
+      type: "compact_conversation",
+      reqId: "req-compact",
+      convId: "conv-1",
+      startedAt: 123_456,
+    });
+
+    expect(orchestrateCompactConversation).toHaveBeenCalledTimes(1);
+    expect(orchestrateCompactConversation).toHaveBeenCalledWith(
+      server,
+      client,
+      "req-compact",
+      "conv-1",
+      123_456,
+      expect.objectContaining({
+        onHeaders: expect.any(Function),
+        onComplete: expect.any(Function),
+      }),
+    );
   });
 });
 

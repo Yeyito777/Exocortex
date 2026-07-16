@@ -129,6 +129,21 @@ describe("restart recovery file", () => {
     expect(readInterruptedStreamIds()).toEqual([convId]);
   });
 
+  test("catchable shutdown aborts maintenance jobs without scheduling an assistant replay", async () => {
+    const convId = makeConversation("maintenance");
+    const ac = new AbortController();
+    setActiveJob(convId, ac, Date.now(), false);
+
+    setTimeout(() => clearActiveJob(convId), 5);
+    const result = await prepareCatchableShutdownForReplay(1_000);
+
+    expect(result.convIds).toEqual([]);
+    expect(result.stillStreaming).toEqual([]);
+    expect(ac.signal.aborted).toBe(true);
+    expect(ac.signal.reason).toBe("daemon-restart");
+    expect(readInterruptedStreamIds()).toEqual([]);
+  });
+
   test("explicit stop aborts active work while preserving queued user intent", async () => {
     const parentConvId = makeConversation("stop-parent");
     const childConvId = makeConversation("stop-child");

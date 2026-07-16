@@ -91,6 +91,14 @@ export interface ReplayConversationCommand {
   startedAt: number;
 }
 
+export interface CompactConversationCommand {
+  type: "compact_conversation";
+  reqId?: string;
+  convId: string;
+  /** Client-originated timestamp used for progress and cancellation state. */
+  startedAt: number;
+}
+
 export interface AbortCommand {
   type: "abort";
   reqId?: string;
@@ -600,6 +608,7 @@ export type Command =
   | NewConversationCommand
   | SendMessageCommand
   | ReplayConversationCommand
+  | CompactConversationCommand
   | SetModelCommand
   | SetEffortCommand
   | SetFastModeCommand
@@ -697,7 +706,7 @@ export interface StreamingStartedEvent {
   blockOffset?: number;
   /** Accumulated output tokens so far — included for late-joining clients and periodic catch-up snapshots. */
   tokens?: number;
-  /** Active native-compaction start time for late-join/catch-up status rendering. */
+  /** Active context-compaction start time for late-join/catch-up status rendering. */
   compactionStartedAt?: number | null;
 }
 
