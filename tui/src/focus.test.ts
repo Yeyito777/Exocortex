@@ -725,9 +725,17 @@ describe("conversation activity shortcuts", () => {
     expect(state.chatFocus).toBe("history");
     expect(state.sidebar.currentFolderId).toBe("work");
     expect(state.sidebar.selectedId).toBe("latest-completed");
+
+    // Loading clears unread in the daemon; cycling by the active id also makes
+    // the next press deterministic before that sidebar update arrives.
+    state.convId = "latest-completed";
+    expect(handleFocusedKey({ type: "char", char: "t" }, state)).toEqual({
+      type: "load_conversation",
+      convId: "older-completed",
+    });
   });
 
-  test("Shift+T opens the most recently updated streaming conversation outside the subagents tree", () => {
+  test("Shift+T cycles through streaming conversations by recency and wraps, excluding subagents", () => {
     const state = createInitialState();
     state.vim.mode = "normal";
     state.sidebar.folders = [
@@ -749,6 +757,20 @@ describe("conversation activity shortcuts", () => {
     expect(state.chatFocus).toBe("prompt");
     expect(state.sidebar.currentFolderId).toBe("work");
     expect(state.sidebar.selectedId).toBe("latest-stream");
+
+    state.convId = "latest-stream";
+    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({
+      type: "load_conversation",
+      convId: "older-stream",
+    });
+
+    state.convId = "older-stream";
+    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({
+      type: "load_conversation",
+      convId: "latest-stream",
+    });
+    expect(state.sidebar.open).toBe(false);
+    expect(state.panelFocus).toBe("chat");
   });
 
   test("t and Shift+T remain text input in insert mode", () => {

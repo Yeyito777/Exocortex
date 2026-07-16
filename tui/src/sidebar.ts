@@ -61,7 +61,8 @@ export {
 export {
   focusConversationAt,
   focusConversationById,
-  focusLatestActivityConversation,
+  focusNextCompletedConversation,
+  focusNextStreamingConversation,
   focusPreviousEnteredConversation,
   rememberEnteredConversation,
 } from "./sidebar/selection";

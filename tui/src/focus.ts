@@ -21,7 +21,8 @@ import { toggleToolOutputPreservingViewport } from "./chatscroll";
 import {
   focusConversationAt,
   focusConversationById,
-  focusLatestActivityConversation,
+  focusNextCompletedConversation,
+  focusNextStreamingConversation,
   focusPreviousEnteredConversation,
   createConversationActionMenu,
   handleConversationActionMenuKey,
@@ -131,11 +132,14 @@ function focusSidebarShortcutTarget(state: RenderState, focus: () => boolean): K
   return focus() ? loadSelectedConversation(state) : { type: "handled" };
 }
 
-function loadLatestActivityConversation(
+function loadActivityConversation(
   state: RenderState,
   status: "completed" | "streaming",
 ): KeyResult {
-  return focusLatestActivityConversation(state.sidebar, status)
+  const focused = status === "completed"
+    ? focusNextCompletedConversation(state.sidebar, state.convId)
+    : focusNextStreamingConversation(state.sidebar, state.convId);
+  return focused
     ? loadSelectedConversation(state)
     : { type: "handled" };
 }
@@ -262,11 +266,11 @@ export function handleFocusedKey(
   // Standalone normal-mode activity shortcuts. Preserve pending Vim sequences
   // so t/T can still be used as the character following an operator or find.
   if (state.vim.mode === "normal" && !vimHasPendingInput(state)) {
-    if (action === "sidebar_focus_latest_completed") {
-      return loadLatestActivityConversation(state, "completed");
+    if (action === "sidebar_focus_next_completed") {
+      return loadActivityConversation(state, "completed");
     }
-    if (action === "sidebar_focus_latest_streaming") {
-      return loadLatestActivityConversation(state, "streaming");
+    if (action === "sidebar_focus_next_streaming") {
+      return loadActivityConversation(state, "streaming");
     }
   }
 

@@ -69,8 +69,8 @@ export type Action =
   | "sidebar_next"
   | "sidebar_prev"
   | "sidebar_focus_previous"
-  | "sidebar_focus_latest_completed"
-  | "sidebar_focus_latest_streaming"
+  | "sidebar_focus_next_completed"
+  | "sidebar_focus_next_streaming"
   | "sidebar_visible_top"
   | "sidebar_visible_middle"
   | "sidebar_visible_bottom"
@@ -132,8 +132,8 @@ const BINDS: Record<string, Action> = {
   // Sidebar quick nav (normal mode for character bindings)
   "char:J":     "sidebar_next",
   "char:K":     "sidebar_prev",
-  "char:t":     "sidebar_focus_latest_completed",
-  "char:T":     "sidebar_focus_latest_streaming",
+  "char:t":     "sidebar_focus_next_completed",
+  "char:T":     "sidebar_focus_next_streaming",
   "f14":        "sidebar_focus_top_1",
   "f15":        "sidebar_focus_top_2",
   "f16":        "sidebar_focus_top_3",

@@ -61,24 +61,39 @@ export function focusPreviousEnteredConversation(sidebar: SidebarState): boolean
   return focusConversationById(sidebar, sidebar.previousEnteredId);
 }
 
-/** Focus the most recently updated completed or streaming non-subagent conversation. */
-export function focusLatestActivityConversation(
+function activityConversations(
   sidebar: SidebarState,
   status: "completed" | "streaming",
-): boolean {
+): ConversationSummary[] {
   const subagentFolderIdSet = subagentsFolderIds(sidebar.folders);
-  let latest: ConversationSummary | null = null;
+  return sidebar.conversations
+    .filter((conv) => {
+      if (conv.folderId && subagentFolderIdSet.has(conv.folderId)) return false;
+      return status === "streaming" ? conv.streaming : conv.unread && !conv.streaming;
+    })
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
 
-  for (const conv of sidebar.conversations) {
-    if (conv.folderId && subagentFolderIdSet.has(conv.folderId)) continue;
-    const matchesStatus = status === "streaming"
-      ? conv.streaming
-      : conv.unread && !conv.streaming;
-    if (!matchesStatus) continue;
-    if (!latest || conv.updatedAt > latest.updatedAt) latest = conv;
-  }
+function focusNextActivityConversation(
+  sidebar: SidebarState,
+  status: "completed" | "streaming",
+  currentConvId: string | null,
+): boolean {
+  const conversations = activityConversations(sidebar, status);
+  if (conversations.length === 0) return false;
+  const currentIndex = currentConvId ? conversations.findIndex(conv => conv.id === currentConvId) : -1;
+  const next = conversations[currentIndex === -1 ? 0 : (currentIndex + 1) % conversations.length];
+  return focusConversationById(sidebar, next.id);
+}
 
-  return latest ? focusConversationById(sidebar, latest.id) : false;
+/** Focus the next completed non-subagent conversation in recency order. */
+export function focusNextCompletedConversation(sidebar: SidebarState, currentConvId: string | null): boolean {
+  return focusNextActivityConversation(sidebar, "completed", currentConvId);
+}
+
+/** Focus the next streaming non-subagent conversation in recency order, wrapping at the end. */
+export function focusNextStreamingConversation(sidebar: SidebarState, currentConvId: string | null): boolean {
+  return focusNextActivityConversation(sidebar, "streaming", currentConvId);
 }
 
 export function selectedDisplayRow(displayRows: DisplayRow[], sidebar: SidebarState): number {
