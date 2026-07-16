@@ -9,6 +9,8 @@ import { existsSync } from "fs";
 import type { Command, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
+import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
+import { log } from "./log";
 
 export type EventHandler = (event: Event) => void;
 export type LlmCompleteCallback = (text: string) => void;
@@ -52,9 +54,15 @@ export class DaemonClient {
   private nextCommandSequence = 0;
   private llmCallbacks = new Map<string, { onSuccess: LlmCompleteCallback; onError?: LlmErrorCallback }>();
   private transcriptionCallbacks = new Map<string, { onSuccess: TranscriptionCallback; onError?: TranscriptionErrorCallback }>();
+  private pendingConversationLoads = new Map<string, { convId: string; startedAt: number }>();
+  private pendingConversationHistoryLoads = new Map<string, { convId: string; requestSource: "initial-backfill" | "viewport"; startedAt: number }>();
   private nextReqId = 0;
 
-  constructor(handler: EventHandler, overrideSocketPath?: string) {
+  constructor(
+    handler: EventHandler,
+    overrideSocketPath?: string,
+    private readonly performanceProfilingEnabled = PERFORMANCE_PROFILING_ENABLED,
+  ) {
     this.handler = handler;
     this.socketPath = overrideSocketPath ?? socketPath();
   }
@@ -327,13 +335,55 @@ export class DaemonClient {
     this.send({ type: "list_conversations" });
   }
 
-  loadConversation(convId: string): void {
-    this.send({ type: "load_conversation", convId, turns: 5 });
+  loadConversation(convId: string): string {
+    const requestedAt = Date.now();
+    const reqId = `conversation_${++this.nextReqId}_${requestedAt}`;
+    if (this.performanceProfilingEnabled) {
+      this.pendingConversationLoads.set(reqId, { convId, startedAt: performance.now() });
+      log("info", `perf: conversation_open tui_request ${JSON.stringify({ reqId, convId, requestedAt, connected: this._connected })}`);
+    }
+    this.send({
+      type: "load_conversation",
+      reqId,
+      convId,
+      turns: 5,
+      ...(this.performanceProfilingEnabled ? { requestedAt } : {}),
+    });
+    if (this.performanceProfilingEnabled) {
+      const waitTimer = setTimeout(() => {
+        const pendingLoad = this.pendingConversationLoads.get(reqId);
+        if (!pendingLoad) return;
+        log("warn", `perf: conversation_open tui_waiting ${JSON.stringify({
+          reqId,
+          convId,
+          elapsedMs: performance.now() - pendingLoad.startedAt,
+          connected: this._connected,
+        })}`);
+      }, 1_000);
+      waitTimer.unref?.();
+    }
+    return reqId;
   }
 
-  loadConversationHistory(convId: string, beforeEntryIndex: number, turns: number): string {
+  loadConversationHistory(
+    convId: string,
+    beforeEntryIndex: number,
+    turns: number,
+    requestSource: "initial-backfill" | "viewport" = "viewport",
+  ): string {
     const reqId = `history_${++this.nextReqId}_${Date.now()}`;
-    this.send({ type: "load_conversation_history", reqId, convId, beforeEntryIndex, turns });
+    if (this.performanceProfilingEnabled) {
+      this.pendingConversationHistoryLoads.set(reqId, { convId, requestSource, startedAt: performance.now() });
+      log("info", `perf: conversation_history tui_request ${JSON.stringify({ reqId, convId, requestSource, beforeEntryIndex, turns, connected: this._connected })}`);
+    }
+    this.send({
+      type: "load_conversation_history",
+      reqId,
+      convId,
+      beforeEntryIndex,
+      turns,
+      ...(this.performanceProfilingEnabled ? { requestSource } : {}),
+    });
     return reqId;
   }
 
@@ -439,7 +489,44 @@ export class DaemonClient {
       this.buffer = this.buffer.slice(idx + 1);
       if (!line) continue;
       try {
+        const parseStartedAt = this.performanceProfilingEnabled ? performance.now() : 0;
         const event = JSON.parse(line) as Event;
+        const parseMs = this.performanceProfilingEnabled ? performance.now() - parseStartedAt : 0;
+        if (this.performanceProfilingEnabled && (event.type === "conversation_loaded" || event.type === "error") && event.reqId) {
+          const pendingLoad = this.pendingConversationLoads.get(event.reqId);
+          if (pendingLoad) {
+            this.pendingConversationLoads.delete(event.reqId);
+            const elapsedMs = performance.now() - pendingLoad.startedAt;
+            log(elapsedMs >= 250 ? "warn" : "info", `perf: conversation_open tui_received ${JSON.stringify({
+              reqId: event.reqId,
+              convId: pendingLoad.convId,
+              elapsedMs,
+              responseType: event.type,
+              wireBytes: Buffer.byteLength(line),
+              parseMs,
+              entries: event.type === "conversation_loaded" ? event.entries.length : null,
+              historyTotalEntries: event.type === "conversation_loaded" ? event.historyTotalEntries ?? null : null,
+            })}`);
+          }
+        }
+        if (this.performanceProfilingEnabled && (event.type === "conversation_history_loaded" || event.type === "error") && event.reqId) {
+          const pendingLoad = this.pendingConversationHistoryLoads.get(event.reqId);
+          if (pendingLoad) {
+            this.pendingConversationHistoryLoads.delete(event.reqId);
+            const elapsedMs = performance.now() - pendingLoad.startedAt;
+            log(elapsedMs >= 250 ? "warn" : "info", `perf: conversation_history tui_received ${JSON.stringify({
+              reqId: event.reqId,
+              convId: pendingLoad.convId,
+              requestSource: pendingLoad.requestSource,
+              elapsedMs,
+              responseType: event.type,
+              wireBytes: Buffer.byteLength(line),
+              parseMs,
+              entries: event.type === "conversation_history_loaded" ? event.entries.length : null,
+              historyTotalEntries: event.type === "conversation_history_loaded" ? event.historyTotalEntries : null,
+            })}`);
+          }
+        }
         this.settleQueueCommands(event);
         let handledByCallback = false;
 

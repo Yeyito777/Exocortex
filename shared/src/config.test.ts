@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { homedir } from "os";
 import { resolve } from "path";
-import { configuredConversationDefaults, effectiveConversationDefaults, productConversationDefaults, type ExocortexConfig, agentWorkingDirectory } from "./config";
+import { configuredConversationDefaults, effectiveConversationDefaults, productConversationDefaults, type ExocortexConfig, agentWorkingDirectory, performanceProfilingEnabled } from "./config";
 import { agentCwdDir, repoRoot } from "./paths";
 
 describe("agentWorkingDirectory", () => {
@@ -22,6 +22,14 @@ describe("agentWorkingDirectory", () => {
   test("keeps absolute paths absolute", () => {
     expect(agentWorkingDirectory({ agent: { workingDirectory: "/tmp/exocortex-agent" } }))
       .toBe("/tmp/exocortex-agent");
+  });
+});
+
+describe("performance profiling config", () => {
+  test("is opt-in and honors the diagnostics flag", () => {
+    expect(performanceProfilingEnabled({})).toBe(false);
+    expect(performanceProfilingEnabled({ diagnostics: { performanceProfiling: false } })).toBe(false);
+    expect(performanceProfilingEnabled({ diagnostics: { performanceProfiling: true } })).toBe(true);
   });
 });
 

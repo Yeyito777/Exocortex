@@ -49,6 +49,7 @@ import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
 import { configureChronoService } from "./chrono-service";
 import { INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory } from "./history-pagination";
+import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
@@ -167,7 +168,10 @@ export function createHandler(server: DaemonServer) {
     exocortex: exocortexRuntime,
   });
 
-  const getRenderSnapshot = (convId: string) => convStore.getRenderSnapshot(convId, false);
+  const getRenderSnapshot = (
+    convId: string,
+    diagnostics?: Partial<convStore.RenderSnapshotDiagnostics>,
+  ) => convStore.getRenderSnapshot(convId, false, diagnostics);
 
   const shouldAutoGenerateTitle = (convId: string): boolean => {
     const title = convStore.get(convId)?.title.trim() ?? "";
@@ -370,6 +374,26 @@ export function createHandler(server: DaemonServer) {
 
   // ── Compact conversation payload helpers ─────────────────────────
 
+  interface ConversationLoadMetrics {
+    snapshot: Partial<convStore.RenderSnapshotDiagnostics>;
+    compactMs: number;
+    paginateMs: number;
+    sendMs: number;
+    responseBytes: number;
+    responseEntries: number;
+    historyTotalEntries: number;
+  }
+
+  const createConversationLoadMetrics = (): ConversationLoadMetrics => ({
+    snapshot: {},
+    compactMs: 0,
+    paginateMs: 0,
+    sendMs: 0,
+    responseBytes: 0,
+    responseEntries: 0,
+    historyTotalEntries: 0,
+  });
+
   const sendCompactHistoryUpdated = (convId: string, resetHistoryWindow = false): boolean => {
     const data = getRenderSnapshot(convId);
     if (!data) return false;
@@ -387,16 +411,24 @@ export function createHandler(server: DaemonServer) {
     convId: string,
     reqId?: string,
     turns?: number,
+    metrics?: ConversationLoadMetrics,
   ) => {
     // Tool-result bodies are fetched separately only when the TUI expands them.
-    const data = getRenderSnapshot(convId);
+    const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
+    const data = getRenderSnapshot(convId, snapshotDiagnostics);
     if (!data) return null;
+    const compactStartedAt = metrics ? performance.now() : 0;
     const compactData = compactHistoryImages(data);
+    const compactMs = metrics ? performance.now() - compactStartedAt : 0;
     const paginated = target.capabilities?.has("history-pagination") || turns !== undefined;
+    const paginateStartedAt = metrics ? performance.now() : 0;
     const page = paginated ? pageDisplayHistory(compactData.entries, turns ?? INITIAL_HISTORY_TURNS) : null;
+    const paginateMs = metrics ? performance.now() - paginateStartedAt : 0;
     const queued = convStore.getQueuedMessages(data.convId);
     const conv = convStore.get(data.convId);
-    server.sendTo(target, {
+    const responseEntries = page ? [...page.pinnedEntries, ...page.entries] : compactData.entries;
+    const sendStartedAt = metrics ? performance.now() : 0;
+    const responseBytes = server.sendTo(target, {
       type: "conversation_loaded",
       reqId,
       convId: compactData.convId,
@@ -404,7 +436,7 @@ export function createHandler(server: DaemonServer) {
       model: compactData.model,
       effort: compactData.effort,
       fastMode: compactData.fastMode,
-      entries: page ? [...page.pinnedEntries, ...page.entries] : compactData.entries,
+      entries: responseEntries,
       ...(page ? {
         historyStartIndex: page.startIndex,
         historyStartUserIndex: page.startUserIndex,
@@ -416,7 +448,16 @@ export function createHandler(server: DaemonServer) {
       toolOutputsIncluded: compactData.toolOutputsIncluded,
       queuedMessages: queued.length > 0 ? queued : undefined,
       goal: conv?.goal ?? null,
-    });
+    }, metrics !== undefined);
+    if (metrics) {
+      metrics.snapshot = snapshotDiagnostics ?? {};
+      metrics.compactMs = compactMs;
+      metrics.paginateMs = paginateMs;
+      metrics.sendMs = performance.now() - sendStartedAt;
+      metrics.responseBytes = typeof responseBytes === "number" ? responseBytes : 0;
+      metrics.responseEntries = responseEntries.length;
+      metrics.historyTotalEntries = page?.totalEntries ?? compactData.entries.length;
+    }
     return data;
   };
 
@@ -426,22 +467,40 @@ export function createHandler(server: DaemonServer) {
     beforeEntryIndex: number,
     turns: number,
     reqId?: string,
+    requestSource?: "initial-backfill" | "viewport",
+    metrics?: ConversationLoadMetrics,
   ): boolean => {
-    const data = getRenderSnapshot(convId);
+    const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
+    const data = getRenderSnapshot(convId, snapshotDiagnostics);
     if (!data) return false;
+    const compactStartedAt = metrics ? performance.now() : 0;
     const compactData = compactHistoryImages(data);
+    const compactMs = metrics ? performance.now() - compactStartedAt : 0;
+    const paginateStartedAt = metrics ? performance.now() : 0;
     const page = pageDisplayHistory(compactData.entries, turns, beforeEntryIndex);
-    server.sendTo(target, {
+    const paginateMs = metrics ? performance.now() - paginateStartedAt : 0;
+    const sendStartedAt = metrics ? performance.now() : 0;
+    const responseBytes = server.sendTo(target, {
       type: "conversation_history_loaded",
       reqId,
       convId,
+      requestSource,
       entries: page.entries,
       historyStartIndex: page.startIndex,
       historyStartUserIndex: page.startUserIndex,
       historyEndIndex: page.endIndex,
       historyTotalEntries: page.totalEntries,
       hasOlderHistory: page.hasOlder,
-    });
+    }, metrics !== undefined);
+    if (metrics) {
+      metrics.snapshot = snapshotDiagnostics ?? {};
+      metrics.compactMs = compactMs;
+      metrics.paginateMs = paginateMs;
+      metrics.sendMs = performance.now() - sendStartedAt;
+      metrics.responseBytes = typeof responseBytes === "number" ? responseBytes : 0;
+      metrics.responseEntries = page.entries.length;
+      metrics.historyTotalEntries = page.totalEntries;
+    }
     return true;
   };
 
@@ -1582,14 +1641,37 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "load_conversation": {
+        const startedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
+        const queueDelayMs = PERFORMANCE_PROFILING_ENABLED
+          && typeof cmd.requestedAt === "number" && Number.isFinite(cmd.requestedAt)
+          ? Math.max(0, Date.now() - cmd.requestedAt)
+          : null;
+        if (PERFORMANCE_PROFILING_ENABLED) {
+          log("info", `perf: conversation_open daemon_start ${JSON.stringify({
+            reqId: cmd.reqId ?? null,
+            convId: cmd.convId,
+            clientId: client.id ?? null,
+            turns: cmd.turns ?? null,
+            queueDelayMs,
+          })}`);
+        }
         if (cmd.turns !== undefined && (!Number.isSafeInteger(cmd.turns) || cmd.turns < 1 || cmd.turns > 100)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid conversation history turn count" });
           break;
         }
         if (cmd.turns !== undefined) client.capabilities?.add("history-pagination");
-        const data = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns);
+        const metrics = PERFORMANCE_PROFILING_ENABLED ? createConversationLoadMetrics() : undefined;
+        const data = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns, metrics);
         if (!data) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          if (PERFORMANCE_PROFILING_ENABLED) {
+            log("warn", `perf: conversation_open daemon_missing ${JSON.stringify({
+              reqId: cmd.reqId ?? null,
+              convId: cmd.convId,
+              durationMs: performance.now() - startedAt,
+              queueDelayMs,
+            })}`);
+          }
           break;
         }
         server.subscribe(client, cmd.convId);
@@ -1619,25 +1701,62 @@ export function createHandler(server: DaemonServer) {
         if (convStore.clearUnread(data.convId)) {
           broadcastConversationUpdated(server, data.convId);
         }
+        if (PERFORMANCE_PROFILING_ENABLED && metrics) {
+          const durationMs = performance.now() - startedAt;
+          log(durationMs >= 250 || (queueDelayMs ?? 0) >= 250 ? "warn" : "info", `perf: conversation_open daemon_complete ${JSON.stringify({
+            reqId: cmd.reqId ?? null,
+            convId: cmd.convId,
+            clientId: client.id ?? null,
+            durationMs,
+            queueDelayMs,
+            ...metrics,
+          })}`);
+        }
         break;
       }
 
       case "load_conversation_history": {
+        const startedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
+        if (PERFORMANCE_PROFILING_ENABLED) {
+          log("info", `perf: conversation_history daemon_start ${JSON.stringify({
+            reqId: cmd.reqId ?? null,
+            convId: cmd.convId,
+            clientId: client.id ?? null,
+            requestSource: cmd.requestSource ?? null,
+            turns: cmd.turns,
+            beforeEntryIndex: cmd.beforeEntryIndex,
+          })}`);
+        }
         if (!Number.isSafeInteger(cmd.beforeEntryIndex) || cmd.beforeEntryIndex < 0
             || !Number.isSafeInteger(cmd.turns) || cmd.turns < 1 || cmd.turns > 100) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid conversation history page request" });
           break;
         }
         client.capabilities?.add("history-pagination");
+        const metrics = PERFORMANCE_PROFILING_ENABLED ? createConversationLoadMetrics() : undefined;
         const sent = sendCompactConversationHistory(
           client,
           cmd.convId,
           cmd.beforeEntryIndex,
           cmd.turns,
           cmd.reqId,
+          PERFORMANCE_PROFILING_ENABLED ? cmd.requestSource : undefined,
+          metrics,
         );
         if (!sent) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+        }
+        if (PERFORMANCE_PROFILING_ENABLED && metrics) {
+          const durationMs = performance.now() - startedAt;
+          log(durationMs >= 250 ? "warn" : "info", `perf: conversation_history daemon_complete ${JSON.stringify({
+            reqId: cmd.reqId ?? null,
+            convId: cmd.convId,
+            clientId: client.id ?? null,
+            requestSource: cmd.requestSource ?? null,
+            durationMs,
+            sent,
+            ...metrics,
+          })}`);
         }
         break;
       }

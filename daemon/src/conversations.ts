@@ -1653,6 +1653,19 @@ export interface ConversationRenderSnapshot extends ConversationDisplayData {
   };
 }
 
+/** Optional phase timings for diagnosing slow conversation opens/history loads. */
+export interface RenderSnapshotDiagnostics {
+  conversationCacheHit: boolean;
+  snapshotCacheHit: boolean;
+  streaming: boolean;
+  loadMs: number;
+  buildMs: number;
+  totalMs: number;
+  fileBytes: number | null;
+  messageCount: number;
+  entryCount: number;
+}
+
 function buildSnapshotDisplayData(
   conv: Conversation,
   messages: StoredMessage[],
@@ -1715,28 +1728,60 @@ function withoutPersistedStreamingSuffix(messages: StoredMessage[], transientMes
   return messages.slice(0, suffixStart);
 }
 
-export function getRenderSnapshot(id: string, includeToolOutputs = true): ConversationRenderSnapshot | null {
+export function getRenderSnapshot(
+  id: string,
+  includeToolOutputs = true,
+  diagnostics?: Partial<RenderSnapshotDiagnostics>,
+): ConversationRenderSnapshot | null {
+  // Avoid clocks, cache probes, and file stats entirely unless a caller opts in.
+  const collectingDiagnostics = diagnostics !== undefined;
+  const totalStartedAt = collectingDiagnostics ? performance.now() : 0;
+  const conversationCacheHit = collectingDiagnostics ? conversations.has(id) : false;
+  const loadStartedAt = collectingDiagnostics ? performance.now() : 0;
   const conv = get(id);
-  if (!conv) return null;
+  const loadMs = collectingDiagnostics ? performance.now() - loadStartedAt : 0;
+  const isStreaming = streaming.isStreaming(id);
+  const finishDiagnostics = (snapshot: ConversationRenderSnapshot | null, snapshotCacheHit: boolean, buildStartedAt: number): ConversationRenderSnapshot | null => {
+    if (diagnostics) {
+      diagnostics.conversationCacheHit = conversationCacheHit;
+      diagnostics.snapshotCacheHit = snapshotCacheHit;
+      diagnostics.streaming = isStreaming;
+      diagnostics.loadMs = loadMs;
+      diagnostics.buildMs = buildStartedAt === 0 ? 0 : performance.now() - buildStartedAt;
+      diagnostics.totalMs = performance.now() - totalStartedAt;
+      try {
+        diagnostics.fileBytes = persistence.getConversationFileStat(id).fileSize;
+      } catch {
+        diagnostics.fileBytes = null;
+      }
+      diagnostics.messageCount = conv?.messages.length ?? 0;
+      diagnostics.entryCount = snapshot?.entries.length ?? 0;
+    }
+    return snapshot;
+  };
+  if (!conv) return finishDiagnostics(null, false, 0);
 
-  if (!streaming.isStreaming(id)) {
+  if (!isStreaming) {
     const cached = renderSnapshotCache.get(id)?.get(includeToolOutputs);
-    if (cached) return cached;
+    if (cached) return finishDiagnostics(cached, true, 0);
   }
 
+  const buildStartedAt = collectingDiagnostics ? performance.now() : 0;
   const fullPersisted = buildSnapshotDisplayData(conv, conv.messages, includeToolOutputs);
-  if (!streaming.isStreaming(id)) {
+  if (!isStreaming) {
     let variants = renderSnapshotCache.get(id);
     if (!variants) {
       variants = new Map();
       renderSnapshotCache.set(id, variants);
     }
     variants.set(includeToolOutputs, fullPersisted);
-    return fullPersisted;
+    return finishDiagnostics(fullPersisted, false, buildStartedAt);
   }
 
   const startedAt = streaming.getStreamingStartedAt(id);
-  if (isCurrentAssistantAlreadyCommitted(conv, startedAt)) return fullPersisted;
+  if (isCurrentAssistantAlreadyCommitted(conv, startedAt)) {
+    return finishDiagnostics(fullPersisted, false, buildStartedAt);
+  }
 
   const transientMessages = streaming.getStreamingDisplayMessages(id);
   const snapshotPersistedMessages = withoutPersistedStreamingSuffix(conv.messages, transientMessages);
@@ -1753,7 +1798,7 @@ export function getRenderSnapshot(id: string, includeToolOutputs = true): Conver
 
   if (trailingAssistant?.type === "ai") transientEntries.pop();
 
-  return {
+  const snapshot: ConversationRenderSnapshot = {
     ...persisted,
     entries: [...persisted.entries, ...transientEntries],
     pendingAI: {
@@ -1766,6 +1811,7 @@ export function getRenderSnapshot(id: string, includeToolOutputs = true): Conver
       ),
     },
   };
+  return finishDiagnostics(snapshot, false, buildStartedAt);
 }
 
 export function getDisplayData(id: string, includeToolOutputs = true): ConversationDisplayData | null {

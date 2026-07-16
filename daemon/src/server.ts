@@ -123,9 +123,16 @@ export class DaemonServer {
 
   // ── Event dispatch ──────────────────────────────────────────────
 
-  sendTo(client: ConnectedClient, event: Event): void {
-    if (client.socket.destroyed) return;
-    try { client.socket.write(JSON.stringify(event) + "\n"); } catch { /* socket dead — client will be cleaned up on close */ }
+  sendTo(client: ConnectedClient, event: Event, measureBytes = false): number {
+    if (client.socket.destroyed) return 0;
+    try {
+      const payload = JSON.stringify(event) + "\n";
+      client.socket.write(payload);
+      return measureBytes ? Buffer.byteLength(payload) : 0;
+    } catch {
+      // Socket dead — client will be cleaned up on close.
+      return 0;
+    }
   }
 
   broadcast(event: Event): void {

@@ -295,21 +295,52 @@ describe("DaemonClient commands", () => {
     });
   });
 
-  test("requests a five-turn opening window and cursor-based older history", () => {
-    const client = new DaemonClient(() => {});
+  test("adds performance correlation fields when profiling is enabled", () => {
+    const client = new DaemonClient(() => {}, undefined, true);
     const internal = client as any;
 
     client.loadConversation("conv-1");
     client.loadConversationHistory("conv-1", 40, 15);
 
-    expect(internal.pendingCommands[0]).toEqual({ type: "load_conversation", convId: "conv-1", turns: 5 });
+    expect(internal.pendingCommands[0]).toMatchObject({
+      type: "load_conversation",
+      convId: "conv-1",
+      turns: 5,
+      requestedAt: expect.any(Number),
+    });
+    expect(internal.pendingCommands[0].reqId).toMatch(/^conversation_/);
+    expect(internal.pendingCommands[1]).toMatchObject({
+      type: "load_conversation_history",
+      convId: "conv-1",
+      beforeEntryIndex: 40,
+      turns: 15,
+      requestSource: "viewport",
+    });
+    expect(internal.pendingCommands[1].reqId).toMatch(/^history_/);
+  });
+
+  test("omits performance bookkeeping and correlation fields when profiling is disabled", () => {
+    const client = new DaemonClient(() => {}, undefined, false);
+    const internal = client as any;
+
+    client.loadConversation("conv-1");
+    client.loadConversationHistory("conv-1", 40, 15);
+
+    expect(internal.pendingCommands[0]).toMatchObject({
+      type: "load_conversation",
+      convId: "conv-1",
+      turns: 5,
+    });
+    expect(internal.pendingCommands[0]).not.toHaveProperty("requestedAt");
     expect(internal.pendingCommands[1]).toMatchObject({
       type: "load_conversation_history",
       convId: "conv-1",
       beforeEntryIndex: 40,
       turns: 15,
     });
-    expect(internal.pendingCommands[1].reqId).toMatch(/^history_/);
+    expect(internal.pendingCommands[1]).not.toHaveProperty("requestSource");
+    expect(internal.pendingConversationLoads.size).toBe(0);
+    expect(internal.pendingConversationHistoryLoads.size).toBe(0);
   });
 });
 

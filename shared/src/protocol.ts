@@ -132,6 +132,8 @@ export interface LoadConversationCommand {
   type: "load_conversation";
   reqId?: string;
   convId: string;
+  /** Client wall-clock time used only to diagnose IPC/event-loop queue delay. */
+  requestedAt?: number;
   /** Number of newest user turns to include in the opening payload. */
   turns?: number;
 }
@@ -140,6 +142,8 @@ export interface LoadConversationHistoryCommand {
   type: "load_conversation_history";
   reqId?: string;
   convId: string;
+  /** UI action that caused this page request; diagnostic only. */
+  requestSource?: "initial-backfill" | "viewport";
   /** Absolute entry cursor returned by the preceding history payload. */
   beforeEntryIndex: number;
   /** Maximum number of user turns to load before the cursor. */
@@ -765,6 +769,8 @@ export interface ConversationHistoryLoadedEvent {
   type: "conversation_history_loaded";
   reqId?: string;
   convId: string;
+  /** Echo of the UI action that caused this page request. */
+  requestSource?: "initial-backfill" | "viewport";
   /** Older entries immediately preceding the client's current history window. */
   entries: DisplayEntry[];
   /** Absolute index of the first returned entry. */

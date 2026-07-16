@@ -49,6 +49,8 @@ import { isConversationInSubagentsFolder, runStreamFinishedPing, shouldPingForBa
 import { stripStartupLaunchEcho } from "./startupinput";
 import { focusedConversationTasks } from "./activitypanel";
 import { beginOlderHistoryLoad, INITIAL_BUFFER_ADDITIONAL_TURNS, OLDER_HISTORY_PAGE_TURNS, shouldLoadOlderHistory } from "./historypagination";
+import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
+import { log } from "./log";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -81,6 +83,7 @@ let deferredHistoryRenderTimer: ReturnType<typeof setTimeout> | null = null;
 let lastPrewarmKey: string | null = null;
 let lastPrewarmAt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let eventLoopLagTimer: ReturnType<typeof setInterval> | null = null;
 let reconnecting = false;
 let reconnectNavigationTarget: string | null = null;
 let terminalSetUp = false;
@@ -234,28 +237,42 @@ function clearReconnectTimer(): void {
 
 const FRAME_DELAY_MS = 16;
 const STREAM_CHUNK_FRAME_DELAY_MS = 50;
+const EVENT_LOOP_CHECK_INTERVAL_MS = 1_000;
+const EVENT_LOOP_LAG_WARN_MS = 250;
 
-function performRender(): void {
+function performRender(): number {
   const renderStartedAt = performance.now();
   render(state);
   const renderMs = performance.now() - renderStartedAt;
+  if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
+    log("warn", `perf: tui_slow_render ${JSON.stringify({
+      convId: state.convId,
+      renderMs,
+      messages: state.messages.length,
+      pendingAI: state.pendingAI !== null,
+      scrollOffset: state.scrollOffset,
+      historyFocus: state.panelFocus === "chat" && state.chatFocus === "history",
+      showToolOutput: state.showToolOutput,
+    })}`);
+  }
   resetStreamTick();
   maybeReportStartupProfile(renderMs);
   scheduleDeferredHistoryRenderWork();
+  return renderMs;
 }
 
-function renderImmediately(): void {
+function renderImmediately(): number {
   clearRenderTimer();
-  performRender();
+  return performRender();
 }
 
-function renderAfterLocalUiMutation(): void {
+function renderAfterLocalUiMutation(): number {
   // IMPORTANT: do not replace this with scheduleRender(). Local keyboard/mouse
   // mutations (prompt edits, chat-history cursor/scroll, focus changes) must be
   // visible immediately. Waiting for the 16ms daemon/stream frame scheduler makes
   // chat-history navigation feel laggy and can reintroduce visible tty tearing.
   // Retained-frame diffing keeps these immediate local paints cheap.
-  renderImmediately();
+  return renderImmediately();
 }
 
 /** Schedule a render. Shorter-delay callers can pull an existing timer earlier. */
@@ -306,10 +323,15 @@ function resetStreamTick(): void {
   }
 }
 
-function requestOlderHistory(turns: number): boolean {
+function requestOlderHistory(turns: number, requestSource: "initial-backfill" | "viewport" = "viewport"): boolean {
   const request = beginOlderHistoryLoad(state, turns);
   if (!request) return false;
-  state.historyLoadingRequestId = daemon.loadConversationHistory(request.convId, request.beforeEntryIndex, request.turns);
+  state.historyLoadingRequestId = daemon.loadConversationHistory(
+    request.convId,
+    request.beforeEntryIndex,
+    request.turns,
+    requestSource,
+  );
   return true;
 }
 
@@ -320,6 +342,7 @@ function maybeRequestOlderHistory(): void {
 // ── Event handler (daemon → TUI) ───────────────────────────────────
 
 function onDaemonEvent(event: Event): void {
+  const eventStartedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
   if (event.type === "conversation_loaded" && event.convId === reconnectNavigationTarget) {
     reconnectNavigationTarget = null;
   } else if (event.type === "error" && event.convId === reconnectNavigationTarget) {
@@ -362,6 +385,18 @@ function onDaemonEvent(event: Event): void {
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
   reattachVisiblePendingVoiceSubmissions();
+  if (PERFORMANCE_PROFILING_ENABLED && event.type === "conversation_history_loaded") {
+    const applyMs = performance.now() - eventStartedAt;
+    log(applyMs >= 100 ? "warn" : "info", `perf: conversation_history tui_applied ${JSON.stringify({
+      reqId: event.reqId ?? null,
+      convId: event.convId,
+      requestSource: event.requestSource ?? null,
+      applyMs,
+      entries: event.entries.length,
+      historyTotalEntries: event.historyTotalEntries,
+      accepted: event.convId === state.convId,
+    })}`);
+  }
 
   if (event.type === "conversations_list") {
     startupProfileConversationCount = event.conversations.length;
@@ -414,8 +449,21 @@ function onDaemonEvent(event: Event): void {
   if (event.type === "conversation_loaded") {
     // Paint the five-turn opening window before beginning the silent expansion
     // to the normal fifteen-turn in-chat buffer.
-    renderImmediately();
-    if (requestOlderHistory(INITIAL_BUFFER_ADDITIONAL_TURNS)) scheduleRender(0);
+    const applyMs = PERFORMANCE_PROFILING_ENABLED ? performance.now() - eventStartedAt : 0;
+    const renderMs = renderImmediately();
+    if (PERFORMANCE_PROFILING_ENABLED) {
+      const totalMs = performance.now() - eventStartedAt;
+      log(totalMs >= 250 ? "warn" : "info", `perf: conversation_open tui_applied ${JSON.stringify({
+        reqId: event.reqId ?? null,
+        convId: event.convId,
+        applyMs,
+        renderMs,
+        totalMs,
+        entries: event.entries.length,
+        historyTotalEntries: event.historyTotalEntries ?? null,
+      })}`);
+    }
+    if (requestOlderHistory(INITIAL_BUFFER_ADDITIONAL_TURNS, "initial-backfill")) scheduleRender(0);
     return;
   }
 
@@ -1199,8 +1247,13 @@ function handleKey(key: KeyEvent): void {
       break;
     case "load_conversation":
       state.folderInstructionsDoc = null;
-      daemon.loadConversation(result.convId);
-      renderAfterLocalUiMutation();
+      {
+        const reqId = daemon.loadConversation(result.convId);
+        const renderMs = renderAfterLocalUiMutation();
+        if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
+          log("warn", `perf: conversation_open tui_request_render ${JSON.stringify({ reqId, convId: result.convId, renderMs, input: "keyboard" })}`);
+        }
+      }
       return;
     case "open_folder_instructions":
       if (state.convId) unsubscribeConversation(state.convId);
@@ -1318,8 +1371,13 @@ function handleMouse(ev: MouseEvent): void {
   switch (result.type) {
     case "load_conversation":
       state.folderInstructionsDoc = null;
-      daemon.loadConversation(result.convId);
-      renderAfterLocalUiMutation();
+      {
+        const reqId = daemon.loadConversation(result.convId);
+        const renderMs = renderAfterLocalUiMutation();
+        if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
+          log("warn", `perf: conversation_open tui_request_render ${JSON.stringify({ reqId, convId: result.convId, renderMs, input: "mouse" })}`);
+        }
+      }
       return;
     case "open_folder_instructions":
       if (state.convId) unsubscribeConversation(state.convId);
@@ -1413,6 +1471,27 @@ function setupTerminal(): void {
   terminalSetUp = true;
 }
 
+function startEventLoopLagMonitor(): void {
+  if (!PERFORMANCE_PROFILING_ENABLED || eventLoopLagTimer) return;
+  let expectedAt = performance.now() + EVENT_LOOP_CHECK_INTERVAL_MS;
+  eventLoopLagTimer = setInterval(() => {
+    const now = performance.now();
+    const lagMs = Math.max(0, now - expectedAt);
+    expectedAt = now + EVENT_LOOP_CHECK_INTERVAL_MS;
+    if (lagMs < EVENT_LOOP_LAG_WARN_MS) return;
+    const memory = process.memoryUsage();
+    log("warn", `perf: tui_event_loop_lag ${JSON.stringify({
+      lagMs,
+      convId: state.convId,
+      messages: state.messages.length,
+      rssMb: Math.round(memory.rss / 1024 / 1024),
+      heapUsedMb: Math.round(memory.heapUsed / 1024 / 1024),
+    })}`);
+  }, EVENT_LOOP_CHECK_INTERVAL_MS);
+  eventLoopLagTimer.unref?.();
+  log("info", "perf: performance profiling enabled");
+}
+
 function restoreTerminal(): void {
   if (!terminalSetUp) return;
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
@@ -1449,6 +1528,7 @@ async function main(): Promise<void> {
   startupProfileMark("ping_sent");
 
   setupTerminal();
+  startEventLoopLagMonitor();
   startupProfileMark("terminal_setup_done");
 
   process.stdout.on("resize", () => {
@@ -1507,6 +1587,10 @@ function cleanup(): void {
   clearStreamFinishedPingTimer();
   clearPrewarmTimer();
   clearReconnectTimer();
+  if (eventLoopLagTimer) {
+    clearInterval(eventLoopLagTimer);
+    eventLoopLagTimer = null;
+  }
   voiceInput?.cleanup();
   daemon?.disconnect();
   restoreTerminal();

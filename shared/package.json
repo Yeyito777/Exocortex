@@ -6,6 +6,7 @@
     "./auth": "./src/auth.ts",
     "./messages": "./src/messages.ts",
     "./config": "./src/config.ts",
+    "./performance-profiling": "./src/performance-profiling.ts",
     "./model-display": "./src/model-display.ts",
     "./token-pricing": "./src/token-pricing.ts",
     "./protocol": "./src/protocol.ts",

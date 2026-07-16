@@ -119,6 +119,17 @@ export interface FeatureFlagsConfig {
   [feature: string]: unknown;
 }
 
+export interface DiagnosticsConfig {
+  /**
+   * Collect correlated daemon/TUI conversation-open timings and event-loop lag
+   * diagnostics. Defaults to false because the extra clocks, bookkeeping, and
+   * log I/O are intended for temporary investigations.
+   */
+  performanceProfiling?: boolean;
+  /** Preserve unknown future diagnostic settings. */
+  [diagnostic: string]: unknown;
+}
+
 export interface ConversationDefaults {
   provider: ProviderId;
   model: ModelId;
@@ -136,6 +147,8 @@ export interface ExocortexConfig {
   theme?: string;
   /** Experimental/product feature gates. */
   features?: FeatureFlagsConfig;
+  /** Opt-in runtime diagnostics. */
+  diagnostics?: DiagnosticsConfig;
   /** User-overridable app defaults. */
   defaults?: DefaultsConfig;
   /** Agent/runtime behavior. */
@@ -196,10 +209,16 @@ export function defaultExocortexConfig(): ExocortexConfig {
   return {
     theme: "whale",
     features: { computerUse: false, goalTool: true },
+    diagnostics: { performanceProfiling: false },
     agent: { workingDirectory: ".exocortex-cwd" },
     ping: { mode: null, sound: null },
     openers: defaultOpenersConfig(),
   };
+}
+
+/** Whether the temporary correlated daemon/TUI performance profiler is enabled. */
+export function performanceProfilingEnabled(config: ExocortexConfig = readExocortexConfig()): boolean {
+  return config.diagnostics?.performanceProfiling === true;
 }
 
 function expandHome(path: string): string {
