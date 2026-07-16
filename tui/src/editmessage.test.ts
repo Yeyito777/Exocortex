@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { confirmEditMessage, editMessageItemIndexAtMouse, openEditMessageModal } from "./editmessage";
-import type { UserMessage } from "./messages";
+import {
+  applyOptimisticEditMessageUnwind,
+  classifyPendingEditMessageUnwindEvent,
+  confirmEditMessage,
+  editMessageItemIndexAtMouse,
+  openEditMessageModal,
+} from "./editmessage";
+import { createPendingAI, type UserMessage } from "./messages";
 import { createInitialState } from "./state";
 
 describe("edit message modal", () => {
@@ -195,5 +201,113 @@ describe("edit message modal", () => {
       userMessageIndex: 1,
     });
     expect(state.contextTokens).toBe(42_123);
+  });
+
+  test("optimistically removes the selected sent message and active tail", () => {
+    const state = createInitialState();
+    state.convId = "conv-optimistic";
+    state.messages = [
+      { role: "system_instructions", text: "Keep this", metadata: null },
+      { role: "user", text: "first", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "first answer" }], metadata: null },
+      { role: "user", text: "edit me", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "old answer" }], metadata: null },
+    ];
+    state.pendingAI = createPendingAI(123, state.model);
+    state.pendingAI.blocks.push({ type: "text", text: "still streaming" });
+    state.streamingTailMessages.push({ role: "system", text: "old tail", metadata: null });
+    state.historyTotalEntries = 4;
+    state.historyLoadingOlder = true;
+    state.historyLoadingStartedAt = 100;
+    state.historyLoadingRequestId = "old-page";
+    state.scrollOffset = 20;
+    state.lastStreamSeqByConv[state.convId] = 9;
+
+    expect(applyOptimisticEditMessageUnwind(state, 1)).toBe(true);
+
+    expect(state.messages.map((message) => message.role)).toEqual([
+      "system_instructions",
+      "user",
+      "assistant",
+    ]);
+    expect(state.pendingAI).toBeNull();
+    expect(state.streamingTailMessages).toEqual([]);
+    expect(state.historyTotalEntries).toBe(2);
+    expect(state.historyLoadingOlder).toBe(false);
+    expect(state.historyLoadingStartedAt).toBeNull();
+    expect(state.historyLoadingRequestId).toBeNull();
+    expect(state.scrollOffset).toBe(0);
+    expect(state.lastStreamSeqByConv[state.convId]).toBeUndefined();
+  });
+
+  test("uses absolute user indices for an optimistic paged-history unwind", () => {
+    const state = createInitialState();
+    state.historyStartIndex = 20;
+    state.historyStartUserIndex = 10;
+    state.historyTotalEntries = 24;
+    state.historyHasOlder = true;
+    state.messages = [
+      { role: "user", text: "user ten", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "answer ten" }], metadata: null },
+      { role: "user", text: "user eleven", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "answer eleven" }], metadata: null },
+    ];
+
+    expect(applyOptimisticEditMessageUnwind(state, 11)).toBe(true);
+    expect(state.messages).toHaveLength(2);
+    expect(state.historyTotalEntries).toBe(22);
+    expect(state.historyHasOlder).toBe(true);
+  });
+
+  test("suppresses doomed stream events until the matching unwind snapshot", () => {
+    const pending = { convId: "conv-1", reqId: "unwind-1" };
+
+    expect(classifyPendingEditMessageUnwindEvent(pending, {
+      type: "system_message",
+      convId: "conv-1",
+      text: "✗ Interrupted",
+    })).toBe("ignore");
+    expect(classifyPendingEditMessageUnwindEvent(pending, {
+      type: "history_updated",
+      convId: "conv-1",
+      entries: [],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    })).toBe("ignore");
+    expect(classifyPendingEditMessageUnwindEvent(pending, {
+      type: "conversation_loaded",
+      reqId: "another-load",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      entries: [],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    })).toBe("ignore");
+    expect(classifyPendingEditMessageUnwindEvent(pending, {
+      type: "conversation_loaded",
+      reqId: "unwind-1",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      entries: [],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    })).toBe("complete");
+    expect(classifyPendingEditMessageUnwindEvent(pending, {
+      type: "error",
+      reqId: "unwind-1",
+      convId: "conv-1",
+      message: "Cannot unwind conversation conv-1",
+    })).toBe("failed");
+    expect(classifyPendingEditMessageUnwindEvent(pending, {
+      type: "system_message",
+      convId: "conv-2",
+      text: "unrelated",
+    })).toBe("unrelated");
   });
 });

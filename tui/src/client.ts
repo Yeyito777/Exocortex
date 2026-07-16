@@ -327,8 +327,10 @@ export class DaemonClient {
     this.send({ type: "move_queued_message", queueId, direction });
   }
 
-  unwindConversation(convId: string, userMessageIndex: number): void {
-    this.send({ type: "unwind_conversation", convId, userMessageIndex });
+  unwindConversation(convId: string, userMessageIndex: number): string {
+    const reqId = `unwind_${++this.nextReqId}_${Date.now()}`;
+    this.send({ type: "unwind_conversation", reqId, convId, userMessageIndex });
+    return reqId;
   }
 
   setSystemInstructions(convId: string, text: string): void {

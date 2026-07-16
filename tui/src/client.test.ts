@@ -407,7 +407,7 @@ describe("DaemonClient reconnect behavior", () => {
     const connecting = client.connect();
     // This command is queued after connect() starts but before its asynchronous
     // socket callback marks the client connected.
-    client.unwindConversation("conv-1", 2);
+    const reqId = client.unwindConversation("conv-1", 2);
 
     const result = await connecting;
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -415,11 +415,13 @@ describe("DaemonClient reconnect behavior", () => {
 
     expect(result).toEqual({ replayedCommands: [{
       type: "unwind_conversation",
+      reqId,
       convId: "conv-1",
       userMessageIndex: 2,
     }] });
     expect(received.join("")).toContain(JSON.stringify({
       type: "unwind_conversation",
+      reqId,
       convId: "conv-1",
       userMessageIndex: 2,
     }) + "\n");

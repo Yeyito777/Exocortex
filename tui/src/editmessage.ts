@@ -11,8 +11,15 @@
 
 import type { KeyEvent } from "./input";
 import type { UserMessage } from "./messages";
+import type { Event } from "./protocol";
 import type { RenderState, EditMessageItem } from "./state";
-import { EDIT_INDEX_INSTRUCTIONS, EDIT_INDEX_QUEUED, focusPrompt } from "./state";
+import {
+  EDIT_INDEX_INSTRUCTIONS,
+  EDIT_INDEX_QUEUED,
+  clearPendingAI,
+  clearStreamingTailMessages,
+  focusPrompt,
+} from "./state";
 import { computeEditMessageOverlayLayout, type EditMessageOverlayLayout } from "./editmessage-layout";
 import { isNewConversationQueuedMessage } from "./queue";
 
@@ -231,6 +238,98 @@ export function confirmEditMessage(state: RenderState): EditConfirmResult {
   }
 
   return { action: "edit_sent", text: item.text, userMessageIndex: item.userMessageIndex };
+}
+
+/**
+ * Immediately project a sent-message unwind into the local transcript.
+ *
+ * The daemon remains authoritative and performs the durable mutation, but it
+ * must first wait for an active stream (and its provider-session cleanup) to
+ * stop. Keeping the known-doomed suffix visible during that wait makes Ctrl-W
+ * feel delayed even though the key and modal were handled synchronously.
+ */
+export function applyOptimisticEditMessageUnwind(
+  state: RenderState,
+  userMessageIndex: number,
+): boolean {
+  let visibleUserIndex = state.historyStartUserIndex;
+  let spliceAt = -1;
+
+  for (let i = 0; i < state.messages.length; i++) {
+    if (state.messages[i]?.role !== "user") continue;
+    if (visibleUserIndex === userMessageIndex) {
+      spliceAt = i;
+      break;
+    }
+    visibleUserIndex += 1;
+  }
+
+  // This can only happen for a stale modal or a local-only voice placeholder.
+  // In either case, leave the current projection alone and let the daemon's
+  // canonical response decide what should be displayed.
+  if (spliceAt === -1) return false;
+
+  const retainedHistoryEntries = state.messages
+    .slice(0, spliceAt)
+    .filter((message) => message.role !== "system_instructions")
+    .length;
+
+  state.messages.splice(spliceAt);
+  clearPendingAI(state);
+  clearStreamingTailMessages(state);
+  if (state.convId) delete state.lastStreamSeqByConv[state.convId];
+  state.scrollOffset = 0;
+  state.historyTotalEntries = state.historyStartIndex + retainedHistoryEntries;
+  state.historyHasOlder = state.historyStartIndex > 0;
+  state.historyLoadingOlder = false;
+  state.historyLoadingStartedAt = null;
+  state.historyLoadingRequestId = null;
+  return true;
+}
+
+export interface PendingEditMessageUnwind {
+  convId: string;
+  reqId: string;
+}
+
+export type PendingEditMessageUnwindEvent = "unrelated" | "ignore" | "complete" | "failed";
+
+const EVENTS_SUPERSEDED_BY_PENDING_UNWIND: ReadonlySet<Event["type"]> = new Set([
+  "conversation_loaded",
+  "streaming_started",
+  "block_start",
+  "text_chunk",
+  "thinking_chunk",
+  "streaming_sync",
+  "tool_call",
+  "tool_result",
+  "tokens_update",
+  "context_update",
+  "message_complete",
+  "streaming_stopped",
+  "stream_retry",
+  "context_compaction_status",
+  "user_message",
+  "system_message",
+  "history_updated",
+]);
+
+/**
+ * Classify daemon events received while an optimistic unwind is in flight.
+ * Stream-finalization events describe the suffix that is about to be deleted,
+ * so applying them would briefly make the old tail reappear. The matching
+ * conversation_loaded response ends the optimistic window; its immediately
+ * following history_updated event is then safe to apply normally.
+ */
+export function classifyPendingEditMessageUnwindEvent(
+  pending: PendingEditMessageUnwind,
+  event: Event,
+): PendingEditMessageUnwindEvent {
+  if (!("convId" in event) || event.convId !== pending.convId) return "unrelated";
+  if (event.type === "conversation_loaded" && event.reqId === pending.reqId) return "complete";
+  if (event.type === "error" && event.reqId === pending.reqId) return "failed";
+  if (EVENTS_SUPERSEDED_BY_PENDING_UNWIND.has(event.type)) return "ignore";
+  return "unrelated";
 }
 
 /** Cancel the edit message modal. */
