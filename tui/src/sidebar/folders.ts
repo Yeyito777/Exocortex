@@ -100,7 +100,6 @@ function movePromptCanTargetFolder(state: SidebarFolderViewState, folderId: stri
 
 function currentFolderDescendantDepth(state: SidebarFolderViewState, folderId: string): number | null {
   const currentFolderId = state.currentFolderId;
-  if (!currentFolderId) return null;
 
   const seen = new Set<string>();
   let depth = 0;
@@ -108,9 +107,9 @@ function currentFolderDescendantDepth(state: SidebarFolderViewState, folderId: s
   while (folder && !seen.has(folder.id)) {
     seen.add(folder.id);
     const parentId = folder.parentId ?? null;
-    if (!parentId) return null;
     depth++;
     if (parentId === currentFolderId) return depth;
+    if (!parentId) return null;
     folder = state.folders.find(f => f.id === parentId);
   }
   return null;

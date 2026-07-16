@@ -997,6 +997,33 @@ describe("sidebar folders", () => {
     expect(state.sidebar.prompt?.input).toBe("/");
   });
 
+  test("move prompt prioritizes top-level matches over same-named nested folders from the root", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [
+      { id: "folder-alpha", name: "Alpha", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 1 },
+      { id: "folder-alpha-done", name: "Done", parentId: "folder-alpha", createdAt: 2, updatedAt: 2, pinned: false, sortOrder: 2 },
+      { id: "folder-beta", name: "Beta", parentId: null, createdAt: 3, updatedAt: 3, pinned: false, sortOrder: 3 },
+      { id: "folder-beta-done", name: "Done", parentId: "folder-beta", createdAt: 4, updatedAt: 4, pinned: false, sortOrder: 4 },
+      { id: "folder-done", name: "Done", parentId: null, createdAt: 5, updatedAt: 5, pinned: false, sortOrder: 5 },
+    ];
+    state.sidebar.conversations = [conversation("conv-a", 6)];
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
+    state.sidebar.selectedId = "conv-a";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "F" }, state)).toEqual({ type: "handled" });
+    for (const ch of "Done") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
+
+    expect(state.sidebar.prompt?.autocomplete?.matches.map(match => match.name)).toEqual([
+      "Done",
+      "Alpha/Done",
+      "Beta/Done",
+    ]);
+  });
+
   test("moving a conversation into a visible folder keeps focus near the removed row, preferring above", () => {
     const state = createInitialState();
     state.sidebar.open = true;
