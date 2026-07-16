@@ -9,7 +9,7 @@ import { createServer, type Server, type Socket } from "net";
 import { existsSync, unlinkSync } from "fs";
 import { isWindows } from "@exocortex/shared/paths";
 import { log } from "./log";
-import type { Command, Event } from "./protocol";
+import type { ClientCapability, Command, Event } from "./protocol";
 
 // ── Client tracking ─────────────────────────────────────────────────
 
@@ -20,7 +20,7 @@ export interface ConnectedClient {
   socket: Socket;
   subscriptions: Set<string>;
   buffer: string;
-  capabilities: Set<"history-pagination">;
+  capabilities: Set<"history-pagination" | ClientCapability>;
 }
 
 export type CommandHandler = (client: ConnectedClient, command: Command) => void | Promise<void>;
@@ -160,6 +160,44 @@ export class DaemonServer {
     for (const client of this.clients.values()) {
       if (!client.subscriptions.has(convId)) continue;
       this.sendTo(client, client.capabilities.has("history-pagination") ? paginatedEvent : legacyEvent);
+    }
+  }
+
+  hasLegacyUnwindSubscribers(convId: string): boolean {
+    for (const client of this.clients.values()) {
+      if (client.subscriptions.has(convId)
+          && !client.capabilities.has("targeted-unwind")) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Deliver the small delta to capable clients. Legacy clients receive their
+   * old summary event and, only when subscribed to this conversation, a full
+   * history fallback. This compatibility path never writes the sidebar index.
+   */
+  deliverConversationUnwind(
+    event: Extract<Event, { type: "conversation_unwound" }>,
+    requester: ConnectedClient,
+    requesterEvent: Extract<Event, { type: "conversation_unwound" }>,
+    broadcast: boolean,
+    legacyHistory?: {
+      legacy: Extract<Event, { type: "history_updated" }>;
+      paginated: Extract<Event, { type: "history_updated" }>;
+    },
+  ): void {
+    for (const client of this.clients.values()) {
+      if (client !== requester && !broadcast) continue;
+      if (client.capabilities.has("targeted-unwind")) {
+        this.sendTo(client, client === requester ? requesterEvent : event);
+        continue;
+      }
+      this.sendTo(client, { type: "conversation_updated", summary: event.summary });
+      if (legacyHistory && client.subscriptions.has(event.convId)) {
+        this.sendTo(client, client.capabilities.has("history-pagination")
+          ? legacyHistory.paginated
+          : legacyHistory.legacy);
+      }
     }
   }
 

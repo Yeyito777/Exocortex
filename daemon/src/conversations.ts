@@ -29,6 +29,7 @@ export {
   isStreaming, setActiveJob, getActiveJob, isRestartRecoverableJob, clearActiveJob, getStreamingStartedAt,
   setStreamingTokens, getStreamingTokens, nextStreamSeq, getStreamSeq,
   setContextCompactionStartedAt, getContextCompactionStartedAt,
+  requestHistoryUnwind, isHistoryUnwindPending, clearHistoryUnwindPending,
   touchActivity, pauseActivity, resumeActivity,
   setActiveToolBackgrounder, clearActiveToolBackgrounder, backgroundActiveTool,
   resetChunkCounter,
@@ -42,6 +43,7 @@ export {
   pushQueuedMessage, pushGlobalIdleQueuedMessage, drainQueuedMessages,
   clearQueuedMessages, clearAllQueuedMessages, removeQueuedMessage, removeQueuedMessageById,
   removeQueuedMessagesById, updateQueuedMessage, moveQueuedMessage,
+  persistQueuedMessagesSnapshot,
   suspendQueuedMessageDelivery, resumeQueuedMessageDelivery, isQueuedMessageDeliverySuspended,
   loadQueuedMessagesFromDisk, setQueuedMessagesChangedListener,
 } from "./message-queue";
@@ -53,6 +55,8 @@ const summaries = new Map<string, PersistedConversationSummary>();
 const folders = new Map<string, PersistedFolderSummary>();
 const folderInstructions = new Map<string, string>();
 const dirty = new Set<string>();
+/** Dirty state containing only rebuildable context-token attribution. */
+const contextAttributionDirty = new Set<string>();
 const unread = new Set<string>();
 const renderSnapshotCache = new Map<string, Map<boolean, ConversationRenderSnapshot>>();
 
@@ -83,7 +87,7 @@ function saveSummaryIndexNow(): void {
       continue;
     }
     try {
-      entries.push({ ...summary, ...persistence.getConversationFileStat(summary.id) });
+      entries.push(persistence.indexEntryFromSummary(summary));
     } catch {
       // The file disappeared between a mutation and the index write; omit it.
     }
@@ -531,11 +535,19 @@ function removeConversationState(id: string): boolean {
   renderSnapshotCache.delete(id);
   summaries.delete(id);
   dirty.delete(id);
+  contextAttributionDirty.delete(id);
   const wasUnread = unread.delete(id);
   streaming.clearActiveJob(id);
   streaming.resetChunkCounter(id);
   messageQueue.clearQueuedMessages(id);
+  if (persistence.hasConversationUnwindReceipt(id)) {
+    // Deletion can follow a recovered unwind whose prior queue write failed. Make
+    // the current snapshot durable before removing its last tombstone receipt.
+    messageQueue.persistQueuedMessagesSnapshot();
+    persistence.removeConversationUnwindReceipt(id);
+  }
   streaming.clearGoalContinuationAfterStream(id);
+  streaming.clearHistoryUnwindPending(id);
   return wasUnread;
 }
 
@@ -545,6 +557,10 @@ export function removeMany(ids: string[], recordUndo = true): string[] {
   for (const id of ids) {
     if (seen.has(id)) continue;
     seen.add(id);
+    if (streaming.isHistoryUnwindPending(id)) {
+      log("warn", `conversations: refusing to delete ${id} while a history unwind is pending`);
+      continue;
+    }
     if (summaries.has(id) || conversations.has(id)) existing.push(id);
   }
   if (existing.length === 0) return [];
@@ -552,15 +568,16 @@ export function removeMany(ids: string[], recordUndo = true): string[] {
   for (const id of existing) {
     if (dirty.has(id)) flush(id);
   }
-  persistence.trashConversations(existing, recordUndo);
+  const moved = persistence.trashConversations(existing, recordUndo);
+  if (moved.length === 0) return [];
 
   let unreadChanged = false;
-  for (const id of existing) {
+  for (const id of moved) {
     unreadChanged = removeConversationState(id) || unreadChanged;
   }
   if (unreadChanged) saveUnreadState();
   saveSummaryIndex();
-  return existing;
+  return moved;
 }
 
 export function remove(id: string): boolean {
@@ -568,13 +585,17 @@ export function remove(id: string): boolean {
 }
 
 function deleteConversationWithoutUndo(id: string): boolean {
-  const existed = summaries.has(id) || conversations.has(id);
+  if (streaming.isHistoryUnwindPending(id)) {
+    log("warn", `conversations: refusing to delete ${id} while a history unwind is pending`);
+    return false;
+  }
   if (dirty.has(id)) flush(id);
   const moved = persistence.trashConversations([id], false).length > 0;
+  if (!moved) return false;
   const unreadChanged = removeConversationState(id);
   if (unreadChanged) saveUnreadState();
-  if (existed || moved) saveSummaryIndex();
-  return existed || moved;
+  saveSummaryIndex();
+  return true;
 }
 
 export type UndoDeleteResult =
@@ -949,9 +970,87 @@ export function getEffectiveSystemInstructions(id: string): string | null {
  * Also aborts any active stream and clears any queued messages.
  * Returns a promise that resolves when any active stream has stopped.
  */
-export async function unwindTo(id: string, userMessageIndex: number): Promise<boolean> {
+export interface ConversationUnwindResult {
+  status: "applied" | "already_applied";
+  operationId: string;
+  convId: string;
+  userMessageIndex: number;
+  historyTotalEntries: number;
+  contextTokens: number | null;
+  summary: ConversationSummary;
+}
+
+export class HistoryUnwindRefreshRequiredError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "HistoryUnwindRefreshRequiredError";
+  }
+}
+
+const inFlightUnwinds = new Map<string, {
+  operationId: string;
+  promise: Promise<ConversationUnwindResult | null>;
+}>();
+
+export function releaseHistoryUnwindLease(id: string, operationId: string): void {
+  streaming.clearHistoryUnwindPending(id, operationId);
+}
+
+export function unwindTo(
+  id: string,
+  userMessageIndex: number,
+  operationId = `unwind-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  expectedStartedAt?: number,
+  targetFingerprint?: string,
+  deferLeaseRelease = false,
+  onCommitted?: (result: ConversationUnwindResult) => void,
+): Promise<ConversationUnwindResult | null> {
+  const inFlight = inFlightUnwinds.get(id);
+  if (inFlight) {
+    if (inFlight.operationId !== operationId) return Promise.resolve(null);
+    return inFlight.promise.then((result) => result ? { ...result, status: "already_applied" } : null);
+  }
+
+  const promise = performUnwindTo(
+    id,
+    userMessageIndex,
+    operationId,
+    expectedStartedAt,
+    targetFingerprint,
+    deferLeaseRelease,
+    onCommitted,
+  );
+  inFlightUnwinds.set(id, { operationId, promise });
+  const clear = () => {
+    if (inFlightUnwinds.get(id)?.promise === promise) inFlightUnwinds.delete(id);
+  };
+  void promise.then(clear, clear);
+  return promise;
+}
+
+async function performUnwindTo(
+  id: string,
+  userMessageIndex: number,
+  operationId: string,
+  expectedStartedAt: number | undefined,
+  targetFingerprint: string | undefined,
+  deferLeaseRelease: boolean,
+  onCommitted: ((result: ConversationUnwindResult) => void) | undefined,
+): Promise<ConversationUnwindResult | null> {
   const conv = get(id);
-  if (!conv) return false;
+  if (!conv) return null;
+  const receipt = persistence.getLastUnwindReceipt(conv);
+  if (receipt?.operationId === operationId) {
+    return {
+      status: "already_applied",
+      operationId,
+      convId: id,
+      userMessageIndex: receipt.userMessageIndex,
+      historyTotalEntries: receipt.historyTotalEntries,
+      contextTokens: conv.lastContextTokens,
+      summary: getSummary(id)!,
+    };
+  }
 
   // Validate the index before doing anything destructive.
   // Only count real user messages — tool_result messages also have
@@ -962,6 +1061,7 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
   let historyCount = 0;
   let targetHistoryCount = -1;
   let targetContextCheckpoint: StoredUserContextCheckpoint | undefined;
+  let targetMessage: StoredMessage | undefined;
   for (let i = 0; i < conv.messages.length; i++) {
     const message = conv.messages[i];
     if (message.role === "system_instructions") continue;
@@ -970,13 +1070,23 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
         spliceAt = i;
         targetHistoryCount = historyCount;
         targetContextCheckpoint = message.contextCheckpoint;
+        targetMessage = message;
         break;
       }
       userCount++;
     }
     if (isReplayHistoryMessage(message)) historyCount++;
   }
-  if (spliceAt === -1) return false;
+  if (spliceAt === -1 || !targetMessage) return null;
+  if (expectedStartedAt !== undefined && targetMessage.metadata?.startedAt !== expectedStartedAt) {
+    log("warn", `conversations: refusing unwind with stale target identity for ${id} at user index ${userMessageIndex}`);
+    return null;
+  }
+  if (targetFingerprint !== undefined
+      && historyPrefixHash(conv.messages, targetHistoryCount + 1) !== targetFingerprint) {
+    log("warn", `conversations: refusing unwind with stale target fingerprint for ${id} at user index ${userMessageIndex}`);
+    return null;
+  }
 
   // A compaction item is irreversible: only the one-to-one transcript tail
   // written after its fixed boundary can be edited. Enforce this in the daemon
@@ -987,83 +1097,161 @@ export async function unwindTo(id: string, userMessageIndex: number): Promise<bo
       : null;
     if (compactionHistoryCount == null || targetHistoryCount < compactionHistoryCount) {
       log("warn", `conversations: refusing unwind before active compaction boundary for ${id} (target=${targetHistoryCount}, boundary=${compactionHistoryCount ?? "unknown"})`);
-      return false;
+      return null;
     }
   } else if (conv.messages.some((message) => message.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND)) {
     // A divider without its derived replay means the checkpoint was discarded or
     // corrupted. There is no safe generation to rewind, so freeze sent history
     // until a later successful compaction establishes a new one.
     log("warn", `conversations: refusing unwind for ${id}; transcript has a compaction boundary but no active checkpoint`);
-    return false;
+    return null;
   }
 
   // Aborting below can race with a successful compaction install or discard.
   // Remember whether a checkpoint existed so a disappearing replay base causes
   // a non-destructive refusal rather than a fallback to the full transcript.
   const hadActiveContextBeforeAbort = conv.activeContext != null;
+  const ac = streaming.getActiveJob(id) ?? null;
+  if (!streaming.requestHistoryUnwind(id, operationId, ac)) return null;
 
   // Gate delivery without removing durable entries. If the process crashes
   // during the abort wait, suspension disappears on restart and the queue is
   // still intact; a successful unwind explicitly clears it below.
   messageQueue.suspendQueuedMessageDelivery(id);
   const goalContinuationBeforeAbort = streaming.consumeGoalContinuationAfterStream(id);
+  let committed = false;
+  let stoppedAbortedStream = false;
+  try {
+    // Abort any active stream and wait for that exact job to release the turn.
+    if (ac) {
+      ac.abort();
+      const stopped = await waitForStreamStop(id);
+      if (!stopped) {
+        log("warn", `conversations: stream for ${id} did not stop within timeout; refusing unsafe unwind`);
+        return null;
+      }
+      stoppedAbortedStream = true;
+    }
 
-  // Abort any active stream and wait for it to fully stop
-  const ac = streaming.getActiveJob(id);
-  if (ac) {
-    ac.abort();
-    const stopped = await waitForStreamStop(id);
-    if (!stopped) {
-      log("warn", `conversations: stream for ${id} did not stop within timeout; refusing unsafe unwind`);
-      messageQueue.resumeQueuedMessageDelivery(id);
+    // A compaction or another destructive mutation can win the race with abort.
+    // Revalidate both the immutable boundary and the exact target object before
+    // committing a durable cut.
+    const postAbortCompactionHistoryCount = conv.activeContext && isValidActiveContext(conv.activeContext, conv.messages)
+      ? activeContextCompactionHistoryCount(conv.activeContext, conv.messages)
+      : null;
+    const lostCheckpointDuringAbort = hadActiveContextBeforeAbort && conv.activeContext == null;
+    if (conversations.get(id) !== conv
+        || lostCheckpointDuringAbort
+        || conv.messages[spliceAt] !== targetMessage
+        || (targetFingerprint !== undefined
+          && historyPrefixHash(conv.messages, targetHistoryCount + 1) !== targetFingerprint)
+        || (conv.activeContext != null
+          && (postAbortCompactionHistoryCount == null || targetHistoryCount < postAbortCompactionHistoryCount))) {
+      throw new Error(
+        `Conversation state changed while unwinding ${id} `
+        + `(target=${targetHistoryCount}, boundary=${postAbortCompactionHistoryCount ?? "missing"})`,
+      );
+    }
+
+    // Build an immutable result first. The sidecar rename below is the operation's
+    // linearization point; live history and queue state remain untouched until it
+    // succeeds.
+    const plannedMessages = conv.messages.slice(0, spliceAt);
+    const recoveredActiveContext = conv.activeContext
+      ? rewindActiveContextToHistoryCount(conv.activeContext, plannedMessages, targetHistoryCount)
+      : null;
+    const plannedConversation: Conversation = {
+      ...conv,
+      messages: plannedMessages,
+      activeContext: recoveredActiveContext,
+      updatedAt: Date.now(),
+    };
+    plannedConversation.lastContextTokens = contextTokensAtUserCheckpoint(
+      plannedConversation,
+      targetContextCheckpoint,
+      targetHistoryCount,
+      recoveredActiveContext?.windowId ?? null,
+    ) ?? estimateCurrentReplayTokens(plannedConversation);
+    const plannedDisplay = buildSnapshotDisplayData(plannedConversation, plannedMessages, false);
+    const historyTotalEntries = plannedDisplay.entries
+      .filter((entry) => entry.type !== "system_instructions").length;
+    const plannedSummary = summarizeConversation(plannedConversation);
+    const supersededQueueIds = messageQueue.listInternalQueuedMessages()
+      .filter((entry) => entry.convId === id)
+      .map((entry) => entry.id);
+
+    if (dirty.has(id) && !contextAttributionDirty.has(id)) {
+      throw new Error(`Cannot persist targeted unwind for ${id} with unrelated dirty state`);
+    }
+    persistence.saveUnwind(conv, plannedConversation, targetHistoryCount, {
+      operationId,
+      userMessageIndex,
+      historyTotalEntries,
+      messageCount: plannedSummary.messageCount,
+      supersededQueueIds,
+    });
+    committed = true;
+
+    conv.messages.splice(spliceAt);
+    conv.activeContext = recoveredActiveContext;
+    conv.lastContextTokens = plannedConversation.lastContextTokens;
+    conv.updatedAt = plannedConversation.updatedAt;
+    renderSnapshotCache.delete(id);
+    dirty.delete(id);
+    contextAttributionDirty.delete(id);
+    updateSummaryFromConversation(conv);
+    try {
+      const removedQueueEntries = messageQueue.removeQueuedMessagesById(supersededQueueIds);
+      // A prior queue write may have failed after its in-memory entry was removed.
+      // Even when this cut sees no such entry, durably rewrite the canonical queue
+      // before acknowledging the inherited tombstone union.
+      if (removedQueueEntries === 0) messageQueue.persistQueuedMessagesSnapshot();
+      persistence.acknowledgeUnwindQueueCleanup(id, operationId);
+    } catch (err) {
+      // The committed sidecar carries these exact tombstones, so restart recovery
+      // will finish the queue cleanup without deleting later queue entries.
+      log("error", `conversations: failed to persist queue cleanup after unwind ${id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    streaming.clearGoalContinuationAfterStream(id);
+    const result: ConversationUnwindResult = {
+      status: "applied",
+      operationId,
+      convId: id,
+      userMessageIndex,
+      historyTotalEntries,
+      contextTokens: conv.lastContextTokens,
+      summary: getSummary(id)!,
+    };
+    // Publish synchronously while this operation still owns the mutation lease.
+    // No other command can observe the committed cut and then race a stale event.
+    onCommitted?.(result);
+    return result;
+  } catch (err) {
+    if (stoppedAbortedStream && !committed) {
+      throw new HistoryUnwindRefreshRequiredError(
+        err instanceof Error ? err.message : String(err),
+        { cause: err },
+      );
+    }
+    throw err;
+  } finally {
+    messageQueue.resumeQueuedMessageDelivery(id);
+    if (!deferLeaseRelease || (!committed && !stoppedAbortedStream)) {
+      streaming.clearHistoryUnwindPending(id, operationId);
+    }
+    if (!committed) {
       const goalContinuationDuringWait = streaming.consumeGoalContinuationAfterStream(id);
       if (goalContinuationBeforeAbort || goalContinuationDuringWait) {
         streaming.requestGoalContinuationAfterStream(id);
       }
-      return false;
+      // A pending unwind makes the exact aborted stream skip its obsolete final
+      // save. If the cut did not commit, restore that interrupted state now.
+      if (ac && conversations.get(id) === conv && streaming.getActiveJob(id) !== ac) {
+        markDirty(id);
+        flush(id);
+      }
     }
   }
-
-  // A compaction can win the race with abort and install a newer immutable
-  // boundary after the first validation. Revalidate before mutating history;
-  // never resurrect the pre-abort checkpoint across that new boundary.
-  const postAbortCompactionHistoryCount = conv.activeContext && isValidActiveContext(conv.activeContext, conv.messages)
-    ? activeContextCompactionHistoryCount(conv.activeContext, conv.messages)
-    : null;
-  const lostCheckpointDuringAbort = hadActiveContextBeforeAbort && conv.activeContext == null;
-  if (lostCheckpointDuringAbort
-      || (conv.activeContext != null
-        && (postAbortCompactionHistoryCount == null || targetHistoryCount < postAbortCompactionHistoryCount))) {
-    messageQueue.resumeQueuedMessageDelivery(id);
-    const goalContinuationDuringWait = streaming.consumeGoalContinuationAfterStream(id);
-    if (goalContinuationBeforeAbort || goalContinuationDuringWait) {
-      streaming.requestGoalContinuationAfterStream(id);
-    }
-    log("warn", `conversations: compaction state changed while unwinding ${id}; refusing stale edit (target=${targetHistoryCount}, boundary=${postAbortCompactionHistoryCount ?? "missing"})`);
-    return false;
-  }
-
-  // Also discard work queued during the short abort wait: the explicit unwind
-  // supersedes it and must leave no post-unwind continuation behind.
-  messageQueue.clearQueuedMessages(id);
-  messageQueue.resumeQueuedMessageDelivery(id);
-  streaming.clearGoalContinuationAfterStream(id);
-
-  conv.messages.splice(spliceAt);
-  const recoveredActiveContext = conv.activeContext
-    ? rewindActiveContextToHistoryCount(conv.activeContext, conv.messages, targetHistoryCount)
-    : null;
-  conv.activeContext = recoveredActiveContext;
-  conv.lastContextTokens = contextTokensAtUserCheckpoint(
-    conv,
-    targetContextCheckpoint,
-    targetHistoryCount,
-    recoveredActiveContext?.windowId ?? null,
-  ) ?? estimateCurrentReplayTokens(conv);
-  conv.updatedAt = Date.now();
-  markDirty(id);
-  flush(id);
-  return true;
 }
 
 function contextTokensAtUserCheckpoint(
@@ -1225,7 +1413,15 @@ export function loadFromDisk(): LoadFromDiskStats {
 /** Mark a conversation as needing a save. */
 export function markDirty(id: string): void {
   renderSnapshotCache.delete(id);
+  contextAttributionDirty.delete(id);
   dirty.add(id);
+}
+
+/** Mark only provider-derived token attribution as dirty. */
+export function markContextAttributionDirty(id: string): void {
+  renderSnapshotCache.delete(id);
+  dirty.add(id);
+  contextAttributionDirty.add(id);
 }
 
 /** Flush a dirty conversation to disk. */
@@ -1235,6 +1431,7 @@ export function flush(id: string, options: { summaryIndex?: SummaryIndexFlushMod
   if (!conv) return;
   persistence.save(conv);
   dirty.delete(id);
+  contextAttributionDirty.delete(id);
   updateSummaryFromConversation(conv);
   saveSummaryIndex(options.summaryIndex ?? "immediate");
 }
@@ -1249,18 +1446,14 @@ export function flushAll(): void {
     updateSummaryFromConversation(conv);
   }
   dirty.clear();
+  contextAttributionDirty.clear();
   summaryIndexDirty = false;
   saveSummaryIndexNow();
 }
 
-/** Track chunk count and flush every N chunks. Returns true on save boundaries. */
+/** Track chunk count for throttled activity updates. Live blocks remain in streaming state. */
 export function onChunk(id: string): boolean {
-  if (streaming.onChunk(id)) {
-    markDirty(id);
-    flush(id);
-    return true;
-  }
-  return false;
+  return streaming.onChunk(id);
 }
 
 // ── Sidebar/listing state ───────────────────────────────────────────
@@ -1616,6 +1809,11 @@ export function deleteFolder(folderId: string, mode: "recursive" | "unwrap" = "r
     .filter(summary => summary.folderId && folderIds.has(summary.folderId))
     .map(summary => summary.id);
 
+  if (conversationIds.some((convId) => streaming.isHistoryUnwindPending(convId))) {
+    log("warn", `conversations: refusing to delete folder ${folderId} while a history unwind is pending`);
+    return false;
+  }
+
   for (const convId of conversationIds) {
     if (dirty.has(convId)) flush(convId);
   }
@@ -1683,6 +1881,8 @@ function buildSnapshotDisplayData(
   messages: StoredMessage[],
   includeToolOutputs: boolean,
   includeFolderInstructions = true,
+  unwindFingerprintPrefix?: StoredMessage[],
+  includeUnwindFingerprints = true,
 ): ConversationDisplayData {
   const folderInstructionsText = includeFolderInstructions ? formatFolderInstructionsForDisplay(conv.folderId ?? null) : null;
   const displayMessages = folderInstructionsText
@@ -1707,7 +1907,13 @@ function buildSnapshotDisplayData(
     displayMessages,
     conv.lastContextTokens,
     summarizeTool,
-    { includeToolOutputs, editableUserHistoryStart: editableHistoryStart },
+    {
+      includeToolOutputs,
+      includeUnwindFingerprints,
+      unwindFingerprintPrefix,
+      replayHistoryPrefixCount: unwindFingerprintPrefix?.filter(isReplayHistoryMessage).length ?? 0,
+      editableUserHistoryStart: editableHistoryStart,
+    },
   );
 }
 
@@ -1800,7 +2006,14 @@ export function getRenderSnapshot(
   const persisted = snapshotPersistedMessages === conv.messages
     ? fullPersisted
     : buildSnapshotDisplayData(conv, snapshotPersistedMessages, includeToolOutputs);
-  const transient = buildSnapshotDisplayData(conv, transientMessages, includeToolOutputs, false);
+  const transient = buildSnapshotDisplayData(
+    conv,
+    transientMessages,
+    includeToolOutputs,
+    false,
+    snapshotPersistedMessages,
+    snapshotPersistedMessages !== conv.messages,
+  );
   const transientEntries = [...transient.entries];
   const trailingAssistant = transientEntries.at(-1);
   const currentBlocks = streaming.getCurrentStreamingBlocks(id) ?? [];

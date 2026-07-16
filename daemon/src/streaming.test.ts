@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, isRestartRecoverableJob, nextStreamSeq, setActiveJob, setContextCompactionStartedAt } from "./streaming";
+import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, clearHistoryUnwindPending, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, isHistoryUnwindPending, isRestartRecoverableJob, nextStreamSeq, requestHistoryUnwind, setActiveJob, setContextCompactionStartedAt } from "./streaming";
 import { clearQueuedMessages, drainQueuedMessages, pushQueuedMessage } from "./message-queue";
 
 const IDS: string[] = [];
@@ -13,6 +13,7 @@ function mkId(suffix: string): string {
 beforeEach(() => {
   for (const id of IDS.splice(0)) {
     clearActiveJob(id);
+    clearHistoryUnwindPending(id);
     clearQueuedMessages(id);
   }
 });
@@ -48,6 +49,22 @@ describe("restart recovery policy", () => {
 
     clearActiveJob(modelTurnId);
     expect(isRestartRecoverableJob(modelTurnId)).toBe(false);
+  });
+});
+
+describe("pending history unwind", () => {
+  test("survives active-job cleanup until the durable truncation settles", () => {
+    const id = mkId("pending-unwind");
+    const ac = new AbortController();
+    setActiveJob(id, ac, 1);
+    requestHistoryUnwind(id, "op-1", ac);
+
+    clearActiveJob(id);
+    expect(isHistoryUnwindPending(id, ac)).toBe(true);
+    expect(isHistoryUnwindPending(id, new AbortController())).toBe(false);
+
+    clearHistoryUnwindPending(id);
+    expect(isHistoryUnwindPending(id)).toBe(false);
   });
 });
 

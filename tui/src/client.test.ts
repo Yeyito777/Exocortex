@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "net";
 import { unlinkSync } from "fs";
 import { DaemonClient } from "./client";
+import type { Command } from "./protocol";
 
 const testServers: Server[] = [];
 const testSockets: string[] = [];
@@ -165,7 +166,7 @@ describe("DaemonClient commands", () => {
 
     internal.socket = null;
     internal._connected = false;
-    client.send({ type: "unwind_conversation", convId: "conv-1", userMessageIndex: 0 });
+    client.send({ type: "unwind_conversation", operationId: "ordered-op", convId: "conv-1", userMessageIndex: 0 });
     client.unqueueMessage("queue-ordered");
 
     const writes: string[] = [];
@@ -182,6 +183,37 @@ describe("DaemonClient commands", () => {
       "unwind_conversation",
       "unqueue_message",
     ]);
+  });
+
+  test("replays an ambiguous unwind with the same operation id until correlated settlement", () => {
+    const events: unknown[] = [];
+    const client = new DaemonClient((event) => events.push(event));
+    const internal = client as any;
+    const writes: string[] = [];
+    internal.socket = { write: (value: string) => { writes.push(value); } };
+    internal._connected = true;
+
+    const reqId = client.unwindConversation("conv-1", 1, 123);
+    const original = JSON.parse(writes[0]) as Extract<Command, { type: "unwind_conversation" }>;
+    expect(internal.unresolvedUnwindCommands.size).toBe(1);
+
+    writes.length = 0;
+    const replayed = internal.flushPendingCommands();
+    expect(replayed).toHaveLength(1);
+    expect(replayed[0]).toMatchObject({
+      type: "unwind_conversation",
+      reqId,
+      operationId: original.operationId,
+    });
+
+    internal.onData(Buffer.from(`${JSON.stringify({
+      type: "error",
+      reqId,
+      convId: "conv-1",
+      message: "settled",
+    })}\n`));
+    expect(internal.unresolvedUnwindCommands.size).toBe(0);
+    expect(events).toHaveLength(1);
   });
 
   test("does not let an enqueue settlement prematurely settle an unqueue for the same id", () => {
@@ -407,23 +439,29 @@ describe("DaemonClient reconnect behavior", () => {
     const connecting = client.connect();
     // This command is queued after connect() starts but before its asynchronous
     // socket callback marks the client connected.
-    const reqId = client.unwindConversation("conv-1", 2);
+    const reqId = client.unwindConversation("conv-1", 2, 1234);
 
     const result = await connecting;
     await new Promise((resolve) => setTimeout(resolve, 10));
     client.disconnect();
 
-    expect(result).toEqual({ replayedCommands: [{
+    expect(result.replayedCommands).toHaveLength(1);
+    expect(result.replayedCommands[0]).toMatchObject({
       type: "unwind_conversation",
       reqId,
       convId: "conv-1",
       userMessageIndex: 2,
-    }] });
+      expectedStartedAt: 1234,
+    });
+    const operationId = (result.replayedCommands[0] as Extract<Command, { type: "unwind_conversation" }>).operationId;
+    expect(operationId).toMatch(/^[0-9a-f-]{36}$/);
     expect(received.join("")).toContain(JSON.stringify({
       type: "unwind_conversation",
       reqId,
+      operationId,
       convId: "conv-1",
       userMessageIndex: 2,
+      expectedStartedAt: 1234,
     }) + "\n");
   });
 

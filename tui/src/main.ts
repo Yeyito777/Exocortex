@@ -358,10 +358,17 @@ function onDaemonEvent(event: Event): void {
     if (unwindEvent === "complete") {
       pendingEditMessageUnwind = null;
       if (pendingLocalInterruptConvId === pending.convId) pendingLocalInterruptConvId = null;
-      // A direct unwind response must not pull the user back into a conversation
-      // they left while its abort cleanup was finishing. The following shared
-      // history/sidebar broadcasts still reconcile any currently open clients.
-      if (state.convId !== pending.convId) return;
+      // A replay receipt proves the cut committed, but newer turns may have been
+      // appended before reconnect. Its original suffix boundary cannot reconcile
+      // that transcript, so load the current canonical window.
+      if (event.type === "conversation_unwound"
+          && event.status === "already_applied"
+          && state.convId === pending.convId) {
+        daemon.loadConversation(pending.convId);
+      }
+      // The targeted event patches the sidebar everywhere but mutates transcript
+      // state only when this conversation is still open, so it cannot navigate
+      // back to a conversation the user left during abort cleanup.
     } else if (unwindEvent === "failed") {
       pendingEditMessageUnwind = null;
       // The local transcript was only an optimistic projection. Restore the
@@ -1205,7 +1212,7 @@ function confirmSelectedEditMessage(): void {
     }
     // The daemon's unwindTo handles abort internally if streaming,
     // waits for the stream to stop, then truncates.
-    const reqId = daemon.unwindConversation(convId, er.userMessageIndex);
+    const reqId = daemon.unwindConversation(convId, er.userMessageIndex, er.expectedStartedAt, er.targetFingerprint);
     if (optimisticallyUnwound) pendingEditMessageUnwind = { convId, reqId };
   } else if (er.action === "edit_instructions") {
     // Text is placed in prompt as "/instructions <text>" — user edits and submits
@@ -1498,10 +1505,9 @@ async function reconnectToDaemon(): Promise<void> {
 
 function handleDaemonConnectionLost(): void {
   voiceInput?.cleanup();
-  // A connected ordinary command is not replayed after an ambiguous socket
-  // loss. Drop the optimistic-event gate so reconnect's canonical reload can
-  // reveal whether the daemon committed the unwind before disconnecting.
-  pendingEditMessageUnwind = null;
+  // The client retains an ambiguous unwind with its operation UUID and replays
+  // it after reconnect. Keep the optimistic gate until that correlated result;
+  // the normal reconnect load may still reveal the canonical state meanwhile.
   clearPendingAI(state);
   clearStreamingTailMessages(state);
   clearStreamTick();

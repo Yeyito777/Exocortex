@@ -7,7 +7,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { buildDisplayData } from "./display";
+import { buildDisplayData, type BuildDisplayOptions } from "./display";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { MessageMetadata } from "./messages";
 import type { ToolSummarizerFn } from "./display";
@@ -33,6 +33,7 @@ function build(
     convId?: string;
     contextTokens?: number | null;
     sum?: ToolSummarizerFn;
+    displayOptions?: BuildDisplayOptions;
   },
 ) {
   return buildDisplayData(
@@ -44,6 +45,7 @@ function build(
     messages,
     opts?.contextTokens ?? null,
     opts?.sum ?? summarizer,
+    opts?.displayOptions,
   );
 }
 
@@ -147,6 +149,18 @@ describe("buildDisplayData — return shape", () => {
       type: "user",
       contextCheckpoint: { editable: true, contextTokens: 12_345 },
     });
+  });
+
+  test("uses an absolute replay cursor for a split post-compaction suffix", () => {
+    const message: StoredMessage = { role: "user", content: "post-compaction", metadata: null };
+    const result = build([message], {
+      displayOptions: {
+        editableUserHistoryStart: 2,
+        replayHistoryPrefixCount: 2,
+      },
+    });
+
+    expect(userEntry(result.entries[0]).contextCheckpoint?.editable).toBe(true);
   });
 
   test("empty messages → empty entries", () => {

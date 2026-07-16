@@ -61,13 +61,17 @@ export function setQueuedMessagesChangedListener(listener: QueueChangedListener 
 export function loadQueuedMessagesFromDisk(deliveredQueueIds: ReadonlySet<string> = new Set()): number {
   deliverySuspended.clear();
   const loaded = persistence.loadQueuedMessages();
+  const unwindTombstones = persistence.loadUnwindQueueTombstones();
   const seen = new Set<string>();
   messages = loaded.filter((entry) => {
-    if (seen.has(entry.id) || deliveredQueueIds.has(entry.id)) return false;
+    if (seen.has(entry.id) || deliveredQueueIds.has(entry.id) || unwindTombstones.has(entry.id)) return false;
     seen.add(entry.id);
     return true;
   });
-  if (messages.length !== loaded.length) persistence.saveQueuedMessages(messages);
+  if (messages.length !== loaded.length || unwindTombstones.size > 0) {
+    persistence.saveQueuedMessages(messages);
+    persistence.acknowledgeRecoveredUnwindQueueCleanup();
+  }
   changedListener?.(listQueuedMessages());
   return messages.length;
 }
@@ -184,6 +188,11 @@ export function removeQueuedMessagesById(ids: Iterable<string>): number {
   const removed = before - messages.length;
   if (removed > 0) commit();
   return removed;
+}
+
+/** Force the current in-memory queue snapshot to the durable queue file. */
+export function persistQueuedMessagesSnapshot(): void {
+  persistence.saveQueuedMessages(messages);
 }
 
 /** Remove the first ordinary queue entry with matching text. */

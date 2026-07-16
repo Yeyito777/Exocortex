@@ -3,9 +3,13 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getRenderSnapshot, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, mark, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, pin, pinFolder, pinSidebarItems, redoDelete, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
-import { setActiveJob, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob } from "./streaming";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { conversationsDir, dataDir } from "@exocortex/shared/paths";
+import { HistoryUnwindRefreshRequiredError, bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
+import { setActiveJob, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
+import { load as loadPersisted } from "./persistence";
 
 const IDS: string[] = [];
 const FOLDER_IDS: string[] = [];
@@ -172,6 +176,20 @@ describe("folders", () => {
     expect(undoDelete()?.type).toBe("conversations");
     expect(getSummary(ids[0])).toMatchObject({ id: ids[0] });
     expect(getSummary(ids[1])).toMatchObject({ id: ids[1] });
+  });
+
+  test("keeps live state when the conversation file cannot be moved to trash", () => {
+    const id = mkId("delete-missing-file");
+    const conv = create(id, "openai", "gpt-5.6-sol", "missing file");
+    rmSync(join(conversationsDir(), `${id}.json`));
+
+    expect(remove(id)).toBe(false);
+    expect(get(id)).toBe(conv);
+
+    // Restore a durable file so normal test cleanup can remove the conversation.
+    markDirty(id);
+    flush(id);
+    expect(remove(id)).toBe(true);
   });
 
   test("undo restores a single sidebar reorder", () => {
@@ -675,8 +693,10 @@ describe("unwindTo", () => {
       { role: "assistant", content: "removed answer", metadata: null },
     );
     conv.lastContextTokens = 350_000;
+    markDirty(id);
+    flush(id);
 
-    expect(await unwindTo(id, 1)).toBe(true);
+    expect(await unwindTo(id, 1)).not.toBeNull();
     expect(get(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer"]);
     expect(get(id)?.lastContextTokens).toBe(4);
   });
@@ -712,11 +732,14 @@ describe("unwindTo", () => {
       { role: "user", content: "remove", metadata: null },
       { role: "assistant", content: "removed answer", metadata: null },
     );
+    markDirty(id);
+    flush(id);
 
-    expect(await unwindTo(id, 1)).toBe(true);
+    expect(await unwindTo(id, 1)).not.toBeNull();
     expect(get(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer"]);
     expect(get(id)?.activeContext).toEqual(checkpoint);
     expect(get(id)?.lastContextTokens).toBe(2);
+    expect(loadPersisted(id)?.activeContext).toEqual(checkpoint);
   });
 
   test("rewinds a legacy advanced checkpoint when abort recovery crosses the unwind point", async () => {
@@ -747,6 +770,8 @@ describe("unwindTo", () => {
     };
     const checkpoint = structuredClone(conv.activeContext);
     conv.messages.push({ role: "user", content: "remove", metadata: null });
+    markDirty(id);
+    flush(id);
 
     const ac = new AbortController();
     setActiveJob(id, ac, Date.now());
@@ -763,7 +788,7 @@ describe("unwindTo", () => {
       clearActiveJob(id);
     }, { once: true });
 
-    expect(await unwindTo(id, 1)).toBe(true);
+    expect(await unwindTo(id, 1)).not.toBeNull();
     expect(get(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer"]);
     expect(get(id)?.activeContext).toEqual(checkpoint);
   });
@@ -797,7 +822,7 @@ describe("unwindTo", () => {
     };
 
     const before = structuredClone(conv);
-    expect(await unwindTo(id, 0)).toBe(false);
+    expect(await unwindTo(id, 0)).toBeNull();
     expect(get(id)?.messages).toEqual(before.messages);
     expect(get(id)?.activeContext).toEqual(before.activeContext);
   });
@@ -821,8 +846,40 @@ describe("unwindTo", () => {
       { role: "user", content: "tail without replay base", metadata: null },
     );
 
-    expect(await unwindTo(id, 1)).toBe(false);
+    expect(await unwindTo(id, 1)).toBeNull();
     expect(get(id)?.messages).toHaveLength(3);
+  });
+
+  test("refuses a stale target identity even when its user index was reused", async () => {
+    const id = mkId("unwind-stale-target");
+    const conv = create(id, "openai", "gpt-5.6-sol");
+    conv.messages.push({
+      role: "user",
+      content: "replacement at reused index",
+      metadata: { startedAt: 200, endedAt: 200, model: conv.model, tokens: 0 },
+    });
+    markDirty(id);
+    flush(id);
+
+    expect(await unwindTo(id, 0, "stale-op", 100)).toBeNull();
+    expect(get(id)?.messages).toHaveLength(1);
+  });
+
+  test("uses a daemon fingerprint to identify legacy messages without timestamps", async () => {
+    const id = mkId("unwind-legacy-fingerprint");
+    const conv = create(id, "openai", "gpt-5.6-sol");
+    conv.messages.push(
+      { role: "user", content: "legacy prompt", metadata: null },
+      { role: "assistant", content: "legacy answer", metadata: null },
+    );
+    markDirty(id);
+    flush(id);
+    const fingerprint = historyPrefixHash(conv.messages, 1);
+
+    expect(await unwindTo(id, 0, "stale-fingerprint-op", undefined, `${fingerprint}-stale`)).toBeNull();
+    expect(get(id)?.messages).toHaveLength(2);
+    expect(await unwindTo(id, 0, "valid-fingerprint-op", undefined, fingerprint)).toMatchObject({ status: "applied" });
+    expect(get(id)?.messages).toHaveLength(0);
   });
 
   test("trims an advanced compact replay back to a post-compaction user checkpoint", async () => {
@@ -872,8 +929,10 @@ describe("unwindTo", () => {
     conv.activeContext.transcriptHistoryCount = 4;
     conv.activeContext.transcriptPrefixHash = historyPrefixHash(conv.messages, 4);
     conv.lastContextTokens = 300_000;
+    markDirty(id);
+    flush(id);
 
-    expect(await unwindTo(id, 1)).toBe(true);
+    expect(await unwindTo(id, 1)).not.toBeNull();
     expect(get(id)?.messages.map((message) => message.content)).toEqual([
       "represented prompt",
       "represented answer",
@@ -881,6 +940,239 @@ describe("unwindTo", () => {
     expect(get(id)?.activeContext?.messages).toEqual(baseMessages);
     expect(get(id)?.activeContext?.transcriptHistoryCount).toBe(2);
     expect(get(id)?.lastContextTokens).toBe(91_234);
+    expect(loadPersisted(id)?.activeContext?.messages).toEqual(baseMessages);
+    expect(loadPersisted(id)?.lastContextTokens).toBe(91_234);
+  });
+
+  test("persists only a truncation overlay and does not rewrite the sidebar index", async () => {
+    const id = mkId("unwind-targeted-persistence");
+    const conv = create(id, "openai", "gpt-5.6-sol", "targeted unwind");
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+      { role: "user", content: "remove", metadata: null },
+      { role: "assistant", content: "removed answer", metadata: null },
+    );
+    markDirty(id);
+    flush(id);
+    const supersededQueueId = `${id}-superseded`;
+    pushQueuedMessage(id, "superseded follow-up", "message-end", undefined, undefined, undefined, supersededQueueId);
+
+    const conversationPath = join(conversationsDir(), `${id}.json`);
+    const indexPath = join(dataDir(), "conversations-index.json");
+    const conversationBefore = readFileSync(conversationPath, "utf8");
+    const indexBefore = readFileSync(indexPath, "utf8");
+
+    expect(await unwindTo(id, 1)).not.toBeNull();
+
+    expect(readFileSync(conversationPath, "utf8")).toBe(conversationBefore);
+    expect(readFileSync(indexPath, "utf8")).toBe(indexBefore);
+    const overlayPath = join(conversationsDir(), `${id}.unwind`);
+    expect(readFileSync(overlayPath, "utf8").length).toBeLessThan(800);
+    expect(loadPersisted(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer"]);
+    expect(getQueuedMessageById(supersededQueueId)).toBeUndefined();
+
+    // Startup overlays the tiny summary delta in memory. It does not repair by
+    // rewriting the monolithic index merely because an unwind sidecar exists.
+    loadFromDisk();
+    expect(readFileSync(indexPath, "utf8")).toBe(indexBefore);
+    expect(getSummary(id)?.messageCount).toBe(2);
+
+    // Simulate a crash after sidecar commit but before the queue-file rewrite:
+    // the exact old ID is tombstoned, while a later distinct queue entry survives.
+    const committedOverlay = JSON.parse(readFileSync(overlayPath, "utf8"));
+    writeFileSync(overlayPath, JSON.stringify({
+      ...committedOverlay,
+      supersededQueueIds: [supersededQueueId],
+    }, null, 2));
+    pushQueuedMessage(id, "stale queue-file copy", "message-end", undefined, undefined, undefined, supersededQueueId);
+    const laterQueueId = `${id}-later`;
+    pushQueuedMessage(id, "later follow-up", "message-end", undefined, undefined, undefined, laterQueueId);
+    loadQueuedMessagesFromDisk();
+    expect(getQueuedMessageById(supersededQueueId)).toBeUndefined();
+    expect(getQueuedMessageById(laterQueueId)).toBeDefined();
+  });
+
+  test("materializes the targeted boundary before trash so undo cannot restore the suffix", async () => {
+    const id = mkId("unwind-trash-roundtrip");
+    const conv = create(id, "openai", "gpt-5.6-sol", "unwind trash");
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+      { role: "user", content: "remove", metadata: null },
+      { role: "assistant", content: "removed answer", metadata: null },
+    );
+    markDirty(id);
+    flush(id);
+    expect(await unwindTo(id, 1)).not.toBeNull();
+
+    expect(remove(id)).toBe(true);
+    expect(undoDelete()).toMatchObject({ type: "conversation" });
+    expect(get(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer"]);
+  });
+
+  test("serializes concurrent unwinds and commits only the mutation owner", async () => {
+    const id = mkId("unwind-concurrent");
+    const conv = create(id, "openai", "gpt-5.6-sol", "concurrent unwind");
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+      { role: "user", content: "remove", metadata: null },
+    );
+    markDirty(id);
+    flush(id);
+    const ac = new AbortController();
+    setActiveJob(id, ac, Date.now());
+
+    const first = unwindTo(id, 1, "owner-op");
+    expect(await unwindTo(id, 0, "racing-op")).toBeNull();
+    clearActiveJob(id);
+
+    expect(await first).toMatchObject({ operationId: "owner-op", userMessageIndex: 1 });
+    expect(get(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer"]);
+  });
+
+  test("coalesces an in-flight retry of the same unwind operation", async () => {
+    const id = mkId("unwind-same-operation");
+    const conv = create(id, "openai", "gpt-5.6-sol", "same operation");
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+      { role: "user", content: "remove", metadata: null },
+    );
+    markDirty(id);
+    flush(id);
+    const ac = new AbortController();
+    setActiveJob(id, ac, Date.now());
+
+    const owner = unwindTo(id, 1, "same-operation");
+    const retry = unwindTo(id, 1, "same-operation");
+    clearActiveJob(id);
+
+    expect(await owner).toMatchObject({ status: "applied", operationId: "same-operation" });
+    expect(await retry).toMatchObject({ status: "already_applied", operationId: "same-operation" });
+  });
+
+  test("can hold the mutation lease until the canonical event is published", async () => {
+    const id = mkId("unwind-deferred-lease");
+    const conv = create(id, "openai", "gpt-5.6-sol", "deferred lease");
+    conv.messages.push({ role: "user", content: "remove", metadata: null });
+    markDirty(id);
+    flush(id);
+
+    expect(await unwindTo(id, 0, "deferred-operation", undefined, undefined, true)).toMatchObject({ status: "applied" });
+    expect(isHistoryUnwindPending(id)).toBe(true);
+    expect(remove(id)).toBe(false);
+    releaseHistoryUnwindLease(id, "deferred-operation");
+    expect(isHistoryUnwindPending(id)).toBe(false);
+  });
+
+  test("holds a failed post-abort lease until canonical recovery is published", async () => {
+    const id = mkId("unwind-failed-deferred-lease");
+    const conv = create(id, "openai", "gpt-5.6-sol", "failed deferred lease");
+    conv.messages.push({ role: "user", content: "replace during abort", metadata: null });
+    markDirty(id);
+    flush(id);
+    const ac = new AbortController();
+    setActiveJob(id, ac, Date.now());
+    ac.signal.addEventListener("abort", () => {
+      conv.messages[0] = { role: "user", content: "replacement", metadata: null };
+      clearActiveJob(id);
+    }, { once: true });
+
+    await expect(unwindTo(id, 0, "failed-deferred-operation", undefined, undefined, true))
+      .rejects.toBeInstanceOf(HistoryUnwindRefreshRequiredError);
+    expect(isHistoryUnwindPending(id)).toBe(true);
+    releaseHistoryUnwindLease(id, "failed-deferred-operation");
+    expect(isHistoryUnwindPending(id)).toBe(false);
+  });
+
+  test("refuses deletion while an unwind owns the conversation mutation lock", async () => {
+    const id = mkId("unwind-delete-race");
+    const conv = create(id, "openai", "gpt-5.6-sol", "delete race");
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+      { role: "user", content: "remove", metadata: null },
+    );
+    markDirty(id);
+    flush(id);
+    const ac = new AbortController();
+    setActiveJob(id, ac, Date.now());
+
+    const unwind = unwindTo(id, 1, "delete-race-owner");
+    expect(remove(id)).toBe(false);
+    expect(get(id)).toBe(conv);
+    clearActiveJob(id);
+
+    expect(await unwind).toMatchObject({ status: "applied" });
+    expect(get(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer"]);
+  });
+
+  test("replays a durable operation receipt without truncating a newer turn", async () => {
+    const id = mkId("unwind-idempotent");
+    const conv = create(id, "openai", "gpt-5.6-sol", "idempotent unwind");
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+      { role: "user", content: "remove", metadata: null },
+    );
+    markDirty(id);
+    flush(id);
+
+    expect(await unwindTo(id, 1, "stable-op")).toMatchObject({ status: "applied" });
+    conv.messages.push({ role: "user", content: "newer turn at the same user index", metadata: null });
+    conv.updatedAt += 1;
+    markDirty(id);
+    flush(id); // Materializes both the unwind and its operation receipt.
+
+    expect(await unwindTo(id, 1, "stable-op")).toMatchObject({ status: "already_applied" });
+    expect(get(id)?.messages.map((message) => message.content)).toEqual([
+      "keep",
+      "kept answer",
+      "newer turn at the same user index",
+    ]);
+  });
+
+  test("leaves history and queued intent untouched when targeted persistence is unsafe", async () => {
+    const id = mkId("unwind-unsafe-dirty");
+    const conv = create(id, "openai", "gpt-5.6-sol", "unsafe unwind");
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+      { role: "user", content: "remove", metadata: null },
+    );
+    markDirty(id);
+    flush(id);
+    const queueId = `${id}-queued`;
+    pushQueuedMessage(id, "must survive", "message-end", undefined, undefined, undefined, queueId);
+    markDirty(id); // Represents an unrelated mutation not encoded by the overlay.
+
+    expect(unwindTo(id, 1, "unsafe-op")).rejects.toThrow("unrelated dirty state");
+    expect(get(id)?.messages.map((message) => message.content)).toEqual(["keep", "kept answer", "remove"]);
+    expect(getQueuedMessageById(queueId)).toBeDefined();
+  });
+});
+
+describe("stream chunk tracking", () => {
+  test("does not rewrite durable history for ephemeral live chunks", () => {
+    const id = mkId("stream-chunks-ephemeral");
+    const conv = create(id, "openai", "gpt-5.6-sol");
+    const path = join(conversationsDir(), `${id}.json`);
+    const persistedBefore = readFileSync(path, "utf8");
+
+    // Live partial text is stored by streaming.ts rather than conv.messages.
+    // Mutate memory here so this test detects an accidental periodic flush.
+    conv.messages.push({ role: "assistant", content: "not durable yet", metadata: null });
+    expect([onChunk(id), onChunk(id), onChunk(id), onChunk(id), onChunk(id)]).toEqual([
+      false,
+      false,
+      false,
+      false,
+      true,
+    ]);
+
+    expect(readFileSync(path, "utf8")).toBe(persistedBefore);
   });
 });
 
@@ -1029,7 +1321,7 @@ describe("getDisplayData", () => {
 
     const snapshot = getRenderSnapshot(id, false)!;
 
-    expect(snapshot.entries).toEqual([
+    expect(snapshot.entries).toMatchObject([
       { type: "user", text: "initial" },
     ]);
     expect(snapshot.pendingAI?.blocks).toEqual([
@@ -1067,7 +1359,7 @@ describe("getDisplayData", () => {
 
     const snapshot = getRenderSnapshot(id)!;
 
-    expect(snapshot.entries).toEqual([
+    expect(snapshot.entries).toMatchObject([
       {
         type: "user",
         text: "initial",
@@ -1100,14 +1392,34 @@ describe("getDisplayData", () => {
 
     const data = getDisplayData(id)!;
     expect(data.entries).toHaveLength(3);
-    expect(data.entries[0]).toEqual({ type: "user", text: "initial" });
+    expect(data.entries[0]).toMatchObject({ type: "user", text: "initial" });
     expect(data.entries[1].type).toBe("ai");
     if (data.entries[1].type !== "ai") throw new Error("expected ai entry");
     expect(data.entries[1].blocks).toEqual([{ type: "text", text: "First tool round done" }]);
-    expect(data.entries[2]).toEqual({ type: "user", text: "queued next turn" });
+    expect(data.entries[2]).toMatchObject({ type: "user", text: "queued next turn" });
 
     const snapshot = getRenderSnapshot(id)!;
     expect(snapshot.pendingAI).toMatchObject({ blocks: [], blockOffset: 1 });
+  });
+
+  test("fingerprints a canonical streaming suffix with its persisted prefix", () => {
+    const id = mkId("display-transient-fingerprint");
+    const conv = create(id, "openai", "gpt-5.5");
+    conv.messages.push(
+      { role: "user", content: "initial", metadata: null },
+      { role: "assistant", content: "first answer", metadata: null },
+      { role: "user", content: "queued next turn", metadata: null },
+    );
+    setActiveJob(id, new AbortController(), Date.now());
+    replaceStreamingDisplayMessages(id, structuredClone(conv.messages.slice(1)));
+
+    const target = getDisplayData(id)!.entries.find(
+      (entry) => entry.type === "user" && entry.text === "queued next turn",
+    );
+    expect(target).toMatchObject({
+      type: "user",
+      unwindFingerprint: historyPrefixHash(conv.messages, 3),
+    });
   });
 
   test("can omit historical tool_result payloads while still exposing patch data", () => {

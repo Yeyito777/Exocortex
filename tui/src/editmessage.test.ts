@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  applyConversationUnwound,
   applyOptimisticEditMessageUnwind,
   classifyPendingEditMessageUnwindEvent,
   confirmEditMessage,
@@ -259,7 +260,70 @@ describe("edit message modal", () => {
     expect(state.historyHasOlder).toBe(true);
   });
 
-  test("suppresses doomed stream events until the matching unwind snapshot", () => {
+  test("applies a canonical unwind boundary without replacing retained history", () => {
+    const state = createInitialState();
+    state.convId = "conv-targeted";
+    state.historyStartIndex = 20;
+    state.historyStartUserIndex = 10;
+    state.historyTotalEntries = 24;
+    state.historyHasOlder = true;
+    state.messages = [
+      { role: "user", text: "user ten", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "answer ten" }], metadata: null },
+      { role: "user", text: "remove me", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "old answer" }], metadata: null },
+    ];
+
+    applyConversationUnwound(state, {
+      type: "conversation_unwound",
+      status: "applied",
+      operationId: "op-targeted",
+      convId: state.convId,
+      userMessageIndex: 11,
+      historyTotalEntries: 22,
+      contextTokens: 1234,
+      summary: {} as never,
+    });
+
+    expect(state.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(state.historyStartIndex).toBe(20);
+    expect(state.historyTotalEntries).toBe(22);
+    expect(state.contextTokens).toBe(1234);
+    expect(state.historyHasOlder).toBe(true);
+  });
+
+  test("drops only an out-of-range loaded suffix while retaining pinned instructions", () => {
+    const state = createInitialState();
+    state.convId = "conv-older-boundary";
+    state.historyStartIndex = 20;
+    state.historyStartUserIndex = 10;
+    state.historyTotalEntries = 24;
+    state.messages = [
+      { role: "system_instructions", text: "Keep pinned", metadata: null },
+      { role: "user", text: "newer page", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "newer answer" }], metadata: null },
+    ];
+
+    applyConversationUnwound(state, {
+      type: "conversation_unwound",
+      status: "applied",
+      operationId: "op-older-boundary",
+      convId: state.convId,
+      userMessageIndex: 5,
+      historyTotalEntries: 10,
+      contextTokens: 500,
+      summary: {} as never,
+    });
+
+    expect(state.messages).toEqual([
+      { role: "system_instructions", text: "Keep pinned", metadata: null },
+    ]);
+    expect(state.historyStartIndex).toBe(10);
+    expect(state.historyStartUserIndex).toBe(5);
+    expect(state.historyHasOlder).toBe(true);
+  });
+
+  test("suppresses doomed stream events until the matching targeted unwind", () => {
     const pending = { convId: "conv-1", reqId: "unwind-1" };
 
     expect(classifyPendingEditMessageUnwindEvent(pending, {
@@ -287,16 +351,15 @@ describe("edit message modal", () => {
       toolOutputsIncluded: false,
     })).toBe("ignore");
     expect(classifyPendingEditMessageUnwindEvent(pending, {
-      type: "conversation_loaded",
+      type: "conversation_unwound",
       reqId: "unwind-1",
+      status: "applied",
+      operationId: "unwind-1",
       convId: "conv-1",
-      provider: "openai",
-      model: "gpt-5.5",
-      effort: "high",
-      fastMode: false,
-      entries: [],
+      userMessageIndex: 1,
+      historyTotalEntries: 2,
       contextTokens: null,
-      toolOutputsIncluded: false,
+      summary: {} as never,
     })).toBe("complete");
     expect(classifyPendingEditMessageUnwindEvent(pending, {
       type: "error",

@@ -29,6 +29,7 @@ import {
   logDiskSyncAssistantDiff,
   preserveLocalAssistantExtensionAfterDiskSync,
 } from "./events/disk-sync-diagnostics";
+import { applyConversationUnwound } from "./editmessage";
 import { pushDisplayEntries } from "./events/display";
 import { preserveViewportAcrossHistoryMutation } from "./chatscroll";
 import { CONV_SCOPED, observeStreamSeq } from "./events/stream-sequence";
@@ -146,6 +147,11 @@ export function handleEvent(
 
     case "conversation_updated":
       handleConversationUpdated(event, state);
+      break;
+
+    case "conversation_unwound":
+      handleConversationUpdated({ type: "conversation_updated", summary: event.summary }, state);
+      applyConversationUnwound(state, event);
       break;
 
     case "goal_updated":

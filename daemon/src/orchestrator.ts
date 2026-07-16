@@ -317,6 +317,11 @@ async function orchestrateAssistantTurn(
     if (client) server.sendTo(client, { type: "error", reqId, convId, message });
     return buildErrorOutcome(message);
   }
+  if (convStore.isHistoryUnwindPending(convId)) {
+    const message = "Conversation unwind in progress";
+    if (client) server.sendTo(client, { type: "error", reqId, convId, message });
+    return buildErrorOutcome(message);
+  }
   if (userMessage?.images?.length && !supportsImageInputs(conv.provider, conv.model)) {
     return reportSendError(`Image inputs are not supported by ${conv.provider}/${conv.model}. Remove the attachment or switch to a vision-capable model.`);
   }
@@ -793,8 +798,8 @@ async function orchestrateAssistantTurn(
       const block = ensurePartialContentTail("text");
       if (block.type === "text") block.text += chunk;
       convStore.appendToStreamingBlock(convId, "text", chunk);
-      // touchActivity piggybacks on the chunk counter — fires every CHUNK_SAVE_INTERVAL
-      // chunks rather than on every single SSE event, keeping overhead negligible.
+      // touchActivity piggybacks on the chunk counter rather than firing on
+      // every single SSE event, keeping overhead negligible.
       if (convStore.onChunk(convId)) convStore.touchActivity(convId);
     },
     onThinkingChunk(chunk) {
@@ -868,7 +873,7 @@ async function orchestrateAssistantTurn(
         const copied = !conv.activeContext && compactionsThisTurn === 0
           ? copyContextTokenAttributionsToStoredHistory(conv.messages, inputMessages)
           : 0;
-        if (copied > 0) convStore.markDirty(convId);
+        if (copied > 0) convStore.markContextAttributionDirty(convId);
         log("info", `orchestrator: context token attribution updated for ${copied} persisted history turns (provider=${conv.provider}, model=${conv.model}, total=${contextTokens}, compactReplay=${Boolean(conv.activeContext || compactionsThisTurn > 0)})`);
       }
       server.sendToSubscribers(convId, { type: "context_update", convId, streamSeq: convStore.nextStreamSeq(convId), contextTokens });
@@ -1312,29 +1317,46 @@ async function orchestrateAssistantTurn(
     convStore.clearCurrentStreamingBlocks(convId);
     convStore.resetChunkCounter(convId);
     if (outcome && !manualCompaction) settlePendingSubagentNotifications(convId, outcome);
-    convStore.markDirty(convId);
-    convStore.flush(convId);
-    server.sendToSubscribers(convId, {
-      type: "streaming_stopped",
-      convId,
-      streamSeq: stoppedStreamSeq,
-      ...(streamStopReason ? { reason: streamStopReason } : {}),
-      persistedBlocks: abortPersistedBlocks,
-    });
-    // Broadcast updated summary (streaming=false, possibly unread=true)
-    broadcastConversationUpdated(server, convId, streamStopReason);
+    // unwindTo persists a small truncation overlay after this finalizer stops.
+    // Saving the interrupted suffix here would be both obsolete and a full-file
+    // rewrite on the unwind critical path.
+    const historyUnwindPending = convStore.isHistoryUnwindPending(convId, ac);
+    if (!historyUnwindPending) {
+      convStore.markDirty(convId);
+      convStore.flush(convId);
 
-    // When the active stream built up any transient display-only history
-    // (completed rounds for late joiners, retries, or next-turn injections),
-    // the TUI may be showing an approximate live view. Now that conv.messages
-    // has the canonical interleaved structure, send history_updated so every
-    // client rebuilds from the persisted ordering.
-    if (agentState.completedMessages.length > 0 || transcriptMarkers.length > 0 || hadNextTurnInjections) {
-      const displayData = convStore.getRenderSnapshot(convId, false);
-      if (displayData) {
-        const events = buildHistoryUpdatedEvents(displayData);
-        server.sendHistoryUpdatedToSubscribers(convId, events.legacy, events.paginated);
+      server.sendToSubscribers(convId, {
+        type: "streaming_stopped",
+        convId,
+        streamSeq: stoppedStreamSeq,
+        ...(streamStopReason ? { reason: streamStopReason } : {}),
+        persistedBlocks: abortPersistedBlocks,
+      });
+      // Broadcast updated summary (streaming=false, possibly unread=true)
+      broadcastConversationUpdated(server, convId, streamStopReason);
+
+      // When the active stream built up any transient display-only history
+      // (completed rounds for late joiners, retries, or next-turn injections),
+      // the TUI may be showing an approximate live view. Now that conv.messages
+      // has the canonical interleaved structure, send history_updated so every
+      // client rebuilds from the persisted ordering.
+      if (agentState.completedMessages.length > 0 || transcriptMarkers.length > 0 || hadNextTurnInjections) {
+        const displayData = convStore.getRenderSnapshot(convId, false);
+        if (displayData) {
+          const events = buildHistoryUpdatedEvents(displayData);
+          server.sendHistoryUpdatedToSubscribers(convId, events.legacy, events.paginated);
+        }
       }
+    } else {
+      // Preserve the stream lifecycle for diagnostics and clients that clear
+      // spinners on stop, without publishing the suffix the targeted unwind is
+      // about to discard.
+      server.sendToSubscribers(convId, {
+        type: "streaming_stopped",
+        convId,
+        streamSeq: stoppedStreamSeq,
+        reason: "unwind",
+      });
     }
 
     if (hadGoalAtStart || conv.goal) {

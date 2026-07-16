@@ -188,7 +188,7 @@ export function editMessageItemIndexAtMouse(
 // ── Confirm / cancel ──────────────────────────────────────────────
 
 export type EditConfirmResult =
-  | { action: "edit_sent"; text: string; userMessageIndex: number }
+  | { action: "edit_sent"; text: string; userMessageIndex: number; expectedStartedAt?: number; targetFingerprint?: string }
   | { action: "edit_queued"; text: string; queuedMessage?: EditMessageItem["queuedMessage"] }
   | { action: "edit_instructions"; text: string }
   | { action: "cancel" };
@@ -237,7 +237,15 @@ export function confirmEditMessage(state: RenderState): EditConfirmResult {
     state.contextTokens = item.message.contextCheckpoint.contextTokens;
   }
 
-  return { action: "edit_sent", text: item.text, userMessageIndex: item.userMessageIndex };
+  const expectedStartedAt = item.message?.metadata?.startedAt;
+  const targetFingerprint = item.sourceMessage?.unwindFingerprint ?? item.message?.unwindFingerprint;
+  return {
+    action: "edit_sent",
+    text: item.text,
+    userMessageIndex: item.userMessageIndex,
+    ...(typeof expectedStartedAt === "number" ? { expectedStartedAt } : {}),
+    ...(targetFingerprint ? { targetFingerprint } : {}),
+  };
 }
 
 /**
@@ -287,6 +295,48 @@ export function applyOptimisticEditMessageUnwind(
   return true;
 }
 
+/** Apply the daemon's targeted canonical unwind without replacing loaded history. */
+export function applyConversationUnwound(
+  state: RenderState,
+  event: Extract<Event, { type: "conversation_unwound" }>,
+): void {
+  if (state.convId !== event.convId) return;
+  if (event.status === "already_applied") return;
+
+  let visibleUserIndex = state.historyStartUserIndex;
+  let spliceAt = -1;
+  for (let i = 0; i < state.messages.length; i++) {
+    if (state.messages[i]?.role !== "user") continue;
+    if (visibleUserIndex === event.userMessageIndex) {
+      spliceAt = i;
+      break;
+    }
+    visibleUserIndex += 1;
+  }
+
+  if (spliceAt >= 0) {
+    state.messages.splice(spliceAt);
+  } else if (event.userMessageIndex < state.historyStartUserIndex
+      || event.historyTotalEntries < state.historyStartIndex) {
+    // This client had only a newer page loaded and the boundary precedes it.
+    // Keep pinned instructions; older retained history remains pageable.
+    state.messages = state.messages.filter((message) => message.role === "system_instructions");
+    state.historyStartIndex = event.historyTotalEntries;
+    state.historyStartUserIndex = event.userMessageIndex;
+  }
+
+  clearPendingAI(state);
+  clearStreamingTailMessages(state);
+  delete state.lastStreamSeqByConv[event.convId];
+  state.contextTokens = event.contextTokens;
+  state.historyTotalEntries = event.historyTotalEntries;
+  state.historyHasOlder = state.historyStartIndex > 0;
+  state.historyLoadingOlder = false;
+  state.historyLoadingStartedAt = null;
+  state.historyLoadingRequestId = null;
+  state.scrollOffset = 0;
+}
+
 export interface PendingEditMessageUnwind {
   convId: string;
   reqId: string;
@@ -318,15 +368,16 @@ const EVENTS_SUPERSEDED_BY_PENDING_UNWIND: ReadonlySet<Event["type"]> = new Set(
  * Classify daemon events received while an optimistic unwind is in flight.
  * Stream-finalization events describe the suffix that is about to be deleted,
  * so applying them would briefly make the old tail reappear. The matching
- * conversation_loaded response ends the optimistic window; its immediately
- * following history_updated event is then safe to apply normally.
+ * conversation_unwound response ends the optimistic window and applies only
+ * the requested suffix boundary.
  */
 export function classifyPendingEditMessageUnwindEvent(
   pending: PendingEditMessageUnwind,
   event: Event,
 ): PendingEditMessageUnwindEvent {
   if (!("convId" in event) || event.convId !== pending.convId) return "unrelated";
-  if (event.type === "conversation_loaded" && event.reqId === pending.reqId) return "complete";
+  if ((event.type === "conversation_unwound" || event.type === "conversation_loaded")
+      && event.reqId === pending.reqId) return "complete";
   if (event.type === "error" && event.reqId === pending.reqId) return "failed";
   if (EVENTS_SUPERSEDED_BY_PENDING_UNWIND.has(event.type)) return "ignore";
   return "unrelated";

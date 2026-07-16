@@ -253,7 +253,7 @@ export function shouldPingForBackgroundStreamCompletion(update: BackgroundStream
 }
 
 export function shouldPingForStreamStopped(reason?: StreamingStopReason): boolean {
-  return reason !== "daemon-restart";
+  return reason !== "daemon-restart" && reason !== "unwind";
 }
 
 export function runStreamFinishedPing(context: StreamFinishedPingContext = {}): void {

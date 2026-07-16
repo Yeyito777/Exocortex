@@ -237,6 +237,41 @@ export function historyPrefixHash(messages: StoredMessage[], historyCount: numbe
 }
 
 /**
+ * Identify every real user-message boundary by hashing canonical replay history
+ * through that message. This also covers migrated messages with no metadata and
+ * detects index reuse after preceding history changes.
+ */
+export function userMessageUnwindFingerprints(
+  messages: StoredMessage[],
+  prefixMessages: StoredMessage[] = [],
+): Map<StoredMessage, string> {
+  const fingerprints = new Map<StoredMessage, string>();
+  const hash = createHash("sha256");
+  for (const message of prefixMessages) {
+    if (!isReplayHistoryMessage(message)) continue;
+    hash.update(JSON.stringify({
+      role: message.role,
+      content: message.content,
+      providerData: message.providerData ?? null,
+    }));
+    hash.update("\n");
+  }
+  for (const message of messages) {
+    if (!isReplayHistoryMessage(message)) continue;
+    hash.update(JSON.stringify({
+      role: message.role,
+      content: message.content,
+      providerData: message.providerData ?? null,
+    }));
+    hash.update("\n");
+    if (isRealUserMessage(message)) {
+      fingerprints.set(message, hash.copy().digest("hex").slice(0, 24));
+    }
+  }
+  return fingerprints;
+}
+
+/**
  * Hash several replay-history prefixes in one transcript pass.
  *
  * Active contexts normally keep transcriptHistoryCount and

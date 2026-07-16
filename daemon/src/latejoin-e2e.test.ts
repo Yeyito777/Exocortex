@@ -90,7 +90,7 @@ describe("late-join streaming integration", () => {
       await streamingStarted;
 
       expect(seen).toEqual(["conversation_loaded", "streaming_started"]);
-      expect(state.messages).toEqual([
+      expect(state.messages).toMatchObject([
         { role: "user", text: "hi", metadata: null },
       ]);
       expect(state.pendingAI).toMatchObject({

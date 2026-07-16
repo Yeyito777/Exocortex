@@ -7,10 +7,16 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { writeFileSync, mkdirSync, rmSync } from "fs";
+import { existsSync, writeFileSync, mkdirSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { conversationsDir } from "@exocortex/shared/paths";
-import { save, load, loadAll } from "./persistence";
+import {
+  load,
+  loadAll,
+  loadConversationIndex,
+  save,
+  saveUnwind,
+} from "./persistence";
 import type { Conversation } from "./messages";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, DEFAULT_EFFORT, historyPrefixHash } from "./messages";
 
@@ -47,6 +53,11 @@ afterAll(() => {
       rmSync(join(CONV_DIR, `${id}.json`));
     } catch {
       // file may have already been removed or never written
+    }
+    try {
+      rmSync(join(CONV_DIR, `${id}.unwind`));
+    } catch {
+      // overlay may have been folded into a later save
     }
   }
 });
@@ -832,6 +843,170 @@ describe("save / load round-trip", () => {
     });
 
     expect(load(id)?.goal).toBeUndefined();
+  });
+
+  test("loads a targeted unwind overlay and folds it into the next ordinary save", () => {
+    const id = mkId("targeted-unwind-overlay");
+    const conv: Conversation = {
+      id,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      fastMode: false,
+      messages: [
+        { role: "user", content: "keep", metadata: null },
+        { role: "assistant", content: "kept answer", metadata: null },
+        { role: "user", content: "remove", metadata: null },
+        { role: "assistant", content: "removed answer", metadata: null },
+      ],
+      createdAt: 15_000_000,
+      updatedAt: 15_000_001,
+      lastContextTokens: 50,
+      marked: false,
+      pinned: false,
+      sortOrder: -15_000_001,
+      title: "Targeted unwind",
+    };
+    save(conv);
+    const basePath = join(CONV_DIR, `${id}.json`);
+    const overlayPath = join(CONV_DIR, `${id}.unwind`);
+    const baseBefore = readFileSync(basePath, "utf8");
+
+    const result: Conversation = {
+      ...conv,
+      messages: conv.messages.slice(0, 2),
+      activeContext: null,
+      lastContextTokens: 12,
+      updatedAt: 15_000_002,
+    };
+    saveUnwind(conv, result, 2, {
+      operationId: "unwind-test-op",
+      userMessageIndex: 1,
+      historyTotalEntries: 2,
+      messageCount: 2,
+      supersededQueueIds: [],
+    });
+
+    expect(readFileSync(basePath, "utf8")).toBe(baseBefore);
+    expect(existsSync(overlayPath)).toBe(true);
+    expect(load(id)).toEqual(result);
+    expect(loadAll().find((summary) => summary.id === id)?.messageCount).toBe(2);
+    const staleOverlay = readFileSync(overlayPath, "utf8");
+
+    conv.messages.splice(2);
+    conv.activeContext = null;
+    conv.lastContextTokens = result.lastContextTokens;
+    conv.updatedAt = result.updatedAt;
+    delete conv.activeContext;
+    save(conv);
+    expect(existsSync(overlayPath)).toBe(false);
+    expect(load(id)).toEqual(conv);
+
+    // Simulate a crash after a newer base-file rename but before stale-overlay
+    // cleanup. Its generation must prevent it truncating future history.
+    conv.messages.push({ role: "user", content: "new turn", metadata: null });
+    conv.updatedAt += 1;
+    save(conv);
+    writeFileSync(overlayPath, staleOverlay, { mode: 0o600 });
+    expect(load(id)).toEqual(conv);
+  });
+
+  test("preserves unresolved queue tombstones when a later unwind replaces the overlay", () => {
+    const id = mkId("targeted-unwind-tombstone-chain");
+    const conv: Conversation = {
+      id,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      fastMode: false,
+      messages: [
+        { role: "user", content: "one", metadata: null },
+        { role: "assistant", content: "answer one", metadata: null },
+        { role: "user", content: "two", metadata: null },
+        { role: "assistant", content: "answer two", metadata: null },
+      ],
+      createdAt: 16_000_000,
+      updatedAt: 16_000_001,
+      lastContextTokens: 40,
+      marked: false,
+      pinned: false,
+      sortOrder: -16_000_001,
+      title: "Chained unwind",
+    };
+    save(conv);
+    const firstResult = { ...conv, messages: conv.messages.slice(0, 2), updatedAt: 16_000_002 };
+    saveUnwind(conv, firstResult, 2, {
+      operationId: "first-unwind",
+      userMessageIndex: 1,
+      historyTotalEntries: 2,
+      messageCount: 2,
+      supersededQueueIds: ["queue-from-first-unwind"],
+    });
+
+    const secondResult = { ...conv, messages: [], updatedAt: 16_000_003 };
+    saveUnwind(conv, secondResult, 0, {
+      operationId: "second-unwind",
+      userMessageIndex: 0,
+      historyTotalEntries: 0,
+      messageCount: 0,
+      supersededQueueIds: ["queue-from-second-unwind"],
+    });
+
+    const overlay = JSON.parse(readFileSync(join(CONV_DIR, `${id}.unwind`), "utf8"));
+    expect(overlay.supersededQueueIds).toEqual([
+      "queue-from-first-unwind",
+      "queue-from-second-unwind",
+    ]);
+  });
+
+  test("accepts an index cached at an intermediate chained-unwind generation", () => {
+    const id = mkId("targeted-unwind-index-chain");
+    const conv: Conversation = {
+      id,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      fastMode: false,
+      messages: [
+        { role: "user", content: "one", metadata: null },
+        { role: "assistant", content: "answer one", metadata: null },
+        { role: "user", content: "two", metadata: null },
+        { role: "assistant", content: "answer two", metadata: null },
+        { role: "user", content: "three", metadata: null },
+        { role: "assistant", content: "answer three", metadata: null },
+      ],
+      createdAt: 17_000_000,
+      updatedAt: 17_000_001,
+      lastContextTokens: 60,
+      marked: false,
+      pinned: false,
+      sortOrder: -17_000_001,
+      title: "Indexed chained unwind",
+    };
+    save(conv);
+    const firstResult = { ...conv, messages: conv.messages.slice(0, 4), updatedAt: 17_000_002 };
+    saveUnwind(conv, firstResult, 4, {
+      operationId: "first-indexed-unwind",
+      userMessageIndex: 2,
+      historyTotalEntries: 4,
+      messageCount: 4,
+      supersededQueueIds: [],
+    });
+    conv.messages = firstResult.messages;
+    conv.updatedAt = firstResult.updatedAt;
+    // Save/repair the index while its logical generation is the first overlay.
+    loadConversationIndex();
+
+    const secondResult = { ...conv, messages: conv.messages.slice(0, 2), updatedAt: 17_000_003 };
+    saveUnwind(conv, secondResult, 2, {
+      operationId: "second-indexed-unwind",
+      userMessageIndex: 1,
+      historyTotalEntries: 2,
+      messageCount: 2,
+      supersededQueueIds: [],
+    });
+    const restarted = loadConversationIndex();
+    expect(restarted.summaries.find((summary) => summary.id === id)?.messageCount).toBe(2);
   });
 });
 
