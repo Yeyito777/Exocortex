@@ -43,6 +43,8 @@ export class ExternalToolDaemonSupervisor {
   private readonly daemons = new Map<string, ManagedDaemon>();
   private tools: LoadedTool[] = [];
 
+  constructor(private readonly onRunningChange?: (toolName: string, running: boolean) => void) {}
+
   get count(): number {
     return this.daemons.size;
   }
@@ -185,11 +187,13 @@ export class ExternalToolDaemonSupervisor {
       }
 
       log("info", `external-tools: started daemon '${managed.toolName}' (pid ${child.pid})`);
+      this.onRunningChange?.(managed.toolName, Boolean(child.pid));
 
       child.on("error", (err) => {
         log("warn", `external-tools: daemon '${managed.toolName}' spawn error: ${err.message}`);
         managed.child = null;
         clearDaemonPidFile(managed.toolDir);
+        this.onRunningChange?.(managed.toolName, false);
         this.scheduleDaemonRestart(managed);
       });
 
@@ -197,6 +201,7 @@ export class ExternalToolDaemonSupervisor {
         const exitedPid = child.pid;
         managed.child = null;
         clearDaemonPidFile(managed.toolDir);
+        this.onRunningChange?.(managed.toolName, false);
 
         if (managed.stopping) return;
 
@@ -230,6 +235,7 @@ export class ExternalToolDaemonSupervisor {
       const msg = err instanceof Error ? err.message : String(err);
       managed.child = null;
       clearDaemonPidFile(managed.toolDir);
+      this.onRunningChange?.(managed.toolName, false);
       log("warn", `external-tools: failed to start daemon '${managed.toolName}': ${msg}`);
       if (!managed.stopping) {
         this.scheduleDaemonRestart(managed);
@@ -309,6 +315,7 @@ export class ExternalToolDaemonSupervisor {
     if (!managed.child || !managed.child.pid) {
       clearDaemonPidFile(managed.toolDir);
       this.daemons.delete(name);
+      this.onRunningChange?.(name, false);
       return Promise.resolve();
     }
 
@@ -323,6 +330,7 @@ export class ExternalToolDaemonSupervisor {
         managed.child = null;
         clearDaemonPidFile(managed.toolDir);
         this.daemons.delete(name);
+        this.onRunningChange?.(name, false);
         resolve();
       };
 

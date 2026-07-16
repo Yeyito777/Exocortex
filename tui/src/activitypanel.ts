@@ -1,13 +1,14 @@
 /**
- * Focused-conversation task panel.
+ * Focused-conversation activity panel.
  *
- * Renders the current goal, active subagents, detached background commands, and
- * displayable Chrono work as a compact top-right overlay. The daemon supplies
- * conversation summaries; this module adds the focused conversation's durable
- * goal and owns all visual formatting for the panel.
+ * Renders the current goal, active subagents, detached background commands,
+ * displayable Chrono work, and durable external notification subscriptions as a
+ * compact top-right overlay. The daemon supplies conversation summaries; this
+ * module adds the focused conversation's durable goal and owns all visual
+ * formatting for the panel.
  */
 
-import type { ConversationGoalStatus, ConversationTaskSummary } from "./messages";
+import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
 import type { RenderState } from "./state";
 import { shouldDisplayConversationTask } from "./taskvisibility";
 import { padRightToWidth, termWidth } from "./textwidth";
@@ -16,6 +17,7 @@ import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
 const MAX_PANEL_WIDTH = 50;
 const MIN_PANEL_WIDTH = 30;
 const ELAPSED_WIDTH = 7;
+const INTEGRATION_STATE_WIDTH = 14;
 const PANEL_BG_HEX = "#00050f";
 const EXOCORTEX_FALLBACK_HEX = "#1d9bf0";
 const BASH_FALLBACK_HEX = "#d19a66";
@@ -53,6 +55,16 @@ export function hasFocusedConversationTasks(state: RenderState): boolean {
   return focusedConversationTasks(state).length > 0;
 }
 
+/** Durable external notification subscriptions targeting the focused conversation. */
+export function focusedConversationIntegrations(state: RenderState): ExternalIntegrationSummary[] {
+  if (!state.convId || state.folderInstructionsDoc) return [];
+  return state.sidebar.conversations.find(conversation => conversation.id === state.convId)?.integrations ?? [];
+}
+
+export function hasFocusedConversationIntegrations(state: RenderState): boolean {
+  return focusedConversationIntegrations(state).length > 0;
+}
+
 /** Compact elapsed time with a stable width suitable for the task card. */
 export function formatTaskElapsed(startedAt: number, now = Date.now()): string {
   const totalSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
@@ -83,8 +95,8 @@ function taskColor(state: RenderState, toolName: "exo" | "bash" | "goal" | "chro
   return hexToAnsi(color);
 }
 
-function cleanTaskTitle(title: string): string {
-  return title.replace(/[\r\n\t]+/g, " ").replace(/[\x00-\x1F\x7F]/g, "").replace(/\s+/g, " ").trim();
+function cleanPanelText(text: string): string {
+  return text.replace(/[\r\n\t]+/g, " ").replace(/[\x00-\x1F\x7F]/g, "").replace(/\s+/g, " ").trim();
 }
 
 function padLeftToWidth(text: string, width: number): string {
@@ -92,12 +104,88 @@ function padLeftToWidth(text: string, width: number): string {
   return " ".repeat(Math.max(0, width - termWidth(clipped))) + clipped;
 }
 
+/** Compact delivery and health text used in place of a task's elapsed time. */
+export function formatIntegrationDeliveryStatus(
+  integration: Pick<ExternalIntegrationSummary, "delivery" | "status">,
+): string {
+  return `${integration.delivery} ${integration.status}`;
+}
+
+interface VisiblePanelContent {
+  tasks: TaskPanelEntry[];
+  integrations: ExternalIntegrationSummary[];
+  hiddenCount: number;
+  showSubscriptionsDivider: boolean;
+}
+
 /**
- * Build the task panel for the focused conversation.
+ * Fit task-panel entries into the card. Subscriptions always keep their own
+ * divider, including when no ordinary task rows are currently present.
+ */
+function fitPanelContent(
+  tasks: TaskPanelEntry[],
+  integrations: ExternalIntegrationSummary[],
+  maxContentRows: number,
+): VisiblePanelContent {
+  const totalEntries = tasks.length + integrations.length;
+
+  if (integrations.length === 0) {
+    const entriesFit = totalEntries <= maxContentRows;
+    const visibleCount = entriesFit ? totalEntries : Math.max(0, maxContentRows - 1);
+    return {
+      tasks: tasks.slice(0, visibleCount),
+      integrations: [],
+      hiddenCount: totalEntries - visibleCount,
+      showSubscriptionsDivider: false,
+    };
+  }
+
+  // A subscription-bearing card always has one internal divider in addition
+  // to its entries, preserving Tasks as the panel's outer identity.
+  if (totalEntries + 1 <= maxContentRows) {
+    return {
+      tasks,
+      integrations,
+      hiddenCount: 0,
+      showSubscriptionsDivider: true,
+    };
+  }
+
+  // At the absolute three-line panel minimum, the section divider and its
+  // count are more informative than an unclassified overflow row.
+  if (maxContentRows < 2) {
+    return { tasks: [], integrations: [], hiddenCount: 0, showSubscriptionsDivider: true };
+  }
+
+  // Reserve one row each for the Subscriptions divider and overflow notice.
+  // In a combined panel, represent both sections once two entry slots exist;
+  // otherwise use all available entry slots for subscription rows.
+  const entrySlots = Math.max(0, maxContentRows - 2);
+  let visibleTaskCount = tasks.length > 0 && entrySlots > 0 ? 1 : 0;
+  let visibleIntegrationCount = tasks.length > 0 && entrySlots > 1
+    ? 1
+    : tasks.length === 0 ? Math.min(integrations.length, entrySlots) : 0;
+  let remainingSlots = entrySlots - visibleTaskCount - visibleIntegrationCount;
+
+  const additionalTasks = Math.min(tasks.length - visibleTaskCount, remainingSlots);
+  visibleTaskCount += additionalTasks;
+  remainingSlots -= additionalTasks;
+  visibleIntegrationCount += Math.min(integrations.length - visibleIntegrationCount, remainingSlots);
+
+  return {
+    tasks: tasks.slice(0, visibleTaskCount),
+    integrations: integrations.slice(0, visibleIntegrationCount),
+    hiddenCount: totalEntries - visibleTaskCount - visibleIntegrationCount,
+    showSubscriptionsDivider: true,
+  };
+}
+
+/**
+ * Build the activity panel for the focused conversation.
  *
- * `maxHeight` is the available message-area height. When every task cannot fit,
- * the final content row reports how many tasks are hidden while the header keeps
- * the total count visible.
+ * `maxHeight` is the available message-area height. When every entry cannot fit,
+ * the final content row reports how many entries are hidden while the header
+ * keeps the total count visible.
  */
 export function renderTaskPanel(
   state: RenderState,
@@ -106,18 +194,14 @@ export function renderTaskPanel(
   now = Date.now(),
 ): TaskPanelRender | null {
   const tasks = focusedConversationTasks(state);
-  if (tasks.length === 0 || chatWidth < MIN_PANEL_WIDTH || maxHeight < 3) return null;
+  const integrations = focusedConversationIntegrations(state);
+  const totalEntries = tasks.length + integrations.length;
+  if (totalEntries === 0 || chatWidth < MIN_PANEL_WIDTH || maxHeight < 3) return null;
 
   const panelWidth = Math.min(MAX_PANEL_WIDTH, chatWidth);
   const innerWidth = panelWidth - 2;
-  const maxLabelWidth = panelWidth >= 38 ? termWidth("◆ Exocortex") : termWidth("$ Bash");
-  if (innerWidth - maxLabelWidth - ELAPSED_WIDTH - 3 < 1) return null;
-
   const maxContentRows = maxHeight - 2;
-  const hasOverflow = tasks.length > maxContentRows;
-  const visibleTaskCount = hasOverflow ? Math.max(0, maxContentRows - 1) : tasks.length;
-  const visibleTasks = tasks.slice(0, visibleTaskCount);
-  const hiddenCount = tasks.length - visibleTasks.length;
+  const visible = fitPanelContent(tasks, integrations, maxContentRows);
 
   const panelBg = hexToAnsiBg(PANEL_BG_HEX);
   const outline = `${theme.dim}${theme.text}`;
@@ -133,18 +217,18 @@ export function renderTaskPanel(
   };
 
   const headerTitle = "Tasks";
-  const taskCount = String(tasks.length);
+  const entryCount = String(totalEntries);
   const headerLeft = `─ ${headerTitle} `;
-  const headerRight = ` ${taskCount} ─`;
+  const headerRight = ` ${entryCount} ─`;
   const headerFill = "─".repeat(Math.max(0, innerWidth - termWidth(headerLeft) - termWidth(headerRight)));
   const lines = [
     withPanelBg(
       `${topOutline}╭─ ${theme.reset}${theme.muted}${headerTitle}${topOutline} ${headerFill}`
-      + `${theme.reset}${theme.muted} ${taskCount}${topOutline} ─╮`,
+      + `${theme.reset}${theme.muted} ${entryCount}${topOutline} ─╮`,
     ),
   ];
 
-  for (const task of visibleTasks) {
+  for (const task of visible.tasks) {
     const isSubagent = task.kind === "subagent";
     const isGoal = task.kind === "goal";
     const isChrono = task.kind === "chrono";
@@ -153,7 +237,7 @@ export function renderTaskPanel(
       ? (isGoal ? `${task.goalStatus === "paused" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exocortex" : isChrono ? "◷ Chrono" : "$ Bash")
       : (isGoal ? `${task.goalStatus === "paused" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exo" : isChrono ? "◷ Chrono" : "$ Bash");
     const fallbackTitle = isGoal ? "Conversation goal" : isSubagent ? "Subagent task" : isChrono ? "Chrono task" : "Background task";
-    const title = cleanTaskTitle(task.title) || fallbackTitle;
+    const title = cleanPanelText(task.title) || fallbackTitle;
     const elapsed = isGoal && task.goalStatus === "paused"
       ? "paused"
       : isChrono && task.chronoMode !== "wait" && task.dueAt !== undefined
@@ -167,10 +251,42 @@ export function renderTaskPanel(
     ));
   }
 
-  if (hiddenCount > 0) {
+  if (visible.showSubscriptionsDivider) {
+    const sectionTitle = "Subscriptions";
+    const sectionCount = String(integrations.length);
+    const sectionLeft = `─ ${sectionTitle} `;
+    const sectionRight = ` ${sectionCount} ─`;
+    const sectionFill = "─".repeat(Math.max(0, innerWidth - termWidth(sectionLeft) - termWidth(sectionRight)));
+    lines.push(withPanelBg(
+      `${outline}├─ ${theme.reset}${theme.muted}${sectionTitle}${outline} ${sectionFill}`
+      + `${theme.reset}${theme.muted} ${sectionCount}${outline} ─┤`,
+    ));
+  }
+
+  for (const integration of visible.integrations) {
+    const style = state.externalToolStyles.find(candidate => candidate.cmd === integration.toolName);
+    const rawToolLabel = cleanPanelText(style?.label ?? integration.toolName) || "External";
+    const color = style ? hexToAnsi(style.color) : theme.tool;
+    const fallbackTitle = cleanPanelText(integration.description ?? "")
+      || cleanPanelText(integration.sourceId)
+      || "Subscription";
+    const title = cleanPanelText(integration.label) || fallbackTitle;
+    const deliveryStatus = formatIntegrationDeliveryStatus(integration);
+    const labelAndTitleWidth = innerWidth - INTEGRATION_STATE_WIDTH - 3;
+    const labelWidth = Math.min(termWidth(rawToolLabel), Math.max(1, labelAndTitleWidth - 1));
+    const toolLabel = padRightToWidth(rawToolLabel, labelWidth).trimEnd();
+    const titleWidth = Math.max(1, labelAndTitleWidth - termWidth(toolLabel));
+    lines.push(withPanelBg(
+      `${outline}│${theme.reset} ${color}${toolLabel}`
+      + `${theme.text} ${padRightToWidth(title, titleWidth)}`
+      + `${theme.muted}${padLeftToWidth(deliveryStatus, INTEGRATION_STATE_WIDTH)}${theme.reset} ${outline}│`,
+    ));
+  }
+
+  if (visible.hiddenCount > 0) {
     lines.push(withPanelBg(
       `${outline}│${theme.reset} ${theme.muted}`
-      + `${padRightToWidth(`… ${hiddenCount} more`, innerWidth - 2)}${theme.reset} ${outline}│`,
+      + `${padRightToWidth(`… ${visible.hiddenCount} more`, innerWidth - 2)}${theme.reset} ${outline}│`,
     ));
   }
 

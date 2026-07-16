@@ -16,6 +16,7 @@ import { ExternalToolWatcher, getExternalToolWatchTargets } from "./external-too
 import { ExternalToolDaemonSupervisor } from "./external-tools-daemon";
 import { getExternalToolAuthArgs } from "./external-tools-auth";
 import type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool } from "./external-tools-types";
+import { setExternalNotificationToolOnline } from "./external-notifications";
 
 export type { ManifestShellLiteralArg, ManifestShell } from "./external-tools-shell";
 export type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool, Manifest, ManifestAuth, ManifestDaemon } from "./external-tools-types";
@@ -30,7 +31,7 @@ let tools: LoadedTool[] = [];
 let watcher: ExternalToolWatcher | null = null;
 let externalToolsDir: string | null = null;
 let daemonSupervisionEnabled = false;
-const daemonSupervisor = new ExternalToolDaemonSupervisor();
+const daemonSupervisor = new ExternalToolDaemonSupervisor(setExternalNotificationToolOnline);
 
 /**
  * Linked worktrees share the canonical external-tools directories through

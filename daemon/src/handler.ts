@@ -27,6 +27,7 @@ import { addAccount as addOpenAIAccount, listAccounts as listOpenAIAccounts, rem
 import { getProviderAdapter } from "./providers/catalog";
 import { getTokenStatsSnapshot } from "./token-stats";
 import {
+  broadcastConversationHistoryUpdated,
   broadcastConversationInstructionsUpdated,
   broadcastConversationUpdated,
   broadcastFolderInstructionsUpdated,
@@ -50,6 +51,18 @@ import { buildBackgroundTaskNotificationText } from "./background-task-notificat
 import { configureChronoService } from "./chrono-service";
 import { INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
+import {
+  buildExternalNotificationEnvelope,
+  hasExternalNotificationReceipt,
+  listExternalNotificationSources,
+  listExternalNotificationSubscriptions,
+  recordExternalNotificationReceipt,
+  registerExternalNotificationSource,
+  setExternalNotificationsChangedListener,
+  subscribeExternalNotification,
+  unsubscribeExternalNotification,
+  updateExternalNotificationSubscription,
+} from "./external-notifications";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
@@ -62,6 +75,9 @@ export function createHandler(server: DaemonServer) {
   let exocortexRuntime: ExocortexToolRuntime | undefined;
   const pendingBackgroundNotifications = new Map<string, { convId: string; completion: BackgroundTaskCompletion }>();
   configureChronoService((convId) => broadcastConversationUpdated(server, convId));
+  setExternalNotificationsChangedListener((convIds) => {
+    for (const convId of convIds) broadcastConversationUpdated(server, convId);
+  });
 
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     server.broadcast({ type: "usage_update", provider, usage });
@@ -1030,6 +1046,164 @@ export function createHandler(server: DaemonServer) {
           const message = err instanceof Error ? err.message : String(err);
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message });
         }
+        break;
+      }
+
+      // ── External notification routing ─────────────────────────────
+
+      case "register_external_notification_source": {
+        try {
+          const source = registerExternalNotificationSource({ toolName: cmd.toolName, ...cmd.source });
+          server.sendTo(client, { type: "external_notification_source", reqId: cmd.reqId, source });
+        } catch (err) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: err instanceof Error ? err.message : String(err) });
+        }
+        break;
+      }
+
+      case "list_external_notification_sources": {
+        server.sendTo(client, {
+          type: "external_notification_sources",
+          reqId: cmd.reqId,
+          sources: listExternalNotificationSources(cmd.toolName),
+        });
+        break;
+      }
+
+      case "list_external_notification_subscriptions": {
+        server.sendTo(client, {
+          type: "external_notification_subscriptions",
+          reqId: cmd.reqId,
+          subscriptions: listExternalNotificationSubscriptions({
+            toolName: cmd.toolName,
+            sourceId: cmd.sourceId,
+            convId: cmd.convId,
+          }),
+        });
+        break;
+      }
+
+      case "subscribe_external_notification": {
+        try {
+          if (!convStore.getSummary(cmd.convId)) throw new Error(`Conversation ${cmd.convId} not found`);
+          const subscription = subscribeExternalNotification({
+            toolName: cmd.toolName,
+            sourceId: cmd.sourceId,
+            sourceLabel: cmd.sourceLabel,
+            sourceDescription: cmd.sourceDescription,
+            convId: cmd.convId,
+            delivery: cmd.delivery,
+          });
+          server.sendTo(client, { type: "external_notification_subscription", reqId: cmd.reqId, subscription });
+        } catch (err) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: err instanceof Error ? err.message : String(err) });
+        }
+        break;
+      }
+
+      case "unsubscribe_external_notification": {
+        try {
+          const removed = unsubscribeExternalNotification({
+            subscriptionId: cmd.subscriptionId,
+            toolName: cmd.toolName,
+            sourceId: cmd.sourceId,
+            convId: cmd.convId,
+          });
+          server.sendTo(client, {
+            type: "external_notification_subscriptions",
+            reqId: cmd.reqId,
+            removed,
+            subscriptions: listExternalNotificationSubscriptions({
+              toolName: cmd.toolName,
+              sourceId: cmd.sourceId,
+              convId: cmd.convId,
+            }),
+          });
+        } catch (err) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: err instanceof Error ? err.message : String(err) });
+        }
+        break;
+      }
+
+      case "update_external_notification_subscription": {
+        try {
+          const subscription = updateExternalNotificationSubscription(cmd.subscriptionId, {
+            delivery: cmd.delivery,
+            enabled: cmd.enabled,
+          });
+          server.sendTo(client, { type: "external_notification_subscription", reqId: cmd.reqId, subscription });
+        } catch (err) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: err instanceof Error ? err.message : String(err) });
+        }
+        break;
+      }
+
+      case "publish_external_notification": {
+        const deliveries: import("./protocol").ExternalNotificationPublishDelivery[] = [];
+        const eventId = cmd.eventId?.trim();
+        const text = cmd.text?.trim();
+        if (!eventId || eventId.length > 300 || /[\r\n\0]/.test(eventId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Invalid external notification eventId" });
+          break;
+        }
+        if (!text || text.length > 100_000) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "External notification text must contain 1-100000 characters" });
+          break;
+        }
+
+        for (const subscription of listExternalNotificationSubscriptions({ toolName: cmd.toolName, sourceId: cmd.sourceId })) {
+          if (!subscription.enabled) continue;
+          if (hasExternalNotificationReceipt(subscription.id, eventId)) {
+            deliveries.push({ subscriptionId: subscription.id, convId: subscription.convId, status: "duplicate" });
+            continue;
+          }
+          if (!convStore.getSummary(subscription.convId)) {
+            deliveries.push({ subscriptionId: subscription.id, convId: subscription.convId, status: "failed", message: "Conversation not found" });
+            continue;
+          }
+
+          const envelope = buildExternalNotificationEnvelope(subscription, {
+            eventId,
+            text,
+            occurredAt: cmd.occurredAt,
+          });
+          try {
+            if (subscription.delivery === "inbox") {
+              if (!convStore.appendExternalInboxNotification(subscription.convId, envelope, Date.now())) {
+                throw new Error("Conversation not found");
+              }
+              recordExternalNotificationReceipt(subscription.id, eventId);
+              broadcastConversationHistoryUpdated(server, subscription.convId);
+              broadcastConversationUpdated(server, subscription.convId);
+              deliveries.push({ subscriptionId: subscription.id, convId: subscription.convId, status: "inbox" });
+            } else {
+              // A durable queue entry closes the crash window between accepting an
+              // external event and starting its autonomous model turn. The normal
+              // queue scheduler starts it immediately when idle or after the
+              // conversation's active turn when busy.
+              const queueId = `external:${subscription.id}:${eventId}`;
+              convStore.pushQueuedMessage(subscription.convId, envelope, "next-turn", undefined, null, undefined, queueId, Date.now());
+              recordExternalNotificationReceipt(subscription.id, eventId);
+              deliveries.push({ subscriptionId: subscription.id, convId: subscription.convId, status: "queued" });
+            }
+          } catch (err) {
+            deliveries.push({
+              subscriptionId: subscription.id,
+              convId: subscription.convId,
+              status: "failed",
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+
+        server.sendTo(client, {
+          type: "external_notification_publish_result",
+          reqId: cmd.reqId,
+          toolName: cmd.toolName,
+          sourceId: cmd.sourceId,
+          eventId,
+          deliveries,
+        });
         break;
       }
 

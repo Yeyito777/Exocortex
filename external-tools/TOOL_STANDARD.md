@@ -112,6 +112,104 @@ The daemon auto-discovers it, spawns the process, and supervises it
 Stdout/stderr are captured to `config/service.log`. When a tool is removed,
 its daemon is stopped automatically.
 
+### External notification subscriptions
+
+External tools that autonomously deliver platform events into Exocortex
+conversations must use the daemon's generic external-notification registry.
+Do not keep Exocortex conversation IDs in a tool-local `relay_targets` list and
+do not shell out to `exo send` from a listener. The external tool owns platform
+authentication, event collection, filtering, and formatting; Exocortex owns the
+durable source → conversation route, delivery policy, deduplication, and UI.
+
+This applies to notification listeners such as Discord DMs/mentions, Twitter
+replies/quotes, and WhatsApp incoming messages. Ordinary request/response tools
+and explicit human/script calls to `exo send` do not need this interface.
+
+#### Source lifecycle
+
+Every listener declares one or more stable, tool-local sources. Register each
+source when the listener starts, before migrating subscriptions or publishing
+events:
+
+```json
+{"type":"register_external_notification_source","reqId":"1","toolName":"discord","source":{"id":"account:paramount:notifications","label":"Paramount · DMs and @mentions","description":"Direct messages, group DMs, and server mentions received by the Paramount account"}}
+```
+
+The daemon replies with `external_notification_source`. Source IDs are opaque to
+Exocortex but must remain stable across restarts. Include the account/profile in
+the ID when a tool supports multiple accounts. Labels and descriptions are safe
+display metadata; never include credentials or tokens.
+
+Discover registered sources with:
+
+```json
+{"type":"list_external_notification_sources","reqId":"2","toolName":"discord"}
+```
+
+The response is `external_notification_sources` with a `sources` array.
+
+#### Subscription management
+
+Tool CLIs should expose `notify subscribe`, `notify unsubscribe`, and
+`notify list` (legacy `add`/`remove` may remain aliases). These commands call the
+daemon registry rather than editing a tool-local routing file:
+
+```json
+{"type":"subscribe_external_notification","reqId":"3","toolName":"discord","sourceId":"account:paramount:notifications","convId":"<conversation-id>","delivery":"wake"}
+{"type":"list_external_notification_subscriptions","reqId":"4","toolName":"discord","sourceId":"account:paramount:notifications"}
+{"type":"unsubscribe_external_notification","reqId":"5","subscriptionId":"<subscription-id>"}
+{"type":"update_external_notification_subscription","reqId":"6","subscriptionId":"<subscription-id>","delivery":"inbox","enabled":true}
+```
+
+`delivery` is one of:
+
+- `wake` — durably enqueue the notification and autonomously start a model turn
+  when the conversation is idle; if busy, deliver after its active turn.
+- `inbox` — persist a provenance-tagged, model-visible notice and mark the
+  conversation unread without autonomously starting a model turn.
+
+The daemon validates conversation IDs and removes subscriptions when their
+conversation is deleted. External tools should never choose a target while
+publishing an event; routing is entirely daemon-owned.
+
+The native model-facing Exocortex command registry also exposes a
+`notifications` command. This lets an AI discover sources and subscribe the
+active conversation when the user says, for example, “subscribe this chat to
+Discord notifications.”
+
+#### Publishing events
+
+Publish one logical platform event or intentionally formatted batch with a
+stable event ID:
+
+```json
+{"type":"publish_external_notification","reqId":"7","toolName":"discord","sourceId":"account:paramount:notifications","eventId":"discord-message-123","occurredAt":1770000000000,"text":"DM from Fede: …"}
+```
+
+The daemon finds enabled subscriptions, adds an explicit untrusted-external-
+content envelope, deduplicates per subscription/event ID, and returns
+`external_notification_publish_result` with a `deliveries` array. A tool may
+retry the same event ID safely. Treat `queued`, `inbox`, `started`, and
+`duplicate` as accepted outcomes; retain/retry events whose routes report
+`failed` according to the platform listener's normal retry policy.
+
+Requirements:
+
+- Never include a target conversation ID in a publish request.
+- Never include secrets in source metadata, event IDs, text, or logs.
+- Use platform-stable event IDs so reconnect/replay does not duplicate turns.
+- Exclude outgoing/self-authored events and history hydration unless the source
+  explicitly promises those semantics.
+- Keep platform sender labels, allowlists, cursors, and polling configuration in
+  the external tool repository.
+- On migration from a legacy `relay_targets` file, create all daemon-owned
+  subscriptions first and delete the legacy key only after every import is
+  acknowledged. Do not run both delivery paths concurrently.
+
+The IPC transport is the normal Exocortex newline-delimited JSON socket. External
+tools may extend their existing small daemon client helper; they must not import
+daemon implementation files or write directly into Exocortex's data directory.
+
 ## Entry point
 
 The `bin/` script is a thin bash wrapper. It resolves the project root,

@@ -56,6 +56,14 @@ import {
 } from "./conversation-activity";
 import { buildSystemPrompt, reloadUserAddendum, setUserAddendum } from "./system";
 import { getLastUsage } from "./usage";
+import {
+  listExternalNotificationSources,
+  listExternalNotificationSubscriptions,
+  isExternalNotificationSourceActive,
+  subscribeExternalNotification,
+  unsubscribeExternalNotification,
+  updateExternalNotificationSubscription,
+} from "./external-notifications";
 
 const runtimeByServer = new WeakMap<DaemonServer, ExocortexToolRuntime>();
 
@@ -931,6 +939,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       instance: "current",
       conversations: conversations.length,
       streaming: conversations.filter(conversation => conversation.streaming).length,
+      external_notification_sources: listExternalNotificationSources().length,
+      external_notification_subscriptions: listExternalNotificationSubscriptions().length,
     }));
   };
 
@@ -1248,6 +1258,114 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }));
   };
 
+  const executeNotificationsCommand = (args: Record<string, unknown>, parentConversationId: string | undefined): ToolResult => {
+    const operation = stringInput(args, "operation", true)!.toLowerCase();
+    const toolName = stringInput(args, "tool");
+    const sourceId = stringInput(args, "source_id");
+    const requestedConversationId = stringInput(args, "conversation_id");
+    const targetConversationId = requestedConversationId ?? parentConversationId;
+
+    if (operation === "sources") {
+      const sources = listExternalNotificationSources(toolName);
+      return ok(pretty({
+        sources: sources.map(source => ({
+          tool: source.toolName,
+          source_id: source.id,
+          label: source.label,
+          description: source.description ?? null,
+          status: isExternalNotificationSourceActive(source.toolName, source.id) ? "active" : "offline",
+          registered_at: source.registeredAt,
+        })),
+      }));
+    }
+
+    if (operation === "list") {
+      const scope = stringInput(args, "scope") ?? (targetConversationId ? "current" : "all");
+      if (scope !== "current" && scope !== "all") throw new Error("scope must be current or all");
+      if (scope === "current" && !targetConversationId) throw new Error("conversation_id is required without an active conversation context");
+      const subscriptions = listExternalNotificationSubscriptions({
+        toolName,
+        sourceId,
+        convId: scope === "current" ? targetConversationId : undefined,
+      });
+      return ok(pretty({
+        scope,
+        subscriptions: subscriptions.map(subscription => ({
+          id: subscription.id,
+          tool: subscription.toolName,
+          source_id: subscription.sourceId,
+          source: subscription.sourceLabel,
+          conversation_id: subscription.convId,
+          conversation_title: convStore.getSummary(subscription.convId)?.title ?? null,
+          delivery: subscription.delivery,
+          enabled: subscription.enabled,
+          created_at: subscription.createdAt,
+          updated_at: subscription.updatedAt,
+        })),
+      }));
+    }
+
+    if (operation === "subscribe") {
+      if (!targetConversationId) throw new Error("conversation_id is required without an active conversation context");
+      if (!convStore.getSummary(targetConversationId)) throw new Error(`Conversation ${targetConversationId} not found`);
+      if (!toolName) throw new Error("tool is required for operation=subscribe");
+      if (!sourceId) throw new Error("source_id is required for operation=subscribe");
+      const source = listExternalNotificationSources(toolName).find(candidate => candidate.id === sourceId);
+      if (!source) {
+        const choices = listExternalNotificationSources(toolName).map(candidate => `${candidate.id} (${candidate.label})`);
+        throw new Error(`External notification source not found: ${toolName}/${sourceId}. Available: ${choices.join(", ") || "none"}`);
+      }
+      const delivery = args.delivery === "inbox" ? "inbox" : args.delivery === undefined || args.delivery === "wake"
+        ? "wake"
+        : (() => { throw new Error("delivery must be wake or inbox"); })();
+      const subscription = subscribeExternalNotification({
+        toolName,
+        sourceId,
+        convId: targetConversationId,
+        delivery,
+      });
+      return ok(pretty({
+        subscribed: true,
+        subscription_id: subscription.id,
+        tool: subscription.toolName,
+        source_id: subscription.sourceId,
+        source: subscription.sourceLabel,
+        conversation_id: subscription.convId,
+        conversation_title: convStore.getSummary(subscription.convId)?.title ?? null,
+        delivery: subscription.delivery,
+      }));
+    }
+
+    if (operation === "unsubscribe") {
+      const subscriptionId = stringInput(args, "subscription_id");
+      if (!subscriptionId && !targetConversationId) throw new Error("subscription_id or conversation_id is required without an active conversation context");
+      const removed = unsubscribeExternalNotification({
+        subscriptionId,
+        toolName,
+        sourceId,
+        convId: subscriptionId ? requestedConversationId : targetConversationId,
+      });
+      return ok(pretty({ unsubscribed: removed }));
+    }
+
+    if (operation === "update") {
+      const subscriptionId = stringInput(args, "subscription_id", true)!;
+      const delivery = args.delivery === undefined ? undefined
+        : args.delivery === "wake" || args.delivery === "inbox" ? args.delivery
+        : (() => { throw new Error("delivery must be wake or inbox"); })();
+      const enabled = typeof args.enabled === "boolean" ? args.enabled : undefined;
+      const subscription = updateExternalNotificationSubscription(subscriptionId, { delivery, enabled });
+      return ok(pretty({
+        subscription_id: subscription.id,
+        delivery: subscription.delivery,
+        enabled: subscription.enabled,
+        updated_at: subscription.updatedAt,
+      }));
+    }
+
+    throw new Error("operation must be sources, list, subscribe, unsubscribe, or update");
+  };
+
   const executeFolderCommand = async (args: Record<string, unknown>, parentConversationId: string | undefined, signal?: AbortSignal): Promise<ToolResult> => {
     const operation = stringInput(args, "operation", true)?.toLowerCase();
     switch (operation) {
@@ -1427,6 +1545,27 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       inputSchema: commandSchema({}),
       examples: [{}],
       execute: () => executeStatus(),
+    },
+    {
+      name: "notifications",
+      description: "Discover external notification sources and list, subscribe, unsubscribe, or update routes. The active conversation is the default target.",
+      inputSchema: commandSchema({
+        operation: { type: "string", enum: ["sources", "list", "subscribe", "unsubscribe", "update"] },
+        tool: { type: "string", description: "External tool manifest name, such as discord, twitter, or whatsapp." },
+        source_id: { type: "string", description: "Opaque source id returned by operation=sources." },
+        conversation_id: { type: "string", description: "Defaults to the active conversation." },
+        subscription_id: { type: "string", description: "Required for update; optional exact target for unsubscribe." },
+        delivery: { type: "string", enum: ["wake", "inbox"], description: "wake starts/queues a model turn; inbox records the event without autonomously invoking the model." },
+        enabled: { type: "boolean", description: "For update: enable or disable the subscription." },
+        scope: { type: "string", enum: ["current", "all"], description: "For list: defaults current when a conversation context exists." },
+      }, ["operation"]),
+      examples: [
+        { operation: "sources", tool: "discord" },
+        { operation: "subscribe", tool: "discord", source_id: "account:paramount:notifications", delivery: "wake" },
+        { operation: "list", scope: "current" },
+        { operation: "unsubscribe", subscription_id: "<subscription-id>" },
+      ],
+      execute: executeNotificationsCommand,
     },
   ];
   const commandMap = new Map(commands.map(command => [command.name, command]));

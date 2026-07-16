@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus } from "./messages";
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, activeContextCompactionHistoryCount, createConversation, createMessageMetadata, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, activeContextCompactionHistoryCount, createConversation, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
@@ -22,6 +22,7 @@ import { notifyConversationRemoved } from "./conversation-lifecycle";
 import { getProvider, normalizeEffort } from "./providers/registry";
 import { isDeepStrictEqual } from "node:util";
 import { contextMessageChars } from "./context-token-attribution";
+import { getConversationExternalIntegrations } from "./external-notifications";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -1274,6 +1275,7 @@ export function listSummaries(): ConversationSummary[] {
       unread: unread.has(summary.id),
       ...getConversationActivityCounts(summary.id),
       tasks: getConversationTasks(summary.id),
+      integrations: getConversationExternalIntegrations(summary.id),
     });
   }
   sortSidebarEntries(result);
@@ -1637,6 +1639,7 @@ export function getSummary(id: string): ConversationSummary | null {
     unread: unread.has(id),
     ...getConversationActivityCounts(id),
     tasks: getConversationTasks(id),
+    integrations: getConversationExternalIntegrations(id),
   };
 }
 
@@ -1840,6 +1843,22 @@ export function markUnread(convId: string): void {
   if (unread.has(convId)) return;
   unread.add(convId);
   saveUnreadState();
+}
+
+/**
+ * Persist an external event in the transcript without autonomously starting a
+ * model turn. It remains model-visible on the next user turn and is rendered as
+ * a provenance-tagged system notice rather than user-authored text.
+ */
+export function appendExternalInboxNotification(convId: string, text: string, startedAt = Date.now()): boolean {
+  const conv = get(convId);
+  if (!conv) return false;
+  conv.messages.push(createModelVisibleSystemNotice(text, conv.model, "external_notification", startedAt));
+  conv.updatedAt = Math.max(conv.updatedAt, startedAt);
+  markDirty(convId);
+  flush(convId);
+  markUnread(convId);
+  return true;
 }
 
 export function clearUnread(convId: string): boolean {

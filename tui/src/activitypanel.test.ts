@@ -1,10 +1,33 @@
 import { describe, expect, test } from "bun:test";
 
-import { renderTaskPanel, formatTaskCountdown, formatTaskElapsed } from "./activitypanel";
+import {
+  focusedConversationIntegrations,
+  focusedConversationTasks,
+  formatIntegrationDeliveryStatus,
+  formatTaskCountdown,
+  formatTaskElapsed,
+  hasFocusedConversationIntegrations,
+  hasFocusedConversationTasks,
+  renderTaskPanel,
+} from "./activitypanel";
 import { stripAnsi } from "./historycursor";
+import type { ExternalIntegrationSummary } from "./messages";
 import { createInitialState } from "./state";
 import { termWidth, visibleLength } from "./textwidth";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
+
+function integration(overrides: Partial<ExternalIntegrationSummary> = {}): ExternalIntegrationSummary {
+  return {
+    id: "integration:discord:design",
+    toolName: "discord",
+    sourceId: "channel:design",
+    label: "Design alerts",
+    delivery: "wake",
+    status: "active",
+    createdAt: 1_000,
+    ...overrides,
+  };
+}
 
 function stateWithTasks() {
   const state = createInitialState();
@@ -35,6 +58,28 @@ function stateWithTasks() {
       { id: "bash:42", kind: "background", title: "bun\ntest tui", startedAt: 12_000 },
     ],
   }];
+  return state;
+}
+
+function stateWithIntegrations() {
+  const state = stateWithTasks();
+  state.sidebar.conversations[0].tasks = [];
+  state.externalToolStyles = [
+    { cmd: "discord", label: "Discord", color: "#5865f2" },
+    { cmd: "whatsapp", label: "WhatsApp", color: "#25d366" },
+  ];
+  state.sidebar.conversations[0].integrations = [
+    integration(),
+    integration({
+      id: "integration:whatsapp:ops",
+      toolName: "whatsapp",
+      sourceId: "group:ops",
+      label: "Ops\nroom",
+      delivery: "inbox",
+      status: "offline",
+      createdAt: 2_000,
+    }),
+  ];
   return state;
 }
 
@@ -145,6 +190,107 @@ describe("focused conversation task panel", () => {
   });
 });
 
+describe("focused conversation subscriptions", () => {
+  test("selects integrations only from the focused conversation and keeps them separate from tasks", () => {
+    const state = stateWithIntegrations();
+    state.sidebar.conversations.push({
+      ...state.sidebar.conversations[0],
+      id: "other",
+      title: "Other",
+      integrations: [integration({ id: "integration:other", label: "Other source" })],
+    });
+
+    expect(focusedConversationIntegrations(state).map(item => item.id)).toEqual([
+      "integration:discord:design",
+      "integration:whatsapp:ops",
+    ]);
+    expect(hasFocusedConversationIntegrations(state)).toBe(true);
+    expect(focusedConversationTasks(state)).toEqual([]);
+    expect(hasFocusedConversationTasks(state)).toBe(false);
+
+    state.convId = "other";
+    expect(focusedConversationIntegrations(state).map(item => item.id)).toEqual(["integration:other"]);
+    state.folderInstructionsDoc = { folderId: "folder", text: "", savedText: "", loading: false };
+    expect(focusedConversationIntegrations(state)).toEqual([]);
+    expect(hasFocusedConversationIntegrations(state)).toBe(false);
+  });
+
+  test("keeps the Tasks identity and a distinct Subscriptions section without ordinary task rows", () => {
+    const panel = renderTaskPanel(stateWithIntegrations(), 100, 20, 43_000);
+    expect(panel).not.toBeNull();
+    expect(panel?.width).toBe(50);
+    expect(panel?.lines).toHaveLength(5);
+
+    const plain = panel!.lines.map(stripAnsi);
+    expect(plain[0]).toContain("Tasks");
+    expect(plain[0].trimEnd()).toEndWith("2 ─╮");
+    expect(plain[1]).toContain("Subscriptions");
+    expect(plain[1].trimEnd()).toEndWith("2 ─┤");
+    expect(plain[2]).toContain("Discord Design alerts");
+    expect(plain[2]).toContain("wake active");
+    expect(plain[3]).toContain("WhatsApp Ops room");
+    expect(plain[3]).toContain("inbox offline");
+    expect(plain.join("\n")).not.toContain("42s");
+    expect(panel!.lines[2]).toContain(hexToAnsi("#5865f2"));
+    expect(panel!.lines[3]).toContain(hexToAnsi("#25d366"));
+    expect(panel!.lines.every(line => line.includes(hexToAnsiBg("#00050f")))).toBe(true);
+    expect(panel!.lines.every(line => visibleLength(line) === panel!.width)).toBe(true);
+  });
+
+  test("keeps a Tasks header and a distinct Subscriptions section when both types are present", () => {
+    const state = stateWithTasks();
+    state.externalToolStyles = [{ cmd: "discord", label: "Discord", color: "#5865f2" }];
+    state.sidebar.conversations[0].integrations = [integration(), integration({ id: "integration:two", label: "Deployments" })];
+
+    const panel = renderTaskPanel(state, 100, 20, 43_000)!;
+    const plain = panel.lines.map(stripAnsi);
+    expect(panel.lines).toHaveLength(7);
+    expect(plain[0]).toContain("Tasks");
+    expect(plain[0].trimEnd()).toEndWith("4 ─╮");
+    expect(plain[1]).toContain("◆ Exocortex Map daemon events");
+    expect(plain[2]).toContain("$ Bash bun test tui");
+    expect(plain[3]).toContain("Subscriptions");
+    expect(plain[3].trimEnd()).toEndWith("2 ─┤");
+    expect(plain[4]).toContain("Discord Design alerts");
+    expect(plain[4]).toContain("wake active");
+    expect(panel.lines.every(line => visibleLength(line) === panel.width)).toBe(true);
+  });
+
+  test("keeps combined sections and overflow correct at the 30-column minimum", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].tasks!.push(
+      { id: "child-2", kind: "subagent", title: "Second child", startedAt: 2_000 },
+      { id: "bash:99", kind: "background", title: "typecheck", startedAt: 3_000 },
+    );
+    state.externalToolStyles = [{ cmd: "discord", label: "An impossibly long tool label", color: "#5865f2" }];
+    state.sidebar.conversations[0].integrations = [
+      integration({ label: "A very long source label", delivery: "inbox", status: "disabled" }),
+      integration({ id: "integration:two", label: "Second source" }),
+      integration({ id: "integration:three", label: "Third source" }),
+    ];
+
+    const panel = renderTaskPanel(state, 30, 6, 50_000)!;
+    const plain = panel.lines.map(stripAnsi);
+    expect(panel.width).toBe(30);
+    expect(panel.lines).toHaveLength(6);
+    expect(plain[0]).toContain("Tasks");
+    expect(plain.join("\n")).toContain("Subscriptions");
+    expect(plain.join("\n")).toContain("inbox disabled");
+    expect(plain.join("\n")).toContain("… 5 more");
+    expect(panel.lines.every(line => termWidth(stripAnsi(line)) === 30)).toBe(true);
+  });
+
+  test("falls back to the manifest name and generic tool color when no external style is available", () => {
+    const state = stateWithIntegrations();
+    state.externalToolStyles = [];
+    state.sidebar.conversations[0].integrations = [integration({ toolName: "custom-feed" })];
+
+    const panel = renderTaskPanel(state, 100, 20)!;
+    expect(stripAnsi(panel.lines[2])).toContain("custom-feed Design alerts");
+    expect(panel.lines[2]).toContain(theme.tool);
+  });
+});
+
 describe("task elapsed formatting", () => {
   test("uses compact units at second, minute, hour, day, and week scales", () => {
     expect(formatTaskElapsed(1_000, 43_000)).toBe("42s");
@@ -157,5 +303,10 @@ describe("task elapsed formatting", () => {
   test("renders scheduled Chrono times as a compact countdown or due", () => {
     expect(formatTaskCountdown(12 * 60_000, 0)).toBe("in 12m");
     expect(formatTaskCountdown(0, 0)).toBe("due");
+  });
+
+  test("formats integration delivery and health compactly", () => {
+    expect(formatIntegrationDeliveryStatus({ delivery: "wake", status: "active" })).toBe("wake active");
+    expect(formatIntegrationDeliveryStatus({ delivery: "inbox", status: "disabled" })).toBe("inbox disabled");
   });
 });

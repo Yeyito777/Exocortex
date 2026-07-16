@@ -54,6 +54,7 @@ const EXO_SYSTEM_HINT = [
   "When an OpenAI subagent is otherwise warranted, omit `model` for the newest default (currently gpt-5.6-sol), use gpt-5.6-terra or gpt-5.6-luna for lighter/grunt work that doesn't require intelligence at all, and use older generations only when requested or required.",
   "Starting a subagent requires a short title of about three words; it becomes the child conversation title and identifies the task in the parent UI.",
   "Set max_depth=0 unless a subagent clearly needs to delegate further.",
+  "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
   "Subagents start in the daemon's working directory, so include the target absolute directory in tasks when relevant.",
 ].join("\n");
 

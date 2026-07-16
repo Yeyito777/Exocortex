@@ -24,6 +24,11 @@ import { resetConversationActivityForTest, setBackgroundTaskActive, setChronoTas
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "../messages";
 import { EXO_ACTIONS, exo } from "./exo";
 import { buildSystemPrompt, getUserAddendum, setUserAddendum } from "../system";
+import {
+  listExternalNotificationSubscriptions,
+  registerExternalNotificationSource,
+  resetExternalNotificationsForTest,
+} from "../external-notifications";
 
 const conversationIds: string[] = [];
 const folderIds: string[] = [];
@@ -59,6 +64,7 @@ function successfulOutcome(text = "done") {
 
 afterEach(() => {
   resetConversationActivityForTest();
+  resetExternalNotificationsForTest();
   for (const convId of conversationIds.splice(0)) {
     clearActiveJob(convId);
     remove(convId);
@@ -96,6 +102,7 @@ describe("native exo tool contract", () => {
       "When an OpenAI subagent is otherwise warranted, omit `model` for the newest default (currently gpt-5.6-sol), use gpt-5.6-terra or gpt-5.6-luna for lighter/grunt work that doesn't require intelligence at all, and use older generations only when requested or required.",
       "Starting a subagent requires a short title of about three words; it becomes the child conversation title and identifies the task in the parent UI.",
       "Set max_depth=0 unless a subagent clearly needs to delegate further.",
+      "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
       "Subagents start in the daemon's working directory, so include the target absolute directory in tasks when relevant.",
     ].join("\n"));
   });
@@ -470,7 +477,7 @@ describe("native exo daemon runtime", () => {
 
     const listed = JSON.parse((await runtime.execute({ action: "commands" }, undefined)).output);
     expect(listed.commands.map((command: { name: string }) => command.name)).toEqual([
-      "folder", "mark", "pin", "reorder", "rename", "delete", "llm", "clone", "system_prompt", "instructions", "stats", "task", "status",
+      "folder", "mark", "pin", "reorder", "rename", "delete", "llm", "clone", "system_prompt", "instructions", "stats", "task", "status", "notifications",
     ]);
 
     const help = JSON.parse((await runtime.execute({
@@ -488,6 +495,53 @@ describe("native exo daemon runtime", () => {
       },
       examples: expect.any(Array),
     });
+  });
+
+  test("discovers notification sources and subscribes the active conversation", async () => {
+    const parentId = id("notification-parent");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "Notification parent");
+    registerExternalNotificationSource({
+      toolName: "discord",
+      id: "account:paramount:notifications",
+      label: "Paramount · DMs and @mentions",
+    });
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn: async () => successfulOutcome(),
+      notifyParent: () => {},
+      hasCredentials: () => true,
+    });
+
+    const sources = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "notifications",
+      args: { operation: "sources", tool: "discord" },
+    }, parentId)).output);
+    expect(sources.sources).toEqual([
+      expect.objectContaining({ tool: "discord", source_id: "account:paramount:notifications" }),
+    ]);
+
+    const result = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "notifications",
+      args: {
+        operation: "subscribe",
+        tool: "discord",
+        source_id: "account:paramount:notifications",
+        delivery: "wake",
+      },
+    }, parentId)).output);
+    expect(result).toMatchObject({ subscribed: true, conversation_id: parentId, delivery: "wake" });
+    expect(listExternalNotificationSubscriptions({ convId: parentId })).toEqual([
+      expect.objectContaining({ toolName: "discord", sourceId: "account:paramount:notifications" }),
+    ]);
+
+    const removed = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "notifications",
+      args: { operation: "unsubscribe", subscription_id: result.subscription_id },
+    }, parentId)).output);
+    expect(removed.unsubscribed).toBe(1);
   });
 
   test("manages conversation, folder, and app instruction layers with revisions", async () => {

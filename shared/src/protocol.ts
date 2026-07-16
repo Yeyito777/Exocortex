@@ -8,8 +8,8 @@
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, UserMessageContextCheckpoint } from "./messages";
-export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, UserMessageContextCheckpoint };
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, UserMessageContextCheckpoint, ExternalNotificationDelivery } from "./messages";
+export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, UserMessageContextCheckpoint, ExternalNotificationDelivery };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
@@ -199,6 +199,96 @@ export interface ManageExternalToolDaemonCommand {
   reqId?: string;
   toolName: string;
   action: ExternalToolDaemonAction;
+}
+
+/** A tool-owned external event source that conversations may subscribe to. */
+export interface ExternalNotificationSource {
+  toolName: string;
+  id: string;
+  label: string;
+  description?: string;
+  /** Last time the source announced itself to this daemon. */
+  registeredAt: number;
+}
+
+/** A durable route from an external event source to an Exocortex conversation. */
+export interface ExternalNotificationSubscription {
+  id: string;
+  toolName: string;
+  sourceId: string;
+  sourceLabel: string;
+  sourceDescription?: string;
+  convId: string;
+  delivery: ExternalNotificationDelivery;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RegisterExternalNotificationSourceCommand {
+  type: "register_external_notification_source";
+  reqId?: string;
+  toolName: string;
+  source: {
+    id: string;
+    label: string;
+    description?: string;
+  };
+}
+
+export interface ListExternalNotificationSourcesCommand {
+  type: "list_external_notification_sources";
+  reqId?: string;
+  toolName?: string;
+}
+
+export interface ListExternalNotificationSubscriptionsCommand {
+  type: "list_external_notification_subscriptions";
+  reqId?: string;
+  toolName?: string;
+  sourceId?: string;
+  convId?: string;
+}
+
+export interface SubscribeExternalNotificationCommand {
+  type: "subscribe_external_notification";
+  reqId?: string;
+  toolName: string;
+  sourceId: string;
+  /** Snapshot metadata permits migration before a source daemon has registered. */
+  sourceLabel?: string;
+  sourceDescription?: string;
+  convId: string;
+  delivery?: ExternalNotificationDelivery;
+}
+
+export interface UnsubscribeExternalNotificationCommand {
+  type: "unsubscribe_external_notification";
+  reqId?: string;
+  subscriptionId?: string;
+  toolName?: string;
+  sourceId?: string;
+  convId?: string;
+}
+
+export interface UpdateExternalNotificationSubscriptionCommand {
+  type: "update_external_notification_subscription";
+  reqId?: string;
+  subscriptionId: string;
+  delivery?: ExternalNotificationDelivery;
+  enabled?: boolean;
+}
+
+export interface PublishExternalNotificationCommand {
+  type: "publish_external_notification";
+  reqId?: string;
+  toolName: string;
+  sourceId: string;
+  /** Stable platform event/batch id used for per-subscription deduplication. */
+  eventId: string;
+  /** Tool-formatted content; the daemon adds the trusted provenance envelope. */
+  text: string;
+  occurredAt?: number;
 }
 
 export interface TrimConversationCommand {
@@ -515,6 +605,13 @@ export type Command =
   | SetFastModeCommand
   | SetGoalCommand
   | ManageExternalToolDaemonCommand
+  | RegisterExternalNotificationSourceCommand
+  | ListExternalNotificationSourcesCommand
+  | ListExternalNotificationSubscriptionsCommand
+  | SubscribeExternalNotificationCommand
+  | UnsubscribeExternalNotificationCommand
+  | UpdateExternalNotificationSubscriptionCommand
+  | PublishExternalNotificationCommand
   | TrimConversationCommand
   | AbortCommand
   | BackgroundToolCommand
@@ -1022,6 +1119,50 @@ export interface ExternalToolDaemonResultEvent {
   status: ExternalToolDaemonStatus;
 }
 
+export interface ExternalNotificationSourceEvent {
+  type: "external_notification_source";
+  reqId?: string;
+  source: ExternalNotificationSource;
+}
+
+export interface ExternalNotificationSourcesEvent {
+  type: "external_notification_sources";
+  reqId?: string;
+  sources: ExternalNotificationSource[];
+}
+
+export interface ExternalNotificationSubscriptionEvent {
+  type: "external_notification_subscription";
+  reqId?: string;
+  subscription: ExternalNotificationSubscription;
+}
+
+export interface ExternalNotificationSubscriptionsEvent {
+  type: "external_notification_subscriptions";
+  reqId?: string;
+  subscriptions: ExternalNotificationSubscription[];
+  /** Number removed when this event acknowledges an unsubscribe command. */
+  removed?: number;
+}
+
+export type ExternalNotificationDeliveryStatus = "started" | "queued" | "inbox" | "duplicate" | "failed";
+
+export interface ExternalNotificationPublishDelivery {
+  subscriptionId: string;
+  convId: string;
+  status: ExternalNotificationDeliveryStatus;
+  message?: string;
+}
+
+export interface ExternalNotificationPublishResultEvent {
+  type: "external_notification_publish_result";
+  reqId?: string;
+  toolName: string;
+  sourceId: string;
+  eventId: string;
+  deliveries: ExternalNotificationPublishDelivery[];
+}
+
 export interface AuthStatusEvent {
   type: "auth_status";
   reqId?: string;
@@ -1083,5 +1224,10 @@ export type Event =
   | SystemPromptEvent
   | TranscriptionResultEvent
   | ExternalToolDaemonResultEvent
+  | ExternalNotificationSourceEvent
+  | ExternalNotificationSourcesEvent
+  | ExternalNotificationSubscriptionEvent
+  | ExternalNotificationSubscriptionsEvent
+  | ExternalNotificationPublishResultEvent
   | AuthStatusEvent
   | ErrorEvent;

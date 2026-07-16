@@ -302,6 +302,29 @@ export interface ConversationTaskSummary {
   chronoMode?: "wait" | "sleep" | "wake";
 }
 
+/** How an external notification subscription delivers events to its conversation. */
+export type ExternalNotificationDelivery = "wake" | "inbox";
+
+/** Health of an external notification subscription's source. */
+export type ExternalIntegrationStatus = "active" | "offline" | "disabled";
+
+/** Durable external notification route projected into conversation UI. */
+export interface ExternalIntegrationSummary {
+  /** Stable daemon-owned subscription id. */
+  id: string;
+  /** External tool manifest name, for example `discord` or `whatsapp`. */
+  toolName: string;
+  /** Tool-owned opaque source id. */
+  sourceId: string;
+  /** Human-readable source label supplied by the external tool. */
+  label: string;
+  /** Optional longer explanation of which external events this source emits. */
+  description?: string;
+  delivery: ExternalNotificationDelivery;
+  status: ExternalIntegrationStatus;
+  createdAt: number;
+}
+
 export interface ConversationSummary {
   id: string;
   provider: ProviderId;
@@ -328,6 +351,8 @@ export interface ConversationSummary {
   backgroundTaskCount?: number;
   /** Ephemeral task details used by focused-conversation activity UI. */
   tasks?: ConversationTaskSummary[];
+  /** Durable external notification subscriptions targeting this conversation. */
+  integrations?: ExternalIntegrationSummary[];
 }
 
 export interface FolderSummary {

@@ -7,6 +7,7 @@ import { beginPendingSubagentNotification, listPendingSubagentNotifications, rem
 import { getDaemonShutdownMode, resetDaemonShutdownModeForTest } from "./daemon-lifecycle";
 import { invalidateCredentialsCache } from "./auth";
 import { clearProviderAuth, saveProviderAuth } from "./store";
+import { resetExternalNotificationsForTest } from "./external-notifications";
 
 interface TestAssistantOutcome {
   ok: boolean;
@@ -282,6 +283,122 @@ describe("handler daemon-owned queue", () => {
       message.id === "bootstrap-id" && message.convId === id && message.text === "later",
     )).toBe(true);
     expect(listQueuedMessages().some(message => message.id === "bootstrap-id")).toBe(true);
+  });
+});
+
+describe("handler external notification routing", () => {
+  afterEach(() => {
+    resetExternalNotificationsForTest();
+    cleanupIds();
+  });
+
+  test("registers, subscribes, durably queues, and deduplicates wake notifications", async () => {
+    resetExternalNotificationsForTest();
+    const id = mkId("external-wake");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "External target");
+    setActiveJob(id, new AbortController(), Date.now());
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendHistoryUpdatedToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "register_external_notification_source",
+      reqId: "source",
+      toolName: "discord",
+      source: { id: "account:paramount:notifications", label: "Paramount · DMs and @mentions" },
+    });
+    await handle({} as never, {
+      type: "subscribe_external_notification",
+      reqId: "subscribe",
+      toolName: "discord",
+      sourceId: "account:paramount:notifications",
+      convId: id,
+      delivery: "wake",
+    });
+    await handle({} as never, {
+      type: "publish_external_notification",
+      reqId: "publish-1",
+      toolName: "discord",
+      sourceId: "account:paramount:notifications",
+      eventId: "discord-message-1",
+      text: "DM from Fede: hello",
+    });
+    await handle({} as never, {
+      type: "publish_external_notification",
+      reqId: "publish-duplicate",
+      toolName: "discord",
+      sourceId: "account:paramount:notifications",
+      eventId: "discord-message-1",
+      text: "DM from Fede: hello",
+    });
+
+    const queued = getQueuedMessages(id);
+    expect(queued).toHaveLength(1);
+    expect(queued[0].text).toContain("untrusted external content");
+    expect(queued[0].text).toContain("DM from Fede: hello");
+    expect(sent.find(event => event.reqId === "publish-1")).toEqual(expect.objectContaining({
+      type: "external_notification_publish_result",
+      deliveries: [expect.objectContaining({ status: "queued", convId: id })],
+    }));
+    expect(sent.find(event => event.reqId === "publish-duplicate")).toEqual(expect.objectContaining({
+      deliveries: [expect.objectContaining({ status: "duplicate", convId: id })],
+    }));
+    removeQueuedMessageById(queued[0].id);
+  });
+
+  test("records inbox notifications without starting a model turn", async () => {
+    resetExternalNotificationsForTest();
+    const id = mkId("external-inbox");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "Inbox target");
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendHistoryUpdatedToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const callsBefore = orchestrateSendMessage.mock.calls.length;
+
+    await handle({} as never, {
+      type: "subscribe_external_notification",
+      toolName: "whatsapp",
+      sourceId: "incoming-messages",
+      sourceLabel: "Incoming WhatsApp messages",
+      convId: id,
+      delivery: "inbox",
+    });
+    await handle({} as never, {
+      type: "publish_external_notification",
+      reqId: "inbox-publish",
+      toolName: "whatsapp",
+      sourceId: "incoming-messages",
+      eventId: "wa-message-1",
+      text: "Message from Mom: hi",
+    });
+
+    expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore);
+    expect(get(id)?.messages.at(-1)).toEqual(expect.objectContaining({
+      role: "user",
+      content: expect.stringContaining("Message from Mom: hi"),
+      metadata: expect.objectContaining({ system: true, kind: "external_notification" }),
+    }));
+    expect(sent.find(event => event.reqId === "inbox-publish")).toEqual(expect.objectContaining({
+      deliveries: [expect.objectContaining({ status: "inbox", convId: id })],
+    }));
   });
 });
 

@@ -33,6 +33,7 @@ import { getToolDisplayInfo } from "./tools/registry";
 import { getProviders, refreshProviders } from "./providers/registry";
 import { socketPath, pidPath, runtimeDir, worktreeName, isWindows } from "@exocortex/shared/paths";
 import { stopAllBackgroundTasks, waitForBackgroundTasksToStop } from "./conversation-activity";
+import { pruneExternalNotificationSubscriptions } from "./external-notifications";
 
 // ── Startup profiling ────────────────────────────────────────────────
 
@@ -201,6 +202,12 @@ async function startDaemon(): Promise<void> {
   // Load persisted conversations
   const conversationLoadStats = convStore.loadFromDisk();
   profileMark("conversations_loaded", conversationLoadStats);
+  const prunedExternalNotificationSubscriptions = pruneExternalNotificationSubscriptions(
+    new Set(convStore.listSummaries().map(conversation => conversation.id)),
+  );
+  if (prunedExternalNotificationSubscriptions > 0) {
+    log("info", `external notifications: pruned ${prunedExternalNotificationSubscriptions} stale subscription(s)`);
+  }
   const queuedMessageCount = convStore.loadQueuedMessagesFromDisk();
   // If the daemon crashed after persisting a queued user message but before
   // removing its queue copy, the transcript's durable queueEntryId wins.
