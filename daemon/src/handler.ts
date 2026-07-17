@@ -51,6 +51,7 @@ import { buildBackgroundTaskNotificationText } from "./background-task-notificat
 import { configureChronoService } from "./chrono-service";
 import { INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
+import { randomUUID } from "crypto";
 import {
   buildExternalNotificationEnvelope,
   hasExternalNotificationReceipt,
@@ -945,6 +946,13 @@ export function createHandler(server: DaemonServer) {
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         break;
       }
+
+      case "client_capabilities": {
+        for (const capability of cmd.capabilities) {
+          if (capability === "targeted-unwind") client.capabilities.add(capability);
+        }
+        break;
+      }
       case "unsubscribe": {
         server.unsubscribe(client, cmd.convId);
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
@@ -1802,20 +1810,93 @@ export function createHandler(server: DaemonServer) {
         // subscription. Subscribe even if validation later rejects the unwind so
         // an error cannot leave the active TUI detached from future events.
         server.subscribe(client, cmd.convId);
-        const ok = await convStore.unwindTo(cmd.convId, cmd.userMessageIndex);
-        if (!ok) {
+        // operationId was introduced together with the targeted response. It is
+        // also a reconnect-safe capability signal if the hello has not arrived.
+        if (typeof cmd.operationId === "string" && cmd.operationId.length > 0) {
+          client.capabilities.add("targeted-unwind");
+        }
+        const targetedRequester = client.capabilities.has("targeted-unwind");
+        if (targetedRequester && cmd.expectedStartedAt === undefined && !cmd.targetFingerprint) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: "Cannot unwind without a stable target identity",
+          });
+          break;
+        }
+        const operationId = typeof cmd.operationId === "string" && cmd.operationId.length > 0
+          ? cmd.operationId
+          : randomUUID();
+        const deliverResult = (
+          unwindResult: convStore.ConversationUnwindResult,
+          broadcast: boolean,
+          releaseLease: boolean,
+        ): void => {
+          try {
+            log("info", `handler: unwound conversation ${cmd.convId} to before user message ${cmd.userMessageIndex}`);
+            const event = {
+              type: "conversation_unwound" as const,
+              ...unwindResult,
+              // A replay receipt may outlive unrelated sidebar mutations. Always
+              // patch with the summary current at this synchronous publication.
+              summary: convStore.getSummary(cmd.convId) ?? unwindResult.summary,
+            };
+            const needsLegacyHistory = !targetedRequester
+              || (broadcast && server.hasLegacyUnwindSubscribers(cmd.convId));
+            const legacyHistory = needsLegacyHistory
+              ? (() => {
+                  const data = getRenderSnapshot(cmd.convId);
+                  return data ? buildHistoryUpdatedEvents(data, { resetHistoryWindow: true }) : undefined;
+                })()
+              : undefined;
+            if (!targetedRequester) sendCompactConversationLoaded(client, cmd.convId, cmd.reqId);
+            server.deliverConversationUnwind(
+              event,
+              client,
+              { ...event, reqId: cmd.reqId },
+              broadcast,
+              legacyHistory,
+            );
+          } finally {
+            if (releaseLease) convStore.releaseHistoryUnwindLease(cmd.convId, operationId);
+          }
+        };
+        let result: convStore.ConversationUnwindResult | null;
+        try {
+          result = await convStore.unwindTo(
+            cmd.convId,
+            cmd.userMessageIndex,
+            operationId,
+            cmd.expectedStartedAt,
+            cmd.targetFingerprint,
+            true,
+            (committed) => deliverResult(committed, true, true),
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          log("error", `handler: unwind failed for ${cmd.convId}: ${message}`);
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message });
+          if (err instanceof convStore.HistoryUnwindRefreshRequiredError) {
+            try {
+              // The stream finalizer intentionally withheld its obsolete tail
+              // while the cut was pending. Publish the restored canonical state
+              // before releasing the mutation lease.
+              sendCompactHistoryUpdated(cmd.convId, true);
+              broadcastConversationUpdated(server, cmd.convId);
+            } finally {
+              convStore.releaseHistoryUnwindLease(cmd.convId, operationId);
+            }
+          }
+          break;
+        }
+        if (!result) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Cannot unwind conversation ${cmd.convId}` });
           break;
         }
-        log("info", `handler: unwound conversation ${cmd.convId} to before user message ${cmd.userMessageIndex}`);
-        // Respond directly to the editor with the full conversation payload, then
-        // broadcast the canonical truncated history to every subscriber.  Ctrl+W
-        // is a real history mutation, not a stale same-conversation refresh; all
-        // open TUIs must discard any local assistant tail that lived past the
-        // unwind point.
-        sendCompactConversationLoaded(client, cmd.convId, cmd.reqId);
-        sendCompactHistoryUpdated(cmd.convId, true);
-        broadcastConversationUpdated(server, cmd.convId);
+        // Applied results were published by the synchronous commit callback.
+        // Replays only need a correlated response for their requesting client.
+        if (result.status === "already_applied") deliverResult(result, false, false);
         break;
       }
 

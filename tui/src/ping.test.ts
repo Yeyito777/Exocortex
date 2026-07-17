@@ -251,9 +251,10 @@ describe("ping config helpers", () => {
     expect(isConversationInSubagentsFolder("missing", conversations, folders)).toBe(false);
   });
 
-  test("daemon-restart stopped streams do not trigger /ping", () => {
+  test("non-completion stopped streams do not trigger /ping", () => {
     expect(shouldPingForStreamStopped()).toBe(true);
     expect(shouldPingForStreamStopped("daemon-restart")).toBe(false);
+    expect(shouldPingForStreamStopped("unwind")).toBe(false);
 
     expect(shouldPingForBackgroundStreamCompletion({
       updatedConvId: "conv-a",

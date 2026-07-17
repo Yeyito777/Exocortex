@@ -119,6 +119,14 @@ export interface PrewarmConversationCommand {
   convId: string;
 }
 
+export type ClientCapability = "targeted-unwind";
+
+/** Connection-scoped feature negotiation for backwards-compatible events. */
+export interface ClientCapabilitiesCommand {
+  type: "client_capabilities";
+  capabilities: ClientCapability[];
+}
+
 export interface SubscribeCommand {
   type: "subscribe";
   reqId?: string;
@@ -522,9 +530,15 @@ export interface MoveQueuedMessageCommand {
 export interface UnwindConversationCommand {
   type: "unwind_conversation";
   reqId?: string;
+  /** Globally unique mutation identity; separate from socket-local request correlation. */
+  operationId: string;
   convId: string;
   /** Index counting only user messages (0-based). Everything from this message onward is removed. */
   userMessageIndex: number;
+  /** Stable target identity when the message has daemon-authored metadata. */
+  expectedStartedAt?: number;
+  /** Daemon-authored hash of the transcript prefix through the selected message. */
+  targetFingerprint?: string;
 }
 
 export interface SetSystemInstructionsCommand {
@@ -604,6 +618,7 @@ export interface LogoutCommand {
 
 export type Command =
   | PingCommand
+  | ClientCapabilitiesCommand
   | PrepareShutdownCommand
   | NewConversationCommand
   | SendMessageCommand
@@ -710,7 +725,7 @@ export interface StreamingStartedEvent {
   compactionStartedAt?: number | null;
 }
 
-export type StreamingStopReason = "daemon-restart";
+export type StreamingStopReason = "daemon-restart" | "unwind";
 
 export interface StreamingStoppedEvent {
   type: "streaming_stopped";
@@ -832,7 +847,7 @@ export interface AIMessagePayload {
 
 export type DisplayEntry =
   | { type: "system_instructions"; text: string }
-  | { type: "user"; text: string; images?: ImageAttachment[]; metadata?: MessageMetadata | null; contextCheckpoint?: UserMessageContextCheckpoint }
+  | { type: "user"; text: string; images?: ImageAttachment[]; metadata?: MessageMetadata | null; unwindFingerprint?: string; contextCheckpoint?: UserMessageContextCheckpoint }
   | { type: "ai"; blocks: Block[]; metadata: MessageMetadata | null }
   | { type: "system"; text: string; color?: string; metadata?: MessageMetadata | null };
 
@@ -904,6 +919,22 @@ export interface ConversationUpdatedEvent {
   summary: ConversationSummary;
   /** Set when this update represents a stream transitioning to stopped for a special reason. */
   streamStopReason?: StreamingStopReason;
+}
+
+/** Targeted history truncation; clients discard only the indicated suffix. */
+export interface ConversationUnwoundEvent {
+  type: "conversation_unwound";
+  reqId?: string;
+  status: "applied" | "already_applied";
+  operationId: string;
+  convId: string;
+  /** Absolute 0-based user-message index removed by the unwind. */
+  userMessageIndex: number;
+  /** Total non-instructions display entries retained after the unwind. */
+  historyTotalEntries: number;
+  contextTokens: number | null;
+  /** In-memory sidebar row patch; no conversations-list/index rewrite is needed. */
+  summary: ConversationSummary;
 }
 
 export interface ConversationDeletedEvent {
@@ -1212,6 +1243,7 @@ export type Event =
   | ConversationHistoryLoadedEvent
   | GoalUpdatedEvent
   | ConversationUpdatedEvent
+  | ConversationUnwoundEvent
   | ConversationDeletedEvent
   | ConversationRestoredEvent
   | ConversationMarkedEvent

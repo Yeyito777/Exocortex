@@ -7,7 +7,7 @@
  */
 
 import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, type Block, type MessageMetadata, type ImageAttachment } from "./messages";
-import { isModelVisibleSystemNotice, isReplayHistoryMessage, type StoredMessage, type ApiContentBlock } from "./messages";
+import { isModelVisibleSystemNotice, isReplayHistoryMessage, userMessageUnwindFingerprints, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { ProviderId, ModelId, EffortLevel } from "./messages";
 import type { DisplayEntry, ToolOutputInfo } from "@exocortex/shared/protocol";
 
@@ -34,6 +34,12 @@ export interface ConversationDisplayData {
 
 export interface BuildDisplayOptions {
   includeToolOutputs?: boolean;
+  /** Include daemon-authored identities used by interactive history editing. */
+  includeUnwindFingerprints?: boolean;
+  /** Canonical history preceding `messages` when rendering a split stream suffix. */
+  unwindFingerprintPrefix?: StoredMessage[];
+  /** Absolute replay-history cursor at the start of a split stream suffix. */
+  replayHistoryPrefixCount?: number;
   /** First replay-history cursor whose user message may be unwound; null locks all. */
   editableUserHistoryStart?: number | null;
 }
@@ -79,7 +85,10 @@ export function buildDisplayData(
 ): ConversationDisplayData {
   const includeToolOutputs = options?.includeToolOutputs ?? true;
   const entries: DisplayEntry[] = [];
-  let replayHistoryCount = 0;
+  const unwindFingerprints = options?.includeUnwindFingerprints
+    ? userMessageUnwindFingerprints(messages, options.unwindFingerprintPrefix)
+    : null;
+  let replayHistoryCount = options?.replayHistoryPrefixCount ?? 0;
 
   let currentAI: { blocks: Block[]; metadata: MessageMetadata | null; canMergeNextAssistant: boolean } | null = null;
 
@@ -198,6 +207,7 @@ export function buildDisplayData(
             text,
             images: images.length > 0 ? images : undefined,
             ...(msg.metadata ? { metadata: msg.metadata } : {}),
+            ...(unwindFingerprints?.get(msg) ? { unwindFingerprint: unwindFingerprints.get(msg) } : {}),
             ...userContextCheckpoint(msg, historyCountBeforeMessage, options),
           });
           continue;
@@ -208,6 +218,7 @@ export function buildDisplayData(
         type: "user",
         text: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
         ...(msg.metadata ? { metadata: msg.metadata } : {}),
+        ...(unwindFingerprints?.get(msg) ? { unwindFingerprint: unwindFingerprints.get(msg) } : {}),
         ...userContextCheckpoint(msg, historyCountBeforeMessage, options),
       });
     } else if (msg.role === "assistant") {

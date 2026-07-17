@@ -2,8 +2,8 @@
  * In-flight stream tracking.
  *
  * Manages the runtime state of active streams: abort controllers,
- * accumulated display blocks (for late-joining clients), chunk
- * counters (for periodic persistence), and startedAt timestamps.
+ * accumulated display blocks (for late-joining clients), throttled
+ * activity counters, and startedAt timestamps.
  *
  * This is ephemeral runtime state — nothing here is persisted.
  * Conversation data and persistence live in conversations.ts.
@@ -40,8 +40,15 @@ const lastActivityAt = new Map<string, number>();
 const pausedStreams = new Set<string>();
 /** Currently executing tool call that can be manually backgrounded by the user. */
 const activeToolBackgrounders = new Map<string, ActiveToolBackgrounder>();
+interface PendingHistoryUnwind {
+  operationId: string;
+  controller: AbortController | null;
+}
 
-const CHUNK_SAVE_INTERVAL = 5;
+/** Exact stream/mutation owner whose transient suffix is being superseded. */
+const pendingHistoryUnwinds = new Map<string, PendingHistoryUnwind>();
+
+const CHUNK_ACTIVITY_INTERVAL = 5;
 
 /**
  * How long a stream can be inactive before the watchdog considers it stale.
@@ -72,6 +79,27 @@ export function setActiveJob(convId: string, ac: AbortController, startedAt: num
 
 export function getActiveJob(convId: string): AbortController | undefined {
   return activeJobs.get(convId);
+}
+
+export function requestHistoryUnwind(
+  convId: string,
+  operationId: string,
+  controller: AbortController | null,
+): boolean {
+  if (pendingHistoryUnwinds.has(convId)) return false;
+  pendingHistoryUnwinds.set(convId, { operationId, controller });
+  return true;
+}
+
+export function isHistoryUnwindPending(convId: string, controller?: AbortController): boolean {
+  const pending = pendingHistoryUnwinds.get(convId);
+  return pending !== undefined && (controller === undefined || pending.controller === controller);
+}
+
+export function clearHistoryUnwindPending(convId: string, operationId?: string): void {
+  const pending = pendingHistoryUnwinds.get(convId);
+  if (!pending || (operationId !== undefined && pending.operationId !== operationId)) return;
+  pendingHistoryUnwinds.delete(convId);
 }
 
 export function isRestartRecoverableJob(convId: string): boolean {
@@ -194,16 +222,16 @@ export function getStaleStreams(): Array<[string, AbortController, number]> {
   return stale;
 }
 
-// ── Chunk counting (for periodic persistence) ─────────────────────
+// ── Chunk counting (for periodic activity updates) ────────────────
 
 /**
  * Track chunk count. Returns true when the count crosses the
- * save interval threshold (caller should flush to disk).
+ * activity-update threshold.
  */
 export function onChunk(convId: string): boolean {
   const count = (chunkCounters.get(convId) ?? 0) + 1;
   chunkCounters.set(convId, count);
-  if (count >= CHUNK_SAVE_INTERVAL) {
+  if (count >= CHUNK_ACTIVITY_INTERVAL) {
     chunkCounters.set(convId, 0);
     return true;
   }

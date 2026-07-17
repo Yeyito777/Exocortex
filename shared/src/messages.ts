@@ -226,6 +226,8 @@ export interface UserMessage {
   text: string;
   images?: ImageAttachment[];
   metadata: MessageMetadata | null;
+  /** Daemon-authored identity of this exact transcript boundary for safe unwinds. */
+  unwindFingerprint?: string;
   /** Daemon-owned rewind point for Ctrl-W history editing. */
   contextCheckpoint?: UserMessageContextCheckpoint;
 }

@@ -11,8 +11,15 @@
 
 import type { KeyEvent } from "./input";
 import type { UserMessage } from "./messages";
+import type { Event } from "./protocol";
 import type { RenderState, EditMessageItem } from "./state";
-import { EDIT_INDEX_INSTRUCTIONS, EDIT_INDEX_QUEUED, focusPrompt } from "./state";
+import {
+  EDIT_INDEX_INSTRUCTIONS,
+  EDIT_INDEX_QUEUED,
+  clearPendingAI,
+  clearStreamingTailMessages,
+  focusPrompt,
+} from "./state";
 import { computeEditMessageOverlayLayout, type EditMessageOverlayLayout } from "./editmessage-layout";
 import { isNewConversationQueuedMessage, queuedMessagesInDisplayOrder } from "./queue";
 
@@ -187,7 +194,7 @@ export function editMessageItemIndexAtMouse(
 // ── Confirm / cancel ──────────────────────────────────────────────
 
 export type EditConfirmResult =
-  | { action: "edit_sent"; text: string; userMessageIndex: number }
+  | { action: "edit_sent"; text: string; userMessageIndex: number; expectedStartedAt?: number; targetFingerprint?: string }
   | { action: "edit_queued"; text: string; queuedMessage?: EditMessageItem["queuedMessage"] }
   | { action: "edit_instructions"; text: string }
   | { action: "cancel" };
@@ -236,7 +243,150 @@ export function confirmEditMessage(state: RenderState): EditConfirmResult {
     state.contextTokens = item.message.contextCheckpoint.contextTokens;
   }
 
-  return { action: "edit_sent", text: item.text, userMessageIndex: item.userMessageIndex };
+  const expectedStartedAt = item.message?.metadata?.startedAt;
+  const targetFingerprint = item.sourceMessage?.unwindFingerprint ?? item.message?.unwindFingerprint;
+  return {
+    action: "edit_sent",
+    text: item.text,
+    userMessageIndex: item.userMessageIndex,
+    ...(typeof expectedStartedAt === "number" ? { expectedStartedAt } : {}),
+    ...(targetFingerprint ? { targetFingerprint } : {}),
+  };
+}
+
+/**
+ * Immediately project a sent-message unwind into the local transcript.
+ *
+ * The daemon remains authoritative and performs the durable mutation, but it
+ * must first wait for an active stream (and its provider-session cleanup) to
+ * stop. Keeping the known-doomed suffix visible during that wait makes Ctrl-W
+ * feel delayed even though the key and modal were handled synchronously.
+ */
+export function applyOptimisticEditMessageUnwind(
+  state: RenderState,
+  userMessageIndex: number,
+): boolean {
+  let visibleUserIndex = state.historyStartUserIndex;
+  let spliceAt = -1;
+
+  for (let i = 0; i < state.messages.length; i++) {
+    if (state.messages[i]?.role !== "user") continue;
+    if (visibleUserIndex === userMessageIndex) {
+      spliceAt = i;
+      break;
+    }
+    visibleUserIndex += 1;
+  }
+
+  // This can only happen for a stale modal or a local-only voice placeholder.
+  // In either case, leave the current projection alone and let the daemon's
+  // canonical response decide what should be displayed.
+  if (spliceAt === -1) return false;
+
+  const retainedHistoryEntries = state.messages
+    .slice(0, spliceAt)
+    .filter((message) => message.role !== "system_instructions")
+    .length;
+
+  state.messages.splice(spliceAt);
+  clearPendingAI(state);
+  clearStreamingTailMessages(state);
+  if (state.convId) delete state.lastStreamSeqByConv[state.convId];
+  state.scrollOffset = 0;
+  state.historyTotalEntries = state.historyStartIndex + retainedHistoryEntries;
+  state.historyHasOlder = state.historyStartIndex > 0;
+  state.historyLoadingOlder = false;
+  state.historyLoadingStartedAt = null;
+  state.historyLoadingRequestId = null;
+  return true;
+}
+
+/** Apply the daemon's targeted canonical unwind without replacing loaded history. */
+export function applyConversationUnwound(
+  state: RenderState,
+  event: Extract<Event, { type: "conversation_unwound" }>,
+): void {
+  if (state.convId !== event.convId) return;
+  if (event.status === "already_applied") return;
+
+  let visibleUserIndex = state.historyStartUserIndex;
+  let spliceAt = -1;
+  for (let i = 0; i < state.messages.length; i++) {
+    if (state.messages[i]?.role !== "user") continue;
+    if (visibleUserIndex === event.userMessageIndex) {
+      spliceAt = i;
+      break;
+    }
+    visibleUserIndex += 1;
+  }
+
+  if (spliceAt >= 0) {
+    state.messages.splice(spliceAt);
+  } else if (event.userMessageIndex < state.historyStartUserIndex
+      || event.historyTotalEntries < state.historyStartIndex) {
+    // This client had only a newer page loaded and the boundary precedes it.
+    // Keep pinned instructions; older retained history remains pageable.
+    state.messages = state.messages.filter((message) => message.role === "system_instructions");
+    state.historyStartIndex = event.historyTotalEntries;
+    state.historyStartUserIndex = event.userMessageIndex;
+  }
+
+  clearPendingAI(state);
+  clearStreamingTailMessages(state);
+  delete state.lastStreamSeqByConv[event.convId];
+  state.contextTokens = event.contextTokens;
+  state.historyTotalEntries = event.historyTotalEntries;
+  state.historyHasOlder = state.historyStartIndex > 0;
+  state.historyLoadingOlder = false;
+  state.historyLoadingStartedAt = null;
+  state.historyLoadingRequestId = null;
+  state.scrollOffset = 0;
+}
+
+export interface PendingEditMessageUnwind {
+  convId: string;
+  reqId: string;
+}
+
+export type PendingEditMessageUnwindEvent = "unrelated" | "ignore" | "complete" | "failed";
+
+const EVENTS_SUPERSEDED_BY_PENDING_UNWIND: ReadonlySet<Event["type"]> = new Set([
+  "conversation_loaded",
+  "streaming_started",
+  "block_start",
+  "text_chunk",
+  "thinking_chunk",
+  "streaming_sync",
+  "tool_call",
+  "tool_result",
+  "tokens_update",
+  "context_update",
+  "message_complete",
+  "streaming_stopped",
+  "stream_retry",
+  "context_compaction_status",
+  "user_message",
+  "system_message",
+  "history_updated",
+]);
+
+/**
+ * Classify daemon events received while an optimistic unwind is in flight.
+ * Stream-finalization events describe the suffix that is about to be deleted,
+ * so applying them would briefly make the old tail reappear. The matching
+ * conversation_unwound response ends the optimistic window and applies only
+ * the requested suffix boundary.
+ */
+export function classifyPendingEditMessageUnwindEvent(
+  pending: PendingEditMessageUnwind,
+  event: Event,
+): PendingEditMessageUnwindEvent {
+  if (!("convId" in event) || event.convId !== pending.convId) return "unrelated";
+  if ((event.type === "conversation_unwound" || event.type === "conversation_loaded")
+      && event.reqId === pending.reqId) return "complete";
+  if (event.type === "error" && event.reqId === pending.reqId) return "failed";
+  if (EVENTS_SUPERSEDED_BY_PENDING_UNWIND.has(event.type)) return "ignore";
+  return "unrelated";
 }
 
 /** Cancel the edit message modal. */
