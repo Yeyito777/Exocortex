@@ -33,7 +33,7 @@ import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from ".
 import { padRightToWidth, termWidth } from "./textwidth";
 import { getVoicePromptRanges } from "./voice";
 import { renderTaskPanel } from "./activitypanel";
-import { renderBtwPanel } from "./btwpanel";
+import { getBtwPanelPreferredHeight, MAX_BTW_PANEL_HEIGHT, renderBtwPanel } from "./btwpanel";
 import {
   appendPositionedPayload as appendFramePositionedPayload,
   appendRowWrite as appendFrameRowWrite,
@@ -680,7 +680,7 @@ export function render(state: RenderState): void {
     firstInputRow,
     sepBelow,
     bottomStartRow,
-    messageAreaHeight,
+    messageAreaHeight: baseMessageAreaHeight,
   } = bottomLayout;
   const { lines: inputLines, isNewLine, cursorLine, cursorCol, scrollOffset: newPromptScroll } = input;
   state.promptScrollOffset = newPromptScroll;
@@ -708,6 +708,20 @@ export function render(state: RenderState): void {
 
   const slHeight = status.height;
   const statusLines = status.lines;
+
+  // BTW starts compact while streaming and grows upward with the final answer.
+  // It consumes the bottom of the chat viewport rather than hiding history rows.
+  let btwPanel = null;
+  if (state.btw) {
+    const availableRows = Math.max(1, baseMessageAreaHeight);
+    const preferredHeight = getBtwPanelPreferredHeight(state.btw, chatW);
+    const btwHeight = availableRows >= 4
+      ? Math.min(preferredHeight, availableRows, MAX_BTW_PANEL_HEIGHT)
+      : 1;
+    const btwTop = bottomStartRow - btwHeight;
+    btwPanel = renderBtwPanel(state.btw, chatW, btwHeight, btwTop, chatCol);
+  }
+  const messageAreaHeight = Math.max(0, baseMessageAreaHeight - (btwPanel?.height ?? 0));
 
   // Prompt separator
   const promptFocused = state.panelFocus === "chat" && state.chatFocus === "prompt";
@@ -852,15 +866,8 @@ export function render(state: RenderState): void {
     ));
   }
 
-  // ── Ephemeral BTW panel (wide, compact, directly above the prompt) ──
-  if (state.btw) {
-    const preferredHeight = 4;
-    const availableRows = Math.max(1, promptSepRow - 1);
-    const btwHeight = availableRows >= preferredHeight ? preferredHeight : 1;
-    const btwTop = Math.max(1, promptSepRow - btwHeight);
-    const btwPanel = renderBtwPanel(state.btw, chatW, btwHeight, btwTop, chatCol);
-    if (btwPanel) appendPositionedPayload(ctx, btwPanel.payload);
-  }
+  // ── Ephemeral BTW panel (foreground, directly above the prompt) ──
+  if (btwPanel) appendPositionedPayload(ctx, btwPanel.payload);
 
   const canScrollMessageRegion = !sidebarOpen
     && !state.autocomplete

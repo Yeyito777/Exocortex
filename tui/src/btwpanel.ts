@@ -17,6 +17,8 @@ export interface BtwPanelRender {
   left: number;
 }
 
+export const MAX_BTW_PANEL_HEIGHT = 20;
+
 function cleanInline(text: string): string {
   return text.replace(/[\r\n\t]+/g, " ").replace(/[\x00-\x1F\x7F]/g, "").replace(/\s+/g, " ").trim();
 }
@@ -30,9 +32,18 @@ function phaseLabel(btw: BtwPanelState): { text: string; color: string } {
   }
 }
 
+/** Keep streaming compact, then expand completed answers to fit up to 20 rows. */
+export function getBtwPanelPreferredHeight(btw: BtwPanelState, width: number): number {
+  if (width < 22) return 1;
+  if (btw.phase !== "complete" || !btw.text) return 4;
+  const contentWidth = Math.max(1, width - 4);
+  const answerRows = markdownWordWrap(btw.text, contentWidth, theme.sidebarBg).lines.length;
+  return Math.min(MAX_BTW_PANEL_HEIGHT, Math.max(4, answerRows + 2));
+}
+
 /**
- * Render a four-row card at an explicit screen position. The caller anchors it
- * directly above the prompt; constrained layouts use the one-row fallback.
+ * Render a compact-to-expanded card at an explicit screen position. The caller
+ * anchors it directly above the prompt; constrained layouts use one row.
  */
 export function renderBtwPanel(
   btw: BtwPanelState,
@@ -58,10 +69,10 @@ export function renderBtwPanel(
     };
   }
 
-  const panelHeight = 4;
+  const panelHeight = Math.min(MAX_BTW_PANEL_HEIGHT, height);
   const innerWidth = width - 2;
   const contentWidth = Math.max(1, innerWidth - 2);
-  const contentRows = 2;
+  const contentRows = panelHeight - 2;
   const panelBg = theme.sidebarBg;
   const outline = theme.accent;
 

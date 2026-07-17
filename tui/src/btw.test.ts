@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderBtwPanel } from "./btwpanel";
+import { getBtwPanelPreferredHeight, renderBtwPanel } from "./btwpanel";
 import { tryCommand } from "./commands";
 import { handleEvent } from "./events";
 import { handleFocusedKey } from "./focus";
@@ -98,6 +98,20 @@ describe("BTW event projection", () => {
 });
 
 describe("BTW foreground panel", () => {
+  test("stays compact while running, then grows with the final answer up to 20 rows", () => {
+    const btw = panelState({ text: Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n") });
+    expect(getBtwPanelPreferredHeight(btw, 100)).toBe(4);
+
+    btw.phase = "complete";
+    expect(getBtwPanelPreferredHeight(btw, 100)).toBe(20);
+
+    btw.text = ["one", "two", "three", "four", "five"].join("\n");
+    expect(getBtwPanelPreferredHeight(btw, 100)).toBe(7);
+    const rendered = renderBtwPanel(btw, 100, 7, 10, 1);
+    expect(rendered?.height).toBe(7);
+    expect(btw.viewportRows).toBe(5);
+  });
+
   test("renders a wide four-row answer card without keybind help", () => {
     const btw = panelState({ phase: "complete", text: "**The answer** is read-only." });
     const rendered = renderBtwPanel(btw, 100, 4, 20, 31);
@@ -146,5 +160,31 @@ describe("BTW foreground panel", () => {
 
     state.vim.mode = "insert";
     expect(handleFocusedKey({ type: "ctrl-q" }, state)).toEqual({ type: "btw_close" });
+  });
+
+  test("Ctrl scrolling targets BTW from the prompt but chat history when history is focused", () => {
+    const state = createInitialState();
+    state.btw = panelState({ scrollOffset: 0, maxScroll: 10, viewportRows: 6 });
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "insert";
+    state.inputBuffer = "keep this prompt";
+    state.cursorPos = state.inputBuffer.length;
+
+    expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
+    expect(state.btw.scrollOffset).toBe(3);
+    expect(state.inputBuffer).toBe("keep this prompt");
+
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.historyLines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+    state.historyCursor = { row: 29, col: 0 };
+    state.layout.totalLines = 30;
+    state.layout.messageAreaHeight = 10;
+    state.scrollOffset = 0;
+
+    expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
+    expect(state.btw.scrollOffset).toBe(3);
+    expect(state.scrollOffset).toBeGreaterThan(0);
   });
 });

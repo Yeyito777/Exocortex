@@ -217,26 +217,44 @@ export function handleFocusedKey(
   // conversation-abort behavior below.
   if (state.btw && key.type === "ctrl-q") return { type: "btw_close" };
 
-  // The BTW card is a foreground read-only view while the ordinary prompt stays
-  // usable. In normal/navigation mode, q closes it and familiar scroll keys move
-  // its answer instead of the obscured chat history.
+  // Ctrl scrolling targets BTW even while the prompt is in insert mode. Once the
+  // user explicitly focuses chat history, all navigation remains with history.
+  const historyFocused = state.panelFocus === "chat" && state.chatFocus === "history";
+  const btw = state.btw;
+  const btwUiAvailable = btw !== null
+    && !state.sidebar.prompt
+    && !state.sidebar.search?.barOpen
+    && !state.search?.barOpen;
+  if (btwUiAvailable && !historyFocused) {
+    const page = Math.max(1, btw.viewportRows - 1);
+    const halfPage = Math.max(1, Math.floor(btw.viewportRows / 2));
+    let delta = 0;
+    if (key.type === "ctrl-y") delta = 1;
+    else if (key.type === "ctrl-e") delta = -1;
+    else if (key.type === "ctrl-u") delta = halfPage;
+    else if (key.type === "ctrl-d") delta = -halfPage;
+    else if (key.type === "ctrl-b") delta = page;
+    else if (key.type === "ctrl-f") delta = -page;
+    if (delta !== 0) {
+      btw.scrollOffset = Math.max(0, Math.min(btw.maxScroll, btw.scrollOffset + delta));
+      return { type: "handled" };
+    }
+  }
+
+  // In normal/navigation mode, the remaining familiar keys scroll BTW unless
+  // chat history has been explicitly focused.
   if (state.btw
+      && !historyFocused
       && !isPromptTyping(state)
       && !state.sidebar.prompt
       && !state.sidebar.search?.barOpen
       && !state.search?.barOpen) {
     if (key.type === "char" && key.char === "q") return { type: "btw_close" };
-    const page = Math.max(1, state.btw.viewportRows - 1);
-    const halfPage = Math.max(1, Math.floor(state.btw.viewportRows / 2));
     let delta = 0;
     if (key.type === "char" && key.char === "k") delta = 1;
     else if (key.type === "char" && key.char === "j") delta = -1;
-    else if (key.type === "up" || key.type === "ctrl-y") delta = 1;
-    else if (key.type === "down" || key.type === "ctrl-e") delta = -1;
-    else if (key.type === "ctrl-u") delta = halfPage;
-    else if (key.type === "ctrl-d") delta = -halfPage;
-    else if (key.type === "ctrl-b") delta = page;
-    else if (key.type === "ctrl-f") delta = -page;
+    else if (key.type === "up") delta = 1;
+    else if (key.type === "down") delta = -1;
     if (delta !== 0) {
       state.btw.scrollOffset = Math.max(0, Math.min(state.btw.maxScroll, state.btw.scrollOffset + delta));
       return { type: "handled" };
