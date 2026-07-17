@@ -1,4 +1,4 @@
-/** Floating foreground panel for an ephemeral `/btw` answer. */
+/** Compact foreground panel for an ephemeral `/btw` answer. */
 
 import { formatModelDisplayName } from "./messages";
 import { markdownWordWrap } from "./markdown";
@@ -30,37 +30,40 @@ function phaseLabel(btw: BtwPanelState): { text: string; color: string } {
   }
 }
 
-export function renderBtwPanel(btw: BtwPanelState, cols: number, rows: number): BtwPanelRender | null {
-  if (cols <= 0 || rows <= 0) return null;
-  if (cols < 22 || rows < 8) {
-    const phase = phaseLabel(btw);
-    const label = cols >= 21
-      ? ` BTW ${phase.text} · ^Q close`
-      : cols >= 10 ? " BTW · ^Q" : "BTW";
+/**
+ * Render a four-row card at an explicit screen position. The caller anchors it
+ * directly above the prompt; constrained layouts use the one-row fallback.
+ */
+export function renderBtwPanel(
+  btw: BtwPanelState,
+  width: number,
+  height = 4,
+  top = 1,
+  left = 1,
+): BtwPanelRender | null {
+  if (width <= 0 || height <= 0 || top <= 0 || left <= 0) return null;
+
+  const phase = phaseLabel(btw);
+  if (width < 22 || height < 4) {
+    const label = truncateToWidth(` BTW · ${phase.text}`, width);
     btw.maxScroll = 0;
     btw.viewportRows = 1;
     btw.scrollOffset = 0;
     return {
-      payload: moveTo(1, 1) + theme.sidebarBg + phase.color + padRightToWidth(label, cols) + theme.reset,
-      width: cols,
+      payload: moveTo(top, left) + theme.sidebarBg + phase.color + padRightToWidth(label, width) + theme.reset,
+      width,
       height: 1,
-      top: 1,
-      left: 1,
+      top,
+      left,
     };
   }
 
-  const availableWidth = Math.max(20, cols - 2);
-  const desiredWidth = Math.max(44, Math.floor(cols * 0.68));
-  const width = Math.min(92, availableWidth, desiredWidth);
-  const height = Math.min(rows - 3, Math.max(8, Math.floor(rows * 0.68)));
-  const top = 2;
-  const left = 2;
+  const panelHeight = 4;
   const innerWidth = width - 2;
   const contentWidth = Math.max(1, innerWidth - 2);
-  const contentRows = Math.max(1, height - 5); // top, query, separator, footer, bottom
+  const contentRows = 2;
   const panelBg = theme.sidebarBg;
   const outline = theme.accent;
-  const phase = phaseLabel(btw);
 
   const applyPanelBg = (line: string): string => {
     const persistent = line.replaceAll(theme.reset, `${theme.reset}${panelBg}`);
@@ -71,20 +74,16 @@ export function renderBtwPanel(btw: BtwPanelState, cols: number, rows: number): 
   );
 
   const model = cleanInline(formatModelDisplayName(btw.model));
-  const topBase = `${theme.bold}${outline}╭─${theme.reset}${panelBg} ${theme.bold}${theme.text}BTW${theme.boldOff}`;
-  const topRight = `${phase.color}${phase.text}${outline} ─╮`;
-  const topBaseWidth = termWidth("╭─ BTW");
-  const topRightWidth = termWidth(`${phase.text} ─╮`);
-  const modelBudget = Math.max(0, width - topBaseWidth - topRightWidth - 2);
-  const visibleModel = modelBudget >= 4 ? truncateToWidth(model, modelBudget - 3) : "";
-  const modelPart = visibleModel ? `${theme.muted} · ${visibleModel} ` : " ";
-  const modelPartWidth = visibleModel ? termWidth(` · ${visibleModel} `) : 1;
-  const topFillWidth = Math.max(0, width - topBaseWidth - modelPartWidth - topRightWidth);
-  const lines: string[] = [applyPanelBg(topBase + modelPart + outline + "─".repeat(topFillWidth) + topRight)];
-
-  const query = truncateToWidth(cleanInline(btw.query), Math.max(1, contentWidth - 3));
-  lines.push(contentLine(`${theme.accent}${theme.bold}Q${theme.boldOff}${theme.reset}${panelBg}  ${theme.text}${query}`));
-  lines.push(applyPanelBg(`${outline}├${"─".repeat(innerWidth)}┤`));
+  const query = cleanInline(btw.query);
+  const identity = `BTW · ${model} · ${query}`;
+  const topLeftFixedWidth = termWidth("╭─ ") + 1;
+  const topRightPlain = ` ${phase.text} ─╮`;
+  const labelBudget = Math.max(1, width - topLeftFixedWidth - termWidth(topRightPlain));
+  const label = truncateToWidth(identity, labelBudget);
+  const topLeftPlain = `╭─ ${label} `;
+  const fillWidth = Math.max(0, width - termWidth(topLeftPlain) - termWidth(topRightPlain));
+  const topLine = `${theme.bold}${outline}╭─ ${theme.text}${label}${theme.boldOff}${outline} ${"─".repeat(fillWidth)}${phase.color}${topRightPlain}`;
+  const lines: string[] = [applyPanelBg(topLine)];
 
   const wrapped = btw.text
     ? markdownWordWrap(btw.text, contentWidth, panelBg).lines
@@ -95,30 +94,13 @@ export function renderBtwPanel(btw: BtwPanelState, cols: number, rows: number): 
   btw.scrollOffset = Math.max(0, Math.min(btw.scrollOffset, maxScroll));
   const start = Math.max(0, wrapped.length - contentRows - btw.scrollOffset);
   const visible = wrapped.slice(start, start + contentRows);
-  for (let i = 0; i < contentRows; i++) {
-    let line = visible[i] ?? "";
-    if (i === 0 && start > 0 && termWidth(line) <= contentWidth - 2) {
-      line = `${theme.muted}▲${theme.reset}${panelBg} ${line}`;
-    }
-    if (i === contentRows - 1 && start + contentRows < wrapped.length && termWidth(line) <= contentWidth - 2) {
-      line = `${line}${theme.muted} ▼${theme.reset}${panelBg}`;
-    }
-    lines.push(contentLine(line));
-  }
+  for (let i = 0; i < contentRows; i++) lines.push(contentLine(visible[i] ?? ""));
 
-  const rawStatus = cleanInline(btw.status || phase.text);
-  const help = contentWidth >= 34
-    ? "j/k scroll · q/^Q close · /btw close"
-    : contentWidth >= 20 ? "j/k · ^Q close" : "^Q close";
-  const statusWidth = Math.max(0, contentWidth - termWidth(help) - 1);
-  const status = truncateToWidth(rawStatus, statusWidth);
-  const gap = " ".repeat(Math.max(1, contentWidth - termWidth(status) - termWidth(help)));
-  lines.push(contentLine(`${phase.color}${status}${theme.reset}${panelBg}${gap}${theme.muted}${help}`));
   lines.push(applyPanelBg(`${outline}╰${"─".repeat(innerWidth)}╯`));
 
   let payload = "";
   for (let index = 0; index < lines.length; index++) {
     payload += moveTo(top + index, left) + lines[index];
   }
-  return { payload, width, height: lines.length, top, left };
+  return { payload, width, height: panelHeight, top, left };
 }

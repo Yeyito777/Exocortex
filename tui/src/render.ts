@@ -852,9 +852,13 @@ export function render(state: RenderState): void {
     ));
   }
 
-  // ── Ephemeral BTW panel (foreground, intentionally above sidebar) ──
+  // ── Ephemeral BTW panel (wide, compact, directly above the prompt) ──
   if (state.btw) {
-    const btwPanel = renderBtwPanel(state.btw, cols, rows);
+    const preferredHeight = 4;
+    const availableRows = Math.max(1, promptSepRow - 1);
+    const btwHeight = availableRows >= preferredHeight ? preferredHeight : 1;
+    const btwTop = Math.max(1, promptSepRow - btwHeight);
+    const btwPanel = renderBtwPanel(state.btw, chatW, btwHeight, btwTop, chatCol);
     if (btwPanel) appendPositionedPayload(ctx, btwPanel.payload);
   }
 

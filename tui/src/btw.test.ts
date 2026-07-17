@@ -98,28 +98,38 @@ describe("BTW event projection", () => {
 });
 
 describe("BTW foreground panel", () => {
-  test("renders above the application with query, answer, model, and close help", () => {
+  test("renders a wide four-row answer card without keybind help", () => {
     const btw = panelState({ phase: "complete", text: "**The answer** is read-only." });
-    const rendered = renderBtwPanel(btw, 100, 30);
+    const rendered = renderBtwPanel(btw, 100, 4, 20, 31);
     expect(rendered).not.toBeNull();
     const plain = stripAnsi(rendered!.payload);
     expect(plain).toContain("BTW");
     expect(plain).toContain("Gpt-5.4");
     expect(plain).toContain("What does this code do?");
     expect(plain).toContain("The answer");
-    expect(plain).toContain("/btw close");
-    expect(rendered!.left).toBe(2);
+    expect(plain).not.toContain("/btw close");
+    expect(plain).not.toContain("j/k");
+    expect(plain).not.toContain("^Q");
+    expect(rendered!.height).toBe(4);
+    expect(rendered!.top).toBe(20);
+    expect(rendered!.left).toBe(31);
+    expect(btw.viewportRows).toBe(2);
   });
 
-  test("renders a visible Ctrl-Q close fallback in a tiny terminal", () => {
-    const rendered = renderBtwPanel(panelState(), 20, 6);
+  test("renders an uncluttered one-row fallback in a constrained layout", () => {
+    const rendered = renderBtwPanel(panelState(), 20, 1, 5, 3);
     expect(rendered).not.toBeNull();
-    expect(stripAnsi(rendered!.payload)).toContain("BTW · ^Q");
+    const plain = stripAnsi(rendered!.payload);
+    expect(plain).toContain("BTW");
+    expect(plain).toContain("running");
+    expect(plain).not.toContain("^Q");
     expect(rendered!.height).toBe(1);
+    expect(rendered!.top).toBe(5);
+    expect(rendered!.left).toBe(3);
   });
 
   test("keeps every card row within a narrow terminal", () => {
-    const rendered = renderBtwPanel(panelState({ text: "A compact answer." }), 22, 10);
+    const rendered = renderBtwPanel(panelState({ text: "A compact answer." }), 22, 4);
     expect(rendered).not.toBeNull();
     const rows = rendered!.payload.split(/\x1b\[\d+;\d+H/).filter(Boolean);
     expect(rows.every(row => termWidth(stripAnsi(row)) <= rendered!.width)).toBe(true);
