@@ -128,6 +128,23 @@ describe("edit message modal", () => {
     });
   });
 
+  test("Ctrl-W groups queued entries for display but initially selects the most recently queued", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.queuedMessages.push(
+      { convId: "conv-1", text: "message end first", timing: "message-end", source: "daemon" },
+      { convId: "conv-1", text: "next turn second", timing: "next-turn", source: "daemon" },
+    );
+
+    openEditMessageModal(state);
+
+    expect(state.editMessagePrompt?.items.map(item => item.text)).toEqual([
+      "next turn second",
+      "message end first",
+    ]);
+    expect(state.editMessagePrompt?.selection).toBe(0);
+  });
+
   test("Ctrl-W does not include queued pending-conversation messages in unrelated blank drafts", () => {
     const state = createInitialState();
     state.queuedMessages.push({

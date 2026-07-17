@@ -90,11 +90,11 @@ export function openEditMessageModal(state: RenderState): void {
   }
 
   // Collect queued messages
-  const queued = queuedMessagesInDisplayOrder(
-    state.convId
-      ? state.queuedMessages.filter(qm => qm.convId === state.convId)
-      : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId),
-  );
+  const queuedInInsertionOrder = state.convId
+    ? state.queuedMessages.filter(qm => qm.convId === state.convId)
+    : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId);
+  const mostRecentQueuedMessage = queuedInInsertionOrder.at(-1);
+  const queued = queuedMessagesInDisplayOrder(queuedInInsertionOrder);
   for (const qm of queued) {
     items.push({
       userMessageIndex: EDIT_INDEX_QUEUED,
@@ -107,9 +107,13 @@ export function openEditMessageModal(state: RenderState): void {
 
   if (items.length === 0) return;
 
+  const mostRecentQueuedIndex = mostRecentQueuedMessage
+    ? items.findIndex(item => item.queuedMessage === mostRecentQueuedMessage)
+    : -1;
+
   state.editMessagePrompt = {
     items,
-    selection: items.length - 1,  // default to most recent
+    selection: mostRecentQueuedIndex === -1 ? items.length - 1 : mostRecentQueuedIndex,
     scrollOffset: 0,
   };
 }
