@@ -23,15 +23,6 @@ function cleanInline(text: string): string {
   return text.replace(/[\r\n\t]+/g, " ").replace(/[\x00-\x1F\x7F]/g, "").replace(/\s+/g, " ").trim();
 }
 
-function phaseLabel(btw: BtwPanelState): { text: string; color: string } {
-  switch (btw.phase) {
-    case "complete": return { text: "✓ complete", color: theme.success };
-    case "error": return { text: "✗ error", color: theme.error };
-    case "starting": return { text: "◌ starting", color: theme.warning };
-    case "running": return { text: "● running", color: theme.accent };
-  }
-}
-
 /** Keep streaming compact, then expand completed answers to fit up to 20 rows. */
 export function getBtwPanelPreferredHeight(btw: BtwPanelState, width: number): number {
   if (width < 22) return 1;
@@ -54,14 +45,13 @@ export function renderBtwPanel(
 ): BtwPanelRender | null {
   if (width <= 0 || height <= 0 || top <= 0 || left <= 0) return null;
 
-  const phase = phaseLabel(btw);
   if (width < 22 || height < 4) {
-    const label = truncateToWidth(` BTW · ${phase.text}`, width);
+    const label = truncateToWidth(" BTW", width);
     btw.maxScroll = 0;
     btw.viewportRows = 1;
     btw.scrollOffset = 0;
     return {
-      payload: moveTo(top, left) + theme.sidebarBg + phase.color + padRightToWidth(label, width) + theme.reset,
+      payload: moveTo(top, left) + theme.sidebarBg + theme.accent + padRightToWidth(label, width) + theme.reset,
       width,
       height: 1,
       top,
@@ -87,13 +77,11 @@ export function renderBtwPanel(
   const model = cleanInline(formatModelDisplayName(btw.model));
   const query = cleanInline(btw.query);
   const identity = `BTW · ${model} · ${query}`;
-  const topLeftFixedWidth = termWidth("╭─ ") + 1;
-  const topRightPlain = ` ${phase.text} ─╮`;
-  const labelBudget = Math.max(1, width - topLeftFixedWidth - termWidth(topRightPlain));
+  const labelBudget = Math.max(1, width - termWidth("╭─  ╮"));
   const label = truncateToWidth(identity, labelBudget);
   const topLeftPlain = `╭─ ${label} `;
-  const fillWidth = Math.max(0, width - termWidth(topLeftPlain) - termWidth(topRightPlain));
-  const topLine = `${theme.bold}${outline}╭─ ${theme.text}${label}${theme.boldOff}${outline} ${"─".repeat(fillWidth)}${phase.color}${topRightPlain}`;
+  const fillWidth = Math.max(0, width - termWidth(topLeftPlain) - 1);
+  const topLine = `${theme.bold}${outline}╭─ ${theme.text}${label}${theme.boldOff}${outline} ${"─".repeat(fillWidth)}╮`;
   const lines: string[] = [applyPanelBg(topLine)];
 
   const wrapped = btw.text

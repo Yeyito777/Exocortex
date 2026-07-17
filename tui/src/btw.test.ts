@@ -121,6 +121,7 @@ describe("BTW foreground panel", () => {
     expect(plain).toContain("Gpt-5.4");
     expect(plain).toContain("What does this code do?");
     expect(plain).toContain("The answer");
+    expect(plain).not.toContain("complete");
     expect(plain).not.toContain("/btw close");
     expect(plain).not.toContain("j/k");
     expect(plain).not.toContain("^Q");
@@ -135,7 +136,8 @@ describe("BTW foreground panel", () => {
     expect(rendered).not.toBeNull();
     const plain = stripAnsi(rendered!.payload);
     expect(plain).toContain("BTW");
-    expect(plain).toContain("running");
+    expect(plain).not.toContain("running");
+    expect(plain).not.toContain("complete");
     expect(plain).not.toContain("^Q");
     expect(rendered!.height).toBe(1);
     expect(rendered!.top).toBe(5);
