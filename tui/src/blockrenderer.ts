@@ -12,7 +12,7 @@ import { formatSize, imageLabel } from "./clipboard";
 import { markdownWordWrap } from "./markdown";
 import { theme } from "./theme";
 import { sanitizeUntrustedText } from "./terminaltext";
-import { termWidth } from "./textwidth";
+import { sliceByWidthFrom, termWidth } from "./textwidth";
 import { wordWrap, type WrapResult } from "./textwrap";
 import { renderToolCallLogicalLines } from "./toolcalllogical";
 
@@ -248,10 +248,206 @@ function renderBlock(
   return { lines, cont, join, copy };
 }
 
+const USER_BUBBLE_PADDING = 1;
+const USER_BUBBLE_MARGIN = 2;
+
+interface UserTextRowTake {
+  text: string;
+  sourceStart: number;
+  nextOffset: number;
+}
+
+export interface UserMessageFlowCursor {
+  /** Hard-line index in sanitizedText.split("\n"). */
+  lineIndex: number;
+  /** UTF-16 offset within that hard line. */
+  offset: number;
+}
+
+export interface AdaptiveUserMessageRow {
+  line: string;
+  /** Width-independent position in the sanitized user-message text. */
+  sourceStart: UserMessageFlowCursor;
+  /** Position at which the following row should resume. */
+  nextCursor: UserMessageFlowCursor;
+}
+
+function trimUserTextStart(text: string, start: number, end: number): number {
+  let cursor = start;
+  while (cursor < end) {
+    const cp = text.codePointAt(cursor)!;
+    const char = String.fromCodePoint(cp);
+    if (char.trimStart() !== "") break;
+    cursor += cp > 0xFFFF ? 2 : 1;
+  }
+  return cursor;
+}
+
+/**
+ * Consume one word-wrapped row while retaining the source offset of the next
+ * row. This deliberately mirrors textwrap.wordWrap's ASCII-space preference.
+ */
+function takeUserTextRow(text: string, sourceStart: number, sourceEnd: number, width: number): UserTextRowTake {
+  const [fitEnd] = sliceByWidthFrom(text, sourceStart, Math.max(1, width));
+  if (fitEnd >= sourceEnd) {
+    return { text: text.slice(sourceStart, sourceEnd), sourceStart, nextOffset: sourceEnd };
+  }
+
+  const fit = text.slice(sourceStart, fitEnd);
+  const breakRel = fit.lastIndexOf(" ");
+  let breakAt = breakRel > 0 ? sourceStart + breakRel : -1;
+
+  if (breakRel <= 0 && fitEnd > sourceStart && text[fitEnd] === " ") {
+    breakAt = fitEnd;
+  }
+  if (breakAt <= sourceStart) {
+    if (fitEnd > sourceStart) {
+      breakAt = fitEnd;
+    } else {
+      const cp = text.codePointAt(sourceStart)!;
+      breakAt = sourceStart + (cp > 0xFFFF ? 2 : 1);
+    }
+  }
+
+  return {
+    text: text.slice(sourceStart, breakAt),
+    sourceStart,
+    nextOffset: trimUserTextStart(text, breakAt, sourceEnd),
+  };
+}
+
+/**
+ * Source starts for the rows produced by the ordinary, constant-width user
+ * bubble. Mixed-width viewport composition uses these to map its rows back to
+ * canonical history rows without treating a prior visual wrap as a hard break.
+ *
+ * Attachment messages intentionally return null because their semantic rows
+ * include display-only badges. Hard line breaks (including empty lines) are
+ * represented explicitly by the flow cursor.
+ */
+export function userMessageTextRowOffsets(
+  text: string,
+  cols: number,
+  images?: ImageAttachment[],
+): { starts: UserMessageFlowCursor[]; end: UserMessageFlowCursor } | null {
+  const sanitized = sanitizeUntrustedText(text);
+  if (!sanitized || images?.length) return null;
+
+  const starts: UserMessageFlowCursor[] = [];
+  const innerWidth = Math.max(1, cols - USER_BUBBLE_MARGIN - 1 - USER_BUBBLE_PADDING * 2);
+  const hardLines = sanitized.split("\n");
+  for (let lineIndex = 0; lineIndex < hardLines.length; lineIndex++) {
+    const hardLine = hardLines[lineIndex];
+    if (hardLine.length === 0) {
+      starts.push({ lineIndex, offset: 0 });
+      continue;
+    }
+
+    let offset = 0;
+    while (offset < hardLine.length) {
+      const row = takeUserTextRow(hardLine, offset, hardLine.length, innerWidth);
+      starts.push({ lineIndex, offset: row.sourceStart });
+      if (row.nextOffset <= offset) return null;
+      offset = row.nextOffset;
+    }
+  }
+  return { starts, end: { lineIndex: hardLines.length, offset: 0 } };
+}
+
+export function compareUserMessageFlowCursors(
+  left: UserMessageFlowCursor,
+  right: UserMessageFlowCursor,
+): number {
+  return left.lineIndex - right.lineIndex || left.offset - right.offset;
+}
+
+/**
+ * Render one user-message text flow across row-dependent widths. Wrapping is
+ * continuous when the task-panel float ends: the first full-width row resumes
+ * exactly where the final narrow row stopped instead of restarting at a
+ * full-width bubble boundary.
+ */
+export function renderAdaptiveUserMessageRows(
+  text: string,
+  sourceStart: UserMessageFlowCursor,
+  sourceEnd: UserMessageFlowCursor,
+  colsForRow: (rowIndex: number) => number,
+): AdaptiveUserMessageRow[] {
+  const sanitized = sanitizeUntrustedText(text);
+  const hardLines = sanitized.split("\n");
+  const clampCursor = (cursor: UserMessageFlowCursor): UserMessageFlowCursor => {
+    const lineIndex = Math.max(0, Math.min(cursor.lineIndex, hardLines.length));
+    if (lineIndex === hardLines.length) return { lineIndex, offset: 0 };
+    return { lineIndex, offset: Math.max(0, Math.min(cursor.offset, hardLines[lineIndex].length)) };
+  };
+  const end = clampCursor(sourceEnd);
+  let cursor = clampCursor(sourceStart);
+  const rawRows: Array<{
+    text: string;
+    sourceStart: UserMessageFlowCursor;
+    nextCursor: UserMessageFlowCursor;
+    cols: number;
+  }> = [];
+
+  while (compareUserMessageFlowCursors(cursor, end) < 0) {
+    const cols = Math.max(1, colsForRow(rawRows.length));
+    const innerWidth = Math.max(1, cols - USER_BUBBLE_MARGIN - 1 - USER_BUBBLE_PADDING * 2);
+    const hardLine = hardLines[cursor.lineIndex] ?? "";
+
+    if (hardLine.length === 0) {
+      const nextCursor = { lineIndex: cursor.lineIndex + 1, offset: 0 };
+      rawRows.push({ text: "", sourceStart: cursor, nextCursor, cols });
+      cursor = nextCursor;
+      continue;
+    }
+
+    const rowEnd = end.lineIndex === cursor.lineIndex ? end.offset : hardLine.length;
+    if (cursor.offset >= rowEnd) {
+      cursor = { lineIndex: cursor.lineIndex + 1, offset: 0 };
+      continue;
+    }
+    const row = takeUserTextRow(hardLine, cursor.offset, rowEnd, innerWidth);
+    const nextCursor = row.nextOffset >= hardLine.length && cursor.lineIndex < end.lineIndex
+      ? { lineIndex: cursor.lineIndex + 1, offset: 0 }
+      : { lineIndex: cursor.lineIndex, offset: row.nextOffset };
+    rawRows.push({ text: row.text, sourceStart: cursor, nextCursor, cols });
+    if (compareUserMessageFlowCursors(nextCursor, cursor) <= 0) break;
+    cursor = nextCursor;
+  }
+
+  const rendered: AdaptiveUserMessageRow[] = [];
+  for (let runStart = 0; runStart < rawRows.length;) {
+    const cols = rawRows[runStart].cols;
+    let runEnd = runStart + 1;
+    while (runEnd < rawRows.length && rawRows[runEnd].cols === cols) runEnd++;
+
+    const maxBubbleWidth = Math.max(1, cols - USER_BUBBLE_MARGIN - 1);
+    const bubbleWidth = Math.min(
+      maxBubbleWidth,
+      Math.max(...rawRows.slice(runStart, runEnd).map(row => termWidth(row.text))) + USER_BUBBLE_PADDING * 2,
+    );
+    const inner = Math.max(0, bubbleWidth - USER_BUBBLE_PADDING * 2);
+    const screenOffset = " ".repeat(Math.max(0, cols - bubbleWidth - USER_BUBBLE_MARGIN));
+    const padRight = " ".repeat(USER_BUBBLE_PADDING);
+
+    for (let index = runStart; index < runEnd; index++) {
+      const row = rawRows[index];
+      const padLeft = " ".repeat(Math.max(0, inner - termWidth(row.text)) + USER_BUBBLE_PADDING);
+      rendered.push({
+        line: `${screenOffset}${theme.userBg}${padLeft}${row.text}${padRight}${theme.reset}`,
+        sourceStart: row.sourceStart,
+        nextCursor: row.nextCursor,
+      });
+    }
+    runStart = runEnd;
+  }
+  return rendered;
+}
+
 export function renderUserMessage(text: string, cols: number, images?: ImageAttachment[]): WrapResult {
   text = sanitizeUntrustedText(text);
-  const padding = 1;         // horizontal padding inside bubble
-  const margin = 2;          // gap from right edge of screen
+  const padding = USER_BUBBLE_PADDING; // horizontal padding inside bubble
+  const margin = USER_BUBBLE_MARGIN;   // gap from right edge of screen
   const maxBubbleWidth = cols - margin - 1;
   const innerWidth = maxBubbleWidth - padding * 2;
 

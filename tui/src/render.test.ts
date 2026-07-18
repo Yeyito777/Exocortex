@@ -6,6 +6,7 @@ import { invalidateFrame } from "./frame";
 import { theme } from "./theme";
 import { termWidth } from "./textwidth";
 import { hide_cursor, show_cursor } from "./terminal";
+import { renderUserMessage } from "./blockrenderer";
 
 function captureRenderOutput(state: RenderState): string {
   let out = "";
@@ -217,6 +218,313 @@ describe("render caching and frame diffing", () => {
 
     expect(header).toBeDefined();
     expect(task).toBeDefined();
+  });
+
+  test("places tasks below system instructions and wraps chat history beside them", () => {
+    const state = createInitialState();
+    state.cols = 120;
+    state.rows = 40;
+    state.convId = "parent";
+    state.messages = [
+      { role: "system_instructions", text: "Keep this full-width instruction box visible.", metadata: null },
+      {
+        role: "assistant",
+        blocks: [
+          { type: "text", text: `OVERLAP ${"history words ".repeat(6)}` },
+          { type: "text", text: "filler" },
+          { type: "text", text: `BELOW ${"full width words ".repeat(6)}` },
+          { type: "text", text: `AFTER ${"full width again ".repeat(6)}` },
+        ],
+        metadata: null,
+      },
+    ];
+    state.sidebar.conversations = [{
+      id: "parent",
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 2,
+      title: "Parent",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: [{ id: "child", kind: "subagent", title: "Inspect renderer flow", startedAt: Date.now() - 2_000 }],
+    }];
+
+    const writes = positionedWrites(captureRenderOutput(state));
+    const taskHeader = writes.find(write => (
+      write.row === 6
+      && write.col === 71
+      && stripAnsi(write.text).includes("Tasks")
+    ));
+    const instructionLines = state.historyLines.filter((_, index) => (
+      state.historyLineAnchors[index]?.segment.startsWith("system_instructions")
+    ));
+    const assistantLines = state.historyLines.filter((_, index) => (
+      state.historyLineAnchors[index]?.segment === "assistant_block"
+    ));
+    const overlappingHistoryWrites = writes.filter(write => (
+      write.col === 1
+      && write.row >= 6
+      && write.row <= 8
+      && /OVERLAP|history words|filler/.test(stripAnsi(write.text))
+    ));
+    const belowPanel = writes.find(write => (
+      write.col === 1
+      && write.row === 11
+      && stripAnsi(write.text).includes("AFTER")
+    ));
+    const bufferRow = writes.find(write => (
+      write.col === 1
+      && write.row === 9
+      && stripAnsi(write.text).includes("BELOW")
+    ));
+
+    expect(taskHeader).toBeDefined();
+    expect(state.layout.historyWidth).toBe(69);
+    expect(instructionLines).toHaveLength(3);
+    expect(instructionLines.every(line => termWidth(stripAnsi(line)) === 120)).toBe(true);
+    expect(assistantLines).toHaveLength(4);
+    expect(overlappingHistoryWrites.length).toBeGreaterThan(0);
+    expect(overlappingHistoryWrites.every(write => termWidth(stripCsi(stripAnsi(write.text))) <= state.layout.historyWidth)).toBe(true);
+    expect(bufferRow).toBeDefined();
+    expect(termWidth(stripCsi(stripAnsi(bufferRow!.text)))).toBeLessThanOrEqual(state.layout.historyWidth);
+    expect(belowPanel).toBeDefined();
+    expect(termWidth(stripCsi(stripAnsi(belowPanel!.text)))).toBeGreaterThan(state.layout.historyWidth);
+  });
+
+  test("preserves assistant indentation on task-panel reflow continuations", () => {
+    const state = createInitialState();
+    state.cols = 180;
+    state.rows = 30;
+    state.convId = "parent";
+    const text = ("Your instinct is exactly right—you are already enumerating the rows of a truth table, while standard notation puts the truth values into columns instead of writing each case as a sentence. ").repeat(3).trim();
+    state.messages = [{
+      role: "assistant",
+      blocks: [{ type: "text", text }],
+      metadata: null,
+    }];
+    state.sidebar.conversations = [{
+      id: "parent",
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 1,
+      title: "Parent",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: Array.from({ length: 7 }, (_, index) => ({
+        id: `child-${index}`,
+        kind: "subagent" as const,
+        title: `Task ${index}`,
+        startedAt: Date.now() - 2_000,
+      })),
+    }];
+
+    const writes = positionedWrites(captureRenderOutput(state));
+    const assistantRows = state.layout.historyViewportRows.flatMap((viewportRow, index) => {
+      if (!viewportRow || state.historyLineAnchors[viewportRow.lineIndex]?.segment !== "assistant_block") return [];
+      const write = writes.filter(candidate => candidate.row === 3 + index && candidate.col === 1).at(-1);
+      return [{ viewportRow, line: stripCsi(stripAnsi(write?.text ?? "")) }];
+    });
+
+    expect(assistantRows.some(row => row.viewportRow.displayPrefixWidth === 2)).toBe(true);
+    expect(assistantRows.every(row => row.line.startsWith("  "))).toBe(true);
+    expect(assistantRows.map(row => row.line.trim()).join(" ")).toBe(text);
+  });
+
+  test("rewraps user bubbles as one continuous message beside the task panel", () => {
+    const state = createInitialState();
+    state.cols = 180;
+    state.rows = 30;
+    state.convId = "parent";
+    const text = "And for the nametag I sometimes put preferred name as Yeyito for the funsies it is kind of like a nickname of mine that people refer to me as sometimes and I find it cool but idk you can put whichever lol";
+    state.messages = [{ role: "user", text, metadata: null }];
+    state.sidebar.conversations = [{
+      id: "parent",
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 1,
+      title: "Parent",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: Array.from({ length: 7 }, (_, index) => ({
+        id: `child-${index}`,
+        kind: "subagent" as const,
+        title: `Task ${index}`,
+        startedAt: Date.now() - 2_000,
+      })),
+    }];
+
+    const writes = positionedWrites(captureRenderOutput(state));
+    const expected = renderUserMessage(text, state.layout.historyWidth).lines.map(line => stripAnsi(line));
+    const actual = expected.map((_, index) => {
+      const write = writes.filter(candidate => candidate.row === 3 + index && candidate.col === 1).at(-1);
+      return stripCsi(stripAnsi(write?.text ?? ""));
+    });
+
+    expect(actual).toEqual(expected);
+    expect(actual.every(line => termWidth(line) <= state.layout.historyWidth)).toBe(true);
+    expect(actual.map(line => line.trim()).join(" ")).toBe(text);
+  });
+
+  test("preserves hard breaks and empty lines while rewrapping a user bubble", () => {
+    const state = createInitialState();
+    state.cols = 180;
+    state.rows = 30;
+    state.convId = "parent";
+    const text = "And for the nametag I sometimes put preferred name as Yeyito for the funsies it is kind of like a nickname of mine that people refer to me as sometimes and I find it cool\n\nbut idk you can put whichever lol";
+    state.messages = [{ role: "user", text, metadata: null }];
+    state.sidebar.conversations = [{
+      id: "parent",
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 1,
+      title: "Parent",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: Array.from({ length: 7 }, (_, index) => ({
+        id: `child-${index}`,
+        kind: "subagent" as const,
+        title: `Task ${index}`,
+        startedAt: Date.now() - 2_000,
+      })),
+    }];
+
+    const writes = positionedWrites(captureRenderOutput(state));
+    const expected = renderUserMessage(text, state.layout.historyWidth).lines.map(line => stripAnsi(line));
+    const actual = expected.map((_, index) => {
+      const write = writes.filter(candidate => candidate.row === 3 + index && candidate.col === 1).at(-1);
+      return stripCsi(stripAnsi(write?.text ?? ""));
+    });
+
+    expect(actual).toEqual(expected);
+    expect(actual.filter(line => line.trim() === "")).toHaveLength(1);
+    expect(actual.every(line => termWidth(line) <= state.layout.historyWidth)).toBe(true);
+  });
+
+  test("expands a user bubble after the panel buffer without losing text", () => {
+    const state = createInitialState();
+    state.cols = 120;
+    state.rows = 30;
+    state.convId = "parent";
+    const text = Array.from({ length: 60 }, (_, index) => `word${index}`).join(" ");
+    state.messages = [{ role: "user", text, metadata: null }];
+    state.sidebar.conversations = [{
+      id: "parent",
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 1,
+      title: "Parent",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: [{ id: "child", kind: "subagent", title: "Task", startedAt: Date.now() - 2_000 }],
+    }];
+
+    const writes = positionedWrites(captureRenderOutput(state));
+    const userRows = state.layout.historyViewportRows.flatMap((viewportRow, index) => {
+      if (!viewportRow || state.historyLineAnchors[viewportRow.lineIndex]?.segment !== "user_content") return [];
+      const write = writes.filter(candidate => candidate.row === 3 + index && candidate.col === 1).at(-1);
+      const line = stripCsi(stripAnsi(write?.text ?? ""));
+      return [{ screenRow: 3 + index, line }];
+    });
+    const bufferBottom = (state.layout.taskPanelRect?.bottom ?? 0) + 1;
+
+    expect(userRows.map(row => row.line.trim()).join(" ")).toBe(text);
+    expect(userRows.filter(row => row.screenRow <= bufferBottom)
+      .every(row => termWidth(row.line) <= state.layout.historyWidth)).toBe(true);
+    expect(userRows.some(row => row.screenRow > bufferBottom && termWidth(row.line) > state.layout.historyWidth)).toBe(true);
+  });
+
+  test("keeps canonical scroll state stable when task-panel wrapping appears and disappears", () => {
+    const state = createInitialState();
+    state.cols = 120;
+    state.rows = 20;
+    state.convId = "parent";
+    state.panelFocus = "chat";
+    state.chatFocus = "history";
+    state.messages = [{
+      role: "assistant",
+      blocks: Array.from({ length: 30 }, (_, index) => ({
+        type: "text" as const,
+        text: `L${String(index).padStart(2, "0")} ${"history words ".repeat(6)}`,
+      })),
+      metadata: null,
+    }];
+    state.sidebar.conversations = [{
+      id: "parent",
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 1,
+      title: "Parent",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: [],
+    }];
+
+    captureRenderOutput(state);
+    const targetRow = state.historyLines.findIndex(line => stripAnsi(line).includes("L08"));
+    state.scrollOffset = state.layout.totalLines - state.layout.messageAreaHeight - targetRow;
+    state.historyCursor = { row: targetRow, col: 2 };
+    state.historyVisualAnchor = { row: targetRow, col: 2 };
+    captureRenderOutput(state);
+
+    state.sidebar.conversations[0].tasks = [{
+      id: "child",
+      kind: "subagent",
+      title: "Inspect renderer flow",
+      startedAt: Date.now() - 2_000,
+    }];
+    captureRenderOutput(state);
+
+    const viewStart = state.layout.totalLines - state.layout.messageAreaHeight - state.scrollOffset;
+    expect(stripAnsi(state.historyLines[viewStart])).toContain("L08");
+    expect(stripAnsi(state.historyLines[state.historyCursor.row])).toContain("L08");
+    expect(stripAnsi(state.historyLines[state.historyVisualAnchor.row])).toContain("L08");
+
+    state.sidebar.conversations[0].tasks = [];
+    captureRenderOutput(state);
+
+    expect(stripAnsi(state.historyLines[viewStart])).toContain("L08");
   });
 
   test("keeps macro highlighting active while voice placeholders are rendered", () => {
