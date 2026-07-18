@@ -6,6 +6,7 @@ import { handleFocusedKey } from "./focus";
 import { stripAnsi } from "./historycursor";
 import { createInitialState, type BtwPanelState } from "./state";
 import { termWidth } from "./textwidth";
+import { theme } from "./theme";
 
 function panelState(overrides: Partial<BtwPanelState> = {}): BtwPanelState {
   return {
@@ -98,6 +99,25 @@ describe("BTW event projection", () => {
 });
 
 describe("BTW foreground panel", () => {
+  test("starts with one content row before the assistant produces output", () => {
+    const btw = panelState();
+    expect(getBtwPanelPreferredHeight(btw, 100)).toBe(3);
+    const originalAppBg = theme.appBg;
+    const originalSidebarBg = theme.sidebarBg;
+    try {
+      theme.appBg = "\x1b[48;2;1;2;3m";
+      theme.sidebarBg = "\x1b[48;2;4;5;6m";
+      const rendered = renderBtwPanel(btw, 100, 3, 10, 1);
+      expect(rendered?.height).toBe(3);
+      expect(btw.viewportRows).toBe(1);
+      expect(rendered?.payload).toContain(theme.appBg);
+      expect(rendered?.payload).not.toContain(theme.sidebarBg);
+    } finally {
+      theme.appBg = originalAppBg;
+      theme.sidebarBg = originalSidebarBg;
+    }
+  });
+
   test("stays compact while running, then grows with the final answer up to 20 rows", () => {
     const btw = panelState({ text: Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n") });
     expect(getBtwPanelPreferredHeight(btw, 100)).toBe(4);

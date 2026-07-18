@@ -26,9 +26,10 @@ function cleanInline(text: string): string {
 /** Keep streaming compact, then expand completed answers to fit up to 20 rows. */
 export function getBtwPanelPreferredHeight(btw: BtwPanelState, width: number): number {
   if (width < 22) return 1;
-  if (btw.phase !== "complete" || !btw.text) return 4;
+  if (!btw.text) return 3;
+  if (btw.phase !== "complete") return 4;
   const contentWidth = Math.max(1, width - 4);
-  const answerRows = markdownWordWrap(btw.text, contentWidth, theme.sidebarBg).lines.length;
+  const answerRows = markdownWordWrap(btw.text, contentWidth, theme.appBg ?? "").lines.length;
   return Math.min(MAX_BTW_PANEL_HEIGHT, Math.max(4, answerRows + 2));
 }
 
@@ -45,13 +46,14 @@ export function renderBtwPanel(
 ): BtwPanelRender | null {
   if (width <= 0 || height <= 0 || top <= 0 || left <= 0) return null;
 
-  if (width < 22 || height < 4) {
+  const panelBg = theme.appBg ?? "";
+  if (width < 22 || height < 3) {
     const label = truncateToWidth(" BTW", width);
     btw.maxScroll = 0;
     btw.viewportRows = 1;
     btw.scrollOffset = 0;
     return {
-      payload: moveTo(top, left) + theme.sidebarBg + theme.accent + padRightToWidth(label, width) + theme.reset,
+      payload: moveTo(top, left) + panelBg + theme.accent + padRightToWidth(label, width) + theme.reset,
       width,
       height: 1,
       top,
@@ -63,7 +65,6 @@ export function renderBtwPanel(
   const innerWidth = width - 2;
   const contentWidth = Math.max(1, innerWidth - 2);
   const contentRows = panelHeight - 2;
-  const panelBg = theme.sidebarBg;
   const outline = theme.accent;
 
   const applyPanelBg = (line: string): string => {

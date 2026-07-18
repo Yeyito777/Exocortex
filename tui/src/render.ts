@@ -715,7 +715,7 @@ export function render(state: RenderState): void {
   if (state.btw) {
     const availableRows = Math.max(1, baseMessageAreaHeight);
     const preferredHeight = getBtwPanelPreferredHeight(state.btw, chatW);
-    const btwHeight = availableRows >= 4
+    const btwHeight = availableRows >= 3
       ? Math.min(preferredHeight, availableRows, MAX_BTW_PANEL_HEIGHT)
       : 1;
     const btwTop = bottomStartRow - btwHeight;
