@@ -11,7 +11,7 @@ import type { MouseEvent } from "./input";
 import type { RenderState } from "./state";
 import { focusHistory, focusPrompt, focusSidebar } from "./state";
 import type { KeyResult } from "./focus";
-import { scrollBy, getViewStart } from "./chat";
+import { scrollBy } from "./chat";
 import { activateSidebarItem, sidebarHitTest, scrollSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { mouse_cursor_pointer, mouse_cursor_text, mouse_cursor_hand } from "./terminal";
 import { clampCol, ensureCursorVisible } from "./historycursor";
@@ -22,6 +22,15 @@ import { focusSidebarItem } from "./sidebar/selection";
 // ── Constants ─────────────────────────────────────────────────────
 
 const SCROLL_LINES = 3;
+
+function isInsideTaskPanel(col: number, row: number, state: RenderState): boolean {
+  const rect = state.layout.taskPanelRect;
+  return !!rect
+    && row >= rect.top
+    && row <= rect.bottom
+    && col >= rect.left
+    && col <= rect.right;
+}
 
 // ── Screen-to-history coordinate mapping ──────────────────────────
 
@@ -38,15 +47,17 @@ function screenToHistoryPos(
 
   // Must be inside the message area (rows 3 to sepAbove-1)
   if (screenRow < 3 || layout.sepAbove <= 0 || screenRow >= layout.sepAbove) return null;
+  if (isInsideTaskPanel(screenCol, screenRow, state)) return null;
 
-  const viewStart = getViewStart(state);
-
-  const lineIdx = viewStart + (screenRow - 3);
+  const viewportRow = layout.historyViewportRows[screenRow - 3];
+  if (!viewportRow) return null;
+  const lineIdx = viewportRow.lineIndex;
   if (lineIdx < 0 || lineIdx >= totalLines) return null;
 
   // Map screen column to content column (account for sidebar offset)
   const contentCol = screenCol - layout.chatCol;
-  const col = clampCol(contentCol, lines, lineIdx);
+  const sourceCol = Math.max(0, contentCol - viewportRow.displayPrefixWidth);
+  const col = clampCol(viewportRow.startCol + sourceCol, lines, lineIdx);
   return { row: lineIdx, col };
 }
 
@@ -69,8 +80,10 @@ function cursorZone(col: number, row: number, state: RenderState): CursorShape {
     return sidebarHitTest(row, state.rows, sidebar) !== null ? "hand" : "pointer";
   }
 
-  // Message area (chat history) → text
-  if (row >= 3 && layout.sepAbove > 0 && row < layout.sepAbove) return "text";
+  // Message area (chat history) → text, except for the task panel itself.
+  if (row >= 3 && layout.sepAbove > 0 && row < layout.sepAbove) {
+    return isInsideTaskPanel(col, row, state) ? "pointer" : "text";
+  }
 
   // Prompt input area → text
   if (layout.firstInputRow > 0 && row >= layout.firstInputRow && row < layout.sepBelow) return "text";
