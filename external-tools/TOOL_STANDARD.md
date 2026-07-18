@@ -118,8 +118,9 @@ External tools that autonomously deliver platform events into Exocortex
 conversations must use the daemon's generic external-notification registry.
 Do not keep Exocortex conversation IDs in a tool-local `relay_targets` list and
 do not shell out to `exo send` from a listener. The external tool owns platform
-authentication, event collection, filtering, and formatting; Exocortex owns the
-durable source → conversation route, delivery policy, deduplication, and UI.
+authentication, event collection, source-level filtering, and formatting;
+Exocortex owns the durable source → conversation route, optional subscriber-
+owned soft-wake filtering, delivery policy, deduplication, and UI.
 
 This applies to notification listeners such as Discord DMs/mentions, Twitter
 replies/quotes, and WhatsApp incoming messages. Ordinary request/response tools
@@ -156,6 +157,7 @@ daemon registry rather than editing a tool-local routing file:
 
 ```json
 {"type":"subscribe_external_notification","reqId":"3","toolName":"discord","sourceId":"account:paramount:notifications","convId":"<conversation-id>","delivery":"wake"}
+{"type":"subscribe_external_notification","reqId":"3b","toolName":"discord","sourceId":"account:paramount:notifications","convId":"<conversation-id>","delivery":"soft","softWake":{"command":"./filter-event.sh","timeoutMs":30000,"hardWake":{"when":"failure","message":"Handle the selected external event.","includeOutput":true}}}
 {"type":"list_external_notification_subscriptions","reqId":"4","toolName":"discord","sourceId":"account:paramount:notifications"}
 {"type":"unsubscribe_external_notification","reqId":"5","subscriptionId":"<subscription-id>"}
 {"type":"update_external_notification_subscription","reqId":"6","subscriptionId":"<subscription-id>","delivery":"inbox","enabled":true}
@@ -167,6 +169,37 @@ daemon registry rather than editing a tool-local routing file:
   when the conversation is idle; if busy, deliver after its active turn.
 - `inbox` — persist a provenance-tagged, model-visible notice and mark the
   conversation unread without autonomously starting a model turn.
+- `soft` — durably run subscriber-owned static Bash without a model. The event
+  is provided as JSON on stdin and is never interpolated into the command.
+  `softWake.hardWake.when` may be `failure` (including a script-defined non-zero
+  exit) or `always`; capped output can be included in the resulting hard wake.
+
+Soft-wake commands run at least once across crash windows. Exocortex exports a
+stable `EXOCORTEX_NOTIFICATION_OCCURRENCE_ID` plus subscription, source, and
+event ID environment variables so side-effecting scripts can deduplicate. The
+stdin JSON has this shape:
+
+```json
+{"type":"external_notification","subscription":{"id":"…","conversationId":"…","toolName":"discord","sourceId":"…","sourceLabel":"…"},"event":{"id":"discord-message-123","occurredAt":1770000000000,"text":"DM from Fede: …","data":{"senderId":"123","body":"…"}}}
+```
+
+Commands are selected by the subscription owner, never by the publisher.
+Implementations must enforce timeouts, output limits, bounded concurrency, and
+the normal Bash safety policy. The daemon also applies bounded durable-backlog
+quotas; a publisher receives `failed` backpressure and must not treat that event
+as accepted. Managed command runners enforce their timeout and terminate their
+process group if the owning daemon channel disappears. Command output and event
+content remain explicitly untrusted when included in a model wake.
+
+Actual command exits, signals, timeouts, and safety-policy blocks are terminal
+soft-wake outcomes and follow the configured hard-wake policy. Runner/spawn or
+other execution-infrastructure failures remain durably pending and retry without
+being checkpointed as command outcomes.
+
+An accepted event snapshots the current command policy. Updating the command
+affects future events; disabling/unsubscribing the route, changing it away from
+`soft`, or deleting its conversation revokes pending work, aborts active work,
+and suppresses any later hard wake.
 
 The daemon validates conversation IDs and removes subscriptions when their
 conversation is deleted. External tools should never choose a target while
@@ -183,7 +216,7 @@ Publish one logical platform event or intentionally formatted batch with a
 stable event ID:
 
 ```json
-{"type":"publish_external_notification","reqId":"7","toolName":"discord","sourceId":"account:paramount:notifications","eventId":"discord-message-123","occurredAt":1770000000000,"text":"DM from Fede: …"}
+{"type":"publish_external_notification","reqId":"7","toolName":"discord","sourceId":"account:paramount:notifications","eventId":"discord-message-123","occurredAt":1770000000000,"text":"DM from Fede: …","data":{"senderId":"123","body":"…"}}
 ```
 
 The daemon finds enabled subscriptions, adds an explicit untrusted-external-
@@ -196,6 +229,8 @@ retry the same event ID safely. Treat `queued`, `inbox`, `started`, and
 Requirements:
 
 - Never include a target conversation ID in a publish request.
+- `data`, when present, must be JSON-compatible untrusted event data. Keep it
+  compact (at most 100,000 serialized characters) and do not include secrets.
 - Never include secrets in source metadata, event IDs, text, or logs.
 - Use platform-stable event IDs so reconnect/replay does not duplicate turns.
 - Exclude outgoing/self-authored events and history hydration unless the source

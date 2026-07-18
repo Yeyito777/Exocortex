@@ -97,6 +97,8 @@ export interface ImageData {
 export interface ToolResult {
   output: string;
   isError: boolean;
+  /** Internal execution classification used by durable automation retry loops. */
+  failureKind?: "infrastructure";
   image?: ImageData;
 }
 

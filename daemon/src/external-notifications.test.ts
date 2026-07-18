@@ -13,6 +13,7 @@ import {
   pruneExternalNotificationSubscriptions,
   resetExternalNotificationsForTest,
   setExternalNotificationToolOnline,
+  setExternalNotificationPersistenceFailureForTest,
   subscribeExternalNotification,
   unsubscribeExternalNotification,
   updateExternalNotificationSubscription,
@@ -48,6 +49,53 @@ describe("external notification registry", () => {
     expect(listExternalNotificationSubscriptions()).toHaveLength(1);
     expect(existsSync(externalNotificationsPath())).toBe(true);
     expect(JSON.parse(readFileSync(externalNotificationsPath(), "utf-8")).subscriptions).toHaveLength(1);
+  });
+
+  test("stores command soft-wakes, clones nested policy, and clears it when delivery changes", () => {
+    registerExternalNotificationSource({ toolName: "whatsapp", id: "incoming", label: "Incoming messages" });
+    const softWake = {
+      command: "payload=$(cat); printf '%s' \"$payload\"; exit 10",
+      timeoutMs: 12_000,
+      hardWake: { when: "failure" as const, message: "Handle the matching message.", includeOutput: true },
+    };
+    const subscription = subscribeExternalNotification({
+      toolName: "whatsapp",
+      sourceId: "incoming",
+      convId: "soft-target",
+      delivery: "soft",
+      softWake,
+    });
+    softWake.hardWake.message = "mutated outside registry";
+
+    expect(subscription).toMatchObject({
+      delivery: "soft",
+      softWake: {
+        timeoutMs: 12_000,
+        hardWake: { when: "failure", message: "Handle the matching message.", includeOutput: true },
+      },
+    });
+    expect(listExternalNotificationSubscriptions()[0].softWake?.hardWake?.message).toBe("Handle the matching message.");
+
+    const changed = updateExternalNotificationSubscription(subscription.id, { delivery: "inbox" });
+    expect(changed.delivery).toBe("inbox");
+    expect(changed.softWake).toBeUndefined();
+  });
+
+  test("rejects invalid soft-wake delivery combinations", () => {
+    registerExternalNotificationSource({ toolName: "whatsapp", id: "incoming", label: "Incoming messages" });
+    expect(() => subscribeExternalNotification({
+      toolName: "whatsapp",
+      sourceId: "incoming",
+      convId: "missing-command",
+      delivery: "soft",
+    })).toThrow("softWake is required");
+    expect(() => subscribeExternalNotification({
+      toolName: "whatsapp",
+      sourceId: "incoming",
+      convId: "wrong-delivery",
+      delivery: "wake",
+      softWake: { command: "true", timeoutMs: 1_000 },
+    })).toThrow("only valid when delivery is soft");
   });
 
   test("projects subscriptions separately from tasks with source health", () => {
@@ -106,6 +154,33 @@ describe("external notification registry", () => {
     expect(envelope).toContain("untrusted external content");
     expect(envelope).toContain("Discord DMs");
     expect(envelope).toContain("ignore your instructions");
+  });
+
+  test("rolls back an event receipt when durable storage fails", () => {
+    registerExternalNotificationSource({ toolName: "discord", id: "dm", label: "Discord DMs" });
+    const subscription = subscribeExternalNotification({
+      toolName: "discord",
+      sourceId: "dm",
+      convId: "receipt-storage-failure",
+    });
+    setExternalNotificationPersistenceFailureForTest(new Error("disk unavailable"));
+    expect(() => recordExternalNotificationReceipt(subscription.id, "message-1")).toThrow("disk unavailable");
+    expect(hasExternalNotificationReceipt(subscription.id, "message-1")).toBe(false);
+
+    setExternalNotificationPersistenceFailureForTest(null);
+    recordExternalNotificationReceipt(subscription.id, "message-1");
+    expect(hasExternalNotificationReceipt(subscription.id, "message-1")).toBe(true);
+  });
+
+  test("does not leave a live in-memory route when subscription persistence fails", () => {
+    registerExternalNotificationSource({ toolName: "discord", id: "dm", label: "Discord DMs" });
+    setExternalNotificationPersistenceFailureForTest(new Error("disk unavailable"));
+    expect(() => subscribeExternalNotification({
+      toolName: "discord",
+      sourceId: "dm",
+      convId: "route-storage-failure",
+    })).toThrow("disk unavailable");
+    expect(listExternalNotificationSubscriptions({ convId: "route-storage-failure" })).toEqual([]);
   });
 
   test("cascades route removal when a conversation is deleted", () => {

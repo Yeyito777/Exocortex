@@ -41,6 +41,7 @@ interface TrackedBackgroundProcess {
 
 /** Detached bash processes that may later be stopped by another bash tool call. */
 const trackedBackgroundProcesses = new Map<number, TrackedBackgroundProcess>();
+let isolatedRunnerPathForTest: string | null = null;
 
 /**
  * Extract literal PIDs from direct process-termination commands.
@@ -310,13 +311,14 @@ async function executeBashImpl(
   const command = getString(input, "command");
   if (!command) return { output: "Error: missing 'command' parameter", isError: true };
   const maxOutputChars = inlineOutputBudget(input);
+  const discardOutputFile = input.discard_output_file === true;
 
   let rewrittenCommand: string;
   try {
     rewrittenCommand = isWindows ? command : await rewriteExternalToolShellCommandForExecution(command);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { output: `Error preparing external tool command: ${msg}`, isError: true };
+    return { output: `Error preparing external tool command: ${msg}`, isError: true, failureKind: "infrastructure" };
   }
   const timeout = getNumber(input, "timeout") ?? DEFAULT_TIMEOUT_MS;
   if (timeout <= 0) return { output: "Error: 'timeout' must be greater than 0 milliseconds", isError: true };
@@ -325,9 +327,12 @@ async function executeBashImpl(
 
   const startTime = Date.now();
   const capturePath = join(tmpdir(), `exocortex-bash-${process.pid}-${randomUUID()}.tmp`);
+  const inputEnv = input.env && typeof input.env === "object" && !Array.isArray(input.env)
+    ? Object.fromEntries(Object.entries(input.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+    : {};
 
   return new Promise((resolve) => {
-    const runnerPath = join(import.meta.dir, "bash-runner.ts");
+    const runnerPath = isolatedRunnerPathForTest ?? join(import.meta.dir, "bash-runner.ts");
     let runner: ChildProcessWithoutNullStreams;
     try {
       runner = spawn(process.execPath, [runnerPath], {
@@ -337,6 +342,7 @@ async function executeBashImpl(
           ...(context?.conversationId ? { EXOCORTEX_PARENT_CONV_ID: context.conversationId } : {}),
           ...(context?.provider ? { EXOCORTEX_PARENT_PROVIDER: context.provider } : {}),
           ...(context?.model ? { EXOCORTEX_PARENT_MODEL: context.model } : {}),
+          ...inputEnv,
         },
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: isWindows,
@@ -344,7 +350,7 @@ async function executeBashImpl(
     } catch (err) {
       restoreBackgroundTaskNotifications(intentionalStops);
       const message = err instanceof Error ? err.message : String(err);
-      resolve({ output: `Error starting isolated bash runner: ${message}`, isError: true });
+      resolve({ output: `Error starting isolated bash runner: ${message}`, isError: true, failureKind: "infrastructure" });
       return;
     }
 
@@ -397,13 +403,15 @@ async function executeBashImpl(
 
     function formatCapturedOutput(output: string, byteTruncated: boolean, outputError?: string): string {
       if (output.length > maxOutputChars) {
-        return buildSpillPreview(
+        const preview = buildSpillPreview(
           output,
           byteTruncated,
           maxOutputChars,
-          outputError ? undefined : capturePath,
-          outputError,
+          outputError || discardOutputFile ? undefined : capturePath,
+          outputError ?? (discardOutputFile ? "discarded by automation output policy" : undefined),
         );
+        if (discardOutputFile) removeCapture();
+        return preview;
       }
       if (byteTruncated) return `${output}\n... (output byte-truncated at 1MB)`;
       removeCapture();
@@ -547,7 +555,12 @@ async function executeBashImpl(
       if (code !== 0 && code !== null) {
         output += `\n(exit code ${code})`;
       }
-      resolve({ output, isError: timedOut || Boolean(processFailure) || (code !== 0 && code !== null) });
+      if (sig) output += `\n(terminated by signal ${sig})`;
+      resolve({
+        output,
+        isError: timedOut || Boolean(processFailure) || Boolean(sig) || (code !== 0 && code !== null),
+        ...(processFailure && !timedOut ? { failureKind: "infrastructure" as const } : {}),
+      });
     }
 
     async function handleBackgrounded(byteTruncated: boolean, outputError?: string): Promise<void> {
@@ -659,7 +672,7 @@ async function executeBashImpl(
       if (settled) return;
       settled = true;
       removeCapture();
-      resolve({ output: `Error: ${err.message}`, isError: true });
+      resolve({ output: `Error: ${err.message}`, isError: true, failureKind: "infrastructure" });
     });
     runner.on("close", (_code, runnerSignal) => {
       if (finalReceived) return;
@@ -679,10 +692,18 @@ async function executeBashImpl(
       settled = true;
       removeCapture();
       const detail = runnerStderr.trim() || processFailure;
-      resolve({ output: `Error: ${detail}`, isError: true });
+      resolve({ output: `Error: ${detail}`, isError: true, failureKind: "infrastructure" });
     });
 
-    writeRunnerRequest({ type: "start", command: rewrittenCommand, outputPath: capturePath, windows: isWindows });
+    writeRunnerRequest({
+      type: "start",
+      command: rewrittenCommand,
+      outputPath: capturePath,
+      windows: isWindows,
+      ...(typeof input.stdin === "string" ? { stdin: input.stdin } : {}),
+      ...(input.terminate_on_parent_exit === true ? { terminateOnParentExit: true } : {}),
+      ...(typeof input.runner_timeout_ms === "number" ? { timeoutMs: input.runner_timeout_ms } : {}),
+    });
 
     timeoutTimer = setTimeout(() => {
       timedOut = true;
@@ -717,6 +738,7 @@ export const bash: Tool = {
     type: "object",
     properties: {
       command: { type: "string", description: `The ${shellName} command to execute` },
+      stdin: { type: "string", description: "Optional literal text provided to the command on standard input." },
       timeout: { type: "number", description: "Timeout in milliseconds (default 3600000)" },
       background: { type: "boolean", description: "Background immediately after spawning and return the PID/output file without waiting. Cannot be combined with await." },
       await: { type: "number", description: "Seconds greater than 0 to wait before backgrounding this command. Cannot be combined with background=true." },
@@ -724,7 +746,7 @@ export const bash: Tool = {
     },
     required: ["command"],
   },
-  systemHint: `${shellName} commands that run longer than ${TOOL_BACKGROUND_SECONDS}s are automatically backgrounded: the process keeps running but control returns to you with the PID and a temp file where output accumulates. Pass background=true to background immediately after spawning. Pass the "await" parameter (seconds greater than 0) to change how long to wait before backgrounding; do not combine background and await. Pass "max_output_chars" to limit inline output; larger output is saved to a temp file with a compact preview.`,
+  systemHint: `${shellName} commands that run longer than ${TOOL_BACKGROUND_SECONDS}s are automatically backgrounded: the process keeps running but control returns to you with the PID and a temp file where output accumulates. Pass stdin to provide literal standard input. Pass background=true to background immediately after spawning. Pass the "await" parameter (seconds greater than 0) to change how long to wait before backgrounding; do not combine background and await. Pass "max_output_chars" to limit inline output; larger output is saved to a temp file with a compact preview.`,
   display: {
     label: "$",
     color: "#d19a66",  // muted amber
@@ -732,3 +754,7 @@ export const bash: Tool = {
   summarize,
   execute: executeBash,
 };
+
+export function setIsolatedBashRunnerPathForTest(path: string | null): void {
+  isolatedRunnerPathForTest = path;
+}

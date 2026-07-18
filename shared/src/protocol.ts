@@ -227,6 +227,30 @@ export interface ExternalNotificationSource {
   registeredAt: number;
 }
 
+/** JSON-compatible untrusted data published alongside an external event's text. */
+export type ExternalNotificationJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | ExternalNotificationJsonValue[]
+  | { [key: string]: ExternalNotificationJsonValue };
+
+/** Optional model escalation after a subscription command soft-wake. */
+export interface ExternalNotificationHardWake {
+  /** `failure` includes a script-defined non-zero exit; `always` also wakes on success. */
+  when: "failure" | "always";
+  message: string;
+  includeOutput: boolean;
+}
+
+/** Subscriber-owned static command run for each event without invoking a model. */
+export interface ExternalNotificationSoftWake {
+  command: string;
+  timeoutMs: number;
+  hardWake?: ExternalNotificationHardWake;
+}
+
 /** A durable route from an external event source to an Exocortex conversation. */
 export interface ExternalNotificationSubscription {
   id: string;
@@ -236,6 +260,8 @@ export interface ExternalNotificationSubscription {
   sourceDescription?: string;
   convId: string;
   delivery: ExternalNotificationDelivery;
+  /** Required when delivery is `soft`; external event content is provided as JSON on stdin. */
+  softWake?: ExternalNotificationSoftWake;
   enabled: boolean;
   createdAt: number;
   updatedAt: number;
@@ -276,6 +302,7 @@ export interface SubscribeExternalNotificationCommand {
   sourceDescription?: string;
   convId: string;
   delivery?: ExternalNotificationDelivery;
+  softWake?: ExternalNotificationSoftWake;
 }
 
 export interface UnsubscribeExternalNotificationCommand {
@@ -292,6 +319,7 @@ export interface UpdateExternalNotificationSubscriptionCommand {
   reqId?: string;
   subscriptionId: string;
   delivery?: ExternalNotificationDelivery;
+  softWake?: ExternalNotificationSoftWake;
   enabled?: boolean;
 }
 
@@ -304,6 +332,8 @@ export interface PublishExternalNotificationCommand {
   eventId: string;
   /** Tool-formatted content; the daemon adds the trusted provenance envelope. */
   text: string;
+  /** Optional structured untrusted event data for deterministic soft-wake commands. */
+  data?: ExternalNotificationJsonValue;
   occurredAt?: number;
 }
 

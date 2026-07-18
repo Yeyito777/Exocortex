@@ -34,6 +34,7 @@ import { getProviders, refreshProviders } from "./providers/registry";
 import { socketPath, pidPath, runtimeDir, worktreeName, isWindows } from "@exocortex/shared/paths";
 import { stopAllBackgroundTasks, waitForBackgroundTasksToStop } from "./conversation-activity";
 import { pruneExternalNotificationSubscriptions } from "./external-notifications";
+import { startExternalNotificationSoftWakeService, stopExternalNotificationSoftWakeService } from "./external-notification-soft-wakes";
 
 // ── Startup profiling ────────────────────────────────────────────────
 
@@ -127,6 +128,7 @@ async function startDaemon(): Promise<void> {
       const shutdownMode = beginDaemonShutdown(requestedMode);
       log("info", `exocortexd: shutting down (${reason}, mode=${shutdownMode})`);
       stopWatchdog();
+      stopExternalNotificationSoftWakeService();
       stopChronoService();
 
       if (shutdownMode === "restart") {
@@ -220,6 +222,8 @@ async function startDaemon(): Promise<void> {
   }
   if (deliveredQueueIds.size > 0) convStore.removeQueuedMessagesById(deliveredQueueIds);
   profileMark("message_queue_loaded", { queuedMessageCount, deduplicated: deliveredQueueIds.size });
+  const pendingExternalSoftWakeCount = startExternalNotificationSoftWakeService();
+  profileMark("external_notification_soft_wakes_started", { pendingCount: pendingExternalSoftWakeCount });
   const chronoScheduleCount = await startChronoService();
   profileMark("chrono_started", { scheduleCount: chronoScheduleCount });
   recoverPendingTitles(server);
