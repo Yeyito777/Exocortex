@@ -2,22 +2,7 @@ import type { Tool, ToolResult } from "./types";
 import { summarizeParams } from "./util";
 import { adoptChronoSchedule, createChronoSchedule, cancelChronoSchedule, listChronoSchedules, type RepeatInput } from "../chrono-service";
 import { waitForConversationTask } from "../conversation-activity";
-
-const DURATION_RE = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)\s*$/i;
-
-function parseDurationMs(value: unknown): number | null {
-  if (typeof value !== "string") return null;
-  const match = value.match(DURATION_RE);
-  if (!match) return null;
-  const amount = Number(match[1]);
-  const multiplier = match[2].toLowerCase() === "ms" ? 1
-    : match[2].toLowerCase() === "s" ? 1_000
-      : match[2].toLowerCase() === "m" ? 60_000
-        : match[2].toLowerCase() === "h" ? 3_600_000
-          : 86_400_000;
-  const result = amount * multiplier;
-  return Number.isFinite(result) && result > 0 ? Math.round(result) : null;
-}
+import { parseDurationMs } from "./duration";
 
 function action(input: Record<string, unknown>): string {
   return typeof input.action === "string" ? input.action : "";
@@ -71,7 +56,7 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
     if (!taskId) return { output: "wait requires task_id.", isError: true };
     const maxWaitMs = parseDurationMs(input.max_wait);
     if (maxWaitMs === null) {
-      return { output: "wait requires max_wait as a positive duration such as '30s', '20m', '2h', or '1d'.", isError: true };
+      return { output: "wait requires max_wait as a positive duration such as '30s', '1m20s', '2h 30m', or '1d'.", isError: true };
     }
 
     const maxWait = String(input.max_wait).trim();
@@ -120,7 +105,7 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
 
   if (selected === "sleep") {
     const durationMs = parseDurationMs(input.duration);
-    if (durationMs === null) return { output: "sleep requires duration such as '30s', '20m', '2h', or '1d'.", isError: true };
+    if (durationMs === null) return { output: "sleep requires duration such as '30s', '1m20s', '2h 30m', or '1d'.", isError: true };
     const startedAt = Date.now();
     const dueAt = startedAt + durationMs;
     const taskId = `chrono:sleep:${context.toolCallId ?? startedAt}`;
@@ -220,8 +205,8 @@ export const chrono: Tool = {
     properties: {
       action: { type: "string", enum: ["wait", "sleep", "wake", "list", "adopt", "cancel"], description: "Chrono operation." },
       task_id: { type: "string", description: "For wait: exact active task id from the Tasks UI or exo tasks." },
-      max_wait: { type: "string", description: "Required for wait: maximum duration to wait, such as 30s, 20m, 2h, or 1d." },
-      duration: { type: "string", description: "For sleep: positive duration such as 30s, 20m, 2h, or 1d." },
+      max_wait: { type: "string", description: "Required for wait: maximum duration to wait, such as 30s, 1m20s, 2h 30m, or 1d." },
+      duration: { type: "string", description: "For sleep: positive duration such as 30s, 1m20s, 2h 30m, or 1d." },
       at: { type: "string", description: "For wake: future ISO-8601 date/time with an explicit timezone offset." },
       after_seconds: { type: "number", exclusiveMinimum: 0, description: "For wake: relative delay; cannot be combined with at." },
       title: { type: "string", description: "Short Tasks UI title for the scheduled wake." },

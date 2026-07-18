@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { chrono, chronoToolInternalsForTest } from "./chrono";
+import { chrono } from "./chrono";
 import { chronoInternalsForTest, installMigratedSchedule } from "../chrono-service";
 import { resetConversationActivityForTest, setBackgroundTaskActive } from "../conversation-activity";
 
@@ -9,13 +9,6 @@ afterEach(() => {
 });
 
 describe("Chrono tool", () => {
-  test("parses compact sleep durations", () => {
-    expect(chronoToolInternalsForTest.parseDurationMs("250ms")).toBe(250);
-    expect(chronoToolInternalsForTest.parseDurationMs("1.5m")).toBe(90_000);
-    expect(chronoToolInternalsForTest.parseDurationMs("2h")).toBe(7_200_000);
-    expect(chronoToolInternalsForTest.parseDurationMs("later")).toBeNull();
-  });
-
   test("shows the wait limit as a flag in TUI summaries", () => {
     expect(chrono.summarize({ action: "wait", task_id: "bash:42", max_wait: "20m" }).detail)
       .toBe("wait: bash:42 --max_wait 20m");
