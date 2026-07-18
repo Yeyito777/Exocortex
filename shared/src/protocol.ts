@@ -610,6 +610,12 @@ export interface AccountCommand {
   target?: string;
 }
 
+export interface ConsumeUsageResetCommand {
+  type: "consume_usage_reset";
+  reqId?: string;
+  provider?: ProviderId;
+}
+
 export interface LogoutCommand {
   type: "logout";
   reqId?: string;
@@ -676,6 +682,7 @@ export type Command =
   | TranscribeAudioCommand
   | LoginCommand
   | AccountCommand
+  | ConsumeUsageResetCommand
   | LogoutCommand;
 
 // ── Events (daemon → client) ────────────────────────────────────────
@@ -823,6 +830,19 @@ export interface UsageUpdateEvent {
   type: "usage_update";
   provider: ProviderId;
   usage: UsageData | null;
+}
+
+export type UsageResetOutcome = "reset" | "nothing_to_reset" | "no_credit" | "already_redeemed";
+
+export interface UsageResetResultEvent {
+  type: "usage_reset_result";
+  reqId?: string;
+  provider: ProviderId;
+  outcome: UsageResetOutcome;
+  /** Number of active rate-limit windows reset by the provider. */
+  windowsReset: number;
+  /** Remaining reset count after the provider state was refreshed, when known. */
+  remainingResets?: number;
 }
 
 export interface TokenStatsEvent {
@@ -1237,6 +1257,7 @@ export type Event =
   | ContextUpdateEvent
   | MessageCompleteEvent
   | UsageUpdateEvent
+  | UsageResetResultEvent
   | TokenStatsEvent
   | ConversationsListEvent
   | ConversationLoadedEvent

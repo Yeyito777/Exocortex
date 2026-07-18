@@ -9,7 +9,7 @@
 
 import { log } from "./log";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
-import { refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
+import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
 import { buildSystemPrompt } from "./system";
@@ -73,6 +73,7 @@ export function createHandler(server: DaemonServer) {
   // ── Local helper functions ────────────────────────────────────────
 
   let openAIAccountMutationInFlight = false;
+  let openAIUsageResetInFlight = false;
   let exocortexRuntime: ExocortexToolRuntime | undefined;
   const pendingBackgroundNotifications = new Map<string, { convId: string; completion: BackgroundTaskCompletion }>();
   configureChronoService((convId) => broadcastConversationUpdated(server, convId));
@@ -809,6 +810,60 @@ export function createHandler(server: DaemonServer) {
           if (changed) broadcastToolsAvailable();
         }).catch((err) => {
           log("warn", `handler: provider refresh failed: ${err instanceof Error ? err.message : err}`);
+        });
+        break;
+      }
+
+      case "consume_usage_reset": {
+        const provider = cmd.provider ?? "openai";
+        if (provider !== "openai") {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: `Usage resets are not supported for ${provider}.`,
+          });
+          break;
+        }
+        if (openAIAccountMutationInFlight) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: "Cannot reset OpenAI usage while account authentication is still in progress.",
+          });
+          break;
+        }
+        if (openAIUsageResetInFlight) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: "An OpenAI usage reset is already in progress.",
+          });
+          break;
+        }
+
+        openAIUsageResetInFlight = true;
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+        void consumeUsageReset(provider).then((result) => {
+          const usage = getLastUsage(provider);
+          broadcastUsage(provider, usage);
+          server.sendTo(client, {
+            type: "usage_reset_result",
+            reqId: cmd.reqId,
+            provider,
+            outcome: result.outcome,
+            windowsReset: result.windowsReset,
+            ...(result.remainingResets !== undefined ? { remainingResets: result.remainingResets } : {}),
+          });
+        }).catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          log("error", `handler: OpenAI usage reset failed: ${message}`);
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: `OpenAI usage reset failed: ${message}`,
+          });
+        }).finally(() => {
+          openAIUsageResetInFlight = false;
         });
         break;
       }

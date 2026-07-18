@@ -21,6 +21,9 @@ export const OPENAI_ACCOUNT_CHECK_URL = `${CHATGPT_BASE_URL}/backend-api/account
 export const OPENAI_MODELS_URL = `${CHATGPT_BASE_URL}/backend-api/codex/models`;
 export const OPENAI_CODEX_RESPONSES_URL = `${CHATGPT_BASE_URL}/backend-api/codex/responses`;
 export const OPENAI_CODEX_RESPONSES_WS_URL = toWebSocketUrl(OPENAI_CODEX_RESPONSES_URL);
+export const OPENAI_USAGE_URL = `${CHATGPT_BASE_URL}/backend-api/wham/usage`;
+export const OPENAI_USAGE_RESET_CREDITS_URL = `${CHATGPT_BASE_URL}/backend-api/wham/rate-limit-reset-credits`;
+export const OPENAI_USAGE_RESET_CONSUME_URL = `${OPENAI_USAGE_RESET_CREDITS_URL}/consume`;
 export const OPENAI_TRANSCRIBE_URL = `${CHATGPT_BASE_URL}/backend-api/transcribe`;
 
 function toWebSocketUrl(httpUrl: string): string {

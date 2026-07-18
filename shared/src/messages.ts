@@ -444,9 +444,18 @@ export interface UsageWindow {
   resetsAt: number | null;
 }
 
+export interface UsageResetCredits {
+  /** Number of earned rate-limit resets currently available. */
+  availableCount: number;
+  /** Unix timestamp (ms) of the next available reset credit to expire. */
+  nextExpiresAt: number | null;
+}
+
 export interface UsageData {
   fiveHour: UsageWindow | null;
   sevenDay: UsageWindow | null;
+  /** OpenAI reset-credit metadata. Omitted for older caches and unsupported providers. */
+  resetCredits?: UsageResetCredits | null;
 }
 
 // ── Token stats ─────────────────────────────────────────────────────

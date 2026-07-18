@@ -421,6 +421,10 @@ export class DaemonClient {
     this.send({ type: "account", provider, target });
   }
 
+  consumeUsageReset(provider: ProviderId = "openai"): void {
+    this.send({ type: "consume_usage_reset", provider });
+  }
+
   logout(provider?: ProviderId): void {
     this.send({ type: "logout", provider });
   }

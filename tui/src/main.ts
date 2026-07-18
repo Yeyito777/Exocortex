@@ -755,6 +755,9 @@ function handleSubmit(): void {
         case "account":
           daemon.account(cmdResult.provider ?? "openai", cmdResult.target);
           break;
+        case "usage_reset_requested":
+          daemon.consumeUsageReset(cmdResult.provider);
+          break;
         case "logout":
           daemon.logout(cmdResult.provider ?? state.provider);
           break;

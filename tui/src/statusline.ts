@@ -16,6 +16,7 @@ import { theme } from "./theme";
 
 import { usageBlock } from "./statusblocks/usage";
 import { contextBlock } from "./statusblocks/context";
+import { usageResetsBlock } from "./statusblocks/usage-resets";
 import { openAIAccountBlock } from "./statusblocks/openai-account";
 
 export interface StatusBlock {
@@ -32,6 +33,7 @@ type BlockBuilder = (state: RenderState) => StatusBlock | null;
 const BLOCK_BUILDERS: BlockBuilder[] = [
   usageBlock,
   contextBlock,
+  usageResetsBlock,
   openAIAccountBlock,
 ];
 

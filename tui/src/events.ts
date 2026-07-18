@@ -137,6 +137,28 @@ export function handleEvent(
       state.usageByProvider[event.provider] = event.usage;
       break;
 
+    case "usage_reset_result": {
+      const remaining = event.remainingResets;
+      const remainingSuffix = remaining === undefined
+        ? ""
+        : ` You have ${remaining} usage ${remaining === 1 ? "reset" : "resets"} left.`;
+      switch (event.outcome) {
+        case "reset":
+          pushSystemMessage(state, `Usage reset.${remainingSuffix}`, theme.muted);
+          break;
+        case "already_redeemed":
+          pushSystemMessage(state, `Usage was already reset.${remainingSuffix}`, theme.muted);
+          break;
+        case "nothing_to_reset":
+          pushSystemMessage(state, "Your usage does not need a reset right now.", theme.muted);
+          break;
+        case "no_credit":
+          pushSystemMessage(state, "No usage limit resets are available.", theme.muted);
+          break;
+      }
+      break;
+    }
+
     case "token_stats":
       state.tokenStats = event.stats;
       break;
