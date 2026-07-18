@@ -1135,6 +1135,39 @@ describe("handler abort", () => {
   });
   afterEach(cleanupIds);
 
+  test("does not let a delayed interrupt abort a queued successor stream", async () => {
+    const convId = mkId("abort-queued-successor");
+    create(convId, "openai", "gpt-5.4");
+    const queuedSuccessor = new AbortController();
+    setActiveJob(convId, queuedSuccessor, 2_000);
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "abort",
+      reqId: "req-stale-abort",
+      convId,
+      expectedStartedAt: 1_000,
+    });
+
+    expect(queuedSuccessor.signal.aborted).toBe(false);
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "ack",
+      reqId: "req-stale-abort",
+      convId,
+    }));
+  });
+
   test("interrupting an active goal leaves it active for implicit resume", async () => {
     const convId = mkId("abort-active-goal");
     create(convId, "openai", "gpt-5.4");

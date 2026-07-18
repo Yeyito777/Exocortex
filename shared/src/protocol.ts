@@ -103,6 +103,13 @@ export interface AbortCommand {
   type: "abort";
   reqId?: string;
   convId: string;
+  /**
+   * Identity of the stream the client intended to interrupt. The daemon ignores
+   * the command if that stream has already stopped and a queued turn has begun.
+   * Omitted by legacy and daemon-internal callers that intentionally target the
+   * conversation's current stream.
+   */
+  expectedStartedAt?: number;
   /** Optional machine-readable reason used by the daemon to render a clearer system message. */
   reason?: "user" | "daemon-restart";
 }

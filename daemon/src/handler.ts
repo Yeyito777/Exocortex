@@ -961,9 +961,14 @@ export function createHandler(server: DaemonServer) {
 
       case "abort": {
         const ac = convStore.getActiveJob(cmd.convId);
-        if (ac) {
+        const activeStartedAt = convStore.getStreamingStartedAt(cmd.convId);
+        const targetsActiveStream = cmd.expectedStartedAt === undefined
+          || cmd.expectedStartedAt === activeStartedAt;
+        if (ac && targetsActiveStream) {
           ac.abort(cmd.reason === "daemon-restart" ? "daemon-restart" : undefined);
           log("info", `handler: abort requested for ${cmd.convId}${cmd.reason ? ` (${cmd.reason})` : ""}`);
+        } else if (ac && !targetsActiveStream) {
+          log("info", `handler: ignored stale abort for ${cmd.convId} (expected stream ${cmd.expectedStartedAt}, active stream ${activeStartedAt})`);
         }
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         break;

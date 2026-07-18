@@ -195,8 +195,8 @@ export class DaemonClient {
     this.send({ type: "ping" });
   }
 
-  abort(convId: string): void {
-    this.send({ type: "abort", convId });
+  abort(convId: string, expectedStartedAt?: number): void {
+    this.send({ type: "abort", convId, expectedStartedAt });
   }
 
   backgroundTool(convId: string): void {
