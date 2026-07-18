@@ -867,7 +867,14 @@ export function render(state: RenderState): void {
   }
 
   // ── Ephemeral BTW panel (foreground, directly above the prompt) ──
-  if (btwPanel) appendPositionedPayload(ctx, btwPanel.payload);
+  if (btwPanel) {
+    // The reduced history viewport no longer paints these rows, so explicitly
+    // preserve the sidebar background and right border alongside the BTW card.
+    for (let row = btwPanel.top; row < btwPanel.top + btwPanel.height; row++) {
+      emitSidebarCol(ctx, row);
+    }
+    appendPositionedPayload(ctx, btwPanel.payload);
+  }
 
   const canScrollMessageRegion = !sidebarOpen
     && !state.autocomplete

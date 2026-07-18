@@ -6,6 +6,7 @@ import { invalidateFrame } from "./frame";
 import { theme } from "./theme";
 import { termWidth } from "./textwidth";
 import { hide_cursor, show_cursor } from "./terminal";
+import { SIDEBAR_WIDTH } from "./sidebar";
 
 function captureRenderOutput(state: RenderState): string {
   let out = "";
@@ -68,6 +69,43 @@ function makeState(): RenderState {
 }
 
 describe("render caching and frame diffing", () => {
+  test("preserves the sidebar background and border beside an expanded BTW panel", () => {
+    const state = makeState();
+    state.sidebar.open = true;
+    state.btw = {
+      sessionId: "btw-1",
+      sourceConvId: "conv-1",
+      query: "Summarize this conversation",
+      provider: "openai",
+      model: "gpt-5.4",
+      startedAt: 100,
+      endedAt: 200,
+      phase: "complete",
+      text: ["one", "two", "three", "four", "five"].join("\n"),
+      status: "complete",
+      scrollOffset: 0,
+      maxScroll: 0,
+      viewportRows: 1,
+    };
+
+    const writes = positionedWrites(captureRenderOutput(state));
+    const panelTop = writes.find(write => (
+      write.col === SIDEBAR_WIDTH + 1
+      && stripAnsi(write.text).includes("BTW ·")
+    ));
+    expect(panelTop).toBeDefined();
+
+    for (let row = panelTop!.row; row < panelTop!.row + 7; row++) {
+      const sidebarRow = writes.find(write => (
+        write.row === row
+        && write.col === 1
+        && stripAnsi(write.text).endsWith("│")
+      ));
+      expect(sidebarRow).toBeDefined();
+      expect(termWidth(stripAnsi(sidebarRow!.text))).toBe(SIDEBAR_WIDTH);
+    }
+  });
+
   test("reuses cached history lines when only the prompt changes", () => {
     const state = makeState();
 
