@@ -6,6 +6,7 @@
 
 import { connect, type Socket } from "net";
 import { existsSync } from "fs";
+import { randomUUID } from "crypto";
 import type { Command, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
@@ -24,6 +25,7 @@ export interface ConnectResult {
 }
 
 type ReplayableQueueCommand = Extract<Command, { type: "queue_message" | "unqueue_message" }>;
+type ReplayableUnwindCommand = Extract<Command, { type: "unwind_conversation" }>;
 
 function replayableQueueCommandKey(command: Command): string | null {
   if (command.type === "queue_message" && command.queueId) return `enqueue:${command.queueId}`;
@@ -49,6 +51,8 @@ export class DaemonClient {
    * until a queue snapshot conclusively settles them.
    */
   private unresolvedQueueCommands = new Map<string, { command: ReplayableQueueCommand; sequence: number }>();
+  /** Ambiguous socket writes are retried with the same durable operation UUID. */
+  private unresolvedUnwindCommands = new Map<string, { command: ReplayableUnwindCommand; sequence: number }>();
   /** Original issuance order shared by connected-unresolved and offline commands. */
   private commandSequences = new WeakMap<Command, number>();
   private nextCommandSequence = 0;
@@ -87,6 +91,7 @@ export class DaemonClient {
         this.socket = socket;
         this._connected = true;
         resolved = true;
+        this.writeCommand({ type: "client_capabilities", capabilities: ["targeted-unwind"] });
         // Report the queue state atomically with the flush. Input can enqueue a
         // command while the socket attempt is still in flight, so a pre-connect
         // queue snapshot would already be stale here.
@@ -136,6 +141,9 @@ export class DaemonClient {
     const queueCommandKey = replayableQueueCommandKey(command);
     if (queueCommandKey) {
       this.unresolvedQueueCommands.set(queueCommandKey, { command: command as ReplayableQueueCommand, sequence });
+    }
+    if (command.type === "unwind_conversation" && command.reqId) {
+      this.unresolvedUnwindCommands.set(command.reqId, { command, sequence });
     }
     if (!this.socket || !this._connected) {
       this.pendingCommands.push(command);
@@ -195,8 +203,8 @@ export class DaemonClient {
     this.send({ type: "ping" });
   }
 
-  abort(convId: string): void {
-    this.send({ type: "abort", convId });
+  abort(convId: string, expectedStartedAt?: number): void {
+    this.send({ type: "abort", convId, expectedStartedAt });
   }
 
   backgroundTool(convId: string): void {
@@ -335,8 +343,18 @@ export class DaemonClient {
     this.send({ type: "move_queued_message", queueId, direction });
   }
 
-  unwindConversation(convId: string, userMessageIndex: number): void {
-    this.send({ type: "unwind_conversation", convId, userMessageIndex });
+  unwindConversation(convId: string, userMessageIndex: number, expectedStartedAt?: number, targetFingerprint?: string): string {
+    const reqId = `unwind_${++this.nextReqId}_${Date.now()}`;
+    this.send({
+      type: "unwind_conversation",
+      reqId,
+      operationId: randomUUID(),
+      convId,
+      userMessageIndex,
+      expectedStartedAt,
+      targetFingerprint,
+    });
+    return reqId;
   }
 
   setSystemInstructions(convId: string, text: string): void {
@@ -411,6 +429,10 @@ export class DaemonClient {
     this.send({ type: "account", provider, target });
   }
 
+  consumeUsageReset(provider: ProviderId = "openai"): void {
+    this.send({ type: "consume_usage_reset", provider });
+  }
+
   logout(provider?: ProviderId): void {
     this.send({ type: "logout", provider });
   }
@@ -464,9 +486,14 @@ export class DaemonClient {
     // with ordinary offline work by original issuance order. This preserves
     // causality such as queue → unwind → unqueue across a disconnect.
     const ordinary = pending
-      .filter(command => replayableQueueCommandKey(command) === null)
+      .filter(command => replayableQueueCommandKey(command) === null
+        && (command.type !== "unwind_conversation" || !command.reqId))
       .map(command => ({ command, sequence: this.commandSequences.get(command) ?? ++this.nextCommandSequence }));
-    const replayed = [...ordinary, ...this.unresolvedQueueCommands.values()]
+    const replayed = [
+      ...ordinary,
+      ...this.unresolvedQueueCommands.values(),
+      ...this.unresolvedUnwindCommands.values(),
+    ]
       .sort((a, b) => a.sequence - b.sequence)
       .map(entry => entry.command);
     for (const command of replayed) this.writeCommand(command);
@@ -490,6 +517,14 @@ export class DaemonClient {
         this.unresolvedQueueCommands.delete(key);
       }
     }
+  }
+
+  private settleUnwindCommand(event: Event): void {
+    if (!(event.type === "conversation_unwound"
+        || event.type === "conversation_loaded"
+        || event.type === "error")
+        || !event.reqId) return;
+    this.unresolvedUnwindCommands.delete(event.reqId);
   }
 
   private onData(data: Buffer | string): void {
@@ -540,6 +575,7 @@ export class DaemonClient {
           }
         }
         this.settleQueueCommands(event);
+        this.settleUnwindCommand(event);
         let handledByCallback = false;
 
         // Intercept request-scoped responses so they do not also surface as

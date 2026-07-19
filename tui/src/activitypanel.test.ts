@@ -8,6 +8,7 @@ import {
   formatTaskElapsed,
   hasFocusedConversationIntegrations,
   hasFocusedConversationTasks,
+  layoutTaskPanel,
   renderTaskPanel,
 } from "./activitypanel";
 import { stripAnsi } from "./historycursor";
@@ -125,6 +126,18 @@ describe("focused conversation task panel", () => {
     state.sidebar.conversations[0].tasks = [{ id: "x", kind: "subagent", title: "One task", startedAt: 0 }];
     expect(renderTaskPanel(state, 29, 20)).toBeNull();
     expect(renderTaskPanel(state, 100, 2)).toBeNull();
+  });
+
+  test("reserves a readable history column and omits the float on narrow chats", () => {
+    const state = stateWithTasks();
+
+    const wide = layoutTaskPanel(state, 70, 20, 43_000);
+    expect(wide.panel?.width).toBe(39);
+    expect(wide.historyWidth).toBe(30);
+
+    const narrow = layoutTaskPanel(state, 59, 20, 43_000);
+    expect(narrow.panel).toBeNull();
+    expect(narrow.historyWidth).toBe(59);
   });
 
   test("shows active and paused goals as tool-colored tasks", () => {
@@ -308,5 +321,6 @@ describe("task elapsed formatting", () => {
   test("formats integration delivery and health compactly", () => {
     expect(formatIntegrationDeliveryStatus({ delivery: "wake", status: "active" })).toBe("wake active");
     expect(formatIntegrationDeliveryStatus({ delivery: "inbox", status: "disabled" })).toBe("inbox disabled");
+    expect(formatIntegrationDeliveryStatus({ delivery: "soft", status: "active" })).toBe("soft active");
   });
 });

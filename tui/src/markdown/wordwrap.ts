@@ -2,6 +2,7 @@ import { theme } from "../theme";
 import { formatMarkdownChunks, stripMarkdown, termWidth, sliceByWidth, isHorizontalRule } from "./formatting";
 import { FENCE_OPEN_RE, isFenceClose, renderCodeBlockWrapped, stripFenceIndent } from "./codeblocks";
 import { isTableLine, renderTableBlock } from "./tables";
+import { renderDisplayMath, renderInlineMathChunks, takeDisplayMathBlock } from "./math";
 import type { WrapCopyLine } from "../textwrap";
 
 export interface MarkdownWrapResult {
@@ -54,9 +55,10 @@ function seedLongWord(
  *
  * Processes text line by line and:
  * 1. Detects fenced code blocks and renders them with syntax highlighting
- * 2. Detects table blocks and renders with box-drawing
- * 3. Detects horizontal rules and renders them as box-drawing lines
- * 4. For regular paragraph text, word-wraps to fit within width and
+ * 2. Renders standalone TeX math blocks as centered Unicode notation
+ * 3. Detects table blocks and renders with box-drawing
+ * 4. Detects horizontal rules and renders them as box-drawing lines
+ * 5. For regular paragraph text, word-wraps to fit within width and
  *    applies inline markdown formatting (bold/italic/code)
  *
  * Output lines are fully formatted — the caller only needs to indent them.
@@ -99,6 +101,20 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
       join.push(...rendered.join);
       copy.push(...rendered.copy);
       continue;
+    }
+
+    // Standalone display math: \[ ... \] or $$ ... $$.
+    if (bgRestore != null && (inputLines[i].includes("\\[") || inputLines[i].includes("$$"))) {
+      const block = takeDisplayMathBlock(inputLines, i);
+      if (block) {
+        const rendered = renderDisplayMath(block.source, width);
+        result.push(...rendered.lines);
+        cont.push(...rendered.cont);
+        join.push(...rendered.join);
+        copy.push(...rendered.copy);
+        i = block.nextLine;
+        continue;
+      }
     }
 
     // Detect table blocks: consecutive lines matching markdown table syntax
@@ -233,13 +249,14 @@ function wrapParagraphBlock(
   copy: Array<WrapCopyLine | null>,
   bgRestore?: string,
 ): void {
+  const sourceParagraphs = bgRestore != null ? renderInlineMathChunks(paragraphs) : paragraphs;
   const rawLines: string[] = [];
   const parseJoin: string[] = [];
   const outCont: boolean[] = [];
   const outJoin: string[] = [];
 
-  for (let p = 0; p < paragraphs.length; p++) {
-    const wrapped = wrapParagraphRaw(paragraphs[p], width, bgRestore);
+  for (let p = 0; p < sourceParagraphs.length; p++) {
+    const wrapped = wrapParagraphRaw(sourceParagraphs[p], width, bgRestore);
     for (let i = 0; i < wrapped.lines.length; i++) {
       rawLines.push(wrapped.lines[i]);
       parseJoin.push(i === 0 ? (rawLines.length === 1 ? "" : "\n") : wrapped.join[i]);
@@ -248,7 +265,7 @@ function wrapParagraphBlock(
     }
   }
 
-  const shouldFormatMarkdown = bgRestore != null && paragraphs.some(paragraph => /[*`]/.test(paragraph));
+  const shouldFormatMarkdown = bgRestore != null && sourceParagraphs.some(paragraph => /[*`]/.test(paragraph));
   const rendered = shouldFormatMarkdown
     ? formatMarkdownChunks(rawLines, parseJoin, bgRestore)
     : rawLines;

@@ -141,7 +141,7 @@ function isTagChar(cp: number): boolean {
   return cp >= 0xE0020 && cp <= 0xE007F;
 }
 
-function nextGrapheme(s: string, i: number): [width: number, end: number] {
+export function nextGrapheme(s: string, i: number): [width: number, end: number] {
   const cp = s.codePointAt(i)!;
   const charLen = cp > 0xFFFF ? 2 : 1;
 

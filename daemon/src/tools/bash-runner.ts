@@ -6,10 +6,9 @@
  * backpressure) from competing with the daemon's client socket event loop.
  */
 
-import { spawn, type ChildProcessByStdio } from "child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { createWriteStream, type WriteStream } from "fs";
 import { createInterface } from "readline";
-import type { Readable } from "stream";
 
 const MAX_CAPTURE_BYTES = 1_000_000;
 
@@ -18,6 +17,9 @@ interface StartRequest {
   command: string;
   outputPath: string;
   windows: boolean;
+  stdin?: string;
+  terminateOnParentExit?: boolean;
+  timeoutMs?: number;
 }
 
 interface BackgroundRequest {
@@ -38,7 +40,7 @@ type RunnerEvent =
       outputError?: string;
     };
 
-let commandProcess: ChildProcessByStdio<null, Readable, Readable> | null = null;
+let commandProcess: ChildProcessWithoutNullStreams | null = null;
 let outputStream: WriteStream | null = null;
 let outputStreamFailed = false;
 let outputError: string | undefined;
@@ -48,6 +50,8 @@ let backgrounded = false;
 let waitingForDrain = false;
 let finalSent = false;
 let terminating = false;
+let terminateOnParentExit = false;
+let commandTimeout: ReturnType<typeof setTimeout> | undefined;
 
 function send(event: RunnerEvent, final = false): void {
   if (finalSent) return;
@@ -117,6 +121,7 @@ function enableBackgrounding(): void {
 }
 
 function finish(code: number | null, signal: string | null): void {
+  if (commandTimeout) clearTimeout(commandTimeout);
   const done = () => send({
     type: "close",
     code,
@@ -169,6 +174,7 @@ function start(request: StartRequest): void {
   }
 
   try {
+    terminateOnParentExit = request.terminateOnParentExit === true;
     outputStream = createWriteStream(request.outputPath, { flags: "wx", mode: 0o600 });
     outputStream.on("error", markOutputFailed);
     outputStream.on("drain", resumeCommandOutput);
@@ -179,7 +185,7 @@ function start(request: StartRequest): void {
       {
         cwd: process.cwd(),
         env: { ...process.env },
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
         detached: !request.windows,
         windowsHide: request.windows,
       },
@@ -196,6 +202,12 @@ function start(request: StartRequest): void {
   }
 
   send({ type: "started", pid: proc.pid });
+  if (request.timeoutMs !== undefined && Number.isFinite(request.timeoutMs) && request.timeoutMs > 0) {
+    commandTimeout = setTimeout(terminateCommandTree, request.timeoutMs);
+    commandTimeout.unref?.();
+  }
+  proc.stdin.on("error", () => { /* the command may exit before consuming all input */ });
+  proc.stdin.end(request.stdin ?? "");
   proc.stdout.on("data", writeOutput);
   proc.stderr.on("data", writeOutput);
   proc.on("error", (err) => {
@@ -219,7 +231,9 @@ lines.on("line", (line) => {
 });
 
 process.stdin.on("end", () => {
-  if (!commandProcess && !finalSent) {
+  if (commandProcess && terminateOnParentExit && !finalSent) {
+    terminateCommandTree();
+  } else if (!commandProcess && !finalSent) {
     send({ type: "error", message: "bash runner input closed before start" }, true);
   }
 });

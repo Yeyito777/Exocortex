@@ -29,6 +29,7 @@ export type CommandResult =
   | { type: "generate_title" }
   | { type: "login"; provider?: ProviderId; apiKey?: string; action?: "add" | "remove"; target?: string; method?: OpenAILoginMethod }
   | { type: "account"; provider?: ProviderId; target?: string }
+  | { type: "usage_reset_requested"; provider: ProviderId }
   | { type: "logout"; provider?: ProviderId }
   | { type: "theme_changed" }
   | { type: "get_system_prompt" }

@@ -24,6 +24,7 @@ import { THEME_COMMAND } from "./commands/theme";
 import { TIME_COMMAND } from "./commands/time";
 import { TOKENS_COMMAND } from "./commands/tokens";
 import { TRIM_COMMAND } from "./commands/trim";
+import { USAGE_COMMAND } from "./commands/usage";
 import type { CommandResult, CompletionItem, SlashCommand } from "./commands/types";
 
 const HELP_COMMAND = createHelpCommand(() => commands);
@@ -47,6 +48,7 @@ const commands: SlashCommand[] = [
   GOAL_COMMAND,
   CONVO_COMMAND,
   TOKENS_COMMAND,
+  USAGE_COMMAND,
   TIME_COMMAND,
   THEME_COMMAND,
   HIDE_COMMAND,

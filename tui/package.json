@@ -10,6 +10,7 @@
     "check": "bun run typecheck && bun run test"
   },
   "dependencies": {
+    "@devhub-io/latex-to-unicode": "2.0.1",
     "@exocortex/shared": "workspace:*"
   },
   "devDependencies": {

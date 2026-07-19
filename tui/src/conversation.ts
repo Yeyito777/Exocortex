@@ -39,7 +39,7 @@ export function compactionFinishedDivider(availableWidth: number): string {
 }
 import { termWidth } from "./textwidth";
 import { wordWrap, type WrapCopyLine, type WrapResult } from "./textwrap";
-import { isNewConversationQueuedMessage, queueTimingLabel } from "./queue";
+import { isNewConversationQueuedMessage, queuedMessagesInDisplayOrder, queueTimingLabel } from "./queue";
 
 export { wordWrap, type WrapResult } from "./textwrap";
 
@@ -435,9 +435,11 @@ export function buildMessageLines(
 
   // Queued messages — dimmed user bubbles with timing label (after pendingAI)
   if (state.convId || !state.folderInstructionsDoc) {
-    const queued = state.convId
-      ? state.queuedMessages.filter(qm => qm.convId === state.convId)
-      : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId);
+    const queued = queuedMessagesInDisplayOrder(
+      state.convId
+        ? state.queuedMessages.filter(qm => qm.convId === state.convId)
+        : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId),
+    );
     for (const qm of queued) {
       const timingLabel = queueTimingLabel(qm);
       pushLine("", qm, "queued_margin_top");

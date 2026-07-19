@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { spawn } from "child_process";
 import { bash, executeBashBackgroundable, intentionalBackgroundTaskStopPidsForTest, spillAndPreviewForTest } from "./bash";
 import type { BackgroundTaskCompletion } from "./types";
 
@@ -54,6 +55,17 @@ describe("bash spill preview", () => {
 });
 
 describe("bash inline output budget", () => {
+  test("passes literal stdin and internal environment overrides to the command", async () => {
+    const result = await executeBashBackgroundable({
+      command: "IFS= read -r line; printf '%s|%s' \"$line\" \"$SOFT_WAKE_MARKER\"",
+      stdin: "literal $HOME and `echo nope`\n",
+      env: { SOFT_WAKE_MARKER: "notification-event" },
+    });
+
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe("literal $HOME and `echo nope`|notification-event");
+  });
+
   test("spills medium output at the default budget", async () => {
     const result = await executeBashBackgroundable(
       { command: "yes x | head -c 13000" },
@@ -79,9 +91,61 @@ describe("bash inline output budget", () => {
     expect(result.output).not.toContain("Full output: ");
     expect(result.output.length).toBe(13_000);
   });
+
+  test("can discard oversized automation output without retaining a spill path", async () => {
+    const result = await executeBashBackgroundable({
+      command: "yes x | head -c 13000",
+      discard_output_file: true,
+    });
+
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("discarded by automation output policy");
+    expect(result.output).not.toContain("Full output: /tmp/");
+  });
 });
 
 describe("bash process-tree timeout", () => {
+  test("treats unexpected command signals as failures", async () => {
+    if (process.platform === "win32") return;
+    const result = await executeBashBackgroundable({ command: "kill -TERM $$", timeout: 2_000 });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("terminated by signal SIGTERM");
+  });
+
+  test("managed runner kills its command tree when the owning daemon channel closes", async () => {
+    if (process.platform === "win32") return;
+    const markerPath = join(tmpdir(), `exocortex-managed-runner-${process.pid}-${Date.now()}`);
+    const outputPath = join(tmpdir(), `exocortex-managed-runner-output-${process.pid}-${Date.now()}`);
+    const runnerPath = join(import.meta.dir, "bash-runner.ts");
+    const runner = spawn(process.execPath, [runnerPath], { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let channelClosed = false;
+    const closed = new Promise<void>((resolve, reject) => {
+      runner.on("error", reject);
+      runner.on("close", () => resolve());
+      runner.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8");
+        if (channelClosed || !stdout.includes('"type":"started"')) return;
+        channelClosed = true;
+        runner.stdin.end();
+      });
+    });
+    runner.stdin.write(JSON.stringify({
+      type: "start",
+      command: `sleep 0.8; touch '${markerPath}'`,
+      outputPath,
+      windows: false,
+      terminateOnParentExit: true,
+      timeoutMs: 5_000,
+    }) + "\n");
+
+    await closed;
+    await Bun.sleep(1_000);
+    expect(existsSync(markerPath)).toBe(false);
+    rmSync(markerPath, { force: true });
+    rmSync(outputPath, { force: true });
+  });
+
   test("times out and kills descendants in the isolated command process group", async () => {
     if (process.platform === "win32") return;
     const result = await executeBashBackgroundable({

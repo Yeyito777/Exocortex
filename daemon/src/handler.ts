@@ -9,7 +9,7 @@
 
 import { log } from "./log";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
-import { refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
+import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
 import { buildSystemPrompt } from "./system";
@@ -51,6 +51,7 @@ import { buildBackgroundTaskNotificationText } from "./background-task-notificat
 import { configureChronoService } from "./chrono-service";
 import { INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
+import { randomUUID } from "crypto";
 import {
   buildExternalNotificationEnvelope,
   hasExternalNotificationReceipt,
@@ -64,6 +65,7 @@ import {
   updateExternalNotificationSubscription,
 } from "./external-notifications";
 import { BtwSessionManager } from "./btw";
+import { enqueueExternalNotificationSoftWake } from "./external-notification-soft-wakes";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
@@ -73,6 +75,7 @@ export function createHandler(server: DaemonServer) {
   // ── Local helper functions ────────────────────────────────────────
 
   let openAIAccountMutationInFlight = false;
+  let openAIUsageResetInFlight = false;
   let exocortexRuntime: ExocortexToolRuntime | undefined;
   let btwManager: BtwSessionManager;
   const pendingBackgroundNotifications = new Map<string, { convId: string; completion: BackgroundTaskCompletion }>();
@@ -835,6 +838,60 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      case "consume_usage_reset": {
+        const provider = cmd.provider ?? "openai";
+        if (provider !== "openai") {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: `Usage resets are not supported for ${provider}.`,
+          });
+          break;
+        }
+        if (openAIAccountMutationInFlight) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: "Cannot reset OpenAI usage while account authentication is still in progress.",
+          });
+          break;
+        }
+        if (openAIUsageResetInFlight) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: "An OpenAI usage reset is already in progress.",
+          });
+          break;
+        }
+
+        openAIUsageResetInFlight = true;
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+        void consumeUsageReset(provider).then((result) => {
+          const usage = getLastUsage(provider);
+          broadcastUsage(provider, usage);
+          server.sendTo(client, {
+            type: "usage_reset_result",
+            reqId: cmd.reqId,
+            provider,
+            outcome: result.outcome,
+            windowsReset: result.windowsReset,
+            ...(result.remainingResets !== undefined ? { remainingResets: result.remainingResets } : {}),
+          });
+        }).catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          log("error", `handler: OpenAI usage reset failed: ${message}`);
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: `OpenAI usage reset failed: ${message}`,
+          });
+        }).finally(() => {
+          openAIUsageResetInFlight = false;
+        });
+        break;
+      }
+
       case "prepare_shutdown": {
         const mode = beginDaemonShutdown(cmd.mode);
         log("info", `handler: service requested daemon shutdown mode=${mode}`);
@@ -968,6 +1025,13 @@ export function createHandler(server: DaemonServer) {
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         break;
       }
+
+      case "client_capabilities": {
+        for (const capability of cmd.capabilities) {
+          if (capability === "targeted-unwind") client.capabilities.add(capability);
+        }
+        break;
+      }
       case "unsubscribe": {
         server.unsubscribe(client, cmd.convId);
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
@@ -976,9 +1040,14 @@ export function createHandler(server: DaemonServer) {
 
       case "abort": {
         const ac = convStore.getActiveJob(cmd.convId);
-        if (ac) {
+        const activeStartedAt = convStore.getStreamingStartedAt(cmd.convId);
+        const targetsActiveStream = cmd.expectedStartedAt === undefined
+          || cmd.expectedStartedAt === activeStartedAt;
+        if (ac && targetsActiveStream) {
           ac.abort(cmd.reason === "daemon-restart" ? "daemon-restart" : undefined);
           log("info", `handler: abort requested for ${cmd.convId}${cmd.reason ? ` (${cmd.reason})` : ""}`);
+        } else if (ac && !targetsActiveStream) {
+          log("info", `handler: ignored stale abort for ${cmd.convId} (expected stream ${cmd.expectedStartedAt}, active stream ${activeStartedAt})`);
         }
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         break;
@@ -1128,6 +1197,7 @@ export function createHandler(server: DaemonServer) {
             sourceDescription: cmd.sourceDescription,
             convId: cmd.convId,
             delivery: cmd.delivery,
+            softWake: cmd.softWake,
           });
           server.sendTo(client, { type: "external_notification_subscription", reqId: cmd.reqId, subscription });
         } catch (err) {
@@ -1164,6 +1234,7 @@ export function createHandler(server: DaemonServer) {
         try {
           const subscription = updateExternalNotificationSubscription(cmd.subscriptionId, {
             delivery: cmd.delivery,
+            softWake: cmd.softWake,
             enabled: cmd.enabled,
           });
           server.sendTo(client, { type: "external_notification_subscription", reqId: cmd.reqId, subscription });
@@ -1185,6 +1256,19 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "External notification text must contain 1-100000 characters" });
           break;
         }
+        if (cmd.data !== undefined) {
+          let serializedData: string;
+          try {
+            serializedData = JSON.stringify(cmd.data);
+          } catch {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "External notification data must be JSON-serializable" });
+            break;
+          }
+          if (serializedData.length > 100_000) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "External notification data must contain no more than 100000 characters" });
+            break;
+          }
+        }
 
         for (const subscription of listExternalNotificationSubscriptions({ toolName: cmd.toolName, sourceId: cmd.sourceId })) {
           if (!subscription.enabled) continue;
@@ -1203,7 +1287,20 @@ export function createHandler(server: DaemonServer) {
             occurredAt: cmd.occurredAt,
           });
           try {
-            if (subscription.delivery === "inbox") {
+            if (subscription.delivery === "soft") {
+              const queued = enqueueExternalNotificationSoftWake(subscription, {
+                eventId,
+                text,
+                ...(cmd.data !== undefined ? { data: cmd.data } : {}),
+                ...(Number.isFinite(cmd.occurredAt) ? { occurredAt: cmd.occurredAt } : {}),
+              });
+              recordExternalNotificationReceipt(subscription.id, eventId);
+              deliveries.push({
+                subscriptionId: subscription.id,
+                convId: subscription.convId,
+                status: queued.duplicate ? "duplicate" : "queued",
+              });
+            } else if (subscription.delivery === "inbox") {
               if (!convStore.appendExternalInboxNotification(subscription.convId, envelope, Date.now())) {
                 throw new Error("Conversation not found");
               }
@@ -1837,20 +1934,93 @@ export function createHandler(server: DaemonServer) {
         // subscription. Subscribe even if validation later rejects the unwind so
         // an error cannot leave the active TUI detached from future events.
         server.subscribe(client, cmd.convId);
-        const ok = await convStore.unwindTo(cmd.convId, cmd.userMessageIndex);
-        if (!ok) {
+        // operationId was introduced together with the targeted response. It is
+        // also a reconnect-safe capability signal if the hello has not arrived.
+        if (typeof cmd.operationId === "string" && cmd.operationId.length > 0) {
+          client.capabilities.add("targeted-unwind");
+        }
+        const targetedRequester = client.capabilities.has("targeted-unwind");
+        if (targetedRequester && cmd.expectedStartedAt === undefined && !cmd.targetFingerprint) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: "Cannot unwind without a stable target identity",
+          });
+          break;
+        }
+        const operationId = typeof cmd.operationId === "string" && cmd.operationId.length > 0
+          ? cmd.operationId
+          : randomUUID();
+        const deliverResult = (
+          unwindResult: convStore.ConversationUnwindResult,
+          broadcast: boolean,
+          releaseLease: boolean,
+        ): void => {
+          try {
+            log("info", `handler: unwound conversation ${cmd.convId} to before user message ${cmd.userMessageIndex}`);
+            const event = {
+              type: "conversation_unwound" as const,
+              ...unwindResult,
+              // A replay receipt may outlive unrelated sidebar mutations. Always
+              // patch with the summary current at this synchronous publication.
+              summary: convStore.getSummary(cmd.convId) ?? unwindResult.summary,
+            };
+            const needsLegacyHistory = !targetedRequester
+              || (broadcast && server.hasLegacyUnwindSubscribers(cmd.convId));
+            const legacyHistory = needsLegacyHistory
+              ? (() => {
+                  const data = getRenderSnapshot(cmd.convId);
+                  return data ? buildHistoryUpdatedEvents(data, { resetHistoryWindow: true }) : undefined;
+                })()
+              : undefined;
+            if (!targetedRequester) sendCompactConversationLoaded(client, cmd.convId, cmd.reqId);
+            server.deliverConversationUnwind(
+              event,
+              client,
+              { ...event, reqId: cmd.reqId },
+              broadcast,
+              legacyHistory,
+            );
+          } finally {
+            if (releaseLease) convStore.releaseHistoryUnwindLease(cmd.convId, operationId);
+          }
+        };
+        let result: convStore.ConversationUnwindResult | null;
+        try {
+          result = await convStore.unwindTo(
+            cmd.convId,
+            cmd.userMessageIndex,
+            operationId,
+            cmd.expectedStartedAt,
+            cmd.targetFingerprint,
+            true,
+            (committed) => deliverResult(committed, true, true),
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          log("error", `handler: unwind failed for ${cmd.convId}: ${message}`);
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message });
+          if (err instanceof convStore.HistoryUnwindRefreshRequiredError) {
+            try {
+              // The stream finalizer intentionally withheld its obsolete tail
+              // while the cut was pending. Publish the restored canonical state
+              // before releasing the mutation lease.
+              sendCompactHistoryUpdated(cmd.convId, true);
+              broadcastConversationUpdated(server, cmd.convId);
+            } finally {
+              convStore.releaseHistoryUnwindLease(cmd.convId, operationId);
+            }
+          }
+          break;
+        }
+        if (!result) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Cannot unwind conversation ${cmd.convId}` });
           break;
         }
-        log("info", `handler: unwound conversation ${cmd.convId} to before user message ${cmd.userMessageIndex}`);
-        // Respond directly to the editor with the full conversation payload, then
-        // broadcast the canonical truncated history to every subscriber.  Ctrl+W
-        // is a real history mutation, not a stale same-conversation refresh; all
-        // open TUIs must discard any local assistant tail that lived past the
-        // unwind point.
-        sendCompactConversationLoaded(client, cmd.convId, cmd.reqId);
-        sendCompactHistoryUpdated(cmd.convId, true);
-        broadcastConversationUpdated(server, cmd.convId);
+        // Applied results were published by the synchronous commit callback.
+        // Replays only need a correlated response for their requesting client.
+        if (result.status === "already_applied") deliverResult(result, false, false);
         break;
       }
 

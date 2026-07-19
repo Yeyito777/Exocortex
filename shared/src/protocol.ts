@@ -122,6 +122,13 @@ export interface AbortCommand {
   type: "abort";
   reqId?: string;
   convId: string;
+  /**
+   * Identity of the stream the client intended to interrupt. The daemon ignores
+   * the command if that stream has already stopped and a queued turn has begun.
+   * Omitted by legacy and daemon-internal callers that intentionally target the
+   * conversation's current stream.
+   */
+  expectedStartedAt?: number;
   /** Optional machine-readable reason used by the daemon to render a clearer system message. */
   reason?: "user" | "daemon-restart";
 }
@@ -136,6 +143,14 @@ export interface PrewarmConversationCommand {
   type: "prewarm_conversation";
   reqId?: string;
   convId: string;
+}
+
+export type ClientCapability = "targeted-unwind";
+
+/** Connection-scoped feature negotiation for backwards-compatible events. */
+export interface ClientCapabilitiesCommand {
+  type: "client_capabilities";
+  capabilities: ClientCapability[];
 }
 
 export interface SubscribeCommand {
@@ -238,6 +253,30 @@ export interface ExternalNotificationSource {
   registeredAt: number;
 }
 
+/** JSON-compatible untrusted data published alongside an external event's text. */
+export type ExternalNotificationJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | ExternalNotificationJsonValue[]
+  | { [key: string]: ExternalNotificationJsonValue };
+
+/** Optional model escalation after a subscription command soft-wake. */
+export interface ExternalNotificationHardWake {
+  /** `failure` includes a script-defined non-zero exit; `always` also wakes on success. */
+  when: "failure" | "always";
+  message: string;
+  includeOutput: boolean;
+}
+
+/** Subscriber-owned static command run for each event without invoking a model. */
+export interface ExternalNotificationSoftWake {
+  command: string;
+  timeoutMs: number;
+  hardWake?: ExternalNotificationHardWake;
+}
+
 /** A durable route from an external event source to an Exocortex conversation. */
 export interface ExternalNotificationSubscription {
   id: string;
@@ -247,6 +286,8 @@ export interface ExternalNotificationSubscription {
   sourceDescription?: string;
   convId: string;
   delivery: ExternalNotificationDelivery;
+  /** Required when delivery is `soft`; external event content is provided as JSON on stdin. */
+  softWake?: ExternalNotificationSoftWake;
   enabled: boolean;
   createdAt: number;
   updatedAt: number;
@@ -287,6 +328,7 @@ export interface SubscribeExternalNotificationCommand {
   sourceDescription?: string;
   convId: string;
   delivery?: ExternalNotificationDelivery;
+  softWake?: ExternalNotificationSoftWake;
 }
 
 export interface UnsubscribeExternalNotificationCommand {
@@ -303,6 +345,7 @@ export interface UpdateExternalNotificationSubscriptionCommand {
   reqId?: string;
   subscriptionId: string;
   delivery?: ExternalNotificationDelivery;
+  softWake?: ExternalNotificationSoftWake;
   enabled?: boolean;
 }
 
@@ -315,6 +358,8 @@ export interface PublishExternalNotificationCommand {
   eventId: string;
   /** Tool-formatted content; the daemon adds the trusted provenance envelope. */
   text: string;
+  /** Optional structured untrusted event data for deterministic soft-wake commands. */
+  data?: ExternalNotificationJsonValue;
   occurredAt?: number;
 }
 
@@ -541,9 +586,15 @@ export interface MoveQueuedMessageCommand {
 export interface UnwindConversationCommand {
   type: "unwind_conversation";
   reqId?: string;
+  /** Globally unique mutation identity; separate from socket-local request correlation. */
+  operationId: string;
   convId: string;
   /** Index counting only user messages (0-based). Everything from this message onward is removed. */
   userMessageIndex: number;
+  /** Stable target identity when the message has daemon-authored metadata. */
+  expectedStartedAt?: number;
+  /** Daemon-authored hash of the transcript prefix through the selected message. */
+  targetFingerprint?: string;
 }
 
 export interface SetSystemInstructionsCommand {
@@ -615,6 +666,12 @@ export interface AccountCommand {
   target?: string;
 }
 
+export interface ConsumeUsageResetCommand {
+  type: "consume_usage_reset";
+  reqId?: string;
+  provider?: ProviderId;
+}
+
 export interface LogoutCommand {
   type: "logout";
   reqId?: string;
@@ -623,6 +680,7 @@ export interface LogoutCommand {
 
 export type Command =
   | PingCommand
+  | ClientCapabilitiesCommand
   | PrepareShutdownCommand
   | NewConversationCommand
   | SendMessageCommand
@@ -682,6 +740,7 @@ export type Command =
   | TranscribeAudioCommand
   | LoginCommand
   | AccountCommand
+  | ConsumeUsageResetCommand
   | LogoutCommand;
 
 // ── Events (daemon → client) ────────────────────────────────────────
@@ -779,7 +838,7 @@ export interface StreamingStartedEvent {
   compactionStartedAt?: number | null;
 }
 
-export type StreamingStopReason = "daemon-restart";
+export type StreamingStopReason = "daemon-restart" | "unwind";
 
 export interface StreamingStoppedEvent {
   type: "streaming_stopped";
@@ -879,6 +938,19 @@ export interface UsageUpdateEvent {
   usage: UsageData | null;
 }
 
+export type UsageResetOutcome = "reset" | "nothing_to_reset" | "no_credit" | "already_redeemed";
+
+export interface UsageResetResultEvent {
+  type: "usage_reset_result";
+  reqId?: string;
+  provider: ProviderId;
+  outcome: UsageResetOutcome;
+  /** Number of active rate-limit windows reset by the provider. */
+  windowsReset: number;
+  /** Remaining reset count after the provider state was refreshed, when known. */
+  remainingResets?: number;
+}
+
 export interface TokenStatsEvent {
   type: "token_stats";
   reqId?: string;
@@ -901,7 +973,7 @@ export interface AIMessagePayload {
 
 export type DisplayEntry =
   | { type: "system_instructions"; text: string }
-  | { type: "user"; text: string; images?: ImageAttachment[]; metadata?: MessageMetadata | null; contextCheckpoint?: UserMessageContextCheckpoint }
+  | { type: "user"; text: string; images?: ImageAttachment[]; metadata?: MessageMetadata | null; unwindFingerprint?: string; contextCheckpoint?: UserMessageContextCheckpoint }
   | { type: "ai"; blocks: Block[]; metadata: MessageMetadata | null }
   | { type: "system"; text: string; color?: string; metadata?: MessageMetadata | null };
 
@@ -973,6 +1045,22 @@ export interface ConversationUpdatedEvent {
   summary: ConversationSummary;
   /** Set when this update represents a stream transitioning to stopped for a special reason. */
   streamStopReason?: StreamingStopReason;
+}
+
+/** Targeted history truncation; clients discard only the indicated suffix. */
+export interface ConversationUnwoundEvent {
+  type: "conversation_unwound";
+  reqId?: string;
+  status: "applied" | "already_applied";
+  operationId: string;
+  convId: string;
+  /** Absolute 0-based user-message index removed by the unwind. */
+  userMessageIndex: number;
+  /** Total non-instructions display entries retained after the unwind. */
+  historyTotalEntries: number;
+  contextTokens: number | null;
+  /** In-memory sidebar row patch; no conversations-list/index rewrite is needed. */
+  summary: ConversationSummary;
 }
 
 export interface ConversationDeletedEvent {
@@ -1282,12 +1370,14 @@ export type Event =
   | ContextUpdateEvent
   | MessageCompleteEvent
   | UsageUpdateEvent
+  | UsageResetResultEvent
   | TokenStatsEvent
   | ConversationsListEvent
   | ConversationLoadedEvent
   | ConversationHistoryLoadedEvent
   | GoalUpdatedEvent
   | ConversationUpdatedEvent
+  | ConversationUnwoundEvent
   | ConversationDeletedEvent
   | ConversationRestoredEvent
   | ConversationMarkedEvent

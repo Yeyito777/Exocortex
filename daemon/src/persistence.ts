@@ -11,16 +11,16 @@
  */
 
 import { join } from "path";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, utimesSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync } from "fs";
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
 import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal } from "./messages";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, MAX_EXO_SUBAGENT_DEPTH, activeContextCompactionHistoryCount, historyPrefixHash, isValidActiveContext, isValidActiveContextCached, sortConversations, summarizeConversation } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, MAX_EXO_SUBAGENT_DEPTH, activeContextCompactionHistoryCount, historyPrefixHash, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, sortConversations, summarizeConversation } from "./messages";
 import type { QueuedMessageInfo } from "./protocol";
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 16;
+const CURRENT_VERSION = 17;
 
 interface ConversationFileV1 {
   version: 1;
@@ -218,7 +218,19 @@ interface ConversationFileV16 extends Omit<ConversationFileV15, "version"> {
   version: 16;
 }
 
-type ConversationFile = ConversationFileV16;
+export interface PersistedUnwindReceipt {
+  operationId: string;
+  userMessageIndex: number;
+  historyTotalEntries: number;
+}
+
+interface ConversationFileV17 extends Omit<ConversationFileV16, "version"> {
+  version: 17;
+  storageGeneration: number;
+  lastUnwindReceipt: PersistedUnwindReceipt | null;
+}
+
+type ConversationFile = ConversationFileV17;
 
 function normalizeProviderId(provider: unknown): ProviderId {
   return typeof provider === "string" && (DEFAULT_PROVIDER_ORDER as readonly string[]).includes(provider)
@@ -404,6 +416,16 @@ function migrateV15toV16(data: ConversationFileV15): ConversationFileV16 {
   };
 }
 
+/** v16 → v17: Add a durable generation for targeted mutation overlays. */
+function migrateV16toV17(data: ConversationFileV16): ConversationFileV17 {
+  return {
+    ...data,
+    version: 17,
+    storageGeneration: 1,
+    lastUnwindReceipt: null,
+  };
+}
+
 function migrate(raw: Record<string, unknown>): ConversationFile {
   // Progressive migration — each function validates and upgrades one version.
   // `any` is intentional at this deserialization boundary: the data is parsed
@@ -425,6 +447,7 @@ function migrate(raw: Record<string, unknown>): ConversationFile {
   if (data.version < 14) data = migrateV13toV14(data);
   if (data.version < 15) data = migrateV14toV15(data);
   if (data.version < 16) data = migrateV15toV16(data);
+  if (data.version < 17) data = migrateV16toV17(data);
 
   if (data.version !== CURRENT_VERSION) {
     log("warn", `persistence: unknown schema version ${data.version}, attempting to load as v${CURRENT_VERSION}`);
@@ -476,6 +499,12 @@ function ensureTrashDir(): void {
 function convPath(id: string): string {
   assertSafeId(id);
   return join(CONV_DIR, `${id}.json`);
+}
+
+/** Small durable overlay used until the next ordinary full conversation save. */
+function unwindPath(id: string): string {
+  assertSafeId(id);
+  return join(CONV_DIR, `${id}.unwind`);
 }
 
 function trashPath(id: string): string {
@@ -699,7 +728,48 @@ export function popRedoEntry(): TrashStackEntry | null {
 
 // ── Serialize / Deserialize ─────────────────────────────────────────
 
-function toFile(conv: Conversation): ConversationFile {
+interface ConversationStorageState {
+  /** Generation currently materialized in the base JSON file. */
+  baseGeneration: number;
+  /** Latest logical generation, including an active unwind overlay. */
+  currentGeneration: number;
+  lastUnwindReceipt: PersistedUnwindReceipt | null;
+}
+
+const conversationStorageState = new WeakMap<Conversation, ConversationStorageState>();
+const knownStorageGenerations = new Map<string, number>();
+
+function storageStateFor(conv: Conversation): ConversationStorageState {
+  return conversationStorageState.get(conv) ?? {
+    baseGeneration: 0,
+    currentGeneration: 0,
+    lastUnwindReceipt: null,
+  };
+}
+
+function normalizeUnwindReceipt(value: unknown): PersistedUnwindReceipt | null {
+  if (!value || typeof value !== "object") return null;
+  const receipt = value as Partial<PersistedUnwindReceipt>;
+  if (typeof receipt.operationId !== "string" || receipt.operationId.length === 0
+      || !isNonNegativeSafeInteger(receipt.userMessageIndex)
+      || !isNonNegativeSafeInteger(receipt.historyTotalEntries)) return null;
+  return {
+    operationId: receipt.operationId,
+    userMessageIndex: receipt.userMessageIndex,
+    historyTotalEntries: receipt.historyTotalEntries,
+  };
+}
+
+export function getLastUnwindReceipt(conv: Conversation): PersistedUnwindReceipt | null {
+  const receipt = storageStateFor(conv).lastUnwindReceipt;
+  return receipt ? { ...receipt } : null;
+}
+
+function toFile(
+  conv: Conversation,
+  storageGeneration: number,
+  lastUnwindReceipt: PersistedUnwindReceipt | null,
+): ConversationFile {
   return {
     version: CURRENT_VERSION,
     id: conv.id,
@@ -719,6 +789,8 @@ function toFile(conv: Conversation): ConversationFile {
     title: conv.title,
     goal: conv.goal ?? null,
     subagentMaxDepth: conv.subagentMaxDepth ?? null,
+    storageGeneration,
+    lastUnwindReceipt,
   };
 }
 
@@ -757,16 +829,26 @@ function fromFile(file: ConversationFile): Conversation {
   }
   if (file.folderId != null) conv.folderId = file.folderId;
   if (file.goal != null && file.goal.status !== "complete") conv.goal = file.goal;
+  const generation = isNonNegativeSafeInteger(file.storageGeneration) && file.storageGeneration > 0
+    ? file.storageGeneration
+    : 1;
+  conversationStorageState.set(conv, {
+    baseGeneration: generation,
+    currentGeneration: generation,
+    lastUnwindReceipt: normalizeUnwindReceipt(file.lastUnwindReceipt),
+  });
+  knownStorageGenerations.set(conv.id, generation);
   return conv;
 }
 
 // ── Summary index ───────────────────────────────────────────────────
 
-const INDEX_VERSION = 2;
+const INDEX_VERSION = 3;
 
 export interface ConversationIndexEntry extends PersistedConversationSummary {
   fileSize: number;
   fileMtimeMs: number;
+  storageGeneration: number;
 }
 
 interface ConversationIndexFile {
@@ -783,9 +865,29 @@ export interface LoadConversationIndexResult {
   saved: boolean;
 }
 
-export function getConversationFileStat(id: string): { fileSize: number; fileMtimeMs: number } {
+interface ConversationUnwindFile {
+  version: 1;
+  id: string;
+  operationId: string;
+  baseGeneration: number;
+  resultGeneration: number;
+  keepMessageCount: number;
+  targetHistoryCount: number;
+  userMessageIndex: number;
+  historyTotalEntries: number;
+  messageCount: number;
+  lastContextTokens: number | null;
+  updatedAt: number;
+  supersededQueueIds: string[];
+}
+
+function baseConversationFileStat(id: string): { fileSize: number; fileMtimeMs: number } {
   const stat = statSync(convPath(id));
   return { fileSize: stat.size, fileMtimeMs: stat.mtimeMs };
+}
+
+export function getConversationFileStat(id: string): { fileSize: number; fileMtimeMs: number } {
+  return baseConversationFileStat(id);
 }
 
 function statConversationFile(id: string): { fileSize: number; fileMtimeMs: number } | null {
@@ -798,7 +900,22 @@ function statConversationFile(id: string): { fileSize: number; fileMtimeMs: numb
 
 export function indexEntryFromConversation(conv: Conversation): ConversationIndexEntry {
   const stat = statConversationFile(conv.id) ?? { fileSize: 0, fileMtimeMs: 0 };
-  return { ...summarizeConversation(conv), ...stat };
+  const storageGeneration = storageStateFor(conv).currentGeneration;
+  knownStorageGenerations.set(conv.id, storageGeneration);
+  return {
+    ...summarizeConversation(conv),
+    ...stat,
+    storageGeneration,
+  };
+}
+
+export function indexEntryFromSummary(summary: PersistedConversationSummary): ConversationIndexEntry {
+  const stat = statConversationFile(summary.id) ?? { fileSize: 0, fileMtimeMs: 0 };
+  return {
+    ...summary,
+    ...stat,
+    storageGeneration: knownStorageGenerations.get(summary.id) ?? 1,
+  };
 }
 
 function readConversationIndex(): ConversationIndexFile | null {
@@ -1039,14 +1156,14 @@ export function loadConversationIndex(): LoadConversationIndexResult {
 
     const cached = indexed.get(id);
     if (cached && cached.fileSize === stat.fileSize && cached.fileMtimeMs === stat.fileMtimeMs) {
-      entries.push(cached);
+      entries.push(overlayCachedIndexEntry(cached));
       reused++;
       continue;
     }
 
     const conv = load(id);
     if (conv) {
-      entries.push({ ...summarizeConversation(conv), ...stat });
+      entries.push(indexEntryFromConversation(conv));
       rebuilt++;
       saved = true;
     } else {
@@ -1062,10 +1179,12 @@ export function loadConversationIndex(): LoadConversationIndexResult {
   }
 
   sortConversations(entries);
+  knownStorageGenerations.clear();
+  for (const entry of entries) knownStorageGenerations.set(entry.id, entry.storageGeneration);
   if (saved) saveConversationIndex(entries);
 
   return {
-    summaries: entries.map(({ fileSize: _fileSize, fileMtimeMs: _fileMtimeMs, ...summary }) => summary),
+    summaries: entries.map(({ fileSize: _fileSize, fileMtimeMs: _fileMtimeMs, storageGeneration: _storageGeneration, ...summary }) => summary),
     reused,
     rebuilt,
     removed,
@@ -1075,11 +1194,267 @@ export function loadConversationIndex(): LoadConversationIndexResult {
 
 // ── Public API ──────────────────────────────────────────────────────
 
+function removeUnwindFile(id: string): void {
+  try {
+    unlinkSync(unwindPath(id));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      log("warn", `persistence: failed to remove unwind overlay for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function parseUnwindFile(id: string): ConversationUnwindFile | null {
+  const path = unwindPath(id);
+  if (!existsSync(path)) return null;
+  const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<ConversationUnwindFile>;
+  if (parsed.version !== 1
+      || parsed.id !== id
+      || typeof parsed.operationId !== "string" || parsed.operationId.length === 0
+      || !isNonNegativeSafeInteger(parsed.baseGeneration) || parsed.baseGeneration < 1
+      || !isNonNegativeSafeInteger(parsed.resultGeneration) || parsed.resultGeneration <= parsed.baseGeneration
+      || !isNonNegativeSafeInteger(parsed.keepMessageCount)
+      || !isNonNegativeSafeInteger(parsed.targetHistoryCount)
+      || !isNonNegativeSafeInteger(parsed.userMessageIndex)
+      || !isNonNegativeSafeInteger(parsed.historyTotalEntries)
+      || !isNonNegativeSafeInteger(parsed.messageCount)
+      || typeof parsed.updatedAt !== "number" || !Number.isFinite(parsed.updatedAt)
+      || !Array.isArray(parsed.supersededQueueIds)
+      || parsed.supersededQueueIds.some((queueId) => typeof queueId !== "string" || queueId.length === 0)
+      || (parsed.lastContextTokens !== null
+        && (typeof parsed.lastContextTokens !== "number"
+          || !Number.isFinite(parsed.lastContextTokens)
+          || parsed.lastContextTokens < 0))) {
+    throw new Error(`Invalid conversation unwind overlay for ${id}`);
+  }
+  return parsed as ConversationUnwindFile;
+}
+
+function activeUnwindForBaseGeneration(id: string, baseGeneration: number): ConversationUnwindFile | null {
+  const unwind = parseUnwindFile(id);
+  if (!unwind) return null;
+  if (baseGeneration === unwind.baseGeneration) return unwind;
+  if (baseGeneration >= unwind.resultGeneration) {
+    if (unwind.supersededQueueIds.length === 0) removeUnwindFile(id);
+    return null;
+  }
+  throw new Error(
+    `Conflicting conversation unwind overlay for ${id} `
+    + `(base=${baseGeneration}, expected=${unwind.baseGeneration}, result=${unwind.resultGeneration})`,
+  );
+}
+
+function overlayCachedIndexEntry(cached: ConversationIndexEntry): ConversationIndexEntry {
+  const unwind = parseUnwindFile(cached.id);
+  if (!unwind) return cached;
+  // Several targeted cuts can accumulate over one unchanged base file. An
+  // independently saved index may therefore contain any logical generation
+  // between the sidecar's base and latest result; all describe the same base
+  // bytes and are safely advanced to the latest overlay summary in memory.
+  if (cached.storageGeneration >= unwind.baseGeneration
+      && cached.storageGeneration <= unwind.resultGeneration) {
+    return {
+      ...cached,
+      updatedAt: unwind.updatedAt,
+      messageCount: unwind.messageCount,
+      storageGeneration: unwind.resultGeneration,
+    };
+  }
+  if (cached.storageGeneration > unwind.resultGeneration) {
+    if (unwind.supersededQueueIds.length === 0) removeUnwindFile(cached.id);
+    return cached;
+  }
+  throw new Error(
+    `Conversation index conflicts with unwind overlay for ${cached.id} `
+    + `(index=${cached.storageGeneration}, base=${unwind.baseGeneration}, result=${unwind.resultGeneration})`,
+  );
+}
+
+function applyUnwindFile(
+  conv: Conversation,
+  baseGeneration: number,
+): Conversation {
+  const unwind = activeUnwindForBaseGeneration(conv.id, baseGeneration);
+  if (!unwind) return conv;
+  if (unwind.keepMessageCount > conv.messages.length) {
+    throw new Error(`Conversation unwind overlay for ${conv.id} retains unavailable messages`);
+  }
+  conv.messages.splice(unwind.keepMessageCount);
+  conv.activeContext = conv.activeContext
+    ? rewindActiveContextToHistoryCount(conv.activeContext, conv.messages, unwind.targetHistoryCount)
+    : null;
+  conv.lastContextTokens = unwind.lastContextTokens;
+  conv.updatedAt = unwind.updatedAt;
+  conversationStorageState.set(conv, {
+    baseGeneration,
+    currentGeneration: unwind.resultGeneration,
+    lastUnwindReceipt: {
+      operationId: unwind.operationId,
+      userMessageIndex: unwind.userMessageIndex,
+      historyTotalEntries: unwind.historyTotalEntries,
+    },
+  });
+  knownStorageGenerations.set(conv.id, unwind.resultGeneration);
+  return conv;
+}
+
+export interface SaveUnwindOptions {
+  operationId: string;
+  userMessageIndex: number;
+  historyTotalEntries: number;
+  messageCount: number;
+  supersededQueueIds: string[];
+}
+
+/**
+ * Persist only an unwind boundary and its scalar derived state. The immutable
+ * history prefix remains in the base JSON file; the next ordinary save folds
+ * this overlay into that file and removes it.
+ */
+export function saveUnwind(
+  baseConversation: Conversation,
+  resultConversation: Conversation,
+  targetHistoryCount: number,
+  options: SaveUnwindOptions,
+): void {
+  assertSafeId(baseConversation.id);
+  if (resultConversation.id !== baseConversation.id) throw new Error("Unwind result conversation ID mismatch");
+  ensureDir();
+  if (!existsSync(convPath(baseConversation.id))) {
+    throw new Error(`Cannot persist unwind for missing conversation ${baseConversation.id}`);
+  }
+  const state = storageStateFor(baseConversation);
+  const resultGeneration = state.currentGeneration + 1;
+  const previous = parseUnwindFile(baseConversation.id);
+  const previousIsActive = previous?.baseGeneration === state.baseGeneration
+    && previous.resultGeneration === state.currentGeneration;
+  const previousIsMaterialized = previous != null
+    && previous.resultGeneration <= state.baseGeneration;
+  if (previous && !previousIsActive && !previousIsMaterialized) {
+    throw new Error(
+      `Cannot replace conflicting unwind overlay for ${baseConversation.id} `
+      + `(overlay=${previous.baseGeneration}..${previous.resultGeneration}, state=${state.baseGeneration}..${state.currentGeneration})`,
+    );
+  }
+  // A previous queue-file acknowledgement may have failed. Preserve those
+  // exact tombstones when replacing the history overlay so a crash cannot
+  // resurrect queue entries superseded by an earlier cut.
+  const supersededQueueIds = new Set(previous?.supersededQueueIds ?? []);
+  for (const queueId of options.supersededQueueIds) supersededQueueIds.add(queueId);
+  const file: ConversationUnwindFile = {
+    version: 1,
+    id: baseConversation.id,
+    operationId: options.operationId,
+    baseGeneration: state.baseGeneration,
+    resultGeneration,
+    keepMessageCount: resultConversation.messages.length,
+    targetHistoryCount,
+    userMessageIndex: options.userMessageIndex,
+    historyTotalEntries: options.historyTotalEntries,
+    messageCount: options.messageCount,
+    lastContextTokens: resultConversation.lastContextTokens,
+    updatedAt: resultConversation.updatedAt,
+    supersededQueueIds: [...supersededQueueIds],
+  };
+  const dest = unwindPath(baseConversation.id);
+  const tmp = `${dest}.tmp`;
+  writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
+  renameSync(tmp, dest);
+  conversationStorageState.set(baseConversation, {
+    baseGeneration: state.baseGeneration,
+    currentGeneration: resultGeneration,
+    lastUnwindReceipt: {
+      operationId: options.operationId,
+      userMessageIndex: options.userMessageIndex,
+      historyTotalEntries: options.historyTotalEntries,
+    },
+  });
+  knownStorageGenerations.set(baseConversation.id, resultGeneration);
+}
+
+/** Queue identities committed as superseded by active unwind overlays. */
+export function loadUnwindQueueTombstones(): Set<string> {
+  ensureDir();
+  const tombstones = new Set<string>();
+  for (const filename of readdirSync(CONV_DIR)) {
+    if (!filename.endsWith(".unwind")) continue;
+    const id = filename.slice(0, -".unwind".length);
+    const unwind = parseUnwindFile(id);
+    if (!unwind) continue;
+    if (!existsSync(convPath(id))) {
+      // A crash can leave the queue receipt behind after its conversation was
+      // moved to trash. Keep suppressing those exact entries until the repaired
+      // queue file is durable; recovery below then removes the orphan receipt.
+      for (const queueId of unwind.supersededQueueIds) tombstones.add(queueId);
+      continue;
+    }
+    const baseFile = parseConversationFile(convPath(id));
+    const isActive = baseFile.storageGeneration === unwind.baseGeneration;
+    const isMaterialized = baseFile.storageGeneration >= unwind.resultGeneration;
+    if (!isActive && !isMaterialized) {
+      throw new Error(
+        `Conflicting queue tombstone overlay for ${id} `
+        + `(base=${baseFile.storageGeneration}, expected=${unwind.baseGeneration}, result=${unwind.resultGeneration})`,
+      );
+    }
+    for (const queueId of unwind.supersededQueueIds) tombstones.add(queueId);
+    if (isMaterialized && unwind.supersededQueueIds.length === 0) removeUnwindFile(id);
+  }
+  return tombstones;
+}
+
+/** Complete startup queue recovery after its canonical queue rewrite succeeds. */
+export function acknowledgeRecoveredUnwindQueueCleanup(): void {
+  ensureDir();
+  for (const filename of readdirSync(CONV_DIR)) {
+    if (!filename.endsWith(".unwind")) continue;
+    const id = filename.slice(0, -".unwind".length);
+    const unwind = parseUnwindFile(id);
+    if (!unwind || unwind.supersededQueueIds.length === 0) continue;
+    if (!existsSync(convPath(id))) {
+      removeUnwindFile(id);
+      continue;
+    }
+    const dest = unwindPath(id);
+    const tmp = `${dest}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ ...unwind, supersededQueueIds: [] }, null, 2), { mode: 0o600 });
+    renameSync(tmp, dest);
+  }
+}
+
+/** Remove a now-ownerless receipt after delete has durably cleared its queue. */
+export function removeConversationUnwindReceipt(id: string): void {
+  assertSafeId(id);
+  removeUnwindFile(id);
+}
+
+export function hasConversationUnwindReceipt(id: string): boolean {
+  assertSafeId(id);
+  return existsSync(unwindPath(id));
+}
+
+/** Mark exact queue tombstones durable in the queue file after sidecar commit. */
+export function acknowledgeUnwindQueueCleanup(id: string, operationId: string): void {
+  const unwind = parseUnwindFile(id);
+  if (!unwind || unwind.operationId !== operationId || unwind.supersededQueueIds.length === 0) return;
+  const dest = unwindPath(id);
+  const tmp = `${dest}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ ...unwind, supersededQueueIds: [] }, null, 2), { mode: 0o600 });
+  renameSync(tmp, dest);
+}
+
 /** Save a conversation to disk (atomic write-then-rename). */
 export function save(conv: Conversation): void {
   assertSafeId(conv.id);
   ensureDir();
-  const file = toFile(conv);
+  const state = storageStateFor(conv);
+  const unwindBeforeSave = parseUnwindFile(conv.id);
+  const nextGeneration = state.currentGeneration + 1;
+  const file = toFile(conv, nextGeneration, state.lastUnwindReceipt);
   const dest = convPath(conv.id);
   const tmp = dest + ".tmp";
   writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
@@ -1096,34 +1471,62 @@ export function save(conv: Conversation): void {
   } catch {
     // Best effort: the file contents are already safely written.
   }
+  conversationStorageState.set(conv, {
+    baseGeneration: nextGeneration,
+    currentGeneration: nextGeneration,
+    lastUnwindReceipt: state.lastUnwindReceipt,
+  });
+  knownStorageGenerations.set(conv.id, nextGeneration);
+  if (!unwindBeforeSave || unwindBeforeSave.supersededQueueIds.length === 0) {
+    removeUnwindFile(conv.id);
+  }
 }
 
-function moveConversationFilesToTrash(ids: string[]): string[] {
+function moveConversationFilesToTrash(ids: string[]): { moved: string[]; failed: string[] } {
   const moved: string[] = [];
+  const failed: string[] = [];
   ensureTrashDir();
   for (const id of ids) {
-    assertSafeId(id);
-    const src = convPath(id);
-    if (!existsSync(src)) continue;
-    renameSync(src, trashPath(id));
-    moved.push(id);
+    try {
+      assertSafeId(id);
+      const src = convPath(id);
+      if (!existsSync(src)) {
+        failed.push(id);
+        continue;
+      }
+      // Trash/undo moves one canonical file. Fold any pending targeted unwind into
+      // it first so undo cannot resurrect the discarded suffix.
+      if (existsSync(unwindPath(id))) {
+        const effective = load(id);
+        if (!effective) throw new Error(`Cannot materialize unwind overlay for ${id} before trashing`);
+        save(effective);
+      }
+      renameSync(src, trashPath(id));
+      moved.push(id);
+    } catch (err) {
+      failed.push(id);
+      log("error", `persistence: failed to trash ${id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
-  return moved;
+  return { moved, failed };
 }
 
 /** Move one or more conversation files to trash instead of deleting them. */
 export function trashConversations(ids: string[], recordUndo = true): string[] {
-  try {
-    const uniqueIds = [...new Set(ids)];
-    const moved = moveConversationFilesToTrash(uniqueIds);
-    if (moved.length === 0) return [];
-    if (recordUndo) pushTrashEntry(moved.length === 1 ? { type: "conversation", id: moved[0] } : { type: "conversations", ids: moved });
-    log("info", `persistence: trashed ${moved.length === 1 ? moved[0] : `${moved.length} conversations`}`);
-    return moved;
-  } catch (err) {
-    log("error", `persistence: failed to trash conversations: ${err}`);
-    return [];
+  const uniqueIds = [...new Set(ids)];
+  const { moved } = moveConversationFilesToTrash(uniqueIds);
+  if (moved.length === 0) return [];
+  if (recordUndo) {
+    try {
+      pushTrashEntry(moved.length === 1 ? { type: "conversation", id: moved[0] } : { type: "conversations", ids: moved });
+    } catch (err) {
+      // The files are already durably moved. Report success rather than leaving
+      // live memory pointing at missing files merely because undo metadata failed.
+      log("error", `persistence: failed to record trash undo metadata: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
+  log("info", `persistence: trashed ${moved.length === 1 ? moved[0] : `${moved.length} conversations`}`);
+  return moved;
 }
 
 /** Move a conversation file to trash instead of deleting it. */
@@ -1134,8 +1537,21 @@ export function trashFile(id: string): void {
 /** Move a folder's conversations to trash and optionally push one undo entry for the whole folder tree. */
 export function trashFolderRecursive(entry: Extract<TrashStackEntry, { type: "folder_recursive" }>, recordUndo = true): boolean {
   try {
-    const moved = moveConversationFilesToTrash(entry.conversationIds);
-    if (recordUndo) pushTrashEntry({ ...entry, conversationIds: moved });
+    const { moved, failed } = moveConversationFilesToTrash(entry.conversationIds);
+    if (failed.length > 0) {
+      // A folder tree cannot be partially removed without leaving live
+      // conversations pointing at deleted folders. Roll back successful renames.
+      for (const id of moved) renameSync(trashPath(id), convPath(id));
+      return false;
+    }
+    if (recordUndo) {
+      try {
+        pushTrashEntry({ ...entry, conversationIds: moved });
+      } catch (err) {
+        for (const id of moved) renameSync(trashPath(id), convPath(id));
+        throw err;
+      }
+    }
     log("info", `persistence: trashed folder ${entry.folderId} (${moved.length} conversations)`);
     return true;
   } catch (err) {
@@ -1173,7 +1589,8 @@ export function load(id: string): Conversation | null {
   const path = convPath(id);
   if (!existsSync(path)) return null;
   try {
-    return fromFile(parseConversationFile(path));
+    const file = parseConversationFile(path);
+    return applyUnwindFile(fromFile(file), file.storageGeneration);
   } catch (err) {
     log("error", `persistence: failed to load ${id}: ${err}`);
     return null;
@@ -1187,12 +1604,9 @@ export function loadAllConversations(): Conversation[] {
 
   for (const filename of readdirSync(CONV_DIR)) {
     if (!filename.endsWith(".json")) continue;
-    const path = join(CONV_DIR, filename);
-    try {
-      conversations.push(fromFile(parseConversationFile(path)));
-    } catch (err) {
-      log("error", `persistence: failed to load ${filename}: ${err}`);
-    }
+    const id = filename.slice(0, -".json".length);
+    const conv = load(id);
+    if (conv) conversations.push(conv);
   }
 
   sortConversations(conversations);

@@ -1,4 +1,9 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { conversationsDir } from "@exocortex/shared/paths";
+import { save, saveUnwind } from "./persistence";
+import type { Conversation } from "./messages";
 import {
   clearAllQueuedMessages,
   drainQueuedMessages,
@@ -10,6 +15,7 @@ import {
   pushGlobalIdleQueuedMessage,
   pushQueuedMessage,
   removeQueuedMessageById,
+  setMessageQueuePersistenceFailureForTest,
   setQueuedMessagesChangedListener,
   suspendQueuedMessageDelivery,
   resumeQueuedMessageDelivery,
@@ -18,15 +24,29 @@ import {
 
 beforeEach(() => {
   setQueuedMessagesChangedListener(null);
+  setMessageQueuePersistenceFailureForTest(null);
   clearAllQueuedMessages();
 });
 
 afterAll(() => {
+  setMessageQueuePersistenceFailureForTest(null);
   setQueuedMessagesChangedListener(null);
   clearAllQueuedMessages();
 });
 
 describe("durable daemon message queue", () => {
+  test("rolls back in-memory mutations when durable queue persistence fails", () => {
+    setMessageQueuePersistenceFailureForTest(new Error("queue disk unavailable"));
+    expect(() => pushQueuedMessage("conv-a", "not durable", "next-turn", undefined, undefined, undefined, "failed-id"))
+      .toThrow("queue disk unavailable");
+    expect(getQueuedMessageById("failed-id")).toBeUndefined();
+    expect(listQueuedMessages()).toEqual([]);
+
+    setMessageQueuePersistenceFailureForTest(null);
+    pushQueuedMessage("conv-a", "durable", "next-turn", undefined, undefined, undefined, "kept-id");
+    expect(getQueuedMessageById("kept-id")?.text).toBe("durable");
+  });
+
   test("persists stable identities and FIFO order across an in-process daemon reload", () => {
     pushQueuedMessage("conv-a", "same", "next-turn", undefined, 2, undefined, "queue-a", 10);
     pushQueuedMessage("conv-a", "same", "message-end", undefined, 1, undefined, "queue-b", 20);
@@ -96,6 +116,41 @@ describe("durable daemon message queue", () => {
 
     expect(loadQueuedMessagesFromDisk(new Set(["accepted-id"]))).toBe(1);
     expect(listQueuedMessages().map(message => message.id)).toEqual(["pending-id"]);
+  });
+
+  test("durably acknowledges an orphan unwind tombstone after startup recovery", () => {
+    const id = `test-queue-orphan-unwind-${Date.now()}`;
+    const conv: Conversation = {
+      id,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      fastMode: false,
+      messages: [{ role: "user", content: "remove", metadata: null }],
+      createdAt: 1,
+      updatedAt: 1,
+      lastContextTokens: null,
+      marked: false,
+      pinned: false,
+      sortOrder: -1,
+      title: "orphan tombstone",
+    };
+    save(conv);
+    saveUnwind(conv, { ...conv, messages: [], updatedAt: 2 }, 0, {
+      operationId: "orphan-unwind",
+      userMessageIndex: 0,
+      historyTotalEntries: 0,
+      messageCount: 0,
+      supersededQueueIds: ["orphaned-queue-entry"],
+    });
+    const conversationPath = join(conversationsDir(), `${id}.json`);
+    const unwindPath = join(conversationsDir(), `${id}.unwind`);
+    rmSync(conversationPath);
+    pushQueuedMessage(id, "stale queued intent", "message-end", undefined, undefined, undefined, "orphaned-queue-entry");
+
+    expect(loadQueuedMessagesFromDisk()).toBe(0);
+    expect(getQueuedMessageById("orphaned-queue-entry")).toBeUndefined();
+    expect(existsSync(unwindPath)).toBe(false);
   });
 
   test("notifies clients with authoritative full snapshots after mutations", () => {

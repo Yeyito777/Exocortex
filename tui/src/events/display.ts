@@ -15,6 +15,7 @@ export function pushDisplayEntries(state: RenderState, entries: DisplayEntry[]):
           text: entry.text,
           images: entry.images,
           metadata: entry.metadata ?? null,
+          ...(entry.unwindFingerprint ? { unwindFingerprint: entry.unwindFingerprint } : {}),
           ...(entry.contextCheckpoint ? { contextCheckpoint: entry.contextCheckpoint } : {}),
         });
         break;

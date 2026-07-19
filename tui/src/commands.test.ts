@@ -560,6 +560,45 @@ describe("/trim", () => {
   });
 });
 
+describe("/usage", () => {
+  test("requests an OpenAI usage reset", () => {
+    const state = createInitialState();
+    state.provider = "openai";
+    state.authByProvider.openai = true;
+    state.inputBuffer = "/usage reset";
+
+    expect(tryCommand("/usage reset", state)).toEqual({
+      type: "usage_reset_requested",
+      provider: "openai",
+    });
+    expect(state.inputBuffer).toBe("");
+  });
+
+  test("advertises the reset subcommand for completion", () => {
+    const state = createInitialState();
+    expect(getCommandArgs(state, "/usage")["/usage"]).toContainEqual(expect.objectContaining({
+      name: "reset",
+    }));
+  });
+
+  test("shows command usage for missing or unknown arguments", () => {
+    const state = createInitialState();
+    expect(tryCommand("/usage", state)).toEqual({ type: "handled" });
+    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "Usage: /usage reset" });
+  });
+
+  test("rejects usage resets for a non-OpenAI provider", () => {
+    const state = createInitialState();
+    state.provider = "deepseek";
+    state.authByProvider.deepseek = true;
+    expect(tryCommand("/usage reset", state)).toEqual({ type: "handled" });
+    expect(state.messages.at(-1)).toMatchObject({
+      role: "system",
+      text: "Usage resets are only supported for OpenAI.",
+    });
+  });
+});
+
 describe("/tokens", () => {
   test("shows a github-style heatmap and bottom summary stats from cached stats", () => {
     const state = createInitialState();

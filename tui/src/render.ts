@@ -32,8 +32,16 @@ import { renderEditMessageOverlay } from "./overlays";
 import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
 import { padRightToWidth, termWidth } from "./textwidth";
 import { getVoicePromptRanges } from "./voice";
-import { renderTaskPanel } from "./activitypanel";
+import { layoutTaskPanel, renderTaskPanel } from "./activitypanel";
+import { trimAnsiLeadingSpaces, wrapAnsiLine } from "./ansiwrap";
 import { getBtwPanelPreferredHeight, MAX_BTW_PANEL_HEIGHT, renderBtwPanel } from "./btwpanel";
+import { wordWrap } from "./textwrap";
+import {
+  compareUserMessageFlowCursors,
+  renderAdaptiveUserMessageRows,
+  userMessageTextRowOffsets,
+  type UserMessageFlowCursor,
+} from "./blockrenderer";
 import {
   appendPositionedPayload as appendFramePositionedPayload,
   appendRowWrite as appendFrameRowWrite,
@@ -76,7 +84,11 @@ function historyLoadingFrame(state: RenderState): number | null {
   return Math.max(0, Math.floor((Date.now() - (state.historyLoadingStartedAt ?? Date.now())) / HISTORY_LOADING_FRAME_INTERVAL_MS));
 }
 
-function canReuseHistoryRender(cached: HistoryRenderCacheEntry, state: RenderState, width: number): boolean {
+function canReuseHistoryRender(
+  cached: HistoryRenderCacheEntry,
+  state: RenderState,
+  width: number,
+): boolean {
   return cached.width === width
     && cached.convId === state.convId
     && cached.messagesRef === state.messages
@@ -111,7 +123,11 @@ function canUseDeferredHistoryRender(state: RenderState, width: number): boolean
     && width > 0;
 }
 
-function buildDeferredHistorySuffix(state: RenderState, width: number, targetLines: number): BuildMessageLinesResult {
+function buildDeferredHistorySuffix(
+  state: RenderState,
+  width: number,
+  targetLines: number,
+): BuildMessageLinesResult {
   let startMessageIndex = Math.max(0, state.messages.length - DEFERRED_HISTORY_INITIAL_MESSAGE_BATCH);
   let result = buildMessageLines(state, width, { startMessageIndex, partial: startMessageIndex > 0 });
 
@@ -131,7 +147,11 @@ function buildDeferredHistorySuffix(state: RenderState, width: number, targetLin
   return result;
 }
 
-function getHistoryRender(state: RenderState, width: number, targetLines: number): BuildMessageLinesResult {
+function getHistoryRender(
+  state: RenderState,
+  width: number,
+  targetLines: number,
+): BuildMessageLinesResult {
   if (state.pendingAI) {
     state.deferredHistoryRender = null;
     historyRenderCache.delete(state);
@@ -343,6 +363,228 @@ function emitSidebarCol(ctx: RenderCtx, screenRow: number): void {
 
 // ── Extracted sub-functions ──────────────────────────────────────────
 
+const SYSTEM_INSTRUCTIONS_SEGMENTS = new Set([
+  "system_instructions_top",
+  "system_instructions_content",
+  "system_instructions_bottom",
+]);
+
+interface ViewportHistoryRow {
+  line: string;
+  lineIndex: number;
+  /** Plain-text column in the canonical history line where this row starts. */
+  startCol: number;
+  /** Display-only indentation repeated in front of a reflow continuation. */
+  displayPrefixWidth: number;
+  /** ANSI-preserving remainder of the canonical line at startCol. */
+  sourceRemainder: string;
+  /** Width-independent continuation point for a reflowed user bubble. */
+  userFlow?: { owner: object; sourceCursor: UserMessageFlowCursor };
+}
+
+function wrapRenderedHistoryLine(line: string, width: number): { lines: string[]; joins: string[] } {
+  if (line.includes("\x1b[")) {
+    return wrapAnsiLine(line, width);
+  }
+  const wrapped = wordWrap(line, width);
+  return { lines: wrapped.lines, joins: wrapped.join };
+}
+
+function continuationIndent(line: string, segment: BuildMessageLinesResult["lineAnchors"][number]["segment"] | undefined): string {
+  if (segment === "user_content" || segment === "queued_content" || segment === "queued_label") return "";
+  return stripAnsi(line).match(/^ +(?=\S)/)?.[0] ?? "";
+}
+
+/** Number of viewport rows occupied by a system-instructions box at the top. */
+function visibleSystemInstructionsHeight(
+  lineAnchors: BuildMessageLinesResult["lineAnchors"],
+  viewStart: number,
+  messageAreaHeight: number,
+): number {
+  let height = 0;
+  while (height < messageAreaHeight) {
+    const segment = lineAnchors[viewStart + height]?.segment;
+    if (!segment || !SYSTEM_INSTRUCTIONS_SEGMENTS.has(segment)) break;
+    height++;
+  }
+  return height;
+}
+
+function composeViewportFrom(
+  allLines: string[],
+  lineAnchors: BuildMessageLinesResult["lineAnchors"],
+  start: Pick<ViewportHistoryRow, "lineIndex" | "startCol" | "sourceRemainder" | "userFlow">,
+  endLineIndex: number,
+  panelTopOffset: number,
+  panelHeight: number,
+  narrowWidth: number,
+  fullWidth: number,
+): ViewportHistoryRow[] {
+  const rows: ViewportHistoryRow[] = [];
+  const panelEndOffset = panelTopOffset + panelHeight;
+
+  for (let lineIndex = start.lineIndex; lineIndex < endLineIndex; lineIndex++) {
+    const anchor = lineAnchors[lineIndex];
+    const isUserFlow = anchor?.segment === "user_content" || anchor?.segment === "queued_content";
+    const owner = anchor?.owner as { text?: unknown; images?: ImageAttachment[] } | undefined;
+    if (isUserFlow && owner && typeof owner.text === "string") {
+      let groupStart = lineIndex;
+      while (groupStart > 0) {
+        const previous = lineAnchors[groupStart - 1];
+        if (previous?.owner !== anchor.owner || previous.segment !== anchor.segment) break;
+        groupStart--;
+      }
+      let groupEnd = lineIndex + 1;
+      while (groupEnd < allLines.length) {
+        const next = lineAnchors[groupEnd];
+        if (next?.owner !== anchor.owner || next.segment !== anchor.segment) break;
+        groupEnd++;
+      }
+
+      const flow = userMessageTextRowOffsets(owner.text, fullWidth, owner.images);
+      const canonicalRowCount = groupEnd - groupStart;
+      if (flow && flow.starts.length === canonicalRowCount) {
+        const requestedEnd = Math.min(groupEnd, endLineIndex);
+        const localStart = Math.max(0, lineIndex - groupStart);
+        const localEnd = Math.max(localStart, requestedEnd - groupStart);
+        const sourceStart = start.userFlow?.owner === anchor.owner && lineIndex === start.lineIndex
+          ? start.userFlow.sourceCursor
+          : (flow.starts[localStart] ?? flow.end);
+        const sourceEnd = localEnd < flow.starts.length ? flow.starts[localEnd] : flow.end;
+        const adaptive = renderAdaptiveUserMessageRows(
+          owner.text,
+          sourceStart,
+          sourceEnd,
+          (rowOffset) => {
+            const screenOffset = rows.length + rowOffset;
+            return screenOffset >= panelTopOffset && screenOffset < panelEndOffset
+              ? narrowWidth
+              : fullWidth;
+          },
+        );
+
+        for (const rendered of adaptive) {
+          let canonicalLocal = 0;
+          while (canonicalLocal + 1 < flow.starts.length
+            && compareUserMessageFlowCursors(flow.starts[canonicalLocal + 1], rendered.sourceStart) <= 0) {
+            canonicalLocal++;
+          }
+          const renderedLine = anchor.segment === "queued_content"
+            ? `${theme.muted}${rendered.line}${theme.reset}`
+            : rendered.line;
+          rows.push({
+            line: renderedLine,
+            lineIndex: groupStart + canonicalLocal,
+            startCol: 0,
+            displayPrefixWidth: 0,
+            sourceRemainder: renderedLine,
+            userFlow: { owner: anchor.owner, sourceCursor: rendered.sourceStart },
+          });
+        }
+        lineIndex = requestedEnd - 1;
+        continue;
+      }
+    }
+
+    let remainder = lineIndex === start.lineIndex ? start.sourceRemainder : allLines[lineIndex];
+    let startCol = lineIndex === start.lineIndex ? start.startCol : 0;
+    let isReflowContinuation = startCol > 0;
+    const indent = continuationIndent(allLines[lineIndex], lineAnchors[lineIndex]?.segment);
+
+    for (;;) {
+      const screenOffset = rows.length;
+      const overlapsPanel = screenOffset >= panelTopOffset && screenOffset < panelEndOffset;
+      const width = overlapsPanel ? narrowWidth : fullWidth;
+      const segment = lineAnchors[lineIndex]?.segment;
+      if (overlapsPanel
+        && startCol === 0
+        && (segment === "user_content" || segment === "queued_content")) {
+        const shifted = trimAnsiLeadingSpaces(remainder, Math.max(0, fullWidth - narrowWidth));
+        remainder = shifted.line;
+        startCol = shifted.removed;
+      }
+      const displayPrefix = isReflowContinuation ? indent : "";
+      const wrapped = wrapRenderedHistoryLine(displayPrefix + remainder, Math.max(1, width));
+      const line = wrapped.lines[0] ?? "";
+      rows.push({
+        line,
+        lineIndex,
+        startCol,
+        displayPrefixWidth: displayPrefix.length,
+        sourceRemainder: remainder,
+      });
+
+      if (wrapped.lines.length <= 1) break;
+      startCol += Math.max(0, stripAnsi(line).length - displayPrefix.length)
+        + (wrapped.joins[1]?.length ?? 0);
+      remainder = wrapped.lines.slice(1)
+        .map((chunk, index) => `${index === 0 ? "" : (wrapped.joins[index + 1] ?? "")}${chunk}`)
+        .join("");
+      isReflowContinuation = true;
+    }
+  }
+
+  return rows;
+}
+
+/**
+ * Reflow only the viewport rows that share vertical space with the task panel.
+ * The viewport remains anchored to the same canonical bottom row, so wrapping
+ * at the top never hides newer full-width rows near the prompt.
+ */
+function composeFloatingHistoryViewport(
+  allLines: string[],
+  lineAnchors: BuildMessageLinesResult["lineAnchors"],
+  viewStart: number,
+  messageAreaHeight: number,
+  panelTopOffset: number,
+  panelHeight: number,
+  narrowWidth: number,
+  fullWidth: number,
+): ViewportHistoryRow[] {
+  const endLineIndex = Math.min(allLines.length, viewStart + messageAreaHeight);
+  if (viewStart >= endLineIndex) return [];
+
+  let start: Pick<ViewportHistoryRow, "lineIndex" | "startCol" | "sourceRemainder" | "userFlow"> = {
+    lineIndex: viewStart,
+    startCol: 0,
+    sourceRemainder: allLines[viewStart],
+  };
+  let rows: ViewportHistoryRow[] = [];
+
+  for (let attempts = 0; attempts <= messageAreaHeight + 2; attempts++) {
+    rows = composeViewportFrom(
+      allLines,
+      lineAnchors,
+      start,
+      endLineIndex,
+      panelTopOffset,
+      panelHeight,
+      narrowWidth,
+      fullWidth,
+    );
+    if (rows.length <= messageAreaHeight) return rows;
+
+    const next = rows[rows.length - messageAreaHeight];
+    const sameUserFlow = next?.userFlow?.owner === start.userFlow?.owner
+      && next?.userFlow?.sourceCursor.lineIndex === start.userFlow?.sourceCursor.lineIndex
+      && next?.userFlow?.sourceCursor.offset === start.userFlow?.sourceCursor.offset;
+    if (!next || (
+      next.lineIndex === start.lineIndex
+      && next.startCol === start.startCol
+      && sameUserFlow
+    )) break;
+    start = {
+      lineIndex: next.lineIndex,
+      startCol: next.startCol,
+      sourceRemainder: next.sourceRemainder,
+      userFlow: next.userFlow,
+    };
+  }
+
+  return rows.slice(-messageAreaHeight);
+}
+
 /**
  * Render the scrollable message/history area (rows 3 to sepAbove-1).
  * Handles visual selection highlighting, normal-mode line highlight,
@@ -351,8 +593,7 @@ function emitSidebarCol(ctx: RenderCtx, screenRow: number): void {
 function renderMessageArea(
   ctx: RenderCtx,
   allLines: string[],
-  totalLines: number,
-  viewStart: number,
+  viewportRows: ViewportHistoryRow[],
   messageAreaStart: number,
   messageAreaHeight: number,
   historyFocused: boolean,
@@ -371,16 +612,17 @@ function renderMessageArea(
   for (let i = 0; i < messageAreaHeight; i++) {
     const row = messageAreaStart + i;
     emitSidebarCol(ctx, row);
-    const lineIdx = viewStart + i;
-    if (lineIdx < totalLines) {
-      const line = allLines[lineIdx];
+    const viewportRow = viewportRows[i];
+    if (viewportRow) {
+      const { line, lineIndex: lineIdx, startCol, displayPrefixWidth } = viewportRow;
       const plain = stripAnsi(line);
+      const canonicalPlain = stripAnsi(allLines[lineIdx]);
       const searchRanges = searchQuery ? findSearchMatches(plain, searchQuery) : [];
       let rendered = line;
 
       if (inVisual && lineIdx >= vStartRow && lineIdx <= vEndRow) {
         // This line is part of the visual selection — text-bound highlight
-        const bounds = contentBounds(plain);
+        const bounds = contentBounds(canonicalPlain);
         let startCol: number;
         let endCol: number;
 
@@ -406,15 +648,19 @@ function renderMessageArea(
           endCol = bounds.end;
         }
 
-        rendered = renderLineWithSelection(rendered, startCol, endCol);
+        const localStart = Math.max(displayPrefixWidth, startCol - viewportRow.startCol + displayPrefixWidth);
+        const localEnd = Math.min(plain.length - 1, endCol - viewportRow.startCol + displayPrefixWidth);
+        if (localStart <= localEnd) rendered = renderLineWithSelection(rendered, localStart, localEnd);
       }
 
       if (searchRanges.length > 0) {
         rendered = renderLineWithSearch(rendered, searchRanges);
       }
 
-      if ((inVisual && lineIdx === vCursor.row) || (historyFocused && !inVisual && lineIdx === vCursor.row)) {
-        rendered = renderLineWithCursor(rendered, vCursor.col);
+      if (((inVisual && lineIdx === vCursor.row) || (historyFocused && !inVisual && lineIdx === vCursor.row))
+        && vCursor.col >= startCol
+        && vCursor.col < startCol + plain.length - displayPrefixWidth) {
+        rendered = renderLineWithCursor(rendered, vCursor.col - startCol + displayPrefixWidth);
       }
 
       const finalLine = historyFocused && !inVisual && lineIdx >= hlFirst && lineIdx <= hlLast
@@ -729,8 +975,14 @@ export function render(state: RenderState): void {
 
   // ── Message area (rows 3 to bottomStartRow-1) ──────────────────
   const messageAreaStart = 3;
+  const taskLayout = layoutTaskPanel(state, chatW, messageAreaHeight);
+  const historyWidth = taskLayout.historyWidth;
   const deferredTargetLines = messageAreaHeight + DEFERRED_HISTORY_GRACE_LINES;
-  const { lines: allLines, messageBounds, wrapContinuation, wrapJoiners, copyLines, lineAnchors } = getHistoryRender(state, chatW, deferredTargetLines);
+  const { lines: allLines, messageBounds, wrapContinuation, wrapJoiners, copyLines, lineAnchors } = getHistoryRender(
+    state,
+    chatW,
+    deferredTargetLines,
+  );
   const totalLines = allLines.length;
 
   // Cache rendered lines and message bounds for history cursor navigation
@@ -752,12 +1004,62 @@ export function render(state: RenderState): void {
   // Cache layout for scroll and mouse functions
   state.layout.totalLines = totalLines;
   state.layout.messageAreaHeight = messageAreaHeight;
+  state.layout.historyWidth = historyWidth;
   state.layout.chatCol = chatCol;
   state.layout.sepAbove = bottomStartRow;
   state.layout.firstInputRow = firstInputRow;
   state.layout.sepBelow = sepBelow;
 
   const viewStart = getViewStart(state);
+
+  // Keep leading system instructions full-width, then float the task panel over
+  // only the rows it actually occupies. Re-evaluate the offset if top-row
+  // wrapping shifts the canonical history row at the viewport's top.
+  let taskPanelTopOffset = taskLayout.panel
+    ? visibleSystemInstructionsHeight(lineAnchors, viewStart, messageAreaHeight)
+    : 0;
+  let taskPanel = taskLayout.panel && taskPanelTopOffset > 0
+    ? renderTaskPanel(state, taskLayout.panel.width, messageAreaHeight - taskPanelTopOffset)
+    : taskLayout.panel;
+  let viewportRows: ViewportHistoryRow[] = [];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    // Keep one extra history row narrow below the card as visual breathing room.
+    const panelFlowHeight = taskPanel ? Math.min(
+      messageAreaHeight - taskPanelTopOffset,
+      taskPanel.lines.length + 1,
+    ) : 0;
+    viewportRows = composeFloatingHistoryViewport(
+      allLines,
+      lineAnchors,
+      viewStart,
+      messageAreaHeight,
+      taskPanelTopOffset,
+      panelFlowHeight,
+      taskPanel ? historyWidth : chatW,
+      chatW,
+    );
+    const topLineIndex = viewportRows[0]?.lineIndex ?? viewStart;
+    const nextOffset = taskLayout.panel
+      ? visibleSystemInstructionsHeight(lineAnchors, topLineIndex, messageAreaHeight)
+      : 0;
+    if (nextOffset === taskPanelTopOffset) break;
+    taskPanelTopOffset = nextOffset;
+    taskPanel = renderTaskPanel(
+      state,
+      taskLayout.panel!.width,
+      messageAreaHeight - taskPanelTopOffset,
+    );
+  }
+  state.layout.historyViewportRows = Array.from(
+    { length: messageAreaHeight },
+    (_, index) => viewportRows[index]
+      ? {
+        lineIndex: viewportRows[index].lineIndex,
+        startCol: viewportRows[index].startCol,
+        displayPrefixWidth: viewportRows[index].displayPrefixWidth,
+      }
+      : null,
+  );
 
   // Compute visual selection range if in visual mode
   const inVisual = historyFocused
@@ -785,19 +1087,26 @@ export function render(state: RenderState): void {
   const searchQuery = getActiveSearchQuery(state);
 
   renderMessageArea(
-    ctx, allLines, totalLines, viewStart,
+    ctx, allLines, viewportRows,
     messageAreaStart, messageAreaHeight,
     historyFocused, inVisual, state.vim.mode,
     vAnchor, vCursor, vStartRow, vEndRow,
     hlFirst, hlLast, searchQuery,
   );
 
-  // ── Active task panel (top-right overlay) ──────────────────────
-  const taskPanel = renderTaskPanel(state, chatW, messageAreaHeight);
+  // ── Active task panel (top-right float) ────────────────────────
+  state.layout.taskPanelRect = null;
   if (taskPanel) {
     const panelCol = chatCol + chatW - taskPanel.width;
+    const panelTop = messageAreaStart + taskPanelTopOffset;
+    state.layout.taskPanelRect = {
+      top: panelTop,
+      bottom: panelTop + taskPanel.lines.length - 1,
+      left: panelCol,
+      right: panelCol + taskPanel.width - 1,
+    };
     for (let i = 0; i < taskPanel.lines.length; i++) {
-      appendRowWrite(ctx, messageAreaStart + i, panelCol, taskPanel.lines[i]);
+      appendRowWrite(ctx, panelTop + i, panelCol, taskPanel.lines[i]);
     }
   }
 

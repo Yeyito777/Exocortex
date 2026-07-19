@@ -2,7 +2,7 @@ import { DEFAULT_MODEL_BY_PROVIDER } from "@exocortex/shared/messages";
 import { createOpenAITurnSession, prewarmOpenAIConversation, streamMessage } from "./api";
 import { ensureAuthenticated, hasConfiguredCredentials, login, logout, refreshTokens, verifyAuth } from "./auth";
 import { FALLBACK_OPENAI_MODELS, fetchOpenAIModels } from "./models";
-import { clearUsage, getLastUsage, handleUsageHeaders, refreshUsage } from "./usage";
+import { clearUsage, consumeUsageReset, getLastUsage, handleUsageHeaders, refreshRemoteUsage, refreshUsage } from "./usage";
 import type { ProviderAdapter } from "../types";
 
 export const openaiProvider: ProviderAdapter = {
@@ -26,6 +26,8 @@ export const openaiProvider: ProviderAdapter = {
   usage: {
     getLastUsage,
     refreshUsage,
+    refreshRemoteUsage,
+    consumeReset: consumeUsageReset,
     handleUsageHeaders,
     clearUsage,
   },

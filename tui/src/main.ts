@@ -36,7 +36,13 @@ import {
   removeNewConversationQueuedMessage,
   removeQueuedMessageByReference,
 } from "./queue";
-import { confirmEditMessage, cancelEditMessage } from "./editmessage";
+import {
+  applyOptimisticEditMessageUnwind,
+  cancelEditMessage,
+  classifyPendingEditMessageUnwindEvent,
+  confirmEditMessage,
+  type PendingEditMessageUnwind,
+} from "./editmessage";
 import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
 import { openTargetDetached } from "./openable";
@@ -92,6 +98,7 @@ let voiceInput: VoiceInputController | null = null;
 let pendingVoiceQueuePrompt = false;
 let pendingNewConversationConvId: string | null = null;
 let pendingLocalInterruptConvId: string | null = null;
+let pendingEditMessageUnwind: PendingEditMessageUnwind | null = null;
 // Local-only user-message echoes whose audio jobs are still transcribing. They
 // are intentionally withheld from the daemon until the TUI has final text.
 const pendingVoiceSubmissions = new Set<SubmittedVoiceTranscription>();
@@ -346,6 +353,32 @@ function maybeRequestOlderHistory(): void {
 
 function onDaemonEvent(event: Event): void {
   const eventStartedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
+  if (pendingEditMessageUnwind) {
+    const pending = pendingEditMessageUnwind;
+    const unwindEvent = classifyPendingEditMessageUnwindEvent(pending, event);
+    if (unwindEvent === "ignore") return;
+    if (unwindEvent === "complete") {
+      pendingEditMessageUnwind = null;
+      if (pendingLocalInterruptConvId === pending.convId) pendingLocalInterruptConvId = null;
+      // A replay receipt proves the cut committed, but newer turns may have been
+      // appended before reconnect. Its original suffix boundary cannot reconcile
+      // that transcript, so load the current canonical window.
+      if (event.type === "conversation_unwound"
+          && event.status === "already_applied"
+          && state.convId === pending.convId) {
+        daemon.loadConversation(pending.convId);
+      }
+      // The targeted event patches the sidebar everywhere but mutates transcript
+      // state only when this conversation is still open, so it cannot navigate
+      // back to a conversation the user left during abort cleanup.
+    } else if (unwindEvent === "failed") {
+      pendingEditMessageUnwind = null;
+      // The local transcript was only an optimistic projection. Restore the
+      // daemon's untouched canonical history when validation or abort cleanup
+      // made the durable unwind fail.
+      if (state.convId === pending.convId) daemon.loadConversation(pending.convId);
+    }
+  }
   if (event.type === "conversation_loaded" && event.convId === reconnectNavigationTarget) {
     reconnectNavigationTarget = null;
   } else if (event.type === "error" && event.convId === reconnectNavigationTarget) {
@@ -654,6 +687,15 @@ function handleSubmit(): void {
 
   if (!text && !hasImages) return;
 
+  // Do not race a newly edited message against the daemon's durable unwind.
+  // The prompt remains editable and intact; the canonical response normally
+  // arrives well before the user finishes editing.
+  if (pendingEditMessageUnwind?.convId === state.convId) {
+    pushSystemMessage(state, "Finishing conversation rewind; submit again in a moment.", theme.warning);
+    scheduleRender();
+    return;
+  }
+
   // Slash commands (only when no images attached — pure text commands)
   if (text && !hasImages) {
     const cmdResult = tryCommand(text, state);
@@ -753,6 +795,9 @@ function handleSubmit(): void {
           break;
         case "account":
           daemon.account(cmdResult.provider ?? "openai", cmdResult.target);
+          break;
+        case "usage_reset_requested":
+          daemon.consumeUsageReset(cmdResult.provider);
           break;
         case "logout":
           daemon.logout(cmdResult.provider ?? state.provider);
@@ -1202,9 +1247,17 @@ function confirmSelectedEditMessage(): void {
       }
     }
   } else if (er.action === "edit_sent" && state.convId) {
+    const convId = state.convId;
+    const optimisticallyUnwound = applyOptimisticEditMessageUnwind(state, er.userMessageIndex);
+    if (optimisticallyUnwound) {
+      clearStreamTick();
+      pendingLocalInterruptConvId = null;
+      invalidateHistoryRenderCache(state);
+    }
     // The daemon's unwindTo handles abort internally if streaming,
     // waits for the stream to stop, then truncates.
-    daemon.unwindConversation(state.convId, er.userMessageIndex);
+    const reqId = daemon.unwindConversation(convId, er.userMessageIndex, er.expectedStartedAt, er.targetFingerprint);
+    if (optimisticallyUnwound) pendingEditMessageUnwind = { convId, reqId };
   } else if (er.action === "edit_instructions") {
     // Text is placed in prompt as "/instructions <text>" — user edits and submits
     // through the normal slash command flow. Nothing else to do here.
@@ -1285,8 +1338,12 @@ function handleKey(key: KeyEvent): void {
       if (isStreaming(state)) {
         const convId = state.convId ?? pendingNewConversationConvId;
         if (convId) {
+          // Bind Ctrl+Q to the stream visible at keypress time. The current turn
+          // can finish and start a queued successor before this command reaches
+          // the daemon; that successor must not inherit the stale interrupt.
+          const expectedStartedAt = state.pendingAI?.metadata?.startedAt;
           showLocalPreContentInterrupt(convId);
-          daemon.abort(convId);
+          daemon.abort(convId, expectedStartedAt);
         }
       }
       break;
@@ -1499,6 +1556,9 @@ async function reconnectToDaemon(): Promise<void> {
 
 function handleDaemonConnectionLost(): void {
   voiceInput?.cleanup();
+  // The client retains an ambiguous unwind with its operation UUID and replays
+  // it after reconnect. Keep the optimistic gate until that correlated result;
+  // the normal reconnect load may still reveal the canonical state meanwhile.
   clearPendingAI(state);
   clearStreamingTailMessages(state);
   clearStreamTick();

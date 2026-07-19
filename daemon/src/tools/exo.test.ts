@@ -366,6 +366,43 @@ describe("native exo daemon runtime", () => {
     expect(getQueuedMessages(parentId)).toEqual([expect.objectContaining({ text: "follow up", timing: "next-turn", subagentMaxDepth: 0 })]);
   });
 
+  test("queues sends to an already-streaming conversation regardless of mode", async () => {
+    const parentId = id("busy-parent");
+    const targetId = id("busy-target");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
+    create(targetId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "busy target");
+    setActiveJob(targetId, new AbortController(), Date.now());
+    const runTurn = mock(async () => successfulOutcome("should not run"));
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn,
+      notifyParent: () => {},
+      hasCredentials: () => true,
+    });
+
+    const modes = [undefined, "auto", "detach", "wait"] as const;
+    for (const mode of modes) {
+      const text = `follow up (${mode ?? "default"})`;
+      const result = await runtime.execute({
+        action: "send",
+        conversation_id: targetId,
+        text,
+        max_depth: 0,
+        ...(mode ? { mode } : {}),
+        ...(mode === "detach" ? { model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID] } : {}),
+      }, parentId);
+      expect(result).toMatchObject({ isError: false });
+      expect(result.output).toContain("queued the message for its next turn");
+    }
+
+    expect(getQueuedMessages(targetId)).toEqual(modes.map(mode => expect.objectContaining({
+      text: `follow up (${mode ?? "default"})`,
+      timing: "next-turn",
+      subagentMaxDepth: 0,
+    })));
+    expect(runTurn).not.toHaveBeenCalled();
+  });
+
   test("requires and monotonically decreases the nested subagent depth budget", async () => {
     const parentId = id("depth-parent");
     create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
@@ -536,10 +573,55 @@ describe("native exo daemon runtime", () => {
       expect.objectContaining({ toolName: "discord", sourceId: "account:paramount:notifications" }),
     ]);
 
+    const softResult = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "notifications",
+      args: {
+        operation: "subscribe",
+        tool: "discord",
+        source_id: "account:paramount:notifications",
+        delivery: "soft",
+        command: "cat >/dev/null; exit 9",
+        timeout_seconds: 12,
+        hard_wake: { when: "failure", message: "Handle selected Discord event.", include_output: false },
+      },
+    }, parentId)).output);
+    expect(softResult).toMatchObject({
+      subscription_id: result.subscription_id,
+      delivery: "soft",
+      soft_wake: {
+        command: "cat >/dev/null; exit 9",
+        timeout_seconds: 12,
+        hard_wake: { when: "failure", message: "Handle selected Discord event.", include_output: false },
+      },
+    });
+    expect(listExternalNotificationSubscriptions({ convId: parentId })[0]).toMatchObject({
+      delivery: "soft",
+      softWake: { timeoutMs: 12_000 },
+    });
+
+    const updatedSoft = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "notifications",
+      args: {
+        operation: "update",
+        subscription_id: softResult.subscription_id,
+        command: "cat >/dev/null; exit 11",
+      },
+    }, parentId)).output);
+    expect(updatedSoft).toMatchObject({
+      delivery: "soft",
+      soft_wake: {
+        command: "cat >/dev/null; exit 11",
+        timeout_seconds: 12,
+        hard_wake: { when: "failure", message: "Handle selected Discord event.", include_output: false },
+      },
+    });
+
     const removed = JSON.parse((await runtime.execute({
       action: "commands",
       command: "notifications",
-      args: { operation: "unsubscribe", subscription_id: result.subscription_id },
+      args: { operation: "unsubscribe", subscription_id: softResult.subscription_id },
     }, parentId)).output);
     expect(removed.unsubscribed).toBe(1);
   });
