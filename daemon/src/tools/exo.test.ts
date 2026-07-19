@@ -366,6 +366,43 @@ describe("native exo daemon runtime", () => {
     expect(getQueuedMessages(parentId)).toEqual([expect.objectContaining({ text: "follow up", timing: "next-turn", subagentMaxDepth: 0 })]);
   });
 
+  test("queues sends to an already-streaming conversation regardless of mode", async () => {
+    const parentId = id("busy-parent");
+    const targetId = id("busy-target");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
+    create(targetId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "busy target");
+    setActiveJob(targetId, new AbortController(), Date.now());
+    const runTurn = mock(async () => successfulOutcome("should not run"));
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn,
+      notifyParent: () => {},
+      hasCredentials: () => true,
+    });
+
+    const modes = [undefined, "auto", "detach", "wait"] as const;
+    for (const mode of modes) {
+      const text = `follow up (${mode ?? "default"})`;
+      const result = await runtime.execute({
+        action: "send",
+        conversation_id: targetId,
+        text,
+        max_depth: 0,
+        ...(mode ? { mode } : {}),
+        ...(mode === "detach" ? { model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID] } : {}),
+      }, parentId);
+      expect(result).toMatchObject({ isError: false });
+      expect(result.output).toContain("queued the message for its next turn");
+    }
+
+    expect(getQueuedMessages(targetId)).toEqual(modes.map(mode => expect.objectContaining({
+      text: `follow up (${mode ?? "default"})`,
+      timing: "next-turn",
+      subagentMaxDepth: 0,
+    })));
+    expect(runTurn).not.toHaveBeenCalled();
+  });
+
   test("requires and monotonically decreases the nested subagent depth budget", async () => {
     const parentId = id("depth-parent");
     create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");

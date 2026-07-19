@@ -683,12 +683,25 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       const target = convStore.get(convId);
       if (!target) throw new Error(`Conversation ${convId} not found`);
       taskTitle = target.title || "Subagent task";
+      // A busy target cannot safely change models or start a nested turn. Preserve
+      // the send as durable intent and let the queue scheduler run it next.
+      if (convStore.isStreaming(convId)) {
+        convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth);
+        return ok(`Conversation ${convId} is busy; queued the message for its next turn.`);
+      }
       setRequestedModel(convId, input);
       ensureCanStart(convStore.get(convId)!.provider);
     }
 
     const modeValue = input.mode;
     const mode = modeValue === "detach" || modeValue === "wait" || modeValue === "auto" ? modeValue : "auto";
+
+    // Keep this guard close to turn startup as well, in case a synchronous hook
+    // made the target busy after the initial existing-conversation check.
+    if (convStore.isStreaming(convId)) {
+      convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth);
+      return ok(`Conversation ${convId} is busy; queued the message for its next turn.`);
+    }
 
     // Sending to the currently executing conversation cannot recursively start a
     // second turn. Match exo-cli's useful behavior by queueing it for next turn.
@@ -698,14 +711,6 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       }
       convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth);
       return ok(`Conversation ${convId} is active; queued the message for its next turn.`);
-    }
-
-    if (convStore.isStreaming(convId)) {
-      if (mode === "wait") {
-        convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth);
-        return ok(`Conversation ${convId} is busy; queued the message for its next turn.`);
-      }
-      throw new Error(`Conversation ${convId} is already streaming`);
     }
     if (!created) ensureSubagentCapacity(parentConvId);
     const shouldDetach = mode !== "wait";

@@ -125,7 +125,7 @@ export const exo: Tool = {
       mode: {
         type: "string",
         enum: ["auto", "detach", "wait"],
-        description: "send lifecycle. auto (default) detaches sends to other/new conversations and queues a send to the active parent; detach starts and returns; wait returns the completed child result.",
+        description: "send lifecycle. auto (default) detaches sends to other/new conversations and queues a send to the active parent; detach starts and returns; wait returns the completed child result. Sends to an already-streaming conversation are queued for its next turn regardless of mode.",
       },
       notify_parent: {
         type: "boolean",
