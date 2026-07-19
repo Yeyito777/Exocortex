@@ -96,13 +96,6 @@ function interleaveTranscriptMarkers(
 }
 
 const STREAMING_SNAPSHOT_INTERVAL_MS = 5_000;
-/**
- * Let clients observe streaming_stopped and deliver any already-buffered Ctrl+Q
- * before a daemon-owned queued successor becomes the active job. Without this
- * handoff boundary, that interrupt can race across turns and cancel the queued
- * message it was meant to continue with.
- */
-const QUEUED_TURN_HANDOFF_GRACE_MS = 150;
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -1375,27 +1368,10 @@ async function orchestrateAssistantTurn(
     // Start the first remaining queued message as a new turn. "next-turn"
     // messages that arrived too late join message-end messages here. The entry
     // remains durable until orchestrateSendMessage persists its user message.
-    let shutdownMode = getDaemonShutdownMode();
+    const shutdownMode = getDaemonShutdownMode();
     if (shutdownMode) {
       convStore.clearGoalContinuationAfterStream(convId);
       log("info", `orchestrator: preserved queued messages for ${convId} during daemon ${shutdownMode}`);
-    }
-    if (!shutdownMode && convStore.getQueuedMessages(convId).length > 0) {
-      // Keep the daemon queue scheduler from starting the successor during the
-      // grace period. This turn has already published streaming_stopped, so a
-      // delayed interrupt now finds no active job instead of crossing the turn
-      // boundary and aborting the queued continuation.
-      convStore.suspendQueuedMessageDelivery(convId);
-      try {
-        await new Promise<void>((resolve) => setTimeout(resolve, QUEUED_TURN_HANDOFF_GRACE_MS));
-      } finally {
-        convStore.resumeQueuedMessageDelivery(convId);
-      }
-      shutdownMode = getDaemonShutdownMode();
-      if (shutdownMode) {
-        convStore.clearGoalContinuationAfterStream(convId);
-        log("info", `orchestrator: preserved queued messages for ${convId} during daemon ${shutdownMode}`);
-      }
     }
     const allQueued = shutdownMode ? [] : convStore.getQueuedMessages(convId);
     if (allQueued.length > 0) {
