@@ -304,8 +304,8 @@ export interface ConversationTaskSummary {
   chronoMode?: "wait" | "sleep" | "wake";
 }
 
-/** How an external notification subscription delivers events to its conversation. */
-export type ExternalNotificationDelivery = "wake" | "inbox";
+/** How an external notification subscription handles events for its conversation. */
+export type ExternalNotificationDelivery = "wake" | "inbox" | "soft";
 
 /** Health of an external notification subscription's source. */
 export type ExternalIntegrationStatus = "active" | "offline" | "disabled";
@@ -444,9 +444,18 @@ export interface UsageWindow {
   resetsAt: number | null;
 }
 
+export interface UsageResetCredits {
+  /** Number of earned rate-limit resets currently available. */
+  availableCount: number;
+  /** Unix timestamp (ms) of the next available reset credit to expire. */
+  nextExpiresAt: number | null;
+}
+
 export interface UsageData {
   fiveHour: UsageWindow | null;
   sevenDay: UsageWindow | null;
+  /** OpenAI reset-credit metadata. Omitted for older caches and unsupported providers. */
+  resetCredits?: UsageResetCredits | null;
 }
 
 // ── Token stats ─────────────────────────────────────────────────────

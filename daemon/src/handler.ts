@@ -9,7 +9,7 @@
 
 import { log } from "./log";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
-import { refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
+import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
 import { buildSystemPrompt } from "./system";
@@ -64,6 +64,7 @@ import {
   unsubscribeExternalNotification,
   updateExternalNotificationSubscription,
 } from "./external-notifications";
+import { enqueueExternalNotificationSoftWake } from "./external-notification-soft-wakes";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
@@ -73,6 +74,7 @@ export function createHandler(server: DaemonServer) {
   // ── Local helper functions ────────────────────────────────────────
 
   let openAIAccountMutationInFlight = false;
+  let openAIUsageResetInFlight = false;
   let exocortexRuntime: ExocortexToolRuntime | undefined;
   const pendingBackgroundNotifications = new Map<string, { convId: string; completion: BackgroundTaskCompletion }>();
   configureChronoService((convId) => broadcastConversationUpdated(server, convId));
@@ -813,6 +815,60 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      case "consume_usage_reset": {
+        const provider = cmd.provider ?? "openai";
+        if (provider !== "openai") {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: `Usage resets are not supported for ${provider}.`,
+          });
+          break;
+        }
+        if (openAIAccountMutationInFlight) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: "Cannot reset OpenAI usage while account authentication is still in progress.",
+          });
+          break;
+        }
+        if (openAIUsageResetInFlight) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: "An OpenAI usage reset is already in progress.",
+          });
+          break;
+        }
+
+        openAIUsageResetInFlight = true;
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+        void consumeUsageReset(provider).then((result) => {
+          const usage = getLastUsage(provider);
+          broadcastUsage(provider, usage);
+          server.sendTo(client, {
+            type: "usage_reset_result",
+            reqId: cmd.reqId,
+            provider,
+            outcome: result.outcome,
+            windowsReset: result.windowsReset,
+            ...(result.remainingResets !== undefined ? { remainingResets: result.remainingResets } : {}),
+          });
+        }).catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          log("error", `handler: OpenAI usage reset failed: ${message}`);
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            message: `OpenAI usage reset failed: ${message}`,
+          });
+        }).finally(() => {
+          openAIUsageResetInFlight = false;
+        });
+        break;
+      }
+
       case "prepare_shutdown": {
         const mode = beginDaemonShutdown(cmd.mode);
         log("info", `handler: service requested daemon shutdown mode=${mode}`);
@@ -961,9 +1017,14 @@ export function createHandler(server: DaemonServer) {
 
       case "abort": {
         const ac = convStore.getActiveJob(cmd.convId);
-        if (ac) {
+        const activeStartedAt = convStore.getStreamingStartedAt(cmd.convId);
+        const targetsActiveStream = cmd.expectedStartedAt === undefined
+          || cmd.expectedStartedAt === activeStartedAt;
+        if (ac && targetsActiveStream) {
           ac.abort(cmd.reason === "daemon-restart" ? "daemon-restart" : undefined);
           log("info", `handler: abort requested for ${cmd.convId}${cmd.reason ? ` (${cmd.reason})` : ""}`);
+        } else if (ac && !targetsActiveStream) {
+          log("info", `handler: ignored stale abort for ${cmd.convId} (expected stream ${cmd.expectedStartedAt}, active stream ${activeStartedAt})`);
         }
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         break;
@@ -1101,6 +1162,7 @@ export function createHandler(server: DaemonServer) {
             sourceDescription: cmd.sourceDescription,
             convId: cmd.convId,
             delivery: cmd.delivery,
+            softWake: cmd.softWake,
           });
           server.sendTo(client, { type: "external_notification_subscription", reqId: cmd.reqId, subscription });
         } catch (err) {
@@ -1137,6 +1199,7 @@ export function createHandler(server: DaemonServer) {
         try {
           const subscription = updateExternalNotificationSubscription(cmd.subscriptionId, {
             delivery: cmd.delivery,
+            softWake: cmd.softWake,
             enabled: cmd.enabled,
           });
           server.sendTo(client, { type: "external_notification_subscription", reqId: cmd.reqId, subscription });
@@ -1158,6 +1221,19 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "External notification text must contain 1-100000 characters" });
           break;
         }
+        if (cmd.data !== undefined) {
+          let serializedData: string;
+          try {
+            serializedData = JSON.stringify(cmd.data);
+          } catch {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "External notification data must be JSON-serializable" });
+            break;
+          }
+          if (serializedData.length > 100_000) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "External notification data must contain no more than 100000 characters" });
+            break;
+          }
+        }
 
         for (const subscription of listExternalNotificationSubscriptions({ toolName: cmd.toolName, sourceId: cmd.sourceId })) {
           if (!subscription.enabled) continue;
@@ -1176,7 +1252,20 @@ export function createHandler(server: DaemonServer) {
             occurredAt: cmd.occurredAt,
           });
           try {
-            if (subscription.delivery === "inbox") {
+            if (subscription.delivery === "soft") {
+              const queued = enqueueExternalNotificationSoftWake(subscription, {
+                eventId,
+                text,
+                ...(cmd.data !== undefined ? { data: cmd.data } : {}),
+                ...(Number.isFinite(cmd.occurredAt) ? { occurredAt: cmd.occurredAt } : {}),
+              });
+              recordExternalNotificationReceipt(subscription.id, eventId);
+              deliveries.push({
+                subscriptionId: subscription.id,
+                convId: subscription.convId,
+                status: queued.duplicate ? "duplicate" : "queued",
+              });
+            } else if (subscription.delivery === "inbox") {
               if (!convStore.appendExternalInboxNotification(subscription.convId, envelope, Date.now())) {
                 throw new Error("Conversation not found");
               }

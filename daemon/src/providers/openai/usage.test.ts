@@ -2,7 +2,15 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "fs";
 import { dataDir, runtimeDir } from "@exocortex/shared/paths";
 import { clearProviderAuth, saveProviderAuth } from "../../store";
-import { clearUsage, handleUsageHeaders, OPENAI_USAGE_ACCOUNT_KEY_HEADER, refreshUsage } from "./usage";
+import {
+  clearUsage,
+  consumeUsageResetForSessionForTest,
+  handleUsageHeaders,
+  mergeRemoteUsageForTest,
+  OPENAI_USAGE_ACCOUNT_KEY_HEADER,
+  refreshUsage,
+  setOpenAIUsageFetchForTest,
+} from "./usage";
 import type { UsageData } from "../../messages";
 import type { StoredOpenAIAuthPool } from "./auth";
 import type { StoredOpenAIAuth } from "./session";
@@ -56,12 +64,117 @@ function resetUsageStorage(): void {
 }
 
 afterEach(() => {
+  setOpenAIUsageFetchForTest(null);
   clearUsage();
   clearProviderAuth("openai");
   resetUsageStorage();
 });
 
 describe("OpenAI usage header parsing", () => {
+  test("merges reset-credit details with remotely fetched rate-limit windows", () => {
+    const now = 1_700_000_000_000;
+    const usage = mergeRemoteUsageForTest(
+      null,
+      {
+        rate_limit: {
+          primary_window: {
+            used_percent: 12.5,
+            limit_window_seconds: 5 * 60 * 60,
+            reset_at: 1_700_018_000,
+          },
+          secondary_window: {
+            used_percent: 40,
+            limit_window_seconds: 7 * 24 * 60 * 60,
+            reset_after_seconds: 3600,
+          },
+        },
+        rate_limit_reset_credits: { available_count: 4 },
+      },
+      {
+        available_count: 3,
+        credits: [
+          { status: "redeemed", expires_at: "2026-07-01T00:00:00Z" },
+          { status: "available", expires_at: "2026-07-20T00:00:00Z" },
+          { status: "available", expires_at: "2026-07-18T00:00:00Z" },
+          { status: "available", expires_at: null },
+        ],
+      },
+      now,
+    );
+
+    expect(usage).toEqual({
+      fiveHour: { utilization: 12.5, resetsAt: 1_700_018_000_000 },
+      sevenDay: { utilization: 40, resetsAt: now + 3_600_000 },
+      resetCredits: {
+        availableCount: 3,
+        nextExpiresAt: Date.parse("2026-07-18T00:00:00Z"),
+      },
+    });
+  });
+
+  test("uses the usage summary count when reset-credit details are unavailable", () => {
+    const previous: UsageData = {
+      fiveHour: null,
+      sevenDay: null,
+      resetCredits: { availableCount: 2, nextExpiresAt: 1_800_000_000_000 },
+    };
+
+    expect(mergeRemoteUsageForTest(
+      previous,
+      { rate_limit_reset_credits: { available_count: 2 } },
+      null,
+      1_700_000_000_000,
+    ).resetCredits).toEqual(previous.resetCredits);
+
+    expect(mergeRemoteUsageForTest(
+      previous,
+      { rate_limit_reset_credits: { available_count: 1 } },
+      null,
+      1_700_000_000_000,
+    ).resetCredits).toEqual({ availableCount: 1, nextExpiresAt: null });
+  });
+
+  test("uses the Codex WHAM reset endpoints and redeem request contract", async () => {
+    resetUsageStorage();
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    setOpenAIUsageFetchForTest(async (input, init) => {
+      const url = String(input);
+      requests.push({ url, init });
+      if (url.endsWith("/rate-limit-reset-credits/consume")) {
+        return new Response(JSON.stringify({ code: "reset", windows_reset: 2 }), { status: 200 });
+      }
+      if (url.endsWith("/rate-limit-reset-credits")) {
+        return new Response(JSON.stringify({
+          available_count: 1,
+          credits: [{ status: "available", expires_at: "2026-07-20T00:00:00Z" }],
+        }), { status: 200 });
+      }
+      if (url.endsWith("/wham/usage")) {
+        return new Response(JSON.stringify({
+          rate_limit_reset_credits: { available_count: 1 },
+        }), { status: 200 });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+
+    const result = await consumeUsageResetForSessionForTest({
+      accessToken: "test-token",
+      accountId: "account-123",
+      accountKey: "account-123",
+    }, "redeem-123");
+
+    expect(result).toEqual({ outcome: "reset", windowsReset: 2, remainingResets: 1 });
+    const consume = requests.find((request) => request.url.endsWith("/rate-limit-reset-credits/consume"));
+    expect(consume?.url).toBe("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume");
+    expect(consume?.init?.method).toBe("POST");
+    expect(JSON.parse(String(consume?.init?.body))).toEqual({ redeem_request_id: "redeem-123" });
+    const headers = new Headers(consume?.init?.headers);
+    expect(headers.get("authorization")).toBe("Bearer test-token");
+    expect(headers.get("chatgpt-account-id")).toBe("account-123");
+    expect(requests.map((request) => request.url)).toContain("https://chatgpt.com/backend-api/wham/usage");
+    expect(requests.map((request) => request.url)).toContain("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits");
+  });
+
   test("uses standard codex used-percent headers for the statusline windows", () => {
     resetUsageStorage();
 

@@ -321,5 +321,6 @@ describe("task elapsed formatting", () => {
   test("formats integration delivery and health compactly", () => {
     expect(formatIntegrationDeliveryStatus({ delivery: "wake", status: "active" })).toBe("wake active");
     expect(formatIntegrationDeliveryStatus({ delivery: "inbox", status: "disabled" })).toBe("inbox disabled");
+    expect(formatIntegrationDeliveryStatus({ delivery: "soft", status: "active" })).toBe("soft active");
   });
 });

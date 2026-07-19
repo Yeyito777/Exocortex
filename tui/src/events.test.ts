@@ -26,6 +26,39 @@ describe("auth browser opener", () => {
   });
 });
 
+describe("usage reset results", () => {
+  test("reports a successful reset and remaining balance", () => {
+    const state = createInitialState();
+    handleEvent({
+      type: "usage_reset_result",
+      provider: "openai",
+      outcome: "reset",
+      windowsReset: 2,
+      remainingResets: 3,
+    }, state, daemon);
+
+    expect(state.messages.at(-1)).toMatchObject({
+      role: "system",
+      text: "Usage reset. You have 3 usage resets left.",
+    });
+  });
+
+  test("reports when there is no eligible window to reset", () => {
+    const state = createInitialState();
+    handleEvent({
+      type: "usage_reset_result",
+      provider: "openai",
+      outcome: "nothing_to_reset",
+      windowsReset: 0,
+    }, state, daemon);
+
+    expect(state.messages.at(-1)).toMatchObject({
+      role: "system",
+      text: "Your usage does not need a reset right now.",
+    });
+  });
+});
+
 describe("daemon queue synchronization", () => {
   test("replaces queue shadows from the shared snapshot while retaining unsent voice placeholders", () => {
     const state = createInitialState();

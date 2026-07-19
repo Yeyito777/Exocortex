@@ -195,8 +195,8 @@ export class DaemonClient {
     this.send({ type: "ping" });
   }
 
-  abort(convId: string): void {
-    this.send({ type: "abort", convId });
+  abort(convId: string, expectedStartedAt?: number): void {
+    this.send({ type: "abort", convId, expectedStartedAt });
   }
 
   backgroundTool(convId: string): void {
@@ -419,6 +419,10 @@ export class DaemonClient {
 
   account(provider?: ProviderId, target?: string): void {
     this.send({ type: "account", provider, target });
+  }
+
+  consumeUsageReset(provider: ProviderId = "openai"): void {
+    this.send({ type: "consume_usage_reset", provider });
   }
 
   logout(provider?: ProviderId): void {

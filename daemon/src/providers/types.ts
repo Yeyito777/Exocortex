@@ -2,7 +2,7 @@ import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData
 import type { OAuthProfile, StoredTokens } from "../store";
 import type { AssistantProviderData } from "./provider-data";
 import type { OpenAICompactionItem } from "./openai/types";
-import type { DeviceCodeAuthPrompt, OpenAILoginMethod } from "@exocortex/shared/protocol";
+import type { DeviceCodeAuthPrompt, OpenAILoginMethod, UsageResetOutcome } from "@exocortex/shared/protocol";
 
 export type ServiceTier = "fast";
 
@@ -191,6 +191,10 @@ export interface ProviderAuthAdapter {
 export interface ProviderUsageAdapter {
   getLastUsage(): UsageData | null;
   refreshUsage(onUpdate: (usage: UsageData | null) => void): void;
+  /** Fetch provider-owned usage state that is not available in response headers. */
+  refreshRemoteUsage?(): Promise<UsageData | null>;
+  /** Consume one earned usage reset, when supported by the provider. */
+  consumeReset?(): Promise<{ outcome: UsageResetOutcome; windowsReset: number; remainingResets?: number }>;
   handleUsageHeaders(headers: Headers, onUpdate: (usage: UsageData) => void): void;
   clearUsage(): void;
 }

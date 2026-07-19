@@ -65,6 +65,19 @@ describe("DaemonClient request-scoped events", () => {
 });
 
 describe("DaemonClient commands", () => {
+  test("binds abort commands to the stream visible at keypress time", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.abort("conv-1", 1234);
+
+    expect(internal.pendingCommands).toEqual([{
+      type: "abort",
+      convId: "conv-1",
+      expectedStartedAt: 1234,
+    }]);
+  });
+
   test("sends stable daemon-owned queue metadata", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;
