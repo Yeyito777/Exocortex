@@ -15,3 +15,6 @@ export { isCodeBlockLine, CODE_GUTTER, FENCE_OPEN_RE, isFenceClose, renderCodeBl
 
 // Tables
 export { isTableLine, isTableSeparator, isBoxDrawingLine, renderTableBlock } from "./tables";
+
+// TeX/LaTeX math rendered as terminal-friendly Unicode
+export { convertLatexMath, renderInlineMath, renderInlineMathChunks, takeDisplayMathBlock, renderDisplayMath } from "./math";

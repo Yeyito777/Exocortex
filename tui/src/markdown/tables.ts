@@ -1,4 +1,5 @@
 import { formatMarkdownChunks, stripMarkdown, termWidth, sliceByWidth, visibleLength } from "./formatting";
+import { renderInlineMath } from "./math";
 
 /**
  * Detects markdown table rows (start and end with |)
@@ -33,10 +34,13 @@ export function isBoxDrawingLine(line: string): boolean {
 /**
  * Parses cells from a table row line
  */
-function parseTableCells(line: string): string[] {
+function parseTableCells(line: string, renderMath: boolean): string[] {
   const trimmed = line.trim();
   const inner = trimmed.slice(1, -1); // Remove leading and trailing |
-  return inner.split("|").map(cell => cell.trim());
+  return inner.split("|").map(cell => {
+    const content = cell.trim();
+    return renderMath ? renderInlineMath(content) : content;
+  });
 }
 
 /**
@@ -200,7 +204,7 @@ export function renderTableBlock(
       dataRows.push([]); // placeholder
     } else {
       isSep.push(false);
-      dataRows.push(parseTableCells(line));
+      dataRows.push(parseTableCells(line, bgRestore != null));
     }
   }
 

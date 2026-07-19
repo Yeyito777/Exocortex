@@ -95,3 +95,64 @@ describe("markdown fenced code block wrapping", () => {
     expect(result.join).toEqual(["", "", ""]);
   });
 });
+
+describe("markdown math rendering", () => {
+  test("renders inline math inside prose and tables", () => {
+    const prose = markdownWordWrap(String.raw`For \(P\land Q\), use **both** statements.`, 80, "\x1b[0m");
+    expect(prose.lines.map(stripAnsi)).toEqual(["For P ∧ Q, use both statements."]);
+    expect(prose.lines.join("\n")).toContain("\x1b[1m");
+
+    const table = markdownWordWrap([
+      String.raw`| \(P\) | \(\neg P\) |`,
+      "|---|---|",
+      "| T | F |",
+    ].join("\n"), 30, "\x1b[0m");
+    expect(table.lines.map(stripAnsi)).toEqual([
+      "┌───┬─────┐",
+      "│ P │ ¬ P │",
+      "├───┼─────┤",
+      "│ T │ F   │",
+      "└───┴─────┘",
+    ]);
+  });
+
+  test("renders standalone display math and retains Unicode copy projection", () => {
+    const rendered = markdownWordWrap([
+      String.raw`\[`,
+      String.raw`\neg(P\land Q)\iff(\neg P\lor\neg Q)`,
+      String.raw`\]`,
+    ].join("\n"), 60, "\x1b[0m");
+
+    expect(rendered.lines.map(line => stripAnsi(line).trim())).toEqual([
+      "¬(P ∧ Q) ⇔ (¬ P ∨ ¬ Q)",
+    ]);
+    expect(rendered.copy?.[0]?.text).toBe("¬(P ∧ Q) ⇔ (¬ P ∨ ¬ Q)");
+  });
+
+  test("does not render math delimiters inside fenced or inline code", () => {
+    const rendered = markdownWordWrap([
+      String.raw`Inline \(x^2\), but ` + "`" + String.raw`\(x^2\)` + "`.",
+      "```text",
+      String.raw`\[x^2\]`,
+      "```",
+    ].join("\n"), 80, "\x1b[0m");
+
+    expect(rendered.lines.map(stripAnsi)).toEqual([
+      "Inline x², but \\(x^2\\).",
+      "▎ text",
+      "▎ \\[x^2\\]",
+    ]);
+  });
+
+  test("does not render math inside an inline code span crossing a hard newline", () => {
+    const rendered = markdownWordWrap([
+      "Code `literal \\(x^2\\)",
+      "continues here`, then \\(y^2\\).",
+    ].join("\n"), 80, "\x1b[0m");
+
+    expect(rendered.lines.map(stripAnsi)).toEqual([
+      "Code literal \\(x^2\\)",
+      "continues here, then y².",
+    ]);
+  });
+});
