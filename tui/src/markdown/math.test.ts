@@ -7,10 +7,6 @@ import {
   takeDisplayMathBlock,
 } from "./math";
 
-function stripAnsi(input: string): string {
-  return input.replace(/\x1b\[[0-9;]*m/g, "");
-}
-
 describe("terminal LaTeX conversion", () => {
   test("renders the logic notation used in the reference conversation", () => {
     expect(convertLatexMath(String.raw`\neg(P\land Q)\iff(\neg P\lor\neg Q)`))
@@ -86,10 +82,11 @@ describe("display math blocks", () => {
     expect(takeDisplayMathBlock([String.raw`\[`, "unclosed"], 0)).toBeNull();
   });
 
-  test("centers and styles rendered display rows while exposing plain copy text", () => {
+  test("keeps rendered display rows plain and left aligned while exposing copy text", () => {
     const rendered = renderDisplayMath(String.raw`P\land Q`, 20);
-    expect(stripAnsi(rendered.lines[0]).trim()).toBe("P ∧ Q");
+    expect(rendered.lines[0]).toBe("P ∧ Q");
     expect(rendered.copy[0]?.text).toBe("P ∧ Q");
+    expect(rendered.copy[0]?.displayStart).toBe(0);
     expect(rendered.cont).toEqual([false]);
   });
 });

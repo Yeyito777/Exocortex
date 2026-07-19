@@ -1,5 +1,4 @@
 import { latexToUnicode } from "@devhub-io/latex-to-unicode";
-import { theme } from "../theme";
 import type { WrapCopyLine } from "../textwrap";
 import { sliceByWidth, termWidth } from "../textwidth";
 
@@ -527,7 +526,7 @@ function breakMathLine(line: string, width: number): string[] {
   return chunks;
 }
 
-/** Render a display expression as centered, accented Unicode terminal rows. */
+/** Render a display expression as ordinary left-aligned assistant text. */
 export function renderDisplayMath(source: string, width: number): RenderedDisplayMath {
   const safeWidth = Math.max(1, width);
   const converted = convertLatexMath(source, true);
@@ -540,11 +539,10 @@ export function renderDisplayMath(source: string, width: number): RenderedDispla
     const chunks = breakMathLine(logicalLine, safeWidth);
     for (let index = 0; index < chunks.length; index++) {
       const chunk = chunks[index];
-      const padding = Math.max(0, Math.floor((safeWidth - termWidth(chunk)) / 2));
-      lines.push(`${" ".repeat(padding)}${theme.accent}${chunk}${theme.reset}`);
+      lines.push(chunk);
       cont.push(index > 0);
       join.push("");
-      copy.push({ text: chunk, displayStart: padding });
+      copy.push({ text: chunk, displayStart: 0 });
     }
   }
 
