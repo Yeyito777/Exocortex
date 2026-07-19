@@ -8,6 +8,7 @@ import { getDaemonShutdownMode, resetDaemonShutdownModeForTest } from "./daemon-
 import { invalidateCredentialsCache } from "./auth";
 import { clearProviderAuth, saveProviderAuth } from "./store";
 import { resetExternalNotificationsForTest } from "./external-notifications";
+import { listPendingExternalNotificationSoftWakes, resetExternalNotificationSoftWakesForTest } from "./external-notification-soft-wakes";
 
 interface TestAssistantOutcome {
   ok: boolean;
@@ -290,6 +291,7 @@ describe("handler daemon-owned queue", () => {
 
 describe("handler external notification routing", () => {
   afterEach(() => {
+    resetExternalNotificationSoftWakesForTest();
     resetExternalNotificationsForTest();
     cleanupIds();
   });
@@ -400,6 +402,75 @@ describe("handler external notification routing", () => {
     }));
     expect(sent.find(event => event.reqId === "inbox-publish")).toEqual(expect.objectContaining({
       deliveries: [expect.objectContaining({ status: "inbox", convId: id })],
+    }));
+  });
+
+  test("durably queues structured events for command soft-wake subscriptions", async () => {
+    resetExternalNotificationSoftWakesForTest();
+    resetExternalNotificationsForTest();
+    const id = mkId("external-soft");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "Soft target");
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendHistoryUpdatedToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "subscribe_external_notification",
+      reqId: "soft-subscribe",
+      toolName: "whatsapp",
+      sourceId: "incoming-messages",
+      sourceLabel: "Incoming WhatsApp messages",
+      convId: id,
+      delivery: "soft",
+      softWake: {
+        command: "cat >/dev/null",
+        timeoutMs: 1_000,
+        hardWake: { when: "failure", message: "Handle /ai.", includeOutput: true },
+      },
+    });
+    await handle({} as never, {
+      type: "publish_external_notification",
+      reqId: "soft-publish",
+      toolName: "whatsapp",
+      sourceId: "incoming-messages",
+      eventId: "wa-soft-1",
+      text: "Message from Alice: /ai hello",
+      data: { senderName: "Alice", body: "   /ai hello" },
+    });
+
+    expect(listPendingExternalNotificationSoftWakes()).toEqual([
+      expect.objectContaining({
+        convId: id,
+        event: expect.objectContaining({
+          eventId: "wa-soft-1",
+          data: { senderName: "Alice", body: "   /ai hello" },
+        }),
+      }),
+    ]);
+    expect(sent.find(event => event.reqId === "soft-publish")).toEqual(expect.objectContaining({
+      deliveries: [expect.objectContaining({ status: "queued", convId: id })],
+    }));
+
+    await handle({} as never, {
+      type: "publish_external_notification",
+      reqId: "soft-duplicate",
+      toolName: "whatsapp",
+      sourceId: "incoming-messages",
+      eventId: "wa-soft-1",
+      text: "Message from Alice: /ai hello",
+      data: { senderName: "Alice", body: "   /ai hello" },
+    });
+    expect(sent.find(event => event.reqId === "soft-duplicate")).toEqual(expect.objectContaining({
+      deliveries: [expect.objectContaining({ status: "duplicate", convId: id })],
     }));
   });
 });

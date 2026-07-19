@@ -64,6 +64,7 @@ import {
   unsubscribeExternalNotification,
   updateExternalNotificationSubscription,
 } from "./external-notifications";
+import { enqueueExternalNotificationSoftWake } from "./external-notification-soft-wakes";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
@@ -1106,6 +1107,7 @@ export function createHandler(server: DaemonServer) {
             sourceDescription: cmd.sourceDescription,
             convId: cmd.convId,
             delivery: cmd.delivery,
+            softWake: cmd.softWake,
           });
           server.sendTo(client, { type: "external_notification_subscription", reqId: cmd.reqId, subscription });
         } catch (err) {
@@ -1142,6 +1144,7 @@ export function createHandler(server: DaemonServer) {
         try {
           const subscription = updateExternalNotificationSubscription(cmd.subscriptionId, {
             delivery: cmd.delivery,
+            softWake: cmd.softWake,
             enabled: cmd.enabled,
           });
           server.sendTo(client, { type: "external_notification_subscription", reqId: cmd.reqId, subscription });
@@ -1163,6 +1166,19 @@ export function createHandler(server: DaemonServer) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "External notification text must contain 1-100000 characters" });
           break;
         }
+        if (cmd.data !== undefined) {
+          let serializedData: string;
+          try {
+            serializedData = JSON.stringify(cmd.data);
+          } catch {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "External notification data must be JSON-serializable" });
+            break;
+          }
+          if (serializedData.length > 100_000) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "External notification data must contain no more than 100000 characters" });
+            break;
+          }
+        }
 
         for (const subscription of listExternalNotificationSubscriptions({ toolName: cmd.toolName, sourceId: cmd.sourceId })) {
           if (!subscription.enabled) continue;
@@ -1181,7 +1197,20 @@ export function createHandler(server: DaemonServer) {
             occurredAt: cmd.occurredAt,
           });
           try {
-            if (subscription.delivery === "inbox") {
+            if (subscription.delivery === "soft") {
+              const queued = enqueueExternalNotificationSoftWake(subscription, {
+                eventId,
+                text,
+                ...(cmd.data !== undefined ? { data: cmd.data } : {}),
+                ...(Number.isFinite(cmd.occurredAt) ? { occurredAt: cmd.occurredAt } : {}),
+              });
+              recordExternalNotificationReceipt(subscription.id, eventId);
+              deliveries.push({
+                subscriptionId: subscription.id,
+                convId: subscription.convId,
+                status: queued.duplicate ? "duplicate" : "queued",
+              });
+            } else if (subscription.delivery === "inbox") {
               if (!convStore.appendExternalInboxNotification(subscription.convId, envelope, Date.now())) {
                 throw new Error("Conversation not found");
               }

@@ -3,9 +3,9 @@
  *
  * Renders the current goal, active subagents, detached background commands,
  * displayable Chrono work, and durable external notification subscriptions as a
- * compact top-right overlay. The daemon supplies conversation summaries; this
+ * compact top-right panel. The daemon supplies conversation summaries; this
  * module adds the focused conversation's durable goal and owns all visual
- * formatting for the panel.
+ * formatting and horizontal space reservation for the panel.
  */
 
 import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
@@ -16,6 +16,10 @@ import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
 
 const MAX_PANEL_WIDTH = 50;
 const MIN_PANEL_WIDTH = 30;
+/** Keep enough chat beside the panel for useful word wrapping. */
+export const MIN_TASK_PANEL_HISTORY_WIDTH = 30;
+/** Blank column separating wrapped history from the task-panel border. */
+export const TASK_PANEL_HISTORY_GAP = 1;
 const ELAPSED_WIDTH = 7;
 const INTEGRATION_STATE_WIDTH = 14;
 const PANEL_BG_HEX = "#00050f";
@@ -32,6 +36,12 @@ export interface TaskPanelEntry extends Omit<ConversationTaskSummary, "kind"> {
 export interface TaskPanelRender {
   width: number;
   lines: string[];
+}
+
+export interface TaskPanelLayout {
+  panel: TaskPanelRender | null;
+  /** Width available to history rows that are vertically beside the panel. */
+  historyWidth: number;
 }
 
 export function focusedConversationTasks(state: RenderState): TaskPanelEntry[] {
@@ -292,4 +302,23 @@ export function renderTaskPanel(
 
   lines.push(withPanelBg(`${outline}╰${"─".repeat(innerWidth)}╯`));
   return { width: panelWidth, lines };
+}
+
+/**
+ * Lay out the panel as a right-hand float while preserving a readable history
+ * column to its left. On narrow terminals the panel is omitted instead of
+ * covering the entire conversation.
+ */
+export function layoutTaskPanel(
+  state: RenderState,
+  chatWidth: number,
+  maxHeight: number,
+  now = Date.now(),
+): TaskPanelLayout {
+  const availablePanelWidth = chatWidth - MIN_TASK_PANEL_HISTORY_WIDTH - TASK_PANEL_HISTORY_GAP;
+  const panel = renderTaskPanel(state, availablePanelWidth, maxHeight, now);
+  return {
+    panel,
+    historyWidth: panel ? chatWidth - panel.width - TASK_PANEL_HISTORY_GAP : chatWidth,
+  };
 }
