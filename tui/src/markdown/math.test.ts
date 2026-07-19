@@ -30,6 +30,25 @@ describe("terminal LaTeX conversion", () => {
     expect(convertLatexMath(source, true)).toBe("⎛ a b ⎞\n⎝ c d ⎠");
   });
 
+  test("collapses pretty-printed display source while preserving structural environment rows", () => {
+    const ordinary = String.raw`\forall x\exists y\Big(
+      (y\times y\times y=x)
+      \land
+      \forall z\big(
+        (z\times z\times z=x)\Rightarrow(z=y)
+      \big)
+    \Big).`;
+    expect(convertLatexMath(ordinary, true)).toBe(
+      "∀ x∃ y((y × y × y=x) ∧ ∀ z((z × z × z=x) ⇒ (z=y))).",
+    );
+
+    const aligned = String.raw`\begin{aligned}
+      x &= 1 \\
+      y &= 2
+    \end{aligned}`;
+    expect(convertLatexMath(aligned, true)).toBe("x = 1\ny = 2");
+  });
+
   test("preserves unknown commands and survives malformed input", () => {
     expect(convertLatexMath(String.raw`x + \unknown{y}`)).toContain("\\unknown");
     expect(() => convertLatexMath(String.raw`\frac{{{{`)).not.toThrow();

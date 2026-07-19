@@ -313,7 +313,13 @@ function preprocessEnvironments(input: string, display: boolean): string {
 export function convertLatexMath(source: string, display = false): string {
   if (!source) return "";
   try {
-    let prepared = preprocessEnvironments(source, display);
+    // TeX treats physical newlines in ordinary display expressions as
+    // whitespace. Collapse them before environment handling so pretty-printed
+    // source does not turn every parenthesis/operator into its own terminal
+    // row. Matrix/aligned/cases environments reintroduce intentional rows from
+    // their `\\` separators below.
+    const normalizedSource = display ? source.replace(/\s*\n\s*/g, " ") : source;
+    let prepared = preprocessEnvironments(normalizedSource, display);
     prepared = preprocessGroupedCommands(prepared);
     prepared = prepared
       .replace(/\\\{/g, ESCAPED_LEFT_BRACE)
@@ -333,6 +339,8 @@ export function convertLatexMath(source: string, display = false): string {
       .replaceAll(ESCAPED_AMPERSAND, "&")
       .replace(/\*/g, "×")
       .replace(/[ \t]+([,.;:])/g, "$1")
+      .replace(/\([ \t]+/g, "(")
+      .replace(/[ \t]+\)/g, ")")
       .replace(/[ \t]{2,}/g, " ")
       .trim();
   } catch {
