@@ -1294,8 +1294,12 @@ function handleKey(key: KeyEvent): void {
       if (isStreaming(state)) {
         const convId = state.convId ?? pendingNewConversationConvId;
         if (convId) {
+          // Bind Ctrl+Q to the stream visible at keypress time. The current turn
+          // can finish and start a queued successor before this command reaches
+          // the daemon; that successor must not inherit the stale interrupt.
+          const expectedStartedAt = state.pendingAI?.metadata?.startedAt;
           showLocalPreContentInterrupt(convId);
-          daemon.abort(convId);
+          daemon.abort(convId, expectedStartedAt);
         }
       }
       break;

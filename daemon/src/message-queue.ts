@@ -37,6 +37,7 @@ let messages: QueuedMessage[] = [];
 let changedListener: QueueChangedListener | null = null;
 /** Ephemeral delivery gates used by destructive operations such as unwind. */
 const deliverySuspended = new Set<string>();
+let persistenceFailureForTest: Error | null = null;
 
 function publicEntry(entry: QueuedMessage): QueuedMessageInfo {
   const {
@@ -47,9 +48,23 @@ function publicEntry(entry: QueuedMessage): QueuedMessageInfo {
   return info;
 }
 
-function commit(): void {
-  persistence.saveQueuedMessages(messages);
+function cloneMessages(): QueuedMessage[] {
+  return messages.map(entry => ({ ...entry, ...(entry.images ? { images: entry.images.map(image => ({ ...image })) } : {}) }));
+}
+
+function mutateAndCommit<T>(mutation: () => T): T {
+  const previous = cloneMessages();
+  let result: T;
+  try {
+    result = mutation();
+    if (persistenceFailureForTest) throw persistenceFailureForTest;
+    persistence.saveQueuedMessages(messages);
+  } catch (error) {
+    messages = previous;
+    throw error;
+  }
   changedListener?.(listQueuedMessages());
+  return result;
 }
 
 /** Install the daemon-server broadcaster/scheduler hook. */
@@ -135,9 +150,10 @@ export function pushQueuedMessage(
     subagentMaxDepth,
     subagentNotificationId,
   };
-  messages.push(entry);
-  commit();
-  return { ...entry };
+  return mutateAndCommit(() => {
+    messages.push(entry);
+    return { ...entry };
+  });
 }
 
 /** Push a `/queue` entry whose readiness is evaluated by the daemon. */
@@ -166,17 +182,17 @@ export function pushGlobalIdleQueuedMessage(
     ...("folderId" in options ? { folderId: options.folderId ?? null } : {}),
     ...(options.waitTarget && options.waitTarget.type !== "global" ? { waitTarget: options.waitTarget } : {}),
   };
-  messages.push(entry);
-  commit();
-  return { ...entry };
+  return mutateAndCommit(() => {
+    messages.push(entry);
+    return { ...entry };
+  });
 }
 
 /** Remove one entry by stable identity. */
 export function removeQueuedMessageById(id: string): boolean {
   const index = messages.findIndex(entry => entry.id === id);
   if (index === -1) return false;
-  messages.splice(index, 1);
-  commit();
+  mutateAndCommit(() => messages.splice(index, 1));
   return true;
 }
 
@@ -184,9 +200,8 @@ export function removeQueuedMessagesById(ids: Iterable<string>): number {
   const remove = new Set(ids);
   if (remove.size === 0) return 0;
   const before = messages.length;
-  messages = messages.filter(entry => !remove.has(entry.id));
-  const removed = before - messages.length;
-  if (removed > 0) commit();
+  const removed = before - messages.filter(entry => !remove.has(entry.id)).length;
+  if (removed > 0) mutateAndCommit(() => { messages = messages.filter(entry => !remove.has(entry.id)); });
   return removed;
 }
 
@@ -210,11 +225,12 @@ export function updateQueuedMessage(
 ): boolean {
   const entry = messages.find(candidate => candidate.id === id);
   if (!entry) return false;
-  entry.text = text;
-  entry.timing = entry.source === "global-idle" ? "message-end" : timing;
-  if (images?.length) entry.images = images;
-  else delete entry.images;
-  commit();
+  mutateAndCommit(() => {
+    entry.text = text;
+    entry.timing = entry.source === "global-idle" ? "message-end" : timing;
+    if (images?.length) entry.images = images;
+    else delete entry.images;
+  });
   return true;
 }
 
@@ -231,8 +247,9 @@ export function moveQueuedMessage(id: string, direction: "up" | "down"): boolean
   const position = candidates.findIndex(candidate => candidate.candidateIndex === index);
   const swap = candidates[position + (direction === "up" ? -1 : 1)];
   if (!swap) return false;
-  [messages[index], messages[swap.candidateIndex]] = [messages[swap.candidateIndex], messages[index]];
-  commit();
+  mutateAndCommit(() => {
+    [messages[index], messages[swap.candidateIndex]] = [messages[swap.candidateIndex], messages[index]];
+  });
   return true;
 }
 
@@ -243,8 +260,7 @@ export function drainQueuedMessages(convId: string, timing?: QueueTiming): Queue
     && (timing === undefined || entry.timing === timing));
   if (drained.length === 0) return [];
   const ids = new Set(drained.map(entry => entry.id));
-  messages = messages.filter(entry => !ids.has(entry.id));
-  commit();
+  mutateAndCommit(() => { messages = messages.filter(entry => !ids.has(entry.id)); });
   return drained.map(entry => ({ ...entry }));
 }
 
@@ -253,14 +269,16 @@ export function clearQueuedMessages(convId: string): void {
   deliverySuspended.delete(convId);
   const remaining = messages.filter(entry => entry.convId !== convId);
   if (remaining.length === messages.length) return;
-  messages = remaining;
-  commit();
+  mutateAndCommit(() => { messages = remaining; });
 }
 
 /** Test/process cleanup helper. */
 export function clearAllQueuedMessages(): void {
   deliverySuspended.clear();
   if (messages.length === 0) return;
-  messages = [];
-  commit();
+  mutateAndCommit(() => { messages = []; });
+}
+
+export function setMessageQueuePersistenceFailureForTest(error: Error | null): void {
+  persistenceFailureForTest = error;
 }

@@ -536,10 +536,55 @@ describe("native exo daemon runtime", () => {
       expect.objectContaining({ toolName: "discord", sourceId: "account:paramount:notifications" }),
     ]);
 
+    const softResult = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "notifications",
+      args: {
+        operation: "subscribe",
+        tool: "discord",
+        source_id: "account:paramount:notifications",
+        delivery: "soft",
+        command: "cat >/dev/null; exit 9",
+        timeout_seconds: 12,
+        hard_wake: { when: "failure", message: "Handle selected Discord event.", include_output: false },
+      },
+    }, parentId)).output);
+    expect(softResult).toMatchObject({
+      subscription_id: result.subscription_id,
+      delivery: "soft",
+      soft_wake: {
+        command: "cat >/dev/null; exit 9",
+        timeout_seconds: 12,
+        hard_wake: { when: "failure", message: "Handle selected Discord event.", include_output: false },
+      },
+    });
+    expect(listExternalNotificationSubscriptions({ convId: parentId })[0]).toMatchObject({
+      delivery: "soft",
+      softWake: { timeoutMs: 12_000 },
+    });
+
+    const updatedSoft = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "notifications",
+      args: {
+        operation: "update",
+        subscription_id: softResult.subscription_id,
+        command: "cat >/dev/null; exit 11",
+      },
+    }, parentId)).output);
+    expect(updatedSoft).toMatchObject({
+      delivery: "soft",
+      soft_wake: {
+        command: "cat >/dev/null; exit 11",
+        timeout_seconds: 12,
+        hard_wake: { when: "failure", message: "Handle selected Discord event.", include_output: false },
+      },
+    });
+
     const removed = JSON.parse((await runtime.execute({
       action: "commands",
       command: "notifications",
-      args: { operation: "unsubscribe", subscription_id: result.subscription_id },
+      args: { operation: "unsubscribe", subscription_id: softResult.subscription_id },
     }, parentId)).output);
     expect(removed.unsubscribed).toBe(1);
   });

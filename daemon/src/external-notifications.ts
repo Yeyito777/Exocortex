@@ -7,19 +7,26 @@ import type {
   ExternalNotificationDelivery,
 } from "@exocortex/shared/messages";
 import type {
+  ExternalNotificationSoftWake,
   ExternalNotificationSource,
   ExternalNotificationSubscription,
 } from "@exocortex/shared/protocol";
 import { onConversationRemoved } from "./conversation-lifecycle";
 import { log } from "./log";
 
+// Keep the additive soft-wake fields on v1 so an older daemon can still load
+// and preserve every legacy wake/inbox route during a downgrade.
 const FILE_VERSION = 1;
 const RECEIPTS_PER_SUBSCRIPTION = 200;
 const MAX_ID_LENGTH = 300;
 const MAX_LABEL_LENGTH = 300;
 const MAX_DESCRIPTION_LENGTH = 2_000;
+const MAX_COMMAND_LENGTH = 100_000;
+const MAX_HARD_WAKE_MESSAGE_LENGTH = 10_000;
+const MAX_SOFT_WAKE_TIMEOUT_MS = 86_400_000;
 
 type ChangedListener = (conversationIds: string[]) => void;
+type RoutesChangedListener = () => void;
 
 interface ExternalNotificationsFile {
   version: typeof FILE_VERSION;
@@ -36,6 +43,8 @@ const receipts = new Map<string, string[]>();
 const activeSources = new Set<string>();
 let loaded = false;
 let changedListener: ChangedListener | null = null;
+let routesChangedListener: RoutesChangedListener | null = null;
+let persistenceFailureForTest: Error | null = null;
 
 function sourceKey(toolName: string, sourceId: string): string {
   return `${toolName}\0${sourceId}`;
@@ -61,7 +70,57 @@ function cleanOptional(value: string | undefined, field: string, maxLength: numb
 function normalizeDelivery(value: unknown): ExternalNotificationDelivery {
   if (value === undefined || value === "wake") return "wake";
   if (value === "inbox") return "inbox";
-  throw new Error("delivery must be wake or inbox");
+  if (value === "soft") return "soft";
+  throw new Error("delivery must be wake, inbox, or soft");
+}
+
+function cleanMultilineRequired(value: unknown, field: string, maxLength: number): string {
+  const clean = typeof value === "string" ? value.trim() : "";
+  if (!clean) throw new Error(`${field} is required`);
+  if (clean.length > maxLength) throw new Error(`${field} is too long (max ${maxLength})`);
+  if (/\0/.test(clean)) throw new Error(`${field} contains invalid control characters`);
+  return clean;
+}
+
+function normalizeSoftWake(value: unknown, delivery: ExternalNotificationDelivery): ExternalNotificationSoftWake | undefined {
+  if (delivery !== "soft") {
+    if (value !== undefined) throw new Error("softWake is only valid when delivery is soft");
+    return undefined;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("softWake is required when delivery is soft");
+  }
+
+  const raw = value as Partial<ExternalNotificationSoftWake>;
+  const command = cleanMultilineRequired(raw.command, "softWake.command", MAX_COMMAND_LENGTH);
+  const timeoutMs = Number(raw.timeoutMs);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_SOFT_WAKE_TIMEOUT_MS) {
+    throw new Error("softWake.timeoutMs must be greater than zero and no more than 86400000");
+  }
+
+  let hardWake: ExternalNotificationSoftWake["hardWake"];
+  if (raw.hardWake !== undefined) {
+    if (!raw.hardWake || typeof raw.hardWake !== "object" || Array.isArray(raw.hardWake)) {
+      throw new Error("softWake.hardWake must be an object");
+    }
+    const when = raw.hardWake.when ?? "failure";
+    if (when !== "failure" && when !== "always") throw new Error("softWake.hardWake.when must be failure or always");
+    hardWake = {
+      when,
+      message: cleanMultilineRequired(
+        raw.hardWake.message || "Handle the external notification selected by this subscription command.",
+        "softWake.hardWake.message",
+        MAX_HARD_WAKE_MESSAGE_LENGTH,
+      ),
+      includeOutput: raw.hardWake.includeOutput !== false,
+    };
+  }
+
+  return {
+    command,
+    timeoutMs: Math.round(timeoutMs),
+    ...(hardWake ? { hardWake } : {}),
+  };
 }
 
 function cloneSource(source: ExternalNotificationSource): ExternalNotificationSource {
@@ -69,7 +128,15 @@ function cloneSource(source: ExternalNotificationSource): ExternalNotificationSo
 }
 
 function cloneSubscription(subscription: ExternalNotificationSubscription): ExternalNotificationSubscription {
-  return { ...subscription };
+  return {
+    ...subscription,
+    ...(subscription.softWake ? {
+      softWake: {
+        ...subscription.softWake,
+        ...(subscription.softWake.hardWake ? { hardWake: { ...subscription.softWake.hardWake } } : {}),
+      },
+    } : {}),
+  };
 }
 
 export function externalNotificationsPath(): string {
@@ -102,6 +169,7 @@ function normalizeSubscription(raw: unknown): ExternalNotificationSubscription |
     const sourceDescription = cleanOptional(value.sourceDescription, "sourceDescription", MAX_DESCRIPTION_LENGTH);
     const convId = cleanRequired(value.convId ?? "", "convId");
     const delivery = normalizeDelivery(value.delivery);
+    const softWake = normalizeSoftWake(value.softWake, delivery);
     const enabled = value.enabled !== false;
     const createdAt = Number.isFinite(value.createdAt) ? Number(value.createdAt) : Date.now();
     const updatedAt = Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : createdAt;
@@ -113,6 +181,7 @@ function normalizeSubscription(raw: unknown): ExternalNotificationSubscription |
       ...(sourceDescription ? { sourceDescription } : {}),
       convId,
       delivery,
+      ...(softWake ? { softWake } : {}),
       enabled,
       createdAt,
       updatedAt,
@@ -131,7 +200,7 @@ function ensureLoaded(): void {
   const path = externalNotificationsPath();
   if (!existsSync(path)) return;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<ExternalNotificationsFile>;
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<Omit<ExternalNotificationsFile, "version">> & { version?: number };
     if (parsed.version !== FILE_VERSION) throw new Error(`unsupported version ${String(parsed.version)}`);
     for (const raw of parsed.sources ?? []) {
       const source = normalizeSource(raw);
@@ -157,9 +226,14 @@ function ensureLoaded(): void {
 
 function save(): void {
   ensureLoaded();
+  if (persistenceFailureForTest) throw persistenceFailureForTest;
   const path = externalNotificationsPath();
   if (sources.size === 0 && subscriptions.size === 0) {
-    try { unlinkSync(path); } catch { /* absent */ }
+    try {
+      unlinkSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     return;
   }
   mkdirSync(dirname(path), { recursive: true });
@@ -175,13 +249,41 @@ function save(): void {
   renameSync(tmp, path);
 }
 
+function mutateRegistryDurably<T>(mutation: () => T): T {
+  ensureLoaded();
+  const sourceSnapshot = new Map(sources);
+  const subscriptionSnapshot = new Map(subscriptions);
+  const receiptSnapshot = new Map([...receipts].map(([id, eventIds]) => [id, [...eventIds]]));
+  const activeSourceSnapshot = new Set(activeSources);
+  try {
+    const result = mutation();
+    save();
+    return result;
+  } catch (error) {
+    sources.clear();
+    for (const [key, source] of sourceSnapshot) sources.set(key, source);
+    subscriptions.clear();
+    for (const [id, subscription] of subscriptionSnapshot) subscriptions.set(id, subscription);
+    receipts.clear();
+    for (const [id, eventIds] of receiptSnapshot) receipts.set(id, eventIds);
+    activeSources.clear();
+    for (const key of activeSourceSnapshot) activeSources.add(key);
+    throw error;
+  }
+}
+
 function notifyChanged(conversationIds: Iterable<string>): void {
   const unique = [...new Set(conversationIds)].filter(Boolean);
   if (unique.length > 0) changedListener?.(unique);
+  routesChangedListener?.();
 }
 
 export function setExternalNotificationsChangedListener(listener: ChangedListener | null): void {
   changedListener = listener;
+}
+
+export function setExternalNotificationRoutesChangedListener(listener: RoutesChangedListener | null): void {
+  routesChangedListener = listener;
 }
 
 export function registerExternalNotificationSource(input: {
@@ -204,23 +306,23 @@ export function registerExternalNotificationSource(input: {
     ...(description ? { description } : {}),
     registeredAt: Date.now(),
   };
-  sources.set(key, source);
-  activeSources.add(key);
-
   const affected: string[] = [];
-  for (const [subscriptionId, subscription] of subscriptions) {
-    if (subscription.toolName !== toolName || subscription.sourceId !== id) continue;
-    affected.push(subscription.convId);
-    if (subscription.sourceLabel !== label || subscription.sourceDescription !== description) {
-      subscriptions.set(subscriptionId, {
-        ...subscription,
-        sourceLabel: label,
-        ...(description ? { sourceDescription: description } : { sourceDescription: undefined }),
-        updatedAt: Date.now(),
-      });
+  mutateRegistryDurably(() => {
+    sources.set(key, source);
+    activeSources.add(key);
+    for (const [subscriptionId, subscription] of subscriptions) {
+      if (subscription.toolName !== toolName || subscription.sourceId !== id) continue;
+      affected.push(subscription.convId);
+      if (subscription.sourceLabel !== label || subscription.sourceDescription !== description) {
+        subscriptions.set(subscriptionId, {
+          ...subscription,
+          sourceLabel: label,
+          ...(description ? { sourceDescription: description } : { sourceDescription: undefined }),
+          updatedAt: Date.now(),
+        });
+      }
     }
-  }
-  save();
+  });
   if (!previous || previous.label !== label || previous.description !== description || affected.length > 0) notifyChanged(affected);
   return cloneSource(source);
 }
@@ -265,6 +367,7 @@ export function subscribeExternalNotification(input: {
   sourceDescription?: string;
   convId: string;
   delivery?: ExternalNotificationDelivery;
+  softWake?: ExternalNotificationSoftWake;
 }): ExternalNotificationSubscription {
   ensureLoaded();
   const toolName = cleanRequired(input.toolName, "toolName");
@@ -275,6 +378,7 @@ export function subscribeExternalNotification(input: {
   if (!sourceLabel) throw new Error(`External notification source not registered: ${toolName}/${sourceId}; sourceLabel is required for migration`);
   const sourceDescription = cleanOptional(input.sourceDescription, "sourceDescription", MAX_DESCRIPTION_LENGTH) ?? source?.description;
   const delivery = normalizeDelivery(input.delivery);
+  const softWake = normalizeSoftWake(input.softWake, delivery);
   const existing = [...subscriptions.values()].find(candidate =>
     candidate.toolName === toolName && candidate.sourceId === sourceId && candidate.convId === convId
   );
@@ -284,6 +388,7 @@ export function subscribeExternalNotification(input: {
     sourceLabel,
     ...(sourceDescription ? { sourceDescription } : { sourceDescription: undefined }),
     delivery,
+    ...(softWake ? { softWake } : { softWake: undefined }),
     enabled: true,
     updatedAt: now,
   } : {
@@ -294,12 +399,12 @@ export function subscribeExternalNotification(input: {
     ...(sourceDescription ? { sourceDescription } : {}),
     convId,
     delivery,
+    ...(softWake ? { softWake } : {}),
     enabled: true,
     createdAt: now,
     updatedAt: now,
   };
-  subscriptions.set(subscription.id, subscription);
-  save();
+  mutateRegistryDurably(() => subscriptions.set(subscription.id, subscription));
   notifyChanged([convId]);
   return cloneSubscription(subscription);
 }
@@ -327,17 +432,21 @@ export function unsubscribeExternalNotification(input: ExternalNotificationSubsc
     throw new Error("subscriptionId or at least one subscription filter is required");
   }
   const removedConvIds: string[] = [];
-  for (const [id, subscription] of subscriptions) {
-    if (subscriptionId && id !== subscriptionId) continue;
-    if (input.toolName && subscription.toolName !== input.toolName) continue;
-    if (input.sourceId && subscription.sourceId !== input.sourceId) continue;
-    if (input.convId && subscription.convId !== input.convId) continue;
-    subscriptions.delete(id);
-    receipts.delete(id);
-    removedConvIds.push(subscription.convId);
-  }
+  const matching = [...subscriptions].filter(([id, subscription]) => {
+    if (subscriptionId && id !== subscriptionId) return false;
+    if (input.toolName && subscription.toolName !== input.toolName) return false;
+    if (input.sourceId && subscription.sourceId !== input.sourceId) return false;
+    if (input.convId && subscription.convId !== input.convId) return false;
+    return true;
+  });
+  for (const [, subscription] of matching) removedConvIds.push(subscription.convId);
   if (removedConvIds.length > 0) {
-    save();
+    mutateRegistryDurably(() => {
+      for (const [id] of matching) {
+        subscriptions.delete(id);
+        receipts.delete(id);
+      }
+    });
     notifyChanged(removedConvIds);
   }
   return removedConvIds.length;
@@ -348,31 +457,39 @@ export function pruneExternalNotificationSubscriptions(validConversationIds: Rea
   ensureLoaded();
   const stale = [...subscriptions.values()].filter(subscription => !validConversationIds.has(subscription.convId));
   if (stale.length === 0) return 0;
-  for (const subscription of stale) {
-    subscriptions.delete(subscription.id);
-    receipts.delete(subscription.id);
-  }
-  save();
+  mutateRegistryDurably(() => {
+    for (const subscription of stale) {
+      subscriptions.delete(subscription.id);
+      receipts.delete(subscription.id);
+    }
+  });
   return stale.length;
 }
 
 export function updateExternalNotificationSubscription(
   subscriptionId: string,
-  patch: { delivery?: ExternalNotificationDelivery; enabled?: boolean },
+  patch: { delivery?: ExternalNotificationDelivery; softWake?: ExternalNotificationSoftWake; enabled?: boolean },
 ): ExternalNotificationSubscription {
   ensureLoaded();
   const id = cleanRequired(subscriptionId, "subscriptionId");
   const existing = subscriptions.get(id);
   if (!existing) throw new Error(`External notification subscription not found: ${id}`);
-  if (patch.delivery === undefined && patch.enabled === undefined) throw new Error("delivery or enabled is required");
+  if (patch.delivery === undefined && patch.softWake === undefined && patch.enabled === undefined) {
+    throw new Error("delivery, softWake, or enabled is required");
+  }
+  const delivery = patch.delivery === undefined ? existing.delivery : normalizeDelivery(patch.delivery);
+  const softWake = normalizeSoftWake(
+    patch.softWake ?? (delivery === "soft" && existing.delivery === "soft" ? existing.softWake : undefined),
+    delivery,
+  );
   const updated: ExternalNotificationSubscription = {
     ...existing,
-    ...(patch.delivery !== undefined ? { delivery: normalizeDelivery(patch.delivery) } : {}),
+    delivery,
+    ...(softWake ? { softWake } : { softWake: undefined }),
     ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
     updatedAt: Date.now(),
   };
-  subscriptions.set(id, updated);
-  save();
+  mutateRegistryDurably(() => subscriptions.set(id, updated));
   notifyChanged([updated.convId]);
   return cloneSubscription(updated);
 }
@@ -406,8 +523,7 @@ export function recordExternalNotificationReceipt(subscriptionId: string, eventI
   const cleanEvent = cleanRequired(eventId, "eventId");
   const current = receipts.get(subscriptionId) ?? [];
   if (current.includes(cleanEvent)) return;
-  receipts.set(subscriptionId, [...current, cleanEvent].slice(-RECEIPTS_PER_SUBSCRIPTION));
-  save();
+  mutateRegistryDurably(() => receipts.set(subscriptionId, [...current, cleanEvent].slice(-RECEIPTS_PER_SUBSCRIPTION)));
 }
 
 export function buildExternalNotificationEnvelope(
@@ -434,7 +550,13 @@ export function resetExternalNotificationsForTest(): void {
   activeSources.clear();
   loaded = true;
   changedListener = null;
+  routesChangedListener = null;
+  persistenceFailureForTest = null;
   try { unlinkSync(externalNotificationsPath()); } catch { /* absent */ }
+}
+
+export function setExternalNotificationPersistenceFailureForTest(error: Error | null): void {
+  persistenceFailureForTest = error;
 }
 
 onConversationRemoved((conversationId) => {

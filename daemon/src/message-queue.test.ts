@@ -15,6 +15,7 @@ import {
   pushGlobalIdleQueuedMessage,
   pushQueuedMessage,
   removeQueuedMessageById,
+  setMessageQueuePersistenceFailureForTest,
   setQueuedMessagesChangedListener,
   suspendQueuedMessageDelivery,
   resumeQueuedMessageDelivery,
@@ -23,15 +24,29 @@ import {
 
 beforeEach(() => {
   setQueuedMessagesChangedListener(null);
+  setMessageQueuePersistenceFailureForTest(null);
   clearAllQueuedMessages();
 });
 
 afterAll(() => {
+  setMessageQueuePersistenceFailureForTest(null);
   setQueuedMessagesChangedListener(null);
   clearAllQueuedMessages();
 });
 
 describe("durable daemon message queue", () => {
+  test("rolls back in-memory mutations when durable queue persistence fails", () => {
+    setMessageQueuePersistenceFailureForTest(new Error("queue disk unavailable"));
+    expect(() => pushQueuedMessage("conv-a", "not durable", "next-turn", undefined, undefined, undefined, "failed-id"))
+      .toThrow("queue disk unavailable");
+    expect(getQueuedMessageById("failed-id")).toBeUndefined();
+    expect(listQueuedMessages()).toEqual([]);
+
+    setMessageQueuePersistenceFailureForTest(null);
+    pushQueuedMessage("conv-a", "durable", "next-turn", undefined, undefined, undefined, "kept-id");
+    expect(getQueuedMessageById("kept-id")?.text).toBe("durable");
+  });
+
   test("persists stable identities and FIFO order across an in-process daemon reload", () => {
     pushQueuedMessage("conv-a", "same", "next-turn", undefined, 2, undefined, "queue-a", 10);
     pushQueuedMessage("conv-a", "same", "message-end", undefined, 1, undefined, "queue-b", 20);

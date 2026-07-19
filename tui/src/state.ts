@@ -106,6 +106,12 @@ export interface EditMessageState {
 export interface LayoutCache {
   totalLines: number;      // total rendered message lines
   messageAreaHeight: number; // visible rows for messages
+  /** Width used only for history rows vertically beside a right-hand task panel. */
+  historyWidth: number;
+  /** Screen rectangle occupied by the non-interactive task panel. */
+  taskPanelRect: { top: number; bottom: number; left: number; right: number } | null;
+  /** Canonical history row and source/display offsets rendered on each message-area row. */
+  historyViewportRows: Array<{ lineIndex: number; startCol: number; displayPrefixWidth: number } | null>;
   chatCol: number;         // 1-based column where chat area starts
   sepAbove: number;        // first row below the message area (search bar or separator)
   firstInputRow: number;   // row number of first input line
@@ -597,7 +603,7 @@ export function createInitialState(): RenderState {
     chatFocus: "prompt",
     sidebar: createSidebarState(),
     vim: createVimState(),
-    layout: { totalLines: 0, messageAreaHeight: 0, chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
+    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, taskPanelRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
     deferredHistoryRender: null,
     pendingSend: { active: false, text: "" },
     pendingAuthQueue: [],

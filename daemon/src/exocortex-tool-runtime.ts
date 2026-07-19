@@ -8,7 +8,7 @@
 
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import { createHash } from "crypto";
-import type { DisplayEntry, QueueTiming } from "@exocortex/shared/protocol";
+import type { DisplayEntry, ExternalNotificationSoftWake, QueueTiming } from "@exocortex/shared/protocol";
 import {
   MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL,
   MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT,
@@ -154,6 +154,56 @@ function booleanInput(input: Record<string, unknown>, key: string, fallback: boo
 function numberInput(input: Record<string, unknown>, key: string, fallback: number): number {
   const value = input[key];
   return typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : fallback;
+}
+
+function externalNotificationSoftWakeInput(
+  input: Record<string, unknown>,
+  required: boolean,
+  existing?: ExternalNotificationSoftWake,
+): ExternalNotificationSoftWake | undefined {
+  const command = stringInput(input, "command") ?? existing?.command;
+  const hardWakeRaw = input.hard_wake;
+  const hasHardWake = hardWakeRaw !== undefined;
+  const hasTimeout = input.timeout_seconds !== undefined;
+  if (!command) {
+    if (required) throw new Error("command is required when delivery=soft");
+    if (hasHardWake || hasTimeout) throw new Error("command is required with timeout_seconds or hard_wake");
+    return undefined;
+  }
+
+  const timeoutSeconds = input.timeout_seconds === undefined
+    ? (existing?.timeoutMs ?? 300_000) / 1_000
+    : numberInput(input, "timeout_seconds", 300);
+  if (timeoutSeconds <= 0 || timeoutSeconds > 86_400) {
+    throw new Error("timeout_seconds must be greater than zero and no more than 86400");
+  }
+
+  let hardWake: ExternalNotificationSoftWake["hardWake"] = existing?.hardWake
+    ? { ...existing.hardWake }
+    : undefined;
+  if (hasHardWake) {
+    if (!hardWakeRaw || typeof hardWakeRaw !== "object" || Array.isArray(hardWakeRaw)) {
+      throw new Error("hard_wake must be an object");
+    }
+    const value = hardWakeRaw as Record<string, unknown>;
+    const when = value.when ?? existing?.hardWake?.when ?? "failure";
+    if (when !== "failure" && when !== "always") throw new Error("hard_wake.when must be failure or always");
+    hardWake = {
+      when,
+      message: typeof value.message === "string" && value.message.trim()
+        ? value.message.trim()
+        : (existing?.hardWake?.message ?? "Handle the external notification selected by this subscription command."),
+      includeOutput: typeof value.include_output === "boolean"
+        ? value.include_output
+        : existing?.hardWake?.includeOutput !== false,
+    };
+  }
+
+  return {
+    command,
+    timeoutMs: timeoutSeconds * 1_000,
+    ...(hardWake ? { hardWake } : {}),
+  };
 }
 
 function boundedIntegerInput(
@@ -1298,6 +1348,15 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           conversation_id: subscription.convId,
           conversation_title: convStore.getSummary(subscription.convId)?.title ?? null,
           delivery: subscription.delivery,
+          soft_wake: subscription.softWake ? {
+            command: subscription.softWake.command,
+            timeout_seconds: subscription.softWake.timeoutMs / 1_000,
+            hard_wake: subscription.softWake.hardWake ? {
+              when: subscription.softWake.hardWake.when,
+              message: subscription.softWake.hardWake.message,
+              include_output: subscription.softWake.hardWake.includeOutput,
+            } : null,
+          } : null,
           enabled: subscription.enabled,
           created_at: subscription.createdAt,
           updated_at: subscription.updatedAt,
@@ -1315,14 +1374,18 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         const choices = listExternalNotificationSources(toolName).map(candidate => `${candidate.id} (${candidate.label})`);
         throw new Error(`External notification source not found: ${toolName}/${sourceId}. Available: ${choices.join(", ") || "none"}`);
       }
-      const delivery = args.delivery === "inbox" ? "inbox" : args.delivery === undefined || args.delivery === "wake"
-        ? "wake"
-        : (() => { throw new Error("delivery must be wake or inbox"); })();
+      const delivery = args.delivery === "inbox" ? "inbox"
+        : args.delivery === "soft" ? "soft"
+          : args.delivery === undefined || args.delivery === "wake" ? "wake"
+            : (() => { throw new Error("delivery must be wake, inbox, or soft"); })();
+      const softWake = externalNotificationSoftWakeInput(args, delivery === "soft");
+      if (delivery !== "soft" && softWake) throw new Error("command is only valid when delivery=soft");
       const subscription = subscribeExternalNotification({
         toolName,
         sourceId,
         convId: targetConversationId,
         delivery,
+        softWake,
       });
       return ok(pretty({
         subscribed: true,
@@ -1333,6 +1396,15 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         conversation_id: subscription.convId,
         conversation_title: convStore.getSummary(subscription.convId)?.title ?? null,
         delivery: subscription.delivery,
+        soft_wake: subscription.softWake ? {
+          command: subscription.softWake.command,
+          timeout_seconds: subscription.softWake.timeoutMs / 1_000,
+          hard_wake: subscription.softWake.hardWake ? {
+            when: subscription.softWake.hardWake.when,
+            message: subscription.softWake.hardWake.message,
+            include_output: subscription.softWake.hardWake.includeOutput,
+          } : null,
+        } : null,
       }));
     }
 
@@ -1350,14 +1422,28 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
 
     if (operation === "update") {
       const subscriptionId = stringInput(args, "subscription_id", true)!;
+      const existing = listExternalNotificationSubscriptions().find(subscription => subscription.id === subscriptionId);
+      if (!existing) throw new Error(`External notification subscription not found: ${subscriptionId}`);
       const delivery = args.delivery === undefined ? undefined
-        : args.delivery === "wake" || args.delivery === "inbox" ? args.delivery
-        : (() => { throw new Error("delivery must be wake or inbox"); })();
+        : args.delivery === "wake" || args.delivery === "inbox" || args.delivery === "soft" ? args.delivery
+        : (() => { throw new Error("delivery must be wake, inbox, or soft"); })();
+      const hasSoftWakeInput = args.command !== undefined || args.timeout_seconds !== undefined || args.hard_wake !== undefined;
+      const softWake = hasSoftWakeInput ? externalNotificationSoftWakeInput(args, true, existing.softWake) : undefined;
+      if (softWake && delivery !== undefined && delivery !== "soft") throw new Error("command is only valid when delivery=soft");
       const enabled = typeof args.enabled === "boolean" ? args.enabled : undefined;
-      const subscription = updateExternalNotificationSubscription(subscriptionId, { delivery, enabled });
+      const subscription = updateExternalNotificationSubscription(subscriptionId, { delivery, softWake, enabled });
       return ok(pretty({
         subscription_id: subscription.id,
         delivery: subscription.delivery,
+        soft_wake: subscription.softWake ? {
+          command: subscription.softWake.command,
+          timeout_seconds: subscription.softWake.timeoutMs / 1_000,
+          hard_wake: subscription.softWake.hardWake ? {
+            when: subscription.softWake.hardWake.when,
+            message: subscription.softWake.hardWake.message,
+            include_output: subscription.softWake.hardWake.includeOutput,
+          } : null,
+        } : null,
         enabled: subscription.enabled,
         updated_at: subscription.updatedAt,
       }));
@@ -1548,20 +1634,33 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     },
     {
       name: "notifications",
-      description: "Discover external notification sources and list, subscribe, unsubscribe, or update routes. The active conversation is the default target.",
+      description: "Discover external notification sources and manage wake, inbox, or Bash soft-wake routes. The active conversation is the default target.",
       inputSchema: commandSchema({
         operation: { type: "string", enum: ["sources", "list", "subscribe", "unsubscribe", "update"] },
         tool: { type: "string", description: "External tool manifest name, such as discord, twitter, or whatsapp." },
         source_id: { type: "string", description: "Opaque source id returned by operation=sources." },
         conversation_id: { type: "string", description: "Defaults to the active conversation." },
         subscription_id: { type: "string", description: "Required for update; optional exact target for unsubscribe." },
-        delivery: { type: "string", enum: ["wake", "inbox"], description: "wake starts/queues a model turn; inbox records the event without autonomously invoking the model." },
+        delivery: { type: "string", enum: ["wake", "inbox", "soft"], description: "wake starts/queues a model turn; inbox records the event; soft runs subscriber-owned Bash without a model." },
+        command: { type: "string", description: "For delivery=soft: static Bash command. The untrusted event is JSON on stdin; it is never interpolated into the command." },
+        timeout_seconds: { type: "number", exclusiveMinimum: 0, maximum: 86400, description: "For delivery=soft: command timeout, default 300 seconds." },
+        hard_wake: {
+          type: "object",
+          description: "For delivery=soft: conditionally wake the model after Bash runs. With when=failure, a script can request escalation by exiting non-zero.",
+          properties: {
+            when: { type: "string", enum: ["failure", "always"], description: "Defaults to failure." },
+            message: { type: "string", description: "Trusted subscription instruction delivered on escalation." },
+            include_output: { type: "boolean", description: "Include capped command output as untrusted content; defaults true." },
+          },
+          additionalProperties: false,
+        },
         enabled: { type: "boolean", description: "For update: enable or disable the subscription." },
         scope: { type: "string", enum: ["current", "all"], description: "For list: defaults current when a conversation context exists." },
       }, ["operation"]),
       examples: [
         { operation: "sources", tool: "discord" },
         { operation: "subscribe", tool: "discord", source_id: "account:paramount:notifications", delivery: "wake" },
+        { operation: "subscribe", tool: "whatsapp", source_id: "incoming-messages", delivery: "soft", command: "payload=$(cat); body=$(jq -r '.event.data.body // empty' <<<\"$payload\"); [[ \"$body\" =~ ^[[:space:]]*/ai[[:space:]]+ ]] || exit 0; printf '%s\\n' \"$payload\"; exit 10", hard_wake: { when: "failure", message: "Handle the matching WhatsApp /ai query." } },
         { operation: "list", scope: "current" },
         { operation: "unsubscribe", subscription_id: "<subscription-id>" },
       ],

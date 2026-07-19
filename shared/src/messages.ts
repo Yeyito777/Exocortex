@@ -304,8 +304,8 @@ export interface ConversationTaskSummary {
   chronoMode?: "wait" | "sleep" | "wake";
 }
 
-/** How an external notification subscription delivers events to its conversation. */
-export type ExternalNotificationDelivery = "wake" | "inbox";
+/** How an external notification subscription handles events for its conversation. */
+export type ExternalNotificationDelivery = "wake" | "inbox" | "soft";
 
 /** Health of an external notification subscription's source. */
 export type ExternalIntegrationStatus = "active" | "offline" | "disabled";
