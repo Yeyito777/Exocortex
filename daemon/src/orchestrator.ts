@@ -481,11 +481,12 @@ async function orchestrateAssistantTurn(
   // incremental item, then safely falls back to full replay of the checkpoint.
   const providerTurnSession = createProviderTurnSession(conv.provider);
   const codexTurnId = `${convId}:${startedAt}`;
-  // Delegation depth stays in daemon-owned turn metadata/tool context. Keeping
-  // it out of the prompt preserves the stable prefix used by provider caches.
+  // Expose a child turn's remaining delegation budget to prevent predictable
+  // rejected send/queue attempts when its max depth is zero.
   const systemPrompt = buildSystemPrompt({
     conversationInstructions: systemInstructionsText || undefined,
     conversationId: convId,
+    subagentMaxDepth,
   });
   const toolDefs = getToolDefs();
   const contextLimit = getMaxContext(conv.provider, conv.model);

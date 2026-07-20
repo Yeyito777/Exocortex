@@ -98,12 +98,15 @@ describe("native exo tool contract", () => {
     expect(exo.description).toContain("Transcription and cross-instance targeting are intentionally excluded");
     expect(exo.systemHint).toBe([
       "Use the native `exo` tool for the current daemon and its subagents.",
-      "Default to doing the work yourself; use subagents only for multiple substantial, independent workstreams that can run concurrently, or for a genuinely hard problem where an independent second analysis is likely to materially improve the result—not merely to offload routine work.",
-      "When an OpenAI subagent is otherwise warranted, omit `model` for the newest default (currently gpt-5.6-sol), use gpt-5.6-terra or gpt-5.6-luna for lighter/grunt work that doesn't require intelligence at all, and use older generations only when requested or required.",
+      "Default to doing the work yourself. Spawn subagents only for substantial, independent workstreams that can run concurrently, or when a genuinely difficult and high-risk problem would materially benefit from an independent analysis.",
+      "Do not spawn subagents for ordinary repository inspection, routine planning, single-component implementation, or generic code review. Do not delegate work you are simultaneously doing yourself.",
+      "Before spawning, identify a concrete, non-overlapping deliverable and how its result will be used. Prefer no more than two active children; exceed that only for clearly partitioned work with substantial expected wall-time savings or when the user explicitly requests broader delegation.",
+      "Start reviews only after the implementation is stable. Prefer one targeted review; do not launch repeated final reviews without substantial new changes or unresolved high-risk findings. Reuse an existing child instead of spawning a replacement while it is still running.",
+      "When an OpenAI subagent is warranted, omit `model` for the newest default (currently gpt-5.6-sol), use gpt-5.6-terra or gpt-5.6-luna for lighter work, and use older generations only when requested or required.",
       "Starting a subagent requires a short title of about three words; it becomes the child conversation title and identifies the task in the parent UI.",
-      "Set max_depth=0 unless a subagent clearly needs to delegate further.",
+      "Set max_depth=0 unless the child has a clear need to delegate a further independent workstream.",
       "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
-      "Subagents start in the daemon's working directory, so include the target absolute directory in tasks when relevant.",
+      "Subagents start in the daemon's working directory, so include the target absolute directory and all necessary task context.",
     ].join("\n"));
   });
 

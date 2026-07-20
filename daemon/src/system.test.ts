@@ -21,18 +21,31 @@ describe("system prompt", () => {
     const prompt = buildSystemPrompt({ conversationId: "nested" });
 
     expect(prompt).toContain("Use the native `exo` tool for the current daemon and its subagents.");
-    expect(prompt).toContain("Default to doing the work yourself; use subagents only for multiple substantial, independent workstreams");
-    expect(prompt).toContain("When an OpenAI subagent is otherwise warranted, omit `model` for the newest default (currently gpt-5.6-sol)");
+    expect(prompt).toContain("Default to doing the work yourself. Spawn subagents only for substantial, independent workstreams");
+    expect(prompt).toContain("Do not spawn subagents for ordinary repository inspection, routine planning, single-component implementation, or generic code review.");
+    expect(prompt).toContain("Prefer no more than two active children");
+    expect(prompt).toContain("Start reviews only after the implementation is stable.");
+    expect(prompt).toContain("When an OpenAI subagent is warranted, omit `model` for the newest default (currently gpt-5.6-sol)");
     expect(prompt).toContain("Starting a subagent requires a short title of about three words");
-    expect(prompt).toContain("Set max_depth=0 unless a subagent clearly needs to delegate further.");
+    expect(prompt).toContain("Set max_depth=0 unless the child has a clear need to delegate a further independent workstream.");
     expect(prompt).toContain("Subagents start in the daemon's working directory");
+  });
+
+  test("tells child turns their remaining native delegation budget", () => {
+    const blocked = buildSystemPrompt({ conversationId: "nested-zero", subagentMaxDepth: 0 });
+    expect(blocked).toContain("This turn's remaining native exo subagent depth is 0.");
+    expect(blocked).toContain("Do not call the native `exo` tool with action=send or action=queue.");
+
+    const nested = buildSystemPrompt({ conversationId: "nested-two", subagentMaxDepth: 2 });
+    expect(nested).toContain("This turn's remaining native exo subagent depth is 2.");
+    expect(nested).toContain("A child turn may receive at most max_depth=1.");
   });
 
   test("omits the conversation-id line for non-conversation utility prompts", () => {
     const prompt = buildSystemPrompt();
 
     expect(prompt).not.toContain("Exocortex conversation ID:");
-    expect(prompt).not.toContain("Native exo subagent depth:");
+    expect(prompt).not.toContain("remaining native exo subagent depth");
   });
 
   test("preserves live app instructions on read errors and rejects stale writes", () => {

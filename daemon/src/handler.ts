@@ -2165,6 +2165,7 @@ export function createHandler(server: DaemonServer) {
           systemPrompt: buildSystemPrompt({
             conversationInstructions: instructions ?? undefined,
             conversationId: cmd.convId,
+            subagentMaxDepth: cmd.convId ? convStore.get(cmd.convId)?.subagentMaxDepth ?? null : null,
           }),
         });
         break;

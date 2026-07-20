@@ -84,6 +84,8 @@ function buildEnvironmentHeader(conversationId?: string): string {
 export interface BuildSystemPromptOptions {
   conversationInstructions?: string;
   conversationId?: string;
+  /** Remaining native exo nesting budget for this conversation turn. */
+  subagentMaxDepth?: number | null;
   /** Restrict tool-specific prompt hints to this explicit session allowlist. */
   toolNames?: readonly string[];
   /** External tools are shell-backed and can be disabled for restricted sessions. */
@@ -103,6 +105,14 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
   if (options.includeToolHints) {
     const toolHints = buildToolSystemHints(options.toolNames);
     if (toolHints) parts.push(toolHints);
+  }
+
+  const depth = options.subagentMaxDepth;
+  const hasExoTool = !options.toolNames || options.toolNames.includes("exo");
+  if (hasExoTool && typeof depth === "number" && Number.isInteger(depth) && depth >= 0) {
+    parts.push(depth === 0
+      ? "This turn's remaining native exo subagent depth is 0. Do not call the native `exo` tool with action=send or action=queue."
+      : `This turn's remaining native exo subagent depth is ${depth}. A child turn may receive at most max_depth=${depth - 1}.`);
   }
 
   if (options.includeExternalHints) {

@@ -1161,6 +1161,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     return ok(buildSystemPrompt({
       conversationInstructions: instructions ?? undefined,
       conversationId: convId,
+      subagentMaxDepth: conversation.subagentMaxDepth ?? null,
     }));
   };
 
