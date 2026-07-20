@@ -382,6 +382,24 @@ interface ViewportHistoryRow {
   userFlow?: { owner: object; sourceCursor: UserMessageFlowCursor };
 }
 
+interface FloatingHistoryViewportCacheEntry {
+  lineAnchors: BuildMessageLinesResult["lineAnchors"];
+  viewStart: number;
+  messageAreaHeight: number;
+  panelTopOffset: number;
+  panelHeight: number;
+  narrowWidth: number;
+  fullWidth: number;
+  rows: ViewportHistoryRow[];
+}
+
+/**
+ * Task countdown/elapsed labels can repaint without changing chat history or
+ * panel geometry. Reusing the expensive adaptive viewport prevents those timer
+ * ticks from re-running the fixed-point reflow over the same rows.
+ */
+const floatingHistoryViewportCache = new WeakMap<string[], FloatingHistoryViewportCacheEntry>();
+
 function wrapRenderedHistoryLine(line: string, width: number): { lines: string[]; joins: string[] } {
   if (line.includes("\x1b[")) {
     return wrapAnsiLine(line, width);
@@ -542,6 +560,18 @@ function composeFloatingHistoryViewport(
   narrowWidth: number,
   fullWidth: number,
 ): ViewportHistoryRow[] {
+  const cached = floatingHistoryViewportCache.get(allLines);
+  if (cached
+    && cached.lineAnchors === lineAnchors
+    && cached.viewStart === viewStart
+    && cached.messageAreaHeight === messageAreaHeight
+    && cached.panelTopOffset === panelTopOffset
+    && cached.panelHeight === panelHeight
+    && cached.narrowWidth === narrowWidth
+    && cached.fullWidth === fullWidth) {
+    return cached.rows;
+  }
+
   const endLineIndex = Math.min(allLines.length, viewStart + messageAreaHeight);
   if (viewStart >= endLineIndex) return [];
 
@@ -563,7 +593,19 @@ function composeFloatingHistoryViewport(
       narrowWidth,
       fullWidth,
     );
-    if (rows.length <= messageAreaHeight) return rows;
+    if (rows.length <= messageAreaHeight) {
+      floatingHistoryViewportCache.set(allLines, {
+        lineAnchors,
+        viewStart,
+        messageAreaHeight,
+        panelTopOffset,
+        panelHeight,
+        narrowWidth,
+        fullWidth,
+        rows,
+      });
+      return rows;
+    }
 
     const next = rows[rows.length - messageAreaHeight];
     const sameUserFlow = next?.userFlow?.owner === start.userFlow?.owner
@@ -582,7 +624,18 @@ function composeFloatingHistoryViewport(
     };
   }
 
-  return rows.slice(-messageAreaHeight);
+  const visibleRows = rows.slice(-messageAreaHeight);
+  floatingHistoryViewportCache.set(allLines, {
+    lineAnchors,
+    viewStart,
+    messageAreaHeight,
+    panelTopOffset,
+    panelHeight,
+    narrowWidth,
+    fullWidth,
+    rows: visibleRows,
+  });
+  return visibleRows;
 }
 
 /**

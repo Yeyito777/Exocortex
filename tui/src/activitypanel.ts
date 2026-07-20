@@ -16,6 +16,8 @@ import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
 
 const MAX_PANEL_WIDTH = 50;
 const MIN_PANEL_WIDTH = 30;
+/** Keep the floating card compact even when a conversation owns many schedules. */
+export const MAX_TASK_PANEL_HEIGHT = 12;
 /** Keep enough chat beside the panel for useful word wrapping. */
 export const MIN_TASK_PANEL_HISTORY_WIDTH = 30;
 /** Blank column separating wrapped history from the task-panel border. */
@@ -98,6 +100,50 @@ export function formatTaskCountdown(dueAt: number, now = Date.now()): string {
   const remainingHours = Math.ceil(remainingMinutes / 60);
   if (remainingHours < 24) return `in ${remainingHours}h`;
   return `in ${Math.ceil(remainingHours / 24)}d`;
+}
+
+function msUntilNextUnitBoundary(value: number, unitMs: number): number {
+  const remainder = value % unitMs;
+  return remainder === 0 ? unitMs : unitMs - remainder;
+}
+
+/**
+ * Delay until an entry's rendered time label can actually change.
+ *
+ * Active work shows seconds only during its first hour, then progressively
+ * coarser minute/hour/day units. Scheduled Chrono entries use the same idea in
+ * reverse: a wake several days away does not need a one-second repaint timer.
+ */
+export function msUntilTaskPanelEntryUpdate(task: TaskPanelEntry, now = Date.now()): number | null {
+  if (!Number.isFinite(now) || !Number.isFinite(task.startedAt)) return null;
+  if (task.kind === "goal" && task.goalStatus === "paused") return null;
+
+  if (task.kind === "chrono" && task.chronoMode !== "wait" && task.dueAt !== undefined) {
+    if (!Number.isFinite(task.dueAt)) return null;
+    const remainingMs = task.dueAt - now;
+    if (remainingMs <= 0) return null;
+
+    const remainingSeconds = Math.ceil(remainingMs / 1000);
+    const unitMs = remainingSeconds < 60
+      ? 1000
+      : Math.ceil(remainingSeconds / 60) < 60
+        ? 60 * 1000
+        : Math.ceil(remainingSeconds / (60 * 60)) < 24
+          ? 60 * 60 * 1000
+          : 24 * 60 * 60 * 1000;
+    const remainder = remainingMs % unitMs;
+    return remainder === 0 ? unitMs : remainder;
+  }
+
+  const elapsedMs = Math.max(0, now - task.startedAt);
+  const unitMs = elapsedMs < 60 * 60 * 1000
+    ? 1000
+    : elapsedMs < 24 * 60 * 60 * 1000
+      ? 60 * 1000
+      : elapsedMs < 7 * 24 * 60 * 60 * 1000
+        ? 60 * 60 * 1000
+        : 24 * 60 * 60 * 1000;
+  return msUntilNextUnitBoundary(elapsedMs, unitMs);
 }
 
 function taskColor(state: RenderState, toolName: "exo" | "bash" | "goal" | "chrono", fallback: string): string {
@@ -206,11 +252,12 @@ export function renderTaskPanel(
   const tasks = focusedConversationTasks(state);
   const integrations = focusedConversationIntegrations(state);
   const totalEntries = tasks.length + integrations.length;
-  if (totalEntries === 0 || chatWidth < MIN_PANEL_WIDTH || maxHeight < 3) return null;
+  const panelHeight = Math.min(maxHeight, MAX_TASK_PANEL_HEIGHT);
+  if (totalEntries === 0 || chatWidth < MIN_PANEL_WIDTH || panelHeight < 3) return null;
 
   const panelWidth = Math.min(MAX_PANEL_WIDTH, chatWidth);
   const innerWidth = panelWidth - 2;
-  const maxContentRows = maxHeight - 2;
+  const maxContentRows = panelHeight - 2;
   const visible = fitPanelContent(tasks, integrations, maxContentRows);
 
   const panelBg = hexToAnsiBg(PANEL_BG_HEX);

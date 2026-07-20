@@ -54,7 +54,7 @@ import { startReplayConversation } from "./replay";
 import { startManualCompaction } from "./compact";
 import { isConversationInSubagentsFolder, runStreamFinishedPing, shouldPingForBackgroundStreamCompletion, shouldPingForStreamStopped } from "./ping";
 import { stripStartupLaunchEcho } from "./startupinput";
-import { focusedConversationTasks } from "./activitypanel";
+import { focusedConversationTasks, msUntilTaskPanelEntryUpdate } from "./activitypanel";
 import { beginOlderHistoryLoad, INITIAL_BUFFER_ADDITIONAL_TURNS, OLDER_HISTORY_PAGE_TURNS, shouldLoadOlderHistory } from "./historypagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { log } from "./log";
@@ -326,7 +326,8 @@ function resetStreamTick(): void {
     tickDelays.push(msUntilNextElapsedSecond(startedAt));
   }
   for (const task of focusedConversationTasks(state)) {
-    if (Number.isFinite(task.startedAt)) tickDelays.push(msUntilNextElapsedSecond(task.startedAt));
+    const delay = msUntilTaskPanelEntryUpdate(task);
+    if (delay !== null) tickDelays.push(delay);
   }
   if (tickDelays.length > 0) {
     streamTickTimer = setTimeout(scheduleRender, Math.min(...tickDelays));

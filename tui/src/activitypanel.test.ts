@@ -9,6 +9,8 @@ import {
   hasFocusedConversationIntegrations,
   hasFocusedConversationTasks,
   layoutTaskPanel,
+  MAX_TASK_PANEL_HEIGHT,
+  msUntilTaskPanelEntryUpdate,
   renderTaskPanel,
 } from "./activitypanel";
 import { stripAnsi } from "./historycursor";
@@ -117,6 +119,22 @@ describe("focused conversation task panel", () => {
     expect(panel?.lines).toHaveLength(5);
     expect(panel?.lines.map(stripAnsi).join("\n")).toContain("… 2 more");
     expect(panel?.lines.every(line => termWidth(stripAnsi(line)) === 32)).toBe(true);
+  });
+
+  test("caps very tall task cards and reports the hidden schedules", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].tasks = Array.from({ length: 27 }, (_, index) => ({
+      id: `chrono:${index}`,
+      kind: "chrono" as const,
+      title: `Schedule ${index}`,
+      startedAt: 1_000,
+      dueAt: 10 * 24 * 60 * 60_000,
+      chronoMode: "wake" as const,
+    }));
+
+    const panel = renderTaskPanel(state, 100, 60, 0)!;
+    expect(panel.lines).toHaveLength(MAX_TASK_PANEL_HEIGHT);
+    expect(panel.lines.map(stripAnsi).join("\n")).toContain("… 18 more");
   });
 
   test("is absent without focused tasks or enough room", () => {
@@ -316,6 +334,44 @@ describe("task elapsed formatting", () => {
   test("renders scheduled Chrono times as a compact countdown or due", () => {
     expect(formatTaskCountdown(12 * 60_000, 0)).toBe("in 12m");
     expect(formatTaskCountdown(0, 0)).toBe("due");
+  });
+
+  test("refreshes task labels only at the precision they display", () => {
+    expect(msUntilTaskPanelEntryUpdate({
+      id: "subagent",
+      kind: "subagent",
+      title: "Recent",
+      startedAt: 1_000,
+    }, 43_250)).toBe(750);
+    expect(msUntilTaskPanelEntryUpdate({
+      id: "background",
+      kind: "background",
+      title: "Hours old",
+      startedAt: 0,
+    }, 3 * 60 * 60_000 + 15_250)).toBe(44_750);
+    expect(msUntilTaskPanelEntryUpdate({
+      id: "chrono",
+      kind: "chrono",
+      title: "Tomorrow",
+      startedAt: 0,
+      dueAt: 25 * 60 * 60_000 + 15_250,
+      chronoMode: "wake",
+    }, 0)).toBe(60 * 60_000 + 15_250);
+    expect(msUntilTaskPanelEntryUpdate({
+      id: "due",
+      kind: "chrono",
+      title: "Due",
+      startedAt: 0,
+      dueAt: 1_000,
+      chronoMode: "wake",
+    }, 1_000)).toBeNull();
+    expect(msUntilTaskPanelEntryUpdate({
+      id: "paused",
+      kind: "goal",
+      title: "Paused",
+      startedAt: 0,
+      goalStatus: "paused",
+    }, 1_000)).toBeNull();
   });
 
   test("formats integration delivery and health compactly", () => {
