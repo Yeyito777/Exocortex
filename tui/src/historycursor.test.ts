@@ -5,6 +5,10 @@ import { applyHistoryAction, contentBounds, getHistoryVisualSelection, joinLogic
 import { createInitialState } from "./state";
 import type { RenderState } from "./state";
 
+function currentChatFocus(state: RenderState): RenderState["chatFocus"] {
+  return state.chatFocus;
+}
+
 function setupHistoryState(): RenderState {
   const state = createInitialState();
   state.messages = [
@@ -149,7 +153,7 @@ describe("history brace navigation", () => {
 
     expect(handleFocusedKey({ type: "char", char: "}" }, state)).toEqual({ type: "handled" });
     expect(state.historyCursor.row).toBe(userBounds[1].contentStart);
-    expect(state.chatFocus).toBe("history");
+    expect(currentChatFocus(state)).toBe("history");
     expect(state.vim.mode).toBe("normal");
     expect(state.inputBuffer).toBe("draft");
     expect(state.cursorPos).toBe(2);
@@ -164,7 +168,7 @@ describe("history brace navigation", () => {
 
     expect(handleFocusedKey({ type: "char", char: "}" }, state)).toEqual({ type: "handled" });
 
-    expect(state.chatFocus).toBe("history");
+    expect(currentChatFocus(state)).toBe("history");
     expect(state.historyCursor.row).toBe(state.historyLines.length - 1);
   });
 });
@@ -285,7 +289,7 @@ describe("history bracket navigation", () => {
 
     expect(handleFocusedKey({ type: "char", char: "]" }, state)).toEqual({ type: "handled" });
     expect(state.historyCursor.row).toBe(aiBounds[1].contentStart);
-    expect(state.chatFocus).toBe("history");
+    expect(currentChatFocus(state)).toBe("history");
     expect(state.vim.mode).toBe("normal");
     expect(state.inputBuffer).toBe("draft");
     expect(state.cursorPos).toBe(2);
@@ -300,7 +304,7 @@ describe("history bracket navigation", () => {
 
     expect(handleFocusedKey({ type: "char", char: "]" }, state)).toEqual({ type: "handled" });
 
-    expect(state.chatFocus).toBe("history");
+    expect(currentChatFocus(state)).toBe("history");
     expect(state.historyCursor.row).toBe(state.historyLines.length - 1);
   });
 });
