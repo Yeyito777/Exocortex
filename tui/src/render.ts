@@ -39,7 +39,6 @@ import { wordWrap } from "./textwrap";
 import {
   compareUserMessageFlowCursors,
   renderAdaptiveUserMessageRows,
-  userMessageTextRowOffsets,
   type UserMessageFlowCursor,
 } from "./blockrenderer";
 import {
@@ -382,9 +381,15 @@ interface ViewportHistoryRow {
   userFlow?: { owner: object; sourceCursor: UserMessageFlowCursor };
 }
 
+type ViewportSourceState = Pick<
+  ViewportHistoryRow,
+  "lineIndex" | "startCol" | "sourceRemainder" | "userFlow"
+>;
+
 interface FloatingHistoryViewportCacheEntry {
   lineAnchors: BuildMessageLinesResult["lineAnchors"];
   viewStart: number;
+  instructionStartIndex: number;
   messageAreaHeight: number;
   panelTopOffset: number;
   panelHeight: number;
@@ -395,8 +400,8 @@ interface FloatingHistoryViewportCacheEntry {
 
 /**
  * Task countdown/elapsed labels can repaint without changing chat history or
- * panel geometry. Reusing the expensive adaptive viewport prevents those timer
- * ticks from re-running the fixed-point reflow over the same rows.
+ * panel geometry. Reusing the adaptive viewport prevents those timer ticks from
+ * recomposing the same rows.
  */
 const floatingHistoryViewportCache = new WeakMap<string[], FloatingHistoryViewportCacheEntry>();
 
@@ -428,10 +433,67 @@ function visibleSystemInstructionsHeight(
   return height;
 }
 
+function composeSemanticUserRows(
+  lineAnchors: BuildMessageLinesResult["lineAnchors"],
+  start: ViewportSourceState,
+  lineIndex: number,
+  endLineIndex: number,
+  colsForRow: (rowOffset: number) => number,
+): { rows: ViewportHistoryRow[]; requestedEnd: number } | null {
+  const anchor = lineAnchors[lineIndex];
+  const isUserFlow = anchor?.segment === "user_content" || anchor?.segment === "queued_content";
+  const owner = anchor?.owner as { text?: unknown } | undefined;
+  if (!isUserFlow
+    || !owner
+    || typeof owner.text !== "string"
+    || !anchor.userFlowDocument
+    || !anchor.userFlowStart
+    || !anchor.userFlowEnd) return null;
+
+  let requestedEnd = lineIndex + 1;
+  while (requestedEnd < endLineIndex) {
+    const next = lineAnchors[requestedEnd];
+    if (next?.owner !== anchor.owner
+      || next.segment !== anchor.segment
+      || !next.userFlowStart
+      || !next.userFlowEnd) break;
+    requestedEnd++;
+  }
+
+  const sourceStart = start.userFlow?.owner === anchor.owner && lineIndex === start.lineIndex
+    ? start.userFlow.sourceCursor
+    : anchor.userFlowStart;
+  const sourceEnd = lineAnchors[requestedEnd - 1].userFlowEnd!;
+  const adaptive = renderAdaptiveUserMessageRows(anchor.userFlowDocument, sourceStart, sourceEnd, colsForRow);
+  const rows: ViewportHistoryRow[] = [];
+  let canonicalLineIndex = lineIndex;
+
+  for (const rendered of adaptive) {
+    while (canonicalLineIndex + 1 < requestedEnd) {
+      const nextStart = lineAnchors[canonicalLineIndex + 1].userFlowStart;
+      if (!nextStart || compareUserMessageFlowCursors(nextStart, rendered.sourceStart) > 0) break;
+      canonicalLineIndex++;
+    }
+    const renderedLine = anchor.segment === "queued_content"
+      ? `${theme.muted}${rendered.line}${theme.reset}`
+      : rendered.line;
+    rows.push({
+      line: renderedLine,
+      lineIndex: canonicalLineIndex,
+      startCol: 0,
+      displayPrefixWidth: 0,
+      sourceRemainder: renderedLine,
+      userFlow: { owner: anchor.owner, sourceCursor: rendered.sourceStart },
+    });
+  }
+
+  return { rows, requestedEnd };
+}
+
 function composeViewportFrom(
   allLines: string[],
   lineAnchors: BuildMessageLinesResult["lineAnchors"],
-  start: Pick<ViewportHistoryRow, "lineIndex" | "startCol" | "sourceRemainder" | "userFlow">,
+  start: ViewportSourceState,
   endLineIndex: number,
   panelTopOffset: number,
   panelHeight: number,
@@ -442,66 +504,22 @@ function composeViewportFrom(
   const panelEndOffset = panelTopOffset + panelHeight;
 
   for (let lineIndex = start.lineIndex; lineIndex < endLineIndex; lineIndex++) {
-    const anchor = lineAnchors[lineIndex];
-    const isUserFlow = anchor?.segment === "user_content" || anchor?.segment === "queued_content";
-    const owner = anchor?.owner as { text?: unknown; images?: ImageAttachment[] } | undefined;
-    if (isUserFlow && owner && typeof owner.text === "string") {
-      let groupStart = lineIndex;
-      while (groupStart > 0) {
-        const previous = lineAnchors[groupStart - 1];
-        if (previous?.owner !== anchor.owner || previous.segment !== anchor.segment) break;
-        groupStart--;
-      }
-      let groupEnd = lineIndex + 1;
-      while (groupEnd < allLines.length) {
-        const next = lineAnchors[groupEnd];
-        if (next?.owner !== anchor.owner || next.segment !== anchor.segment) break;
-        groupEnd++;
-      }
-
-      const flow = userMessageTextRowOffsets(owner.text, fullWidth, owner.images);
-      const canonicalRowCount = groupEnd - groupStart;
-      if (flow && flow.starts.length === canonicalRowCount) {
-        const requestedEnd = Math.min(groupEnd, endLineIndex);
-        const localStart = Math.max(0, lineIndex - groupStart);
-        const localEnd = Math.max(localStart, requestedEnd - groupStart);
-        const sourceStart = start.userFlow?.owner === anchor.owner && lineIndex === start.lineIndex
-          ? start.userFlow.sourceCursor
-          : (flow.starts[localStart] ?? flow.end);
-        const sourceEnd = localEnd < flow.starts.length ? flow.starts[localEnd] : flow.end;
-        const adaptive = renderAdaptiveUserMessageRows(
-          owner.text,
-          sourceStart,
-          sourceEnd,
-          (rowOffset) => {
-            const screenOffset = rows.length + rowOffset;
-            return screenOffset >= panelTopOffset && screenOffset < panelEndOffset
-              ? narrowWidth
-              : fullWidth;
-          },
-        );
-
-        for (const rendered of adaptive) {
-          let canonicalLocal = 0;
-          while (canonicalLocal + 1 < flow.starts.length
-            && compareUserMessageFlowCursors(flow.starts[canonicalLocal + 1], rendered.sourceStart) <= 0) {
-            canonicalLocal++;
-          }
-          const renderedLine = anchor.segment === "queued_content"
-            ? `${theme.muted}${rendered.line}${theme.reset}`
-            : rendered.line;
-          rows.push({
-            line: renderedLine,
-            lineIndex: groupStart + canonicalLocal,
-            startCol: 0,
-            displayPrefixWidth: 0,
-            sourceRemainder: renderedLine,
-            userFlow: { owner: anchor.owner, sourceCursor: rendered.sourceStart },
-          });
-        }
-        lineIndex = requestedEnd - 1;
-        continue;
-      }
+    const userRows = composeSemanticUserRows(
+      lineAnchors,
+      start,
+      lineIndex,
+      endLineIndex,
+      (rowOffset) => {
+        const screenOffset = rows.length + rowOffset;
+        return screenOffset >= panelTopOffset && screenOffset < panelEndOffset
+          ? narrowWidth
+          : fullWidth;
+      },
+    );
+    if (userRows) {
+      rows.push(...userRows.rows);
+      lineIndex = userRows.requestedEnd - 1;
+      continue;
     }
 
     let remainder = lineIndex === start.lineIndex ? start.sourceRemainder : allLines[lineIndex];
@@ -545,15 +563,164 @@ function composeViewportFrom(
   return rows;
 }
 
+function canonicalSourceState(allLines: string[], lineIndex: number): ViewportSourceState {
+  return {
+    lineIndex,
+    startCol: 0,
+    sourceRemainder: allLines[lineIndex] ?? "",
+  };
+}
+
+function rowSourceState(row: ViewportHistoryRow): ViewportSourceState {
+  return {
+    lineIndex: row.lineIndex,
+    startCol: row.startCol,
+    sourceRemainder: row.sourceRemainder,
+    userFlow: row.userFlow,
+  };
+}
+
+function wrappedRemainders(lines: string[], joins: string[]): string[] {
+  const remainders = new Array<string>(lines.length);
+  let remainder = "";
+  for (let index = lines.length - 1; index >= 0; index--) {
+    remainder = `${lines[index] ?? ""}${index + 1 < lines.length ? (joins[index + 1] ?? "") : ""}${remainder}`;
+    remainders[index] = remainder;
+  }
+  return remainders;
+}
+
+/** Render one bounded source range once at one width. */
+function composeFixedWidthRows(
+  allLines: string[],
+  lineAnchors: BuildMessageLinesResult["lineAnchors"],
+  start: ViewportSourceState,
+  endLineIndex: number,
+  width: number,
+  canonicalWidth: number,
+): ViewportHistoryRow[] {
+  const rows: ViewportHistoryRow[] = [];
+  const safeWidth = Math.max(1, width);
+
+  for (let lineIndex = start.lineIndex; lineIndex < endLineIndex; lineIndex++) {
+    const anchor = lineAnchors[lineIndex];
+    const userRows = composeSemanticUserRows(
+      lineAnchors,
+      start,
+      lineIndex,
+      endLineIndex,
+      () => safeWidth,
+    );
+    if (userRows) {
+      rows.push(...userRows.rows);
+      lineIndex = userRows.requestedEnd - 1;
+      continue;
+    }
+
+    const canonicalLine = allLines[lineIndex] ?? "";
+    const indent = continuationIndent(canonicalLine, anchor?.segment);
+    let sourceLine = lineIndex === start.lineIndex ? start.sourceRemainder : canonicalLine;
+    let sourceCol = lineIndex === start.lineIndex ? start.startCol : 0;
+    const startsAsContinuation = sourceCol > 0;
+    const segment = anchor?.segment;
+    if (!startsAsContinuation
+      && (segment === "user_content" || segment === "queued_content")) {
+      const shifted = trimAnsiLeadingSpaces(sourceLine, Math.max(0, canonicalWidth - safeWidth));
+      sourceLine = shifted.line;
+      sourceCol = shifted.removed;
+    }
+
+    const firstPrefix = startsAsContinuation ? indent : "";
+    const firstWrap = wrapRenderedHistoryLine(
+      sourceLine,
+      Math.max(1, safeWidth - firstPrefix.length),
+    );
+    const firstLine = firstWrap.lines[0] ?? "";
+    rows.push({
+      line: firstPrefix + firstLine,
+      lineIndex,
+      startCol: sourceCol,
+      displayPrefixWidth: firstPrefix.length,
+      sourceRemainder: sourceLine,
+    });
+    if (firstWrap.lines.length <= 1) continue;
+
+    sourceCol += stripAnsi(firstLine).length + (firstWrap.joins[1]?.length ?? 0);
+    const remainder = firstWrap.lines.slice(1)
+      .map((chunk, index) => `${index === 0 ? "" : (firstWrap.joins[index + 1] ?? "")}${chunk}`)
+      .join("");
+    // A continuation-start already reserved indentation in the first wrap, so
+    // every returned chunk has the correct width and can be emitted directly.
+    if (startsAsContinuation || indent.length === 0) {
+      const remainders = wrappedRemainders(firstWrap.lines, firstWrap.joins);
+      for (let index = 1; index < firstWrap.lines.length; index++) {
+        const chunk = firstWrap.lines[index] ?? "";
+        rows.push({
+          line: firstPrefix + chunk,
+          lineIndex,
+          startCol: sourceCol,
+          displayPrefixWidth: firstPrefix.length,
+          sourceRemainder: remainders[index] ?? chunk,
+        });
+        sourceCol += stripAnsi(chunk).length + (firstWrap.joins[index + 1]?.length ?? 0);
+      }
+      continue;
+    }
+
+    const continuationWrap = wrapRenderedHistoryLine(
+      remainder,
+      Math.max(1, safeWidth - indent.length),
+    );
+    const continuationRemainders = wrappedRemainders(continuationWrap.lines, continuationWrap.joins);
+    for (let index = 0; index < continuationWrap.lines.length; index++) {
+      const chunk = continuationWrap.lines[index] ?? "";
+      rows.push({
+        line: indent + chunk,
+        lineIndex,
+        startCol: sourceCol,
+        displayPrefixWidth: indent.length,
+        sourceRemainder: continuationRemainders[index] ?? chunk,
+      });
+      sourceCol += stripAnsi(chunk).length + (continuationWrap.joins[index + 1]?.length ?? 0);
+    }
+  }
+
+  return rows;
+}
+
+function canonicalViewportRows(
+  allLines: string[],
+  startLineIndex: number,
+  endLineIndex: number,
+): ViewportHistoryRow[] {
+  const rows: ViewportHistoryRow[] = [];
+  for (let lineIndex = startLineIndex; lineIndex < endLineIndex; lineIndex++) {
+    const line = allLines[lineIndex];
+    if (line === undefined) continue;
+    rows.push({
+      line,
+      lineIndex,
+      startCol: 0,
+      displayPrefixWidth: 0,
+      sourceRemainder: line,
+    });
+  }
+  return rows;
+}
+
 /**
- * Reflow only the viewport rows that share vertical space with the task panel.
- * The viewport remains anchored to the same canonical bottom row, so wrapping
- * at the top never hides newer full-width rows near the prompt.
+ * Compose the task-panel float as two deterministic history regions.
+ *
+ * The newest rows below the card are fixed first at full width. The immediately
+ * preceding source rows are then rendered once at the narrow width and clipped
+ * from the top to the card's height. Unlike the old fixed-point loop, wrapping
+ * beside the card can never move the full-width tail or trigger another pass.
  */
 function composeFloatingHistoryViewport(
   allLines: string[],
   lineAnchors: BuildMessageLinesResult["lineAnchors"],
   viewStart: number,
+  instructionStartIndex: number,
   messageAreaHeight: number,
   panelTopOffset: number,
   panelHeight: number,
@@ -564,6 +731,7 @@ function composeFloatingHistoryViewport(
   if (cached
     && cached.lineAnchors === lineAnchors
     && cached.viewStart === viewStart
+    && cached.instructionStartIndex === instructionStartIndex
     && cached.messageAreaHeight === messageAreaHeight
     && cached.panelTopOffset === panelTopOffset
     && cached.panelHeight === panelHeight
@@ -575,59 +743,104 @@ function composeFloatingHistoryViewport(
   const endLineIndex = Math.min(allLines.length, viewStart + messageAreaHeight);
   if (viewStart >= endLineIndex) return [];
 
-  let start: Pick<ViewportHistoryRow, "lineIndex" | "startCol" | "sourceRemainder" | "userFlow"> = {
-    lineIndex: viewStart,
-    startCol: 0,
-    sourceRemainder: allLines[viewStart],
-  };
-  let rows: ViewportHistoryRow[] = [];
+  if (panelHeight <= 0 || narrowWidth === fullWidth) {
+    const rows = canonicalViewportRows(allLines, viewStart, endLineIndex);
+    floatingHistoryViewportCache.set(allLines, {
+      lineAnchors,
+      viewStart,
+      instructionStartIndex,
+      messageAreaHeight,
+      panelTopOffset,
+      panelHeight,
+      narrowWidth,
+      fullWidth,
+      rows,
+    });
+    return rows;
+  }
 
-  for (let attempts = 0; attempts <= messageAreaHeight + 2; attempts++) {
-    rows = composeViewportFrom(
+  // Genuinely short histories should remain top-aligned. A full canonical
+  // viewport can go straight to the bounded bottom-anchored composition.
+  if (instructionStartIndex === viewStart && endLineIndex - viewStart < messageAreaHeight) {
+    const directRows = composeViewportFrom(
       allLines,
       lineAnchors,
-      start,
+      canonicalSourceState(allLines, viewStart),
       endLineIndex,
       panelTopOffset,
       panelHeight,
       narrowWidth,
       fullWidth,
     );
-    if (rows.length <= messageAreaHeight) {
+    if (directRows.length <= messageAreaHeight) {
       floatingHistoryViewportCache.set(allLines, {
         lineAnchors,
         viewStart,
+        instructionStartIndex,
         messageAreaHeight,
         panelTopOffset,
         panelHeight,
         narrowWidth,
         fullWidth,
-        rows,
+        rows: directRows,
       });
-      return rows;
+      return directRows;
     }
-
-    const next = rows[rows.length - messageAreaHeight];
-    const sameUserFlow = next?.userFlow?.owner === start.userFlow?.owner
-      && next?.userFlow?.sourceCursor.lineIndex === start.userFlow?.sourceCursor.lineIndex
-      && next?.userFlow?.sourceCursor.offset === start.userFlow?.sourceCursor.offset;
-    if (!next || (
-      next.lineIndex === start.lineIndex
-      && next.startCol === start.startCol
-      && sameUserFlow
-    )) break;
-    start = {
-      lineIndex: next.lineIndex,
-      startCol: next.startCol,
-      sourceRemainder: next.sourceRemainder,
-      userFlow: next.userFlow,
-    };
   }
 
-  const visibleRows = rows.slice(-messageAreaHeight);
+  const instructionRows = Math.min(
+    panelTopOffset,
+    messageAreaHeight,
+    endLineIndex - instructionStartIndex,
+  );
+  const instructionEndIndex = instructionStartIndex + instructionRows;
+  const availableAfterInstructions = Math.max(0, messageAreaHeight - instructionRows);
+  const narrowRowCount = Math.min(panelHeight, availableAfterInstructions);
+  const fullRowCount = Math.max(0, availableAfterInstructions - narrowRowCount);
+
+  // Preserve the newest canonical full-width rows. Narrow wrapping above this
+  // boundary is presentation-only and cannot displace the tail near the prompt.
+  const fullStartIndex = Math.max(instructionEndIndex, endLineIndex - fullRowCount);
+  const narrowSourceStartIndex = Math.max(
+    instructionEndIndex,
+    fullStartIndex - narrowRowCount,
+  );
+
+  const instructions = canonicalViewportRows(allLines, instructionStartIndex, instructionEndIndex);
+  const narrowProbe = narrowSourceStartIndex < fullStartIndex
+    ? composeFixedWidthRows(
+        allLines,
+        lineAnchors,
+        canonicalSourceState(allLines, narrowSourceStartIndex),
+        fullStartIndex,
+        narrowWidth,
+        fullWidth,
+      )
+    : [];
+  const narrowStart = narrowProbe[narrowProbe.length - narrowRowCount];
+  const narrowRows = narrowStart
+    ? composeFixedWidthRows(
+        allLines,
+        lineAnchors,
+        rowSourceState(narrowStart),
+        fullStartIndex,
+        narrowWidth,
+        fullWidth,
+      ).slice(0, narrowRowCount)
+    : narrowProbe;
+  const fullRows = composeFixedWidthRows(
+    allLines,
+    lineAnchors,
+    canonicalSourceState(allLines, fullStartIndex),
+    endLineIndex,
+    fullWidth,
+    fullWidth,
+  );
+  const visibleRows = [...instructions, ...narrowRows, ...fullRows].slice(-messageAreaHeight);
   floatingHistoryViewportCache.set(allLines, {
     lineAnchors,
     viewStart,
+    instructionStartIndex,
     messageAreaHeight,
     panelTopOffset,
     panelHeight,
@@ -1071,6 +1284,7 @@ export function render(state: RenderState): void {
   let taskPanelTopOffset = taskLayout.panel
     ? visibleSystemInstructionsHeight(lineAnchors, viewStart, messageAreaHeight)
     : 0;
+  let instructionStartIndex = viewStart;
   let taskPanel = taskLayout.panel && taskPanelTopOffset > 0
     ? renderTaskPanel(state, taskLayout.panel.width, messageAreaHeight - taskPanelTopOffset)
     : taskLayout.panel;
@@ -1085,6 +1299,7 @@ export function render(state: RenderState): void {
       allLines,
       lineAnchors,
       viewStart,
+      instructionStartIndex,
       messageAreaHeight,
       taskPanelTopOffset,
       panelFlowHeight,
@@ -1095,7 +1310,9 @@ export function render(state: RenderState): void {
     const nextOffset = taskLayout.panel
       ? visibleSystemInstructionsHeight(lineAnchors, topLineIndex, messageAreaHeight)
       : 0;
-    if (nextOffset === taskPanelTopOffset) break;
+    if (nextOffset === taskPanelTopOffset
+      && (nextOffset === 0 || topLineIndex === instructionStartIndex)) break;
+    instructionStartIndex = topLineIndex;
     taskPanelTopOffset = nextOffset;
     taskPanel = renderTaskPanel(
       state,

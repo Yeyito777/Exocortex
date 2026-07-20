@@ -40,6 +40,8 @@ interface UserMessageCacheEntry {
   imagesKey: string;
   themeName: string;
   result: WrapResult;
+  flowDocument?: UserMessageFlowDocument;
+  flow?: { starts: UserMessageFlowCursor[]; end: UserMessageFlowCursor } | null;
 }
 
 const userMessageRenderCache = new WeakMap<object, UserMessageCacheEntry>();
@@ -264,12 +266,22 @@ export interface UserMessageFlowCursor {
   offset: number;
 }
 
+export interface UserMessageFlowDocument {
+  text: string;
+  hardLines: string[];
+}
+
 export interface AdaptiveUserMessageRow {
   line: string;
   /** Width-independent position in the sanitized user-message text. */
   sourceStart: UserMessageFlowCursor;
   /** Position at which the following row should resume. */
   nextCursor: UserMessageFlowCursor;
+}
+
+function createUserMessageFlowDocument(text: string): UserMessageFlowDocument {
+  const sanitized = sanitizeUntrustedText(text);
+  return { text: sanitized, hardLines: sanitized.split("\n") };
 }
 
 function trimUserTextStart(text: string, start: number, end: number): number {
@@ -330,12 +342,19 @@ export function userMessageTextRowOffsets(
   cols: number,
   images?: ImageAttachment[],
 ): { starts: UserMessageFlowCursor[]; end: UserMessageFlowCursor } | null {
-  const sanitized = sanitizeUntrustedText(text);
-  if (!sanitized || images?.length) return null;
+  return userMessageTextRowOffsetsFromDocument(createUserMessageFlowDocument(text), cols, images);
+}
+
+function userMessageTextRowOffsetsFromDocument(
+  document: UserMessageFlowDocument,
+  cols: number,
+  images?: ImageAttachment[],
+): { starts: UserMessageFlowCursor[]; end: UserMessageFlowCursor } | null {
+  if (!document.text || images?.length) return null;
 
   const starts: UserMessageFlowCursor[] = [];
   const innerWidth = Math.max(1, cols - USER_BUBBLE_MARGIN - 1 - USER_BUBBLE_PADDING * 2);
-  const hardLines = sanitized.split("\n");
+  const hardLines = document.hardLines;
   for (let lineIndex = 0; lineIndex < hardLines.length; lineIndex++) {
     const hardLine = hardLines[lineIndex];
     if (hardLine.length === 0) {
@@ -368,13 +387,14 @@ export function compareUserMessageFlowCursors(
  * full-width bubble boundary.
  */
 export function renderAdaptiveUserMessageRows(
-  text: string,
+  text: string | UserMessageFlowDocument,
   sourceStart: UserMessageFlowCursor,
   sourceEnd: UserMessageFlowCursor,
   colsForRow: (rowIndex: number) => number,
 ): AdaptiveUserMessageRow[] {
-  const sanitized = sanitizeUntrustedText(text);
-  const hardLines = sanitized.split("\n");
+  const hardLines = typeof text === "string"
+    ? createUserMessageFlowDocument(text).hardLines
+    : text.hardLines;
   const clampCursor = (cursor: UserMessageFlowCursor): UserMessageFlowCursor => {
     const lineIndex = Math.max(0, Math.min(cursor.lineIndex, hardLines.length));
     if (lineIndex === hardLines.length) return { lineIndex, offset: 0 };
@@ -509,6 +529,33 @@ export function renderUserMessageCached(owner: object, text: string, cols: numbe
   const result = renderUserMessage(text, cols, images);
   userMessageRenderCache.set(owner, { text, cols, imagesKey, themeName: theme.name, result });
   return result;
+}
+
+/** Canonical source document/cursors shared by history and viewport reflow. */
+export function userMessageFlowMetadataCached(
+  owner: object,
+  text: string,
+  cols: number,
+  images?: ImageAttachment[],
+): ({ document: UserMessageFlowDocument } & {
+  starts: UserMessageFlowCursor[];
+  end: UserMessageFlowCursor;
+}) | null {
+  const imagesKey = imageAttachmentsKey(images);
+  let cached = userMessageRenderCache.get(owner);
+  if (!cached
+    || cached.text !== text
+    || cached.cols !== cols
+    || cached.imagesKey !== imagesKey
+    || cached.themeName !== theme.name) {
+    renderUserMessageCached(owner, text, cols, images);
+    cached = userMessageRenderCache.get(owner)!;
+  }
+  cached.flowDocument ??= createUserMessageFlowDocument(text);
+  if (cached.flow === undefined) {
+    cached.flow = userMessageTextRowOffsetsFromDocument(cached.flowDocument, cols, images);
+  }
+  return cached.flow ? { document: cached.flowDocument, ...cached.flow } : null;
 }
 
 export function renderSystemMessage(text: string, availableWidth: number, color?: string): WrapResult {

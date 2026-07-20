@@ -336,6 +336,63 @@ describe("render caching and frame diffing", () => {
     expect(termWidth(stripCsi(stripAnsi(belowPanel!.text)))).toBeGreaterThan(state.layout.historyWidth);
   });
 
+  test("pins a system-instructions box revealed by top reflow without duplicating rows", () => {
+    const state = createInitialState();
+    state.cols = 120;
+    state.rows = 30;
+    state.convId = "parent";
+    state.messages = [
+      {
+        role: "assistant",
+        blocks: [{ type: "text", text: `BEFORE ${"history words ".repeat(6)}` }],
+        metadata: null,
+      },
+      { role: "system_instructions", text: "Keep this box intact.", metadata: null },
+      {
+        role: "assistant",
+        blocks: Array.from({ length: 13 }, (_, index) => ({
+          type: "text" as const,
+          text: `AFTER${index} ${"history words ".repeat(6)}`,
+        })),
+        metadata: null,
+      },
+    ];
+    state.sidebar.conversations = [{
+      id: "parent",
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 3,
+      title: "Parent",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: Array.from({ length: 27 }, (_, index) => ({
+        id: `child-${index}`,
+        kind: "subagent" as const,
+        title: `Task ${index}`,
+        startedAt: Date.now() - 2_000,
+      })),
+    }];
+
+    captureRenderOutput(state);
+    const instructionRows = state.layout.historyViewportRows.filter((viewportRow) => (
+      viewportRow
+      && state.historyLineAnchors[viewportRow.lineIndex]?.segment.startsWith("system_instructions")
+    ));
+
+    expect(instructionRows.map(row => row?.lineIndex)).toEqual([1, 2, 3]);
+    expect(state.layout.taskPanelRect?.top).toBe(6);
+    expect(instructionRows.every(row => (
+      row !== null && termWidth(stripAnsi(state.historyLines[row.lineIndex])) === state.cols
+    ))).toBe(true);
+  });
+
   test("preserves assistant indentation on task-panel reflow continuations", () => {
     const state = createInitialState();
     state.cols = 180;
@@ -504,6 +561,121 @@ describe("render caching and frame diffing", () => {
     expect(userRows.filter(row => row.screenRow <= bufferBottom)
       .every(row => termWidth(row.line) <= state.layout.historyWidth)).toBe(true);
     expect(userRows.some(row => row.screenRow > bufferBottom && termWidth(row.line) > state.layout.historyWidth)).toBe(true);
+  });
+
+  test("keeps the newest full-width tail fixed when task-panel reflow overflows", () => {
+    const state = createInitialState();
+    state.cols = 120;
+    state.rows = 30;
+    state.convId = "parent";
+    state.messages = [{
+      role: "assistant",
+      blocks: Array.from({ length: 30 }, (_, index) => ({
+        type: "text" as const,
+        text: `L${String(index).padStart(2, "0")} ${"history words ".repeat(6)}`,
+      })),
+      metadata: null,
+    }];
+    state.sidebar.conversations = [{
+      id: "parent",
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 1,
+      title: "Parent",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: Array.from({ length: 27 }, (_, index) => ({
+        id: `child-${index}`,
+        kind: "subagent" as const,
+        title: `Task ${index}`,
+        startedAt: Date.now() - 2_000,
+      })),
+    }];
+
+    const writes = positionedWrites(captureRenderOutput(state));
+    const panelBufferBottom = (state.layout.taskPanelRect?.bottom ?? 0) + 1;
+    const historyRows = state.layout.historyViewportRows.map((viewportRow, index) => {
+      const screenRow = 3 + index;
+      const write = writes.filter(candidate => candidate.row === screenRow && candidate.col === 1).at(-1);
+      return {
+        screenRow,
+        viewportRow,
+        line: stripCsi(stripAnsi(write?.text ?? "")),
+      };
+    });
+    const narrowRows = historyRows.filter(row => row.screenRow <= panelBufferBottom);
+    const fullRows = historyRows.filter(row => row.screenRow > panelBufferBottom);
+
+    expect(state.layout.messageAreaHeight).toBe(23);
+    expect(narrowRows).toHaveLength(13);
+    expect(narrowRows[0].viewportRow?.startCol).toBeGreaterThan(0);
+    expect(narrowRows[0].viewportRow?.displayPrefixWidth).toBe(2);
+    expect(narrowRows[0].line.startsWith("  ")).toBe(true);
+    expect(narrowRows.every(row => termWidth(row.line) <= state.layout.historyWidth)).toBe(true);
+    expect(Math.max(...narrowRows.map(row => row.viewportRow?.lineIndex ?? -1))).toBe(19);
+    expect(fullRows.map(row => row.viewportRow?.lineIndex)).toEqual(
+      Array.from({ length: 10 }, (_, index) => 20 + index),
+    );
+    expect(fullRows.map(row => row.line.trim().slice(0, 3))).toEqual(
+      Array.from({ length: 10 }, (_, index) => `L${20 + index}`),
+    );
+    expect(fullRows.every(row => termWidth(row.line) > state.layout.historyWidth)).toBe(true);
+  });
+
+  test("keeps an overflowing user bubble continuous across the fixed-width boundary", () => {
+    const state = createInitialState();
+    state.cols = 120;
+    state.rows = 30;
+    state.convId = "parent";
+    const words = Array.from({ length: 500 }, (_, index) => `word${String(index).padStart(3, "0")}`);
+    state.messages = [{ role: "user", text: words.join(" "), metadata: null }];
+    state.sidebar.conversations = [{
+      id: "parent",
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 1,
+      title: "Parent",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: Array.from({ length: 27 }, (_, index) => ({
+        id: `child-${index}`,
+        kind: "subagent" as const,
+        title: `Task ${index}`,
+        startedAt: Date.now() - 2_000,
+      })),
+    }];
+
+    const writes = positionedWrites(captureRenderOutput(state));
+    const panelBufferBottom = (state.layout.taskPanelRect?.bottom ?? 0) + 1;
+    const userRows = state.layout.historyViewportRows.flatMap((viewportRow, index) => {
+      if (!viewportRow || state.historyLineAnchors[viewportRow.lineIndex]?.segment !== "user_content") return [];
+      const screenRow = 3 + index;
+      const write = writes.filter(candidate => candidate.row === screenRow && candidate.col === 1).at(-1);
+      return [{ screenRow, line: stripCsi(stripAnsi(write?.text ?? "")) }];
+    });
+    const visibleWords = userRows.flatMap(row => row.line.trim().split(/\s+/).filter(Boolean));
+    const sourceStart = words.indexOf(visibleWords[0]);
+
+    expect(sourceStart).toBeGreaterThan(0); // the top of the overflowing bubble is clipped
+    expect(visibleWords).toEqual(words.slice(sourceStart));
+    expect(userRows.filter(row => row.screenRow <= panelBufferBottom)
+      .every(row => termWidth(row.line) <= state.layout.historyWidth)).toBe(true);
+    expect(userRows.some(row => row.screenRow > panelBufferBottom
+      && termWidth(row.line) > state.layout.historyWidth)).toBe(true);
   });
 
   test("keeps canonical scroll state stable when task-panel wrapping appears and disappears", () => {

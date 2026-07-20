@@ -10,7 +10,14 @@ import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, type Message,
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { theme } from "./theme";
-import { renderBlockCached, renderSystemMessage, renderUserMessageCached } from "./blockrenderer";
+import {
+  renderBlockCached,
+  renderSystemMessage,
+  renderUserMessageCached,
+  userMessageFlowMetadataCached,
+  type UserMessageFlowDocument,
+  type UserMessageFlowCursor,
+} from "./blockrenderer";
 import { isVisuallyBlankLine, sanitizeUntrustedText } from "./terminaltext";
 
 const COMPACTION_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
@@ -195,6 +202,10 @@ export interface RenderLineAnchor {
   index: number;
   /** Wrapped visual row within that logical line (0 for the first row). */
   subIndex: number;
+  /** Width-independent source range for semantic user/queued text rows. */
+  userFlowDocument?: UserMessageFlowDocument;
+  userFlowStart?: UserMessageFlowCursor;
+  userFlowEnd?: UserMessageFlowCursor;
 }
 
 export interface BuildMessageLinesResult {
@@ -327,8 +338,17 @@ export function buildMessageLines(
     if (msg.role === "user") {
       if (!firstUser) pushLine("", msg, "user_margin_top");  // top margin (skip for first)
       const contentStart = lines.length;
-      pushBlock(msg, "user_content", renderUserMessageCached(msg, msg.text, availableWidth, msg.images));
+      const rendered = renderUserMessageCached(msg, msg.text, availableWidth, msg.images);
+      pushBlock(msg, "user_content", rendered);
       const contentEnd = lines.length;
+      const flow = userMessageFlowMetadataCached(msg, msg.text, availableWidth, msg.images);
+      if (flow && flow.starts.length === contentEnd - contentStart) {
+        for (let row = 0; row < flow.starts.length; row++) {
+          lineAnchors[contentStart + row].userFlowDocument = flow.document;
+          lineAnchors[contentStart + row].userFlowStart = flow.starts[row];
+          lineAnchors[contentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
+        }
+      }
       pushLine("", msg, "user_margin_bottom");               // bottom margin
       firstUser = false;
       pushMessageBound(msg.role, start, contentStart, contentEnd);
@@ -445,8 +465,17 @@ export function buildMessageLines(
       pushLine("", qm, "queued_margin_top");
       // Render a dimmed user bubble
       const qr = renderUserMessageCached(qm, qm.text, availableWidth, qm.images);
+      const queuedContentStart = lines.length;
       for (let i = 0; i < qr.lines.length; i++) {
         pushLine(`${theme.muted}${qr.lines[i]}${theme.reset}`, qm, "queued_content", i);
+      }
+      const flow = userMessageFlowMetadataCached(qm, qm.text, availableWidth, qm.images);
+      if (flow && flow.starts.length === qr.lines.length) {
+        for (let row = 0; row < flow.starts.length; row++) {
+          lineAnchors[queuedContentStart + row].userFlowDocument = flow.document;
+          lineAnchors[queuedContentStart + row].userFlowStart = flow.starts[row];
+          lineAnchors[queuedContentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
+        }
       }
       // Timing label — right-aligned, muted italic
       const labelPad = " ".repeat(Math.max(0, availableWidth - timingLabel.length - 3));
