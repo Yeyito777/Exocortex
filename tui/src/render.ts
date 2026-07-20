@@ -923,9 +923,15 @@ function renderMessageArea(
         rendered = renderLineWithSearch(rendered, searchRanges);
       }
 
+      const sourceEnd = startCol + plain.length - displayPrefixWidth;
+      // Blank canonical lines use a virtual cursor at the end of their padding.
+      // Include that otherwise-exclusive endpoint so renderLineWithCursor can
+      // append the visible cursor cell, while keeping reflow boundaries exclusive.
+      const cursorAtBlankLineEnd = canonicalPlain.trim().length === 0
+        && vCursor.col === sourceEnd;
       if (((inVisual && lineIdx === vCursor.row) || (historyFocused && !inVisual && lineIdx === vCursor.row))
         && vCursor.col >= startCol
-        && vCursor.col < startCol + plain.length - displayPrefixWidth) {
+        && (vCursor.col < sourceEnd || cursorAtBlankLineEnd)) {
         rendered = renderLineWithCursor(rendered, vCursor.col - startCol + displayPrefixWidth);
       }
 

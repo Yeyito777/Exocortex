@@ -165,6 +165,30 @@ describe("render caching and frame diffing", () => {
     expect(stripAnsi(state.historyLines.join("\n"))).toContain("updated body");
   });
 
+  test("renders the focused history cursor on an empty source line", () => {
+    const state = createInitialState();
+    state.cols = 100;
+    state.rows = 20;
+    state.panelFocus = "chat";
+    state.chatFocus = "history";
+    state.messages = [{
+      role: "assistant",
+      blocks: [{ type: "text", text: "before\n\nafter" }],
+      metadata: null,
+    }];
+
+    captureRenderOutput(state);
+    const blankRow = state.historyLines.findIndex(line => stripAnsi(line).trim().length === 0);
+    expect(blankRow).toBeGreaterThanOrEqual(0);
+    state.historyCursor = { row: blankRow, col: stripAnsi(state.historyLines[blankRow]).length };
+
+    const output = captureRenderOutput(state);
+    const viewportIndex = state.layout.historyViewportRows.findIndex(row => row?.lineIndex === blankRow);
+
+    expect(viewportIndex).toBeGreaterThanOrEqual(0);
+    expect(output).toContain(theme.cursorBg);
+  });
+
   test("prompt typing flushes only the changed bottom row instead of the whole screen", () => {
     const state = makeState();
     captureRenderOutput(state); // prime previous-frame cache
