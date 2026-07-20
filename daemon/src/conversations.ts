@@ -23,6 +23,8 @@ import { getProvider, normalizeEffort } from "./providers/registry";
 import { isDeepStrictEqual } from "node:util";
 import { contextMessageChars } from "./context-token-attribution";
 import { getConversationExternalIntegrations } from "./external-notifications";
+import * as displayPageStore from "./display-page-store";
+import { scheduleDisplayIndex } from "./display-index-backfill";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -573,6 +575,7 @@ export function removeMany(ids: string[], recordUndo = true): string[] {
 
   let unreadChanged = false;
   for (const id of moved) {
+    displayPageStore.removeDisplayProjection(id);
     unreadChanged = removeConversationState(id) || unreadChanged;
   }
   if (unreadChanged) saveUnreadState();
@@ -592,6 +595,7 @@ function deleteConversationWithoutUndo(id: string): boolean {
   if (dirty.has(id)) flush(id);
   const moved = persistence.trashConversations([id], false).length > 0;
   if (!moved) return false;
+  displayPageStore.removeDisplayProjection(id);
   const unreadChanged = removeConversationState(id);
   if (unreadChanged) saveUnreadState();
   saveSummaryIndex();
@@ -624,6 +628,7 @@ function restoreConversationsFromTrash(conversationIds: string[]): Conversation[
   for (const conv of restored) {
     conversations.set(conv.id, conv);
     updateSummaryFromConversation(conv);
+    scheduleDisplayIndex(conv.id);
   }
   if (restored.length > 0) saveSummaryIndex();
   return restored;
@@ -1082,8 +1087,11 @@ async function performUnwindTo(
     log("warn", `conversations: refusing unwind with stale target identity for ${id} at user index ${userMessageIndex}`);
     return null;
   }
-  if (targetFingerprint !== undefined
-      && historyPrefixHash(conv.messages, targetHistoryCount + 1) !== targetFingerprint) {
+  const targetFingerprintMatches = (): boolean => targetFingerprint === undefined
+    || (displayPageStore.isPagedUserFingerprint(targetFingerprint)
+      ? displayPageStore.pagedUserFingerprint(id, userMessageIndex, targetMessage!) === targetFingerprint
+      : historyPrefixHash(conv.messages, targetHistoryCount + 1) === targetFingerprint);
+  if (!targetFingerprintMatches()) {
     log("warn", `conversations: refusing unwind with stale target fingerprint for ${id} at user index ${userMessageIndex}`);
     return null;
   }
@@ -1143,8 +1151,7 @@ async function performUnwindTo(
     if (conversations.get(id) !== conv
         || lostCheckpointDuringAbort
         || conv.messages[spliceAt] !== targetMessage
-        || (targetFingerprint !== undefined
-          && historyPrefixHash(conv.messages, targetHistoryCount + 1) !== targetFingerprint)
+        || !targetFingerprintMatches()
         || (conv.activeContext != null
           && (postAbortCompactionHistoryCount == null || targetHistoryCount < postAbortCompactionHistoryCount))) {
       throw new Error(
@@ -1190,6 +1197,7 @@ async function performUnwindTo(
       messageCount: plannedSummary.messageCount,
       supersededQueueIds,
     });
+    scheduleDisplayIndex(id);
     committed = true;
 
     conv.messages.splice(spliceAt);
@@ -1430,6 +1438,7 @@ export function flush(id: string, options: { summaryIndex?: SummaryIndexFlushMod
   const conv = conversations.get(id);
   if (!conv) return;
   persistence.save(conv);
+  scheduleDisplayIndex(id);
   dirty.delete(id);
   contextAttributionDirty.delete(id);
   updateSummaryFromConversation(conv);
@@ -1443,6 +1452,7 @@ export function flushAll(): void {
     const conv = conversations.get(id);
     if (!conv) continue;
     persistence.save(conv);
+    scheduleDisplayIndex(id);
     updateSummaryFromConversation(conv);
   }
   dirty.clear();
@@ -1820,6 +1830,7 @@ export function deleteFolder(folderId: string, mode: "recursive" | "unwrap" = "r
   if (!persistence.trashFolderRecursive({ type: "folder_recursive", folderId, folders: folderSnapshots, conversationIds }, recordUndo)) {
     return false;
   }
+  for (const convId of conversationIds) displayPageStore.removeDisplayProjection(convId);
 
   let unreadChanged = false;
   for (const convId of conversationIds) {
@@ -1867,6 +1878,12 @@ export interface ConversationRenderSnapshot extends ConversationDisplayData {
 export interface RenderSnapshotDiagnostics {
   conversationCacheHit: boolean;
   snapshotCacheHit: boolean;
+  /** Compact page projection hit; false means this request built the index. */
+  displayPageHit?: boolean;
+  /** Time spent reading compact manifest/chunk files. */
+  displayPageReadMs?: number;
+  /** Time spent writing a missing/stale compact projection. */
+  displayPageWriteMs?: number;
   streaming: boolean;
   loadMs: number;
   buildMs: number;
@@ -1874,6 +1891,103 @@ export interface RenderSnapshotDiagnostics {
   fileBytes: number | null;
   messageCount: number;
   entryCount: number;
+}
+
+export type StoredDisplayHistoryPage = displayPageStore.StoredDisplayHistoryPage;
+
+/**
+ * Read a compact user-turn page without materializing the canonical transcript.
+ * A missing/stale projection is rebuilt once from an unvalidated display-only
+ * load; active-context integrity remains deferred until provider replay needs it.
+ */
+export function getStoredDisplayPage(
+  id: string,
+  turns: number,
+  beforeEntryIndex?: number,
+  diagnostics?: Partial<RenderSnapshotDiagnostics>,
+): StoredDisplayHistoryPage | null {
+  if (!summaries.has(id) && !conversations.has(id)) return null;
+  const totalStartedAt = diagnostics ? performance.now() : 0;
+  const conversationCacheHit = diagnostics ? conversations.has(id) : false;
+  let readStartedAt = diagnostics ? performance.now() : 0;
+  let page = displayPageStore.loadDisplayPage(id, turns, beforeEntryIndex);
+  const loadedConversation = conversations.get(id);
+  if (loadedConversation && dirty.has(id)) return null;
+  if (page && loadedConversation && page.storedMessageCount !== loadedConversation.messages.length) {
+    // An in-memory mutation can exist briefly before its canonical save. Never
+    // publish or serve a projection ahead of the durable source of truth.
+    page = null;
+  }
+  let readMs = diagnostics ? performance.now() - readStartedAt : 0;
+  const displayPageHit = page !== null;
+  let sourceLoadMs = 0;
+  let projectionBuildMs = 0;
+  let projectionWriteMs = 0;
+
+  if (!page) {
+    const sourceLoadStartedAt = diagnostics ? performance.now() : 0;
+    // Re-read the canonical source even when a clean in-memory conversation is
+    // present. If callers have an unflushed in-memory mutation that somehow was
+    // not marked dirty, preserve the existing full-snapshot behavior rather than
+    // binding either version to the other's file signature.
+    const source = persistence.loadForDisplayProjection(id);
+    sourceLoadMs = diagnostics ? performance.now() - sourceLoadStartedAt : 0;
+    if (!source) return null;
+    if (loadedConversation && !isDeepStrictEqual({
+      provider: loadedConversation.provider,
+      model: loadedConversation.model,
+      effort: loadedConversation.effort,
+      fastMode: loadedConversation.fastMode,
+      lastContextTokens: loadedConversation.lastContextTokens,
+      activeContext: loadedConversation.activeContext,
+      messages: loadedConversation.messages,
+    }, {
+      provider: source.provider,
+      model: source.model,
+      effort: source.effort,
+      fastMode: source.fastMode,
+      lastContextTokens: source.lastContextTokens,
+      activeContext: source.activeContext,
+      messages: source.messages,
+    })) return null;
+    const expectedSource = displayPageStore.getConversationSourceSignature(id);
+    if (!expectedSource) return null;
+    const projectionDiagnostics: Partial<displayPageStore.DisplayProjectionWriteDiagnostics> | undefined = diagnostics ? {} : undefined;
+    try {
+      if (!displayPageStore.writeDisplayProjection(source, expectedSource, projectionDiagnostics)) return null;
+    } catch (err) {
+      log("warn", `display pages: failed on-demand index for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+    projectionBuildMs = projectionDiagnostics?.buildMs ?? 0;
+    projectionWriteMs = projectionDiagnostics?.writeMs ?? 0;
+    readStartedAt = diagnostics ? performance.now() : 0;
+    page = displayPageStore.loadDisplayPage(id, turns, beforeEntryIndex);
+    readMs += diagnostics ? performance.now() - readStartedAt : 0;
+  }
+  if (!page) return null;
+
+  const summary = summaries.get(id) ?? summarizeConversation(conversations.get(id)!);
+  const folderInstructionsText = formatFolderInstructionsForDisplay(summary.folderId ?? null);
+  const pinnedEntries = folderInstructionsText
+    ? [{ type: "system_instructions" as const, text: folderInstructionsText }, ...page.pinnedEntries]
+    : page.pinnedEntries;
+  const result = { ...page, pinnedEntries };
+  if (diagnostics) {
+    diagnostics.conversationCacheHit = conversationCacheHit;
+    diagnostics.snapshotCacheHit = false;
+    diagnostics.displayPageHit = displayPageHit;
+    diagnostics.displayPageReadMs = readMs;
+    diagnostics.displayPageWriteMs = projectionWriteMs;
+    diagnostics.streaming = false;
+    diagnostics.loadMs = sourceLoadMs;
+    diagnostics.buildMs = projectionBuildMs;
+    diagnostics.totalMs = performance.now() - totalStartedAt;
+    diagnostics.fileBytes = page.source.baseSize;
+    diagnostics.messageCount = summary.messageCount;
+    diagnostics.entryCount = page.totalEntries + pinnedEntries.length;
+  }
+  return result;
 }
 
 function buildSnapshotDisplayData(

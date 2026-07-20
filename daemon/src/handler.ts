@@ -455,6 +455,46 @@ export function createHandler(server: DaemonServer) {
     turns?: number,
     metrics?: ConversationLoadMetrics,
   ) => {
+    const paginated = target.capabilities?.has("history-pagination") || turns !== undefined;
+    if (paginated && !convStore.isStreaming(convId)) {
+      const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
+      const page = convStore.getStoredDisplayPage(convId, turns ?? INITIAL_HISTORY_TURNS, undefined, snapshotDiagnostics);
+      if (page) {
+        const queued = convStore.getQueuedMessages(page.convId);
+        const summary = convStore.getSummary(page.convId);
+        const responseEntries = [...page.pinnedEntries, ...page.entries];
+        const sendStartedAt = metrics ? performance.now() : 0;
+        const responseBytes = server.sendTo(target, {
+          type: "conversation_loaded",
+          reqId,
+          convId: page.convId,
+          provider: summary?.provider ?? page.provider,
+          model: summary?.model ?? page.model,
+          effort: summary?.effort ?? page.effort,
+          fastMode: summary?.fastMode ?? page.fastMode,
+          entries: responseEntries,
+          historyStartIndex: page.startIndex,
+          historyStartUserIndex: page.startUserIndex,
+          historyTotalEntries: page.totalEntries,
+          hasOlderHistory: page.hasOlder,
+          contextTokens: page.contextTokens,
+          toolOutputsIncluded: false,
+          queuedMessages: queued.length > 0 ? queued : undefined,
+          goal: summary?.goal ?? null,
+        }, metrics !== undefined);
+        if (metrics) {
+          metrics.snapshot = snapshotDiagnostics ?? {};
+          metrics.compactMs = 0;
+          metrics.paginateMs = 0;
+          metrics.sendMs = performance.now() - sendStartedAt;
+          metrics.responseBytes = typeof responseBytes === "number" ? responseBytes : 0;
+          metrics.responseEntries = responseEntries.length;
+          metrics.historyTotalEntries = page.totalEntries;
+        }
+        return page.convId;
+      }
+    }
+
     // Tool-result bodies are fetched separately only when the TUI expands them.
     const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
     const data = getRenderSnapshot(convId, snapshotDiagnostics);
@@ -462,12 +502,11 @@ export function createHandler(server: DaemonServer) {
     const compactStartedAt = metrics ? performance.now() : 0;
     const compactData = compactHistoryImages(data);
     const compactMs = metrics ? performance.now() - compactStartedAt : 0;
-    const paginated = target.capabilities?.has("history-pagination") || turns !== undefined;
     const paginateStartedAt = metrics ? performance.now() : 0;
     const page = paginated ? pageDisplayHistory(compactData.entries, turns ?? INITIAL_HISTORY_TURNS) : null;
     const paginateMs = metrics ? performance.now() - paginateStartedAt : 0;
     const queued = convStore.getQueuedMessages(data.convId);
-    const conv = convStore.get(data.convId);
+    const summary = convStore.getSummary(data.convId);
     const responseEntries = page ? [...page.pinnedEntries, ...page.entries] : compactData.entries;
     const sendStartedAt = metrics ? performance.now() : 0;
     const responseBytes = server.sendTo(target, {
@@ -489,7 +528,7 @@ export function createHandler(server: DaemonServer) {
       contextTokens: compactData.contextTokens,
       toolOutputsIncluded: compactData.toolOutputsIncluded,
       queuedMessages: queued.length > 0 ? queued : undefined,
-      goal: conv?.goal ?? null,
+      goal: summary?.goal ?? null,
     }, metrics !== undefined);
     if (metrics) {
       metrics.snapshot = snapshotDiagnostics ?? {};
@@ -500,7 +539,7 @@ export function createHandler(server: DaemonServer) {
       metrics.responseEntries = responseEntries.length;
       metrics.historyTotalEntries = page?.totalEntries ?? compactData.entries.length;
     }
-    return data;
+    return data.convId;
   };
 
   const sendCompactConversationHistory = (
@@ -512,6 +551,36 @@ export function createHandler(server: DaemonServer) {
     requestSource?: "initial-backfill" | "viewport",
     metrics?: ConversationLoadMetrics,
   ): boolean => {
+    if (!convStore.isStreaming(convId)) {
+      const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
+      const page = convStore.getStoredDisplayPage(convId, turns, beforeEntryIndex, snapshotDiagnostics);
+      if (page) {
+        const sendStartedAt = metrics ? performance.now() : 0;
+        const responseBytes = server.sendTo(target, {
+          type: "conversation_history_loaded",
+          reqId,
+          convId,
+          requestSource,
+          entries: page.entries,
+          historyStartIndex: page.startIndex,
+          historyStartUserIndex: page.startUserIndex,
+          historyEndIndex: page.endIndex,
+          historyTotalEntries: page.totalEntries,
+          hasOlderHistory: page.hasOlder,
+        }, metrics !== undefined);
+        if (metrics) {
+          metrics.snapshot = snapshotDiagnostics ?? {};
+          metrics.compactMs = 0;
+          metrics.paginateMs = 0;
+          metrics.sendMs = performance.now() - sendStartedAt;
+          metrics.responseBytes = typeof responseBytes === "number" ? responseBytes : 0;
+          metrics.responseEntries = page.entries.length;
+          metrics.historyTotalEntries = page.totalEntries;
+        }
+        return true;
+      }
+    }
+
     const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
     const data = getRenderSnapshot(convId, snapshotDiagnostics);
     if (!data) return false;
@@ -1070,8 +1139,8 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "prewarm_conversation": {
-        const conv = convStore.get(cmd.convId);
-        if (!conv || conv.provider !== "openai" || convStore.isStreaming(cmd.convId)
+        const summary = convStore.getSummary(cmd.convId);
+        if (!summary || summary.provider !== "openai" || convStore.isStreaming(cmd.convId)
             || openAIAccountMutationInFlight) break;
         void getProviderAdapter("openai").prewarmConversation?.(cmd.convId)
           .catch((err) => log("debug", `openai prewarm failed for ${cmd.convId}: ${err instanceof Error ? err.message : err}`));
@@ -2055,8 +2124,8 @@ export function createHandler(server: DaemonServer) {
         }
         if (cmd.turns !== undefined) client.capabilities?.add("history-pagination");
         const metrics = PERFORMANCE_PROFILING_ENABLED ? createConversationLoadMetrics() : undefined;
-        const data = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns, metrics);
-        if (!data) {
+        const loadedConvId = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns, metrics);
+        if (!loadedConvId) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           if (PERFORMANCE_PROFILING_ENABLED) {
             log("warn", `perf: conversation_open daemon_missing ${JSON.stringify({
@@ -2068,14 +2137,14 @@ export function createHandler(server: DaemonServer) {
           }
           break;
         }
-        server.subscribe(client, cmd.convId);
+        server.subscribe(client, loadedConvId);
         // After subscribing, send a fresh streaming snapshot for late-join catch-up.
         // This covers any chunks emitted between the initial load snapshot and the
         // moment the new subscriber was attached.
         if (convStore.isStreaming(cmd.convId)) {
-          const catchupData = getRenderSnapshot(cmd.convId) ?? data;
-          const pendingAI = catchupData.pendingAI;
-          if (pendingAI) {
+          const catchupData = getRenderSnapshot(cmd.convId);
+          const pendingAI = catchupData?.pendingAI;
+          if (catchupData && pendingAI) {
             server.sendTo(client, {
               type: "streaming_started",
               convId: catchupData.convId,
@@ -2092,8 +2161,8 @@ export function createHandler(server: DaemonServer) {
           }
         }
         // Clear unread when a client views the conversation
-        if (convStore.clearUnread(data.convId)) {
-          broadcastConversationUpdated(server, data.convId);
+        if (convStore.clearUnread(loadedConvId)) {
+          broadcastConversationUpdated(server, loadedConvId);
         }
         if (PERFORMANCE_PROFILING_ENABLED && metrics) {
           const durationMs = performance.now() - startedAt;
@@ -2134,7 +2203,7 @@ export function createHandler(server: DaemonServer) {
           cmd.beforeEntryIndex,
           cmd.turns,
           cmd.reqId,
-          PERFORMANCE_PROFILING_ENABLED ? cmd.requestSource : undefined,
+          cmd.requestSource,
           metrics,
         );
         if (!sent) {

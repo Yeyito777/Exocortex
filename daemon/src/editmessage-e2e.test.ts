@@ -134,7 +134,7 @@ describe("edit-message integration", () => {
       const edit = confirmEditMessage(stateA);
       expect(edit).toMatchObject({ action: "edit_sent", text: "second prompt", userMessageIndex: 1, expectedStartedAt: 200 });
       if (edit.action === "edit_sent") {
-        expect(edit.targetFingerprint).toMatch(/^[0-9a-f]{24}$/);
+        expect(edit.targetFingerprint).toMatch(/^(?:[0-9a-f]{24}|page-v1:[0-9a-f]{24})$/);
         clientA.unwindConversation(convId, edit.userMessageIndex, edit.expectedStartedAt, edit.targetFingerprint);
       }
 

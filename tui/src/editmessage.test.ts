@@ -11,6 +11,24 @@ import { createPendingAI, type UserMessage } from "./messages";
 import { createInitialState } from "./state";
 
 describe("edit message modal", () => {
+  test("does not offer compact history whose image payload is unavailable", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages = [
+      {
+        role: "user",
+        text: "old image prompt",
+        images: [{ mediaType: "image/png", base64: "", sizeBytes: 123 }],
+        metadata: null,
+      },
+      { role: "user", text: "editable text prompt", metadata: null },
+    ];
+
+    openEditMessageModal(state);
+
+    expect(state.editMessagePrompt?.items.map((item) => item.text)).toEqual(["editable text prompt"]);
+  });
+
   test("uses the absolute user index of a paged history window", () => {
     const state = createInitialState();
     state.convId = "conv-1";

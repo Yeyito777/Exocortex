@@ -35,6 +35,7 @@ import { socketPath, pidPath, runtimeDir, worktreeName, isWindows } from "@exoco
 import { stopAllBackgroundTasks, waitForBackgroundTasksToStop } from "./conversation-activity";
 import { pruneExternalNotificationSubscriptions } from "./external-notifications";
 import { startExternalNotificationSoftWakeService, stopExternalNotificationSoftWakeService } from "./external-notification-soft-wakes";
+import { startDisplayIndexBackfill } from "./display-index-backfill";
 
 // ── Startup profiling ────────────────────────────────────────────────
 
@@ -204,6 +205,10 @@ async function startDaemon(): Promise<void> {
   // Load persisted conversations
   const conversationLoadStats = convStore.loadFromDisk();
   profileMark("conversations_loaded", conversationLoadStats);
+  // Development/source installs can migrate legacy histories off the event loop.
+  // Compiled Windows builds may not ship the worker's TypeScript entrypoint;
+  // their projections are created lazily on first open/save instead.
+  if (!isWindows) startDisplayIndexBackfill();
   const prunedExternalNotificationSubscriptions = pruneExternalNotificationSubscriptions(
     new Set(convStore.listSummaries().map(conversation => conversation.id)),
   );

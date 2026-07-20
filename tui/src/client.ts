@@ -412,7 +412,7 @@ export class DaemonClient {
       convId,
       beforeEntryIndex,
       turns,
-      ...(this.performanceProfilingEnabled ? { requestSource } : {}),
+      requestSource,
     });
     return reqId;
   }

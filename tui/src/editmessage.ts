@@ -63,6 +63,12 @@ export function openEditMessageModal(state: RenderState): void {
       if (msg.contextCheckpoint?.editable === false) {
         continue;
       }
+      // Compact older history intentionally omits image bytes. Do not offer an
+      // edit action that would first unwind the canonical message and then put
+      // an empty, non-resendable attachment into the prompt.
+      if (msg.images?.some((image) => image.base64.length === 0)) {
+        continue;
+      }
       const itemMessage = isSameSubmittedVoiceMessage(msg) ? submittedVoiceMessage! : msg;
       if (includedMessages.has(itemMessage)) {
         continue;

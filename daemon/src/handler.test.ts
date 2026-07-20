@@ -1358,6 +1358,7 @@ describe("handler load_conversation late-join streaming snapshots", () => {
       convId,
       beforeEntryIndex: 4,
       turns: 2,
+      requestSource: "initial-backfill",
     });
 
     expect(sent[0]).toMatchObject({
@@ -1367,6 +1368,7 @@ describe("handler load_conversation late-join streaming snapshots", () => {
       historyEndIndex: 4,
       historyTotalEntries: 14,
       hasOlderHistory: false,
+      requestSource: "initial-backfill",
     });
     expect((sent[0].entries as Array<{ type: string; text?: string }>)
       .filter((entry) => entry.type === "user").map((entry) => entry.text))

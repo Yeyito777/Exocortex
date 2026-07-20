@@ -134,11 +134,14 @@ describe("paged conversation history events", () => {
     state.historyLoadingOlder = true;
     state.historyLoadingStartedAt = 100;
     state.historyLoadingRequestId = "history-1";
+    state.layout.messageAreaHeight = 20;
+    state.historyLines = ["cached visible bottom"];
 
     handleEvent({
       type: "conversation_history_loaded",
       reqId: "history-1",
       convId: "conv-1",
+      requestSource: "initial-backfill",
       entries: [
         { type: "user", text: "u1" },
         { type: "ai", blocks: [{ type: "text", text: "a1" }], metadata: null },
@@ -159,6 +162,9 @@ describe("paged conversation history events", () => {
     expect(state.historyStartUserIndex).toBe(0);
     expect(state.historyHasOlder).toBe(false);
     expect(state.historyLoadingOlder).toBe(false);
+    // Bottom-anchored initial expansion skips the old/new double history reflow;
+    // the normal render scheduled by main.ts replaces this cache afterward.
+    expect(state.historyLines).toEqual(["cached visible bottom"]);
   });
 
   test("ignores a stale page without clearing the newer in-flight request", () => {

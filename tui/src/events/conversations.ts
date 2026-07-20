@@ -326,7 +326,7 @@ export function handleConversationHistoryLoaded(
     return;
   }
 
-  preserveViewportAcrossHistoryMutation(state, () => {
+  const prependOlderMessages = () => {
     const currentMessages = state.messages;
     let pinnedCount = 0;
     while (currentMessages[pinnedCount]?.role === "system_instructions") pinnedCount += 1;
@@ -346,5 +346,15 @@ export function handleConversationHistoryLoaded(
     state.historyLoadingOlder = false;
     state.historyLoadingStartedAt = null;
     state.historyLoadingRequestId = null;
-  });
+  };
+
+  // The automatic post-open backfill is bottom-anchored and normally arrives
+  // before the user can enter history navigation. Prepending older rows cannot
+  // change the visible bottom in that state, so avoid rendering/wrapping the old
+  // and new windows solely to remap a viewport that does not need remapping.
+  const canFastPathInitialBackfill = event.requestSource === "initial-backfill"
+    && state.scrollOffset === 0
+    && !(state.panelFocus === "chat" && state.chatFocus === "history");
+  if (canFastPathInitialBackfill) prependOlderMessages();
+  else preserveViewportAcrossHistoryMutation(state, prependOlderMessages);
 }

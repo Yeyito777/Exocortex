@@ -1,0 +1,62 @@
+{
+  "generatedAt": "2026-07-20T19:51:00.000Z",
+  "environment": "real TUI in xenv via scripts/dev/exotest; copied main conversation corpus",
+  "migration": {
+    "conversationFiles": 2117,
+    "canonicalBytesApproxGiB": 1.7,
+    "indexed": 2117,
+    "alreadyFresh": 0,
+    "failed": 0,
+    "durationMsApprox": 6000,
+    "projectionDiskMiBApprox": 235
+  },
+  "opens": [
+    {
+      "conversation": "copied 23.9 MB long-history conversation",
+      "fileBytes": 23862322,
+      "before": {
+        "requestToFirstFrameMs": 253.250633,
+        "daemonMs": 234.821327,
+        "initialBackfillApplyMs": 15.255937
+      },
+      "after": {
+        "requestToFirstFrameMs": 21.194256,
+        "daemonMs": 2.785249,
+        "displayPageReadMs": 1.918555,
+        "initialBackfillApplyMs": 0.207018
+      },
+      "speedup": {
+        "requestToFirstFrame": 11.949,
+        "daemon": 84.309
+      }
+    },
+    {
+      "conversation": "copied 96.1 MB long-history conversation",
+      "fileBytes": 96083024,
+      "before": {
+        "requestToFirstFrameMs": 801.812469,
+        "daemonMs": 770.348617,
+        "initialBackfillApplyMs": 21.766177
+      },
+      "after": {
+        "requestToFirstFrameMs": 39.017504,
+        "daemonMs": 4.39694,
+        "displayPageReadMs": 2.735226,
+        "initialBackfillApplyMs": 0.064703
+      },
+      "speedup": {
+        "requestToFirstFrame": 20.550,
+        "daemon": 175.201
+      }
+    }
+  ],
+  "onDemandMissingProjection": {
+    "conversation": "copied conversation with projection deliberately removed",
+    "requestToReceivedMs": 108.784412,
+    "daemonMs": 104.424792,
+    "canonicalDisplayOnlyLoadMs": 75.821405,
+    "projectionBuildMs": 12.372219,
+    "projectionWriteMs": 11.535537,
+    "note": "One-time fallback before the background migration has created this projection."
+  }
+}

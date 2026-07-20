@@ -794,13 +794,13 @@ function toFile(
   };
 }
 
-function fromFile(file: ConversationFile): Conversation {
+function fromFile(file: ConversationFile, validateActiveContext = true): Conversation {
   const provider = normalizeProviderId(file.provider);
   const activeContext = file.activeContext
-    && isValidActiveContextCached(file.activeContext, file.messages)
+    && (!validateActiveContext || isValidActiveContextCached(file.activeContext, file.messages))
     ? file.activeContext
     : null;
-  if (file.activeContext && !activeContext) {
+  if (validateActiveContext && file.activeContext && !activeContext) {
     log("warn", `persistence: discarded invalid active context for ${file.id}; full transcript will be replayed`);
   }
   const conv: Conversation = {
@@ -815,7 +815,7 @@ function fromFile(file: ConversationFile): Conversation {
     updatedAt: file.updatedAt,
     // A token total measured against a discarded compact replay is no longer a
     // meaningful projection for the full transcript fallback.
-    lastContextTokens: file.activeContext && !activeContext ? null : file.lastContextTokens,
+    lastContextTokens: validateActiveContext && file.activeContext && !activeContext ? null : file.lastContextTokens,
     marked: file.marked,
     pinned: file.pinned,
     sortOrder: file.sortOrder,
@@ -1277,6 +1277,7 @@ function overlayCachedIndexEntry(cached: ConversationIndexEntry): ConversationIn
 function applyUnwindFile(
   conv: Conversation,
   baseGeneration: number,
+  validateActiveContext = true,
 ): Conversation {
   const unwind = activeUnwindForBaseGeneration(conv.id, baseGeneration);
   if (!unwind) return conv;
@@ -1284,9 +1285,14 @@ function applyUnwindFile(
     throw new Error(`Conversation unwind overlay for ${conv.id} retains unavailable messages`);
   }
   conv.messages.splice(unwind.keepMessageCount);
-  conv.activeContext = conv.activeContext
-    ? rewindActiveContextToHistoryCount(conv.activeContext, conv.messages, unwind.targetHistoryCount)
-    : null;
+  // Compact display projections only need the immutable compaction boundary.
+  // Keep the persisted checkpoint shape without re-hashing the retained prefix;
+  // the canonical model-replay load still validates and rewinds it normally.
+  if (validateActiveContext) {
+    conv.activeContext = conv.activeContext
+      ? rewindActiveContextToHistoryCount(conv.activeContext, conv.messages, unwind.targetHistoryCount)
+      : null;
+  }
   conv.lastContextTokens = unwind.lastContextTokens;
   conv.updatedAt = unwind.updatedAt;
   conversationStorageState.set(conv, {
@@ -1593,6 +1599,24 @@ export function load(id: string): Conversation | null {
     return applyUnwindFile(fromFile(file), file.storageGeneration);
   } catch (err) {
     log("error", `persistence: failed to load ${id}: ${err}`);
+    return null;
+  }
+}
+
+/**
+ * Load a conversation solely to build its disposable compact display index.
+ * Provider replay never uses this result, so active-context integrity hashing is
+ * intentionally deferred until the canonical `load()` path is actually needed.
+ */
+export function loadForDisplayProjection(id: string): Conversation | null {
+  assertSafeId(id);
+  const path = convPath(id);
+  if (!existsSync(path)) return null;
+  try {
+    const file = parseConversationFile(path);
+    return applyUnwindFile(fromFile(file, false), file.storageGeneration, false);
+  } catch (err) {
+    log("error", `persistence: failed to load display projection source ${id}: ${err}`);
     return null;
   }
 }

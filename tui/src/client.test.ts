@@ -377,7 +377,7 @@ describe("DaemonClient commands", () => {
     expect(internal.pendingCommands[1].reqId).toMatch(/^history_/);
   });
 
-  test("omits performance bookkeeping and correlation fields when profiling is disabled", () => {
+  test("omits performance bookkeeping but preserves behavioral request fields when profiling is disabled", () => {
     const client = new DaemonClient(() => {}, undefined, false);
     const internal = client as any;
 
@@ -395,8 +395,8 @@ describe("DaemonClient commands", () => {
       convId: "conv-1",
       beforeEntryIndex: 40,
       turns: 15,
+      requestSource: "viewport",
     });
-    expect(internal.pendingCommands[1]).not.toHaveProperty("requestSource");
     expect(internal.pendingConversationLoads.size).toBe(0);
     expect(internal.pendingConversationHistoryLoads.size).toBe(0);
   });
