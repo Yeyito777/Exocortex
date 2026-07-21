@@ -311,6 +311,33 @@ describe("focused conversation subscriptions", () => {
     expect(panel.lines.every(line => termWidth(stripAnsi(line)) === 30)).toBe(true);
   });
 
+  test("prioritizes every subscription before assigning overflow slots to tasks", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].tasks!.push(
+      { id: "child-2", kind: "subagent", title: "Second child", startedAt: 2_000 },
+      { id: "bash:99", kind: "background", title: "typecheck", startedAt: 3_000 },
+    );
+    state.externalToolStyles = [{ cmd: "discord", label: "Discord", color: "#5865f2" }];
+    state.sidebar.conversations[0].integrations = [
+      integration({ id: "integration:one", label: "Subscription one" }),
+      integration({ id: "integration:two", label: "Subscription two" }),
+      integration({ id: "integration:three", label: "Subscription three" }),
+    ];
+
+    // Eight panel rows leave four entry slots after the borders, divider, and
+    // overflow row. All three subscriptions should be visible, leaving one
+    // slot for a task even though task rows render first in the card.
+    const panel = renderTaskPanel(state, 100, 8, 50_000)!;
+    const plain = panel.lines.map(stripAnsi).join("\n");
+    expect(panel.lines).toHaveLength(8);
+    expect(plain).toContain("Map daemon events");
+    expect(plain).not.toContain("bun test tui");
+    expect(plain).toContain("Subscription one");
+    expect(plain).toContain("Subscription two");
+    expect(plain).toContain("Subscription three");
+    expect(plain).toContain("… 3 more");
+  });
+
   test("falls back to the manifest name and generic tool color when no external style is available", () => {
     const state = stateWithIntegrations();
     state.externalToolStyles = [];

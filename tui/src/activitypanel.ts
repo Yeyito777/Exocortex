@@ -213,16 +213,11 @@ function fitPanelContent(
   }
 
   // Reserve one row each for the Subscriptions divider and overflow notice.
-  // Represent both sections once two entry slots exist.
+  // Subscriptions are durable inbound connections, so allocate every available
+  // entry slot to them before using any remaining slots for tasks.
   const entrySlots = Math.max(0, maxContentRows - 2);
-  let visibleTaskCount = entrySlots > 0 ? 1 : 0;
-  let visibleIntegrationCount = entrySlots > 1 ? 1 : 0;
-  let remainingSlots = entrySlots - visibleTaskCount - visibleIntegrationCount;
-
-  const additionalTasks = Math.min(tasks.length - visibleTaskCount, remainingSlots);
-  visibleTaskCount += additionalTasks;
-  remainingSlots -= additionalTasks;
-  visibleIntegrationCount += Math.min(integrations.length - visibleIntegrationCount, remainingSlots);
+  const visibleIntegrationCount = Math.min(integrations.length, entrySlots);
+  const visibleTaskCount = Math.min(tasks.length, entrySlots - visibleIntegrationCount);
 
   return {
     tasks: tasks.slice(0, visibleTaskCount),
