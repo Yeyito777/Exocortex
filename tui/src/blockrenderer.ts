@@ -252,6 +252,7 @@ function renderBlock(
 
 const USER_BUBBLE_PADDING = 1;
 const USER_BUBBLE_MARGIN = 2;
+const adaptiveUserBubbleWidthCache = new WeakMap<UserMessageFlowDocument, Map<number, number>>();
 
 interface UserTextRowTake {
   text: string;
@@ -282,6 +283,35 @@ export interface AdaptiveUserMessageRow {
 function createUserMessageFlowDocument(text: string): UserMessageFlowDocument {
   const sanitized = sanitizeUntrustedText(text);
   return { text: sanitized, hardLines: sanitized.split("\n") };
+}
+
+/**
+ * Bubble width for the complete message at one viewport width.
+ *
+ * Adaptive viewport rendering may receive only the visible source range of a
+ * message. Deriving its bubble width from those rows makes the background
+ * shrink as wider, off-screen rows are scrolled away, so always measure a
+ * constant-width wrap of the complete source document instead.
+ */
+function fullUserMessageBubbleWidth(document: UserMessageFlowDocument, cols: number): number {
+  let widthsByCols = adaptiveUserBubbleWidthCache.get(document);
+  if (!widthsByCols) {
+    widthsByCols = new Map();
+    adaptiveUserBubbleWidthCache.set(document, widthsByCols);
+  }
+  const cached = widthsByCols.get(cols);
+  if (cached !== undefined) return cached;
+
+  const maxBubbleWidth = Math.max(1, cols - USER_BUBBLE_MARGIN - 1);
+  const innerWidth = Math.max(1, maxBubbleWidth - USER_BUBBLE_PADDING * 2);
+  const wrapped = wordWrap(document.text, innerWidth).lines;
+  const longestLine = wrapped.reduce((max, line) => Math.max(max, termWidth(line)), 0);
+  const bubbleWidth = Math.min(
+    maxBubbleWidth,
+    longestLine + USER_BUBBLE_PADDING * 2,
+  );
+  widthsByCols.set(cols, bubbleWidth);
+  return bubbleWidth;
 }
 
 function trimUserTextStart(text: string, start: number, end: number): number {
@@ -392,9 +422,8 @@ export function renderAdaptiveUserMessageRows(
   sourceEnd: UserMessageFlowCursor,
   colsForRow: (rowIndex: number) => number,
 ): AdaptiveUserMessageRow[] {
-  const hardLines = typeof text === "string"
-    ? createUserMessageFlowDocument(text).hardLines
-    : text.hardLines;
+  const document = typeof text === "string" ? createUserMessageFlowDocument(text) : text;
+  const hardLines = document.hardLines;
   const clampCursor = (cursor: UserMessageFlowCursor): UserMessageFlowCursor => {
     const lineIndex = Math.max(0, Math.min(cursor.lineIndex, hardLines.length));
     if (lineIndex === hardLines.length) return { lineIndex, offset: 0 };
@@ -442,9 +471,15 @@ export function renderAdaptiveUserMessageRows(
     while (runEnd < rawRows.length && rawRows[runEnd].cols === cols) runEnd++;
 
     const maxBubbleWidth = Math.max(1, cols - USER_BUBBLE_MARGIN - 1);
+    const visibleContentWidth = Math.max(
+      ...rawRows.slice(runStart, runEnd).map(row => termWidth(row.text)),
+    );
     const bubbleWidth = Math.min(
       maxBubbleWidth,
-      Math.max(...rawRows.slice(runStart, runEnd).map(row => termWidth(row.text))) + USER_BUBBLE_PADDING * 2,
+      Math.max(
+        fullUserMessageBubbleWidth(document, cols),
+        visibleContentWidth + USER_BUBBLE_PADDING * 2,
+      ),
     );
     const inner = Math.max(0, bubbleWidth - USER_BUBBLE_PADDING * 2);
     const screenOffset = " ".repeat(Math.max(0, cols - bubbleWidth - USER_BUBBLE_MARGIN));

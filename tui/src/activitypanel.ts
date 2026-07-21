@@ -175,8 +175,8 @@ interface VisiblePanelContent {
 }
 
 /**
- * Fit task-panel entries into the card. Subscriptions always keep their own
- * divider, including when no ordinary task rows are currently present.
+ * Fit activity entries into the card. The internal Subscriptions divider is
+ * only needed when task and subscription rows share the panel.
  */
 function fitPanelContent(
   tasks: TaskPanelEntry[],
@@ -185,19 +185,18 @@ function fitPanelContent(
 ): VisiblePanelContent {
   const totalEntries = tasks.length + integrations.length;
 
-  if (integrations.length === 0) {
+  if (tasks.length === 0 || integrations.length === 0) {
     const entriesFit = totalEntries <= maxContentRows;
     const visibleCount = entriesFit ? totalEntries : Math.max(0, maxContentRows - 1);
     return {
       tasks: tasks.slice(0, visibleCount),
-      integrations: [],
+      integrations: integrations.slice(0, visibleCount),
       hiddenCount: totalEntries - visibleCount,
       showSubscriptionsDivider: false,
     };
   }
 
-  // A subscription-bearing card always has one internal divider in addition
-  // to its entries, preserving Tasks as the panel's outer identity.
+  // A combined card needs one internal divider in addition to its entries.
   if (totalEntries + 1 <= maxContentRows) {
     return {
       tasks,
@@ -214,13 +213,10 @@ function fitPanelContent(
   }
 
   // Reserve one row each for the Subscriptions divider and overflow notice.
-  // In a combined panel, represent both sections once two entry slots exist;
-  // otherwise use all available entry slots for subscription rows.
+  // Represent both sections once two entry slots exist.
   const entrySlots = Math.max(0, maxContentRows - 2);
-  let visibleTaskCount = tasks.length > 0 && entrySlots > 0 ? 1 : 0;
-  let visibleIntegrationCount = tasks.length > 0 && entrySlots > 1
-    ? 1
-    : tasks.length === 0 ? Math.min(integrations.length, entrySlots) : 0;
+  let visibleTaskCount = entrySlots > 0 ? 1 : 0;
+  let visibleIntegrationCount = entrySlots > 1 ? 1 : 0;
   let remainingSlots = entrySlots - visibleTaskCount - visibleIntegrationCount;
 
   const additionalTasks = Math.min(tasks.length - visibleTaskCount, remainingSlots);
@@ -273,7 +269,7 @@ export function renderTaskPanel(
     return `${panelBg}${persistentBg}${theme.reset}`;
   };
 
-  const headerTitle = "Tasks";
+  const headerTitle = tasks.length > 0 ? "Tasks" : "Subscriptions";
   const entryCount = String(totalEntries);
   const headerLeft = `─ ${headerTitle} `;
   const headerRight = ` ${entryCount} ─`;

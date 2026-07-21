@@ -246,24 +246,24 @@ describe("focused conversation subscriptions", () => {
     expect(hasFocusedConversationIntegrations(state)).toBe(false);
   });
 
-  test("keeps the Tasks identity and a distinct Subscriptions section without ordinary task rows", () => {
+  test("uses a single Subscriptions header when no task rows are present", () => {
     const panel = renderTaskPanel(stateWithIntegrations(), 100, 20, 43_000);
     expect(panel).not.toBeNull();
     expect(panel?.width).toBe(50);
-    expect(panel?.lines).toHaveLength(5);
+    expect(panel?.lines).toHaveLength(4);
 
     const plain = panel!.lines.map(stripAnsi);
-    expect(plain[0]).toContain("Tasks");
+    expect(plain[0]).toContain("Subscriptions");
     expect(plain[0].trimEnd()).toEndWith("2 ─╮");
-    expect(plain[1]).toContain("Subscriptions");
-    expect(plain[1].trimEnd()).toEndWith("2 ─┤");
-    expect(plain[2]).toContain("Discord Design alerts");
-    expect(plain[2]).toContain("wake active");
-    expect(plain[3]).toContain("WhatsApp Ops room");
-    expect(plain[3]).toContain("inbox offline");
+    expect(plain.join("\n")).not.toContain("Tasks");
+    expect(plain.join("\n").match(/Subscriptions/g)).toHaveLength(1);
+    expect(plain[1]).toContain("Discord Design alerts");
+    expect(plain[1]).toContain("wake active");
+    expect(plain[2]).toContain("WhatsApp Ops room");
+    expect(plain[2]).toContain("inbox offline");
     expect(plain.join("\n")).not.toContain("42s");
-    expect(panel!.lines[2]).toContain(hexToAnsi("#5865f2"));
-    expect(panel!.lines[3]).toContain(hexToAnsi("#25d366"));
+    expect(panel!.lines[1]).toContain(hexToAnsi("#5865f2"));
+    expect(panel!.lines[2]).toContain(hexToAnsi("#25d366"));
     expect(panel!.lines.every(line => line.includes(hexToAnsiBg("#00050f")))).toBe(true);
     expect(panel!.lines.every(line => visibleLength(line) === panel!.width)).toBe(true);
   });
@@ -317,8 +317,8 @@ describe("focused conversation subscriptions", () => {
     state.sidebar.conversations[0].integrations = [integration({ toolName: "custom-feed" })];
 
     const panel = renderTaskPanel(state, 100, 20)!;
-    expect(stripAnsi(panel.lines[2])).toContain("custom-feed Design alerts");
-    expect(panel.lines[2]).toContain(theme.tool);
+    expect(stripAnsi(panel.lines[1])).toContain("custom-feed Design alerts");
+    expect(panel.lines[1]).toContain(theme.tool);
   });
 });
 
