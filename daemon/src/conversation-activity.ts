@@ -220,6 +220,12 @@ function byStart(a: InternalTaskRecord, b: InternalTaskRecord): number {
   return a.startedAt - b.startedAt || a.id.localeCompare(b.id);
 }
 
+function byDueAt(a: InternalTaskRecord, b: InternalTaskRecord): number {
+  const aDueAt = Number.isFinite(a.dueAt) ? a.dueAt! : Number.POSITIVE_INFINITY;
+  const bDueAt = Number.isFinite(b.dueAt) ? b.dueAt! : Number.POSITIVE_INFINITY;
+  return aDueAt === bDueAt ? byStart(a, b) : aDueAt - bDueAt;
+}
+
 function summaryProjection(task: InternalTaskRecord): ConversationTaskSummary {
   return {
     id: task.id,
@@ -231,12 +237,15 @@ function summaryProjection(task: InternalTaskRecord): ConversationTaskSummary {
   };
 }
 
-/** Compact task details for the focused-conversation activity panel. */
+/**
+ * Compact task details in panel priority order: background commands and
+ * subagents by call time, followed by Chrono schedules by next due time.
+ */
 export function getConversationTasks(convId: string): ConversationTaskSummary[] {
   return [
-    ...[...(subagentsByParent.get(convId)?.values() ?? [])].sort(byStart),
     ...[...(backgroundTasksByConversation.get(convId)?.values() ?? [])].sort(byStart),
-    ...[...(chronoTasksByConversation.get(convId)?.values() ?? [])].sort(byStart),
+    ...[...(subagentsByParent.get(convId)?.values() ?? [])].sort(byStart),
+    ...[...(chronoTasksByConversation.get(convId)?.values() ?? [])].sort(byDueAt),
   ].map(summaryProjection);
 }
 

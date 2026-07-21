@@ -35,9 +35,9 @@ describe("focused conversation activity", () => {
     });
     expect(getActiveSubagentCount()).toBe(2);
     expect(getConversationTasks("parent")).toEqual([
+      { id: "bash:1", kind: "background", title: "bun test tui", startedAt: 300 },
       { id: "child-1", kind: "subagent", title: "Inspect renderer flow", startedAt: 100 },
       { id: "child-2", kind: "subagent", title: "Review daemon events", startedAt: 200 },
-      { id: "bash:1", kind: "background", title: "bun test tui", startedAt: 300 },
     ]);
 
     expect(setSubagentActive("parent", "child-1", false)).toBe(true);
@@ -83,6 +83,47 @@ describe("focused conversation activity", () => {
     await expect(waitForConversationTask("missing")).rejects.toThrow("Active task not found");
   });
 
+  test("orders task-panel buckets and puts the soonest Chrono schedules first", () => {
+    setChronoTaskActive("parent", "chrono:later", true, {
+      title: "Later wake",
+      startedAt: 100,
+      dueAt: 9_000,
+      chronoMode: "wake",
+    });
+    setSubagentActive("parent", "child-later", true, { title: "Later child", startedAt: 400 });
+    setBackgroundTaskActive("parent", "bash:later", true, { title: "Later command", startedAt: 300 });
+    setChronoTaskActive("parent", "chrono:soon-later", true, {
+      title: "Second same-time wake",
+      startedAt: 600,
+      dueAt: 2_000,
+      chronoMode: "wake",
+    });
+    setSubagentActive("parent", "child-earlier", true, { title: "Earlier child", startedAt: 200 });
+    setBackgroundTaskActive("parent", "bash:earlier", true, { title: "Earlier command", startedAt: 100 });
+    setChronoTaskActive("parent", "chrono:soon-earlier", true, {
+      title: "First same-time wake",
+      startedAt: 500,
+      dueAt: 2_000,
+      chronoMode: "wake",
+    });
+    setChronoTaskActive("parent", "chrono:unknown", true, {
+      title: "Wake without due time",
+      startedAt: 50,
+      chronoMode: "wake",
+    });
+
+    expect(getConversationTasks("parent").map(task => task.id)).toEqual([
+      "bash:earlier",
+      "bash:later",
+      "child-earlier",
+      "child-later",
+      "chrono:soon-earlier",
+      "chrono:soon-later",
+      "chrono:later",
+      "chrono:unknown",
+    ]);
+  });
+
   test("projects ephemeral counts and task details onto conversation summaries", () => {
     const id = `activity-summary-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     ids.push(id);
@@ -94,8 +135,8 @@ describe("focused conversation activity", () => {
       subagentCount: 1,
       backgroundTaskCount: 1,
       tasks: [
-        { id: "child", kind: "subagent", title: "Map daemon events", startedAt: 100 },
         { id: "bash:42", kind: "background", title: "bun test daemon", startedAt: 200 },
+        { id: "child", kind: "subagent", title: "Map daemon events", startedAt: 100 },
       ],
     });
   });
