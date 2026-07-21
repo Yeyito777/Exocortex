@@ -138,18 +138,26 @@ describe("BTW foreground panel", () => {
     }
   });
 
-  test("stays compact while running, then grows with the final answer up to 20 rows", () => {
-    const btw = panelState({ text: Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n") });
-    expect(getBtwPanelPreferredHeight(btw, 100)).toBe(4);
+  test("grows with the streamed answer up to 20 rows, then scrolls the newest output", () => {
+    const btw = panelState({ text: ["one", "two", "three", "four", "five"].join("\n") });
+    expect(getBtwPanelPreferredHeight(btw, 100)).toBe(7);
+    let rendered = renderBtwPanel(btw, 100, 7, 10, 1);
+    expect(rendered?.height).toBe(7);
+    expect(btw.viewportRows).toBe(5);
+    expect(btw.maxScroll).toBe(0);
+
+    btw.text = Array.from({ length: 30 }, (_, i) => `row ${String(i + 1).padStart(3, "0")}`).join("\n");
+    expect(getBtwPanelPreferredHeight(btw, 100)).toBe(20);
+    rendered = renderBtwPanel(btw, 100, 20, 10, 1);
+    const plain = stripAnsi(rendered!.payload);
+    expect(rendered?.height).toBe(20);
+    expect(btw.viewportRows).toBe(18);
+    expect(btw.maxScroll).toBe(12);
+    expect(plain).toContain("row 030");
+    expect(plain).not.toContain("row 001");
 
     btw.phase = "complete";
     expect(getBtwPanelPreferredHeight(btw, 100)).toBe(20);
-
-    btw.text = ["one", "two", "three", "four", "five"].join("\n");
-    expect(getBtwPanelPreferredHeight(btw, 100)).toBe(7);
-    const rendered = renderBtwPanel(btw, 100, 7, 10, 1);
-    expect(rendered?.height).toBe(7);
-    expect(btw.viewportRows).toBe(5);
   });
 
   test("renders a wide four-row answer card without keybind help", () => {

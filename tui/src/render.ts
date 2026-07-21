@@ -1227,7 +1227,7 @@ export function render(state: RenderState): void {
   const slHeight = status.height;
   const statusLines = status.lines;
 
-  // BTW starts compact while streaming and grows upward with the final answer.
+  // BTW grows upward with the stream, then scrolls once it reaches its limit.
   // It consumes the bottom of the chat viewport rather than hiding history rows.
   let btwPanel = null;
   if (state.btw) {

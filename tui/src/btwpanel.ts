@@ -23,11 +23,10 @@ function cleanInline(text: string): string {
   return text.replace(/[\r\n\t]+/g, " ").replace(/[\x00-\x1F\x7F]/g, "").replace(/\s+/g, " ").trim();
 }
 
-/** Keep streaming compact, then expand completed answers to fit up to 20 rows. */
+/** Grow with the streamed answer, then use a scrolling viewport after 20 rows. */
 export function getBtwPanelPreferredHeight(btw: BtwPanelState, width: number): number {
   if (width < 22) return 1;
   if (!btw.text) return 3;
-  if (btw.phase !== "complete") return 4;
   const contentWidth = Math.max(1, width - 4);
   const answerRows = markdownWordWrap(btw.text, contentWidth, theme.appBg ?? "").lines.length;
   return Math.min(MAX_BTW_PANEL_HEIGHT, Math.max(4, answerRows + 2));
