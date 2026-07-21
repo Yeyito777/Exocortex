@@ -95,9 +95,12 @@ export type KeyResult =
 
 // ── Key routing ─────────────────────────────────────────────────────
 
+function isPromptFocused(state: RenderState): boolean {
+  return state.panelFocus === "chat" && state.chatFocus === "prompt";
+}
+
 function isPromptTyping(state: RenderState): boolean {
-  return state.panelFocus === "chat" && state.chatFocus === "prompt"
-    && state.vim.mode === "insert";
+  return isPromptFocused(state) && state.vim.mode === "insert";
 }
 
 function ensureSidebarReady(state: RenderState): void {
@@ -217,15 +220,15 @@ export function handleFocusedKey(
   // conversation-abort behavior below.
   if (state.btw && key.type === "ctrl-q") return { type: "btw_close" };
 
-  // Ctrl scrolling targets BTW even while the prompt is in insert mode. Once the
-  // user explicitly focuses chat history, all navigation remains with history.
-  const historyFocused = state.panelFocus === "chat" && state.chatFocus === "history";
+  // Ctrl scrolling targets BTW even while the prompt is in insert mode. Other
+  // focused panels retain their own scrolling bindings.
+  const promptFocused = isPromptFocused(state);
   const btw = state.btw;
   const btwUiAvailable = btw !== null
     && !state.sidebar.prompt
     && !state.sidebar.search?.barOpen
     && !state.search?.barOpen;
-  if (btwUiAvailable && !historyFocused) {
+  if (btwUiAvailable && promptFocused) {
     const page = Math.max(1, btw.viewportRows - 1);
     const halfPage = Math.max(1, Math.floor(btw.viewportRows / 2));
     let delta = 0;
@@ -241,14 +244,12 @@ export function handleFocusedKey(
     }
   }
 
-  // In normal/navigation mode, the remaining familiar keys scroll BTW unless
-  // chat history has been explicitly focused.
-  if (state.btw
-      && !historyFocused
-      && !isPromptTyping(state)
-      && !state.sidebar.prompt
-      && !state.sidebar.search?.barOpen
-      && !state.search?.barOpen) {
+  // Only standalone normal-mode prompt keys are borrowed by BTW. Sidebar,
+  // history, visual mode, and pending Vim sequences keep their own bindings.
+  if (btwUiAvailable
+      && promptFocused
+      && state.vim.mode === "normal"
+      && !vimHasPendingInput(state)) {
     if (key.type === "char" && key.char === "q") return { type: "btw_close" };
     let delta = 0;
     if (key.type === "char" && key.char === "k") delta = 1;
@@ -256,7 +257,7 @@ export function handleFocusedKey(
     else if (key.type === "up") delta = 1;
     else if (key.type === "down") delta = -1;
     if (delta !== 0) {
-      state.btw.scrollOffset = Math.max(0, Math.min(state.btw.maxScroll, state.btw.scrollOffset + delta));
+      btw.scrollOffset = Math.max(0, Math.min(btw.maxScroll, btw.scrollOffset + delta));
       return { type: "handled" };
     }
   }

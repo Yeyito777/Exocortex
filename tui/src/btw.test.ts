@@ -4,6 +4,7 @@ import { tryCommand } from "./commands";
 import { handleEvent } from "./events";
 import { handleFocusedKey } from "./focus";
 import { stripAnsi } from "./historycursor";
+import type { ConversationSummary } from "./messages";
 import { createInitialState, type BtwPanelState } from "./state";
 import { termWidth } from "./textwidth";
 import { theme } from "./theme";
@@ -24,6 +25,25 @@ function panelState(overrides: Partial<BtwPanelState> = {}): BtwPanelState {
     maxScroll: 0,
     viewportRows: 1,
     ...overrides,
+  };
+}
+
+function conversation(id: string, sortOrder: number): ConversationSummary {
+  return {
+    id,
+    provider: "openai",
+    model: "gpt-5.4",
+    effort: "high",
+    fastMode: false,
+    createdAt: sortOrder,
+    updatedAt: sortOrder,
+    messageCount: 0,
+    title: id,
+    marked: false,
+    pinned: false,
+    streaming: false,
+    unread: false,
+    sortOrder,
   };
 }
 
@@ -182,6 +202,50 @@ describe("BTW foreground panel", () => {
 
     state.vim.mode = "insert";
     expect(handleFocusedKey({ type: "ctrl-q" }, state)).toEqual({ type: "btw_close" });
+  });
+
+  test("sidebar navigation keeps j/k and Ctrl scrolling while BTW is visible", () => {
+    const state = createInitialState();
+    state.btw = panelState({ scrollOffset: 5, maxScroll: 10, viewportRows: 5 });
+    state.panelFocus = "sidebar";
+    state.sidebar.open = true;
+    state.vim.mode = "normal";
+    state.sidebar.conversations = [conversation("one", 1), conversation("two", 2)];
+    state.sidebar.selectedItem = { type: "conversation", id: "one" };
+    state.sidebar.selectedId = "one";
+    state.sidebar.selectedIndex = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "j" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("two");
+    expect(state.btw.scrollOffset).toBe(5);
+
+    expect(handleFocusedKey({ type: "char", char: "k" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.selectedId).toBe("one");
+    expect(state.btw.scrollOffset).toBe(5);
+
+    expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
+    expect(state.btw.scrollOffset).toBe(5);
+  });
+
+  test("visual and pending prompt motions are not taken by BTW", () => {
+    const state = createInitialState();
+    state.btw = panelState({ scrollOffset: 5, maxScroll: 10, viewportRows: 5 });
+    state.inputBuffer = "one\ntwo\nthree";
+    state.cursorPos = 0;
+    state.vim.mode = "visual";
+    state.vim.visualAnchor = 0;
+
+    expect(handleFocusedKey({ type: "char", char: "j" }, state)).toEqual({ type: "handled" });
+    expect(state.cursorPos).toBe(4);
+    expect(state.btw.scrollOffset).toBe(5);
+
+    state.vim.mode = "normal";
+    state.cursorPos = 0;
+    expect(handleFocusedKey({ type: "char", char: "d" }, state)).toEqual({ type: "handled" });
+    expect(state.vim.pendingOperator).toBe("delete");
+    expect(handleFocusedKey({ type: "char", char: "j" }, state)).toEqual({ type: "handled" });
+    expect(state.vim.pendingOperator).toBeNull();
+    expect(state.btw.scrollOffset).toBe(5);
   });
 
   test("Ctrl scrolling targets BTW from the prompt but chat history when history is focused", () => {
