@@ -464,6 +464,7 @@ export function createHandler(server: DaemonServer) {
         const summary = convStore.getSummary(page.convId);
         const responseEntries = [...page.pinnedEntries, ...page.entries];
         const sendStartedAt = metrics ? performance.now() : 0;
+        const btw = btwManager.getSnapshot(page.convId);
         const responseBytes = server.sendTo(target, {
           type: "conversation_loaded",
           reqId,
@@ -481,6 +482,7 @@ export function createHandler(server: DaemonServer) {
           toolOutputsIncluded: false,
           queuedMessages: queued.length > 0 ? queued : undefined,
           goal: summary?.goal ?? null,
+          btw,
         }, metrics !== undefined);
         if (metrics) {
           metrics.snapshot = snapshotDiagnostics ?? {};
@@ -491,7 +493,7 @@ export function createHandler(server: DaemonServer) {
           metrics.responseEntries = responseEntries.length;
           metrics.historyTotalEntries = page.totalEntries;
         }
-        return page.convId;
+        return { convId: page.convId, btwSessionId: btw?.sessionId ?? null };
       }
     }
 
@@ -509,6 +511,7 @@ export function createHandler(server: DaemonServer) {
     const summary = convStore.getSummary(data.convId);
     const responseEntries = page ? [...page.pinnedEntries, ...page.entries] : compactData.entries;
     const sendStartedAt = metrics ? performance.now() : 0;
+    const btw = btwManager.getSnapshot(data.convId);
     const responseBytes = server.sendTo(target, {
       type: "conversation_loaded",
       reqId,
@@ -529,6 +532,7 @@ export function createHandler(server: DaemonServer) {
       toolOutputsIncluded: compactData.toolOutputsIncluded,
       queuedMessages: queued.length > 0 ? queued : undefined,
       goal: summary?.goal ?? null,
+      btw,
     }, metrics !== undefined);
     if (metrics) {
       metrics.snapshot = snapshotDiagnostics ?? {};
@@ -539,7 +543,7 @@ export function createHandler(server: DaemonServer) {
       metrics.responseEntries = responseEntries.length;
       metrics.historyTotalEntries = page?.totalEntries ?? compactData.entries.length;
     }
-    return data.convId;
+    return { convId: data.convId, btwSessionId: btw?.sessionId ?? null };
   };
 
   const sendCompactConversationHistory = (
@@ -1087,6 +1091,7 @@ export function createHandler(server: DaemonServer) {
 
       case "subscribe": {
         server.subscribe(client, cmd.convId);
+        btwManager.sendSnapshot(client, cmd.convId);
         // Clear unread when a client views the conversation
         if (convStore.clearUnread(cmd.convId)) {
           broadcastConversationUpdated(server, cmd.convId);
@@ -1153,7 +1158,8 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "btw_close": {
-        if (!btwManager.close(client, cmd.sessionId)) {
+        const result = btwManager.close(client, cmd.convId, cmd.sessionId);
+        if (result === "already_closed" && !cmd.sessionId) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId });
         }
         break;
@@ -2124,8 +2130,8 @@ export function createHandler(server: DaemonServer) {
         }
         if (cmd.turns !== undefined) client.capabilities?.add("history-pagination");
         const metrics = PERFORMANCE_PROFILING_ENABLED ? createConversationLoadMetrics() : undefined;
-        const loadedConvId = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns, metrics);
-        if (!loadedConvId) {
+        const loaded = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns, metrics);
+        if (!loaded) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           if (PERFORMANCE_PROFILING_ENABLED) {
             log("warn", `perf: conversation_open daemon_missing ${JSON.stringify({
@@ -2137,7 +2143,15 @@ export function createHandler(server: DaemonServer) {
           }
           break;
         }
+        const loadedConvId = loaded.convId;
         server.subscribe(client, loadedConvId);
+        // Reconcile any BTW updates emitted between the load snapshot and this
+        // subscription, just like the active-turn catch-up below. An all-null
+        // pair needs no redundant event; a loaded panel followed by a close must
+        // still send the authoritative null snapshot.
+        if (loaded.btwSessionId || btwManager.getSnapshot(loadedConvId)) {
+          btwManager.sendSnapshot(client, loadedConvId);
+        }
         // After subscribing, send a fresh streaming snapshot for late-join catch-up.
         // This covers any chunks emitted between the initial load snapshot and the
         // moment the new subscriber was attached.

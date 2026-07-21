@@ -215,14 +215,14 @@ export function handleFocusedKey(
     return { type: "handled" };
   }
 
-  // Ctrl-Q is the always-available BTW interrupt/close key, including while the
-  // main prompt remains in insert mode. With no BTW panel it retains its normal
-  // conversation-abort behavior below.
-  if (state.btw && key.type === "ctrl-q") return { type: "btw_close" };
+  const promptFocused = isPromptFocused(state);
+
+  // Ctrl-Q closes BTW from either prompt mode. Other focused panels retain its
+  // normal conversation-abort behavior.
+  if (state.btw && promptFocused && key.type === "ctrl-q") return { type: "btw_close" };
 
   // Ctrl scrolling targets BTW even while the prompt is in insert mode. Other
   // focused panels retain their own scrolling bindings.
-  const promptFocused = isPromptFocused(state);
   const btw = state.btw;
   const btwUiAvailable = btw !== null
     && !state.sidebar.prompt

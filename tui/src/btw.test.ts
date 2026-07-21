@@ -82,7 +82,7 @@ describe("/btw command", () => {
 describe("BTW event projection", () => {
   test("streams, reconciles, and completes only the matching session", () => {
     const state = createInitialState();
-    state.btw = panelState({ phase: "starting", text: "" });
+    state.convId = "conv-1";
     const daemon = {} as Parameters<typeof handleEvent>[2];
 
     handleEvent({
@@ -94,10 +94,10 @@ describe("BTW event projection", () => {
       model: "gpt-5.4",
       startedAt: 100,
     }, state, daemon);
-    handleEvent({ type: "btw_text_chunk", sessionId: "stale", text: "wrong" }, state, daemon);
-    handleEvent({ type: "btw_text_chunk", sessionId: "btw-1", text: "partial" }, state, daemon);
-    handleEvent({ type: "btw_content", sessionId: "btw-1", text: "canonical answer" }, state, daemon);
-    handleEvent({ type: "btw_finished", sessionId: "btw-1", endedAt: 200 }, state, daemon);
+    handleEvent({ type: "btw_text_chunk", convId: "conv-1", sessionId: "stale", text: "wrong" }, state, daemon);
+    handleEvent({ type: "btw_text_chunk", convId: "conv-1", sessionId: "btw-1", text: "partial" }, state, daemon);
+    handleEvent({ type: "btw_content", convId: "conv-1", sessionId: "btw-1", text: "canonical answer" }, state, daemon);
+    handleEvent({ type: "btw_finished", convId: "conv-1", sessionId: "btw-1", endedAt: 200 }, state, daemon);
 
     expect(state.btw?.text).toBe("canonical answer");
     expect(state.btw?.phase).toBe("complete");
@@ -106,14 +106,90 @@ describe("BTW event projection", () => {
 
   test("keeps errors visible until an explicit close event", () => {
     const state = createInitialState();
+    state.convId = "conv-1";
     state.btw = panelState();
     const daemon = {} as Parameters<typeof handleEvent>[2];
 
-    handleEvent({ type: "btw_error", sessionId: "btw-1", message: "provider failed", endedAt: 200 }, state, daemon);
+    handleEvent({ type: "btw_error", convId: "conv-1", sessionId: "btw-1", message: "provider failed", endedAt: 200 }, state, daemon);
     expect(state.btw?.phase).toBe("error");
     expect(state.btw?.status).toBe("provider failed");
 
-    handleEvent({ type: "btw_closed", sessionId: "btw-1" }, state, daemon);
+    handleEvent({ type: "btw_closed", convId: "conv-1", sessionId: "btw-1" }, state, daemon);
+    expect(state.btw).toBeNull();
+  });
+
+  test("rehydrates the BTW owned by each loaded conversation until it is closed", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    const daemon = {
+      unsubscribe() {},
+      loadToolOutputs() {},
+    } as unknown as Parameters<typeof handleEvent>[2];
+    const durable = {
+      sessionId: "durable-btw",
+      query: "remember this",
+      provider: "openai" as const,
+      model: "gpt-5.6-sol",
+      startedAt: 100,
+      endedAt: 200,
+      phase: "complete" as const,
+      text: "persisted answer",
+      status: "Complete",
+    };
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-2",
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      fastMode: false,
+      entries: [],
+      contextTokens: 0,
+      toolOutputsIncluded: false,
+      btw: durable,
+    }, state, daemon);
+    expect(state.btw).toMatchObject({
+      ...durable,
+      sourceConvId: "conv-2",
+      scrollOffset: 0,
+    });
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-3",
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      fastMode: false,
+      entries: [],
+      contextTokens: 0,
+      toolOutputsIncluded: false,
+      btw: null,
+    }, state, daemon);
+    expect(state.btw).toBeNull();
+
+    handleEvent({ type: "btw_snapshot", convId: "conv-3", btw: durable }, state, daemon);
+    expect(state.btw?.sourceConvId).toBe("conv-3");
+    handleEvent({ type: "btw_snapshot", convId: "conv-3", btw: null }, state, daemon);
+    expect(state.btw).toBeNull();
+  });
+
+  test("clears an orphaned panel when reconnect catch-up omits its deleted conversation", () => {
+    const state = createInitialState();
+    state.convId = "deleted-conv";
+    state.messages = [{ role: "assistant", blocks: [{ type: "text", text: "stale conversation" }], metadata: null }];
+    state.btw = panelState({ sourceConvId: "deleted-conv" });
+    state.sidebar.conversations = [conversation("deleted-conv", 1)];
+
+    handleEvent({
+      type: "conversations_list",
+      conversations: [conversation("other-conv", 2)],
+      folders: [],
+    }, state, {} as Parameters<typeof handleEvent>[2]);
+
+    expect(state.convId).toBeNull();
+    expect(state.messages).toEqual([]);
     expect(state.btw).toBeNull();
   });
 });
@@ -212,7 +288,7 @@ describe("BTW foreground panel", () => {
     expect(handleFocusedKey({ type: "ctrl-q" }, state)).toEqual({ type: "btw_close" });
   });
 
-  test("sidebar navigation keeps j/k and Ctrl scrolling while BTW is visible", () => {
+  test("sidebar keeps j/k, Ctrl scrolling, and Ctrl-Q while BTW is visible", () => {
     const state = createInitialState();
     state.btw = panelState({ scrollOffset: 5, maxScroll: 10, viewportRows: 5 });
     state.panelFocus = "sidebar";
@@ -233,6 +309,9 @@ describe("BTW foreground panel", () => {
 
     expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
     expect(state.btw.scrollOffset).toBe(5);
+
+    expect(handleFocusedKey({ type: "ctrl-q" }, state)).toEqual({ type: "abort" });
+    expect(state.btw).not.toBeNull();
   });
 
   test("visual and pending prompt motions are not taken by BTW", () => {

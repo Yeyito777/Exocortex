@@ -8,8 +8,8 @@
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, UserMessageContextCheckpoint, ExternalNotificationDelivery } from "./messages";
-export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, UserMessageContextCheckpoint, ExternalNotificationDelivery };
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery } from "./messages";
+export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
@@ -99,7 +99,7 @@ export interface CompactConversationCommand {
   startedAt: number;
 }
 
-/** Run an isolated, ephemeral one-shot query against a frozen conversation snapshot. */
+/** Run an isolated one-shot query owned by a conversation until explicitly closed. */
 export interface BtwQueryCommand {
   type: "btw_query";
   reqId?: string;
@@ -110,11 +110,11 @@ export interface BtwQueryCommand {
   startedAt: number;
 }
 
-/** Close an ephemeral BTW session, aborting it first when it is still running. */
+/** Close a conversation's durable BTW session, aborting it first when still running. */
 export interface BtwCloseCommand {
   type: "btw_close";
   reqId?: string;
-  /** Omitted only by non-UI clients that want to close whichever session they own. */
+  convId: string;
   sessionId?: string;
 }
 
@@ -780,6 +780,7 @@ export interface BtwStartedEvent {
 /** Append streamed answer text to the currently displayed BTW content. */
 export interface BtwTextChunkEvent {
   type: "btw_text_chunk";
+  convId: string;
   sessionId: string;
   text: string;
 }
@@ -787,24 +788,28 @@ export interface BtwTextChunkEvent {
 /** Replace streamed answer text with a canonical snapshot (retry/final reconciliation). */
 export interface BtwContentEvent {
   type: "btw_content";
+  convId: string;
   sessionId: string;
   text: string;
 }
 
 export interface BtwStatusEvent {
   type: "btw_status";
+  convId: string;
   sessionId: string;
   status: string;
 }
 
 export interface BtwFinishedEvent {
   type: "btw_finished";
+  convId: string;
   sessionId: string;
   endedAt: number;
 }
 
 export interface BtwErrorEvent {
   type: "btw_error";
+  convId: string;
   sessionId: string;
   message: string;
   endedAt: number;
@@ -812,7 +817,23 @@ export interface BtwErrorEvent {
 
 export interface BtwClosedEvent {
   type: "btw_closed";
+  convId: string;
   sessionId: string;
+}
+
+/** Durable acknowledgement for replayable BTW mutations. */
+export interface BtwMutationSettledEvent {
+  type: "btw_mutation_settled";
+  convId: string;
+  sessionId: string;
+  mutation: "start" | "close";
+}
+
+/** Authoritative conversation-owned BTW state for loads and subscription catch-up. */
+export interface BtwSnapshotEvent {
+  type: "btw_snapshot";
+  convId: string;
+  btw: ConversationBtw | null;
 }
 
 export type StreamingSnapshotKind = "start" | "catchup" | "heartbeat";
@@ -1010,6 +1031,8 @@ export interface ConversationLoadedEvent {
   queuedMessages?: QueuedMessageInfo[];
   /** Persistent objective attached to this conversation, if any. */
   goal?: ConversationGoal | null;
+  /** Durable one-shot answer retained by this conversation until closed. */
+  btw?: ConversationBtw | null;
 }
 
 export interface ConversationHistoryLoadedEvent {
@@ -1358,6 +1381,8 @@ export type Event =
   | BtwFinishedEvent
   | BtwErrorEvent
   | BtwClosedEvent
+  | BtwMutationSettledEvent
+  | BtwSnapshotEvent
   | StreamingStartedEvent
   | StreamingStoppedEvent
   | BlockStartEvent

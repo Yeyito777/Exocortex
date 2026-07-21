@@ -7,7 +7,7 @@
  */
 
 import type { RenderState } from "./state";
-import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, renderFolderInstructionsDocument, setCurrentConversationToolOutputAvailability, setFolderInstructionsDocumentText } from "./state";
+import { clearPendingAI, clearStreamingTailMessages, projectConversationBtw, pushSystemMessage, renderFolderInstructionsDocument, setCurrentConversationToolOutputAvailability, setFolderInstructionsDocumentText } from "./state";
 import { theme } from "./theme";
 import { censorKnownAuthEmails } from "./privacy";
 import type { Event } from "./protocol";
@@ -73,15 +73,30 @@ export function handleEvent(
   observeStreamSeq(event, state);
 
   switch (event.type) {
+    case "btw_mutation_settled":
+      // Consumed by DaemonClient to settle ambiguous socket writes.
+      break;
+
     case "btw_started":
-      if (state.btw?.sessionId !== event.sessionId) break;
-      state.btw.sourceConvId = event.convId;
-      state.btw.query = event.query;
-      state.btw.provider = event.provider;
-      state.btw.model = event.model;
-      state.btw.startedAt = event.startedAt;
-      state.btw.phase = "running";
-      state.btw.status = "Thinking…";
+      state.btw = {
+        sessionId: event.sessionId,
+        sourceConvId: event.convId,
+        query: event.query,
+        provider: event.provider,
+        model: event.model,
+        startedAt: event.startedAt,
+        endedAt: null,
+        phase: "running",
+        text: "",
+        status: "Thinking…",
+        scrollOffset: 0,
+        maxScroll: 0,
+        viewportRows: 1,
+      };
+      break;
+
+    case "btw_snapshot":
+      state.btw = projectConversationBtw(event.convId, event.btw);
       break;
 
     case "btw_text_chunk":

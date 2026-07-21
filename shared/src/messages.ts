@@ -270,6 +270,21 @@ export interface SystemInstructionsMessage {
 
 export type Message = UserMessage | AIMessage | SystemMessage | SystemInstructionsMessage;
 
+// ── Conversation BTW panel ─────────────────────────────────────────
+
+/** Durable one-shot answer owned by a conversation until explicitly closed. */
+export interface ConversationBtw {
+  sessionId: string;
+  query: string;
+  provider: ProviderId;
+  model: ModelId;
+  startedAt: number;
+  endedAt: number | null;
+  phase: "running" | "complete" | "error";
+  text: string;
+  status: string;
+}
+
 // ── Conversation goals ───────────────────────────────────────────────
 
 export type ConversationGoalStatus = "active" | "paused" | "complete";

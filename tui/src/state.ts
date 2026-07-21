@@ -7,7 +7,7 @@
 
 import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
 import { configuredConversationDefaults, effectiveConversationDefaults, productConversationDefaults, type ConversationDefaults } from "@exocortex/shared/config";
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage } from "./messages";
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage, ConversationBtw } from "./messages";
 import { DEFAULT_MODEL_BY_PROVIDER, defaultEffortForModelId, supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage, Block } from "./messages";
 import { loadPreferredProvider } from "./preferences";
@@ -69,24 +69,27 @@ export interface QueuePromptState {
   images?: ImageAttachment[];
 }
 
-// ── Ephemeral BTW panel ─────────────────────────────────────────────
+// ── Conversation-owned BTW panel ───────────────────────────────────
 
-export interface BtwPanelState {
-  sessionId: string;
+export interface BtwPanelState extends Omit<ConversationBtw, "phase"> {
   sourceConvId: string;
-  query: string;
-  provider: ProviderId;
-  model: ModelId;
-  startedAt: number;
-  endedAt: number | null;
   phase: "starting" | "running" | "complete" | "error";
-  text: string;
-  status: string;
   /** Visual lines above the bottom of the answer viewport. */
   scrollOffset: number;
   /** Renderer-populated bounds used by foreground scrolling keys. */
   maxScroll: number;
   viewportRows: number;
+}
+
+export function projectConversationBtw(convId: string, btw: ConversationBtw | null | undefined): BtwPanelState | null {
+  if (!btw) return null;
+  return {
+    ...btw,
+    sourceConvId: convId,
+    scrollOffset: 0,
+    maxScroll: 0,
+    viewportRows: 1,
+  };
 }
 
 export interface AuthQueuedMessage {
@@ -312,7 +315,7 @@ export interface RenderState {
   promptScrollOffset: number;
   /** Queue prompt overlay — non-null when the modal is showing. */
   queuePrompt: QueuePromptState | null;
-  /** Ephemeral one-shot answer panel opened by `/btw`. */
+  /** Durable one-shot answer owned by the active conversation until closed. */
   btw: BtwPanelState | null;
   /** Chat-history search state for vim-style / and ? search. */
   search: SearchState | null;
@@ -465,6 +468,7 @@ export function resetDraftConversationState(state: RenderState): void {
   clearStreamingTailMessages(state);
   state.contextTokens = 0;
   state.goal = null;
+  state.btw = null;
   state.voicePrompt = null;
   state.voicePromptJobs = [];
   state.voiceMessage = null;
@@ -484,6 +488,7 @@ export function openFolderInstructionsDocument(state: RenderState, folderId: str
   state.convId = null;
   state.contextTokens = 0;
   state.goal = null;
+  state.btw = null;
   state.voicePrompt = null;
   state.voicePromptJobs = [];
   state.voiceMessage = null;

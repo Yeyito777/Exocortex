@@ -9,6 +9,8 @@ export const CONV_SCOPED: ReadonlySet<string> = new Set([
   "message_complete", "streaming_stopped", "user_message", "system_message",
   "stream_retry", "history_updated", "tool_outputs_loaded", "goal_updated",
   "context_compaction_status", "conversation_history_loaded",
+  "btw_started", "btw_text_chunk", "btw_content", "btw_status",
+  "btw_finished", "btw_error", "btw_closed", "btw_mutation_settled", "btw_snapshot",
 ]);
 
 const STREAM_SEQ_SCOPED: ReadonlySet<string> = new Set([

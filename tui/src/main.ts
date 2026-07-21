@@ -619,9 +619,6 @@ function startNewConversation(): void {
 
 function startBtwSession(query: string): void {
   if (!state.convId) return;
-  const previous = state.btw;
-  if (previous) daemon.closeBtw(previous.sessionId);
-
   const sessionId = randomUUID();
   const startedAt = Date.now();
   state.btw = {
@@ -647,7 +644,7 @@ function closeBtwSession(): void {
   if (!session) return;
   // Remove immediately; the daemon-side close aborts a running provider/tool call.
   state.btw = null;
-  daemon.closeBtw(session.sessionId);
+  daemon.closeBtw(session.sourceConvId, session.sessionId);
 }
 
 function syncInlineCommandChanges(result: InlineCommandApplication, convId = state.convId): void {
@@ -711,6 +708,7 @@ function handleSubmit(): void {
         case "create_conversation_for_instructions":
           if (state.convId) unsubscribeConversation(state.convId);
           state.convId = null;
+          state.btw = null;
           resetHistoryPagination(state);
           state.contextTokens = 0;
           resetNewConversationDefaults(state);
@@ -1386,6 +1384,7 @@ function handleKey(key: KeyEvent): void {
         clearPendingAI(state);
         state.contextTokens = 0;
         state.goal = null;
+        state.btw = null;
         resetToolOutputState(state);
         resetHistoryPagination(state);
         resetNewConversationDefaults(state);
@@ -1401,6 +1400,7 @@ function handleKey(key: KeyEvent): void {
         clearPendingAI(state);
         state.contextTokens = 0;
         state.goal = null;
+        state.btw = null;
         resetToolOutputState(state);
         resetHistoryPagination(state);
       }
@@ -1568,11 +1568,6 @@ function handleDaemonConnectionLost(): void {
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
-  if (state.btw && (state.btw.phase === "starting" || state.btw.phase === "running")) {
-    state.btw.phase = "error";
-    state.btw.status = "Lost connection to daemon";
-    state.btw.endedAt = Date.now();
-  }
   pushSystemMessage(state, "✗ Lost connection to daemon.", theme.error);
   scheduleRender();
   void reconnectToDaemon();

@@ -14,7 +14,7 @@ import { join } from "path";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync } from "fs";
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
-import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal } from "./messages";
+import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal, ConversationBtw } from "./messages";
 import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, MAX_EXO_SUBAGENT_DEPTH, activeContextCompactionHistoryCount, historyPrefixHash, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, sortConversations, summarizeConversation } from "./messages";
 import type { QueuedMessageInfo } from "./protocol";
 
@@ -467,6 +467,7 @@ const INDEX_FILE = join(DATA_DIR, "conversations-index.json");
 const FOLDERS_FILE = join(DATA_DIR, "folders.json");
 const FOLDER_INSTRUCTIONS_FILE = join(DATA_DIR, "folder-instructions.json");
 const UNREAD_FILE = join(DATA_DIR, "unread.json");
+const BTW_FILE = join(DATA_DIR, "btw.json");
 const MESSAGE_QUEUE_FILE = join(DATA_DIR, "message-queue.json");
 let lastConversationSaveMtime = 0;
 
@@ -1051,6 +1052,105 @@ export function saveUnreadConversationIds(conversationIds: Iterable<string>): vo
   const tmp = `${UNREAD_FILE}.tmp`;
   writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
   renameSync(tmp, UNREAD_FILE);
+}
+
+// ── Persistent conversation-owned BTW panels ───────────────────────
+
+interface BtwFile {
+  version: 1 | 2;
+  updatedAt: number;
+  conversations: Record<string, ConversationBtw>;
+  seenSessionIds?: Record<string, string[]>;
+}
+
+export interface ConversationBtwPersistenceState {
+  btws: Map<string, ConversationBtw>;
+  /** Durable operation receipts prevent accepted/closed sessions from replaying. */
+  seenSessionIds: Map<string, Set<string>>;
+}
+
+function normalizeConversationBtw(raw: unknown): ConversationBtw | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  if (typeof value.sessionId !== "string" || !value.sessionId) return null;
+  if (typeof value.query !== "string") return null;
+  if (typeof value.provider !== "string" || !value.provider) return null;
+  if (typeof value.model !== "string" || !value.model) return null;
+  if (!Number.isFinite(value.startedAt)) return null;
+  if (value.endedAt !== null && !Number.isFinite(value.endedAt)) return null;
+  if (value.phase !== "running" && value.phase !== "complete" && value.phase !== "error") return null;
+  if (typeof value.text !== "string" || typeof value.status !== "string") return null;
+  return {
+    sessionId: value.sessionId,
+    query: value.query,
+    provider: value.provider as ProviderId,
+    model: value.model,
+    startedAt: Number(value.startedAt),
+    endedAt: value.endedAt === null ? null : Number(value.endedAt),
+    phase: value.phase,
+    text: value.text,
+    status: value.status,
+  };
+}
+
+/** Load durable BTW panels and their accepted-session receipts. */
+export function loadConversationBtwState(): ConversationBtwPersistenceState {
+  ensureDataDir();
+  try {
+    if (!existsSync(BTW_FILE)) return { btws: new Map(), seenSessionIds: new Map() };
+    const parsed = JSON.parse(readFileSync(BTW_FILE, "utf-8")) as Partial<BtwFile>;
+    if ((parsed.version !== 1 && parsed.version !== 2)
+        || !parsed.conversations || typeof parsed.conversations !== "object") {
+      return { btws: new Map(), seenSessionIds: new Map() };
+    }
+    const btws = new Map<string, ConversationBtw>();
+    for (const [convId, raw] of Object.entries(parsed.conversations)) {
+      if (!convId) continue;
+      const btw = normalizeConversationBtw(raw);
+      if (btw) btws.set(convId, btw);
+    }
+    const seenSessionIds = new Map<string, Set<string>>();
+    if (parsed.seenSessionIds && typeof parsed.seenSessionIds === "object") {
+      for (const [convId, rawIds] of Object.entries(parsed.seenSessionIds)) {
+        if (!convId || !Array.isArray(rawIds)) continue;
+        const ids = rawIds.filter((id): id is string => typeof id === "string" && id.length > 0);
+        if (ids.length > 0) seenSessionIds.set(convId, new Set(ids));
+      }
+    }
+    // V1 files predate receipts; their visible sessions were necessarily accepted.
+    for (const [convId, btw] of btws) {
+      const ids = seenSessionIds.get(convId) ?? new Set<string>();
+      ids.add(btw.sessionId);
+      seenSessionIds.set(convId, ids);
+    }
+    return { btws, seenSessionIds };
+  } catch (err) {
+    log("warn", `persistence: failed to read BTW state: ${err instanceof Error ? err.message : err}`);
+    return { btws: new Map(), seenSessionIds: new Map() };
+  }
+}
+
+/** Atomically replace every durable panel and accepted-session receipt. */
+export function saveConversationBtwState(state: ConversationBtwPersistenceState): void {
+  ensureDataDir();
+  if (state.btws.size === 0 && state.seenSessionIds.size === 0) {
+    try {
+      unlinkSync(BTW_FILE);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    return;
+  }
+  const conversations: Record<string, ConversationBtw> = {};
+  for (const [convId, btw] of state.btws) conversations[convId] = { ...btw };
+  const seenSessionIds: Record<string, string[]> = {};
+  for (const [convId, ids] of state.seenSessionIds) {
+    if (ids.size > 0) seenSessionIds[convId] = [...ids];
+  }
+  const file: BtwFile = { version: 2, updatedAt: Date.now(), conversations, seenSessionIds };
+  const tmp = `${BTW_FILE}.tmp`;
+  writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
+  renameSync(tmp, BTW_FILE);
 }
 
 // ── Persistent daemon-owned message queue ───────────────────────────

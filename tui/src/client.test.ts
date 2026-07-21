@@ -229,6 +229,72 @@ describe("DaemonClient commands", () => {
     expect(events).toHaveLength(1);
   });
 
+  test("replays only the latest ambiguous BTW mutation until durable state settles it", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    const writes: string[] = [];
+    internal.socket = { write: (value: string) => { writes.push(value); } };
+    internal._connected = true;
+
+    client.startBtw("conv-1", "btw-1", "first", 100);
+    client.closeBtw("conv-1", "btw-1");
+    expect(internal.unresolvedBtwCommands.size).toBe(1);
+
+    writes.length = 0;
+    const replayed = internal.flushPendingCommands();
+    expect(replayed).toEqual([{ type: "btw_close", convId: "conv-1", sessionId: "btw-1" }]);
+    expect(writes.map(line => JSON.parse(line))).toEqual(replayed);
+
+    internal.onData(Buffer.from(`${JSON.stringify({
+      type: "btw_snapshot",
+      convId: "conv-1",
+      btw: null,
+    })}\n`));
+    expect(internal.unresolvedBtwCommands.size).toBe(1);
+    internal.onData(Buffer.from(`${JSON.stringify({
+      type: "btw_mutation_settled",
+      convId: "conv-1",
+      sessionId: "btw-1",
+      mutation: "close",
+    })}\n`));
+    expect(internal.unresolvedBtwCommands.size).toBe(0);
+  });
+
+  test("settles a replayable BTW start only from its matching durable session", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    internal.socket = { write() {} };
+    internal._connected = true;
+
+    client.startBtw("conv-1", "btw-new", "answer once", 100);
+    internal.onData(Buffer.from(`${JSON.stringify({ type: "btw_closed", convId: "conv-1", sessionId: "btw-old" })}\n`));
+    expect(internal.unresolvedBtwCommands.size).toBe(1);
+
+    internal.onData(Buffer.from(`${JSON.stringify({
+      type: "btw_snapshot",
+      convId: "conv-1",
+      btw: {
+        sessionId: "btw-new",
+        query: "answer once",
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        startedAt: 100,
+        endedAt: null,
+        phase: "running",
+        text: "",
+        status: "Thinking…",
+      },
+    })}\n`));
+    expect(internal.unresolvedBtwCommands.size).toBe(1);
+    internal.onData(Buffer.from(`${JSON.stringify({
+      type: "btw_mutation_settled",
+      convId: "conv-1",
+      sessionId: "btw-new",
+      mutation: "start",
+    })}\n`));
+    expect(internal.unresolvedBtwCommands.size).toBe(0);
+  });
+
   test("does not let an enqueue settlement prematurely settle an unqueue for the same id", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;
@@ -321,6 +387,19 @@ describe("DaemonClient commands", () => {
       type: "compact_conversation",
       convId: "conv-1",
       startedAt: 123_456,
+    });
+  });
+
+  test("closes a BTW through its owning conversation", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.closeBtw("conv-1", "btw-1");
+
+    expect(internal.pendingCommands[0]).toEqual({
+      type: "btw_close",
+      convId: "conv-1",
+      sessionId: "btw-1",
     });
   });
 

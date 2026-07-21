@@ -19,6 +19,7 @@ import {
   resetNewConversationDefaults,
   resetHistoryPagination,
   resetToolOutputState,
+  projectConversationBtw,
   setLoadedConversationToolOutputState,
 } from "../state";
 import {
@@ -59,6 +60,7 @@ export function handleConversationCreated(
   state.effort = event.effort ?? state.effort;
   state.fastMode = event.fastMode ?? state.fastMode;
   state.goal = event.goal ?? null;
+  state.btw = null;
   resetHistoryPagination(state);
   daemon.subscribe(event.convId);
 
@@ -78,6 +80,27 @@ export function handleConversationCreated(
 
 export function handleConversationsList(event: Extract<Event, { type: "conversations_list" }>, state: RenderState): void {
   updateConversationList(state.sidebar, event.conversations, event.folders ?? []);
+  const activeConvId = state.convId;
+  if (activeConvId && !event.conversations.some(conversation => conversation.id === activeConvId)) {
+    // The list is authoritative reconnect catch-up. If this client missed a
+    // deletion while offline, do not leave its conversation-owned BTW orphaned.
+    clearRemovedActiveConversation(state, activeConvId);
+    clearAllQueuedMessagesForConversation(state, activeConvId);
+  }
+}
+
+function clearRemovedActiveConversation(state: RenderState, convId: string): void {
+  state.convId = null;
+  state.draftFolderId = state.sidebar.currentFolderId;
+  state.messages = [];
+  clearPendingAI(state);
+  delete state.lastStreamSeqByConv[convId];
+  state.contextTokens = 0;
+  state.goal = null;
+  state.btw = null;
+  resetToolOutputState(state);
+  resetHistoryPagination(state);
+  resetNewConversationDefaults(state);
 }
 
 export function handleConversationUpdated(event: Extract<Event, { type: "conversation_updated" }>, state: RenderState): void {
@@ -123,16 +146,7 @@ export function handleConversationDeleted(event: Extract<Event, { type: "convers
   }
   // If this was the current conversation, clear the chat.
   if (state.convId === event.convId) {
-    state.convId = null;
-    state.draftFolderId = state.sidebar.currentFolderId;
-    state.messages = [];
-    clearPendingAI(state);
-    delete state.lastStreamSeqByConv[event.convId];
-    state.contextTokens = 0;
-    state.goal = null;
-    resetToolOutputState(state);
-    resetHistoryPagination(state);
-    resetNewConversationDefaults(state);
+    clearRemovedActiveConversation(state, event.convId);
   }
   clearAllQueuedMessagesForConversation(state, event.convId);
 }
@@ -219,6 +233,7 @@ export function handleConversationLoaded(
   state.effort = event.effort ?? state.effort;
   state.fastMode = event.fastMode ?? state.fastMode;
   state.goal = event.goal ?? null;
+  state.btw = projectConversationBtw(event.convId, event.btw);
   state.scrollOffset = 0;
   state.contextTokens = event.contextTokens;
   state.historyStartIndex = event.historyStartIndex ?? 0;
