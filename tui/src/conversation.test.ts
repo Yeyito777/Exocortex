@@ -250,6 +250,70 @@ describe("queued message rendering", () => {
 });
 
 describe("tool call rendering", () => {
+  test("appends a red error marker to the last line of failed tool calls while output is hidden", () => {
+    const failedCall = {
+      type: "tool_call" as const,
+      toolCallId: "failed",
+      toolName: "bash",
+      input: {},
+      summary: "echo first\necho failed",
+    };
+    const state = createInitialState();
+    state.showToolOutput = false;
+    state.toolRegistry = [{ name: "bash", label: "$", color: "#d19a66" }];
+    state.messages.push({
+      role: "assistant",
+      blocks: [
+        failedCall,
+        {
+          type: "tool_call",
+          toolCallId: "successful",
+          toolName: "bash",
+          input: {},
+          summary: "echo success",
+        },
+        { type: "tool_result", toolCallId: "failed", toolName: "bash", output: "exit 1", isError: true },
+        { type: "tool_result", toolCallId: "successful", toolName: "bash", output: "ok", isError: false },
+      ],
+      metadata: null,
+    });
+
+    const rendered = buildMessageLines(state, 120).lines;
+    const plain = rendered.map(stripAnsi);
+
+    expect(plain).toContain("  $ echo first");
+    expect(plain).toContain("  echo failed ✗");
+    expect(plain).toContain("  $ echo success");
+    expect(plain.filter(line => line.includes("✗"))).toEqual(["  echo failed ✗"]);
+    expect(rendered.find(line => stripAnsi(line).endsWith("echo failed ✗")))
+      .toContain(`${theme.error}✗${theme.reset}`);
+  });
+
+  test("adds the error marker when a result arrives after the tool call was cached", () => {
+    const state = createInitialState();
+    state.toolRegistry = [{ name: "bash", label: "$", color: "#d19a66" }];
+    state.pendingAI = createPendingAI(Date.now(), state.model);
+    state.pendingAI.blocks.push({
+      type: "tool_call",
+      toolCallId: "late-error",
+      toolName: "bash",
+      input: {},
+      summary: "false",
+    });
+
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toContain("  $ false");
+
+    state.pendingAI.blocks.push({
+      type: "tool_result",
+      toolCallId: "late-error",
+      toolName: "bash",
+      output: "exit 1",
+      isError: true,
+    });
+
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toContain("  $ false ✗");
+  });
+
   test("wraps wide-character bash tool calls to the chat width", () => {
     const availableWidth = 162;
     const summary = [

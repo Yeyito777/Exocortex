@@ -247,6 +247,28 @@ export function buildMessageLines(
   const copyLines: Array<WrapCopyLine | null> = [];
   const messageBounds: MessageBound[] = [];
   const lineAnchors: RenderLineAnchor[] = [];
+  const startMessageIndex = Math.max(0, Math.min(options.startMessageIndex ?? 0, state.messages.length));
+  const erroredToolCallIds = new Set<string>();
+  for (let messageIndex = startMessageIndex; messageIndex < state.messages.length; messageIndex++) {
+    const message = state.messages[messageIndex];
+    if (message.role !== "assistant") continue;
+    for (const block of message.blocks) {
+      if (block.type === "tool_result" && block.isError) erroredToolCallIds.add(block.toolCallId);
+    }
+  }
+  for (const block of state.pendingAI?.blocks ?? []) {
+    if (block.type === "tool_result" && block.isError) erroredToolCallIds.add(block.toolCallId);
+  }
+
+  const renderAssistantBlock = (block: Extract<Message, { role: "assistant" }>["blocks"][number]): WrapResult =>
+    renderBlockCached(
+      block,
+      contentWidth,
+      state.toolRegistry,
+      state.externalToolStyles,
+      state.showToolOutput,
+      block.type === "tool_call" && erroredToolCallIds.has(block.toolCallId),
+    );
 
   const pushAnchoredLine = (
     line: string,
@@ -307,7 +329,6 @@ export function buildMessageLines(
     messageBounds.push({ role, start, end: lines.length, contentStart, contentEnd });
   };
 
-  const startMessageIndex = Math.max(0, Math.min(options.startMessageIndex ?? 0, state.messages.length));
   let historyLoadingInsertIndex = startMessageIndex;
   if (state.historyLoadingOlder && startMessageIndex === 0) {
     while (state.messages[historyLoadingInsertIndex]?.role === "system_instructions") {
@@ -356,7 +377,7 @@ export function buildMessageLines(
       // AI messages: content blocks, then metadata
       const contentStart = lines.length;
       for (const block of msg.blocks) {
-        pushBlock(block, "assistant_block", renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
+        pushBlock(block, "assistant_block", renderAssistantBlock(block));
       }
       const nextIsAssistant = state.messages[messageIndex + 1]?.role === "assistant"
         || (messageIndex === state.messages.length - 1 && state.pendingAI?.role === "assistant");
@@ -412,7 +433,7 @@ export function buildMessageLines(
   if (state.pendingAI) {
     const start = lines.length;
     for (const block of state.pendingAI.blocks) {
-      pushBlock(block, "assistant_block", renderBlockCached(block, contentWidth, state.toolRegistry, state.externalToolStyles, state.showToolOutput));
+      pushBlock(block, "assistant_block", renderAssistantBlock(block));
     }
     // Terminal stream notices (abort/error/watchdog) arrive just before
     // streaming_stopped. Keep pendingAI around for reconciliation, but do not

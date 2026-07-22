@@ -23,6 +23,8 @@ interface BlockCacheEntry {
   width: number;
   /** Whether tool output was shown (affects tool_result blocks). */
   showToolOutput: boolean;
+  /** Whether this tool_call has a matching errored tool_result. */
+  toolCallErrored: boolean;
   /** Theme name used to produce ANSI styling. */
   themeName: string;
   /** Tool style registries used by tool_call rendering. */
@@ -121,6 +123,7 @@ export function renderBlockCached(
   toolRegistry: ToolDisplayInfo[],
   externalToolStyles: ExternalToolStyle[],
   showToolOutput: boolean,
+  toolCallErrored = false,
 ): WrapResult {
   const contentKey = blockContentKey(block);
   const cached = blockRenderCache.get(block);
@@ -129,6 +132,7 @@ export function renderBlockCached(
     cached.contentKey === contentKey &&
     cached.width === contentWidth &&
     cached.showToolOutput === showToolOutput &&
+    cached.toolCallErrored === toolCallErrored &&
     cached.themeName === theme.name &&
     cached.toolRegistryRef === toolRegistry &&
     cached.externalToolStylesRef === externalToolStyles
@@ -136,11 +140,12 @@ export function renderBlockCached(
     return cached.result;
   }
 
-  const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput);
+  const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput, toolCallErrored);
   blockRenderCache.set(block, {
     contentKey,
     width: contentWidth,
     showToolOutput,
+    toolCallErrored,
     themeName: theme.name,
     toolRegistryRef: toolRegistry,
     externalToolStylesRef: externalToolStyles,
@@ -155,6 +160,7 @@ function renderBlock(
   toolRegistry: ToolDisplayInfo[],
   externalToolStyles: ExternalToolStyle[],
   showToolOutput: boolean,
+  toolCallErrored: boolean,
 ): WrapResult {
   const lines: string[] = [];
   const cont: boolean[] = [];
@@ -219,6 +225,9 @@ function renderBlock(
           join.push(w.join[j]);
           copy.push(null);
         }
+      }
+      if (toolCallErrored && lines.length > 0) {
+        lines[lines.length - 1] += ` ${theme.error}✗${theme.reset}`;
       }
       break;
     }
