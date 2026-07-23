@@ -2,6 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import type { ApiToolCall } from "../api";
+import { toolTimeoutReason } from "../abort";
+import { buildExecutor } from "./registry";
 import { patch, patchInternalsForTest } from "./patch";
 
 const tempDirs: string[] = [];
@@ -105,6 +108,60 @@ describe("patch tool", () => {
 
     expect(result.isError).toBe(false);
     expect(readText(join(cwd, "doc.txt"))).toBe("goodbye - world\n");
+  });
+
+  test("reports files changed before a later hunk fails", async () => {
+    const cwd = tempWorkspace();
+    writeFileSync(join(cwd, "first.txt"), "one\n");
+    writeFileSync(join(cwd, "second.txt"), "two\n");
+
+    const result = await patch.execute({
+      cwd,
+      input: `*** Begin Patch
+*** Update File: first.txt
+@@
+-one
++ONE
+*** Update File: second.txt
+@@
+-missing
++TWO
+*** End Patch`,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Changes already applied before the patch stopped:");
+    expect(result.output).toContain("M first.txt");
+    expect(readText(join(cwd, "first.txt"))).toBe("ONE\n");
+    expect(readText(join(cwd, "second.txt"))).toBe("two\n");
+  });
+
+  test("settles an abort before returning and starts no later mutation", async () => {
+    const cwd = tempWorkspace();
+    const controller = new AbortController();
+    const call: ApiToolCall = {
+      id: "patch-timeout",
+      name: "patch",
+      input: {
+        cwd,
+        input: `*** Begin Patch
+*** Add File: first.txt
++one
+*** Add File: second.txt
++two
+*** End Patch`,
+      },
+    };
+
+    const execution = buildExecutor(undefined, ["patch"])([call], controller.signal);
+    controller.abort(toolTimeoutReason("patch", 30_000));
+    const [result] = await execution;
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('Tool "patch" timed out');
+    expect(result.output).toContain("No files were changed before the patch stopped.");
+    expect(existsSync(join(cwd, "first.txt"))).toBe(false);
+    expect(existsSync(join(cwd, "second.txt"))).toBe(false);
   });
 
   test("parses heredoc-wrapped input", () => {

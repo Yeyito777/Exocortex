@@ -147,6 +147,13 @@ export interface Tool {
    */
   defaultTimeoutMs?: number | null;
 
+  /**
+   * Wait for cooperative cancellation to settle before returning an abort
+   * result. Mutating tools use this when returning early could leave work
+   * running after the caller was told it had stopped.
+   */
+  settleOnAbort?: boolean;
+
   /** Shared resource pool used to bound expensive calls across conversations. */
   resourceClass?: ToolResourceClass;
 

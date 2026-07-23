@@ -16,7 +16,7 @@
 
 import { dirname, isAbsolute, resolve } from "path";
 import { mkdir, rm, stat, writeFile } from "fs/promises";
-import type { Tool, ToolResult, ToolSummary } from "./types";
+import type { Tool, ToolExecutionContext, ToolResult, ToolSummary } from "./types";
 import { getString, summarizeParams } from "./util";
 import { isWindows } from "@exocortex/shared/paths";
 import { log } from "../log";
@@ -67,6 +67,8 @@ interface AffectedPaths {
   added: string[];
   modified: string[];
   deleted: string[];
+  movedFrom: string[];
+  uncertainPath: string | null;
 }
 
 class PatchParseError extends Error {
@@ -74,6 +76,17 @@ class PatchParseError extends Error {
     super(lineNumber == null ? message : `line ${lineNumber}: ${message}`);
     this.name = "PatchParseError";
   }
+}
+
+class PatchAbortedError extends Error {
+  constructor() {
+    super("Patch execution stopped");
+    this.name = "PatchAbortedError";
+  }
+}
+
+function throwIfPatchAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new PatchAbortedError();
 }
 
 function isAbsolutePatchPath(path: string): boolean {
@@ -358,8 +371,16 @@ async function ensureParentDirectory(path: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
 }
 
-async function writeText(path: string, content: string): Promise<void> {
+async function writeText(
+  path: string,
+  content: string,
+  signal?: AbortSignal,
+  onWriteStart?: () => void,
+): Promise<void> {
+  throwIfPatchAborted(signal);
   await ensureParentDirectory(path);
+  throwIfPatchAborted(signal);
+  onWriteStart?.();
   await writeFile(path, content, "utf8");
 }
 
@@ -367,8 +388,10 @@ function resolvePatchPath(cwd: string, patchPath: string): string {
   return resolve(cwd, patchPath);
 }
 
-async function deriveUpdatedContents(path: string, chunks: UpdateChunk[]): Promise<string> {
+async function deriveUpdatedContents(path: string, chunks: UpdateChunk[], signal?: AbortSignal): Promise<string> {
+  throwIfPatchAborted(signal);
   const originalContents = await readFileText(path);
+  throwIfPatchAborted(signal);
   const originalLines = originalContents.split("\n");
   if (originalLines.at(-1) === "") originalLines.pop();
   const replacements = computeReplacements(originalLines, path, chunks);
@@ -377,42 +400,60 @@ async function deriveUpdatedContents(path: string, chunks: UpdateChunk[]): Promi
   return newLines.join("\n");
 }
 
-async function applyHunks(hunks: Hunk[], cwd: string): Promise<AffectedPaths> {
+async function applyHunks(
+  hunks: Hunk[],
+  cwd: string,
+  affected: AffectedPaths,
+  signal?: AbortSignal,
+): Promise<void> {
   if (hunks.length === 0) throw new Error("No files were modified.");
 
-  const affected: AffectedPaths = { added: [], modified: [], deleted: [] };
-
   for (const hunk of hunks) {
+    throwIfPatchAborted(signal);
     const absPath = resolvePatchPath(cwd, hunk.path);
     if (hunk.kind === "add") {
-      await writeText(absPath, hunk.contents);
+      await writeText(absPath, hunk.contents, signal, () => { affected.uncertainPath = hunk.path; });
+      affected.uncertainPath = null;
       affected.added.push(hunk.path);
+      throwIfPatchAborted(signal);
       continue;
     }
 
     if (hunk.kind === "delete") {
       const metadata = await stat(absPath);
       if (metadata.isDirectory()) throw new Error(`Failed to delete file ${absPath}: path is a directory`);
+      throwIfPatchAborted(signal);
+      affected.uncertainPath = hunk.path;
       await rm(absPath, { recursive: false, force: false });
+      affected.uncertainPath = null;
       affected.deleted.push(hunk.path);
+      throwIfPatchAborted(signal);
       continue;
     }
 
-    const newContents = await deriveUpdatedContents(absPath, hunk.chunks);
+    const newContents = await deriveUpdatedContents(absPath, hunk.chunks, signal);
+    throwIfPatchAborted(signal);
     if (hunk.movePath != null) {
       const destAbs = resolvePatchPath(cwd, hunk.movePath);
-      await writeText(destAbs, newContents);
+      await writeText(destAbs, newContents, signal, () => { affected.uncertainPath = hunk.movePath; });
+      affected.uncertainPath = null;
+      affected.modified.push(hunk.movePath);
+      throwIfPatchAborted(signal);
       const metadata = await stat(absPath);
       if (metadata.isDirectory()) throw new Error(`Failed to remove original ${absPath}: path is a directory`);
+      throwIfPatchAborted(signal);
+      affected.uncertainPath = hunk.path;
       await rm(absPath, { recursive: false, force: false });
-      affected.modified.push(hunk.movePath);
+      affected.uncertainPath = null;
+      affected.movedFrom.push(hunk.path);
+      throwIfPatchAborted(signal);
     } else {
-      await writeText(absPath, newContents);
+      await writeText(absPath, newContents, signal, () => { affected.uncertainPath = hunk.path; });
+      affected.uncertainPath = null;
       affected.modified.push(hunk.path);
+      throwIfPatchAborted(signal);
     }
   }
-
-  return affected;
 }
 
 function formatSummary(affected: AffectedPaths): string {
@@ -423,7 +464,34 @@ function formatSummary(affected: AffectedPaths): string {
   return lines.join("\n");
 }
 
-async function executePatch(input: Record<string, unknown>): Promise<ToolResult> {
+function hasAffectedPaths(affected: AffectedPaths): boolean {
+  return affected.added.length > 0
+    || affected.modified.length > 0
+    || affected.deleted.length > 0
+    || affected.movedFrom.length > 0;
+}
+
+function formatPartialSummary(affected: AffectedPaths): string {
+  if (!hasAffectedPaths(affected)) return "No files were changed before the patch stopped.";
+  const lines = ["Changes already applied before the patch stopped:"];
+  for (const path of affected.added) lines.push(`A ${path}`);
+  for (const path of affected.modified) lines.push(`M ${path}`);
+  for (const path of affected.deleted) lines.push(`D ${path}`);
+  for (const path of affected.movedFrom) lines.push(`D ${path}`);
+  return lines.join("\n");
+}
+
+function formatUncertainMutation(affected: AffectedPaths): string {
+  return affected.uncertainPath == null
+    ? ""
+    : `The failing filesystem operation may also have modified:\n? ${affected.uncertainPath}`;
+}
+
+async function executePatch(
+  input: Record<string, unknown>,
+  _context?: ToolExecutionContext,
+  signal?: AbortSignal,
+): Promise<ToolResult> {
   const patchInput = getString(input, "input");
   const cwdInput = getString(input, "cwd") ?? process.cwd();
 
@@ -433,14 +501,30 @@ async function executePatch(input: Record<string, unknown>): Promise<ToolResult>
     return { output: `Error: cwd must be absolute, got: ${cwdInput}`, isError: true };
   }
 
+  const affected: AffectedPaths = {
+    added: [],
+    modified: [],
+    deleted: [],
+    movedFrom: [],
+    uncertainPath: null,
+  };
   try {
     const parsed = parsePatch(patchInput);
-    const affected = await applyHunks(parsed.hunks, cwdInput);
+    await applyHunks(parsed.hunks, cwdInput, affected, signal);
     return { output: formatSummary(affected), isError: false };
   } catch (err) {
+    const partialSummary = formatPartialSummary(affected);
+    if (err instanceof PatchAbortedError) {
+      return { output: partialSummary, isError: true };
+    }
     const msg = err instanceof Error ? err.message : String(err);
     log("error", `patch: ${msg}`);
-    return { output: `Error applying patch: ${msg}`, isError: true };
+    const details = [
+      hasAffectedPaths(affected) ? partialSummary : "",
+      formatUncertainMutation(affected),
+    ].filter(Boolean);
+    const detailSuffix = details.length > 0 ? `\n\n${details.join("\n\n")}` : "";
+    return { output: `Error applying patch: ${msg}${detailSuffix}`, isError: true };
   }
 }
 
@@ -468,6 +552,7 @@ export const patch: Tool = {
   description: PATCH_DESCRIPTION,
   parallelSafety: "exclusive",
   defaultTimeoutMs: 30_000,
+  settleOnAbort: true,
   inputSchema: {
     type: "object",
     properties: {

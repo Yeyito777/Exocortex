@@ -150,10 +150,23 @@ async function execTool(
   call: ApiToolCall,
   promise: Promise<ToolResult>,
   signal?: AbortSignal,
+  settleOnAbort = false,
 ): Promise<ToolExecResult> {
   const startTime = Date.now();
   try {
-    const result = await raceAbort(promise, signal);
+    const result = settleOnAbort ? await promise : await raceAbort(promise, signal);
+    if (settleOnAbort && signal?.aborted) {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const abortMessage = formatToolAbortMessage(signal, elapsed);
+      const details = result.output.trim();
+      return {
+        toolCallId: call.id,
+        toolName: call.name,
+        output: details ? `${abortMessage}\n\n${details}` : abortMessage,
+        isError: isToolTimeoutReason(signal.reason),
+        image: result.image,
+      };
+    }
     return {
       toolCallId: call.id,
       toolName: call.name,
@@ -300,7 +313,7 @@ async function executeSingleTool(
   };
 
   try {
-    return await execTool(call, run(), deadline.signal);
+    return await execTool(call, run(), deadline.signal, tool.settleOnAbort === true);
   } finally {
     if (timeout) clearTimeout(timeout);
     if (signal && onParentAbort) signal.removeEventListener("abort", onParentAbort);
@@ -334,3 +347,7 @@ export function buildExecutor(
   const allowedTools = allowedToolNames ? new Set(allowedToolNames) : undefined;
   return (calls, signal?) => executeScheduledTools(calls, toolContext, signal, allowedTools);
 }
+
+export const registryInternalsForTest = {
+  execTool,
+};

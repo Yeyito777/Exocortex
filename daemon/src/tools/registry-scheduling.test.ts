@@ -5,8 +5,10 @@ import {
   getToolParallelSafety,
   getToolResourceClass,
   planToolExecutionBatches,
+  registryInternalsForTest,
   toolCallsRequireWatchdogPause,
 } from "./registry";
+import { toolTimeoutReason } from "../abort";
 
 function call(name: string, id = name): ApiToolCall {
   return { id, name, input: {} };
@@ -64,5 +66,34 @@ describe("tool execution scheduling", () => {
     expect(toolCallsRequireWatchdogPause([call("glob")])).toBe(false);
     expect(toolCallsRequireWatchdogPause([call("grep"), call("read")])).toBe(false);
     expect(toolCallsRequireWatchdogPause([call("glob"), call("bash")])).toBe(true);
+  });
+
+  test("waits for settle-on-abort tools before returning a timeout", async () => {
+    const controller = new AbortController();
+    let finishTool!: () => void;
+    const toolPromise = new Promise<{ output: string; isError: boolean }>(resolve => {
+      finishTool = () => resolve({ output: "No files were changed before the patch stopped.", isError: true });
+    });
+    let returned = false;
+    const execution = registryInternalsForTest.execTool(
+      call("patch", "settled-timeout"),
+      toolPromise,
+      controller.signal,
+      true,
+    ).then(result => {
+      returned = true;
+      return result;
+    });
+
+    controller.abort(toolTimeoutReason("patch", 30_000));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(returned).toBe(false);
+
+    finishTool();
+    const result = await execution;
+    expect(returned).toBe(true);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('Tool "patch" timed out');
+    expect(result.output).toContain("No files were changed before the patch stopped.");
   });
 });
