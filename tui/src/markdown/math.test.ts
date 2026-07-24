@@ -24,6 +24,11 @@ describe("terminal LaTeX conversion", () => {
       .toBe("ℝ, C(n, k), x⃗");
   });
 
+  test("uses linear notation when a script has no Unicode equivalent", () => {
+    expect(convertLatexMath(String.raw`1_{\mathbb{C}} := 1 + 0i`)).toBe("1_ℂ:= 1 + 0i");
+    expect(convertLatexMath(String.raw`x_1 + y^{2}`)).toBe("x₁ + y²");
+  });
+
   test("renders matrices compactly inline and structurally in display mode", () => {
     const source = String.raw`\begin{pmatrix}a&b\\c&d\end{pmatrix}`;
     expect(convertLatexMath(source)).toBe("(a b; c d)");

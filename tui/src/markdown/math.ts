@@ -332,7 +332,10 @@ export function convertLatexMath(source: string, display = false): string {
     return latexToUnicode(prepared, {
       latexCheck: false,
       customMacros: CUSTOM_MACROS,
-      fallbackBehaviour: "parentheses",
+      // Unicode has no subscript forms for many symbols (including ℂ). Keep
+      // those scripts in readable linear notation (`_ℂ`) instead of mixing a
+      // baseline glyph with subscript parentheses (`₍ℂ₎`).
+      fallbackBehaviour: "raw",
     })
       .replaceAll(ESCAPED_LEFT_BRACE, "{")
       .replaceAll(ESCAPED_RIGHT_BRACE, "}")
