@@ -98,6 +98,46 @@ describe("automatic agent compaction", () => {
     expect(compactCalls).toBe(0);
   });
 
+  test("allows context recovery after a provider retry discarded partial output", async () => {
+    let streamCalls = 0;
+    let compactCalls = 0;
+    const retryAttempts: number[] = [];
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        streamCallbacks.onText("discarded partial answer");
+        streamCallbacks.onRetry?.(1, 8, "Timed out (stale stream)", 0, { kind: "transient" });
+        throw new Error("maximum context length exceeded");
+      }
+      return {
+        text: "recovered",
+        thinking: "",
+        stopReason: "stop",
+        blocks: [{ type: "text", text: "recovered" }],
+        toolCalls: [],
+      };
+    }) as typeof streamMessage;
+
+    const result = await runAgentLoop(
+      [{ role: "user", content: "hello" }],
+      "openai",
+      "gpt-5.6-sol",
+      callbacks({
+        onRetry: (attempt) => retryAttempts.push(attempt),
+        compactContext: async (messages) => {
+          compactCalls += 1;
+          return messages;
+        },
+      }),
+      { streamMessageFn: fakeStream },
+    );
+
+    expect(streamCalls).toBe(2);
+    expect(compactCalls).toBe(1);
+    expect(retryAttempts).toEqual([1]);
+    expect(result.blocks).toEqual([{ type: "text", text: "recovered" }]);
+  });
+
   test("uses exact provider output usage when projecting mid-turn compaction", async () => {
     let streamCalls = 0;
     let compactCalls = 0;

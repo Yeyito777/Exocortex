@@ -191,7 +191,13 @@ export async function runAgentLoop(
           onToolCall: (block) => { roundEmittedOutput = true; callbacks.onToolCall(block); },
           onToolResult: (block) => { roundEmittedOutput = true; callbacks.onToolResult(block); },
           onHeaders: callbacks.onHeaders,
-          onRetry: callbacks.onRetry,
+          onRetry: (attempt, maxAttempts, errorMessage, delaySec, metadata) => {
+            // Provider retries discard the current attempt's streamed output.
+            // Reset this guard too so a clean retry that hits a context error can
+            // still compact rather than being blocked by already-discarded text.
+            roundEmittedOutput = false;
+            callbacks.onRetry?.(attempt, maxAttempts, errorMessage, delaySec, metadata);
+          },
           onRetryWaitStart: callbacks.onRetryWaitStart,
           onRetryWaitEnd: callbacks.onRetryWaitEnd,
         }, {

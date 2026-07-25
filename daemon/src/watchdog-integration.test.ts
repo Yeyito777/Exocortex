@@ -5,10 +5,10 @@
  *
  * Scenario 1 — Model hangs:
  *   A stream goes silent (model stops producing tokens, fetch hangs, etc.).
- *   The watchdog detects the stream as stale after STALE_STREAM_TIMEOUT of
- *   inactivity and aborts it with reason "watchdog". The orchestrator's
- *   catch block detects the watchdog abort and persists a distinct system
- *   message: "✗ Timed out (stale stream)".
+ *   The watchdog detects the stream as stale after STALE_STREAM_TIMEOUT and
+ *   interrupts the current provider attempt. Production turns route that
+ *   interruption through the eight-retry stale-stream wrapper; plain active-job
+ *   controllers retain the terminal watchdog-abort fallback tested below.
  *
  * Scenario 2 — Long tool call (5m+):
  *   A tool (e.g. `bash` with await=600) takes minutes to complete. The
@@ -29,6 +29,7 @@ import {
   touchActivity, pauseActivity, resumeActivity,
   getStaleStreams, STALE_STREAM_TIMEOUT,
 } from "./streaming";
+import { RetryableStreamAbortController, runWithStaleStreamRetries } from "./watchdog-retry";
 
 // ── Fast watchdog for testing ─────────────────────────────────────
 // Mirrors the real watchdog (watchdog.ts) but with configurable check
@@ -74,10 +75,44 @@ beforeEach(() => { for (const id of TEST_IDS) clearActiveJob(id); });
 afterEach(() => { for (const id of TEST_IDS) clearActiveJob(id); });
 
 // ═══════════════════════════════════════════════════════════════════
-// SCENARIO 1: Model hangs → watchdog detects → abort fires
+// SCENARIO 1: Model hangs → watchdog detects → retry or terminal fallback
 // ═══════════════════════════════════════════════════════════════════
 
-describe("scenario 1: model hangs → watchdog aborts", () => {
+describe("scenario 1: model hangs → watchdog recovery and fallback", () => {
+  test("production controller turns the watchdog abort into a provider retry", async () => {
+    const ac = new RetryableStreamAbortController();
+    setActiveJob("wd-int-1", ac, Date.now() - STALE_STREAM_TIMEOUT - 1_000);
+    let calls = 0;
+    let startedFirstAttempt!: () => void;
+    const firstAttemptStarted = new Promise<void>((resolve) => { startedFirstAttempt = resolve; });
+
+    const resultPromise = runWithStaleStreamRetries(
+      ac,
+      { onText: () => {}, onThinking: () => {}, onRetry: () => touchActivity("wd-int-1") },
+      (signal) => {
+        calls += 1;
+        if (calls > 1) return Promise.resolve("recovered");
+        startedFirstAttempt();
+        return new Promise((_, reject) => {
+          signal.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          }, { once: true });
+        });
+      },
+      { retryDelayMs: () => 0 },
+    );
+
+    await firstAttemptStarted;
+    const stale = getStaleStreams();
+    expect(stale).toHaveLength(1);
+    stale[0][1].abort("watchdog");
+
+    await expect(resultPromise).resolves.toBe("recovered");
+    expect(calls).toBe(2);
+    expect(ac.signal.aborted).toBe(false);
+    expect(getStaleStreams()).toHaveLength(0);
+  });
+
   test("watchdog detects stale stream and fires abort", async () => {
     // Simulate: stream started STALE_STREAM_TIMEOUT + 1s ago, zero activity since.
     // This is what happens when the model or network silently hangs.
@@ -131,9 +166,10 @@ describe("scenario 1: model hangs → watchdog aborts", () => {
     expect(ac.signal.aborted).toBe(true);
   });
 
-  test("orchestrator catch block distinguishes watchdog from user interrupt", () => {
-    // The orchestrator uses `ac.signal.reason === "watchdog"` to tell
-    // a timeout apart from a manual user interrupt.
+  test("terminal fallback distinguishes watchdog from user interrupt", () => {
+    // Outside a retryable provider attempt, the orchestrator uses
+    // `ac.signal.reason === "watchdog"` to tell a timeout apart from a manual
+    // user interrupt.
     //
     // This test exercises the exact logic from orchestrator.ts:
     //   const isAbort = ac.signal.aborted;

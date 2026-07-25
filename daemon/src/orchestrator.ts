@@ -21,7 +21,7 @@ import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { goalContinuationUserMessage } from "./goals";
-import { createProviderTurnSession, type streamMessage } from "./api";
+import { createProviderTurnSession, streamMessage } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
 import type { StreamingStopReason } from "./protocol";
 import {
@@ -38,6 +38,11 @@ import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChro
 import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
 import { buildHistoryUpdatedEvents } from "./history-pagination";
+import {
+  RetryableStreamAbortController,
+  StaleStreamRetriesExhaustedError,
+  runWithStaleStreamRetries,
+} from "./watchdog-retry";
 
 // ── Transcript marker helpers ──────────────────────────────────────
 
@@ -389,12 +394,30 @@ async function orchestrateAssistantTurn(
   if (options.queueEntryId) convStore.removeQueuedMessageById(options.queueEntryId);
   if (options.subagentNotificationId) acknowledgeSubagentNotification(options.subagentNotificationId);
 
-  const ac = new AbortController();
+  const ac = new RetryableStreamAbortController();
   // A standalone compaction has no unfinished assistant turn to replay after a
   // daemon restart. It is still an active job so abort, queueing, and shutdown
   // can coordinate with it normally.
   convStore.setActiveJob(convId, ac, startedAt, !manualCompaction);
   convStore.initStreamingState(convId);
+
+  // The app watchdog interrupts only the current provider invocation. Give each
+  // retry a fresh child signal while preserving `ac.signal` as the terminal turn
+  // signal used by user interrupts and daemon lifecycle operations.
+  const streamMessageWithWatchdogRetries: typeof streamMessage = async (
+    provider,
+    messages,
+    model,
+    callbacks,
+    streamOptions = {},
+  ) => runWithStaleStreamRetries(
+    ac,
+    callbacks,
+    (attemptSignal) => (ext.streamMessageFn ?? streamMessage)(provider, messages, model, callbacks, {
+      ...streamOptions,
+      signal: attemptSignal,
+    }),
+  );
 
   // Broadcast sidebar update (streaming indicator)
   broadcastConversationUpdated(server, convId);
@@ -560,6 +583,9 @@ async function orchestrateAssistantTurn(
             color: "warning",
           });
         },
+        // Compaction pauses the app watchdog for its full operation. Preserve the
+        // direct stream seam here so native request-budget accounting can still
+        // distinguish production transports from test doubles.
         streamMessageFn: ext.streamMessageFn,
       });
       // Session invalidation is part of the atomic install. If it fails, leave
@@ -1079,7 +1105,7 @@ async function orchestrateAssistantTurn(
         codexTurnId,
         codexTurnStartedAtMs: startedAt,
         state: agentState,
-        streamMessageFn: ext.streamMessageFn,
+        streamMessageFn: streamMessageWithWatchdogRetries,
       });
 
       const endedAt = Date.now();
@@ -1169,17 +1195,21 @@ async function orchestrateAssistantTurn(
     // ── Error/abort path: persist salvageable state ─────────────────
     const isAbort = ac.signal.aborted;
 
-    const isWatchdog = isAbort && ac.signal.reason === "watchdog";
+    const staleRetriesExhausted = err instanceof StaleStreamRetriesExhaustedError;
+    // A root user/lifecycle abort wins races with stale-retry exhaustion.
+    const isWatchdog = isAbort
+      ? ac.signal.reason === "watchdog"
+      : staleRetriesExhausted;
     const isDaemonRestart = isAbort && ac.signal.reason === "daemon-restart";
 
-    if (!isAbort) {
+    if (isWatchdog) {
+      log("warn", `orchestrator: stream timed out for ${convId} (watchdog${staleRetriesExhausted ? ", retries exhausted" : ""})`);
+    } else if (!isAbort) {
       const msg = err instanceof Error ? err.message : String(err);
       log("error", `orchestrator: stream error for ${convId}: ${msg}`);
       // Don't also emit a conversation-scoped `error` event here: the catch
       // path already persists and broadcasts a canonical `system_message`
       // below, and sending both makes the TUI render the same failure twice.
-    } else if (isWatchdog) {
-      log("warn", `orchestrator: stream timed out for ${convId} (watchdog)`);
     } else if (isDaemonRestart) {
       log("info", `orchestrator: stream interrupted for daemon restart for ${convId}`);
     } else {
@@ -1266,7 +1296,9 @@ async function orchestrateAssistantTurn(
     // Persist and broadcast system message
     let outcomeError: string;
     if (isWatchdog) {
-      const sysText = "✗ Timed out (stale stream)";
+      const sysText = staleRetriesExhausted
+        ? `✗ ${err.message}`
+        : "✗ Timed out (stale stream)";
       outcomeError = sysText;
       conv.messages.push({ role: "system", content: sysText, metadata: null });
       server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text: sysText, color: "error" });
@@ -1295,7 +1327,7 @@ async function orchestrateAssistantTurn(
       durationMs: endedAt - startedAt,
       endedAt,
       error: outcomeError,
-      aborted: isAbort,
+      aborted: isAbort || isWatchdog,
       watchdog: isWatchdog,
       daemonRestart: isDaemonRestart,
     };
