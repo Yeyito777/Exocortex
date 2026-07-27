@@ -233,6 +233,72 @@ export function preserveViewportAcrossResize(state: RenderState, nextCols: numbe
 }
 
 /**
+ * Toggle the sidebar without losing the user's semantic position in history.
+ *
+ * Opening or closing the sidebar changes the chat width and can rewrap nearly
+ * every message. Treat it like a resize rather than relying on the generic
+ * line-count adjustment performed during render, which cannot tell which newly
+ * wrapped row corresponds to the content that was at the top of the viewport.
+ * A bottom-pinned viewport deliberately remains bottom-pinned.
+ */
+export function toggleSidebarPreservingViewport(state: RenderState): void {
+  const oldMessageAreaHeight = state.layout.messageAreaHeight;
+  const oldSidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
+  const oldChatW = Math.max(1, state.cols - oldSidebarW);
+  const oldRender = oldMessageAreaHeight > 0 && state.layout.totalLines > 0
+    ? buildMessageLines(state, oldChatW)
+    : null;
+  const oldViewStart = oldRender
+    ? getViewStartFor(oldRender.lines.length, oldMessageAreaHeight, state.scrollOffset)
+    : 0;
+  const oldCursorRow = state.historyCursor.row;
+  const oldVisualAnchorRow = state.historyVisualAnchor.row;
+
+  state.sidebar.open = !state.sidebar.open;
+
+  if (!oldRender) return;
+
+  const newSidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
+  const newChatW = Math.max(1, state.cols - newSidebarW);
+  const { messageAreaHeight: newMessageAreaHeight } = computeBottomLayout(state, newChatW, state.rows);
+  const newRender = buildMessageLines(state, newChatW);
+  const newAnchorIndex = buildAnchorIndex(newRender.lineAnchors);
+  const newLineIndex = buildRenderedLineIndex(newRender.lines);
+
+  if (state.scrollOffset > 0) {
+    const newViewStart = remapRenderedRow(
+      oldViewStart,
+      oldRender.lines,
+      oldRender.lineAnchors,
+      newRender.lines,
+      newAnchorIndex,
+      newLineIndex,
+    );
+    state.scrollOffset = getScrollOffsetForViewStart(newRender.lines.length, newMessageAreaHeight, newViewStart);
+  }
+
+  state.historyCursor = {
+    ...state.historyCursor,
+    row: remapRenderedRow(oldCursorRow, oldRender.lines, oldRender.lineAnchors, newRender.lines, newAnchorIndex, newLineIndex),
+  };
+  state.historyVisualAnchor = {
+    ...state.historyVisualAnchor,
+    row: remapRenderedRow(oldVisualAnchorRow, oldRender.lines, oldRender.lineAnchors, newRender.lines, newAnchorIndex, newLineIndex),
+  };
+
+  // Prime the render caches so the next frame does not also apply its generic
+  // total-line delta adjustment.
+  state.historyLines = newRender.lines;
+  state.historyWrapContinuation = newRender.wrapContinuation;
+  state.historyWrapJoiners = newRender.wrapJoiners;
+  state.historyCopyLines = newRender.copyLines;
+  state.historyMessageBounds = newRender.messageBounds;
+  state.historyLineAnchors = newRender.lineAnchors;
+  state.layout.totalLines = newRender.lines.length;
+  state.layout.messageAreaHeight = newMessageAreaHeight;
+}
+
+/**
  * Apply a history mutation while preserving the user's semantic position.
  *
  * The mutation may add/remove/wrap lines (for example toggling tool output or

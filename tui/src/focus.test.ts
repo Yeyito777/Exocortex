@@ -3,7 +3,7 @@ import { handleFocusedKey } from "./focus";
 import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
 import { handleEvent } from "./events";
-import { buildDisplayRows, renderSidebar, sidebarHitTest } from "./sidebar";
+import { buildDisplayRows, renderSidebar, sidebarHitTest, SIDEBAR_WIDTH } from "./sidebar";
 import { theme } from "./theme";
 import { createInitialState } from "./state";
 import { clearPrompt } from "./promptstate";
@@ -498,10 +498,64 @@ function buildToolToggleState(showToolOutput: boolean) {
 }
 
 function topVisibleLine(state: ReturnType<typeof createInitialState>): string {
-  const rendered = buildMessageLines(state, state.cols).lines.map(stripAnsi);
+  const chatWidth = state.cols - (state.sidebar.open ? SIDEBAR_WIDTH : 0);
+  const rendered = buildMessageLines(state, chatWidth).lines.map(stripAnsi);
   const viewStart = getViewStartFor(rendered.length, state.layout.messageAreaHeight, state.scrollOffset);
   return rendered[viewStart] ?? "";
 }
+
+describe("sidebar toggle scroll preservation", () => {
+  test("opening and closing the sidebar preserves the top visible history content", () => {
+    const state = createInitialState();
+    state.cols = 80;
+    state.rows = 24;
+    state.layout.messageAreaHeight = 8;
+    state.messages = [{
+      role: "assistant",
+      blocks: [{
+        type: "text",
+        text: Array.from(
+          { length: 50 },
+          (_, i) => `distinct history line ${String(i + 1).padStart(2, "0")} with enough text to rewrap when the sidebar opens`,
+        ).join("\n"),
+      }],
+      metadata: null,
+    }] as any;
+
+    const initialRender = buildMessageLines(state, state.cols);
+    state.historyLines = initialRender.lines;
+    state.historyLineAnchors = initialRender.lineAnchors;
+    state.layout.totalLines = initialRender.lines.length;
+    state.scrollOffset = 12;
+    const originalTop = topVisibleLine(state);
+    const logicalLine = originalTop.match(/distinct history line \d+/)?.[0];
+    expect(logicalLine).toBeDefined();
+
+    expect(handleFocusedKey({ type: "ctrl-s" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.open).toBe(true);
+    // The narrower viewport rewraps the row, but its first visible content is
+    // still the same logical source line.
+    expect(topVisibleLine(state)).toContain(logicalLine!);
+
+    expect(handleFocusedKey({ type: "ctrl-s" }, state)).toEqual({ type: "handled" });
+    expect(state.sidebar.open).toBe(false);
+    expect(topVisibleLine(state)).toBe(originalTop);
+  });
+
+  test("a bottom-pinned viewport stays pinned to the bottom", () => {
+    const state = createInitialState();
+    state.cols = 80;
+    state.rows = 24;
+    state.layout.messageAreaHeight = 8;
+    state.layout.totalLines = 20;
+    state.scrollOffset = 0;
+
+    handleFocusedKey({ type: "ctrl-s" }, state);
+
+    expect(state.sidebar.open).toBe(true);
+    expect(state.scrollOffset).toBe(0);
+  });
+});
 
 describe("tool output toggle scroll preservation", () => {
   test("Ctrl+O preserves the top visible line when expanding hidden tool output", () => {
