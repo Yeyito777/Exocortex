@@ -770,6 +770,12 @@ describe("handler subagent folder placement", () => {
     const subagentsFolder = findTopLevelFolderByName("subagents");
     expect(subagentsFolder).toBeTruthy();
     expect(convId ? getSummary(convId)?.folderId : null).toBe(subagentsFolder?.id);
+    expect(created).toMatchObject({ effort: "medium" });
+    expect(convId ? get(convId)?.subagentPolicy : null).toEqual({
+      parentConversationId: null,
+      allowEdits: false,
+      parentSystemInstructions: "",
+    });
     expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation_moved" }));
   });
 

@@ -134,6 +134,15 @@ export const MAX_EXO_SUBAGENT_DEPTH = 8;
 export const MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT = 8;
 export const MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL = 32;
 
+export interface SubagentPolicy {
+  /** Conversation that created this worker. Null is reserved for external/debug clients. */
+  parentConversationId: string | null;
+  /** Shell and mutation capabilities are opt-in for scoped workers. */
+  allowEdits: boolean;
+  /** Snapshot of the parent's effective folder/conversation instructions at creation. */
+  parentSystemInstructions: string;
+}
+
 export interface Conversation {
   id: string;
   provider: ProviderId;
@@ -160,6 +169,8 @@ export interface Conversation {
    * conversation. Null/omitted means a root/user-started turn.
    */
   subagentMaxDepth?: number | null;
+  /** Restricted worker capabilities and inherited parent constraints. */
+  subagentPolicy?: SubagentPolicy | null;
 }
 
 /**

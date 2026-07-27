@@ -13,6 +13,7 @@ import {
   MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL,
   MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT,
   MAX_EXO_SUBAGENT_DEPTH,
+  EFFORT_LEVELS,
   SUBAGENTS_FOLDER_NAME,
   type Block,
   type EffortLevel,
@@ -55,6 +56,7 @@ import {
   type ActiveConversationTask,
 } from "./conversation-activity";
 import { buildSystemPrompt, reloadUserAddendum, setUserAddendum } from "./system";
+import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { getLastUsage } from "./usage";
 import {
   listExternalNotificationSources,
@@ -149,6 +151,21 @@ function stringInput(input: Record<string, unknown>, key: string, required = fal
 
 function booleanInput(input: Record<string, unknown>, key: string, fallback: boolean): boolean {
   return typeof input[key] === "boolean" ? input[key] : fallback;
+}
+
+function optionalBooleanInput(input: Record<string, unknown>, key: string): boolean | undefined {
+  const value = input[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") throw new Error(`${key} must be a boolean`);
+  return value;
+}
+
+function effortInput(value: unknown): EffortLevel | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "string" && (EFFORT_LEVELS as readonly string[]).includes(value)) {
+    return value as EffortLevel;
+  }
+  throw new Error(`effort must be one of: ${EFFORT_LEVELS.join(", ")}`);
 }
 
 function numberInput(input: Record<string, unknown>, key: string, fallback: number): number {
@@ -312,7 +329,7 @@ interface ModelSelection {
   fastMode: boolean;
 }
 
-function resolveModelSelection(input: Record<string, unknown>): ModelSelection {
+function resolveModelSelection(input: Record<string, unknown>, fallbackEffort?: EffortLevel): ModelSelection {
   const requested = parseRequestedModel(input.provider, input.model);
   const defaults = effectiveConversationDefaults();
   const provider = requested.provider ?? defaults.provider;
@@ -322,8 +339,8 @@ function resolveModelSelection(input: Record<string, unknown>): ModelSelection {
   if (!isKnownModel(provider, model) && !allowsCustomModels(provider)) {
     throw new Error(unknownModelMessage(provider, model));
   }
-  const defaultEffort = provider === defaults.provider && model === defaults.model ? defaults.effort : undefined;
-  const effort = normalizeEffort(provider, model, defaultEffort);
+  const configuredEffort = provider === defaults.provider && model === defaults.model ? defaults.effort : undefined;
+  const effort = normalizeEffort(provider, model, effortInput(input.effort) ?? fallbackEffort ?? configuredEffort);
   const fastMode = provider === defaults.provider
     && model === defaults.model
     && defaults.fastMode
@@ -636,18 +653,36 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     if (blocked) throw new Error(blocked);
   };
 
+  const scopedCallerPolicy = (parentConvId: string | undefined) => (
+    parentConvId ? convStore.get(parentConvId)?.subagentPolicy ?? null : null
+  );
+
+  const ensureScopedDelegationTarget = (
+    parentConvId: string | undefined,
+    targetConvId: string,
+  ): void => {
+    const callerPolicy = scopedCallerPolicy(parentConvId);
+    if (!callerPolicy || targetConvId === parentConvId) return;
+    const targetPolicy = convStore.get(targetConvId)?.subagentPolicy;
+    if (!targetPolicy || targetPolicy.parentConversationId !== parentConvId) {
+      throw new Error("Scoped subagents can only send or queue work to themselves or their own direct subagents.");
+    }
+  };
+
   const setRequestedModel = (convId: string, input: Record<string, unknown>): void => {
-    if (typeof input.model !== "string" || !input.model.trim()) return;
+    const requestedEffort = effortInput(input.effort);
+    const hasRequestedModel = typeof input.model === "string" && Boolean(input.model.trim());
+    if (!hasRequestedModel && !requestedEffort) return;
     const conv = convStore.get(convId);
     if (!conv) throw new Error(`Conversation ${convId} not found`);
     if (convStore.isStreaming(convId)) throw new Error("Cannot switch provider/model while the conversation is streaming.");
-    const requested = parseRequestedModel(input.provider, input.model);
+    const requested = hasRequestedModel ? parseRequestedModel(input.provider, input.model) : {};
     const provider = requested.provider ?? conv.provider;
-    const model = requested.model!;
+    const model = requested.model ?? conv.model;
     if (!getProvider(provider)) throw new Error(`Unknown provider: ${provider}`);
     if (!isKnownModel(provider, model) && !allowsCustomModels(provider)) throw new Error(unknownModelMessage(provider, model));
     ensureCanStart(provider);
-    const effort = normalizeEffort(provider, model, conv.effort);
+    const effort = normalizeEffort(provider, model, requestedEffort ?? conv.effort);
     const fastMode = supportsFastMode(provider) ? conv.fastMode : false;
     if (!convStore.setModel(convId, provider, model, effort, fastMode)) throw new Error(`Conversation ${convId} not found`);
     broadcastConversationUpdated(server, convId);
@@ -662,18 +697,31 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const text = stringInput(input, "text", true)!;
     const maxDepth = requestedMaxDepth(input, callerMaxDepth);
     let convId = stringInput(input, "conversation_id");
+    const requestedAllowEdits = optionalBooleanInput(input, "allow_edits");
+    if (convId && requestedAllowEdits !== undefined) {
+      throw new Error("allow_edits can only be specified when creating a new subagent");
+    }
+    const callerPolicy = scopedCallerPolicy(parentConvId);
+    if (requestedAllowEdits === true && callerPolicy && !callerPolicy.allowEdits) {
+      throw new Error("A scoped subagent without edit access cannot grant edit access to a child.");
+    }
     const requestedTitle = convId ? undefined : subagentTitleInput(input);
     let taskTitle: string;
     let created = false;
 
     if (!convId) {
       ensureSubagentCapacity(parentConvId);
-      const selection = resolveModelSelection(input);
+      const selection = resolveModelSelection(input, "medium");
       ensureCanStart(selection.provider);
       const folder = convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME);
       if (!folder) throw new Error(`Failed to create ${SUBAGENTS_FOLDER_NAME} folder`);
       convId = convStore.generateId();
       convStore.create(convId, selection.provider, selection.model, requestedTitle, selection.effort, selection.fastMode, folder.id);
+      convStore.setSubagentPolicy(convId, {
+        parentConversationId: parentConvId ?? null,
+        allowEdits: requestedAllowEdits === true,
+        parentSystemInstructions: parentConvId ? convStore.getEffectiveSystemInstructions(parentConvId) ?? "" : "",
+      });
       taskTitle = requestedTitle!;
       created = true;
       broadcastConversationUpdated(server, convId);
@@ -682,6 +730,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     } else {
       const target = convStore.get(convId);
       if (!target) throw new Error(`Conversation ${convId} not found`);
+      ensureScopedDelegationTarget(parentConvId, convId);
       taskTitle = target.title || "Subagent task";
       // A busy target cannot safely change models or start a nested turn. Preserve
       // the send as durable intent and let the queue scheduler run it next.
@@ -737,7 +786,18 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           else deps.notifyParent?.(parentConvId, convId!, text, outcome);
         }
       });
-      return ok(pretty({ conversation_id: convId, title: taskTitle, status: "running", detached: true, created, max_depth: maxDepth, notify_parent: notify ? parentConvId : null }));
+      const child = convStore.get(convId);
+      return ok(pretty({
+        conversation_id: convId,
+        title: taskTitle,
+        status: "running",
+        detached: true,
+        created,
+        max_depth: maxDepth,
+        effort: child?.effort ?? null,
+        allow_edits: child?.subagentPolicy?.allowEdits === true,
+        notify_parent: notify ? parentConvId : null,
+      }));
     }
 
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -882,6 +942,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const summary = convStore.getSummary(convId);
     const snapshot = convStore.getRenderSnapshot(convId, false);
     if (!summary || !snapshot) throw new Error(`Conversation ${convId} not found`);
+    const policy = convStore.get(convId)?.subagentPolicy;
     const result = ok(pretty({
       conversation_id: convId,
       title: summary.title,
@@ -899,6 +960,10 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       updated_at: summary.updatedAt,
       folder_id: summary.folderId ?? null,
       subagent_max_depth: convStore.get(convId)?.subagentMaxDepth ?? null,
+      subagent_policy: policy ? {
+        parent_conversation_id: policy.parentConversationId,
+        allow_edits: policy.allowEdits,
+      } : null,
       queued_messages: convStore.getQueuedMessages(convId).map(message => ({
         text: message.text,
         timing: message.timing,
@@ -950,11 +1015,16 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     return ok(`Aborted ${convId}.`);
   };
 
-  const executeQueue = (input: Record<string, unknown>, callerMaxDepth: number | null | undefined): ToolResult => {
+  const executeQueue = (
+    input: Record<string, unknown>,
+    parentConvId: string | undefined,
+    callerMaxDepth: number | null | undefined,
+  ): ToolResult => {
     const convId = stringInput(input, "conversation_id", true)!;
     const text = stringInput(input, "text", true)!;
     const maxDepth = requestedMaxDepth(input, callerMaxDepth);
     if (!convStore.getSummary(convId)) throw new Error(`Conversation ${convId} not found`);
+    ensureScopedDelegationTarget(parentConvId, convId);
     const timing: QueueTiming = input.timing === "message-end" ? "message-end" : "next-turn";
     convStore.pushQueuedMessage(convId, text, timing, undefined, maxDepth);
     return ok(`Queued (${timing}, max_depth=${maxDepth}) for ${convId}`);
@@ -1158,10 +1228,12 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const conversation = convStore.get(convId);
     if (!conversation) throw new Error(`Conversation ${convId} not found`);
     const instructions = convStore.getEffectiveSystemInstructions(convId);
+    const scopedPromptOptions = scopedSubagentPromptOptions(conversation, conversation.subagentMaxDepth ?? 0);
     return ok(buildSystemPrompt({
       conversationInstructions: instructions ?? undefined,
       conversationId: convId,
       subagentMaxDepth: conversation.subagentMaxDepth ?? null,
+      ...(scopedPromptOptions ?? {}),
     }));
   };
 
@@ -1726,7 +1798,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           case "history": return executeHistory(input);
           case "delete": return await executeDelete(input, parentConversationId, signal);
           case "abort": return executeAbort(input);
-          case "queue": return executeQueue(input, callerMaxDepth);
+          case "queue": return executeQueue(input, parentConversationId, callerMaxDepth);
           case "rename": return executeRename(input, parentConversationId);
           case "status": return executeStatus();
           case "commands": return await executeCommands(input, parentConversationId, signal);

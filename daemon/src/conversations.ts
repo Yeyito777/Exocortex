@@ -6,7 +6,7 @@
  * In-flight stream tracking lives in streaming.ts.
  */
 
-import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus } from "./messages";
+import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy } from "./messages";
 import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, activeContextCompactionHistoryCount, createConversation, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, TrimMode, ToolOutputInfo } from "./protocol";
@@ -395,6 +395,19 @@ export function createWithInitialUserMessage(
   markDirty(id);
   flush(id);
   return conv;
+}
+
+export function setSubagentPolicy(id: string, policy: SubagentPolicy): boolean {
+  const conv = get(id);
+  if (!conv) return false;
+  conv.subagentPolicy = {
+    parentConversationId: policy.parentConversationId,
+    allowEdits: policy.allowEdits === true,
+    parentSystemInstructions: policy.parentSystemInstructions.trim(),
+  };
+  markDirty(id);
+  flush(id);
+  return true;
 }
 
 /** Bump an unpinned conversation to the top of the unpinned section. No-op for pinned conversations. */
@@ -962,6 +975,10 @@ export function getEffectiveSystemInstructions(id: string): string | null {
   const conv = get(id);
   if (!conv) return null;
   const parts: string[] = [];
+  const inheritedText = typeof conv.subagentPolicy?.parentSystemInstructions === "string"
+    ? conv.subagentPolicy.parentSystemInstructions.trim()
+    : "";
+  if (inheritedText) parts.push(`Inherited parent instructions:\n${inheritedText}`);
   const folderText = formatFolderInstructionsForDisplay(conv.folderId ?? null);
   if (folderText) parts.push(folderText);
   const conversationText = getSystemInstructions(id)?.trim();

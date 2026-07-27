@@ -19,6 +19,8 @@ import {
   listSidebarState,
   remove,
   setActiveJob,
+  setSubagentPolicy,
+  setSystemInstructions,
 } from "../conversations";
 import { resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive, setSubagentActive } from "../conversation-activity";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "../messages";
@@ -93,6 +95,8 @@ describe("native exo tool contract", () => {
     expect(schema).toContain('"title"');
     expect(schema).toContain("Short title of about three words");
     expect(schema).toContain("max_depth");
+    expect(schema).toContain('"effort"');
+    expect(schema).toContain('"allow_edits"');
     expect(schema).toContain("Maximum number of additional subagent generations permitted");
     expect(schema).toContain("not a target. Use 0 unless the target clearly needs to delegate");
     expect(exo.description).toContain("Transcription and cross-instance targeting are intentionally excluded");
@@ -102,9 +106,10 @@ describe("native exo tool contract", () => {
       "Do not spawn subagents for ordinary repository inspection, routine planning, single-component implementation, or generic code review. Do not delegate work you are simultaneously doing yourself.",
       "Before spawning, identify a concrete, non-overlapping deliverable and how its result will be used. Prefer no more than two active children; exceed that only for clearly partitioned work with substantial expected wall-time savings or when the user explicitly requests broader delegation.",
       "Start reviews only after the implementation is stable. Prefer one targeted review; do not launch repeated final reviews without substantial new changes or unresolved high-risk findings. Reuse an existing child instead of spawning a replacement while it is still running.",
-      "When an OpenAI subagent is warranted, omit `model` for the newest default (currently gpt-5.6-sol), use gpt-5.6-terra or gpt-5.6-luna for lighter work, and use older generations only when requested or required.",
+      "Subagents default to medium effort. Specify `effort` only when the task clearly benefits from another supported level. When an OpenAI subagent is warranted, omit `model` for the newest default (currently gpt-5.6-sol), use gpt-5.6-terra or gpt-5.6-luna for lighter work, and use older generations only when requested or required.",
       "Starting a subagent requires a short title of about three words; it becomes the child conversation title and identifies the task in the parent UI.",
       "Set max_depth=0 unless the child has a clear need to delegate a further independent workstream.",
+      "Subagents are read-only by default. Set allow_edits=true only when the child's deliverable requires shell access or file changes.",
       "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
       "Subagents start in the daemon's working directory, so include the target absolute directory and all necessary task context.",
     ].join("\n"));
@@ -267,6 +272,7 @@ describe("native exo daemon runtime", () => {
   test("spawns detached subagents directly and notifies their parent", async () => {
     const parentId = id("parent");
     create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
+    setSystemInstructions(parentId, "Never use live service credentials.");
     let resolveTurn!: (outcome: ReturnType<typeof successfulOutcome>) => void;
     const runTurn = mock(() => new Promise<ReturnType<typeof successfulOutcome>>((resolve) => {
       resolveTurn = resolve;
@@ -280,15 +286,41 @@ describe("native exo daemon runtime", () => {
       hasCredentials: () => true,
     });
 
-    const result = await runtime.execute({ action: "send", text: "Inspect /tmp/project", title: "Inspect project files", max_depth: 0 }, parentId);
+    const result = await runtime.execute({
+      action: "send",
+      text: "Inspect /tmp/project",
+      title: "Inspect project files",
+      model: "gpt-5.4",
+      max_depth: 0,
+    }, parentId);
     expect(result.isError).toBe(false);
     const payload = JSON.parse(result.output);
     const childId = payload.conversation_id as string;
     conversationIds.push(childId);
 
-    expect(payload).toMatchObject({ title: "Inspect project files", status: "running", detached: true, created: true, max_depth: 0, notify_parent: parentId });
+    expect(payload).toMatchObject({
+      title: "Inspect project files",
+      status: "running",
+      detached: true,
+      created: true,
+      max_depth: 0,
+      effort: "medium",
+      allow_edits: false,
+      notify_parent: parentId,
+    });
     expect(getSummary(childId)?.folderId).toBe(findTopLevelFolderByName("subagents")?.id);
     expect(getSummary(childId)?.title).toBe("Inspect project files");
+    const child = get(childId);
+    expect(child).toMatchObject({
+      effort: "medium",
+      subagentPolicy: {
+        parentConversationId: parentId,
+        allowEdits: false,
+      },
+    });
+    expect(child?.subagentPolicy?.parentSystemInstructions).toContain("Never use live service credentials.");
+    expect(getEffectiveSystemInstructions(childId)).toContain("Inherited parent instructions:");
+    expect(getEffectiveSystemInstructions(childId)).toContain("Never use live service credentials.");
     expect(getSummary(parentId)?.subagentCount).toBe(1);
     expect(getSummary(parentId)?.tasks).toEqual([
       expect.objectContaining({ id: childId, kind: "subagent", title: "Inspect project files", startedAt: expect.any(Number) }),
@@ -299,10 +331,116 @@ describe("native exo daemon runtime", () => {
       summary: expect.objectContaining({ id: parentId, subagentCount: 1 }),
     }));
 
+    const childPrompt = await runtime.execute({
+      action: "commands",
+      command: "system_prompt",
+      args: { conversation_id: childId },
+    }, parentId);
+    expect(childPrompt.output).toStartWith("You are a scoped subagent working for a parent agent.");
+    expect(childPrompt.output).toContain("Do only the assigned task.");
+    expect(childPrompt.output).toContain("Never use live service credentials.");
+    expect(childPrompt.output).not.toContain("# External tools");
+    expect(childPrompt.output).not.toContain("Use the native `exo` tool");
+
     resolveTurn(successfulOutcome("child result"));
     await Promise.resolve();
     expect(getSummary(parentId)?.subagentCount).toBe(0);
     expect(notifyParent).toHaveBeenCalledWith(parentId, childId, "Inspect /tmp/project", expect.objectContaining({ ok: true }));
+  });
+
+  test("lets the parent explicitly grant edit tools and override subagent effort", async () => {
+    const parentId = id("editable-parent");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn: async () => successfulOutcome("edited"),
+      hasCredentials: () => true,
+    });
+
+    const result = await runtime.execute({
+      action: "send",
+      text: "Implement the focused change",
+      title: "Implement focused change",
+      model: "gpt-5.4",
+      effort: "xhigh",
+      allow_edits: true,
+      mode: "wait",
+      max_depth: 0,
+    }, parentId);
+    const childId = result.output.match(/exo:([^\s]+)/)?.[1];
+    expect(childId).toBeTruthy();
+    if (!childId) return;
+    conversationIds.push(childId);
+    expect(get(childId)).toMatchObject({
+      effort: "xhigh",
+      subagentPolicy: { allowEdits: true, parentConversationId: parentId },
+    });
+
+    const prompt = await runtime.execute({
+      action: "commands",
+      command: "system_prompt",
+      args: { conversation_id: childId },
+    }, parentId);
+    expect(prompt.output).toContain("Prefer the edit tool over sed/awk");
+
+    const immutable = await runtime.execute({
+      action: "send",
+      conversation_id: childId,
+      text: "change permissions",
+      allow_edits: false,
+      max_depth: 0,
+      mode: "wait",
+    }, parentId);
+    expect(immutable).toMatchObject({ isError: true });
+    expect(immutable.output).toContain("allow_edits can only be specified when creating a new subagent");
+  });
+
+  test("prevents scoped children from escalating edit access or targeting unrelated conversations", async () => {
+    const rootId = id("scoped-root");
+    const childId = id("scoped-caller");
+    const unrelatedId = id("unrelated-target");
+    create(rootId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "root");
+    create(childId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "child");
+    create(unrelatedId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "unrelated");
+    setSubagentPolicy(childId, {
+      parentConversationId: rootId,
+      allowEdits: false,
+      parentSystemInstructions: "Inherited constraint",
+    });
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn: async () => successfulOutcome("done"),
+      hasCredentials: () => true,
+    });
+
+    const escalation = await runtime.execute({
+      action: "send",
+      text: "Make edits",
+      title: "Escalated child",
+      allow_edits: true,
+      max_depth: 0,
+    }, childId, undefined, 1);
+    expect(escalation).toMatchObject({ isError: true });
+    expect(escalation.output).toContain("cannot grant edit access");
+
+    const unrelatedSend = await runtime.execute({
+      action: "send",
+      conversation_id: unrelatedId,
+      text: "Run elsewhere",
+      max_depth: 0,
+      mode: "wait",
+    }, childId, undefined, 1);
+    expect(unrelatedSend).toMatchObject({ isError: true });
+    expect(unrelatedSend.output).toContain("their own direct subagents");
+
+    const unrelatedQueue = await runtime.execute({
+      action: "queue",
+      conversation_id: unrelatedId,
+      text: "Queue elsewhere",
+      max_depth: 0,
+    }, childId, undefined, 1);
+    expect(unrelatedQueue).toMatchObject({ isError: true });
+    expect(unrelatedQueue.output).toContain("their own direct subagents");
   });
 
   test("registers durable parent notification state before starting a detached child", async () => {

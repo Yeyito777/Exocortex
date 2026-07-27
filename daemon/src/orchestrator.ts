@@ -19,6 +19,7 @@ import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
+import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { goalContinuationUserMessage } from "./goals";
 import { createProviderTurnSession, streamMessage } from "./api";
@@ -506,12 +507,15 @@ async function orchestrateAssistantTurn(
   const codexTurnId = `${convId}:${startedAt}`;
   // Expose a child turn's remaining delegation budget to prevent predictable
   // rejected send/queue attempts when its max depth is zero.
+  const scopedPromptOptions = scopedSubagentPromptOptions(liveConv, subagentMaxDepth);
+  const allowedToolNames = scopedPromptOptions?.toolNames;
   const systemPrompt = buildSystemPrompt({
     conversationInstructions: systemInstructionsText || undefined,
     conversationId: convId,
     subagentMaxDepth,
+    ...(scopedPromptOptions ?? {}),
   });
-  const toolDefs = getToolDefs();
+  const toolDefs = getToolDefs(allowedToolNames);
   const contextLimit = getMaxContext(conv.provider, conv.model);
   const startingCompactionCount = conv.activeContext?.compactionCount ?? 0;
   let currentWindowNumber = conv.activeContext?.windowNumber ?? 0;
@@ -1008,7 +1012,7 @@ async function orchestrateAssistantTurn(
   // Bounded tools retain the stream watchdog as a second line of defense.
   // Pause it only for tools such as bash that intentionally own a separate
   // long-running/background lifecycle.
-  const rawExecutor = buildExecutor(toolContext);
+  const rawExecutor = buildExecutor(toolContext, allowedToolNames);
   const executor: typeof rawExecutor = async (calls, signal?) => {
     const pauseWatchdog = toolCallsRequireWatchdogPause(calls);
     if (pauseWatchdog) convStore.pauseActivity(convId);
