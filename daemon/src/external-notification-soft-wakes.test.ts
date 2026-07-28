@@ -57,7 +57,7 @@ afterEach(() => {
 });
 
 describe("external notification command soft wakes", () => {
-  test("passes structured events on stdin and hard-wakes on a script-defined non-zero exit", async () => {
+  test("passes structured events on stdin and renders an exit-10 selection once", async () => {
     const convId = makeConversation("soft-wake-match");
     const source = registerExternalNotificationSource({
       toolName: "whatsapp",
@@ -74,7 +74,7 @@ describe("external notification command soft wakes", () => {
           "payload=$(cat)",
           "[[ \"$payload\" == *'/ai hello'* ]] || exit 0",
           "printf 'selected:%s:%s:%s' \"$EXOCORTEX_NOTIFICATION_TOOL\" \"$EXOCORTEX_NOTIFICATION_EVENT_ID\" \"$EXOCORTEX_NOTIFICATION_OCCURRENCE_ID\"",
-          "exit 23",
+          "exit 10",
         ].join("\n"),
         timeoutMs: 2_000,
         hardWake: {
@@ -87,8 +87,8 @@ describe("external notification command soft wakes", () => {
     const event = {
       eventId: "chat-1:message-1",
       occurredAt: 1_784_335_000_000,
-      text: "Sender: Alice\nMessage:    /ai hello",
-      data: { senderName: "Alice", senderJid: "123@s.whatsapp.net", body: "   /ai hello" },
+      text: "Alice [chat:123@s.whatsapp.net]\n\n→ Alice <123@s.whatsapp.net>:\n/ai hello\n[msg:message-1]",
+      data: { schemaVersion: 1, kind: "incoming_message", senderName: "Alice", senderJid: "123@s.whatsapp.net", content: "   /ai hello" },
     } as const;
 
     const queued = enqueueExternalNotificationSoftWake(subscription, event);
@@ -102,12 +102,13 @@ describe("external notification command soft wakes", () => {
     await waitUntil(() => getQueuedMessages(convId).length === 1);
     const wake = getQueuedMessages(convId)[0];
     expect(wake.id).toBe(`${queued.occurrenceId}:hard-wake`);
-    expect(wake.text).toContain("[external notification soft wake: whatsapp/incoming-messages]");
-    expect(wake.text).toContain("Handle the matching WhatsApp /ai query.");
+    expect(wake.text).toContain("[notification] WhatsApp · message");
+    expect(wake.text).toContain("Action: Handle the matching WhatsApp /ai query.");
     expect(wake.text).toContain("selected:whatsapp:chat-1:message-1:external-soft:");
-    expect(wake.text).toContain("Sender: Alice");
-    expect(wake.text).toContain("Message:    /ai hello");
-    expect(wake.text).toContain("untrusted external content");
+    expect(wake.text).toContain("→ Alice <123@s.whatsapp.net>:");
+    expect(wake.text.match(/→ Alice <123@s\.whatsapp\.net>:/g)).toHaveLength(1);
+    expect(wake.text).not.toContain("exit code 10");
+    expect(wake.text).not.toContain("command output (untrusted, JSON string)");
     expect(listPendingExternalNotificationSoftWakes()).toEqual([]);
     expect(existsSync(externalNotificationSoftWakesPath())).toBe(false);
   });

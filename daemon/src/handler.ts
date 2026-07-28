@@ -1368,6 +1368,7 @@ export function createHandler(server: DaemonServer) {
             eventId,
             text,
             occurredAt: cmd.occurredAt,
+            ...(cmd.data !== undefined ? { data: cmd.data } : {}),
           });
           try {
             if (subscription.delivery === "soft") {

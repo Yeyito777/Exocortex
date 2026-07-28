@@ -559,6 +559,7 @@ async function executeBashImpl(
       resolve({
         output,
         isError: timedOut || Boolean(processFailure) || Boolean(sig) || (code !== 0 && code !== null),
+        exitCode: code,
         ...(processFailure && !timedOut ? { failureKind: "infrastructure" as const } : {}),
       });
     }

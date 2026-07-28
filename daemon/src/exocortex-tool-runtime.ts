@@ -212,7 +212,7 @@ function externalNotificationSoftWakeInput(
         : (existing?.hardWake?.message ?? "Handle the external notification selected by this subscription command."),
       includeOutput: typeof value.include_output === "boolean"
         ? value.include_output
-        : existing?.hardWake?.includeOutput !== false,
+        : (existing?.hardWake?.includeOutput ?? false),
     };
   }
 
@@ -1724,11 +1724,11 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         timeout_seconds: { type: "number", exclusiveMinimum: 0, maximum: 86400, description: "For delivery=soft: command timeout, default 300 seconds." },
         hard_wake: {
           type: "object",
-          description: "For delivery=soft: conditionally wake the model after Bash runs. With when=failure, a script can request escalation by exiting non-zero.",
+          description: "For delivery=soft: conditionally wake the model after Bash runs. Exit 0 ignores an event, exit 10 selects it, and other non-zero exits are failures.",
           properties: {
             when: { type: "string", enum: ["failure", "always"], description: "Defaults to failure." },
             message: { type: "string", description: "Trusted subscription instruction delivered on escalation." },
-            include_output: { type: "boolean", description: "Include capped command output as untrusted content; defaults true." },
+            include_output: { type: "boolean", description: "Include capped diagnostic command output; defaults false." },
           },
           additionalProperties: false,
         },
@@ -1738,7 +1738,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       examples: [
         { operation: "sources", tool: "discord" },
         { operation: "subscribe", tool: "discord", source_id: "account:paramount:notifications", delivery: "wake" },
-        { operation: "subscribe", tool: "whatsapp", source_id: "incoming-messages", delivery: "soft", command: "payload=$(cat); body=$(jq -r '.event.data.body // empty' <<<\"$payload\"); [[ \"$body\" =~ ^[[:space:]]*/ai[[:space:]]+ ]] || exit 0; printf '%s\\n' \"$payload\"; exit 10", hard_wake: { when: "failure", message: "Handle the matching WhatsApp /ai query." } },
+        { operation: "subscribe", tool: "whatsapp", source_id: "incoming-messages", delivery: "soft", command: "payload=$(cat); body=$(jq -r '.event.data.content // empty' <<<\"$payload\"); [[ \"$body\" =~ ^[[:space:]]*/ai[[:space:]]+ ]] || exit 0; exit 10", hard_wake: { when: "failure", message: "Handle the matching WhatsApp /ai query.", include_output: false } },
         { operation: "list", scope: "current" },
         { operation: "unsubscribe", subscription_id: "<subscription-id>" },
       ],

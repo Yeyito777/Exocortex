@@ -347,8 +347,10 @@ describe("handler external notification routing", () => {
 
     const queued = getQueuedMessages(id);
     expect(queued).toHaveLength(1);
-    expect(queued[0].text).toContain("untrusted external content");
-    expect(queued[0].text).toContain("DM from Fede: hello");
+    expect(queued[0].text).toBe([
+      "[notification] Discord · account:paramount:notifications",
+      "DM from Fede: hello",
+    ].join("\n"));
     expect(sent.find(event => event.reqId === "publish-1")).toEqual(expect.objectContaining({
       type: "external_notification_publish_result",
       deliveries: [expect.objectContaining({ status: "queued", convId: id })],
