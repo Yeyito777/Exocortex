@@ -180,8 +180,16 @@ event ID environment variables so side-effecting scripts can deduplicate. The
 stdin JSON has this shape:
 
 ```json
-{"type":"external_notification","subscription":{"id":"…","conversationId":"…","toolName":"discord","sourceId":"…","sourceLabel":"…"},"event":{"id":"discord-message-123","occurredAt":1770000000000,"text":"DM from Fede: …","data":{"senderId":"123","body":"…"}}}
+{"type":"external_notification","subscription":{"id":"…","conversationId":"…","toolName":"discord","sourceId":"…","sourceLabel":"…"},"event":{"id":"discord-message-123","occurredAt":1770000000000,"text":"DM from Fede: …","data":{"schemaVersion":1,"accountAlias":"paramount","kind":"dm","channel":{"id":"456","type":"dm","name":"Fede","participants":["fede"],"participantIds":["123"]},"guild":null,"messageId":"discord-message-123","author":{"id":"123","username":"fede","displayName":"Fede"},"content":"…","mentionsAssistant":false,"replyTo":null}}}
 ```
+
+`event.text` is a human-readable rendering for the model and UI. It is not a
+machine-readable interface: publishers may wrap lines, truncate previews, or
+change punctuation without versioning. `event.data` is the stable structured
+interface for routing and filtering. Soft-wake commands should inspect
+`event.data` and must not parse fields such as sender IDs, event kinds, message
+bodies, mentions, or reply metadata back out of `event.text` when those fields
+are available structurally.
 
 Commands are selected by the subscription owner, never by the publisher.
 Implementations must enforce timeouts, output limits, bounded concurrency, and
@@ -216,7 +224,7 @@ Publish one logical platform event or intentionally formatted batch with a
 stable event ID:
 
 ```json
-{"type":"publish_external_notification","reqId":"7","toolName":"discord","sourceId":"account:paramount:notifications","eventId":"discord-message-123","occurredAt":1770000000000,"text":"DM from Fede: …","data":{"senderId":"123","body":"…"}}
+{"type":"publish_external_notification","reqId":"7","toolName":"discord","sourceId":"account:paramount:notifications","eventId":"discord-message-123","occurredAt":1770000000000,"text":"DM from Fede: …","data":{"schemaVersion":1,"accountAlias":"paramount","kind":"dm","channel":{"id":"456","type":"dm","name":"Fede","participants":["fede"],"participantIds":["123"]},"guild":null,"messageId":"discord-message-123","author":{"id":"123","username":"fede","displayName":"Fede"},"content":"…","mentionsAssistant":false,"replyTo":null}}
 ```
 
 The daemon finds enabled subscriptions, adds an explicit untrusted-external-
@@ -229,8 +237,17 @@ retry the same event ID safely. Treat `queued`, `inbox`, `started`, and
 Requirements:
 
 - Never include a target conversation ID in a publish request.
-- `data`, when present, must be JSON-compatible untrusted event data. Keep it
-  compact (at most 100,000 serialized characters) and do not include secrets.
+- Sources with independently routable or filterable event attributes must
+  publish them in `data`; omit `data` only when an event genuinely has no
+  structured attributes. Include a positive integer `schemaVersion`, a stable
+  event-kind discriminator, platform IDs, and the untruncated content and
+  mention/reply metadata needed by subscribers. Treat the schema as an API:
+  make changes backward-compatible or increment `schemaVersion`.
+- `data` must be JSON-compatible untrusted event data. Keep it compact (at most
+  100,000 serialized characters) and do not include secrets. Human-oriented
+  history/context may remain in `text`; do not duplicate an unbounded transcript
+  into `data`.
+- Subscribers must route on `data`, not the presentation format of `text`.
 - Never include secrets in source metadata, event IDs, text, or logs.
 - Use platform-stable event IDs so reconnect/replay does not duplicate turns.
 - Exclude outgoing/self-authored events and history hydration unless the source
