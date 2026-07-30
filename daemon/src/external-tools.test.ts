@@ -251,9 +251,9 @@ describe("getExternalToolHints", () => {
     ]);
 
     expect(hints).toBe([
-      "#gmail",
+      "# gmail",
       "Gmail hint",
-      "#image",
+      "# image",
       "Image hint",
     ].join("\n"));
   });
