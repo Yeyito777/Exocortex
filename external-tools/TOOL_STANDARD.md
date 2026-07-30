@@ -21,11 +21,11 @@ Each tool is its own git repository, independently developed. Tools are
 installed by cloning into `external-tools/` — the daemon discovers them
 automatically.
 
-## Self-describing local commands
+## Sidecar commands
 
-A **self-describing local command** is an ordinary executable that opts into
-custom Exocortex TUI presentation through an adjacent `exo-manifest.json`. It
-is useful for project scripts and one-off tools that should remain outside the
+A **sidecar command** is an ordinary executable that opts into custom
+Exocortex TUI presentation through an adjacent `exo-manifest.json`. It is
+useful for project scripts and one-off tools that should remain outside the
 installed external-tool registry.
 
 Use this layer when the model already knows about the command from the user's
