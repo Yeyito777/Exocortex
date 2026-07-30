@@ -53,7 +53,7 @@ These human-facing payloads have the same general shell-transport concern but
 did not declare `literalArgs`:
 
 - Twitter: `post`, `reply`, and `dm --send` now require exact stdin payloads.
-- WhatsApp: `send` message text and file captions remain to migrate.
+- WhatsApp: `send` message text and file captions now use exact stdin payloads.
 - Gmail: `send`, `reply`, and `forward` already fall back to stdin when neither
   `--body` nor `--body-file` is supplied, but inline `--body` remains to review.
 
@@ -129,7 +129,7 @@ the CLI lacks an obvious safe payload path.
   stdin.
 - [x] Migrate Twitter `post`, `reply`, and `dm --send` primary payloads to
   required stdin.
-- [ ] Migrate WhatsApp message text and file captions to required stdin.
+- [x] Migrate WhatsApp message text and file captions to required stdin.
 - [x] Migrate image prompts and vimbrowser JavaScript/raw payloads to required
   stdin.
 - [x] Migrate external Exo `send`, `queue`, and the primary `llm` prompt to
