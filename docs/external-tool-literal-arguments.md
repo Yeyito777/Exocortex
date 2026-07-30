@@ -47,15 +47,15 @@ not count as positional payloads.
 No other installed external-tool manifest declared `shell.literalArgs` in the
 baseline inventory.
 
-## Other argv-based payloads to review
+## Adjacent payload migrations
 
 These human-facing payloads have the same general shell-transport concern but
-do not currently declare `literalArgs`:
+did not declare `literalArgs`:
 
-- Twitter: `post`, `reply`, and `dm --send`.
-- WhatsApp: `send` message text and file captions.
-- Gmail: `send`, `reply`, and `forward` via `--body`. Gmail already falls back
-  to stdin when neither `--body` nor `--body-file` is supplied.
+- Twitter: `post`, `reply`, and `dm --send` now require exact stdin payloads.
+- WhatsApp: `send` message text and file captions remain to migrate.
+- Gmail: `send`, `reply`, and `forward` already fall back to stdin when neither
+  `--body` nor `--body-file` is supplied, but inline `--body` remains to review.
 
 The original direct manifest consumers—Discord, image, vimbrowser, and external
 Exo—have all migrated to required stdin for their primary opaque payloads.
@@ -127,7 +127,7 @@ the CLI lacks an obvious safe payload path.
 
 - [x] Migrate Discord `send`, `reply`, `edit`, and `dm --send` to required
   stdin.
-- [ ] Migrate Twitter `post`, `reply`, and `dm --send` primary payloads to
+- [x] Migrate Twitter `post`, `reply`, and `dm --send` primary payloads to
   required stdin.
 - [ ] Migrate WhatsApp message text and file captions to required stdin.
 - [x] Migrate image prompts and vimbrowser JavaScript/raw payloads to required
