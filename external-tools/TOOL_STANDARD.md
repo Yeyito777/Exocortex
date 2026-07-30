@@ -21,17 +21,44 @@ Each tool is its own git repository, independently developed. Tools are
 installed by cloning into `external-tools/` — the daemon discovers them
 automatically.
 
-## Lightweight repo-local commands
+## Self-describing local commands
 
-A repository script that only needs custom TUI presentation does not need to
-become an installed external tool. Invoke an executable by an explicit path,
-give its basename an `exo-` prefix, and place `exo-manifest.json` beside it:
+A **self-describing local command** is an ordinary executable that opts into
+custom Exocortex TUI presentation through an adjacent `exo-manifest.json`. It
+is useful for project scripts and one-off tools that should remain outside the
+installed external-tool registry.
+
+Use this layer when the model already knows about the command from the user's
+request, an `AGENTS.md`, or project documentation, and the only Exocortex
+integration needed is a recognizable label and color. Use a full external tool
+manifest below when the command needs global discovery, system-prompt
+instructions, PATH installation, auth, notifications, or daemon supervision.
+
+### Creating one
+
+1. Create an executable whose basename starts with `exo-`.
+2. Put `exo-manifest.json` in the same directory.
+3. Tell the model when to use the command in `AGENTS.md`, project documentation,
+   or the request itself. The display manifest is deliberately not a discovery
+   or instruction mechanism.
+4. Invoke it through a static relative or absolute path.
+
+For example:
 
 ```
 project/
   scripts/
     exo-deploy
     exo-manifest.json
+```
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+environment="${1:?usage: exo-deploy <environment>}"
+# Perform the project-local operation.
+printf 'Deployed to %s.\n' "$environment"
 ```
 
 ```json
@@ -44,32 +71,39 @@ project/
 }
 ```
 
-For example, `./scripts/exo-deploy production` is rendered using the local
-label and color. One manifest applies to every eligible `exo-*` executable in
-its directory. The executable is still an ordinary Bash command: this manifest
-does not add it to PATH or the system prompt, and cannot affect arguments,
-execution, permissions, output, auth, or daemon supervision.
+```bash
+chmod +x ./scripts/exo-deploy
+./scripts/exo-deploy production
+```
 
-The lookup is intentionally conservative:
+The Bash tool call is rendered as `Deploy production`, while execution and
+stdout remain those of the original command. One manifest applies to every
+eligible `exo-*` executable in its directory; put commands in separate
+directories when they need different labels or colors.
 
-- The executable must be called through a static relative or absolute path;
-  a PATH-only `exo-deploy`, `bash exo-deploy`, shell expansion, or command
-  substitution is not eligible. Relative lookup uses the Bash tool's initial
-  working directory; relative invocations after a preceding `cd`, `pushd`,
-  `popd`, `source`, or `eval` are conservatively left unstyled.
-- The basename must match `exo-<name>`, and the manifest must be in the
-  executable's lexical directory.
+### Contract and boundaries
+
+- The executable is still an ordinary Bash command. The manifest cannot affect
+  arguments, stdin, environment, permissions, execution, output, auth, or
+  daemon supervision.
+- The executable must be called through a static relative or absolute path.
+  PATH-only `exo-deploy`, `bash exo-deploy`, shell expansion, and command
+  substitution are not eligible.
+- Relative lookup uses the Bash tool's initial working directory. Relative
+  invocations after a preceding `cd`, `pushd`, `popd`, `source`, or `eval` are
+  conservatively left unstyled; use a direct path from the initial directory or
+  an absolute path instead.
+- The basename must be `exo-<name>`, with a non-empty `<name>`, and the manifest
+  must be in the executable's lexical directory.
 - `version` must be `1`; `display.label` is at most 64 characters and
   `display.color` is a six-digit hex color.
-- Missing, unreadable, oversized, or invalid manifests fall back to ordinary
-  Bash presentation and never block execution.
-- Presentation is snapshotted into the tool call, so existing conversation
-  history does not change when the file is edited or removed.
-
-This is a presentation-only layer for commands the model already knows to
-invoke. Use a full external tool manifest below when the command needs global
-discovery, prompt instructions, PATH installation, auth, literal-argument
-rewriting, notifications, or daemon supervision.
+- Missing, unreadable, oversized, slow, or invalid manifests fall back to
+  ordinary Bash presentation and never block command execution.
+- Presentation is snapshotted into the tool call, so conversation history does
+  not change when the manifest is edited or removed later.
+- Commands with a primary opaque payload should follow the stdin convention
+  described below. A display manifest does not make freeform inline shell
+  arguments literal-safe.
 
 ## manifest.json
 
