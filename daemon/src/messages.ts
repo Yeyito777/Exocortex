@@ -12,7 +12,7 @@ export * from "@exocortex/shared/messages";
 
 // ── API-level types (for stored conversations / API replay) ─────────
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal } from "@exocortex/shared/messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal, type ToolCallPresentation } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
 import { createHash } from "crypto";
 
@@ -47,7 +47,7 @@ export type ApiContentBlock =
   | { type: "text"; text: string }
   | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
   | { type: "thinking"; thinking: string; signature: string }
-  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown>; presentation?: ToolCallPresentation }
   | { type: "tool_result"; tool_use_id: string; content: string | unknown[]; is_error?: boolean };
 
 export interface ApiMessage {

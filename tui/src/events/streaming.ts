@@ -173,6 +173,7 @@ export function handleToolCall(event: Extract<Event, { type: "tool_call" }>, sta
       toolName: event.toolName,
       input: event.input,
       summary: event.summary,
+      ...(event.presentation ? { presentation: event.presentation } : {}),
     });
   }
 }

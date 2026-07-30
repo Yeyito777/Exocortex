@@ -60,7 +60,7 @@ function blockContentKey(block: Block): string {
     case "text":
       return block.text;
     case "tool_call":
-      return `${block.summary}\n${JSON.stringify(block.input)}`;
+      return `${block.summary}\n${JSON.stringify(block.input)}\n${JSON.stringify(block.presentation ?? null)}`;
     case "tool_result":
       return block.output;
   }
@@ -74,6 +74,25 @@ function shortValue(value: unknown): string {
   else text = JSON.stringify(value);
   if (text.length > 160) text = `${text.slice(0, 157)}…`;
   return text;
+}
+
+function callLocalBashStyles(block: Extract<Block, { type: "tool_call" }>): ExternalToolStyle[] {
+  const styles = block.presentation?.bashStyles;
+  if (!Array.isArray(styles)) return [];
+  return styles.slice(0, 16).filter((style): style is ExternalToolStyle => (
+    !!style
+    && typeof style === "object"
+    && typeof style.cmd === "string"
+    && style.cmd.length > 0
+    && style.cmd.length <= 1_024
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(style.cmd)
+    && typeof style.label === "string"
+    && style.label.length > 0
+    && style.label.length <= 64
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(style.label)
+    && typeof style.color === "string"
+    && /^#[0-9a-fA-F]{6}$/.test(style.color)
+  ));
 }
 
 const COMPUTER_ARG_ORDER = [
@@ -210,7 +229,13 @@ function renderBlock(
     }
     case "tool_call": {
       const summary = sanitizeUntrustedText(toolCallSummaryForRender(block));
-      const logical = renderToolCallLogicalLines(block.toolName, summary, toolRegistry, externalToolStyles);
+      const localStyles = callLocalBashStyles(block);
+      const logical = renderToolCallLogicalLines(
+        block.toolName,
+        summary,
+        toolRegistry,
+        localStyles.length > 0 ? [...localStyles, ...externalToolStyles] : externalToolStyles,
+      );
 
       for (const entry of logical) {
         const w = wordWrap(entry.text, contentWidth - 2);

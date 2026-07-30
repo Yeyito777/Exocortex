@@ -12,7 +12,7 @@
 import { streamMessage, type ApiToolCall, type ProviderTurnSession } from "./api";
 import { log } from "./log";
 import { recordToolCallDiagnostics } from "./diagnostics";
-import { type ProviderId, type ModelId, type EffortLevel, type Block, type ToolCallBlock, type ToolResultBlock, type ApiMessage, type ApiContentBlock, type TokenTrackingContext } from "./messages";
+import { type ProviderId, type ModelId, type EffortLevel, type Block, type ToolCallBlock, type ToolResultBlock, type ToolCallPresentation, type ApiMessage, type ApiContentBlock, type TokenTrackingContext } from "./messages";
 import type { ContentBlock as ProviderContentBlock, ServiceTier, StreamRetryMetadata } from "./providers/types";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
 import { getMaxContext } from "./providers/registry";
@@ -117,6 +117,14 @@ export interface AgentState {
 /** Injected function that produces a display summary for a tool call. */
 export type ToolSummarizer = (name: string, input: Record<string, unknown>) => string;
 
+/** Resolve invocation-local display metadata before a tool call is persisted. */
+export type ToolPresentationResolver = (
+  name: string,
+  input: Record<string, unknown>,
+) => ToolCallPresentation | undefined | Promise<ToolCallPresentation | undefined>;
+
+const PRESENTATION_RESOLVER_TIMEOUT_MS = 250;
+
 /** Fallback if no summarizer is provided. */
 function defaultSummarizer(name: string, _input: Record<string, unknown>): string {
   return name;
@@ -134,6 +142,7 @@ export async function runAgentLoop(
     signal?: AbortSignal;
     executor?: ToolExecutor;
     summarizer?: ToolSummarizer;
+    presentationResolver?: ToolPresentationResolver;
     maxTokens?: number;
     tools?: unknown[];
     effort?: EffortLevel;
@@ -243,6 +252,33 @@ export async function runAgentLoop(
       callbacks.onContextUpdate(result.inputTokens, messages);
     }
 
+    // Presentation is best-effort and must never interfere with execution.
+    const presentations = new Map<string, ToolCallPresentation>();
+    if (options.presentationResolver) {
+      const resolverBatch = Promise.all(result.toolCalls.map(async (tc) => {
+        try {
+          return await options.presentationResolver!(tc.name, tc.input);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          log("warn", `agent: failed to resolve presentation for '${tc.name}': ${message}`);
+          return undefined;
+        }
+      }));
+      let presentationTimer: ReturnType<typeof setTimeout> | undefined;
+      const resolverTimeout = new Promise<Array<undefined>>((resolveTimeout) => {
+        presentationTimer = setTimeout(() => {
+          log("warn", `agent: presentation resolution exceeded ${PRESENTATION_RESOLVER_TIMEOUT_MS}ms — continuing without it`);
+          resolveTimeout(result.toolCalls.map(() => undefined));
+        }, PRESENTATION_RESOLVER_TIMEOUT_MS);
+        presentationTimer.unref?.();
+      });
+      const resolvedPresentations = await Promise.race([resolverBatch, resolverTimeout]);
+      if (presentationTimer) clearTimeout(presentationTimer);
+      for (const [index, presentation] of resolvedPresentations.entries()) {
+        if (presentation) presentations.set(result.toolCalls[index]!.id, presentation);
+      }
+    }
+
     // ── Collect content blocks (thinking + text) ──────────────────
     for (const block of result.blocks) {
       if (block.type === "thinking") {
@@ -257,6 +293,7 @@ export async function runAgentLoop(
           toolName: block.name,
           input: block.input,
           summary: block.summary,
+          ...(presentations.get(block.id) ? { presentation: presentations.get(block.id) } : {}),
         });
       } else if (block.type === "tool_result") {
         allBlocks.push({
@@ -277,13 +314,25 @@ export async function runAgentLoop(
       } else if (block.type === "text") {
         assistantContent.push({ type: "text", text: block.text });
       } else if (block.type === "tool_call") {
-        assistantContent.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
+        assistantContent.push({
+          type: "tool_use",
+          id: block.id,
+          name: block.name,
+          input: block.input,
+          ...(presentations.get(block.id) ? { presentation: presentations.get(block.id) } : {}),
+        });
       } else if (block.type === "tool_result") {
         assistantContent.push({ type: "tool_result", tool_use_id: block.toolUseId, content: block.output, is_error: block.isError });
       }
     }
     for (const tc of result.toolCalls) {
-      assistantContent.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
+      assistantContent.push({
+        type: "tool_use",
+        id: tc.id,
+        name: tc.name,
+        input: tc.input,
+        ...(presentations.get(tc.id) ? { presentation: presentations.get(tc.id) } : {}),
+      });
     }
     const assistantMsg: ApiMessage = {
       role: "assistant",
@@ -308,6 +357,7 @@ export async function runAgentLoop(
         toolName: tc.name,
         input: tc.input,
         summary: (options.summarizer ?? defaultSummarizer)(tc.name, tc.input),
+        ...(presentations.get(tc.id) ? { presentation: presentations.get(tc.id) } : {}),
       };
       allBlocks.push(block);
       callbacks.onToolCall(block);

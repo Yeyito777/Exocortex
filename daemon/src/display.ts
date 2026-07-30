@@ -117,6 +117,7 @@ export function buildDisplayData(
             toolName: c.name,
             input: c.input,
             summary: s.detail || s.label,
+            ...(c.presentation ? { presentation: c.presentation } : {}),
           });
         } else if (c.type === "tool_result") {
           blocks.push({

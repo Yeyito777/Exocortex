@@ -124,12 +124,20 @@ export interface TextBlock {
   text: string;
 }
 
+/** Invocation-local display metadata resolved by the daemon for a tool call. */
+export interface ToolCallPresentation {
+  /** Bash command styles discovered beside explicitly invoked local executables. */
+  bashStyles?: ExternalToolStyle[];
+}
+
 export interface ToolCallBlock {
   type: "tool_call";
   toolCallId: string;
   toolName: string;
   input: Record<string, unknown>;
   summary: string;
+  /** Snapshotted at invocation time so history never depends on the live filesystem. */
+  presentation?: ToolCallPresentation;
 }
 
 export interface ToolResultBlock {
@@ -440,9 +448,9 @@ export interface ToolDisplayInfo {
 }
 
 /**
- * External tool style — maps a bash sub-command prefix to TUI display
- * properties. Sent alongside ToolDisplayInfo so the TUI can style
- * bash invocations of external tools (e.g. "gmail" → Gmail label + color).
+ * Bash command style — maps a command prefix to TUI display properties.
+ * Global external-tool styles are sent alongside ToolDisplayInfo; local styles
+ * may instead be snapshotted on an individual tool call.
  */
 export interface ExternalToolStyle {
   cmd: string;      // command prefix to match (e.g. "gmail")

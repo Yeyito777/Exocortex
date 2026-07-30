@@ -35,6 +35,7 @@ import {
 } from "./context-compaction";
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./providers/openai/auth";
 import { buildCodexWindowId } from "./providers/openai/identity";
+import { resolveToolCallPresentation } from "./exo-command-manifest";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
 import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
@@ -864,6 +865,7 @@ async function orchestrateAssistantTurn(
         toolName: block.toolName,
         input: block.input,
         summary: block.summary,
+        ...(block.presentation ? { presentation: block.presentation } : {}),
       });
       convStore.pushStreamingBlock(convId, {
         type: "tool_call",
@@ -871,6 +873,7 @@ async function orchestrateAssistantTurn(
         toolName: block.toolName,
         input: block.input,
         summary: block.summary,
+        ...(block.presentation ? { presentation: block.presentation } : {}),
       });
     },
     onToolResult(block) {
@@ -1099,6 +1102,7 @@ async function orchestrateAssistantTurn(
           const s = summarizeTool(name, input);
           return s.detail || s.label;
         },
+        presentationResolver: resolveToolCallPresentation,
         effort: conv.effort,
         serviceTier: conv.fastMode ? "fast" : undefined,
         promptCacheKey: convId,
