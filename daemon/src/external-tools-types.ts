@@ -1,5 +1,3 @@
-import type { ManifestShell } from "./external-tools-shell";
-
 export interface ManifestDaemon {
   /** Shell command to run from the tool directory (executed via `bash -lc`). */
   command: string;
@@ -27,8 +25,6 @@ export interface Manifest {
     label: string;
     color: string;
   };
-  /** Optional shell invocation hints for the bash harness. */
-  shell?: ManifestShell;
   /** Optional provider auth borrowed from the daemon and passed as CLI args. */
   auth?: ManifestAuth;
   /** Optional long-running daemon that exocortexd will spawn and supervise. */

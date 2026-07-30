@@ -2,7 +2,7 @@
  * External tools facade — discovery, PATH injection, daemon supervision, and runtime watching.
  *
  * Scans external-tools/{tool}/manifest.json for tool metadata and coordinates the
- * narrower modules that own manifest parsing, watcher lifecycle, shell rewriting,
+ * narrower modules that own manifest parsing, watcher lifecycle, auth injection,
  * and supervised daemon lifecycle.
  */
 
@@ -10,7 +10,7 @@ import { mkdirSync } from "fs";
 import { externalToolsDir as getExternalToolsDir, worktreeName } from "@exocortex/shared/paths";
 import type { ExternalToolStyle } from "@exocortex/shared/messages";
 import { log } from "./log";
-import { getShellConfigHint, rewriteExternalToolShellCommandForTools, rewriteExternalToolShellCommandForToolsWithAuth } from "./external-tools-shell";
+import { rewriteExternalToolShellCommandForToolsWithAuth } from "./external-tools-shell";
 import { scanExternalTools, getToolReloadKey } from "./external-tools-manifest";
 import { ExternalToolWatcher, getExternalToolWatchTargets } from "./external-tools-watcher";
 import { ExternalToolDaemonSupervisor } from "./external-tools-daemon";
@@ -18,7 +18,6 @@ import { getExternalToolAuthArgs } from "./external-tools-auth";
 import type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool } from "./external-tools-types";
 import { setExternalNotificationToolOnline } from "./external-notifications";
 
-export type { ManifestShellLiteralArg, ManifestShell } from "./external-tools-shell";
 export type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool, Manifest, ManifestAuth, ManifestDaemon } from "./external-tools-types";
 export { getToolReloadKey } from "./external-tools-manifest";
 export { getExternalToolWatchTargets } from "./external-tools-watcher";
@@ -81,10 +80,6 @@ function reloadTools(onUpdate?: () => void): void {
 
   log("info", `external-tools: reloaded — ${updated.length} tool(s): ${updated.map((tool) => tool.manifest.name).join(", ") || "(none)"}`);
   onUpdate?.();
-}
-
-export function rewriteExternalToolShellCommand(command: string, loadedTools: LoadedTool[] = tools): string {
-  return rewriteExternalToolShellCommandForTools(command, loadedTools);
 }
 
 export async function rewriteExternalToolShellCommandForExecution(command: string, loadedTools: LoadedTool[] = tools): Promise<string> {
@@ -152,13 +147,7 @@ export async function manageExternalToolDaemon(toolName: string, action: Externa
 
 /** Aggregated system hints from all loaded external tools. */
 export function getExternalToolHints(): string {
-  const hints = tools.flatMap((tool) => {
-    const entries: string[] = [];
-    if (tool.manifest.systemHint) entries.push(tool.manifest.systemHint);
-    const shellHint = getShellConfigHint(tool.manifest.name, tool.manifest.shell);
-    if (shellHint) entries.push(shellHint);
-    return entries;
-  });
+  const hints = tools.map((tool) => tool.manifest.systemHint).filter(Boolean);
   return hints.length > 0 ? hints.join("\n") : "";
 }
 

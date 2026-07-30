@@ -57,11 +57,10 @@ do not currently declare `literalArgs`:
 - Gmail: `send`, `reply`, and `forward` via `--body`. Gmail already falls back
   to stdin when neither `--body` nor `--body-file` is supplied.
 
-Other content-bearing commands may be worth aligning later even when they do
-not send messages to people. Exo already supports `exo send -` for stdin; image
-prompts and vimbrowser JavaScript/raw payloads currently remain argv-oriented.
+The original direct manifest consumers—Discord, image, vimbrowser, and external
+Exo—have all migrated to required stdin for their primary opaque payloads.
 
-## How `literalArgs` enters model context
+## How `literalArgs` entered model context (removed)
 
 The raw manifest JSON is not injected into model context.
 
@@ -81,7 +80,7 @@ sentence is added now that every manifest rule has been removed.
 Before the stdin migration, `external-tools/TOOL_STANDARD.md` documented the
 manifest feature; that file is not itself injected into model context.
 
-The current generated sentence ends with:
+The generated sentence ended with:
 
 > freeform text arguments are treated literally by the bash harness, so
 > markdown/code text does not need manual shell escaping.
@@ -89,9 +88,9 @@ The current generated sentence ends with:
 That wording is broader than the implementation can guarantee and is part of
 the payload-input design issue under review.
 
-## Runtime rewrite behavior
+## Runtime rewrite behavior (removed)
 
-The same manifest rules also control Bash-command rewriting:
+The same manifest rules also controlled Bash-command rewriting:
 
 1. Exocortex splits eligible top-level shell command segments.
 2. It tokenizes a simple shell command and identifies the external tool and
@@ -101,11 +100,11 @@ The same manifest rules also control Bash-command rewriting:
    apostrophes safely.
 5. Bash then executes the rewritten command.
 
-This protects content that the tokenizer can identify correctly. It does not
-provide a separate payload channel, and it cannot recover content after nested
-unescaped quotes, backticks, substitutions, or unsupported shell syntax make
-the command unparseable. In those cases the segment may remain unchanged and
-Bash can interpret payload text as syntax.
+This protected content that the tokenizer could identify correctly. It did not
+provide a separate payload channel, and it could not recover content after
+nested unescaped quotes, backticks, substitutions, or unsupported shell syntax
+made the command unparseable. In those cases the segment could remain unchanged,
+and Bash could interpret payload text as syntax.
 
 ## Observed behavior baseline
 
@@ -137,7 +136,7 @@ the CLI lacks an obvious safe payload path.
   stdin; use `--system-file` for the secondary system prompt.
 - [ ] Decide whether Gmail should reject inline `--body` after its existing
   stdin path is standardized.
-- [ ] Remove `shell.literalArgs`, its generated prompt hints, runtime rewrite
+- [x] Remove `shell.literalArgs`, its generated prompt hints, runtime rewrite
   branches, manifest schema, and tests from Exocortex core. The
   `TOOL_STANDARD.md` replacement is complete.
 
@@ -151,5 +150,5 @@ exception instead of a blanket missing-stdin error.
 If a command has one primary opaque payload—message, body, prompt, JavaScript,
 or raw IPC—it comes from stdin. Everything structural remains argv. Migrated
 commands require exact UTF-8 stdin, reject inline payload arguments, and fail on
-a missing required payload before external mutation. Once the remaining core
-implementation is removed, no `literalArgs` fallback remains.
+a missing required payload before external mutation. No `literalArgs` fallback
+remains.

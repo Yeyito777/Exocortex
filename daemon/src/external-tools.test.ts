@@ -12,7 +12,6 @@ import {
   isLikelyManagedDaemonPid,
   killProcessGroup,
   reapStaleManagedDaemonPid,
-  rewriteExternalToolShellCommand,
   shouldSuperviseExternalToolDaemons,
 } from "./external-tools";
 import { rewriteExternalToolShellCommandForToolsWithAuth } from "./external-tools-shell";
@@ -230,12 +229,6 @@ describe("getToolReloadKey", () => {
     expect(getToolReloadKey(before)).not.toBe(getToolReloadKey(after));
   });
 
-  test("shell config changes invalidate the reload key", () => {
-    const before = [makeTool({ manifest: { shell: { literalArgs: [{ subcommand: "send", kind: "tail" }] } } })];
-    const after = [makeTool({ manifest: { shell: { literalArgs: [{ subcommand: "send", kind: "tail" }, { subcommand: "dm", kind: "flag", flag: "--send" }] } } })];
-    expect(getToolReloadKey(before)).not.toBe(getToolReloadKey(after));
-  });
-
   test("daemon config changes invalidate the reload key", () => {
     const before = [makeTool({ manifest: { daemon: { command: "node daemon.js" } } })];
     const after = [makeTool({ manifest: { daemon: { command: "node daemon.js", restart: "always" } } })];
@@ -268,175 +261,41 @@ describe("getExternalToolWatchTargets", () => {
   });
 });
 
-describe("rewriteExternalToolShellCommand", () => {
-  const discord = makeTool({
+describe("external-tool auth arg injection", () => {
+  const image = makeTool({
     manifest: {
-      name: "discord",
-      bin: "./bin/discord",
-      display: { label: "Discord", color: "#5865F2" },
-      shell: {
-        literalArgs: [
-          { subcommand: "send", kind: "tail" },
-          { subcommand: "reply", kind: "tail" },
-          { subcommand: "edit", kind: "tail" },
-          { subcommand: "dm", kind: "flag", flag: "--send" },
-        ],
-      },
+      name: "image",
+      bin: "./bin/image",
+      display: { label: "Image", color: "#ffb86c" },
+      auth: { providers: ["openai"] },
     },
-    toolDir: "/tmp/tools/discord",
+    toolDir: "/tmp/tools/image",
   });
 
-  test("rewrites the trailing literal argument for configured tail rules", () => {
-    const command = 'discord send general "```ts\nconst x = \\\"$HOME\\\"\n```"';
-    expect(rewriteExternalToolShellCommand(command, [discord]))
-      .toBe("discord send general '```ts\nconst x = \"$HOME\"\n```'");
-  });
-
-  test("rewrites flagged literal arguments for configured commands", () => {
-    const command = 'discord dm 123 --send "$HOME"';
-    expect(rewriteExternalToolShellCommand(command, [discord]))
-      .toBe("discord dm 123 --send '$HOME'");
-  });
-
-  test("rewrites inline flag assignments for configured commands", () => {
-    const command = 'discord dm 123 --send="$HOME"';
-    expect(rewriteExternalToolShellCommand(command, [discord]))
-      .toBe("discord dm 123 --send='$HOME'");
-  });
-
-  test("preserves embedded single quotes in rewritten literals", () => {
-    const command = 'discord reply 123 456 "it' + "'" + 's fine"';
-    expect(rewriteExternalToolShellCommand(command, [discord]))
-      .toBe("discord reply 123 456 'it'\\''s fine'");
-  });
-
-  test("supports leading environment assignments", () => {
-    const command = 'DEBUG=1 discord dm 123 --send "$USER"';
-    expect(rewriteExternalToolShellCommand(command, [discord]))
-      .toBe("DEBUG=1 discord dm 123 --send '$USER'");
-  });
-
-  test("rewrites eligible tool invocations inside && chains", () => {
-    const command = 'discord typing 123 && discord reply 123 456 "$2.1/day"';
-    expect(rewriteExternalToolShellCommand(command, [discord]))
-      .toBe("discord typing 123 && discord reply 123 456 '$2.1/day'");
-  });
-
-  test("rewrites eligible tool invocations inside ; chains", () => {
-    const command = 'echo prelude; discord dm 123 --send "$HOME"';
-    expect(rewriteExternalToolShellCommand(command, [discord]))
-      .toBe("echo prelude; discord dm 123 --send '$HOME'");
-  });
-
-  test("rewrites eligible tool invocations inside pipelines", () => {
-    const command = 'discord dm 123 --send "$HOME" | tee /tmp/out.txt';
-    expect(rewriteExternalToolShellCommand(command, [discord]))
-      .toBe("discord dm 123 --send '$HOME' | tee /tmp/out.txt");
-  });
-
-  test("rewrites literals before trailing redirects", () => {
-    const command = 'discord dm 123 --send "$HOME" >/tmp/out.txt';
-    expect(rewriteExternalToolShellCommand(command, [discord]))
-      .toBe("discord dm 123 --send '$HOME' >/tmp/out.txt");
-  });
-
-  test("leaves unconfigured subcommands alone", () => {
-    const command = 'discord react 123 456 👍';
-    expect(rewriteExternalToolShellCommand(command, [discord])).toBe(command);
-  });
-
-  test("leaves flag rules alone when the flag has no value", () => {
-    const command = 'discord dm 123 --send --file note.txt';
-    expect(rewriteExternalToolShellCommand(command, [discord])).toBe(command);
-  });
-
-  test("injects requested auth args while preserving literal argument rewrites", async () => {
-    const image = makeTool({
-      manifest: {
-        name: "image",
-        bin: "./bin/image",
-        display: { label: "Image", color: "#ffb86c" },
-        shell: { literalArgs: [{ subcommand: "generate", kind: "tail" }] },
-        auth: { providers: ["openai"] },
-      },
-      toolDir: "/tmp/tools/image",
-    });
-
+  test("injects quoted auth args after the external-tool command", async () => {
     await expect(rewriteExternalToolShellCommandForToolsWithAuth(
-      'image generate "$HOME poster"',
+      "image generate --json",
       [image],
       async () => ["--exocortex-auth-openai", "token with spaces"],
-    )).resolves.toBe("image '--exocortex-auth-openai' 'token with spaces' generate '$HOME poster'");
+    )).resolves.toBe("image '--exocortex-auth-openai' 'token with spaces' generate --json");
   });
 
-  const exo = makeTool({
-    manifest: {
-      name: "exo",
-      bin: "./bin/exo",
-      display: { label: "Exocortex", color: "#1d9bf0" },
-      shell: {
-        literalArgs: [
-          {
-            subcommand: "send",
-            kind: "positional",
-            index: 0,
-            flagsWithValues: ["-c", "--conv", "--provider", "--model", "--instance", "--timeout", "--notify-parent", "--system"],
-          },
-          {
-            subcommand: "llm",
-            kind: "positional",
-            index: 0,
-            flagsWithValues: ["-c", "--conv", "--provider", "--model", "--instance", "--timeout", "--notify-parent", "--system"],
-          },
-          { subcommand: "llm", kind: "flag", flag: "--system" },
-          { subcommand: "queue", kind: "positional", index: 1, flagsWithValues: ["-c", "--conv", "--provider", "--model", "--instance", "--timeout", "--notify-parent", "--system"] },
-          { subcommand: "rename", kind: "positional", index: 1, flagsWithValues: ["-c", "--conv", "--provider", "--model", "--instance", "--timeout", "--notify-parent", "--system"] },
-        ],
-      },
-    },
-    toolDir: "/tmp/tools/exo",
+  test("injects auth args in chains while leaving other commands unchanged", async () => {
+    await expect(rewriteExternalToolShellCommandForToolsWithAuth(
+      "echo setup && image generate --json >/tmp/result.json",
+      [image],
+      async () => ["--exocortex-auth-openai", "token"],
+    )).resolves.toBe(
+      "echo setup && image '--exocortex-auth-openai' 'token' generate --json >/tmp/result.json",
+    );
   });
 
-  test("rewrites configured positional literal arguments before later flags", () => {
-    const command = 'exo send "prompt with `date` and $HOME" -c abc --timeout 1800';
-    expect(rewriteExternalToolShellCommand(command, [exo]))
-      .toBe("exo send 'prompt with `date` and $HOME' -c abc --timeout 1800");
-  });
-
-  test("rewrites eligible tool invocations after newline separators", () => {
-    const command = 'echo setup\nexo send "prompt with `date` and $HOME" -c abc --timeout 1800';
-    expect(rewriteExternalToolShellCommand(command, [exo]))
-      .toBe("echo setup\nexo send 'prompt with `date` and $HOME' -c abc --timeout 1800");
-  });
-
-  test("rewrites configured positional literal arguments before trailing redirects", () => {
-    const command = 'exo send "prompt with `date` and $HOME" --timeout 1800 >/tmp/out.txt 2>/tmp/err.txt';
-    expect(rewriteExternalToolShellCommand(command, [exo]))
-      .toBe("exo send 'prompt with `date` and $HOME' --timeout 1800 >/tmp/out.txt 2>/tmp/err.txt");
-  });
-
-  test("skips configured flag values while finding positional literals", () => {
-    const command = 'exo send --timeout 1800 --json "prompt with $HOME"';
-    expect(rewriteExternalToolShellCommand(command, [exo]))
-      .toBe("exo send --timeout 1800 --json 'prompt with $HOME'");
-  });
-
-  test("rewrites multiple literal arguments in one command segment", () => {
-    const command = 'exo llm "user $HOME" --system "system `date`" --haiku';
-    expect(rewriteExternalToolShellCommand(command, [exo]))
-      .toBe("exo llm 'user $HOME' --system 'system `date`' --haiku");
-  });
-
-  test("rewrites inline literal flag assignments alongside positional literals", () => {
-    const command = 'exo llm "user $HOME" --system="system $PATH"';
-    expect(rewriteExternalToolShellCommand(command, [exo]))
-      .toBe("exo llm 'user $HOME' --system='system $PATH'");
-  });
-
-  test("rewrites later positional literals for queue and rename", () => {
-    expect(rewriteExternalToolShellCommand('exo queue abc "queued $HOME" --end', [exo]))
-      .toBe("exo queue abc 'queued $HOME' --end");
-    expect(rewriteExternalToolShellCommand('exo rename abc "title `date`"', [exo]))
-      .toBe("exo rename abc 'title `date`'");
+  test("does not rewrite tools when no auth args are requested", async () => {
+    const command = "image generate --json";
+    await expect(rewriteExternalToolShellCommandForToolsWithAuth(
+      command,
+      [image],
+      async () => [],
+    )).resolves.toBe(command);
   });
 });
