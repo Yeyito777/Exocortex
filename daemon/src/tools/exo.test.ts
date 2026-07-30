@@ -101,15 +101,9 @@ describe("native exo tool contract", () => {
     expect(schema).toContain("not a target. Use 0 unless the target clearly needs to delegate");
     expect(exo.description).toContain("Transcription and cross-instance targeting are intentionally excluded");
     expect(exo.systemHint).toBe([
-      "Use the native `exo` tool for the current daemon and its subagents.",
-      "Default to doing the work yourself. Spawn subagents only for substantial, independent workstreams that can run concurrently, or when a genuinely difficult and high-risk problem would materially benefit from an independent analysis.",
-      "Do not spawn subagents for ordinary repository inspection, routine planning, single-component implementation, or generic code review. Do not delegate work you are simultaneously doing yourself.",
-      "Before spawning, identify a concrete, non-overlapping deliverable and how its result will be used. Prefer no more than two active children; exceed that only for clearly partitioned work with substantial expected wall-time savings or when the user explicitly requests broader delegation.",
-      "Start reviews only after the implementation is stable. Prefer one targeted review; do not launch repeated final reviews without substantial new changes or unresolved high-risk findings. Reuse an existing child instead of spawning a replacement while it is still running.",
-      "Subagents default to medium effort. Specify `effort` only when the task clearly benefits from another supported level. When an OpenAI subagent is warranted, omit `model` for the newest default (currently gpt-5.6-sol), use gpt-5.6-terra or gpt-5.6-luna for lighter work, and use older generations only when requested or required.",
-      "Starting a subagent requires a short title of about three words; it becomes the child conversation title and identifies the task in the parent UI.",
-      "Set max_depth=0 unless the child has a clear need to delegate a further independent workstream.",
-      "Subagents are read-only by default. Set allow_edits=true only when the child's deliverable requires shell access or file changes.",
+      "### subagents",
+      "For work, don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents are read-only by default. Set allow_edits=true if needed.",
+      "### subscriptions",
       "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
       "Subagents start in the daemon's working directory, so include the target absolute directory and all necessary task context.",
     ].join("\n"));

@@ -34,15 +34,16 @@ describe("system prompt", () => {
   test("includes compact native-subagent guidance", () => {
     const prompt = buildSystemPrompt({ conversationId: "nested" });
 
-    expect(prompt).toContain("Use the native `exo` tool for the current daemon and its subagents.");
-    expect(prompt).toContain("Default to doing the work yourself. Spawn subagents only for substantial, independent workstreams");
-    expect(prompt).toContain("Do not spawn subagents for ordinary repository inspection, routine planning, single-component implementation, or generic code review.");
-    expect(prompt).toContain("Prefer no more than two active children");
-    expect(prompt).toContain("Start reviews only after the implementation is stable.");
-    expect(prompt).toContain("When an OpenAI subagent is warranted, omit `model` for the newest default (currently gpt-5.6-sol)");
-    expect(prompt).toContain("Starting a subagent requires a short title of about three words");
-    expect(prompt).toContain("Set max_depth=0 unless the child has a clear need to delegate a further independent workstream.");
-    expect(prompt).toContain("Subagents start in the daemon's working directory");
+    expect(prompt).toContain([
+      "## exo",
+      "### subagents",
+      "For work, don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents are read-only by default. Set allow_edits=true if needed.",
+      "### subscriptions",
+      "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
+      "Subagents start in the daemon's working directory, so include the target absolute directory and all necessary task context.",
+      "## chrono",
+      "Prefer chrono over shell sleep, polling background tasks, or cron. `wait` requires a `max_wait` safety limit and wakes immediately when the task finishes. `sleep` pauses this turn for a duration. `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions.",
+    ].join("\n"));
   });
 
   test("tells child turns their remaining native delegation budget", () => {
