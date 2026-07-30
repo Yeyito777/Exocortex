@@ -1,8 +1,8 @@
 # External Tool Literal Arguments and Payload Inputs
 
-Status: baseline captured and direct manifest migrations completed 2026-07-30.
+Status: baseline captured and payload migrations completed 2026-07-30.
 This document preserves the original `shell.literalArgs` inventory, adjacent
-argv-based payloads, evidence, and remaining cleanup work.
+argv-based payloads, evidence, and completed cleanup work.
 
 No installed external-tool manifest now declares `shell.literalArgs`.
 
@@ -47,15 +47,15 @@ not count as positional payloads.
 No other installed external-tool manifest declared `shell.literalArgs` in the
 baseline inventory.
 
-## Other argv-based payloads to review
+## Adjacent payload migrations
 
 These human-facing payloads have the same general shell-transport concern but
-do not currently declare `literalArgs`:
+did not declare `literalArgs`:
 
-- Twitter: `post`, `reply`, and `dm --send`.
-- WhatsApp: `send` message text and file captions.
-- Gmail: `send`, `reply`, and `forward` via `--body`. Gmail already falls back
-  to stdin when neither `--body` nor `--body-file` is supplied.
+- Twitter: `post`, `reply`, and `dm --send` now require exact stdin payloads.
+- WhatsApp: `send` message text and file captions now use exact stdin payloads.
+- Gmail: `send`, `reply`, and `forward` now use exact stdin bodies; attachment-
+  only mail and forward-without-note remain explicit bodyless modes.
 
 The original direct manifest consumers—Discord, image, vimbrowser, and external
 Exo—have all migrated to required stdin for their primary opaque payloads.
@@ -123,19 +123,19 @@ results do not show that capable agents naturally hit it on every rich message;
 instead, they show that agents currently invent a Python argv workaround when
 the CLI lacks an obvious safe payload path.
 
-## Migration TODO
+## Migration checklist
 
 - [x] Migrate Discord `send`, `reply`, `edit`, and `dm --send` to required
   stdin.
-- [ ] Migrate Twitter `post`, `reply`, and `dm --send` primary payloads to
+- [x] Migrate Twitter `post`, `reply`, and `dm --send` primary payloads to
   required stdin.
-- [ ] Migrate WhatsApp message text and file captions to required stdin.
+- [x] Migrate WhatsApp message text and file captions to required stdin.
 - [x] Migrate image prompts and vimbrowser JavaScript/raw payloads to required
   stdin.
 - [x] Migrate external Exo `send`, `queue`, and the primary `llm` prompt to
   stdin; use `--system-file` for the secondary system prompt.
-- [ ] Decide whether Gmail should reject inline `--body` after its existing
-  stdin path is standardized.
+- [x] Migrate Gmail `send`, `reply`, and `forward` bodies to exact stdin and
+  reject the legacy inline and body-file sources.
 - [x] Remove `shell.literalArgs`, its generated prompt hints, runtime rewrite
   branches, manifest schema, and tests from Exocortex core. The
   `TOOL_STANDARD.md` replacement is complete.
