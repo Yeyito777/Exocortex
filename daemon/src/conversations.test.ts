@@ -3,10 +3,10 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { conversationsDir, dataDir } from "@exocortex/shared/paths";
-import { HistoryUnwindRefreshRequiredError, bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
+import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
+import { HistoryUnwindRefreshRequiredError, bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
 import { load as loadPersisted } from "./persistence";
@@ -519,6 +519,118 @@ describe("sidebar ordering", () => {
     loadFromDisk();
 
     expect(rootConversationOrder(ids)).toEqual([ids[0], ids[2], ids[1], ids[3]]);
+  });
+
+  test("manual moves persist through tiny sidebar overlays without rewriting conversation history", () => {
+    const ids = ["overlay-move-one", "overlay-move-two", "overlay-move-three"].map(mkId);
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+    const paths = ids.map(id => join(conversationsDir(), `${id}.json`));
+    const filesBefore = paths.map(path => readFileSync(path, "utf8"));
+
+    expect(moveSidebarItem({ type: "conversation", id: ids[1] }, "down")).toBe(true);
+
+    expect(paths.map(path => readFileSync(path, "utf8"))).toEqual(filesBefore);
+    expect(existsSync(join(conversationsDir(), `${ids[1]}.sidebar`))).toBe(true);
+    expect(existsSync(join(conversationsDir(), `${ids[2]}.sidebar`))).toBe(true);
+    expect(loadPersisted(ids[1])?.sortOrder).toBeGreaterThan(loadPersisted(ids[2])!.sortOrder);
+
+    loadFromDisk();
+    expect(rootConversationOrder(ids)).toEqual([ids[0], ids[2], ids[1]]);
+  });
+
+  test("an ordinary save folds a sidebar overlay into the conversation file", () => {
+    const ids = ["overlay-fold-one", "overlay-fold-two"].map(mkId);
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+    const sidebarPath = join(conversationsDir(), `${ids[0]}.sidebar`);
+
+    expect(moveSidebarItem({ type: "conversation", id: ids[0] }, "down")).toBe(true);
+    expect(existsSync(sidebarPath)).toBe(true);
+
+    markDirty(ids[0]);
+    flush(ids[0]);
+
+    expect(existsSync(sidebarPath)).toBe(false);
+    expect(loadPersisted(ids[0])?.sortOrder).toBe(getSummary(ids[0])?.sortOrder);
+  });
+
+  test("delete materializes sidebar placement so undo restores it without an overlay", () => {
+    const ids = ["overlay-delete-one", "overlay-delete-two", "overlay-delete-three"].map(mkId);
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+
+    expect(moveSidebarItem({ type: "conversation", id: ids[1] }, "down")).toBe(true);
+    const movedOrder = getSummary(ids[1])!.sortOrder;
+    expect(remove(ids[1])).toBe(true);
+    expect(existsSync(join(conversationsDir(), `${ids[1]}.sidebar`))).toBe(false);
+
+    expect(undoDelete()).toMatchObject({ type: "conversation" });
+    expect(getSummary(ids[1])?.sortOrder).toBe(movedOrder);
+    expect(rootConversationOrder(ids)).toEqual([ids[0], ids[2], ids[1]]);
+  });
+
+  test("a failed delete keeps the live generation synchronized after sidebar materialization", async () => {
+    const ids = ["overlay-failed-delete", "overlay-failed-delete-neighbor"].map(mkId);
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.6-sol", id);
+    const conv = get(ids[0])!;
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+      { role: "user", content: "remove", metadata: null },
+      { role: "assistant", content: "removed answer", metadata: null },
+    );
+    markDirty(ids[0]);
+    flush(ids[0]);
+    expect(moveSidebarItem({ type: "conversation", id: ids[0] }, "down")).toBe(true);
+
+    const blockingTrashPath = join(trashDir(), `${ids[0]}.json`);
+    mkdirSync(blockingTrashPath, { recursive: true });
+    try {
+      expect(remove(ids[0])).toBe(false);
+    } finally {
+      rmSync(blockingTrashPath, { recursive: true, force: true });
+    }
+    expect(existsSync(join(conversationsDir(), `${ids[0]}.sidebar`))).toBe(false);
+
+    expect(await unwindTo(ids[0], 1)).not.toBeNull();
+    expect(loadPersisted(ids[0])?.messages.map(message => message.content)).toEqual(["keep", "kept answer"]);
+  });
+
+  test("a sidebar move survives an unwind that advances only the logical generation", async () => {
+    const ids = ["overlay-then-unwind", "overlay-then-unwind-neighbor"].map(mkId);
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.6-sol", id);
+    const conv = get(ids[0])!;
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+      { role: "user", content: "remove", metadata: null },
+      { role: "assistant", content: "removed answer", metadata: null },
+    );
+    markDirty(ids[0]);
+    flush(ids[0]);
+    expect(moveSidebarItem({ type: "conversation", id: ids[0] }, "down")).toBe(true);
+    const movedOrder = getSummary(ids[0])!.sortOrder;
+
+    expect(await unwindTo(ids[0], 1)).not.toBeNull();
+    expect(existsSync(join(conversationsDir(), `${ids[0]}.sidebar`))).toBe(true);
+
+    const reloaded = loadPersisted(ids[0]);
+    expect(reloaded?.messages.map(message => message.content)).toEqual(["keep", "kept answer"]);
+    expect(reloaded?.sortOrder).toBe(movedOrder);
+    loadFromDisk();
+    expect(rootConversationOrder(ids)).toEqual([ids[1], ids[0]]);
+  });
+
+  test("a malformed sidebar overlay rebuilds a cached moved summary from the base file", () => {
+    const ids = ["overlay-corrupt-one", "overlay-corrupt-two"].map(mkId);
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+    expect(rootConversationOrder(ids)).toEqual(ids);
+    expect(moveSidebarItem({ type: "conversation", id: ids[0] }, "down")).toBe(true);
+    flushAll();
+    const sidebarPaths = ids.map(id => join(conversationsDir(), `${id}.sidebar`));
+    for (const sidebarPath of sidebarPaths) writeFileSync(sidebarPath, "{not json", "utf8");
+
+    expect(loadFromDisk().indexRebuilt).toBeGreaterThanOrEqual(2);
+    expect(sidebarPaths.some(existsSync)).toBe(false);
+    expect(rootConversationOrder(ids)).toEqual(ids);
   });
 });
 

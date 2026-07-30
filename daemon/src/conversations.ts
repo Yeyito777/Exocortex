@@ -190,20 +190,60 @@ function getItemSortOrder(item: SidebarItemRef): number | undefined {
   return folders.get(item.id)?.sortOrder;
 }
 
-function setItemSortOrder(item: SidebarItemRef, sortOrder: number, summaryIndex: SummaryIndexFlushMode = "immediate"): boolean {
+function setConversationSidebarState(
+  id: string,
+  state: Pick<persistence.ConversationSidebarState, "folderId" | "pinned" | "sortOrder">,
+): boolean {
+  const summary = summaries.get(id);
+  if (!summary) return false;
+  const folderChanged = (summary.folderId ?? null) !== state.folderId;
+  summary.folderId = state.folderId;
+  summary.pinned = state.pinned;
+  summary.sortOrder = state.sortOrder;
+  const loaded = conversations.get(id);
+  if (loaded) {
+    loaded.folderId = state.folderId;
+    loaded.pinned = state.pinned;
+    loaded.sortOrder = state.sortOrder;
+  }
+  if (folderChanged) renderSnapshotCache.delete(id);
+  return true;
+}
+
+function persistConversationSidebarStates(ids: Iterable<string>): void {
+  const seen = new Set<string>();
+  let persisted = false;
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const summary = summaries.get(id);
+    if (!summary) continue;
+    persistence.saveConversationSidebarState({
+      id,
+      folderId: summary.folderId ?? null,
+      pinned: summary.pinned,
+      sortOrder: summary.sortOrder,
+    });
+    persisted = true;
+  }
+  if (persisted) saveSummaryIndex("defer");
+}
+
+/** Update one item's order in memory. The caller batches the small durable writes. */
+function setItemSortOrder(item: SidebarItemRef, sortOrder: number): boolean {
   if (item.type === "conversation") {
-    const conv = get(item.id);
-    if (!conv) return false;
-    conv.sortOrder = sortOrder;
-    markDirty(conv.id);
-    flush(conv.id, { summaryIndex });
-    return true;
+    const summary = summaries.get(item.id);
+    if (!summary) return false;
+    return setConversationSidebarState(item.id, {
+      folderId: summary.folderId ?? null,
+      pinned: summary.pinned,
+      sortOrder,
+    });
   }
   const folder = folders.get(item.id);
   if (!folder) return false;
   folder.sortOrder = sortOrder;
   folder.updatedAt = Date.now();
-  saveFolderState();
   return true;
 }
 
@@ -271,16 +311,16 @@ function recordSidebarUndo(entry: persistence.TrashStackEntry): void {
 function restoreSidebarItemSnapshots(snapshots: persistence.TrashSidebarItemSnapshot[]): boolean {
   let conversationChanged = false;
   let folderChanged = false;
+  const changedConversationIds: string[] = [];
 
   for (const snapshot of snapshots) {
     if (snapshot.item.type === "conversation") {
-      const conv = get(snapshot.item.id);
-      if (!conv) continue;
-      conv.folderId = snapshot.parentId;
-      conv.pinned = snapshot.pinned;
-      conv.sortOrder = snapshot.sortOrder;
-      markDirty(conv.id);
-      flush(conv.id, { summaryIndex: "defer" });
+      if (!setConversationSidebarState(snapshot.item.id, {
+        folderId: snapshot.parentId,
+        pinned: snapshot.pinned,
+        sortOrder: snapshot.sortOrder,
+      })) continue;
+      changedConversationIds.push(snapshot.item.id);
       conversationChanged = true;
       continue;
     }
@@ -295,7 +335,7 @@ function restoreSidebarItemSnapshots(snapshots: persistence.TrashSidebarItemSnap
   }
 
   if (folderChanged) saveFolderState();
-  if (conversationChanged) saveSummaryIndex();
+  if (conversationChanged) persistConversationSidebarStates(changedConversationIds);
   return conversationChanged || folderChanged;
 }
 
@@ -566,6 +606,17 @@ function removeConversationState(id: string): boolean {
   return wasUnread;
 }
 
+/** Fold targeted overlays through the canonical live object before trashing. */
+function materializeConversationOverlaysForTrash(id: string): void {
+  if (!dirty.has(id)
+      && !persistence.hasConversationSidebarState(id)
+      && !persistence.hasConversationUnwindReceipt(id)) return;
+  const conv = get(id);
+  if (!conv) return;
+  markDirty(id);
+  flush(id);
+}
+
 export function removeMany(ids: string[], recordUndo = true): string[] {
   const seen = new Set<string>();
   const existing: string[] = [];
@@ -580,9 +631,7 @@ export function removeMany(ids: string[], recordUndo = true): string[] {
   }
   if (existing.length === 0) return [];
 
-  for (const id of existing) {
-    if (dirty.has(id)) flush(id);
-  }
+  for (const id of existing) materializeConversationOverlaysForTrash(id);
   const moved = persistence.trashConversations(existing, recordUndo);
   if (moved.length === 0) return [];
 
@@ -605,7 +654,7 @@ function deleteConversationWithoutUndo(id: string): boolean {
     log("warn", `conversations: refusing to delete ${id} while a history unwind is pending`);
     return false;
   }
-  if (dirty.has(id)) flush(id);
+  materializeConversationOverlaysForTrash(id);
   const moved = persistence.trashConversations([id], false).length > 0;
   if (!moved) return false;
   displayPageStore.removeDisplayProjection(id);
@@ -1544,17 +1593,19 @@ export function mark(id: string, marked: boolean): boolean {
 
 /** Toggle or set the pinned flag on a conversation. */
 export function pin(id: string, pinned: boolean): boolean {
-  const conv = get(id);
-  if (!conv) return false;
-  if (conv.pinned === pinned) return true;
+  const summary = summaries.get(id);
+  if (!summary) return false;
+  if (summary.pinned === pinned) return true;
   const snapshot = sidebarItemSnapshot({ type: "conversation", id });
   if (snapshot) recordSidebarUndo({ type: "sidebar_items", items: [snapshot] });
-  conv.pinned = pinned;
-  conv.sortOrder = pinned
-    ? nextPinnedOrderInFolder(conv.folderId ?? null, id)
-    : nextUnpinnedOrderInFolder(conv.folderId ?? null, id);
-  markDirty(id);
-  flush(id);
+  setConversationSidebarState(id, {
+    folderId: summary.folderId ?? null,
+    pinned,
+    sortOrder: pinned
+      ? nextPinnedOrderInFolder(summary.folderId ?? null, id)
+      : nextUnpinnedOrderInFolder(summary.folderId ?? null, id),
+  });
+  persistConversationSidebarStates([id]);
   return true;
 }
 
@@ -1578,10 +1629,10 @@ export function ensureTopLevelFolder(name: string): FolderSummary | null {
 }
 
 export function moveConversationToFolder(id: string, folderId: string | null): boolean {
-  const conv = get(id);
-  if (!conv) return false;
+  const summary = summaries.get(id);
+  if (!summary) return false;
   const parentId = folderId && folders.has(folderId) ? folderId : null;
-  if ((conv.folderId ?? null) === parentId) return true;
+  if ((summary.folderId ?? null) === parentId) return true;
   return moveSidebarItems([{ type: "conversation", id }], parentId, undefined, { placement: "bottom" });
 }
 
@@ -1658,16 +1709,19 @@ export function pinSidebarItems(pins: { item: SidebarItemRef; pinned: boolean }[
 
   let conversationChanged = false;
   let folderChanged = false;
+  const changedConversationIds: string[] = [];
   for (const mutation of mutations) {
     if (mutation.item.type === "conversation") {
-      const conv = get(mutation.item.id);
-      if (!conv) continue;
-      conv.pinned = mutation.pinned;
-      conv.sortOrder = mutation.pinned
-        ? nextPinnedOrderInFolder(conv.folderId ?? null, conv.id)
-        : nextUnpinnedOrderInFolder(conv.folderId ?? null, conv.id);
-      markDirty(conv.id);
-      flush(conv.id, { summaryIndex: "defer" });
+      const summary = summaries.get(mutation.item.id);
+      if (!summary) continue;
+      setConversationSidebarState(mutation.item.id, {
+        folderId: summary.folderId ?? null,
+        pinned: mutation.pinned,
+        sortOrder: mutation.pinned
+          ? nextPinnedOrderInFolder(summary.folderId ?? null, summary.id)
+          : nextUnpinnedOrderInFolder(summary.folderId ?? null, summary.id),
+      });
+      changedConversationIds.push(mutation.item.id);
       conversationChanged = true;
     } else {
       const folder = folders.get(mutation.item.id);
@@ -1682,7 +1736,7 @@ export function pinSidebarItems(pins: { item: SidebarItemRef; pinned: boolean }[
   }
 
   if (folderChanged) saveFolderState();
-  if (conversationChanged) saveSummaryIndex();
+  if (conversationChanged) persistConversationSidebarStates(changedConversationIds);
   return conversationChanged || folderChanged;
 }
 
@@ -1705,12 +1759,15 @@ export function moveSidebarItem(item: SidebarItemRef, direction: "up" | "down"):
   const targetOrder = target.sortOrder;
   const snapshots = sidebarItemSnapshots([item, targetRef]);
   if (snapshots.length > 0) recordSidebarUndo({ type: "sidebar_items", items: snapshots });
-  setItemSortOrder(item, targetOrder, "defer");
-  setItemSortOrder(targetRef, currentOrder, "defer");
+  setItemSortOrder(item, targetOrder);
+  setItemSortOrder(targetRef, currentOrder);
 
   if (targetOrder === currentOrder) {
-    setItemSortOrder(item, currentOrder + (direction === "up" ? -0.5 : 0.5), "defer");
+    setItemSortOrder(item, currentOrder + (direction === "up" ? -0.5 : 0.5));
   }
+  const changedItems = [item, targetRef];
+  persistConversationSidebarStates(changedItems.filter(candidate => candidate.type === "conversation").map(candidate => candidate.id));
+  if (changedItems.some(candidate => candidate.type === "folder")) saveFolderState();
   return true;
 }
 
@@ -1730,6 +1787,8 @@ export function moveSidebarItems(
 ): boolean {
   const safeParent = parentId && folders.has(parentId) ? parentId : null;
   let moved = false;
+  let folderChanged = false;
+  const changedConversationIds: string[] = [];
   const seen = new Set<string>();
   const movableItems: SidebarItemRef[] = [];
   for (const item of items) {
@@ -1780,13 +1839,8 @@ export function moveSidebarItems(
     order += step;
     const pinned = options.preservePinned ? getItemPinned(item) ?? false : false;
     if (item.type === "conversation") {
-      const conv = get(item.id);
-      if (!conv) continue;
-      conv.folderId = safeParent;
-      conv.pinned = pinned;
-      conv.sortOrder = order;
-      markDirty(conv.id);
-      flush(conv.id, { summaryIndex: "defer" });
+      if (!setConversationSidebarState(item.id, { folderId: safeParent, pinned, sortOrder: order })) continue;
+      changedConversationIds.push(item.id);
       moved = true;
     } else {
       const folder = folders.get(item.id);
@@ -1795,10 +1849,12 @@ export function moveSidebarItems(
       folder.pinned = pinned;
       folder.sortOrder = order;
       folder.updatedAt = Date.now();
+      folderChanged = true;
       moved = true;
     }
   }
-  if (moved) saveFolderState();
+  if (changedConversationIds.length > 0) persistConversationSidebarStates(changedConversationIds);
+  if (folderChanged) saveFolderState();
   return moved;
 }
 
@@ -1841,9 +1897,7 @@ export function deleteFolder(folderId: string, mode: "recursive" | "unwrap" = "r
     return false;
   }
 
-  for (const convId of conversationIds) {
-    if (dirty.has(convId)) flush(convId);
-  }
+  for (const convId of conversationIds) materializeConversationOverlaysForTrash(convId);
   if (!persistence.trashFolderRecursive({ type: "folder_recursive", folderId, folders: folderSnapshots, conversationIds }, recordUndo)) {
     return false;
   }

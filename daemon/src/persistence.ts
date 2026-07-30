@@ -527,6 +527,12 @@ function unwindPath(id: string): string {
   return join(CONV_DIR, `${id}.unwind`);
 }
 
+/** Small canonical overlay for sidebar-only metadata changes. */
+function sidebarPath(id: string): string {
+  assertSafeId(id);
+  return join(CONV_DIR, `${id}.sidebar`);
+}
+
 function trashPath(id: string): string {
   assertSafeId(id);
   return join(TRASH_DIR, `${id}.json`);
@@ -757,6 +763,9 @@ interface ConversationStorageState {
 }
 
 const conversationStorageState = new WeakMap<Conversation, ConversationStorageState>();
+/** Generation physically present in the base JSON, excluding targeted overlays. */
+const knownBaseStorageGenerations = new Map<string, number>();
+/** Latest logical generation, including a targeted unwind overlay. */
 const knownStorageGenerations = new Map<string, number>();
 
 function storageStateFor(conv: Conversation): ConversationStorageState {
@@ -866,6 +875,7 @@ function fromFile(file: ConversationFile, validateActiveContext = true): Convers
     currentGeneration: generation,
     lastUnwindReceipt: normalizeUnwindReceipt(file.lastUnwindReceipt),
   });
+  knownBaseStorageGenerations.set(conv.id, generation);
   knownStorageGenerations.set(conv.id, generation);
   return conv;
 }
@@ -929,7 +939,9 @@ function statConversationFile(id: string): { fileSize: number; fileMtimeMs: numb
 
 export function indexEntryFromConversation(conv: Conversation): ConversationIndexEntry {
   const stat = statConversationFile(conv.id) ?? { fileSize: 0, fileMtimeMs: 0 };
-  const storageGeneration = storageStateFor(conv).currentGeneration;
+  const state = storageStateFor(conv);
+  const storageGeneration = state.currentGeneration;
+  knownBaseStorageGenerations.set(conv.id, state.baseGeneration);
   knownStorageGenerations.set(conv.id, storageGeneration);
   return {
     ...summarizeConversation(conv),
@@ -1284,9 +1296,15 @@ export function loadConversationIndex(): LoadConversationIndexResult {
 
     const cached = indexed.get(id);
     if (cached && cached.fileSize === stat.fileSize && cached.fileMtimeMs === stat.fileMtimeMs) {
-      entries.push(overlayCachedIndexEntry(cached));
-      reused++;
-      continue;
+      try {
+        entries.push(overlayCachedIndexEntry(cached));
+        reused++;
+        continue;
+      } catch (error) {
+        if (!(error instanceof InvalidConversationSidebarOverlayError)) throw error;
+        // The cached entry may itself contain the now-discarded overlay fields.
+        // Rebuild this one summary from the canonical base instead of reusing it.
+      }
     }
 
     const conv = load(id);
@@ -1307,8 +1325,16 @@ export function loadConversationIndex(): LoadConversationIndexResult {
   }
 
   sortConversations(entries);
+  knownBaseStorageGenerations.clear();
   knownStorageGenerations.clear();
-  for (const entry of entries) knownStorageGenerations.set(entry.id, entry.storageGeneration);
+  for (const entry of entries) {
+    const unwind = parseUnwindFile(entry.id);
+    const baseGeneration = unwind && entry.storageGeneration === unwind.resultGeneration
+      ? unwind.baseGeneration
+      : entry.storageGeneration;
+    knownBaseStorageGenerations.set(entry.id, baseGeneration);
+    knownStorageGenerations.set(entry.id, entry.storageGeneration);
+  }
   if (saved) saveConversationIndex(entries);
 
   return {
@@ -1378,28 +1404,145 @@ function activeUnwindForBaseGeneration(id: string, baseGeneration: number): Conv
 
 function overlayCachedIndexEntry(cached: ConversationIndexEntry): ConversationIndexEntry {
   const unwind = parseUnwindFile(cached.id);
-  if (!unwind) return cached;
+  let overlaid = cached;
+  let baseGeneration = cached.storageGeneration;
+  if (!unwind) return applyConversationSidebarFile(cached, baseGeneration, "throw");
   // Several targeted cuts can accumulate over one unchanged base file. An
   // independently saved index may therefore contain any logical generation
   // between the sidecar's base and latest result; all describe the same base
   // bytes and are safely advanced to the latest overlay summary in memory.
   if (cached.storageGeneration >= unwind.baseGeneration
       && cached.storageGeneration <= unwind.resultGeneration) {
-    return {
+    baseGeneration = unwind.baseGeneration;
+    overlaid = {
       ...cached,
       updatedAt: unwind.updatedAt,
       messageCount: unwind.messageCount,
       storageGeneration: unwind.resultGeneration,
     };
-  }
-  if (cached.storageGeneration > unwind.resultGeneration) {
+  } else if (cached.storageGeneration > unwind.resultGeneration) {
     if (unwind.supersededQueueIds.length === 0) removeUnwindFile(cached.id);
-    return cached;
+  } else {
+    throw new Error(
+      `Conversation index conflicts with unwind overlay for ${cached.id} `
+      + `(index=${cached.storageGeneration}, base=${unwind.baseGeneration}, result=${unwind.resultGeneration})`,
+    );
   }
-  throw new Error(
-    `Conversation index conflicts with unwind overlay for ${cached.id} `
-    + `(index=${cached.storageGeneration}, base=${unwind.baseGeneration}, result=${unwind.resultGeneration})`,
-  );
+  return applyConversationSidebarFile(overlaid, baseGeneration, "throw");
+}
+
+interface ConversationSidebarFile {
+  version: 1;
+  id: string;
+  storageGeneration: number;
+  folderId: string | null;
+  pinned: boolean;
+  sortOrder: number;
+}
+
+class InvalidConversationSidebarOverlayError extends Error {}
+
+export interface ConversationSidebarState {
+  id: string;
+  folderId: string | null;
+  pinned: boolean;
+  sortOrder: number;
+}
+
+function parseConversationSidebarFile(id: string): ConversationSidebarFile | null {
+  const path = sidebarPath(id);
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<ConversationSidebarFile>;
+    if (parsed.version !== 1
+        || parsed.id !== id
+        || !isNonNegativeSafeInteger(parsed.storageGeneration) || parsed.storageGeneration < 1
+        || (parsed.folderId !== null && typeof parsed.folderId !== "string")
+        || typeof parsed.pinned !== "boolean"
+        || typeof parsed.sortOrder !== "number"
+        || !Number.isFinite(parsed.sortOrder)) {
+      throw new Error("invalid schema");
+    }
+    return parsed as ConversationSidebarFile;
+  } catch (error) {
+    // Sidebar placement is recoverable from the canonical conversation file. A
+    // damaged tiny overlay must not make the whole conversation index unloadable.
+    log("warn", `persistence: discarded invalid sidebar overlay for ${id}: ${error instanceof Error ? error.message : String(error)}`);
+    removeConversationSidebarFile(id);
+    throw new InvalidConversationSidebarOverlayError(`Invalid conversation sidebar overlay for ${id}`);
+  }
+}
+
+function applyConversationSidebarFile<T extends {
+  id: string;
+  folderId?: string | null;
+  pinned: boolean;
+  sortOrder: number;
+}>(
+  value: T,
+  baseStorageGeneration: number,
+  invalid: "ignore" | "throw" = "ignore",
+): T {
+  let sidebar: ConversationSidebarFile | null;
+  try {
+    sidebar = parseConversationSidebarFile(value.id);
+  } catch (error) {
+    if (invalid === "throw") throw error;
+    return value;
+  }
+  if (!sidebar) return value;
+  if (sidebar.storageGeneration !== baseStorageGeneration) {
+    if (baseStorageGeneration > sidebar.storageGeneration) {
+      // A full save committed but crashed before removing the now-redundant
+      // overlay. The newer base contains the in-memory sidebar fields it saved.
+      removeConversationSidebarFile(value.id);
+      return value;
+    }
+    throw new Error(
+      `Conversation sidebar overlay for ${value.id} targets generation ${sidebar.storageGeneration}, `
+      + `but the base conversation is generation ${baseStorageGeneration}`,
+    );
+  }
+  value.folderId = sidebar.folderId;
+  value.pinned = sidebar.pinned;
+  value.sortOrder = sidebar.sortOrder;
+  return value;
+}
+
+/** Persist sidebar-only fields without parsing or rewriting the conversation history. */
+export function saveConversationSidebarState(state: ConversationSidebarState): void {
+  assertSafeId(state.id);
+  if ((state.folderId !== null && typeof state.folderId !== "string")
+      || typeof state.pinned !== "boolean"
+      || !Number.isFinite(state.sortOrder)) {
+    throw new Error(`Invalid conversation sidebar state for ${state.id}`);
+  }
+  ensureDir();
+  if (!existsSync(convPath(state.id))) throw new Error(`Cannot persist sidebar state for missing conversation ${state.id}`);
+  const storageGeneration = knownBaseStorageGenerations.get(state.id);
+  if (!storageGeneration || storageGeneration < 1) {
+    throw new Error(`Cannot persist sidebar state without a known storage generation for ${state.id}`);
+  }
+  const file: ConversationSidebarFile = { version: 1, storageGeneration, ...state };
+  const dest = sidebarPath(state.id);
+  const tmp = `${dest}.tmp`;
+  writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
+  renameSync(tmp, dest);
+}
+
+export function hasConversationSidebarState(id: string): boolean {
+  assertSafeId(id);
+  return existsSync(sidebarPath(id));
+}
+
+function removeConversationSidebarFile(id: string): void {
+  try {
+    unlinkSync(sidebarPath(id));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      log("warn", `persistence: failed to remove sidebar overlay for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 function applyUnwindFile(
@@ -1610,10 +1753,12 @@ export function save(conv: Conversation): void {
     currentGeneration: nextGeneration,
     lastUnwindReceipt: state.lastUnwindReceipt,
   });
+  knownBaseStorageGenerations.set(conv.id, nextGeneration);
   knownStorageGenerations.set(conv.id, nextGeneration);
   if (!unwindBeforeSave || unwindBeforeSave.supersededQueueIds.length === 0) {
     removeUnwindFile(conv.id);
   }
+  removeConversationSidebarFile(conv.id);
 }
 
 function moveConversationFilesToTrash(ids: string[]): { moved: string[]; failed: string[] } {
@@ -1628,12 +1773,22 @@ function moveConversationFilesToTrash(ids: string[]): { moved: string[]; failed:
         failed.push(id);
         continue;
       }
-      // Trash/undo moves one canonical file. Fold any pending targeted unwind into
-      // it first so undo cannot resurrect the discarded suffix.
-      if (existsSync(unwindPath(id))) {
-        const effective = load(id);
-        if (!effective) throw new Error(`Cannot materialize unwind overlay for ${id} before trashing`);
-        save(effective);
+      // Callers must fold active overlays through their canonical live object.
+      // Saving a separately loaded copy here would advance only that copy's
+      // WeakMap generation; if the later rename failed, the surviving live object
+      // could commit a conflicting unwind generation.
+      if (existsSync(sidebarPath(id))) {
+        throw new Error(`Cannot trash ${id} with an unmaterialized sidebar overlay`);
+      }
+      const unwind = parseUnwindFile(id);
+      if (unwind) {
+        const baseFile = parseConversationFile(src);
+        const baseGeneration = isNonNegativeSafeInteger(baseFile.storageGeneration) && baseFile.storageGeneration > 0
+          ? baseFile.storageGeneration
+          : 1;
+        if (baseGeneration < unwind.resultGeneration) {
+          throw new Error(`Cannot trash ${id} with an unmaterialized unwind overlay`);
+        }
       }
       renameSync(src, trashPath(id));
       moved.push(id);
@@ -1724,7 +1879,8 @@ export function load(id: string): Conversation | null {
   if (!existsSync(path)) return null;
   try {
     const file = parseConversationFile(path);
-    return applyUnwindFile(fromFile(file), file.storageGeneration);
+    const conv = applyUnwindFile(fromFile(file), file.storageGeneration);
+    return applyConversationSidebarFile(conv, storageStateFor(conv).baseGeneration);
   } catch (err) {
     log("error", `persistence: failed to load ${id}: ${err}`);
     return null;
@@ -1742,7 +1898,8 @@ export function loadForDisplayProjection(id: string): Conversation | null {
   if (!existsSync(path)) return null;
   try {
     const file = parseConversationFile(path);
-    return applyUnwindFile(fromFile(file, false), file.storageGeneration, false);
+    const conv = applyUnwindFile(fromFile(file, false), file.storageGeneration, false);
+    return applyConversationSidebarFile(conv, storageStateFor(conv).baseGeneration);
   } catch (err) {
     log("error", `persistence: failed to load display projection source ${id}: ${err}`);
     return null;

@@ -1,7 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { log } from "./log";
-import { isValidShellConfig } from "./external-tools-shell";
 import type { LoadedTool, Manifest } from "./external-tools-types";
 
 function loadManifest(toolDir: string): LoadedTool | null {
@@ -23,12 +22,6 @@ function loadManifest(toolDir: string): LoadedTool | null {
     ) {
       log("warn", `external-tools: invalid manifest at ${manifestPath} — skipping`);
       return null;
-    }
-
-    // Validate optional shell field
-    if (data.shell !== undefined && !isValidShellConfig(data.shell)) {
-      log("warn", `external-tools: invalid shell config in ${manifestPath} — ignoring shell hints`);
-      data.shell = undefined;
     }
 
     // Validate optional auth field
@@ -106,7 +99,6 @@ export function getToolReloadKey(tools: LoadedTool[]): string {
     bin: tool.manifest.bin,
     systemHint: tool.manifest.systemHint,
     display: tool.manifest.display,
-    shell: tool.manifest.shell ?? null,
     auth: tool.manifest.auth ?? null,
     daemon: tool.manifest.daemon ?? null,
     binDir: tool.binDir,

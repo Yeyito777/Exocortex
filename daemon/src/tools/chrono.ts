@@ -199,7 +199,7 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
 export const chrono: Tool = {
   name: "chrono",
   description: "Wait for an active task up to a required limit, sleep the current model turn, or manage durable one-shot/recurring wakes. A message is a hard wake that starts the model. A command is a soft wake that runs without a model and can escalate to a hard wake on failure or a script-defined non-zero exit.",
-  systemHint: "Use Chrono instead of shell sleep, polling background tasks, or cron. `wait` requires a `max_wait` safety limit and wakes immediately when the task finishes or that limit is reached. `sleep` pauses this turn for a duration. `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions. `adopt` attaches an ownerless daemon command schedule to this conversation and configures its hard wake. Command occurrences are at-least-once across crash windows and receive CHRONO_OCCURRENCE_ID, so side-effecting commands should deduplicate that id. Use list/cancel to manage owned schedules.",
+  systemHint: "Prefer chrono over shell sleep, polling background tasks, or cron. `wait` requires a `max_wait` safety limit and wakes immediately when the task finishes. `sleep` pauses this turn for a duration. `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions.",
   inputSchema: {
     type: "object",
     properties: {

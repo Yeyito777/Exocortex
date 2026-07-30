@@ -81,13 +81,6 @@ rewriting, notifications, or daemon supervision.
   "display": {
     "label": "Tool Name",
     "color": "#hexcolor"
-  },
-  "shell": {
-    "literalArgs": [
-      { "subcommand": "send", "kind": "tail" },
-      { "subcommand": "reply", "kind": "tail" },
-      { "subcommand": "dm", "kind": "flag", "flag": "--send" }
-    ]
   }
 }
 ```
@@ -96,47 +89,20 @@ rewriting, notifications, or daemon supervision.
 - **bin**: Relative path to the executable. Its parent directory is added to PATH.
 - **systemHint**: Injected into the system prompt so the model knows the tool exists.
 - **display**: TUI styling for bash sub-command matching (label + hex color).
-- **shell**: Optional bash-harness hints for literal-safe rewriting of eligible tool invocations in bash command lines.
 
-### Optional: literal argument rules
+## Primary opaque payloads
 
-Use this when certain subcommands take freeform text (message bodies, markdown,
-code blocks, etc.) that should not be interpreted by the shell.
+If a command has one primary opaque payload—message, body, prompt, JavaScript,
+or raw IPC—it comes from stdin. Everything structural remains argv.
 
-```json
-{
-  "shell": {
-    "literalArgs": [
-      { "subcommand": "send", "kind": "tail" },
-      { "subcommand": "reply", "kind": "tail" },
-      { "subcommand": "dm", "kind": "flag", "flag": "--send" }
-    ]
-  }
-}
-```
-
-Supported rule kinds:
-- `{"subcommand":"send","kind":"tail"}`
-  - Treats the final positional argument to `tool-name send ...` as literal text.
-- `{"subcommand":"dm","kind":"flag","flag":"--send"}`
-  - Treats the value passed to `--send` as literal text.
-
-This lets the AI write commands like:
-
-~~~bash
-discord send general "```ts
-const x = \"$HOME\";
-```"
-discord dm 123 --send "$HOME"
-~~~
-
-without having to manually protect `$`, backticks, quotes, or newlines in the
-configured literal argument.
-
-Scope:
-- Applies to eligible top-level tool invocations, including within simple chains/pipelines like `cmd1 && discord send ...`, `cmd1; discord send ...`, or `discord send ... | tee out.txt`
-- Does not apply inside subshells, redirects, or other unsupported shell syntax within the same segment
-- Keep flags/options before the literal text they control
+Read stdin as exact UTF-8: do not trim it, decode escapes, interpolate it, or
+otherwise rewrite it. Reject inline payload arguments and reject a missing
+required payload before external mutation, with an actionable stdin error.
+Keep IDs, recipients, flags, names, titles, subjects, queries, and paths in argv.
+If a command needs a second opaque payload, give it an explicit file or other
+structured source. Document the contract in top-level and command-specific
+`-h` output. Commands with a valid bodyless mode may explicitly allow empty
+stdin.
 
 ### Optional: daemon supervision
 
