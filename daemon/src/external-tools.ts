@@ -146,8 +146,10 @@ export async function manageExternalToolDaemon(toolName: string, action: Externa
 }
 
 /** Aggregated system hints from all loaded external tools. */
-export function getExternalToolHints(): string {
-  const hints = tools.map((tool) => tool.manifest.systemHint).filter(Boolean);
+export function getExternalToolHints(loadedTools: readonly LoadedTool[] = tools): string {
+  const hints = loadedTools.flatMap((tool) => tool.manifest.systemHint
+    ? [`#${tool.manifest.name}\n${tool.manifest.systemHint}`]
+    : []);
   return hints.length > 0 ? hints.join("\n") : "";
 }
 

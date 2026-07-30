@@ -102,12 +102,12 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
 }): string[] {
   const parts = [buildEnvironmentHeader(options.conversationId, options.identity)];
 
-  if (options.wrapperNote) parts.push(options.wrapperNote);
-
   if (options.includeToolHints) {
     const toolHints = buildToolSystemHints(options.toolNames);
-    if (toolHints) parts.push(toolHints);
+    parts.push(toolHints ? `# Internal tools\n${toolHints}` : "# Internal tools");
   }
+
+  if (options.wrapperNote) parts.push(options.wrapperNote);
 
   const depth = options.subagentMaxDepth;
   const hasExoTool = !options.toolNames || options.toolNames.includes("exo");

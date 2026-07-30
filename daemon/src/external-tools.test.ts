@@ -7,6 +7,7 @@ import type { LoadedTool, Manifest } from "./external-tools";
 import {
   buildDaemonSpawnSpec,
   getDaemonStatePaths,
+  getExternalToolHints,
   getExternalToolWatchTargets,
   getToolReloadKey,
   isLikelyManagedDaemonPid,
@@ -239,6 +240,22 @@ describe("getToolReloadKey", () => {
     const before = [makeTool()];
     const after = [makeTool({ manifest: { auth: { providers: ["openai"] } } })];
     expect(getToolReloadKey(before)).not.toBe(getToolReloadKey(after));
+  });
+});
+
+describe("getExternalToolHints", () => {
+  test("prefixes every external tool hint with its tool name", () => {
+    const hints = getExternalToolHints([
+      makeTool({ manifest: { name: "gmail", systemHint: "Gmail hint" } }),
+      makeTool({ manifest: { name: "image", systemHint: "Image hint" } }),
+    ]);
+
+    expect(hints).toBe([
+      "#gmail",
+      "Gmail hint",
+      "#image",
+      "Image hint",
+    ].join("\n"));
   });
 });
 

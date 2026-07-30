@@ -8,9 +8,21 @@ import { SCOPED_SUBAGENT_IDENTITY, SCOPED_SUBAGENT_WRAPPER_NOTE, subagentToolNam
 
 describe("system prompt", () => {
   test("includes Exocortex-owned tool/runtime guidance", () => {
-    const prompt = buildSystemPrompt();
+    const prompt = buildSystemPrompt({
+      conversationId: "internal-tool-headings",
+      toolNames: ["read", "grep"],
+      includeExternalToolHints: false,
+    });
 
-    expect(prompt).toContain("Prefer the read tool over cat/head/tail for reading files.");
+    expect(prompt).toContain([
+      "- Exocortex conversation ID: internal-tool-headings",
+      "",
+      "# Internal tools",
+      "#read",
+      "Prefer the read tool over cat/head/tail for reading files.",
+      "#grep",
+      "Prefer the grep tool over grep/rg for searching file contents.",
+    ].join("\n"));
   });
 
   test("includes the Exocortex conversation id in a conversation prompt", () => {
@@ -59,6 +71,7 @@ describe("system prompt", () => {
     expect(prompt).toContain("Do only the assigned task.");
     expect(prompt).toContain("Do not inventory repositories");
     expect(prompt).toContain("Inherited safety constraint");
+    expect(prompt).toContain("# Internal tools\n#read\n");
     expect(prompt).not.toContain("# External tools");
     expect(prompt).not.toContain("remaining native exo subagent depth");
     expect(getToolDefs(readOnlyTools).map(tool => tool.name)).toEqual([
