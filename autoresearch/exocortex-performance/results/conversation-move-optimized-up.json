@@ -1,0 +1,64 @@
+{
+  "generatedAt": "2026-07-30T16:32:27.476Z",
+  "target": {
+    "id": "1785427358263-rzconc",
+    "title": "utmail-dev",
+    "fileMiB": 69.23875331878662,
+    "messageCount": 8059,
+    "peerIndex": 1,
+    "peerCount": 6
+  },
+  "adjacent": {
+    "id": "1774169062894-038twc",
+    "title": "uoft admission roadmap",
+    "fileMiB": 71.09057521820068,
+    "messageCount": 8234
+  },
+  "fixture": {
+    "conversations": 3349,
+    "folders": 25
+  },
+  "load": {
+    "measuredMs": 254.267177,
+    "loaded": 3349,
+    "total": 3349,
+    "normalizedEffort": 0,
+    "deduplicatedSortOrders": 0,
+    "durationMs": 254.05206700000002,
+    "indexReused": 3346,
+    "indexRebuilt": 3,
+    "indexRemoved": 3,
+    "indexSaved": true
+  },
+  "timingsMs": {
+    "listSidebarBefore": 6.430187999999987,
+    "stringifySidebarBefore": 2.3484550000000013,
+    "coldMove": 9.758617999999956,
+    "listSidebarAfter": 2.4435889999999745,
+    "stringifySidebarAfter": 3.266727000000003,
+    "tuiHandleMoved": 0.7820150000000012,
+    "tuiRenderAfterMoved": 15.112317000000019,
+    "warmMoveBack": 7.256316000000027
+  },
+  "sidebarPayloadMiB": 1.399744987487793,
+  "memoryMiB": {
+    "beforeMove": {
+      "rss": 175.8515625,
+      "heapTotal": 30.01953125,
+      "heapUsed": 10.699141502380371,
+      "external": 5.606703758239746,
+      "arrayBuffers": 1.575770378112793
+    },
+    "afterColdMove": {
+      "rss": 178.7265625,
+      "heapTotal": 30.22265625,
+      "heapUsed": 17.252224922180176,
+      "external": 10.316555976867676,
+      "arrayBuffers": 1.575770378112793
+    }
+  },
+  "moved": {
+    "cold": true,
+    "warmBack": true
+  }
+}
