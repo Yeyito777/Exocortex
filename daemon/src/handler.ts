@@ -13,6 +13,7 @@ import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clea
 import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
 import { buildSystemPrompt } from "./system";
+import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
 import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME } from "./messages";
@@ -1000,7 +1001,7 @@ export function createHandler(server: DaemonServer) {
         const defaultEffort = provider === conversationDefaults.provider && model === conversationDefaults.model
           ? conversationDefaults.effort
           : undefined;
-        const effort = normalizeEffort(provider, model, cmd.effort ?? defaultEffort);
+        const effort = normalizeEffort(provider, model, cmd.effort ?? (cmd.subagent ? "medium" : defaultEffort));
         const requestedFastMode = typeof cmd.fastMode === "boolean"
           ? cmd.fastMode
           : (provider === conversationDefaults.provider && model === conversationDefaults.model ? conversationDefaults.fastMode : false);
@@ -1040,6 +1041,13 @@ export function createHandler(server: DaemonServer) {
           convStore.createWithInitialUserMessage(id, provider, model, title, effort, fastMode, initialMessage, folderId);
         } else {
           convStore.create(id, provider, model, title, effort, fastMode, folderId);
+        }
+        if (cmd.subagent) {
+          convStore.setSubagentPolicy(id, {
+            parentConversationId: null,
+            allowEdits: false,
+            parentSystemInstructions: "",
+          });
         }
         const goalResult = goalObjective ? setConversationGoal(id, goalObjective, { pausable: cmd.goalPausable, completable: cmd.goalCompletable }) : null;
         const goal = goalResult?.goal ?? null;
@@ -1360,6 +1368,7 @@ export function createHandler(server: DaemonServer) {
             eventId,
             text,
             occurredAt: cmd.occurredAt,
+            ...(cmd.data !== undefined ? { data: cmd.data } : {}),
           });
           try {
             if (subscription.delivery === "soft") {
@@ -2242,13 +2251,19 @@ export function createHandler(server: DaemonServer) {
 
       case "get_system_prompt": {
         const instructions = cmd.convId ? convStore.getEffectiveSystemInstructions(cmd.convId) : null;
+        const conversation = cmd.convId ? convStore.get(cmd.convId) : undefined;
+        const subagentMaxDepth = conversation?.subagentMaxDepth ?? null;
+        const scopedPromptOptions = conversation
+          ? scopedSubagentPromptOptions(conversation, subagentMaxDepth)
+          : null;
         server.sendTo(client, {
           type: "system_prompt",
           reqId: cmd.reqId,
           systemPrompt: buildSystemPrompt({
             conversationInstructions: instructions ?? undefined,
             conversationId: cmd.convId,
-            subagentMaxDepth: cmd.convId ? convStore.get(cmd.convId)?.subagentMaxDepth ?? null : null,
+            subagentMaxDepth,
+            ...(scopedPromptOptions ?? {}),
           }),
         });
         break;

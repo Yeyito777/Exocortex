@@ -20,7 +20,7 @@ import type { QueuedMessageInfo } from "./protocol";
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 17;
+const CURRENT_VERSION = 18;
 
 interface ConversationFileV1 {
   version: 1;
@@ -230,7 +230,12 @@ interface ConversationFileV17 extends Omit<ConversationFileV16, "version"> {
   lastUnwindReceipt: PersistedUnwindReceipt | null;
 }
 
-type ConversationFile = ConversationFileV17;
+interface ConversationFileV18 extends Omit<ConversationFileV17, "version"> {
+  version: 18;
+  subagentPolicy: Conversation["subagentPolicy"];
+}
+
+type ConversationFile = ConversationFileV18;
 
 function normalizeProviderId(provider: unknown): ProviderId {
   return typeof provider === "string" && (DEFAULT_PROVIDER_ORDER as readonly string[]).includes(provider)
@@ -426,6 +431,19 @@ function migrateV16toV17(data: ConversationFileV16): ConversationFileV17 {
   };
 }
 
+/** v17 → v18: Persist scoped-subagent capabilities and inherited constraints. */
+function migrateV17toV18(data: ConversationFileV17): ConversationFileV18 {
+  return {
+    ...data,
+    version: 18,
+    subagentPolicy: data.subagentMaxDepth == null ? null : {
+      parentConversationId: null,
+      allowEdits: false,
+      parentSystemInstructions: "",
+    },
+  };
+}
+
 function migrate(raw: Record<string, unknown>): ConversationFile {
   // Progressive migration — each function validates and upgrades one version.
   // `any` is intentional at this deserialization boundary: the data is parsed
@@ -448,6 +466,7 @@ function migrate(raw: Record<string, unknown>): ConversationFile {
   if (data.version < 15) data = migrateV14toV15(data);
   if (data.version < 16) data = migrateV15toV16(data);
   if (data.version < 17) data = migrateV16toV17(data);
+  if (data.version < 18) data = migrateV17toV18(data);
 
   if (data.version !== CURRENT_VERSION) {
     log("warn", `persistence: unknown schema version ${data.version}, attempting to load as v${CURRENT_VERSION}`);
@@ -790,6 +809,7 @@ function toFile(
     title: conv.title,
     goal: conv.goal ?? null,
     subagentMaxDepth: conv.subagentMaxDepth ?? null,
+    subagentPolicy: conv.subagentPolicy ?? null,
     storageGeneration,
     lastUnwindReceipt,
   };
@@ -827,6 +847,14 @@ function fromFile(file: ConversationFile, validateActiveContext = true): Convers
       && file.subagentMaxDepth >= 0
       && file.subagentMaxDepth <= MAX_EXO_SUBAGENT_DEPTH) {
     conv.subagentMaxDepth = file.subagentMaxDepth;
+  }
+  if (file.subagentPolicy && typeof file.subagentPolicy === "object") {
+    const policy = file.subagentPolicy as unknown as Record<string, unknown>;
+    conv.subagentPolicy = {
+      parentConversationId: typeof policy.parentConversationId === "string" ? policy.parentConversationId : null,
+      allowEdits: policy.allowEdits === true,
+      parentSystemInstructions: typeof policy.parentSystemInstructions === "string" ? policy.parentSystemInstructions : "",
+    };
   }
   if (file.folderId != null) conv.folderId = file.folderId;
   if (file.goal != null && file.goal.status !== "complete") conv.goal = file.goal;

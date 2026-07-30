@@ -700,7 +700,7 @@ describe("save / load round-trip", () => {
     expect(loaded?.lastContextTokens).toBeNull();
   });
 
-  test("persists an active native exo subagent depth budget", () => {
+  test("persists an active native exo subagent depth budget and scoped policy", () => {
     const id = mkId("subagent-depth-roundtrip");
     const original: Conversation = {
       id,
@@ -717,10 +717,47 @@ describe("save / load round-trip", () => {
       sortOrder: -14_000_001,
       title: "Nested child",
       subagentMaxDepth: 3,
+      subagentPolicy: {
+        parentConversationId: "parent-conversation",
+        allowEdits: true,
+        parentSystemInstructions: "Inherited constraint",
+      },
     };
 
     save(original);
     expect(load(id)).toEqual(original);
+  });
+
+  test("migrates legacy active subagents to a restricted policy", () => {
+    const id = mkId("legacy-subagent-policy");
+    writeFixture(id, {
+      version: 17,
+      id,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      effort: "xhigh",
+      fastMode: false,
+      messages: [],
+      activeContext: null,
+      createdAt: 14_100_000,
+      updatedAt: 14_100_001,
+      lastContextTokens: null,
+      marked: false,
+      pinned: false,
+      sortOrder: -14_100_001,
+      folderId: null,
+      title: "Legacy child",
+      goal: null,
+      subagentMaxDepth: 0,
+      storageGeneration: 1,
+      lastUnwindReceipt: null,
+    });
+
+    expect(load(id)?.subagentPolicy).toEqual({
+      parentConversationId: null,
+      allowEdits: false,
+      parentSystemInstructions: "",
+    });
   });
 
   test("save then load returns a deeply equal conversation", () => {

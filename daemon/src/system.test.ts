@@ -3,6 +3,8 @@ import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { configDir } from "@exocortex/shared/paths";
 import { buildSystemPrompt, getUserAddendum, reloadUserAddendum, setUserAddendum } from "./system";
+import { getToolDefs } from "./tools/registry";
+import { SCOPED_SUBAGENT_IDENTITY, SCOPED_SUBAGENT_WRAPPER_NOTE, subagentToolNames } from "./subagent-policy";
 
 describe("system prompt", () => {
   test("includes Exocortex-owned tool/runtime guidance", () => {
@@ -39,6 +41,33 @@ describe("system prompt", () => {
     const nested = buildSystemPrompt({ conversationId: "nested-two", subagentMaxDepth: 2 });
     expect(nested).toContain("This turn's remaining native exo subagent depth is 2.");
     expect(nested).toContain("A child turn may receive at most max_depth=1.");
+  });
+
+  test("builds a minimal restricted prompt and tool set for scoped subagents", () => {
+    const readOnlyTools = subagentToolNames(0, false);
+    const prompt = buildSystemPrompt({
+      conversationId: "scoped-child",
+      subagentMaxDepth: 0,
+      identity: SCOPED_SUBAGENT_IDENTITY,
+      wrapperNote: SCOPED_SUBAGENT_WRAPPER_NOTE,
+      toolNames: readOnlyTools,
+      includeExternalToolHints: false,
+      conversationInstructions: "Inherited safety constraint",
+    });
+
+    expect(prompt).toStartWith(SCOPED_SUBAGENT_IDENTITY);
+    expect(prompt).toContain("Do only the assigned task.");
+    expect(prompt).toContain("Do not inventory repositories");
+    expect(prompt).toContain("Inherited safety constraint");
+    expect(prompt).not.toContain("# External tools");
+    expect(prompt).not.toContain("remaining native exo subagent depth");
+    expect(getToolDefs(readOnlyTools).map(tool => tool.name)).toEqual([
+      "read", "glob", "grep", "browse",
+    ]);
+    expect(getToolDefs(subagentToolNames(0, true)).map(tool => tool.name)).toEqual([
+      "bash", "read", "write", "glob", "grep", "edit", "patch", "browse", "chrono",
+    ]);
+    expect(getToolDefs(subagentToolNames(1, false)).map(tool => tool.name)).toContain("exo");
   });
 
   test("omits the conversation-id line for non-conversation utility prompts", () => {

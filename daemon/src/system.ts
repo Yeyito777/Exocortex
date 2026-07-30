@@ -61,7 +61,7 @@ export function setUserAddendum(text: string, expectedText?: string): void {
   }
 }
 
-function buildEnvironmentHeader(conversationId?: string): string {
+function buildEnvironmentHeader(conversationId?: string, identity = "You are Exo, the user's assistant."): string {
   const cwd = process.cwd();
   const date = new Date().toLocaleDateString("en-US", {
     weekday: "long",
@@ -71,7 +71,7 @@ function buildEnvironmentHeader(conversationId?: string): string {
   });
 
   return [
-    "You are Exo, the user's assistant.",
+    identity,
     "",
     "Environment:",
     `- Working directory: ${cwd}`,
@@ -92,13 +92,15 @@ export interface BuildSystemPromptOptions {
   includeExternalToolHints?: boolean;
   /** Session-specific behavior placed near the top of the system prompt. */
   wrapperNote?: string;
+  /** Session-specific assistant identity. */
+  identity?: string;
 }
 
 function buildPromptParts(options: BuildSystemPromptOptions & {
   includeToolHints: boolean;
   includeExternalHints: boolean;
 }): string[] {
-  const parts = [buildEnvironmentHeader(options.conversationId)];
+  const parts = [buildEnvironmentHeader(options.conversationId, options.identity)];
 
   if (options.wrapperNote) parts.push(options.wrapperNote);
 

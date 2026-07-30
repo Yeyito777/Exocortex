@@ -157,7 +157,7 @@ daemon registry rather than editing a tool-local routing file:
 
 ```json
 {"type":"subscribe_external_notification","reqId":"3","toolName":"discord","sourceId":"account:paramount:notifications","convId":"<conversation-id>","delivery":"wake"}
-{"type":"subscribe_external_notification","reqId":"3b","toolName":"discord","sourceId":"account:paramount:notifications","convId":"<conversation-id>","delivery":"soft","softWake":{"command":"./filter-event.sh","timeoutMs":30000,"hardWake":{"when":"failure","message":"Handle the selected external event.","includeOutput":true}}}
+{"type":"subscribe_external_notification","reqId":"3b","toolName":"discord","sourceId":"account:paramount:notifications","convId":"<conversation-id>","delivery":"soft","softWake":{"command":"./filter-event.sh","timeoutMs":30000,"hardWake":{"when":"failure","message":"Handle the selected external event.","includeOutput":false}}}
 {"type":"list_external_notification_subscriptions","reqId":"4","toolName":"discord","sourceId":"account:paramount:notifications"}
 {"type":"unsubscribe_external_notification","reqId":"5","subscriptionId":"<subscription-id>"}
 {"type":"update_external_notification_subscription","reqId":"6","subscriptionId":"<subscription-id>","delivery":"inbox","enabled":true}
@@ -171,8 +171,11 @@ daemon registry rather than editing a tool-local routing file:
   conversation unread without autonomously starting a model turn.
 - `soft` — durably run subscriber-owned static Bash without a model. The event
   is provided as JSON on stdin and is never interpolated into the command.
-  `softWake.hardWake.when` may be `failure` (including a script-defined non-zero
-  exit) or `always`; capped output can be included in the resulting hard wake.
+  Exit `0` means the filter did not select the event, while exit `10` explicitly
+  selects it for a hard wake. Other non-zero exits, timeouts, signals, and safety
+  blocks are actual filter failures. `softWake.hardWake.when` may be `failure`
+  (selected events and failures) or `always`; capped diagnostic output can be
+  included in the resulting hard wake.
 
 Soft-wake commands run at least once across crash windows. Exocortex exports a
 stable `EXOCORTEX_NOTIFICATION_OCCURRENCE_ID` plus subscription, source, and
@@ -180,7 +183,50 @@ event ID environment variables so side-effecting scripts can deduplicate. The
 stdin JSON has this shape:
 
 ```json
-{"type":"external_notification","subscription":{"id":"…","conversationId":"…","toolName":"discord","sourceId":"…","sourceLabel":"…"},"event":{"id":"discord-message-123","occurredAt":1770000000000,"text":"DM from Fede: …","data":{"senderId":"123","body":"…"}}}
+{"type":"external_notification","subscription":{"id":"…","conversationId":"…","toolName":"discord","sourceId":"…","sourceLabel":"…"},"event":{"id":"discord-message-123","occurredAt":1770000000000,"text":"DM from Fede: …","data":{"schemaVersion":1,"accountAlias":"paramount","kind":"dm","channel":{"id":"456","type":"dm","name":"Fede","participants":["fede"],"participantIds":["123"]},"guild":null,"messageId":"discord-message-123","author":{"id":"123","username":"fede","displayName":"Fede"},"content":"…","mentionsAssistant":false,"replyTo":null}}}
+```
+
+`event.text` is a human-readable rendering for the model and UI. It is not a
+machine-readable interface: publishers may wrap lines, truncate previews, or
+change punctuation without versioning. `event.data` is the stable structured
+interface for routing and filtering. Soft-wake commands should inspect
+`event.data` and must not parse fields such as sender IDs, event kinds, message
+bodies, mentions, or reply metadata back out of `event.text` when those fields
+are available structurally.
+
+The publisher's `text` is the event body, not another provenance envelope.
+Exocortex adds the canonical `[notification] Tool/account · kind`
+header exactly once. Event bodies should be compact but action-complete:
+
+- Put the location and its actionable ID first, for example
+  `raw mutton › #yeyo-dev [ch:1492179045167796224]` or
+  `Family Chat [chat:120363…@g.us]`.
+- When a source is configured to include context, preserve that context in
+  chronological order under `Context:`. Do not re-rank or suppress it at render
+  time.
+- Render each contextual message as
+  `Name <platform-user-id> [trust]: content [msg:message-id]`. For platforms
+  with native mention syntax, preserve it (for example Discord `<@user-id>`).
+- Render reply relationships inline as `↳ [reply-to:message-id]`.
+- Separate the triggering event with `→`, preserve its original line breaks,
+  and put its message ID on the final line.
+- Do not repeat event IDs, timestamps, schema versions, subscription IDs,
+  routing status, raw JSON, or generic untrusted-content prose in normal event
+  text. Keep those in structured data/metadata. Actual filter failures may show
+  concise diagnostics separately.
+
+For example, a Discord publisher body can be:
+
+```text
+raw mutton › #yeyo-dev [ch:1492179045167796224]
+
+Context:
+Yeyito <@310543961825738754> [owner]: previous message [msg:1531350891586916523]
+Paramount <@1031059414846808234> [assistant] ↳ [reply-to:1531350891586916523]: response [msg:1531350947148726345]
+
+→ Yeyito <@310543961825738754> [owner]:
+full multiline message
+[msg:1531747966119968879]
 ```
 
 Commands are selected by the subscription owner, never by the publisher.
@@ -190,6 +236,12 @@ quotas; a publisher receives `failed` backpressure and must not treat that event
 as accepted. Managed command runners enforce their timeout and terminate their
 process group if the owning daemon channel disappears. Command output and event
 content remain explicitly untrusted when included in a model wake.
+
+Filter stdout is for concise diagnostics or an intentional presentation
+addition, not event transport. A selecting filter should normally print
+nothing and exit `10`; it must not echo the stdin payload or `event.text`, which
+Exocortex already retains and renders once. Set `includeOutput` only when that
+extra output is genuinely useful.
 
 Actual command exits, signals, timeouts, and safety-policy blocks are terminal
 soft-wake outcomes and follow the configured hard-wake policy. Runner/spawn or
@@ -216,7 +268,7 @@ Publish one logical platform event or intentionally formatted batch with a
 stable event ID:
 
 ```json
-{"type":"publish_external_notification","reqId":"7","toolName":"discord","sourceId":"account:paramount:notifications","eventId":"discord-message-123","occurredAt":1770000000000,"text":"DM from Fede: …","data":{"senderId":"123","body":"…"}}
+{"type":"publish_external_notification","reqId":"7","toolName":"discord","sourceId":"account:paramount:notifications","eventId":"discord-message-123","occurredAt":1770000000000,"text":"DM from Fede: …","data":{"schemaVersion":1,"accountAlias":"paramount","kind":"dm","channel":{"id":"456","type":"dm","name":"Fede","participants":["fede"],"participantIds":["123"]},"guild":null,"messageId":"discord-message-123","author":{"id":"123","username":"fede","displayName":"Fede"},"content":"…","mentionsAssistant":false,"replyTo":null}}
 ```
 
 The daemon finds enabled subscriptions, adds an explicit untrusted-external-
@@ -229,8 +281,17 @@ retry the same event ID safely. Treat `queued`, `inbox`, `started`, and
 Requirements:
 
 - Never include a target conversation ID in a publish request.
-- `data`, when present, must be JSON-compatible untrusted event data. Keep it
-  compact (at most 100,000 serialized characters) and do not include secrets.
+- Sources with independently routable or filterable event attributes must
+  publish them in `data`; omit `data` only when an event genuinely has no
+  structured attributes. Include a positive integer `schemaVersion`, a stable
+  event-kind discriminator, platform IDs, and the untruncated content and
+  mention/reply metadata needed by subscribers. Treat the schema as an API:
+  make changes backward-compatible or increment `schemaVersion`.
+- `data` must be JSON-compatible untrusted event data. Keep it compact (at most
+  100,000 serialized characters) and do not include secrets. Human-oriented
+  history/context may remain in `text`; do not duplicate an unbounded transcript
+  into `data`.
+- Subscribers must route on `data`, not the presentation format of `text`.
 - Never include secrets in source metadata, event IDs, text, or logs.
 - Use platform-stable event IDs so reconnect/replay does not duplicate turns.
 - Exclude outgoing/self-authored events and history hydration unless the source

@@ -17,7 +17,7 @@ import type { RenderState } from "./state";
 import { EDIT_INDEX_INSTRUCTIONS, focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
 import { resolveAction, sidebarTopShortcutIndex } from "./keybinds";
 import { handleChatKey } from "./chat";
-import { toggleToolOutputPreservingViewport } from "./chatscroll";
+import { toggleSidebarPreservingViewport, toggleToolOutputPreservingViewport } from "./chatscroll";
 import {
   focusConversationAt,
   focusConversationById,
@@ -332,7 +332,7 @@ export function handleFocusedKey(
     case "restart_daemon":
       return { type: "restart_daemon" };
     case "sidebar_toggle":
-      state.sidebar.open = !state.sidebar.open;
+      toggleSidebarPreservingViewport(state);
       if (state.sidebar.open) {
         ensureSidebarReady(state);
       } else {

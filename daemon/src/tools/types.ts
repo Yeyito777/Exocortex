@@ -97,6 +97,8 @@ export interface ImageData {
 export interface ToolResult {
   output: string;
   isError: boolean;
+  /** Process exit status when the executor ran a foreground command. */
+  exitCode?: number | null;
   /** Internal execution classification used by durable automation retry loops. */
   failureKind?: "infrastructure";
   image?: ImageData;

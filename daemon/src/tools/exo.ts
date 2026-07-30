@@ -1,4 +1,4 @@
-import { MAX_EXO_SUBAGENT_DEPTH } from "../messages";
+import { EFFORT_LEVELS, MAX_EXO_SUBAGENT_DEPTH } from "../messages";
 import type { Tool } from "./types";
 
 export const EXO_ACTIONS = [
@@ -54,9 +54,10 @@ const EXO_SYSTEM_HINT = [
   "Do not spawn subagents for ordinary repository inspection, routine planning, single-component implementation, or generic code review. Do not delegate work you are simultaneously doing yourself.",
   "Before spawning, identify a concrete, non-overlapping deliverable and how its result will be used. Prefer no more than two active children; exceed that only for clearly partitioned work with substantial expected wall-time savings or when the user explicitly requests broader delegation.",
   "Start reviews only after the implementation is stable. Prefer one targeted review; do not launch repeated final reviews without substantial new changes or unresolved high-risk findings. Reuse an existing child instead of spawning a replacement while it is still running.",
-  "When an OpenAI subagent is warranted, omit `model` for the newest default (currently gpt-5.6-sol), use gpt-5.6-terra or gpt-5.6-luna for lighter work, and use older generations only when requested or required.",
+  "Subagents default to medium effort. Specify `effort` only when the task clearly benefits from another supported level. When an OpenAI subagent is warranted, omit `model` for the newest default (currently gpt-5.6-sol), use gpt-5.6-terra or gpt-5.6-luna for lighter work, and use older generations only when requested or required.",
   "Starting a subagent requires a short title of about three words; it becomes the child conversation title and identifies the task in the parent UI.",
   "Set max_depth=0 unless the child has a clear need to delegate a further independent workstream.",
+  "Subagents are read-only by default. Set allow_edits=true only when the child's deliverable requires shell access or file changes.",
   "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
   "Subagents start in the daemon's working directory, so include the target absolute directory and all necessary task context.",
 ].join("\n");
@@ -124,6 +125,15 @@ export const exo: Tool = {
       model: {
         type: "string",
         description: "Optional model or provider/model spec for send (for example gpt-5.6-terra or deepseek/pro).",
+      },
+      effort: {
+        type: "string",
+        enum: EFFORT_LEVELS,
+        description: "Optional reasoning effort for a new subagent. Defaults to medium and is normalized to the selected model's supported levels.",
+      },
+      allow_edits: {
+        type: "boolean",
+        description: "For a new subagent, opt into shell and write/edit/patch tools. Defaults to false, cannot be changed by later sends, and cannot be granted by a scoped parent that lacks edit access.",
       },
       mode: {
         type: "string",
