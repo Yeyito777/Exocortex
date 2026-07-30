@@ -98,7 +98,7 @@ export function getToolDisplayInfo(): ToolDisplayInfo[] {
 export function buildToolSystemHints(allowedNames?: readonly string[]): string {
   return getSelectedAvailableTools(allowedNames)
     .filter(t => t.systemHint)
-    .map(t => `# ${t.name}\n${t.systemHint!}`)
+    .map(t => `## ${t.name}\n${t.systemHint!}`)
     .join("\n");
 }
 
