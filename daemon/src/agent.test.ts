@@ -190,3 +190,100 @@ describe("automatic agent compaction", () => {
     expect(compactCalls).toBe(1);
   });
 });
+
+describe("tool-call presentation", () => {
+  test("snapshots presentation into live blocks and durable tool-use messages", async () => {
+    let streamCalls = 0;
+    const fakeStream = (async () => {
+      streamCalls++;
+      if (streamCalls === 1) {
+        return {
+          text: "",
+          thinking: "",
+          stopReason: "tool_use",
+          blocks: [],
+          toolCalls: [{ id: "call-local", name: "bash", input: { command: "./scripts/exo-check" } }],
+        } satisfies StreamResult;
+      }
+      return {
+        text: "done",
+        thinking: "",
+        stopReason: "stop",
+        blocks: [{ type: "text", text: "done" }],
+        toolCalls: [],
+      } satisfies StreamResult;
+    }) as typeof streamMessage;
+    const emitted: Array<Parameters<AgentCallbacks["onToolCall"]>[0]> = [];
+    const presentation = {
+      bashStyles: [{ cmd: "./scripts/exo-check", label: "Check", color: "#123456" }],
+    };
+
+    const result = await runAgentLoop(
+      [{ role: "user", content: "check it" }],
+      "openai",
+      "gpt-5.6-sol",
+      callbacks({ onToolCall: (block) => emitted.push(block) }),
+      {
+        streamMessageFn: fakeStream,
+        presentationResolver: () => presentation,
+        executor: async () => [{
+          toolCallId: "call-local",
+          toolName: "bash",
+          output: "ok",
+          isError: false,
+        }],
+      },
+    );
+
+    expect(emitted[0]?.presentation).toEqual(presentation);
+    expect(result.blocks.find((block) => block.type === "tool_call")).toMatchObject({ presentation });
+    expect(result.newMessages[0]?.content).toContainEqual({
+      type: "tool_use",
+      id: "call-local",
+      name: "bash",
+      input: { command: "./scripts/exo-check" },
+      presentation,
+    });
+  });
+
+  test("a stalled presentation resolver never prevents tool execution", async () => {
+    let streamCalls = 0;
+    let executed = false;
+    const fakeStream = (async () => {
+      streamCalls++;
+      return streamCalls === 1
+        ? {
+            text: "",
+            thinking: "",
+            stopReason: "tool_use",
+            blocks: [],
+            toolCalls: [{ id: "call-1", name: "bash", input: { command: "./exo-test" } }],
+          } satisfies StreamResult
+        : {
+            text: "done",
+            thinking: "",
+            stopReason: "stop",
+            blocks: [{ type: "text", text: "done" }],
+            toolCalls: [],
+          } satisfies StreamResult;
+    }) as typeof streamMessage;
+
+    const result = await runAgentLoop(
+      [{ role: "user", content: "run it" }],
+      "openai",
+      "gpt-5.6-sol",
+      callbacks(),
+      {
+        streamMessageFn: fakeStream,
+        presentationResolver: () => new Promise(() => {}),
+        executor: async () => {
+          executed = true;
+          return [{ toolCallId: "call-1", toolName: "bash", output: "ok", isError: false }];
+        },
+      },
+    );
+
+    expect(executed).toBe(true);
+    expect(result.blocks.find((block) => block.type === "tool_call")).not.toHaveProperty("presentation");
+  });
+});

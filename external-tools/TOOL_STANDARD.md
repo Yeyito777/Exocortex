@@ -21,6 +21,90 @@ Each tool is its own git repository, independently developed. Tools are
 installed by cloning into `external-tools/` — the daemon discovers them
 automatically.
 
+## Sidecar commands
+
+A **sidecar command** is an ordinary executable that opts into custom
+Exocortex TUI presentation through an adjacent `exo-manifest.json`. It is
+useful for project scripts and one-off tools that should remain outside the
+installed external-tool registry.
+
+Use this layer when the model already knows about the command from the user's
+request, an `AGENTS.md`, or project documentation, and the only Exocortex
+integration needed is a recognizable label and color. Use a full external tool
+manifest below when the command needs global discovery, system-prompt
+instructions, PATH installation, auth, notifications, or daemon supervision.
+
+### Creating one
+
+1. Create an executable whose basename starts with `exo-`.
+2. Put `exo-manifest.json` in the same directory.
+3. Tell the model when to use the command in `AGENTS.md`, project documentation,
+   or the request itself. The display manifest is deliberately not a discovery
+   or instruction mechanism.
+4. Invoke it through a static relative or absolute path.
+
+For example:
+
+```
+project/
+  scripts/
+    exo-deploy
+    exo-manifest.json
+```
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+environment="${1:?usage: exo-deploy <environment>}"
+# Perform the project-local operation.
+printf 'Deployed to %s.\n' "$environment"
+```
+
+```json
+{
+  "version": 1,
+  "display": {
+    "label": "Deploy",
+    "color": "#7aa2f7"
+  }
+}
+```
+
+```bash
+chmod +x ./scripts/exo-deploy
+./scripts/exo-deploy production
+```
+
+The Bash tool call is rendered as `Deploy production`, while execution and
+stdout remain those of the original command. One manifest applies to every
+eligible `exo-*` executable in its directory; put commands in separate
+directories when they need different labels or colors.
+
+### Contract and boundaries
+
+- The executable is still an ordinary Bash command. The manifest cannot affect
+  arguments, stdin, environment, permissions, execution, output, auth, or
+  daemon supervision.
+- The executable must be called through a static relative or absolute path.
+  PATH-only `exo-deploy`, `bash exo-deploy`, shell expansion, and command
+  substitution are not eligible.
+- Relative lookup uses the Bash tool's initial working directory. Relative
+  invocations after a preceding `cd`, `pushd`, `popd`, `source`, or `eval` are
+  conservatively left unstyled; use a direct path from the initial directory or
+  an absolute path instead.
+- The basename must be `exo-<name>`, with a non-empty `<name>`, and the manifest
+  must be in the executable's lexical directory.
+- `version` must be `1`; `display.label` is at most 64 characters and
+  `display.color` is a six-digit hex color.
+- Missing, unreadable, oversized, slow, or invalid manifests fall back to
+  ordinary Bash presentation and never block command execution.
+- Presentation is snapshotted into the tool call, so conversation history does
+  not change when the manifest is edited or removed later.
+- Commands with a primary opaque payload should follow the stdin convention
+  described below. A display manifest does not make freeform inline shell
+  arguments literal-safe.
+
 ## manifest.json
 
 ```json

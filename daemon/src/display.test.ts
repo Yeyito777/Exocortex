@@ -300,6 +300,26 @@ describe("assistant messages", () => {
     });
   });
 
+  test("tool_use presentation snapshot survives history projection", () => {
+    const presentation = {
+      bashStyles: [{ cmd: "./scripts/exo-check", label: "Check", color: "#123456" }],
+    };
+    const content: ApiContentBlock[] = [{
+      type: "tool_use",
+      id: "tu-local",
+      name: "bash",
+      input: { command: "./scripts/exo-check" },
+      presentation,
+    }];
+
+    const { entries } = build([{ role: "assistant", content, metadata: null }]);
+    expect(aiEntry(entries[0]).blocks[0]).toMatchObject({
+      type: "tool_call",
+      toolCallId: "tu-local",
+      presentation,
+    });
+  });
+
   test("tool_use summary: uses detail when non-empty", () => {
     const input = { path: "/tmp/f" };
     const content: ApiContentBlock[] = [

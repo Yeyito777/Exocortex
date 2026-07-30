@@ -329,7 +329,9 @@ function extractCommandCandidate(summary: string): CommandCandidate | null {
  */
 function tryMatch(command: string, style: ExternalToolStyle): ResolvedToolDisplay | null {
   const { cmd } = style;
-  if (command === cmd || command.startsWith(cmd + " ") || command.startsWith(cmd + "\n")) {
+  const boundary = command[cmd.length];
+  const hasCommandBoundary = boundary !== undefined && /[\s<>]/.test(boundary);
+  if (command === cmd || (command.startsWith(cmd) && hasCommandBoundary)) {
     const detail = command.slice(cmd.length).trimStart();
     return { label: style.label, detail, fg: hexToAnsi(style.color), cmd };
   }
