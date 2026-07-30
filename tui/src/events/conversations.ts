@@ -244,6 +244,7 @@ export function handleConversationLoaded(
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
+  state.deferredHistoryRender = null;
   setLoadedConversationToolOutputState(state, event.toolOutputsIncluded);
 
   // Entries arrive in display order — just map to TUI message types.
@@ -354,6 +355,9 @@ export function handleConversationHistoryLoaded(
       ...olderMessages,
       ...currentMessages.slice(pinnedCount),
     ];
+    // The prepend changes every suffix index. Recompute the viewport-sized
+    // suffix on the next render rather than advancing stale deferred state.
+    state.deferredHistoryRender = null;
     state.historyStartIndex = event.historyStartIndex;
     state.historyStartUserIndex = event.historyStartUserIndex;
     state.historyTotalEntries = event.historyTotalEntries;

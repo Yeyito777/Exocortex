@@ -71,10 +71,9 @@ interface HistoryRenderCacheEntry {
 }
 
 const historyRenderCache = new WeakMap<RenderState, HistoryRenderCacheEntry>();
-const DEFERRED_HISTORY_MIN_MESSAGES = 24;
-const DEFERRED_HISTORY_INITIAL_MESSAGE_BATCH = 8;
-const DEFERRED_HISTORY_ADVANCE_MESSAGE_BATCH = 8;
-const DEFERRED_HISTORY_GRACE_LINES = 200;
+const DEFERRED_HISTORY_FALLBACK_MESSAGE_BATCH = 8;
+/** First paint includes the visible viewport plus one viewport of scrollback. */
+const DEFERRED_HISTORY_TARGET_VIEWPORTS = 2;
 const AUTOCOMPLETE_MAX_VISIBLE_ROWS = 10;
 const HISTORY_LOADING_FRAME_INTERVAL_MS = 80;
 
@@ -118,8 +117,21 @@ function shouldForceFullHistoryRender(state: RenderState): boolean {
 function canUseDeferredHistoryRender(state: RenderState, width: number): boolean {
   return !shouldForceFullHistoryRender(state)
     && state.convId !== null
-    && state.messages.length >= DEFERRED_HISTORY_MIN_MESSAGES
+    && state.messages.length > 0
     && width > 0;
+}
+
+/**
+ * Find the start of the complete user turn immediately before `beforeIndex`.
+ * Synthetic/test histories without user messages retain the old bounded message
+ * batching behavior so progressive rendering still makes forward progress.
+ */
+function previousHistoryTurnStart(state: RenderState, beforeIndex: number): number {
+  const safeBeforeIndex = Math.max(0, Math.min(beforeIndex, state.messages.length));
+  for (let index = safeBeforeIndex - 1; index >= 0; index--) {
+    if (state.messages[index]?.role === "user") return index;
+  }
+  return Math.max(0, safeBeforeIndex - DEFERRED_HISTORY_FALLBACK_MESSAGE_BATCH);
 }
 
 function buildDeferredHistorySuffix(
@@ -127,11 +139,17 @@ function buildDeferredHistorySuffix(
   width: number,
   targetLines: number,
 ): BuildMessageLinesResult {
-  let startMessageIndex = Math.max(0, state.messages.length - DEFERRED_HISTORY_INITIAL_MESSAGE_BATCH);
+  // Start with one complete newest turn, then add older turns only until the
+  // suffix fills the visible viewport and its scrollback buffer. Turn sizes vary
+  // wildly (a single tool-heavy turn can be hundreds of terminal rows), so fixed
+  // message/turn counts either leave the screen sparse or do excessive work.
+  let startMessageIndex = previousHistoryTurnStart(state, state.messages.length);
   let result = buildMessageLines(state, width, { startMessageIndex, partial: startMessageIndex > 0 });
 
   while (startMessageIndex > 0 && result.lines.length < targetLines) {
-    startMessageIndex = Math.max(0, startMessageIndex - DEFERRED_HISTORY_INITIAL_MESSAGE_BATCH);
+    const nextStartMessageIndex = previousHistoryTurnStart(state, startMessageIndex);
+    if (nextStartMessageIndex === startMessageIndex) break;
+    startMessageIndex = nextStartMessageIndex;
     result = buildMessageLines(state, width, { startMessageIndex, partial: startMessageIndex > 0 });
   }
 
@@ -216,7 +234,7 @@ export function hasDeferredHistoryRenderWork(state: RenderState): boolean {
 export function advanceDeferredHistoryRender(state: RenderState): boolean {
   const deferred = state.deferredHistoryRender;
   if (!deferred || deferred.complete || deferred.convId !== state.convId) return false;
-  const nextStart = Math.max(0, deferred.startMessageIndex - DEFERRED_HISTORY_ADVANCE_MESSAGE_BATCH);
+  const nextStart = previousHistoryTurnStart(state, deferred.startMessageIndex);
   if (nextStart === deferred.startMessageIndex) return false;
   deferred.startMessageIndex = nextStart;
   deferred.complete = nextStart === 0;
@@ -1249,7 +1267,7 @@ export function render(state: RenderState): void {
   const messageAreaStart = 3;
   const taskLayout = layoutTaskPanel(state, chatW, messageAreaHeight);
   const historyWidth = taskLayout.historyWidth;
-  const deferredTargetLines = messageAreaHeight + DEFERRED_HISTORY_GRACE_LINES;
+  const deferredTargetLines = Math.max(1, messageAreaHeight * DEFERRED_HISTORY_TARGET_VIEWPORTS);
   const { lines: allLines, messageBounds, wrapContinuation, wrapJoiners, copyLines, lineAnchors } = getHistoryRender(
     state,
     chatW,

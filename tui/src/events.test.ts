@@ -134,6 +134,13 @@ describe("paged conversation history events", () => {
     state.historyLoadingOlder = true;
     state.historyLoadingStartedAt = 100;
     state.historyLoadingRequestId = "history-1";
+    state.deferredHistoryRender = {
+      convId: "conv-1",
+      width: 80,
+      startMessageIndex: 1,
+      generation: 1,
+      complete: false,
+    };
     state.layout.messageAreaHeight = 20;
     state.historyLines = ["cached visible bottom"];
 
@@ -162,6 +169,7 @@ describe("paged conversation history events", () => {
     expect(state.historyStartUserIndex).toBe(0);
     expect(state.historyHasOlder).toBe(false);
     expect(state.historyLoadingOlder).toBe(false);
+    expect(state.deferredHistoryRender).toBeNull();
     // Bottom-anchored initial expansion skips the old/new double history reflow;
     // the normal render scheduled by main.ts replaces this cache afterward.
     expect(state.historyLines).toEqual(["cached visible bottom"]);

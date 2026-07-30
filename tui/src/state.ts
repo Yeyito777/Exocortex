@@ -370,6 +370,7 @@ export function resetHistoryPagination(state: RenderState): void {
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
+  state.deferredHistoryRender = null;
 }
 
 /** Fully reset historical tool-output state (used when clearing/switching chats). */

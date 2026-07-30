@@ -352,6 +352,7 @@ export function handleEvent(
 
       preserveViewportAcrossHistoryMutation(state, () => {
         state.messages = [];
+        state.deferredHistoryRender = null;
         clearStreamingTailMessages(state);
         state.contextTokens = event.contextTokens;
         setCurrentConversationToolOutputAvailability(state, event.toolOutputsIncluded);

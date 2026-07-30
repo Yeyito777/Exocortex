@@ -909,6 +909,47 @@ describe("render caching and frame diffing", () => {
     expect(stripAnsi(state.historyLines.join("\n"))).toContain("newest-39");
   });
 
+  test("fills first paint with complete newest turns up to one viewport of buffer", () => {
+    const state = createInitialState();
+    state.cols = 212;
+    state.rows = 57;
+    state.convId = "turn-sized-conversation";
+    state.panelFocus = "sidebar";
+    state.messages = [
+      { role: "user", text: "oldest-user", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: `oldest-hidden ${"word ".repeat(4000)}` }], metadata: null },
+      { role: "user", text: "older-user", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: `older-hidden ${"word ".repeat(4000)}` }], metadata: null },
+      { role: "user", text: "fill-user", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: `fill-visible ${"word ".repeat(4000)}` }], metadata: null },
+      { role: "user", text: "recent-user", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "recent-answer" }], metadata: null },
+      { role: "user", text: "newest-user", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "newest-answer" }], metadata: null },
+    ];
+
+    renderSilently(state);
+
+    const firstPaint = stripAnsi(state.historyLines.join("\n"));
+    expect(state.deferredHistoryRender).toMatchObject({ startMessageIndex: 4, complete: false });
+    expect(state.historyLines.length).toBeGreaterThanOrEqual(state.layout.messageAreaHeight * 2);
+    expect(firstPaint).toContain("fill-visible");
+    expect(firstPaint).toContain("newest-answer");
+    expect(firstPaint).not.toContain("older-hidden");
+    expect(firstPaint).not.toContain("oldest-hidden");
+
+    expect(advanceDeferredHistoryRender(state)).toBe(true);
+    renderSilently(state);
+    expect(state.deferredHistoryRender).toMatchObject({ startMessageIndex: 2, complete: false });
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("older-hidden");
+    expect(stripAnsi(state.historyLines.join("\n"))).not.toContain("oldest-hidden");
+
+    expect(advanceDeferredHistoryRender(state)).toBe(true);
+    renderSilently(state);
+    expect(state.deferredHistoryRender).toMatchObject({ startMessageIndex: 0, complete: true });
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("oldest-hidden");
+  });
+
   test("abandoned deferred history work does not advance after conversation switch", () => {
     const state = createInitialState();
     state.cols = 100;
