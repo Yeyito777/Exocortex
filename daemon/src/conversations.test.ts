@@ -6,8 +6,8 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
-import { HistoryUnwindRefreshRequiredError, bumpToTop, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
-import { setActiveJob, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob, isHistoryUnwindPending } from "./streaming";
+import { HistoryUnwindRefreshRequiredError, appendRealtimeCallStatus, appendRealtimeTranscript, bumpToTop, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, promoteRealtimeTranscript, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
+import { setActiveJob, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
 import { load as loadPersisted } from "./persistence";
 
@@ -67,6 +67,113 @@ describe("canonical conversation cache", () => {
     flush(dirtyId);
     conversationCacheInternalsForTest.evictClean();
     expect(conversationCacheInternalsForTest.snapshot().ids).toEqual([]);
+  });
+});
+
+describe("realtime transcripts", () => {
+  test("persists model-hidden call boundaries without counting them as turns", () => {
+    const id = mkId("realtime-call-status");
+    create(id, "openai", "gpt-5.4", "Call status");
+
+    expect(appendRealtimeCallStatus(id, "Realtime call started.", 500)).toBe(true);
+    expect(appendRealtimeCallStatus(id, "Realtime call ended.", 2_500)).toBe(true);
+
+    const messages = get(id)!.messages;
+    expect(messages).toEqual([
+      expect.objectContaining({
+        role: "system",
+        content: "Realtime call started.",
+        metadata: expect.objectContaining({ kind: "realtime_call_status" }),
+      }),
+      expect.objectContaining({
+        role: "system",
+        content: "Realtime call ended.",
+        metadata: expect.objectContaining({ kind: "realtime_call_status" }),
+      }),
+    ]);
+    expect(messages[0]!.metadata?.system).toBeUndefined();
+    expect(messages[1]!.metadata?.system).toBeUndefined();
+    expect(getSummary(id)?.messageCount).toBe(0);
+  });
+
+  test("persists call utterances as ordinary provenance-tagged user and assistant turns", () => {
+    const id = mkId("realtime-transcript");
+    create(id, "openai", "gpt-5.4", "Call transcript");
+
+    expect(appendRealtimeTranscript(id, "user", "  What is six plus one?  ", 1_000)).toBe(true);
+    expect(appendRealtimeTranscript(id, "assistant", "Seven.", 2_000, {
+      endedAt: 4_500,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 3,
+    })).toBe(true);
+
+    const messages = get(id)!.messages;
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({
+      role: "user",
+      content: "What is six plus one?",
+      metadata: { kind: "realtime_transcript" },
+      contextCheckpoint: { version: 1, transcriptHistoryCount: 0 },
+    });
+    expect(messages[1]).toMatchObject({
+      role: "assistant",
+      content: "Seven.",
+      metadata: {
+        startedAt: 2_000,
+        endedAt: 4_500,
+        model: "gpt-live-1-boulder-alpha",
+        tokens: 3,
+        kind: "realtime_transcript",
+      },
+    });
+    expect(messages[0]!.metadata?.system).toBeUndefined();
+    expect(messages[1]!.metadata?.system).toBeUndefined();
+    expect(getSummary(id)?.messageCount).toBe(2);
+  });
+
+  test("promotes a matching transcript in place without adding another user turn", () => {
+    const id = mkId("realtime-delegation");
+    create(id, "openai", "gpt-5.4", "Realtime delegation");
+    appendRealtimeTranscript(id, "user", "Please inspect the repository.", 1_000);
+    appendRealtimeTranscript(id, "assistant", "I’ll take a look.", 1_500);
+
+    const original = get(id)!.messages[0]!;
+    original.contextTokens = {
+      version: 1,
+      provider: "openai",
+      model: "gpt-5.4",
+      signature: "stale",
+      totalTokens: 10,
+      breakdown: {
+        userText: 10,
+        userImage: 0,
+        assistantText: 0,
+        toolUse: 0,
+        toolResultText: 0,
+        toolResultImage: 0,
+        thinking: 0,
+        providerReasoning: 0,
+        systemHint: 0,
+      },
+      source: "estimated",
+      updatedAt: 1_000,
+    };
+
+    const replacement = "[realtime delegation]\nTask: Inspect the repository.\nOriginal speech: Please inspect the repository.";
+    expect(promoteRealtimeTranscript(id, "Please inspect the repository", replacement)).toBe(true);
+
+    const messages = get(id)!.messages;
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toBe(original);
+    expect(messages[0]).toMatchObject({
+      role: "user",
+      content: replacement,
+      metadata: { startedAt: 1_000, kind: "realtime_transcript" },
+      contextCheckpoint: { version: 1, transcriptHistoryCount: 0 },
+      contextTokens: null,
+    });
+    expect(messages[1]).toMatchObject({ role: "assistant", content: "I’ll take a look." });
+    expect(promoteRealtimeTranscript(id, "unrelated speech", replacement)).toBe(false);
   });
 });
 
@@ -1470,17 +1577,79 @@ describe("getDisplayData", () => {
     conv.messages[1].contextTokens = null;
     setActiveJob(id, new AbortController(), 100);
     replaceStreamingDisplayMessages(id, completedRound);
+    setStreamingCommittedBlockCount(id, 3);
 
     const snapshot = getRenderSnapshot(id, false)!;
 
     expect(snapshot.entries).toMatchObject([
       { type: "user", text: "initial" },
+      {
+        type: "ai",
+        blocks: [
+          { type: "thinking", text: "checking" },
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash" },
+          { type: "tool_result", toolCallId: "call-1", isError: false },
+        ],
+      },
     ]);
-    expect(snapshot.pendingAI?.blocks).toEqual([
-      { type: "thinking", text: "checking" },
-      { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "pwd" }, summary: "pwd" },
-      { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
-    ]);
+    expect(snapshot.pendingAI).toMatchObject({ blocks: [], blockOffset: 3 });
+  });
+
+  test("keeps interleaved external transcripts canonical while exposing only the unfinished live tail", () => {
+    const id = mkId("display-interleaved-transcript");
+    create(id, "openai", "gpt-5.6-sol");
+    const conv = get(id)!;
+    const firstRound = {
+      role: "assistant" as const,
+      content: [{ type: "tool_use" as const, id: "call-glob", name: "glob", input: { pattern: "docs/**" } }],
+      metadata: null,
+    };
+    const firstResult = {
+      role: "user" as const,
+      content: [{ type: "tool_result" as const, tool_use_id: "call-glob", content: "README.md" }],
+      metadata: null,
+    };
+    const secondRound = {
+      role: "assistant" as const,
+      content: [{ type: "tool_use" as const, id: "call-read", name: "read", input: { file_path: "README.md" } }],
+      metadata: null,
+    };
+    const interjection = {
+      role: "user" as const,
+      content: "How long will this take?",
+      metadata: {
+        startedAt: 2_000,
+        endedAt: 2_000,
+        model: "gpt-5.6-sol" as const,
+        tokens: 0,
+        kind: "realtime_transcript",
+      },
+    };
+    conv.messages.push(
+      { role: "user", content: "initial", metadata: null },
+      structuredClone(firstRound),
+      structuredClone(firstResult),
+      interjection,
+      structuredClone(secondRound),
+    );
+    setActiveJob(id, new AbortController(), 1_000);
+    replaceStreamingDisplayMessages(id, [firstRound, firstResult, secondRound]);
+    replaceCurrentStreamingBlocks(id, [{ type: "text", text: "Still reading" }]);
+    setStreamingCommittedBlockCount(id, 3);
+
+    const snapshot = getRenderSnapshot(id, false)!;
+    const toolCallIds = snapshot.entries.flatMap(entry =>
+      entry.type === "ai"
+        ? entry.blocks.filter(block => block.type === "tool_call").map(block => block.toolCallId)
+        : []
+    );
+
+    expect(toolCallIds).toEqual(["call-glob", "call-read"]);
+    expect(snapshot.entries.filter(entry => entry.type === "user" && entry.text === interjection.content)).toHaveLength(1);
+    expect(snapshot.pendingAI).toMatchObject({
+      blocks: [{ type: "text", text: "Still reading" }],
+      blockOffset: 3,
+    });
   });
 
   test("late-join snapshots retain a durable compaction boundary without duplicating its assistant prefix", () => {

@@ -92,14 +92,18 @@ describe("late-join streaming integration", () => {
       expect(seen).toEqual(["conversation_loaded", "streaming_started"]);
       expect(state.messages).toMatchObject([
         { role: "user", text: "hi", metadata: null },
+        {
+          role: "assistant",
+          blocks: [
+            { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
+            { type: "tool_result", toolCallId: "call-1", isError: false },
+            { type: "text", text: "done with the tool round" },
+          ],
+        },
       ]);
       expect(state.pendingAI).toMatchObject({
         role: "assistant",
-        blocks: [
-          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-          { type: "tool_result", toolCallId: "call-1", isError: false },
-          { type: "text", text: "done with the tool round" },
-        ],
+        blocks: [],
         metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
       });
 

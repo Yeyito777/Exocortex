@@ -57,6 +57,8 @@ import { focusedConversationTasks, msUntilTaskPanelEntryUpdate } from "./activit
 import { beginOlderHistoryLoad, INITIAL_BUFFER_ADDITIONAL_TURNS, OLDER_HISTORY_PAGE_TURNS, shouldLoadOlderHistory } from "./historypagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { log } from "./log";
+import { CallMediaController } from "./call-media";
+import { formatMicGainDb, loadMicGainDb, saveMicGainDb } from "./mic-gain";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -94,6 +96,7 @@ let reconnecting = false;
 let reconnectNavigationTarget: string | null = null;
 let terminalSetUp = false;
 let voiceInput: VoiceInputController | null = null;
+let callMedia: CallMediaController | null = null;
 let pendingVoiceQueuePrompt = false;
 let pendingNewConversationConvId: string | null = null;
 let pendingLocalInterruptConvId: string | null = null;
@@ -353,6 +356,7 @@ function maybeRequestOlderHistory(): void {
 
 function onDaemonEvent(event: Event): void {
   const eventStartedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
+  callMedia?.handleEvent(event);
   if (pendingEditMessageUnwind) {
     const pending = pendingEditMessageUnwind;
     const unwindEvent = classifyPendingEditMessageUnwindEvent(pending, event);
@@ -733,6 +737,37 @@ function handleSubmit(): void {
         case "btw_close_requested":
           closeBtwSession();
           break;
+        case "call_requested":
+          if (state.convId) {
+            daemon.startCall(state.convId, cmdResult.voice);
+          } else {
+            daemon.createConversationForCall(
+              state.provider,
+              state.model,
+              state.effort,
+              state.fastMode,
+              state.draftFolderId,
+              cmdResult.voice,
+            );
+          }
+          break;
+        case "hangup_requested":
+          if (state.convId) daemon.stopCall(state.convId);
+          break;
+        case "mic_gain_changed": {
+          callMedia?.setMicGainDb(cmdResult.gainDb);
+          try {
+            const gainDb = saveMicGainDb(cmdResult.gainDb);
+            pushSystemMessage(state, `Microphone gain set to ${formatMicGainDb(gainDb)}.`);
+          } catch (error) {
+            pushSystemMessage(
+              state,
+              `Microphone gain changed for this TUI session, but saving failed: ${error instanceof Error ? error.message : String(error)}`,
+              theme.warning,
+            );
+          }
+          break;
+        }
         case "model_changed":
           if (state.convId) daemon.setModel(state.convId, cmdResult.provider, cmdResult.model);
           break;
@@ -1543,6 +1578,7 @@ async function reconnectToDaemon(): Promise<void> {
 
 function handleDaemonConnectionLost(): void {
   voiceInput?.cleanup();
+  callMedia?.stop();
   // The client retains an ambiguous unwind with its operation UUID and replays
   // it after reconnect. Keep the optimistic gate until that correlated result;
   // the normal reconnect load may still reveal the canonical state meanwhile.
@@ -1604,6 +1640,13 @@ async function main(): Promise<void> {
   startupProfileMark("main_begin");
   daemon = new DaemonClient(onDaemonEvent);
   daemon.onConnectionLost(handleDaemonConnectionLost);
+  callMedia = new CallMediaController(daemon, {
+    micGainDb: loadMicGainDb(),
+    onError: message => {
+      pushSystemMessage(state, `✗ ${message}`, theme.error);
+      scheduleRender();
+    },
+  });
   voiceInput = createVoiceInputController(state, daemon, scheduleRender, {
     submitPendingTranscription: submitPendingVoiceTranscription,
     completePendingTranscription: completePendingVoiceTranscription,
@@ -1690,6 +1733,7 @@ function cleanup(): void {
     eventLoopLagTimer = null;
   }
   voiceInput?.cleanup();
+  callMedia?.stop();
   daemon?.disconnect();
   restoreTerminal();
   process.exit(0);

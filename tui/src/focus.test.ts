@@ -315,14 +315,14 @@ describe("autocomplete with vim Escape", () => {
     expect(state.autocomplete?.type).toBe("command");
 
     expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
-    expect(state.inputBuffer).toBe("/model");
+    expect(state.inputBuffer).toBe("/mic");
 
     expect(handleFocusedKey({ type: "escape" }, state)).toEqual({ type: "handled" });
 
     expect(state.vim.mode).toBe("normal");
     expect(state.autocomplete).toBeNull();
-    expect(state.inputBuffer).toBe("/model");
-    expect(state.cursorPos).toBe(5);
+    expect(state.inputBuffer).toBe("/mic");
+    expect(state.cursorPos).toBe(3);
   });
 
   test("/default-model command and nested args autocomplete", () => {

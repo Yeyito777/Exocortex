@@ -42,6 +42,7 @@ import {
   subtractLoadedAssistantPrefix,
 } from "./streaming-snapshot";
 import type { DaemonActions } from "./types";
+import { clearCallTranscriptDrafts, reconcileCallTranscriptDrafts } from "./call";
 
 export function handleConversationCreated(
   event: Extract<Event, { type: "conversation_created" }>,
@@ -93,6 +94,8 @@ function clearRemovedActiveConversation(state: RenderState, convId: string): voi
   state.convId = null;
   state.draftFolderId = state.sidebar.currentFolderId;
   state.messages = [];
+  state.callAssistantDraft = null;
+  state.callUserDraft = null;
   clearPendingAI(state);
   delete state.lastStreamSeqByConv[convId];
   state.contextTokens = 0;
@@ -162,6 +165,7 @@ export function handleConversationLoaded(
 ): void {
   const previousConvId = state.convId;
   const sameConversation = previousConvId === event.convId;
+  if (!sameConversation) clearCallTranscriptDrafts(state);
   const beforeApply = sameConversation ? captureAssistantDisplaySnapshot(state) : null;
   const previousShowToolOutput = state.showToolOutput;
   const previousToolOutputsLoaded = state.toolOutputsLoaded;
@@ -249,6 +253,7 @@ export function handleConversationLoaded(
 
   // Entries arrive in display order — just map to TUI message types.
   pushDisplayEntries(state, event.entries);
+  reconcileCallTranscriptDrafts(state);
 
   if (preservedPendingAI) {
     const alignment = event.pendingAI

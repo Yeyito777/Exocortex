@@ -155,6 +155,8 @@ export type Block = ThinkingBlock | TextBlock | ToolCallBlock | ToolResultBlock;
 /** Machine-readable identity and fallback text for persisted compaction dividers. */
 export const CONTEXT_COMPACTION_FINISHED_KIND = "context_compaction_finished";
 export const CONTEXT_COMPACTION_FINISHED_TEXT = "--- Compaction finished ---";
+export const REALTIME_TRANSCRIPT_KIND = "realtime_transcript";
+export const REALTIME_CALL_STATUS_KIND = "realtime_call_status";
 
 /**
  * Metadata attached to a message. Persisted by the daemon,

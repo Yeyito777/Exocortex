@@ -713,7 +713,7 @@ describe("native exo daemon runtime", () => {
 
     const listed = JSON.parse((await runtime.execute({ action: "commands" }, undefined)).output);
     expect(listed.commands.map((command: { name: string }) => command.name)).toEqual([
-      "folder", "mark", "pin", "reorder", "rename", "delete", "llm", "clone", "system_prompt", "instructions", "stats", "task", "status", "notifications",
+      "folder", "mark", "pin", "reorder", "rename", "delete", "llm", "clone", "system_prompt", "instructions", "stats", "task", "hangup", "status", "notifications",
     ]);
 
     const help = JSON.parse((await runtime.execute({

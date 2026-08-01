@@ -190,6 +190,10 @@ export interface RenderState {
   historyLoadingRequestId: string | null;
   /** The AI message currently being streamed (not yet finalized). */
   pendingAI: AIMessage | null;
+  /** Live GPT-Live transcript projected into history until canonical persistence arrives. */
+  callAssistantDraft: { callId: string; message: AIMessage; final: boolean } | null;
+  /** Live captured speech projected ahead of its canonical persisted user turn. */
+  callUserDraft: { callId: string; message: UserMessage; final: boolean } | null;
   /** Start time for the transient native context-compaction spinner. */
   contextCompactionStartedAt: number | null;
   /** True when pendingAI was hydrated from a daemon snapshot rather than live local chunks. */
@@ -465,6 +469,8 @@ export function resetDraftConversationState(state: RenderState): void {
   // is only browsing and must not silently move the eventual conversation.
   state.draftFolderId = state.sidebar.currentFolderId;
   state.messages = [];
+  state.callAssistantDraft = null;
+  state.callUserDraft = null;
   clearPendingAI(state);
   clearStreamingTailMessages(state);
   state.contextTokens = 0;
@@ -495,6 +501,8 @@ export function openFolderInstructionsDocument(state: RenderState, folderId: str
   state.voiceMessage = null;
   clearPendingAI(state);
   state.messages = [];
+  state.callAssistantDraft = null;
+  state.callUserDraft = null;
   clearStreamingTailMessages(state);
   state.scrollOffset = 0;
   resetToolOutputState(state);
@@ -596,6 +604,8 @@ export function createInitialState(): RenderState {
     historyLoadingStartedAt: null,
     historyLoadingRequestId: null,
     pendingAI: null,
+    callAssistantDraft: null,
+    callUserDraft: null,
     contextCompactionStartedAt: null,
     pendingAIHydratedFromSnapshot: false,
     suppressPendingAIMetadataStartedAt: null,

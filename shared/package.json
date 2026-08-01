@@ -10,6 +10,7 @@
     "./model-display": "./src/model-display.ts",
     "./token-pricing": "./src/token-pricing.ts",
     "./protocol": "./src/protocol.ts",
+    "./realtime": "./src/realtime.ts",
     "./paths": "./src/paths.ts"
   },
   "devDependencies": {
