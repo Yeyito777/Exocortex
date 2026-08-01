@@ -40,7 +40,7 @@ instructions, PATH installation, auth, notifications, or daemon supervision.
 
 ### Creating one
 
-1. Create an executable whose basename starts with `exo-`.
+1. Create an executable with the desired command name.
 2. Put `exo-manifest.json` in the same directory.
 3. Tell the model when to use the command in `AGENTS.md`, project documentation,
    or the request itself. The display manifest is deliberately not a discovery
@@ -52,7 +52,7 @@ For example:
 ```
 project/
   scripts/
-    exo-deploy
+    deploy
     exo-manifest.json
 ```
 
@@ -60,7 +60,7 @@ project/
 #!/usr/bin/env bash
 set -euo pipefail
 
-environment="${1:?usage: exo-deploy <environment>}"
+environment="${1:?usage: deploy <environment>}"
 # Perform the project-local operation.
 printf 'Deployed to %s.\n' "$environment"
 ```
@@ -76,13 +76,13 @@ printf 'Deployed to %s.\n' "$environment"
 ```
 
 ```bash
-chmod +x ./scripts/exo-deploy
-./scripts/exo-deploy production
+chmod +x ./scripts/deploy
+./scripts/deploy production
 ```
 
 The Bash tool call is rendered as `Deploy production`, while execution and
 stdout remain those of the original command. One manifest applies to every
-eligible `exo-*` executable in its directory; put commands in separate
+eligible executable in its directory; put commands in separate
 directories when they need different labels or colors.
 
 ### Contract and boundaries
@@ -91,14 +91,14 @@ directories when they need different labels or colors.
   arguments, stdin, environment, permissions, execution, output, auth, or
   daemon supervision.
 - The executable must be called through a static relative or absolute path.
-  PATH-only `exo-deploy`, `bash exo-deploy`, shell expansion, and command
+  PATH-only `deploy`, `bash deploy`, shell expansion, and command
   substitution are not eligible.
 - Relative lookup uses the Bash tool's initial working directory. Relative
   invocations after a preceding `cd`, `pushd`, `popd`, `source`, or `eval` are
   conservatively left unstyled; use a direct path from the initial directory or
   an absolute path instead.
-- The basename must be `exo-<name>`, with a non-empty `<name>`, and the manifest
-  must be in the executable's lexical directory.
+- The executable must have a non-empty basename, and the manifest must be in
+  the executable's lexical directory.
 - `version` must be `1`; `display.label` is at most 64 characters and
   `display.color` is a six-digit hex color.
 - Missing, unreadable, oversized, slow, or invalid manifests fall back to

@@ -422,7 +422,7 @@ async function parseManifestWithinDeadline(manifestPath: string): Promise<Manife
   }
 }
 
-/** Resolve presentation metadata for direct-path `exo-*` commands in one Bash call. */
+/** Resolve presentation metadata for direct-path helper commands in one Bash call. */
 export async function resolveExoCommandPresentation(
   command: string,
   initialCwd: string = process.cwd(),
@@ -454,8 +454,9 @@ export async function resolveExoCommandPresentation(
     const executable = token.text;
     const rawExecutable = commandPart.slice(token.start, token.end);
     const commandName = basename(executable);
-    const eligible = commandName.startsWith("exo-")
-      && commandName.length > "exo-".length
+    const eligible = commandName.length > 0
+      && commandName !== "."
+      && commandName !== ".."
       && isStaticExplicitPath(executable, rawExecutable)
       && ((!relativeCwdUncertain && !invocationCwdUncertain) || isAbsolute(executable))
       && !seenCommands.has(rawExecutable);

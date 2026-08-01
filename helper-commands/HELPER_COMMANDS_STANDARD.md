@@ -13,7 +13,7 @@ eligible command beside it.
 helper-commands/
   HELPER_COMMANDS_STANDARD.md
   deploy/
-    exo-deploy
+    deploy
     exo-manifest.json
 ```
 
@@ -22,24 +22,24 @@ tracked.
 
 ## Command
 
-A helper command is an ordinary executable whose basename starts with `exo-`.
-Give it a shebang, make it executable, and provide concise `-h` output.
+A helper command is an ordinary executable. Give it a shebang, make it
+executable, and provide concise `-h` output.
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
-environment="${1:?usage: exo-deploy <environment>}"
+environment="${1:?usage: deploy <environment>}"
 printf 'Deployed to %s.\n' "$environment"
 ```
 
 ```bash
-chmod +x ./helper-commands/deploy/exo-deploy
-./helper-commands/deploy/exo-deploy production
+chmod +x ./helper-commands/deploy/deploy
+./helper-commands/deploy/deploy production
 ```
 
 Invoke the command through a static relative or absolute path. PATH-only names,
-interpreter arguments such as `bash exo-deploy`, shell expansion, and command
+interpreter arguments such as `bash deploy`, shell expansion, and command
 substitution do not receive custom presentation.
 
 Helper commands are not discovered or added to the model's instructions. Tell
