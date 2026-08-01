@@ -3,7 +3,7 @@ import { buildMessageLines, compactionFinishedDivider, compactionSpinnerText, wo
 import { theme } from "./theme";
 import { visibleLength } from "./textwidth";
 import { createInitialState } from "./state";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, REALTIME_TRANSCRIPT_KIND, createPendingAI } from "./messages";
 
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
@@ -105,6 +105,44 @@ describe("older history loading status", () => {
     expect(loadingIndex).toBe(instructionsBottomIndex + 1);
     expect(stripAnsi(rendered.lines[loadingIndex])).toContain("Loading...");
     expect(rendered.lineAnchors[loadingIndex + 1]?.segment).toBe("user_content");
+  });
+});
+
+describe("call transcript rendering", () => {
+  test("labels captured user speech while reusing an unlabelled assistant render", () => {
+    const metadata = {
+      startedAt: 1_000,
+      endedAt: 1_000,
+      model: "gpt-5.4",
+      tokens: 0,
+      kind: REALTIME_TRANSCRIPT_KIND,
+    } as const;
+    const state = {
+      messages: [
+        { role: "user", text: "What is six plus one?", metadata },
+        { role: "assistant", blocks: [{ type: "text", text: "Six plus one is seven." }], metadata },
+      ],
+      pendingAI: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: "conv-call",
+      queuedMessages: [],
+    } as any;
+
+    const rendered = buildMessageLines(state, 80).lines.map(stripAnsi);
+    const userIndex = rendered.findIndex(line => line.includes("What is six plus one?"));
+    const assistantIndex = rendered.findIndex(line => line.includes("Six plus one is seven."));
+    const labels = rendered
+      .map((line, index) => ({ line: line.trim(), index }))
+      .filter(entry => entry.line === "call transcript");
+
+    expect(userIndex).toBeGreaterThanOrEqual(0);
+    expect(assistantIndex).toBeGreaterThan(userIndex);
+    expect(labels).toHaveLength(1);
+    expect(labels[0]!.index).toBeGreaterThan(userIndex);
+    expect(labels[0]!.index).toBeLessThan(assistantIndex);
+    expect(rendered.some(line => line.includes("0 tokens"))).toBe(false);
   });
 });
 

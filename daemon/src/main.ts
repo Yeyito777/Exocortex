@@ -112,7 +112,7 @@ async function startDaemon(): Promise<void> {
 
   // Create server — handler is set up with a forward reference
   // since the handler needs the server instance for sending events.
-  let commandHandler: ((client: import("./server").ConnectedClient, cmd: import("./protocol").Command) => void | Promise<void>) | null = null;
+  let commandHandler: import("./handler").DaemonCommandHandler | null = null;
   const server = new DaemonServer(SOCKET_PATH, (client, cmd) => commandHandler?.(client, cmd));
   commandHandler = createHandler(server);
   profileMark("server_constructed");
@@ -131,6 +131,7 @@ async function startDaemon(): Promise<void> {
       stopWatchdog();
       stopExternalNotificationSoftWakeService();
       stopChronoService();
+      await commandHandler?.stop();
 
       if (shutdownMode === "restart") {
         const replayPrep = await prepareCatchableShutdownForReplay();

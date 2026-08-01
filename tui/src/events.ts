@@ -180,6 +180,19 @@ export function handleEvent(
       handleStreamingStopped(event, state);
       break;
 
+    case "call_state":
+      if (event.message) pushSystemMessage(state, event.message, event.state === "error" ? theme.error : theme.muted);
+      break;
+
+    case "call_transcript":
+      // Final transcript parts are persisted by the daemon and arrive through
+      // the canonical history update; deltas belong to media-aware clients.
+      break;
+
+    case "call_sdp_answer":
+      // Consumed by the media adapter that supplied the matching offer.
+      break;
+
     case "error":
       // Only show errors for the current conversation (or unscoped errors).
       if (event.convId && event.convId !== state.convId) break;

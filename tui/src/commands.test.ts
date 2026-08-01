@@ -171,6 +171,53 @@ describe("/new", () => {
   });
 });
 
+describe("/call", () => {
+  test("requests a call for the active conversation", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+
+    const result = tryCommand("/call", state);
+
+    expect(result).toEqual({ type: "call_requested" });
+    expect(state.inputBuffer).toBe("");
+  });
+
+  test("also requests a call from an empty conversation draft", () => {
+    const state = createInitialState();
+
+    const result = tryCommand("/call", state);
+
+    expect(result).toEqual({ type: "call_requested" });
+    expect(state.inputBuffer).toBe("");
+  });
+
+  test("rejects arguments until call targeting is defined", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+
+    const result = tryCommand("/call somebody", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Usage: /call");
+  });
+});
+
+describe("/hangup", () => {
+  test("requests call termination for the active conversation", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+
+    expect(tryCommand("/hangup", state)).toEqual({ type: "hangup_requested" });
+  });
+
+  test("requires an active conversation", () => {
+    const state = createInitialState();
+
+    expect(tryCommand("/hangup", state)).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("No conversation is open.");
+  });
+});
+
 describe("/default-model command", () => {
   test("saves an explicit provider/model/effort/fast default and applies it to a draft", () => {
     const state = createInitialState();

@@ -177,8 +177,19 @@ export class DaemonClient {
     goalPausable?: boolean,
     goalCompletable?: boolean,
     titleContext?: string,
+    startCall?: boolean,
   ): void {
-    this.send({ type: "new_conversation", ...(convId ? { convId } : {}), provider, model, title, titleContext, effort, fastMode, initialMessage, folderId, goalObjective, goalPausable, goalCompletable });
+    this.send({ type: "new_conversation", ...(convId ? { convId } : {}), provider, model, title, titleContext, effort, fastMode, initialMessage, folderId, goalObjective, goalPausable, goalCompletable, startCall });
+  }
+
+  createConversationForCall(
+    provider: ProviderId,
+    model: ModelId,
+    effort: EffortLevel,
+    fastMode: boolean,
+    folderId?: string | null,
+  ): void {
+    this.send({ type: "new_conversation", provider, model, effort, fastMode, folderId, startCall: true });
   }
 
   subscribe(convId: string): void {
@@ -219,6 +230,18 @@ export class DaemonClient {
 
   backgroundTool(convId: string): void {
     this.send({ type: "background_tool", convId });
+  }
+
+  startCall(convId: string): void {
+    this.send({ type: "start_call", convId });
+  }
+
+  attachCallMedia(convId: string, callId: string, offerSdp: string, reqId?: string): void {
+    this.send({ type: "attach_call_media", convId, callId, offerSdp, reqId });
+  }
+
+  stopCall(convId: string, callId?: string): void {
+    this.send({ type: "stop_call", convId, callId });
   }
 
   prewarmConversation(convId: string): void {

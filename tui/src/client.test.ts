@@ -390,6 +390,35 @@ describe("DaemonClient commands", () => {
     });
   });
 
+  test("can request a realtime call owned by a conversation", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.startCall("conv-1");
+
+    expect(internal.pendingCommands[0]).toEqual({
+      type: "start_call",
+      convId: "conv-1",
+    });
+  });
+
+  test("can atomically create a conversation for a realtime call", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.createConversationForCall("openai", "gpt-5.4", "high", false, "folder-1");
+
+    expect(internal.pendingCommands[0]).toEqual({
+      type: "new_conversation",
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "high",
+      fastMode: false,
+      folderId: "folder-1",
+      startCall: true,
+    });
+  });
+
   test("closes a BTW through its owning conversation", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;

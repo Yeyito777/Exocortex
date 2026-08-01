@@ -6,7 +6,7 @@
  * in blockrenderer.ts.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, type Message, type MessageMetadata } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Message, type MessageMetadata } from "./messages";
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { theme } from "./theme";
@@ -31,6 +31,11 @@ export function compactionSpinnerText(startedAt: number, now = Date.now()): stri
 export function historyLoadingSpinnerText(startedAt: number, now = Date.now()): string {
   const frameIndex = Math.max(0, Math.floor((now - startedAt) / COMPACTION_SPINNER_INTERVAL_MS));
   return `${COMPACTION_SPINNER_FRAMES[frameIndex % COMPACTION_SPINNER_FRAMES.length]} Loading...`;
+}
+
+function rightAlignedProvenanceLabel(label: string, availableWidth: number): string {
+  const padding = " ".repeat(Math.max(0, availableWidth - label.length - 3));
+  return `${padding}${theme.muted}${theme.italic}${label}${theme.reset}`;
 }
 
 /** Build the muted markdown-style completion divider, ending at the screen midpoint. */
@@ -189,6 +194,7 @@ export type RenderLineSegment =
   | "system_instructions_content"
   | "system_instructions_top"
   | "system_message"
+  | "transcript_label"
   | "user_content"
   | "user_margin_bottom"
   | "user_margin_top";
@@ -370,6 +376,9 @@ export function buildMessageLines(
           lineAnchors[contentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
         }
       }
+      if (msg.metadata?.kind === REALTIME_TRANSCRIPT_KIND) {
+        pushLine(rightAlignedProvenanceLabel("call transcript", availableWidth), msg, "transcript_label");
+      }
       pushLine("", msg, "user_margin_bottom");               // bottom margin
       firstUser = false;
       pushMessageBound(msg.role, start, contentStart, contentEnd);
@@ -381,11 +390,14 @@ export function buildMessageLines(
       }
       const nextIsAssistant = state.messages[messageIndex + 1]?.role === "assistant"
         || (messageIndex === state.messages.length - 1 && state.pendingAI?.role === "assistant");
+      const isCallTranscript = msg.metadata?.kind === REALTIME_TRANSCRIPT_KIND;
       const metadata = assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
-      const metadataLines = nextIsAssistant ? [] : renderMetadata(metadata);
+      const metadataLines = isCallTranscript ? [] : nextIsAssistant ? [] : renderMetadata(metadata);
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
       const contentEnd = lines.length;
-      for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], msg, "assistant_metadata", i);
+      for (let i = 0; i < metadataLines.length; i++) {
+        pushLine(metadataLines[i], msg, "assistant_metadata", i);
+      }
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "system" && msg.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND) {
       pushLine("", msg, "compaction_margin_top");
@@ -499,8 +511,7 @@ export function buildMessageLines(
         }
       }
       // Timing label — right-aligned, muted italic
-      const labelPad = " ".repeat(Math.max(0, availableWidth - timingLabel.length - 3));
-      pushLine(`${labelPad}${theme.muted}${theme.italic}${timingLabel}${theme.reset}`, qm, "queued_label");
+      pushLine(rightAlignedProvenanceLabel(timingLabel, availableWidth), qm, "queued_label");
     }
   }
 

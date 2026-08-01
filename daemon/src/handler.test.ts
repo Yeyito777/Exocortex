@@ -1091,6 +1091,178 @@ describe("handler compact_conversation", () => {
   });
 });
 
+describe("handler start_call", () => {
+  afterEach(cleanupIds);
+
+  const fakeCallManager = () => ({
+    hasActiveCall: mock(() => false),
+    start: mock(async () => ({ callId: "call-1", state: "waiting_for_media" as const })),
+    attachMedia: mock(async () => {}),
+    stop: mock(async () => {}),
+    stopAll: mock(async () => {}),
+  });
+
+  test("keeps call ownership in the daemon while the media backend is pending", async () => {
+    const convId = mkId("call");
+    create(convId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const sent: Array<Record<string, unknown>> = [];
+    const subscriberEvents: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock((_convId: string, event: Record<string, unknown>) => { subscriberEvents.push(event); }),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    const handle = createHandler(server as never, { callManager });
+
+    await handle({} as never, { type: "start_call", reqId: "req-call", convId });
+
+    expect(callManager.start).toHaveBeenCalledWith(convId);
+    expect(subscriberEvents).toEqual([]);
+    expect(sent).toContainEqual({ type: "ack", reqId: "req-call", convId });
+  });
+
+  test("rejects a missing owner conversation", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    const handle = createHandler(server as never, { callManager });
+
+    await handle({} as never, { type: "start_call", reqId: "req-call-missing", convId: "missing" });
+
+    expect(sent).toContainEqual({
+      type: "error",
+      reqId: "req-call-missing",
+      convId: "missing",
+      message: "Conversation not found.",
+    });
+  });
+
+  test("routes media attachment and stop commands through the daemon-owned call manager", async () => {
+    const convId = mkId("call-media");
+    create(convId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const sent: Array<Record<string, unknown>> = [];
+    const subscribe = mock(() => {});
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe,
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    const handle = createHandler(server as never, { callManager });
+    const client = {} as never;
+
+    await handle(client, {
+      type: "attach_call_media",
+      reqId: "req-media",
+      convId,
+      callId: "call-1",
+      offerSdp: "v=0\\r\\no=offer",
+    });
+    await handle(client, {
+      type: "stop_call",
+      reqId: "req-stop-call",
+      convId,
+      callId: "call-1",
+    });
+
+    expect(subscribe).toHaveBeenCalledWith(client, convId);
+    expect(callManager.attachMedia).toHaveBeenCalledWith(
+      client,
+      convId,
+      "call-1",
+      "v=0\\r\\no=offer",
+      "req-media",
+    );
+    expect(callManager.stop).toHaveBeenCalledWith(convId, "call-1");
+    expect(sent).toContainEqual({ type: "ack", reqId: "req-media", convId });
+    expect(sent).toContainEqual({ type: "ack", reqId: "req-stop-call", convId });
+  });
+
+  test("creates empty-draft calls as OpenAI conversations even when the draft selected another provider", async () => {
+    const convId = `${Date.now()}-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
+    IDS.push(convId);
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    const handle = createHandler(server as never, { callManager });
+
+    await handle({} as never, {
+      type: "new_conversation",
+      reqId: "req-call-provider",
+      convId,
+      provider: "deepseek",
+      model: "deepseek-chat",
+      startCall: true,
+    });
+
+    expect(get(convId)?.provider).toBe("openai");
+    expect(get(convId)?.model).not.toBe("deepseek-chat");
+    expect(callManager.start).toHaveBeenCalledWith(convId);
+  });
+
+  test("atomically creates and starts a call from an empty client conversation", async () => {
+    const convId = `${Date.now()}-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
+    IDS.push(convId);
+    const sent: Array<Record<string, unknown>> = [];
+    const subscriberEvents: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock((_convId: string, event: Record<string, unknown>) => { subscriberEvents.push(event); }),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    const handle = createHandler(server as never, { callManager });
+
+    await handle({} as never, {
+      type: "new_conversation",
+      reqId: "req-call-create",
+      convId,
+      provider: DEFAULT_PROVIDER_ID,
+      model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID],
+      startCall: true,
+    });
+
+    expect(get(convId)).toBeDefined();
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "conversation_created",
+      reqId: "req-call-create",
+      convId,
+    }));
+    expect(callManager.start).toHaveBeenCalledWith(convId);
+    expect(subscriberEvents).toEqual([]);
+    expect(sent).toContainEqual({ type: "ack", reqId: "req-call-create", convId });
+  });
+});
+
 describe("handler set_goal resume", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();

@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
-import { HistoryUnwindRefreshRequiredError, bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
+import { HistoryUnwindRefreshRequiredError, appendRealtimeCallStatus, appendRealtimeTranscript, bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
 import { load as loadPersisted } from "./persistence";
@@ -28,6 +28,58 @@ beforeEach(() => {
   for (const id of FOLDER_IDS.splice(0)) {
     deleteFolder(id);
   }
+});
+
+describe("realtime transcripts", () => {
+  test("persists model-hidden call boundaries without counting them as turns", () => {
+    const id = mkId("realtime-call-status");
+    create(id, "openai", "gpt-5.4", "Call status");
+
+    expect(appendRealtimeCallStatus(id, "Realtime call started.", 500)).toBe(true);
+    expect(appendRealtimeCallStatus(id, "Realtime call ended.", 2_500)).toBe(true);
+
+    const messages = get(id)!.messages;
+    expect(messages).toEqual([
+      expect.objectContaining({
+        role: "system",
+        content: "Realtime call started.",
+        metadata: expect.objectContaining({ kind: "realtime_call_status" }),
+      }),
+      expect.objectContaining({
+        role: "system",
+        content: "Realtime call ended.",
+        metadata: expect.objectContaining({ kind: "realtime_call_status" }),
+      }),
+    ]);
+    expect(messages[0]!.metadata?.system).toBeUndefined();
+    expect(messages[1]!.metadata?.system).toBeUndefined();
+    expect(getSummary(id)?.messageCount).toBe(0);
+  });
+
+  test("persists call utterances as ordinary provenance-tagged user and assistant turns", () => {
+    const id = mkId("realtime-transcript");
+    create(id, "openai", "gpt-5.4", "Call transcript");
+
+    expect(appendRealtimeTranscript(id, "user", "  What is six plus one?  ", 1_000)).toBe(true);
+    expect(appendRealtimeTranscript(id, "assistant", "Seven.", 2_000)).toBe(true);
+
+    const messages = get(id)!.messages;
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({
+      role: "user",
+      content: "What is six plus one?",
+      metadata: { kind: "realtime_transcript" },
+      contextCheckpoint: { version: 1, transcriptHistoryCount: 0 },
+    });
+    expect(messages[1]).toMatchObject({
+      role: "assistant",
+      content: "Seven.",
+      metadata: { kind: "realtime_transcript" },
+    });
+    expect(messages[0]!.metadata?.system).toBeUndefined();
+    expect(messages[1]!.metadata?.system).toBeUndefined();
+    expect(getSummary(id)?.messageCount).toBe(2);
+  });
 });
 
 describe("folders", () => {

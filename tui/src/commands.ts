@@ -1,12 +1,14 @@
 import type { RenderState } from "./state";
 import { ACCOUNT_COMMAND } from "./commands/account";
 import { BTW_COMMAND } from "./commands/btw";
+import { CALL_COMMAND } from "./commands/call";
 import { COMPACT_COMMAND } from "./commands/compact";
 import { CONVO_COMMAND } from "./commands/convo";
 import { DEFAULT_MODEL_COMMAND } from "./commands/default-model";
 import { EFFORT_COMMAND } from "./commands/effort";
 import { FAST_COMMAND } from "./commands/fast";
 import { GOAL_COMMAND } from "./commands/goal";
+import { HANGUP_COMMAND } from "./commands/hangup";
 import { createHelpCommand } from "./commands/help";
 import { HIDE_COMMAND } from "./commands/hide";
 import { INSTRUCTIONS_COMMAND } from "./commands/instructions";
@@ -37,6 +39,8 @@ const commands: SlashCommand[] = [
   ACCOUNT_COMMAND,
   REPLAY_COMMAND,
   BTW_COMMAND,
+  CALL_COMMAND,
+  HANGUP_COMMAND,
   COMPACT_COMMAND,
   RENAME_COMMAND,
   MODEL_COMMAND,

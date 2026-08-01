@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy } from "./messages";
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, activeContextCompactionHistoryCount, createConversation, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, activeContextCompactionHistoryCount, createConversation, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
@@ -2265,6 +2265,59 @@ export function appendExternalInboxNotification(convId: string, text: string, st
   markDirty(convId);
   flush(convId);
   markUnread(convId);
+  return true;
+}
+
+/** Persist one finalized voice-call utterance as a normal provenance-tagged turn. */
+export function appendRealtimeTranscript(
+  convId: string,
+  role: "user" | "assistant",
+  text: string,
+  startedAt = Date.now(),
+): boolean {
+  const conv = get(convId);
+  const normalized = text.trim();
+  if (!conv || !normalized) return false;
+
+  if (role === "user") {
+    const message = createStoredUserMessage(normalized, conv.model, startedAt, undefined, {
+      contextCheckpoint: createStoredUserContextCheckpoint(conv),
+    });
+    message.metadata!.kind = REALTIME_TRANSCRIPT_KIND;
+    conv.messages.push(message);
+  } else {
+    conv.messages.push({
+      role: "assistant",
+      content: normalized,
+      metadata: {
+        ...createMessageMetadata(startedAt, conv.model, { endedAt: startedAt }),
+        kind: REALTIME_TRANSCRIPT_KIND,
+      },
+    });
+  }
+
+  conv.updatedAt = Math.max(conv.updatedAt, startedAt);
+  markDirty(convId);
+  flush(convId);
+  return true;
+}
+
+/** Persist a model-hidden lifecycle marker so call boundaries survive history reloads. */
+export function appendRealtimeCallStatus(convId: string, text: string, startedAt = Date.now()): boolean {
+  const conv = get(convId);
+  const normalized = text.trim();
+  if (!conv || !normalized) return false;
+  conv.messages.push({
+    role: "system",
+    content: normalized,
+    metadata: {
+      ...createMessageMetadata(startedAt, conv.model, { endedAt: startedAt }),
+      kind: REALTIME_CALL_STATUS_KIND,
+    },
+  });
+  conv.updatedAt = Math.max(conv.updatedAt, startedAt);
+  markDirty(convId);
+  flush(convId);
   return true;
 }
 
