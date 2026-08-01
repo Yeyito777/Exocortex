@@ -9,6 +9,7 @@
  */
 
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery } from "./messages";
+import type { RealtimeVoice } from "./realtime";
 export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
@@ -61,6 +62,8 @@ export interface NewConversationCommand {
   goalCompletable?: boolean;
   /** Start a realtime call owned by the new conversation immediately after creation. */
   startCall?: boolean;
+  /** Optional explicit voice for the initial realtime call. */
+  callVoice?: RealtimeVoice;
 }
 
 export interface ParentNotificationTarget {
@@ -146,6 +149,8 @@ export interface StartCallCommand {
   type: "start_call";
   reqId?: string;
   convId: string;
+  /** Explicit selection; omission reuses the persisted call voice. */
+  voice?: RealtimeVoice;
 }
 
 /** Attach a media adapter's WebRTC offer to a prepared conversation call. */

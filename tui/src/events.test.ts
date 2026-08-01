@@ -78,6 +78,40 @@ describe("GPT-Live transcript events", () => {
     expect(state.messages).toHaveLength(0);
   });
 
+  test("discards an empty finalized assistant projection during hangup", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "assistant",
+      text: "Got it. I'll pause.",
+      final: true,
+      startedAt: 1_000,
+      endedAt: 3_500,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 5,
+    }, state, daemon);
+    expect(state.callAssistantDraft).not.toBeNull();
+
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "assistant",
+      text: "",
+      final: true,
+      startedAt: 1_000,
+      endedAt: 5_000,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 0,
+    }, state, daemon);
+
+    expect(state.callAssistantDraft).toBeNull();
+    expect(state.messages).toHaveLength(0);
+  });
+
   test("projects captured user speech until canonical history owns it", () => {
     const state = createInitialState();
     state.convId = "conv-call";

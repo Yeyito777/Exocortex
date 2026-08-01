@@ -449,10 +449,47 @@ export function buildMessageLines(
     pushHistoryLoadingLine();
   }
 
+  // Currently streaming AI message — no margins
+  if (state.pendingAI) {
+    const start = lines.length;
+    for (const block of state.pendingAI.blocks) {
+      pushBlock(block, "assistant_block", renderAssistantBlock(block));
+    }
+    // Terminal stream notices (abort/error/watchdog) arrive just before
+    // streaming_stopped. Keep pendingAI around for reconciliation, but do not
+    // render metadata-only pending state next to the notice: if no assistant
+    // content was persisted, that line disappears one frame later and flickers.
+    const terminalNoticePendingStop = isTerminalStreamNotice(state.messages[state.messages.length - 1])
+      && state.pendingAI.metadata?.startedAt === state.suppressPendingAIMetadataStartedAt;
+    const pendingMetadataSuppressed = state.pendingAI.metadata?.startedAt === state.suppressPendingAIMetadataStartedAt;
+    const shouldRenderPendingMetadata = !pendingMetadataSuppressed && (state.pendingAI.blocks.length > 0 || (
+      state.contextCompactionStartedAt == null
+      && state.pendingAICommittedIndex === null
+      && !terminalNoticePendingStop
+    ));
+    const metadata = pendingAssistantSegmentMetadata(state) ?? pendingAssistantRunMetadata(state);
+    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(metadata) : [];
+    const compactionStartedAt = state.contextCompactionStartedAt;
+    const compactionActive = compactionStartedAt != null;
+    if (metadataLines.length > 0 || compactionActive) trimTrailingBlankAssistantContent(start);
+    const contentEnd = lines.length;
+    for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], state.pendingAI, "assistant_metadata", i);
+    if (compactionActive) {
+      pushLine("", state.pendingAI, "compaction_margin_top");
+      pushLine(
+        `  ${theme.dim}${compactionSpinnerText(compactionStartedAt)}${theme.reset}`,
+        state.pendingAI,
+        "compaction_spinner",
+      );
+    }
+    pushMessageBound(state.pendingAI.role, start, start, contentEnd);
+  }
+
   // GPT-Live transcript projections deliberately live outside canonical
-  // state.messages. Input transcription can finish after output speech starts;
-  // rendering both drafts here keeps their user → assistant order stable while
-  // canonical history refreshes replace each finalized draft independently.
+  // state.messages. Keep them at the visual tail, after any delegated agent
+  // stream, so their position matches the canonical ordering that replaces
+  // them. Input transcription can finish after output speech starts, therefore
+  // the two drafts still render together in user → assistant order.
   if (state.callUserDraft) {
     const msg = state.callUserDraft.message;
     const start = lines.length;
@@ -489,42 +526,6 @@ export function buildMessageLines(
       pushLine(metadataLines[i], msg, "assistant_metadata", i);
     }
     pushMessageBound(msg.role, start, contentStart, contentEnd);
-  }
-
-  // Currently streaming AI message — no margins
-  if (state.pendingAI) {
-    const start = lines.length;
-    for (const block of state.pendingAI.blocks) {
-      pushBlock(block, "assistant_block", renderAssistantBlock(block));
-    }
-    // Terminal stream notices (abort/error/watchdog) arrive just before
-    // streaming_stopped. Keep pendingAI around for reconciliation, but do not
-    // render metadata-only pending state next to the notice: if no assistant
-    // content was persisted, that line disappears one frame later and flickers.
-    const terminalNoticePendingStop = isTerminalStreamNotice(state.messages[state.messages.length - 1])
-      && state.pendingAI.metadata?.startedAt === state.suppressPendingAIMetadataStartedAt;
-    const pendingMetadataSuppressed = state.pendingAI.metadata?.startedAt === state.suppressPendingAIMetadataStartedAt;
-    const shouldRenderPendingMetadata = !pendingMetadataSuppressed && (state.pendingAI.blocks.length > 0 || (
-      state.contextCompactionStartedAt == null
-      && state.pendingAICommittedIndex === null
-      && !terminalNoticePendingStop
-    ));
-    const metadata = pendingAssistantSegmentMetadata(state) ?? pendingAssistantRunMetadata(state);
-    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(metadata) : [];
-    const compactionStartedAt = state.contextCompactionStartedAt;
-    const compactionActive = compactionStartedAt != null;
-    if (metadataLines.length > 0 || compactionActive) trimTrailingBlankAssistantContent(start);
-    const contentEnd = lines.length;
-    for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], state.pendingAI, "assistant_metadata", i);
-    if (compactionActive) {
-      pushLine("", state.pendingAI, "compaction_margin_top");
-      pushLine(
-        `  ${theme.dim}${compactionSpinnerText(compactionStartedAt)}${theme.reset}`,
-        state.pendingAI,
-        "compaction_spinner",
-      );
-    }
-    pushMessageBound(state.pendingAI.role, start, start, contentEnd);
   }
 
   // Live user-notice tail during streaming. These are buffered in state and

@@ -9,6 +9,7 @@
 
 import { log } from "./log";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
+import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateRealtimeDelegation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
@@ -80,7 +81,7 @@ export interface DaemonCommandHandler {
 }
 
 type RealtimeCallController = Pick<RealtimeCallManager,
-  "hasActiveCall" | "start" | "attachMedia" | "stop" | "stopAll"
+  "hasActiveCall" | "start" | "attachMedia" | "stop" | "stopFromAgent" | "stopAll"
 >;
 
 export interface HandlerOptions {
@@ -420,6 +421,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       );
       maybeStartAutoTitleGeneration(convId);
       return turn;
+    },
+    stopCall: async (convId) => {
+      await callManager.stopFromAgent(convId);
     },
     beginParentNotification: notificationRuntime.begin,
     completeParentNotification: notificationRuntime.complete,
@@ -890,7 +894,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   };
 
   callManager = options.callManager ?? new RealtimeCallManager(server, {
-    delegate: async (convId, delegation) => {
+    delegate: async (convId, delegation, signal) => {
       const conv = convStore.get(convId);
       if (!conv) throw new Error("Owning conversation no longer exists.");
       if (convStore.isStreaming(convId)) throw new Error("The owning conversation is already running another turn.");
@@ -901,18 +905,22 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         Date.now(),
         buildOrchestrationCallbacks(convId),
         { subagentMaxDepth: conv.subagentMaxDepth ?? null },
+        signal,
       );
+      if (outcome.aborted && !outcome.watchdog && !outcome.daemonRestart) {
+        return { status: "cancelled" as const };
+      }
       if (!outcome.ok) throw new Error(outcome.error ?? "Delegated agent turn failed.");
       const reply = outcome.blocks
         .flatMap(block => block.type === "text" ? [block.text] : [])
         .join("\n")
         .trim();
       if (!reply) throw new Error("Delegated agent turn returned no spoken reply.");
-      return reply;
+      return { status: "completed" as const, text: reply };
     },
   });
 
-  const startCall = async (client: ConnectedClient, convId: string, reqId?: string): Promise<void> => {
+  const startCall = async (client: ConnectedClient, convId: string, reqId?: string, voice?: RealtimeVoice): Promise<void> => {
     if (!convStore.get(convId)) {
       server.sendTo(client, {
         type: "error",
@@ -926,7 +934,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     // publishing lifecycle events; this also covers an atomic create + call.
     server.subscribe(client, convId);
     try {
-      await callManager.start(convId);
+      if (voice) await callManager.start(convId, voice);
+      else await callManager.start(convId);
       server.sendTo(client, { type: "ack", reqId, convId });
     } catch (error) {
       server.sendTo(client, {
@@ -1143,7 +1152,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         broadcastConversationUpdated(server, id);
         if (cmd.subagent) server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
 
-        if (cmd.startCall) await startCall(client, id, cmd.reqId);
+        if (cmd.startCall) await startCall(client, id, cmd.reqId, cmd.callVoice);
 
         if (goalObjective && !initialMessage) {
           server.subscribe(client, id);
@@ -1231,7 +1240,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "start_call": {
-        await startCall(client, cmd.convId, cmd.reqId);
+        await startCall(client, cmd.convId, cmd.reqId, cmd.voice);
         break;
       }
 

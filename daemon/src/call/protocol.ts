@@ -1,3 +1,5 @@
+import { DEFAULT_REALTIME_VOICE, type RealtimeVoice } from "@exocortex/shared/realtime";
+
 export interface RealtimeInitialItem {
   role: "developer" | "user" | "assistant";
   text: string;
@@ -12,17 +14,17 @@ export type RealtimeSidebandEvent =
   | { type: "closed"; reason?: string };
 
 export const REALTIME_MODEL = "gpt-live-1-boulder-alpha";
-const DEFAULT_VOICE = "cove";
 const CONTEXT_APPEND_MAX_BYTES = 500;
 
 export function buildRealtimeSession(
   prompt: string,
   initialItems: RealtimeInitialItem[],
+  voice: RealtimeVoice = DEFAULT_REALTIME_VOICE,
 ): Record<string, unknown> {
   return {
     model: REALTIME_MODEL,
     instructions: prompt,
-    audio: { output: { voice: DEFAULT_VOICE } },
+    audio: { output: { voice } },
     delegation: { type: "client" },
     ...(initialItems.length > 0 ? {
       initial_items: initialItems.map(item => ({

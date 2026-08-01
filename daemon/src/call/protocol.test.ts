@@ -25,6 +25,12 @@ describe("Frameless Bidi protocol", () => {
     });
   });
 
+  test("uses an explicitly selected voice", () => {
+    expect(buildRealtimeSession("voice prompt", [], "sol")).toMatchObject({
+      audio: { output: { voice: "sol" } },
+    });
+  });
+
   test("parses transcripts, completion, delegation, and errors", () => {
     expect(parseRealtimeSidebandEvent(JSON.stringify({
       type: "input_transcript.added",

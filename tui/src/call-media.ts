@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { Event } from "./protocol";
 import { log } from "./log";
+import { DEFAULT_MIC_GAIN_DB, normalizeMicGainDb } from "./mic-gain";
 
 interface CallMediaDaemon {
   attachCallMedia(convId: string, callId: string, offerSdp: string, reqId?: string): void;
@@ -29,6 +30,7 @@ interface ActiveAdapter {
 export interface CallMediaControllerOptions {
   spawnHelper?: () => ChildProcessWithoutNullStreams;
   onError?: (message: string) => void;
+  micGainDb?: number;
 }
 
 const HELPER_PATH = fileURLToPath(new URL("./call-media-helper.cjs", import.meta.url));
@@ -45,6 +47,7 @@ export class CallMediaController {
   private active: ActiveAdapter | null = null;
   private readonly spawnHelper: () => ChildProcessWithoutNullStreams;
   private readonly onError: (message: string) => void;
+  private micGainDb: number;
 
   constructor(
     private readonly daemon: CallMediaDaemon,
@@ -52,6 +55,7 @@ export class CallMediaController {
   ) {
     this.spawnHelper = options.spawnHelper ?? defaultSpawnHelper;
     this.onError = options.onError ?? (() => {});
+    this.micGainDb = normalizeMicGainDb(options.micGainDb ?? DEFAULT_MIC_GAIN_DB);
   }
 
   handleEvent(event: Event): void {
@@ -78,6 +82,12 @@ export class CallMediaController {
     this.stopAdapter(active);
   }
 
+  setMicGainDb(gainDb: number): void {
+    this.micGainDb = normalizeMicGainDb(gainDb);
+    const active = this.active;
+    if (active) this.send(active, { type: "mic_gain", gainDb: this.micGainDb });
+  }
+
   private start(convId: string, callId: string): void {
     const current = this.active;
     if (current?.convId === convId && current.callId === callId) return;
@@ -101,6 +111,7 @@ export class CallMediaController {
       stopping: false,
     };
     this.active = active;
+    this.send(active, { type: "mic_gain", gainDb: this.micGainDb });
 
     child.stdout.on("data", chunk => this.handleOutput(active, chunk.toString()));
     child.stderr.on("data", chunk => { active.stderr = `${active.stderr}${chunk}`.slice(-2_000); });

@@ -11,6 +11,7 @@ import type { Command, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMe
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
+import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import { log } from "./log";
 
 export type EventHandler = (event: Event) => void;
@@ -188,8 +189,18 @@ export class DaemonClient {
     effort: EffortLevel,
     fastMode: boolean,
     folderId?: string | null,
+    voice?: RealtimeVoice,
   ): void {
-    this.send({ type: "new_conversation", provider, model, effort, fastMode, folderId, startCall: true });
+    this.send({
+      type: "new_conversation",
+      provider,
+      model,
+      effort,
+      fastMode,
+      folderId,
+      startCall: true,
+      ...(voice ? { callVoice: voice } : {}),
+    });
   }
 
   subscribe(convId: string): void {
@@ -232,8 +243,8 @@ export class DaemonClient {
     this.send({ type: "background_tool", convId });
   }
 
-  startCall(convId: string): void {
-    this.send({ type: "start_call", convId });
+  startCall(convId: string, voice?: RealtimeVoice): void {
+    this.send({ type: "start_call", convId, ...(voice ? { voice } : {}) });
   }
 
   attachCallMedia(convId: string, callId: string, offerSdp: string, reqId?: string): void {

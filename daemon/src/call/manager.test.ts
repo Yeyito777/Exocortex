@@ -3,6 +3,7 @@ import type { Conversation } from "../messages";
 import type { RealtimeSidebandEvent } from "./protocol";
 import type { NativeRealtimeStartParams, NativeRealtimeTransport } from "./transport";
 import { buildRealtimeInitialItems, estimateRealtimeTokens, mergeCompletedTranscript, RealtimeCallManager, stripRepeatedInterruptedTranscript } from "./manager";
+import type { RealtimeVoice } from "@exocortex/shared/realtime";
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -79,7 +80,10 @@ describe("realtime call manager", () => {
         statuses.push(text);
         return true;
       },
-      delegate: async (_id, delegation) => `Agent completed: ${delegation.backendTask}`,
+      delegate: async (_id, delegation) => ({
+        status: "completed",
+        text: `Agent completed: ${delegation.backendTask}`,
+      }),
     });
 
     const started = await manager.start(conv.id);
@@ -97,9 +101,11 @@ describe("realtime call manager", () => {
       threadId: conv.id,
       sessionId: started.callId,
       offerSdp: "v=0\r\no=offer",
+      voice: "cove",
     });
     expect(realtime.starts[0]!.prompt).toContain("delegate only the backend work");
     expect(realtime.starts[0]!.prompt).toContain("completeness matters");
+    expect(realtime.starts[0]!.prompt).toContain("do not claim to be checking, waiting, loading, or making progress");
     expect(realtime.starts[0]!.initialItems).toEqual([
       { role: "developer", text: "Prefer concise spoken replies." },
       { role: "user", text: "Earlier question" },
@@ -213,7 +219,7 @@ describe("realtime call manager", () => {
         persisted.push({ role, text });
         return true;
       },
-      delegate: async () => "The delegated answer.",
+      delegate: async () => ({ status: "completed", text: "The delegated answer." }),
     });
 
     const started = await manager.start(conv.id);
@@ -288,6 +294,119 @@ describe("realtime call manager", () => {
     await manager.stopAll();
   });
 
+  test("returns a clean result to GPT-Live when the delegated stream is cancelled", async () => {
+    const conv = conversation();
+    const realtime = new FakeTransport();
+    const server = fakeServer();
+    let emit: ((event: RealtimeSidebandEvent) => void | Promise<void>) | null = null;
+    const manager = new RealtimeCallManager(server.server as never, {
+      createTransport: handler => {
+        emit = handler;
+        return realtime;
+      },
+      ensureAuthenticated: async () => {},
+      getConversation: id => id === conv.id ? conv : undefined,
+      getEffectiveInstructions: () => null,
+      getAccountScope: () => null,
+      persistTranscript: () => true,
+      delegate: async () => ({ status: "cancelled" }),
+    });
+
+    const started = await manager.start(conv.id);
+    await manager.attachMedia({} as never, conv.id, started.callId, "v=0\r\no=offer", "media-req");
+    await emit!({ type: "handoff", handoffId: "handoff-cancelled", text: "Inspect the repository" });
+    await Bun.sleep(0);
+
+    expect(realtime.handoffs).toEqual([{
+      handoffId: "handoff-cancelled",
+      text: "The delegated request was canceled.",
+    }]);
+    await manager.stopAll();
+  });
+
+  test("hangup aborts an in-flight delegation before closing the transport", async () => {
+    const conv = conversation();
+    const realtime = new FakeTransport();
+    const server = fakeServer();
+    let emit: ((event: RealtimeSidebandEvent) => void | Promise<void>) | null = null;
+    let delegationAborted = false;
+    let delegationStarted!: () => void;
+    const startedDelegation = new Promise<void>(resolve => { delegationStarted = resolve; });
+    const manager = new RealtimeCallManager(server.server as never, {
+      createTransport: handler => {
+        emit = handler;
+        return realtime;
+      },
+      ensureAuthenticated: async () => {},
+      getConversation: id => id === conv.id ? conv : undefined,
+      getEffectiveInstructions: () => null,
+      getAccountScope: () => null,
+      persistTranscript: () => true,
+      delegate: async (_id, _delegation, signal) => {
+        delegationStarted();
+        await new Promise<void>(resolve => signal.addEventListener("abort", () => {
+          delegationAborted = true;
+          resolve();
+        }, { once: true }));
+        return { status: "cancelled" };
+      },
+    });
+
+    const started = await manager.start(conv.id);
+    await manager.attachMedia({} as never, conv.id, started.callId, "v=0\r\no=offer", "media-req");
+    await emit!({ type: "handoff", handoffId: "handoff-running", text: "Inspect the repository" });
+    await startedDelegation;
+    await manager.stop(conv.id, started.callId);
+
+    expect(delegationAborted).toBe(true);
+    expect(realtime.stopped).toBe(1);
+    expect(realtime.handoffs).toEqual([]);
+  });
+
+  test("agent-initiated hangup lets the tool-owning delegation finish", async () => {
+    const conv = conversation();
+    const realtime = new FakeTransport();
+    const server = fakeServer();
+    let emit: ((event: RealtimeSidebandEvent) => void | Promise<void>) | null = null;
+    let delegationStarted!: () => void;
+    let finishDelegation!: () => void;
+    let delegationAborted = false;
+    let delegationFinished = false;
+    const startedDelegation = new Promise<void>(resolve => { delegationStarted = resolve; });
+    const finish = new Promise<void>(resolve => { finishDelegation = resolve; });
+    const manager = new RealtimeCallManager(server.server as never, {
+      createTransport: handler => {
+        emit = handler;
+        return realtime;
+      },
+      ensureAuthenticated: async () => {},
+      getConversation: id => id === conv.id ? conv : undefined,
+      getEffectiveInstructions: () => null,
+      getAccountScope: () => null,
+      persistTranscript: () => true,
+      delegate: async (_id, _delegation, signal) => {
+        signal.addEventListener("abort", () => { delegationAborted = true; }, { once: true });
+        delegationStarted();
+        await finish;
+        delegationFinished = true;
+        return { status: "completed", text: "The call ended." };
+      },
+    });
+
+    const started = await manager.start(conv.id);
+    await manager.attachMedia({} as never, conv.id, started.callId, "v=0\r\no=offer", "media-req");
+    await emit!({ type: "handoff", handoffId: "handoff-hangup", text: "Hang up the call" });
+    await startedDelegation;
+    await manager.stopFromAgent(conv.id);
+
+    expect(delegationAborted).toBe(false);
+    expect(realtime.stopped).toBe(1);
+    finishDelegation();
+    await Bun.sleep(0);
+    expect(delegationFinished).toBe(true);
+    expect(realtime.handoffs).toEqual([]);
+  });
+
   test("rejects non-OpenAI owners and enforces one global active call", async () => {
     const openAI = conversation();
     const deepSeek = conversation({ id: "deep", provider: "deepseek", model: "deepseek-chat" });
@@ -332,6 +451,42 @@ describe("buildRealtimeInitialItems", () => {
     expect(items.length).toBeLessThanOrEqual(64);
     expect(items.reduce((sum, item) => sum + item.text.length, 0)).toBeLessThanOrEqual(28_000);
     expect(items.at(-1)?.text).toContain("99:");
+  });
+
+  test("persists an explicit voice and reuses it for later calls", async () => {
+    const conv = conversation();
+    let savedVoice: RealtimeVoice = "cove";
+    const saved: string[] = [];
+
+    const makeManager = (transport: FakeTransport) => new RealtimeCallManager(fakeServer().server as never, {
+      createTransport: () => transport,
+      ensureAuthenticated: async () => {},
+      getConversation: id => id === conv.id ? conv : undefined,
+      getEffectiveInstructions: () => null,
+      getAccountScope: () => null,
+      getVoice: () => savedVoice,
+      saveVoice: voice => {
+        savedVoice = voice;
+        saved.push(voice);
+      },
+      persistStatus: () => true,
+    });
+
+    const selectedTransport = new FakeTransport();
+    const selectedManager = makeManager(selectedTransport);
+    const selected = await selectedManager.start(conv.id, "sol");
+    await selectedManager.attachMedia({} as never, conv.id, selected.callId, "v=0");
+    expect(selectedTransport.starts[0]?.voice).toBe("sol");
+    expect(saved).toEqual(["sol"]);
+    await selectedManager.stop(conv.id, selected.callId);
+
+    const reusedTransport = new FakeTransport();
+    const reusedManager = makeManager(reusedTransport);
+    const reused = await reusedManager.start(conv.id);
+    await reusedManager.attachMedia({} as never, conv.id, reused.callId, "v=0");
+    expect(reusedTransport.starts[0]?.voice).toBe("sol");
+    expect(saved).toEqual(["sol"]);
+    await reusedManager.stop(conv.id, reused.callId);
   });
 });
 

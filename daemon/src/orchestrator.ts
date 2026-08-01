@@ -199,6 +199,8 @@ interface AssistantTurnOptions {
     originalUserUtterance: string;
     backendTask: string;
   };
+  /** Optional owner lifecycle that can cancel this turn without daemon IPC. */
+  externalAbortSignal?: AbortSignal;
 }
 
 export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId">;
@@ -243,10 +245,12 @@ export async function orchestrateRealtimeDelegation(
   startedAt: number,
   ext: OrchestrationCallbacks,
   policy: SubagentTurnPolicy = {},
+  signal?: AbortSignal,
 ): Promise<AssistantTurnOutcome> {
   return await orchestrateAssistantTurn(server, null, undefined, convId, startedAt, ext, {
     ...policy,
     realtimeDelegation: delegation,
+    externalAbortSignal: signal,
   });
 }
 
@@ -473,6 +477,10 @@ async function orchestrateAssistantTurn(
   if (options.subagentNotificationId) acknowledgeSubagentNotification(options.subagentNotificationId);
 
   const ac = new RetryableStreamAbortController();
+  const externalAbortSignal = options.externalAbortSignal;
+  const abortFromExternalOwner = () => ac.abort(externalAbortSignal?.reason);
+  if (externalAbortSignal?.aborted) abortFromExternalOwner();
+  else externalAbortSignal?.addEventListener("abort", abortFromExternalOwner, { once: true });
   // A standalone compaction has no unfinished assistant turn to replay after a
   // daemon restart. It is still an active job so abort, queueing, and shutdown
   // can coordinate with it normally.
@@ -1401,6 +1409,7 @@ async function orchestrateAssistantTurn(
       daemonRestart: isDaemonRestart,
     };
   } finally {
+    externalAbortSignal?.removeEventListener("abort", abortFromExternalOwner);
     if (providerTurnSession) {
       try {
         if (outcome?.ok) await providerTurnSession.close();

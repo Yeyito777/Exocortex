@@ -33,7 +33,10 @@ describe("TUI call media controller", () => {
     const sent: string[] = [];
     child.stdin.on("data", chunk => sent.push(chunk.toString()));
     const api = daemon();
-    const controller = new CallMediaController(api, { spawnHelper: () => child.asChild() });
+    const controller = new CallMediaController(api, {
+      spawnHelper: () => child.asChild(),
+      micGainDb: -6,
+    });
 
     controller.handleEvent({
       type: "call_state",
@@ -51,6 +54,10 @@ describe("TUI call media controller", () => {
     ]);
     const reqId = api.attachCallMedia.mock.calls[0]?.[3];
     expect(reqId).toStartWith("call-media-");
+    expect(sent.map(line => JSON.parse(line))).toContainEqual({ type: "mic_gain", gainDb: -6 });
+
+    controller.setMicGainDb(3.5);
+    expect(sent.map(line => JSON.parse(line))).toContainEqual({ type: "mic_gain", gainDb: 3.5 });
 
     controller.handleEvent({
       type: "call_sdp_answer",

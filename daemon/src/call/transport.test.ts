@@ -58,6 +58,7 @@ describe("native ChatGPT realtime transport", () => {
       offerSdp: "v=0\r\no=offer",
       prompt: "voice prompt",
       initialItems: [{ role: "user", text: "context" }],
+      voice: "cove",
       sessionId: "session-1",
       threadId: "thread-1",
     });
@@ -110,7 +111,7 @@ describe("native ChatGPT realtime transport", () => {
       },
     });
 
-    const starting = transport.start({ offerSdp: "v=0", prompt: "p", initialItems: [] })
+    const starting = transport.start({ offerSdp: "v=0", prompt: "p", initialItems: [], voice: "cove" })
       .then(() => null, error => error as Error);
     for (let attempt = 0; attempt < 10 && sockets.length === 0; attempt++) await Promise.resolve();
     expect(sockets).toHaveLength(1);
@@ -146,7 +147,7 @@ describe("native ChatGPT realtime transport", () => {
       },
     });
 
-    await transport.start({ offerSdp: "v=0", prompt: "p", initialItems: [] });
+    await transport.start({ offerSdp: "v=0", prompt: "p", initialItems: [], voice: "cove" });
     expect(forceRefresh).toEqual([false, true]);
     expect(calls).toBe(2);
     await transport.stop();

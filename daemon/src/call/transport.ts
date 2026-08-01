@@ -10,6 +10,7 @@ import {
   type RealtimeInitialItem,
   type RealtimeSidebandEvent,
 } from "./protocol";
+import type { RealtimeVoice } from "@exocortex/shared/realtime";
 
 export interface NativeRealtimeStartParams {
   offerSdp: string;
@@ -17,6 +18,7 @@ export interface NativeRealtimeStartParams {
   initialItems: RealtimeInitialItem[];
   sessionId?: string;
   threadId?: string;
+  voice: RealtimeVoice;
 }
 
 export interface NativeRealtimeStartResult {
@@ -197,7 +199,7 @@ export class ChatGptRealtimeTransport implements NativeRealtimeTransport {
       },
       body: JSON.stringify({
         sdp: params.offerSdp,
-        session: buildRealtimeSession(params.prompt, params.initialItems),
+        session: buildRealtimeSession(params.prompt, params.initialItems, params.voice),
       }),
     });
   }

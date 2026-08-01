@@ -59,6 +59,7 @@ import { beginOlderHistoryLoad, INITIAL_BUFFER_ADDITIONAL_TURNS, OLDER_HISTORY_P
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { log } from "./log";
 import { CallMediaController } from "./call-media";
+import { formatMicGainDb, loadMicGainDb, saveMicGainDb } from "./mic-gain";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -739,7 +740,7 @@ function handleSubmit(): void {
           break;
         case "call_requested":
           if (state.convId) {
-            daemon.startCall(state.convId);
+            daemon.startCall(state.convId, cmdResult.voice);
           } else {
             daemon.createConversationForCall(
               state.provider,
@@ -747,12 +748,27 @@ function handleSubmit(): void {
               state.effort,
               state.fastMode,
               state.draftFolderId,
+              cmdResult.voice,
             );
           }
           break;
         case "hangup_requested":
           if (state.convId) daemon.stopCall(state.convId);
           break;
+        case "mic_gain_changed": {
+          callMedia?.setMicGainDb(cmdResult.gainDb);
+          try {
+            const gainDb = saveMicGainDb(cmdResult.gainDb);
+            pushSystemMessage(state, `Microphone gain set to ${formatMicGainDb(gainDb)}.`);
+          } catch (error) {
+            pushSystemMessage(
+              state,
+              `Microphone gain changed for this TUI session, but saving failed: ${error instanceof Error ? error.message : String(error)}`,
+              theme.warning,
+            );
+          }
+          break;
+        }
         case "model_changed":
           if (state.convId) daemon.setModel(state.convId, cmdResult.provider, cmdResult.model);
           break;
@@ -1639,6 +1655,7 @@ async function main(): Promise<void> {
   daemon = new DaemonClient(onDaemonEvent);
   daemon.onConnectionLost(handleDaemonConnectionLost);
   callMedia = new CallMediaController(daemon, {
+    micGainDb: loadMicGainDb(),
     onError: message => {
       pushSystemMessage(state, `✗ ${message}`, theme.error);
       scheduleRender();

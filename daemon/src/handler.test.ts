@@ -9,6 +9,7 @@ import { invalidateCredentialsCache } from "./auth";
 import { clearProviderAuth, saveProviderAuth } from "./store";
 import { resetExternalNotificationsForTest } from "./external-notifications";
 import { listPendingExternalNotificationSoftWakes, resetExternalNotificationSoftWakesForTest } from "./external-notification-soft-wakes";
+import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
 
 interface TestAssistantOutcome {
   ok: boolean;
@@ -1101,6 +1102,7 @@ describe("handler start_call", () => {
     start: mock(async () => ({ callId: "call-1", state: "waiting_for_media" as const })),
     attachMedia: mock(async () => {}),
     stop: mock(async () => {}),
+    stopFromAgent: mock(async () => {}),
     stopAll: mock(async () => {}),
   });
 
@@ -1121,9 +1123,9 @@ describe("handler start_call", () => {
     const callManager = fakeCallManager();
     const handle = createHandler(server as never, { callManager });
 
-    await handle({} as never, { type: "start_call", reqId: "req-call", convId });
+    await handle({} as never, { type: "start_call", reqId: "req-call", convId, voice: "sol" });
 
-    expect(callManager.start).toHaveBeenCalledWith(convId);
+    expect(callManager.start).toHaveBeenCalledWith(convId, "sol");
     expect(subscriberEvents).toEqual([]);
     expect(sent).toContainEqual({ type: "ack", reqId: "req-call", convId });
   });
@@ -1197,6 +1199,32 @@ describe("handler start_call", () => {
     expect(sent).toContainEqual({ type: "ack", reqId: "req-stop-call", convId });
   });
 
+  test("lets the owning agent hang up through the discovered Exocortex command", async () => {
+    const convId = mkId("call-tool-hangup");
+    create(convId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const server = {
+      sendTo: mock(() => {}),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    createHandler(server as never, { callManager });
+    const runtime = getExocortexToolRuntime(server as never)!;
+
+    const result = await runtime.execute({
+      action: "commands",
+      command: "hangup",
+      args: {},
+    }, convId);
+
+    expect(result.isError).toBe(false);
+    expect(callManager.stopFromAgent).toHaveBeenCalledWith(convId);
+  });
+
   test("creates empty-draft calls as OpenAI conversations even when the draft selected another provider", async () => {
     const convId = `${Date.now()}-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
     IDS.push(convId);
@@ -1252,6 +1280,7 @@ describe("handler start_call", () => {
       provider: DEFAULT_PROVIDER_ID,
       model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID],
       startCall: true,
+      callVoice: "maple",
     });
 
     expect(get(convId)).toMatchObject({ title: "voice call" });
@@ -1260,7 +1289,7 @@ describe("handler start_call", () => {
       reqId: "req-call-create",
       convId,
     }));
-    expect(callManager.start).toHaveBeenCalledWith(convId);
+    expect(callManager.start).toHaveBeenCalledWith(convId, "maple");
     expect(subscriberEvents).toEqual([]);
     expect(sent).toContainEqual({ type: "ack", reqId: "req-call-create", convId });
   });

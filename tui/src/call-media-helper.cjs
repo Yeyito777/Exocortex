@@ -18,6 +18,8 @@ let playback = null;
 let playbackFormat = null;
 let captureBuffer = Buffer.alloc(0);
 let remoteSink = null;
+let micGainDb = 0;
+let micGainLinear = 1;
 const intentionallyStoppedChildren = new WeakSet();
 
 function send(message) {
@@ -70,6 +72,20 @@ function stopChild(child) {
   try { child.kill("SIGTERM"); } catch {}
 }
 
+function setMicGainDb(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error("Microphone gain must be a finite number.");
+  micGainDb = Object.is(value, -0) ? 0 : value;
+  micGainLinear = 10 ** (micGainDb / 20);
+}
+
+function applyMicGain(samples) {
+  if (micGainLinear === 1) return;
+  for (let index = 0; index < samples.length; index++) {
+    const amplified = Math.round(samples[index] * micGainLinear);
+    samples[index] = Math.max(-32_768, Math.min(32_767, amplified));
+  }
+}
+
 function startCapture() {
   if (capture || stopping) return;
   const child = spawn("parec", pulseArgs("--record"), { stdio: ["ignore", "pipe", "pipe"] });
@@ -83,6 +99,7 @@ function startCapture() {
       captureBuffer = captureBuffer.subarray(BYTES_PER_CHUNK);
       const samples = new Int16Array(FRAMES_PER_CHUNK * CHANNEL_COUNT);
       Buffer.from(samples.buffer).set(frame);
+      applyMicGain(samples);
       try {
         source.onData({
           samples,
@@ -172,6 +189,10 @@ async function handle(message) {
   }
   if (message.type === "stop") {
     await stop(0);
+    return;
+  }
+  if (message.type === "mic_gain") {
+    setMicGainDb(message.gainDb);
     return;
   }
   throw new Error(`Unknown media-adapter command: ${String(message.type)}`);

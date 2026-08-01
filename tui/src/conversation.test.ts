@@ -152,7 +152,7 @@ describe("call transcript rendering", () => {
     expect(rendered).toContainEqual(expect.stringContaining("Gpt-live-1-boulder-alpha | 12 tokens | 2s"));
   });
 
-  test("renders live captured speech before the live assistant without mutating canonical history", () => {
+  test("keeps live call drafts at the tail below a delegated agent stream", () => {
     const state = createInitialState();
     state.convId = "conv-call";
     state.messages.push({
@@ -160,6 +160,16 @@ describe("call transcript rendering", () => {
       blocks: [{ type: "text", text: "Older canonical answer." }],
       metadata: null,
     });
+    state.pendingAI = {
+      role: "assistant",
+      blocks: [{ type: "text", text: "Delegated backend still working." }],
+      metadata: {
+        startedAt: 900,
+        endedAt: null,
+        model: "gpt-5.6-sol",
+        tokens: 3,
+      },
+    };
     state.callUserDraft = {
       callId: "call-1",
       final: false,
@@ -193,11 +203,13 @@ describe("call transcript rendering", () => {
 
     const rendered = buildMessageLines(state, 80).lines.map(stripAnsi);
     const oldIndex = rendered.findIndex(line => line.includes("Older canonical answer."));
+    const pendingIndex = rendered.findIndex(line => line.includes("Delegated backend still working."));
     const userIndex = rendered.findIndex(line => line.includes("New captured question."));
     const assistantIndex = rendered.findIndex(line => line.includes("Live answer"));
 
     expect(oldIndex).toBeGreaterThanOrEqual(0);
-    expect(userIndex).toBeGreaterThan(oldIndex);
+    expect(pendingIndex).toBeGreaterThan(oldIndex);
+    expect(userIndex).toBeGreaterThan(pendingIndex);
     expect(assistantIndex).toBeGreaterThan(userIndex);
     expect(rendered.slice(userIndex, assistantIndex)).toContainEqual(expect.stringContaining("call transcript"));
     expect(state.messages).toHaveLength(1);

@@ -105,6 +105,15 @@ function handleUserTranscript(event: TranscriptEvent, state: RenderState): void 
 }
 
 function handleAssistantTranscript(event: TranscriptEvent, state: RenderState): void {
+  // Finalization may run again during hangup after the completed assistant turn
+  // has already been persisted. The daemon emits an empty final projection to
+  // retire any optimistic UI draft; treating it as a new message would render a
+  // metadata-only phantom turn after "Realtime call ended."
+  if (event.final && !event.text.trim()) {
+    state.callAssistantDraft = null;
+    return;
+  }
+
   let draft = state.callAssistantDraft;
   if (draft && (draft.callId !== event.callId || (draft.final && !event.final))) draft = null;
 
