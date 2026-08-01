@@ -70,6 +70,8 @@ the instance's gitignored data directory.
 
 ## 2. Introduce a conversation repository
 
+Detailed implementation checklist: [SQLite Conversation Store Overhaul TODO](sqlite-conversation-store/TODO.md).
+
 Create a storage boundary before changing the canonical storage format.
 
 - [ ] Define a `ConversationRepository` interface.
