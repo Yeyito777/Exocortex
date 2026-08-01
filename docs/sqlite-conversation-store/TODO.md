@@ -57,21 +57,40 @@ this checklist has been reviewed and approved.
 
 # Phase 0 — Review and approval
 
-- [ ] Review this TODO with the user.
-- [ ] Resolve any requested scope changes.
-- [ ] Agree on the SQLite canonical database location and file name.
-- [ ] Agree on low-scale and large-scale performance acceptance thresholds.
-- [ ] Agree on how long JSON rollback data remains after canonical cutover.
-- [ ] Record approval here before beginning Phase 1.
+- [x] Review this TODO with the user.
+- [x] Resolve any requested scope changes.
+- [x] Agree on the SQLite canonical database location and file name.
+- [x] Agree on low-scale and large-scale performance acceptance thresholds.
+- [x] Agree on how long JSON rollback data remains after canonical cutover.
+- [x] Record approval here before beginning Phase 1.
 
 Approval record:
 
 ```text
-Status: awaiting review
-Approved by:
-Date:
-Scope changes:
+Status: approved ("LGTM go ahead")
+Approved by: user
+Date: 2026-08-01
+Scope changes: none; use the defaults recorded below where approval did not specify a value.
 ```
+
+Approved defaults:
+
+- Canonical path: `<instance dataDir>/exocortex.sqlite3` (one database per
+  main/worktree instance).
+- Low-scale gate: median latency must not regress by more than the larger of 15%
+  or 2 ms; p95 must not regress by more than the larger of 25% or 5 ms.
+- Interactive write gate: p95 below 50 ms for ordinary low-scale metadata and
+  append operations on the test machine.
+- Large-scale gate: startup/listing must be at least 2x faster at 10,000
+  conversations, and appending to 10/50/100 MiB histories must be at least 5x
+  faster than JSON while scaling with new content rather than history bytes.
+- Rollback retention: existing JSON remains untouched and import/export remains
+  supported through at least one accepted release; cleanup is a separate,
+  explicit user-approved operation.
+- Chrono and external-notification durable schedule/route files remain their own
+  stores in this pass. SQLite owns indexed conversation references and deletion
+  integration; synthetic integration tests verify these systems without copying
+  or firing live main-instance automation.
 
 ---
 
@@ -79,50 +98,50 @@ Scope changes:
 
 ## Current behavior inventory
 
-- [ ] Inventory every exported operation in `conversations.ts`.
-- [ ] Inventory every conversation/sidebar/folder command in `handler.ts`.
-- [ ] Inventory every persistence sidecar and compensating receipt.
-- [ ] Inventory every startup repair/recovery path.
-- [ ] Inventory every display-page read/write/backfill path.
-- [ ] Inventory message migrations and current storage versions.
-- [ ] Inventory queue, unread, folder, BTW, subagent-notification, goal, Chrono,
+- [x] Inventory every exported operation in `conversations.ts`.
+- [x] Inventory every conversation/sidebar/folder command in `handler.ts`.
+- [x] Inventory every persistence sidecar and compensating receipt.
+- [x] Inventory every startup repair/recovery path.
+- [x] Inventory every display-page read/write/backfill path.
+- [x] Inventory message migrations and current storage versions.
+- [x] Inventory queue, unread, folder, BTW, subagent-notification, goal, Chrono,
   and external-notification dependencies on conversation existence/history.
-- [ ] Map each current JSON/sidecar file to its future table or explicitly retained
+- [x] Map each current JSON/sidecar file to its future table or explicitly retained
   external file.
-- [ ] Document which state is canonical, derived, ephemeral, or rollback-only.
+- [x] Document which state is canonical, derived, ephemeral, or rollback-only.
 
 ## Baseline correctness
 
-- [ ] Run the shared, daemon, and TUI typechecks before implementation.
-- [ ] Run all conversation/persistence/display/handler tests before implementation.
-- [ ] Record unrelated or environment-sensitive baseline failures.
+- [x] Run the shared, daemon, and TUI typechecks before implementation.
+- [x] Run all conversation/persistence/display/handler tests before implementation.
+- [x] Record unrelated or environment-sensitive baseline failures.
 - [ ] Add a deterministic storage-backend contract test harness.
 - [ ] Make the existing JSON backend pass the contract harness unchanged.
 
 ## Design decisions
 
-- [ ] Write the repository interface and transaction-boundary design.
-- [ ] Define immutable read snapshots and generation-checked mutations.
-- [ ] Define ordered message identity and sequence semantics.
-- [ ] Define active-context/checkpoint storage semantics.
-- [ ] Define the large-content policy for tool results and images.
-- [ ] Define SQLite journal mode, synchronous level, foreign keys, busy timeout,
+- [x] Write the repository interface and transaction-boundary design.
+- [x] Define immutable read snapshots and generation-checked mutations.
+- [x] Define ordered message identity and sequence semantics.
+- [x] Define active-context/checkpoint storage semantics.
+- [x] Define the large-content policy for tool results and images.
+- [x] Define SQLite journal mode, synchronous level, foreign keys, busy timeout,
   checkpointing, and connection ownership.
-- [ ] Define schema migration versioning and failure behavior.
-- [ ] Define database backup, restore, integrity-check, and export behavior.
-- [ ] Define shadow-write ordering and parity failure reporting.
-- [ ] Define canonical cutover and rollback switches.
-- [ ] Define how JSON overlays are materialized during import.
-- [ ] Define how trash/undo history maps into transactional tables.
-- [ ] Define how display paging reads directly from canonical rows.
-- [ ] Review the design for Windows/Bun SQLite compatibility.
+- [x] Define schema migration versioning and failure behavior.
+- [x] Define database backup, restore, integrity-check, and export behavior.
+- [x] Define shadow-write ordering and parity failure reporting.
+- [x] Define canonical cutover and rollback switches.
+- [x] Define how JSON overlays are materialized during import.
+- [x] Define how trash/undo history maps into transactional tables.
+- [x] Define how display paging reads directly from canonical rows.
+- [x] Review the design for Windows/Bun SQLite compatibility.
 
 Deliverables:
 
-- [ ] Repository contract document.
+- [x] Repository contract document (`design.md`).
 - [ ] SQLite schema document.
-- [ ] State/file-to-table mapping document.
-- [ ] Migration/cutover/rollback document.
+- [x] State/file-to-table mapping document (`state-map.md`).
+- [x] Migration/cutover/rollback document (`migration.md`).
 
 ---
 
