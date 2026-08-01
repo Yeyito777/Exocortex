@@ -1,6 +1,5 @@
 /** Compact foreground panel for an ephemeral `/btw` answer. */
 
-import { formatModelDisplayName } from "./messages";
 import { markdownWordWrap } from "./markdown";
 import type { BtwPanelState } from "./state";
 import { padRightToWidth, padVisibleRightToWidth, termWidth, truncateToWidth } from "./textwidth";
@@ -47,7 +46,7 @@ export function renderBtwPanel(
 
   const panelBg = theme.appBg ?? "";
   if (width < 22 || height < 3) {
-    const label = truncateToWidth(" BTW", width);
+    const label = truncateToWidth(` ${cleanInline(btw.query)}`, width);
     btw.maxScroll = 0;
     btw.viewportRows = 1;
     btw.scrollOffset = 0;
@@ -74,11 +73,9 @@ export function renderBtwPanel(
     `${outline}│${theme.reset}${panelBg} ${padVisibleRightToWidth(text, contentWidth)} ${outline}│`,
   );
 
-  const model = cleanInline(formatModelDisplayName(btw.model));
   const query = cleanInline(btw.query);
-  const identity = `BTW · ${model} · ${query}`;
   const labelBudget = Math.max(1, width - termWidth("╭─  ╮"));
-  const label = truncateToWidth(identity, labelBudget);
+  const label = truncateToWidth(query, labelBudget);
   const topLeftPlain = `╭─ ${label} `;
   const fillWidth = Math.max(0, width - termWidth(topLeftPlain) - 1);
   const topLine = `${theme.bold}${outline}╭─ ${theme.text}${label}${theme.boldOff}${outline} ${"─".repeat(fillWidth)}╮`;
