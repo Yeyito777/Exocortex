@@ -251,11 +251,11 @@ function buildRecoveryCallbacks(server: DaemonServer, convId: string) {
 
   return {
     onHeaders: (headers: Headers) => {
-      const provider = convStore.get(convId)?.provider ?? getDefaultProvider().id;
+      const provider = convStore.getIndexedSummary(convId)?.provider ?? getDefaultProvider().id;
       handleUsageHeaders(provider, headers, (usage) => broadcastUsage(provider, usage));
     },
     onComplete: () => {
-      const provider = convStore.get(convId)?.provider ?? getDefaultProvider().id;
+      const provider = convStore.getIndexedSummary(convId)?.provider ?? getDefaultProvider().id;
       refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
       broadcastTokenStats();
     },
@@ -291,7 +291,7 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
   }
   convIds = normalizeConvIds([...convIds, ...runningNotifications.map((record) => record.childConvId)]);
   for (const record of runningNotifications) {
-    const childTitle = convStore.get(record.childConvId)?.title.trim()
+    const childTitle = convStore.getIndexedSummary(record.childConvId)?.title.trim()
       || record.task.split("\n")[0].replace(/\s+/g, " ").trim()
       || "Subagent task";
     if (setSubagentActive(record.parentConvId, record.childConvId, true, {
@@ -313,7 +313,7 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
 
   const scheduled: string[] = [];
   for (const convId of convIds) {
-    if (!convStore.get(convId)) {
+    if (!convStore.hasConversation(convId)) {
       log("warn", `restart-recovery: interrupted conversation ${convId} no longer exists; skipping`);
       const orphaned = runningNotifications.find((record) => record.childConvId === convId);
       if (orphaned) {
@@ -436,6 +436,9 @@ export function recoverActiveGoals(server: DaemonServer, excludeConvIds: Iterabl
   for (const summary of convStore.listSummaries()) {
     const convId = summary.id;
     if (excluded.has(convId)) continue;
+    // The summary index already carries goal state. Do not parse every canonical
+    // transcript on boot just to reject virtually all of them.
+    if (summary.goal?.status !== "active") continue;
     const conv = convStore.get(convId);
     if (conv?.goal?.status !== "active") continue;
     if (convStore.isStreaming(convId)) continue;

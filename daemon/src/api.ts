@@ -4,10 +4,17 @@ import type { ApiToolCall, ContentBlock, ProviderTurnSession, StreamResult, Stre
 import { AuthError } from "./providers/errors";
 import { recordTokenUsage } from "./token-stats";
 import { recordModelRequestDiagnostics } from "./diagnostics";
+import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 
 export type { ApiMessage, ApiContentBlock };
 export type { ApiToolCall, ContentBlock, ProviderTurnSession, StreamResult, StreamCallbacks, StreamOptions };
 export { AuthError };
+
+/** Daemon-only metadata stripped before options are passed to a provider. */
+export interface StreamMessageOptions extends StreamOptions {
+  /** Messages newly introduced since the preceding provider request. */
+  diagnosticMessages?: ApiMessage[];
+}
 
 export function createProviderTurnSession(provider: ProviderId): ProviderTurnSession | null {
   return getProviderAdapter(provider).createTurnSession?.() ?? null;
@@ -18,9 +25,10 @@ export async function streamMessage(
   messages: ApiMessage[],
   model: ModelId,
   callbacks: StreamCallbacks,
-  options: StreamOptions = {},
+  options: StreamMessageOptions = {},
 ): Promise<StreamResult> {
-  const result = await getProviderAdapter(provider).streamMessage(messages, model, callbacks, options);
+  const { diagnosticMessages = [], ...providerOptions } = options;
+  const result = await getProviderAdapter(provider).streamMessage(messages, model, callbacks, providerOptions);
   if (options.tracking) {
     recordTokenUsage(provider, model, {
       inputTokens: result.inputTokens,
@@ -28,6 +36,8 @@ export async function streamMessage(
       outputTokens: result.outputTokens,
     }, options.tracking);
   }
-  recordModelRequestDiagnostics(provider, model, messages, result, options.tracking);
+  if (PERFORMANCE_PROFILING_ENABLED) {
+    recordModelRequestDiagnostics(provider, model, messages, result, options.tracking, diagnosticMessages);
+  }
   return result;
 }

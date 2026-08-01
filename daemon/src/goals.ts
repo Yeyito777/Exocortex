@@ -69,7 +69,7 @@ export function normalizeGoalSetOptions(options: GoalSetOptions = {}): Required<
 
 export function setGoal(convId: string, objective: string, options: GoalSetOptions = {}): GoalOperationResult {
   const trimmed = objective.trim();
-  if (!trimmed) return { ok: false, goal: convStore.get(convId)?.goal ?? null, message: "Goal objective cannot be empty." };
+  if (!trimmed) return { ok: false, goal: convStore.getIndexedSummary(convId)?.goal ?? null, message: "Goal objective cannot be empty." };
   const normalizedOptions = normalizeGoalSetOptions(options);
   const goal = convStore.setGoal(convId, trimmed, normalizedOptions);
   if (!goal) return { ok: false, goal: null, message: "Goal update failed." };
@@ -77,7 +77,7 @@ export function setGoal(convId: string, objective: string, options: GoalSetOptio
 }
 
 export function updateGoalStatus(convId: string, status: IncompleteGoalStatus, message: string, options: { enforceModelPermissions?: boolean } = {}): GoalOperationResult {
-  const currentGoal = convStore.get(convId)?.goal ?? null;
+  const currentGoal = convStore.getIndexedSummary(convId)?.goal ?? null;
   const enforceModelPermissions = options.enforceModelPermissions ?? false;
   if (enforceModelPermissions && status === "paused" && currentGoal && !goalCanPause(currentGoal)) {
     return { ok: false, goal: currentGoal, message: "This goal cannot be paused." };
@@ -88,7 +88,7 @@ export function updateGoalStatus(convId: string, status: IncompleteGoalStatus, m
 }
 
 export function completeGoal(convId: string, message = "Goal complete.", options: { enforceModelPermissions?: boolean } = {}): GoalOperationResult {
-  const currentGoal = convStore.get(convId)?.goal ?? null;
+  const currentGoal = convStore.getIndexedSummary(convId)?.goal ?? null;
   const enforceModelPermissions = options.enforceModelPermissions ?? false;
   if (!currentGoal) return { ok: false, goal: null, message: "No goal set." };
   if (enforceModelPermissions && !goalCanComplete(currentGoal)) {

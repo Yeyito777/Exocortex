@@ -123,7 +123,8 @@ export interface DiagnosticsConfig {
   /**
    * Collect correlated daemon/TUI conversation-open timings and event-loop lag
    * diagnostics. Defaults to false because the extra clocks, bookkeeping, and
-   * log I/O are intended for temporary investigations.
+   * log I/O are intended for temporary investigations. Daemon JSONL diagnostics
+   * are retained for seven days and capped at 32 MiB per kind/day.
    */
   performanceProfiling?: boolean;
   /** Preserve unknown future diagnostic settings. */

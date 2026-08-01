@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, rmSync } from "fs";
+import { appendFileSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from "fs";
 import { createHash } from "crypto";
 import { join } from "path";
 import { diagnosticsDir, worktreeName } from "@exocortex/shared/paths";
@@ -9,6 +9,13 @@ import { log } from "./log";
 const DIAGNOSTICS_VERSION = 1;
 const INSTANCE_ID = worktreeName() ?? "main";
 const ERROR_REASON_MAX_CHARS = 2_000;
+const TOOL_RESULTS_PER_REQUEST_MAX = 32;
+const DIAGNOSTICS_RETENTION_DAYS = 7;
+const DIAGNOSTICS_FILE_MAX_BYTES = 32 * 1024 * 1024;
+const RETENTION_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+let lastRetentionCheckAt = 0;
+const fullDiagnosticsFiles = new Set<string>();
+const diagnosticsFileBytes = new Map<string, number>();
 
 export interface ToolCallDiagnosticsInput {
   conversationId?: string;
@@ -30,11 +37,58 @@ function diagnosticsFile(kind: "model-requests" | "tool-calls", timestamp: numbe
   return join(diagnosticsDir(), kind, `${INSTANCE_ID}-${localDay(timestamp)}.jsonl`);
 }
 
+function removeExpiredDiagnostics(timestamp: number): void {
+  if (timestamp - lastRetentionCheckAt < RETENTION_CHECK_INTERVAL_MS) return;
+  lastRetentionCheckAt = timestamp;
+  const cutoffDay = localDay(timestamp - DIAGNOSTICS_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  for (const kind of ["model-requests", "tool-calls"] as const) {
+    const dir = join(diagnosticsDir(), kind);
+    let files: string[];
+    try {
+      files = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of files) {
+      const day = name.match(/-(\d{4}-\d{2}-\d{2})\.jsonl$/)?.[1];
+      if (!day || day >= cutoffDay) continue;
+      const file = join(dir, name);
+      try {
+        unlinkSync(file);
+        fullDiagnosticsFiles.delete(file);
+        diagnosticsFileBytes.delete(file);
+      } catch (err) {
+        log("warn", `diagnostics: failed to remove expired file ${file}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  }
+}
+
 function appendDiagnostic(kind: "model-requests" | "tool-calls", timestamp: number, record: Record<string, unknown>): void {
   try {
+    removeExpiredDiagnostics(timestamp);
     const file = diagnosticsFile(kind, timestamp);
+    if (fullDiagnosticsFiles.has(file)) return;
+    const line = JSON.stringify(record) + "\n";
+    const lineBytes = Buffer.byteLength(line, "utf8");
+    let existingBytes = diagnosticsFileBytes.get(file);
+    if (existingBytes === undefined) {
+      try {
+        existingBytes = statSync(file).size;
+      } catch {
+        // A missing daily file starts at zero bytes.
+        existingBytes = 0;
+      }
+      diagnosticsFileBytes.set(file, existingBytes);
+    }
+    if (existingBytes + lineBytes > DIAGNOSTICS_FILE_MAX_BYTES) {
+      fullDiagnosticsFiles.add(file);
+      log("warn", `diagnostics: capped ${file} at ${DIAGNOSTICS_FILE_MAX_BYTES} bytes; skipping further records today`);
+      return;
+    }
     mkdirSync(join(diagnosticsDir(), kind), { recursive: true });
-    appendFileSync(file, JSON.stringify(record) + "\n", { mode: 0o600 });
+    appendFileSync(file, line, { mode: 0o600 });
+    diagnosticsFileBytes.set(file, existingBytes + lineBytes);
   } catch (err) {
     log("warn", `diagnostics: failed to append ${kind}: ${err instanceof Error ? err.message : err}`);
   }
@@ -128,12 +182,15 @@ export function recordModelRequestDiagnostics(
   messages: ApiMessage[],
   result: StreamResult,
   tracking?: TokenTrackingContext,
+  newMessages: ApiMessage[] = messages,
 ): void {
   const timestamp = Date.now();
   const inputTokens = result.inputTokens ?? 0;
   const cachedInputTokens = result.cachedInputTokens ?? 0;
   const uncachedInputTokens = result.cachedInputTokens == null ? 0 : Math.max(0, inputTokens - cachedInputTokens);
   const providerDiagnostics: ModelRequestDiagnostics | undefined = result.requestDiagnostics;
+  const newToolResults = summarizeToolResults(newMessages);
+  const omittedToolResults = Math.max(0, newToolResults.length - TOOL_RESULTS_PER_REQUEST_MAX);
 
   appendDiagnostic("model-requests", timestamp, {
     version: DIAGNOSTICS_VERSION,
@@ -152,7 +209,9 @@ export function recordModelRequestDiagnostics(
     inputChars: inputCharCount(messages),
     inputMessages: messages.length,
     toolCallsRequested: result.toolCalls.map((call) => call.name),
-    toolResultsIncluded: summarizeToolResults(messages),
+    toolResultsIncluded: newToolResults.slice(-TOOL_RESULTS_PER_REQUEST_MAX),
+    toolResultsIncludedCount: newToolResults.length,
+    toolResultsIncludedOmitted: omittedToolResults,
     ...(providerDiagnostics ?? {}),
   });
 }
@@ -185,4 +244,7 @@ export function recordToolCallDiagnostics(input: ToolCallDiagnosticsInput): void
 
 export function resetDiagnosticsForTest(): void {
   rmSync(diagnosticsDir(), { recursive: true, force: true });
+  lastRetentionCheckAt = 0;
+  fullDiagnosticsFiles.clear();
+  diagnosticsFileBytes.clear();
 }

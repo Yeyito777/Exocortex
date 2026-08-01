@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
-import { HistoryUnwindRefreshRequiredError, bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
+import { HistoryUnwindRefreshRequiredError, bumpToTop, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
 import { load as loadPersisted } from "./persistence";
@@ -21,6 +21,7 @@ function mkId(suffix: string): string {
 }
 
 beforeEach(() => {
+  conversationCacheInternalsForTest.resetLimits();
   for (const id of IDS.splice(0)) {
     clearActiveJob(id);
     remove(id);
@@ -28,6 +29,45 @@ beforeEach(() => {
   for (const id of FOLDER_IDS.splice(0)) {
     deleteFolder(id);
   }
+});
+
+describe("canonical conversation cache", () => {
+  test("evicts least-recently-used clean transcripts while retaining indexed existence", () => {
+    conversationCacheInternalsForTest.evictClean();
+    conversationCacheInternalsForTest.setLimits({ maxEntries: 2, maxFileBytes: Number.MAX_SAFE_INTEGER });
+    const first = mkId("cache-first");
+    const second = mkId("cache-second");
+    const third = mkId("cache-third");
+
+    create(first, "openai", "gpt-5.4", "first");
+    create(second, "openai", "gpt-5.4", "second");
+    create(third, "openai", "gpt-5.4", "third");
+
+    expect(conversationCacheInternalsForTest.snapshot().ids).toEqual([second, third]);
+    expect(hasConversation(first)).toBe(true);
+    expect(getSummary(first)?.title).toBe("first");
+
+    expect(get(first)?.id).toBe(first);
+    expect(conversationCacheInternalsForTest.snapshot().ids).toEqual([third, first]);
+  });
+
+  test("does not evict active or dirty transcripts under cache pressure", () => {
+    conversationCacheInternalsForTest.evictClean();
+    const active = mkId("cache-active");
+    const dirtyId = mkId("cache-dirty");
+    create(active, "openai", "gpt-5.4", "active");
+    create(dirtyId, "openai", "gpt-5.4", "dirty");
+    setActiveJob(active, new AbortController(), Date.now());
+    markDirty(dirtyId);
+
+    conversationCacheInternalsForTest.setLimits({ maxEntries: 0, maxFileBytes: 0 });
+
+    expect(conversationCacheInternalsForTest.snapshot().ids).toEqual([active, dirtyId]);
+    clearActiveJob(active);
+    flush(dirtyId);
+    conversationCacheInternalsForTest.evictClean();
+    expect(conversationCacheInternalsForTest.snapshot().ids).toEqual([]);
+  });
 });
 
 describe("folders", () => {

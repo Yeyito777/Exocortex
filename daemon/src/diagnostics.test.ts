@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync, readdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { diagnosticsDir } from "@exocortex/shared/paths";
 import { recordModelRequestDiagnostics, recordToolCallDiagnostics, resetDiagnosticsForTest } from "./diagnostics";
@@ -58,7 +58,51 @@ describe("diagnostics", () => {
       errorReason: "context failed: missing reference",
       errorReasonTruncated: false,
     }]);
+    expect(record.toolResultsIncludedCount).toBe(1);
+    expect(record.toolResultsIncludedOmitted).toBe(0);
     expect(record.usedIncremental).toBe(true);
+  });
+
+  test("records only newly introduced tool results and bounds their per-request list", () => {
+    const historical = [
+      { role: "assistant" as const, content: [{ type: "tool_use" as const, id: "old", name: "read", input: {} }] },
+      { role: "user" as const, content: [{ type: "tool_result" as const, tool_use_id: "old", content: "old output" }] },
+    ];
+    const newMessages = Array.from({ length: 40 }, (_, index) => ({
+      role: "user" as const,
+      content: [{ type: "tool_result" as const, tool_use_id: `new-${index}`, content: `output-${index}` }],
+    }));
+    recordModelRequestDiagnostics(
+      "openai",
+      "gpt-5.4",
+      [...historical, ...newMessages],
+      { text: "done", thinking: "", stopReason: "stop", blocks: [], toolCalls: [] },
+      undefined,
+      newMessages,
+    );
+
+    const [record] = readDiagnostics("model-requests");
+    expect(record.toolResultsIncludedCount).toBe(40);
+    expect(record.toolResultsIncludedOmitted).toBe(8);
+    expect(record.toolResultsIncluded).toHaveLength(32);
+    expect((record.toolResultsIncluded as Array<{ callId: string }>)[0].callId).toBe("new-8");
+    expect((record.toolResultsIncluded as Array<{ callId: string }>).some(result => result.callId === "old")).toBe(false);
+  });
+
+  test("removes expired daily diagnostics during the next append", () => {
+    const dir = join(diagnosticsDir(), "model-requests");
+    mkdirSync(dir, { recursive: true });
+    const expired = join(dir, "main-2000-01-01.jsonl");
+    writeFileSync(expired, "{}\n");
+
+    recordModelRequestDiagnostics(
+      "openai",
+      "gpt-5.4",
+      [],
+      { text: "done", thinking: "", stopReason: "stop", blocks: [], toolCalls: [] },
+    );
+
+    expect(existsSync(expired)).toBe(false);
   });
 
   test("appends one tool-call diagnostics row per tool result", () => {

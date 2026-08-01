@@ -209,7 +209,7 @@ export function buildSubagentNotificationText(
   record: PendingSubagentNotification,
   outcome: SubagentNotificationOutcome,
 ): string {
-  const title = (convStore.get(record.childConvId)?.title || record.task.split("\n")[0] || "subagent task").trim();
+  const title = (convStore.getIndexedSummary(record.childConvId)?.title || record.task.split("\n")[0] || "subagent task").trim();
   const body = outcome.ok
     ? (textFromBlocks(outcome.blocks) || "(subagent completed without text output)")
     : (outcome.error || "Subagent did not complete successfully.");

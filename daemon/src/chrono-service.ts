@@ -675,7 +675,7 @@ function capOutput(output: string): string {
 
 function enqueueHardWake(occurrence: PendingOccurrence, hardWake: CommandHardWake, failed: boolean, output: string): void {
   if (hardWake.when !== "always" && !failed) return;
-  if (!convStore.get(hardWake.conversationId)) {
+  if (!convStore.hasConversation(hardWake.conversationId)) {
     log("warn", `chrono: cannot hard-wake missing conversation ${hardWake.conversationId} for ${occurrence.id}`);
     return;
   }
@@ -705,14 +705,14 @@ async function executeOccurrence(occurrence: PendingOccurrence): Promise<void> {
     chronoMode: "wake",
   })) notifyConversation(commandOwner);
   try {
-    if (occurrence.source === "model" && occurrence.ownerConversationId && !convStore.get(occurrence.ownerConversationId)) {
+    if (occurrence.source === "model" && occurrence.ownerConversationId && !convStore.hasConversation(occurrence.ownerConversationId)) {
       log("warn", `chrono: dropping ${occurrence.id}; its owning conversation no longer exists`);
       pending.delete(occurrence.id);
       persist();
       return;
     }
     if (occurrence.target.kind === "conversation") {
-      if (!convStore.get(occurrence.target.conversationId)) {
+      if (!convStore.hasConversation(occurrence.target.conversationId)) {
         log("warn", `chrono: dropping wake ${occurrence.id}; conversation ${occurrence.target.conversationId} no longer exists`);
       } else if (!occurrenceAlreadyDelivered(occurrence)) {
         const text = `[chrono wake: ${occurrence.scheduleId}]\n${occurrence.target.message}`;
@@ -793,8 +793,8 @@ async function processPendingAndDue(): Promise<void> {
     const now = Date.now();
     for (const schedule of [...schedules.values()]) {
       if (schedule.nextAt > now) continue;
-      const missingConversationTarget = schedule.target.kind === "conversation" && !convStore.get(schedule.target.conversationId);
-      const missingModelOwner = schedule.source === "model" && schedule.ownerConversationId && !convStore.get(schedule.ownerConversationId);
+      const missingConversationTarget = schedule.target.kind === "conversation" && !convStore.hasConversation(schedule.target.conversationId);
+      const missingModelOwner = schedule.source === "model" && schedule.ownerConversationId && !convStore.hasConversation(schedule.ownerConversationId);
       if (missingConversationTarget || missingModelOwner) {
         schedules.delete(schedule.id);
         replacePublishedSchedule(schedule);
@@ -854,7 +854,7 @@ export async function startChronoService(): Promise<number> {
     const conversationId = schedule.target.kind === "conversation"
       ? schedule.target.conversationId
       : schedule.source === "model" ? schedule.ownerConversationId : undefined;
-    if (conversationId && !convStore.get(conversationId)) {
+    if (conversationId && !convStore.hasConversation(conversationId)) {
       schedules.delete(schedule.id);
       pruned = true;
     }
