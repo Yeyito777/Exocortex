@@ -27,6 +27,25 @@ function savedFixture(store: SqliteConversationStore, id: string) {
   return conv;
 }
 
+function logicalState(store: SqliteConversationStore, id: string) {
+  const btw = store.loadConversationBtwState();
+  return {
+    exported: store.exportConversation(id),
+    page: store.loadDisplayPage(id, 20),
+    tools: store.loadToolOutputs(id),
+    unread: store.loadUnreadConversationIds(),
+    queue: store.loadQueuedMessages(),
+    btw: {
+      sessions: [...btw.btws].sort(([a], [b]) => a.localeCompare(b)),
+      receipts: [...btw.seenSessionIds].map(([convId, ids]) => [convId, [...ids].sort()]).sort(([a], [b]) => String(a).localeCompare(String(b))),
+    },
+    history: store.db.query<Record<string, unknown>, []>("SELECT stack, position, entry_json FROM sidebar_history ORDER BY stack, position").all(),
+    conversationRow: store.db.query<Record<string, unknown>, [string]>("SELECT * FROM conversations WHERE id=?").get(id),
+    blobRows: store.db.query<Record<string, unknown>, [string]>("SELECT kind, ordinal, payload_bytes, content_hash FROM message_blobs WHERE conversation_id=? ORDER BY message_sequence, kind, ordinal").all(id),
+    ftsRows: store.db.query<Record<string, unknown>, [string]>("SELECT conversation_id, title FROM conversation_title_fts WHERE conversation_id=?").all(id),
+  };
+}
+
 describe("SQLite transaction fault boundaries", () => {
   test("recovers WAL after an abrupt process exit inside a transaction", () => {
     const { root, path } = pathFor("abrupt-wal");
@@ -54,6 +73,128 @@ describe("SQLite transaction fault boundaries", () => {
     expect(store.load("abrupt-wal")?.messages).toHaveLength(2);
     expect(store.integrityCheck().ok).toBe(true);
     store.close();
+  });
+
+  test("metadata saves leave message rows untouched and append changes only the suffix", () => {
+    const { path } = pathFor("targeted-save");
+    const points: string[] = [];
+    const store = new SqliteConversationStore({ path, faultInjection(point) { points.push(point); } });
+    const conv = savedFixture(store, "targeted-save");
+    const before = store.db.query<Record<string, unknown>, [string]>(`
+      SELECT sequence, content_json, metadata_json, provider_data_json,
+             context_tokens_json, context_checkpoint_json, content_hash, message_hash
+      FROM messages WHERE conversation_id=? ORDER BY sequence
+    `).all(conv.id);
+
+    points.length = 0;
+    conv.marked = true;
+    conv.updatedAt += 1;
+    store.save(conv);
+    expect(points).not.toContain("save.after-messages");
+    expect(store.db.query<Record<string, unknown>, [string]>(`
+      SELECT sequence, content_json, metadata_json, provider_data_json,
+             context_tokens_json, context_checkpoint_json, content_hash, message_hash
+      FROM messages WHERE conversation_id=? ORDER BY sequence
+    `).all(conv.id)).toEqual(before);
+
+    points.length = 0;
+    conv.messages.push({ role: "user", content: "suffix only", metadata: null });
+    conv.updatedAt += 1;
+    store.save(conv);
+    expect(points).toContain("save.after-messages");
+    const after = store.db.query<Record<string, unknown>, [string]>(`
+      SELECT sequence, content_json, metadata_json, provider_data_json,
+             context_tokens_json, context_checkpoint_json, content_hash, message_hash
+      FROM messages WHERE conversation_id=? ORDER BY sequence
+    `).all(conv.id);
+    expect(after.slice(0, before.length)).toEqual(before);
+    expect(after).toHaveLength(before.length + 1);
+    store.close();
+  });
+
+  test("rolls back every save fault boundary without blob or FTS divergence", () => {
+    for (const faultPoint of ["save.after-conversation", "save.after-messages", "save.after-display", "save.before-commit"]) {
+      const { path } = pathFor(faultPoint.replaceAll(".", "-"));
+      let armed = false;
+      let store = new SqliteConversationStore({ path, faultInjection(point) {
+        if (armed && point === faultPoint) throw new Error(`injected ${faultPoint}`);
+      } });
+      const conv = savedFixture(store, `fault-${faultPoint}`);
+      const before = logicalState(store, conv.id);
+      conv.title = `changed-${faultPoint}`;
+      conv.messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `call-${faultPoint}`, content: "large".repeat(1_000) }], metadata: null });
+      armed = true;
+      expect(() => store.save(conv)).toThrow(`injected ${faultPoint}`);
+      armed = false;
+      expect(logicalState(store, conv.id)).toEqual(before);
+      expect(store.integrityCheck().ok).toBe(true);
+      store.close();
+
+      store = new SqliteConversationStore({ path });
+      expect(logicalState(store, conv.id)).toEqual(before);
+      expect(store.integrityCheck().ok).toBe(true);
+      store.close();
+    }
+  });
+
+  test("rolls back every unwind fault boundary including queue and receipts", () => {
+    for (const faultPoint of ["unwind.after-conversation", "unwind.after-messages", "unwind.before-commit"]) {
+      const { path } = pathFor(faultPoint.replaceAll(".", "-"));
+      let armed = false;
+      let store = new SqliteConversationStore({ path, faultInjection(point) {
+        if (armed && point === faultPoint) throw new Error(`injected ${faultPoint}`);
+      } });
+      const conv = savedFixture(store, `fault-${faultPoint}`);
+      conv.messages.push({ role: "user", content: "remove", metadata: null });
+      store.save(conv);
+      store.saveQueuedMessages([{ id: `queue-${faultPoint}`, convId: conv.id, text: "queued", timing: "message-end", source: "daemon", createdAt: 1 }]);
+      const before = logicalState(store, conv.id);
+      const result = { ...conv, messages: conv.messages.slice(0, 2), updatedAt: conv.updatedAt + 1 };
+      armed = true;
+      expect(() => store.saveUnwind(conv, result, 2, {
+        operationId: `operation-${faultPoint}`, userMessageIndex: 1,
+        historyTotalEntries: 2, messageCount: 2, supersededQueueIds: [`queue-${faultPoint}`],
+      })).toThrow(`injected ${faultPoint}`);
+      armed = false;
+      expect(logicalState(store, conv.id)).toEqual(before);
+      expect(store.hasConversationUnwindReceipt(conv.id)).toBe(false);
+      store.close();
+
+      store = new SqliteConversationStore({ path });
+      expect(logicalState(store, conv.id)).toEqual(before);
+      expect(store.integrityCheck().ok).toBe(true);
+      store.close();
+    }
+  });
+
+  test("rolls back every delete fault boundary including unread BTW and history stacks", () => {
+    for (const faultPoint of ["delete.after-conversations", "delete.before-commit"]) {
+      const { path } = pathFor(faultPoint.replaceAll(".", "-"));
+      let armed = false;
+      let store = new SqliteConversationStore({ path, faultInjection(point) {
+        if (armed && point === faultPoint) throw new Error(`injected ${faultPoint}`);
+      } });
+      const conv = savedFixture(store, `fault-${faultPoint}`);
+      store.saveUnreadConversationIds([conv.id]);
+      store.saveConversationBtwState({
+        btws: new Map([[conv.id, { sessionId: `btw-${faultPoint}`, query: "q", provider: "openai", model: conv.model, startedAt: 1, endedAt: null, phase: "running", text: "", status: "streaming" }]]),
+        seenSessionIds: new Map([[conv.id, new Set([`btw-${faultPoint}`])]]),
+      });
+      store.pushUndoEntry({ type: "conversation_renamed", convId: conv.id, title: "old" });
+      store.pushRedoEntry({ type: "conversation_marked", convId: conv.id, marked: false });
+      const before = logicalState(store, conv.id);
+      armed = true;
+      expect(() => store.trashConversations([conv.id], true)).toThrow(`injected ${faultPoint}`);
+      armed = false;
+      expect(logicalState(store, conv.id)).toEqual(before);
+      expect(store.has(conv.id)).toBe(true);
+      store.close();
+
+      store = new SqliteConversationStore({ path });
+      expect(logicalState(store, conv.id)).toEqual(before);
+      expect(store.integrityCheck().ok).toBe(true);
+      store.close();
+    }
   });
 
   test("rolls back conversation, message, and display writes together", () => {
@@ -180,6 +321,45 @@ describe("SQLite maintenance", () => {
     store.close();
   });
 
+  test("migrates every schema checkpoint through v6 transactionally", () => {
+    for (let version = 1; version <= 5; version++) {
+      const { path } = pathFor(`schema-v${version}`);
+      let store = new SqliteConversationStore({ path, targetSchemaVersion: version });
+      expect(store.db.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(version);
+      expect(store.integrityCheck().ok).toBe(true);
+      store.close();
+
+      store = new SqliteConversationStore({ path });
+      expect(store.diagnostics().schemaVersion).toBe(6);
+      expect(store.integrityCheck().ok).toBe(true);
+      store.close();
+    }
+  });
+
+  test("keeps title FTS synchronized across rename, soft restore, and hard delete", () => {
+    const { path } = pathFor("title-fts");
+    const store = new SqliteConversationStore({ path });
+    const conv = savedFixture(store, "title-fts");
+    conv.title = "AlphaUnique title";
+    store.save(conv);
+    expect(store.searchTitles("AlphaUni", 10).map((entry) => entry.id)).toEqual([conv.id]);
+
+    conv.title = "BetaUnique title";
+    store.save(conv);
+    expect(store.searchTitles("AlphaUni", 10)).toEqual([]);
+    expect(store.searchTitles("BetaUni", 10).map((entry) => entry.id)).toEqual([conv.id]);
+
+    store.trashConversations([conv.id], false);
+    expect(store.searchTitles("BetaUni", 10)).toEqual([]);
+    store.restoreConversationsFromTrash([conv.id]);
+    expect(store.searchTitles("BetaUni", 10).map((entry) => entry.id)).toEqual([conv.id]);
+
+    store.db.query("DELETE FROM conversations WHERE id=?").run(conv.id);
+    expect(store.db.query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM conversation_title_fts WHERE conversation_id=?").get(conv.id)?.count).toBe(0);
+    expect(store.integrityCheck().ok).toBe(true);
+    store.close();
+  });
+
   test("uses indexes for scale-critical summary and page queries", () => {
     const { path } = pathFor("query-plan");
     const store = new SqliteConversationStore({ path });
@@ -200,5 +380,9 @@ describe("SQLite maintenance", () => {
     db.query("INSERT INTO schema_migrations VALUES (?, ?, ?)").run(999, "future", Date.now());
     db.close();
     expect(() => new SqliteConversationStore({ path })).toThrow("Unsupported future conversation database schema 999");
+    const unchanged = new Database(path, { readonly: true });
+    expect(unchanged.query<{ version: number }, []>("SELECT version FROM schema_migrations").get()?.version).toBe(999);
+    expect(unchanged.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM sqlite_schema WHERE type='table' AND name<>'schema_migrations'").get()?.count).toBe(0);
+    unchanged.close();
   });
 });

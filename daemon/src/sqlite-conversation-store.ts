@@ -55,6 +55,8 @@ export interface SqliteConversationStoreOptions {
   path?: string;
   autoImportLegacy?: boolean;
   readonly?: boolean;
+  /** Test-only schema checkpoint builder. Production always migrates to the latest version. */
+  targetSchemaVersion?: number;
   /** Test-only crash/fault boundary hook; throwing rolls back the active transaction. */
   faultInjection?: (point: string) => void;
 }
@@ -315,7 +317,7 @@ export class SqliteConversationStore implements ConversationRepository {
     this.db = new Database(this.path, { create: !options.readonly, readonly: options.readonly ?? false });
     try { chmodSync(this.path, 0o600); } catch { /* best effort, especially on Windows */ }
     this.configure();
-    this.migrate();
+    this.migrate(options.targetSchemaVersion ?? SCHEMA_VERSION);
     if (options.autoImportLegacy) this.importLegacyIfNeeded();
   }
 
@@ -335,7 +337,10 @@ export class SqliteConversationStore implements ConversationRepository {
     if (foreignKeys !== 1) throw new Error("SQLite foreign key enforcement could not be enabled");
   }
 
-  private migrate(): void {
+  private migrate(targetVersion: number): void {
+    if (!Number.isSafeInteger(targetVersion) || targetVersion < 1 || targetVersion > SCHEMA_VERSION) {
+      throw new Error(`Invalid target conversation schema version: ${targetVersion}`);
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         version INTEGER PRIMARY KEY,
@@ -520,7 +525,7 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(1, "normalized conversation store", Date.now());
       })();
     }
-    if (current < 2) {
+    if (current < 2 && targetVersion >= 2) {
       this.db.transaction(() => {
         this.db.exec(`
           ALTER TABLE messages ADD COLUMN has_provider_data INTEGER NOT NULL DEFAULT 0 CHECK (has_provider_data IN (0,1));
@@ -533,7 +538,7 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(2, "preserve optional message field presence", Date.now());
       })();
     }
-    if (current < 3) {
+    if (current < 3 && targetVersion >= 3) {
       this.db.transaction(() => {
         this.db.exec(`
           ALTER TABLE conversations ADD COLUMN content_bytes INTEGER NOT NULL DEFAULT 0;
@@ -545,7 +550,7 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(3, "constant-time conversation byte totals", Date.now());
       })();
     }
-    if (current < 4) {
+    if (current < 4 && targetVersion >= 4) {
       this.db.transaction(() => {
         this.db.exec(`
           CREATE VIRTUAL TABLE conversation_title_fts USING fts5(
@@ -569,7 +574,7 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(4, "indexed title search", Date.now());
       })();
     }
-    if (current < 5) {
+    if (current < 5 && targetVersion >= 5) {
       this.db.transaction(() => {
         // Canonical content already owns tool-result bytes. Keep only the direct
         // lookup identity here so large outputs are not duplicated in storage.
@@ -577,7 +582,7 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(5, "deduplicate tool output payloads", Date.now());
       })();
     }
-    if (current < 6) {
+    if (current < 6 && targetVersion >= 6) {
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE message_blobs (
@@ -1197,7 +1202,10 @@ export class SqliteConversationStore implements ConversationRepository {
       }
       this.faultInjection?.("unwind.after-messages");
       this.rebuildDisplay(result, 0);
-      this.db.query("UPDATE conversations SET content_bytes=? WHERE id=?").run(contentBytes, base.id);
+      // The domain-calculated count excludes non-visible/system/tool-receipt
+      // messages. Preserve exactly the same unwind summary semantics as JSON.
+      this.db.query("UPDATE conversations SET content_bytes=?, message_count=? WHERE id=?")
+        .run(contentBytes, options.messageCount, base.id);
       this.saveActiveContext(result);
       this.db.query(`
         INSERT INTO unwind_receipts(conversation_id, operation_id, user_message_index, history_total_entries, superseded_queue_ids_json)

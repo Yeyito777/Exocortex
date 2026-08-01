@@ -373,6 +373,10 @@ function verifyFixture(requireSourceStable = false): string[] {
   const sourceDrift: string[] = [];
   for (const file of manifest.files) {
     if (sha256(readFileSync(file.destinationPath)) !== file.sha256) throw new Error(`Copied fixture hash mismatch: ${file.destinationPath}`);
+    if (!existsSync(file.sourcePath)) {
+      sourceDrift.push(file.sourcePath);
+      continue;
+    }
     const source = statSync(file.sourcePath);
     const stableMetadata = source.size === file.bytes && source.mtimeMs === file.sourceMtimeMs;
     const stableHash = stableMetadata && sha256(readFileSync(file.sourcePath)) === file.sha256;
