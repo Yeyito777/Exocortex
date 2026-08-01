@@ -21,28 +21,28 @@ Each tool is its own git repository, independently developed. Tools are
 installed by cloning into `external-tools/` — the daemon discovers them
 automatically.
 
-## Helper commands
+## Helper tools
 
-A **helper command** is an ordinary executable that opts into custom
+A **helper tool** is an ordinary executable that opts into custom
 Exocortex TUI presentation through an adjacent `exo-manifest.json`. It is
 useful for project scripts and one-off tools that should remain outside the
 installed external-tool registry.
 
-See [`helper-commands/HELPER_COMMANDS_STANDARD.md`](../helper-commands/HELPER_COMMANDS_STANDARD.md)
-for the focused authoring standard and the repository's local helper-command
+See [`helper-tools/HELPER_TOOLS_STANDARD.md`](../helper-tools/HELPER_TOOLS_STANDARD.md)
+for the focused authoring standard and the repository's local helper-tool
 directory.
 
-Use this layer when the model already knows about the command from the user's
+Use this layer when the model already knows about the tool from the user's
 request, an `AGENTS.md`, or project documentation, and the only Exocortex
 integration needed is a recognizable label and color. Use a full external tool
-manifest below when the command needs global discovery, system-prompt
-instructions, PATH installation, auth, notifications, or daemon supervision.
+manifest below when the tool needs global discovery, system-prompt instructions,
+PATH installation, auth, notifications, or daemon supervision.
 
 ### Creating one
 
-1. Create an executable with the desired command name.
+1. Create an executable with the desired tool name.
 2. Put `exo-manifest.json` in the same directory.
-3. Tell the model when to use the command in `AGENTS.md`, project documentation,
+3. Tell the model when to use the tool in `AGENTS.md`, project documentation,
    or the request itself. The display manifest is deliberately not a discovery
    or instruction mechanism.
 4. Invoke it through a static relative or absolute path.
@@ -87,9 +87,9 @@ directories when they need different labels or colors.
 
 ### Contract and boundaries
 
-- The executable is still an ordinary Bash command. The manifest cannot affect
-  arguments, stdin, environment, permissions, execution, output, auth, or
-  daemon supervision.
+- The helper tool is still an ordinary executable invoked through Bash. The
+  manifest cannot affect arguments, stdin, environment, permissions, execution,
+  output, auth, or daemon supervision.
 - The executable must be called through a static relative or absolute path.
   PATH-only `deploy`, `bash deploy`, shell expansion, and command
   substitution are not eligible.
@@ -105,7 +105,7 @@ directories when they need different labels or colors.
   ordinary Bash presentation and never block command execution.
 - Presentation is snapshotted into the tool call, so conversation history does
   not change when the manifest is edited or removed later.
-- Commands with a primary opaque payload should follow the stdin convention
+- Helper tools with a primary opaque payload should follow the stdin convention
   described below. A display manifest does not make freeform inline shell
   arguments literal-safe.
 

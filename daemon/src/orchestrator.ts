@@ -35,7 +35,7 @@ import {
 } from "./context-compaction";
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./providers/openai/auth";
 import { buildCodexWindowId } from "./providers/openai/identity";
-import { resolveToolCallPresentation } from "./exo-command-manifest";
+import { resolveToolCallPresentation } from "./helper-tool-manifest";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
 import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";

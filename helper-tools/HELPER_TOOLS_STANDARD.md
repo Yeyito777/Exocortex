@@ -1,17 +1,17 @@
-# Helper Command Standard
+# Helper Tool Standard
 
-Guide for small, user-local commands that need recognizable Exocortex TUI
+Guide for small, user-local tools that need recognizable Exocortex TUI
 presentation without becoming full external tools.
 
 ## Directory layout
 
-Put local commands under `helper-commands/`. Keep commands with different labels
+Put local tools under `helper-tools/`. Keep tools with different labels
 or colors in separate directories because one manifest applies to every
-eligible command beside it.
+eligible tool beside it.
 
 ```text
-helper-commands/
-  HELPER_COMMANDS_STANDARD.md
+helper-tools/
+  HELPER_TOOLS_STANDARD.md
   deploy/
     deploy
     exo-manifest.json
@@ -20,9 +20,9 @@ helper-commands/
 Local entries in this directory are ignored by Git. The standard remains
 tracked.
 
-## Command
+## Tool
 
-A helper command is an ordinary executable. Give it a shebang, make it
+A helper tool is an ordinary executable. Give it a shebang, make it
 executable, and provide concise `-h` output.
 
 ```bash
@@ -34,15 +34,15 @@ printf 'Deployed to %s.\n' "$environment"
 ```
 
 ```bash
-chmod +x ./helper-commands/deploy/deploy
-./helper-commands/deploy/deploy production
+chmod +x ./helper-tools/deploy/deploy
+./helper-tools/deploy/deploy production
 ```
 
-Invoke the command through a static relative or absolute path. PATH-only names,
+Invoke the tool through a static relative or absolute path. PATH-only names,
 interpreter arguments such as `bash deploy`, shell expansion, and command
 substitution do not receive custom presentation.
 
-Helper commands are not discovered or added to the model's instructions. Tell
+Helper tools are not discovered or added to the model's instructions. Tell
 the model when to use one in `AGENTS.md`, project documentation, or the request.
 
 ## Display manifest
@@ -68,13 +68,13 @@ Place `exo-manifest.json` beside the executable:
 
 ## Payloads
 
-Put structural values such as IDs, flags, names, and paths in argv. If the
-command accepts one primary opaque payload such as a message, body, prompt, or
-JavaScript, read its exact UTF-8 bytes from stdin instead of accepting it inline.
+Put structural values such as IDs, flags, names, and paths in argv. If the tool
+accepts one primary opaque payload such as a message, body, prompt, or JavaScript,
+read its exact UTF-8 bytes from stdin instead of accepting it inline.
 Do not trim, decode, interpolate, or otherwise rewrite it.
 
 ## When to use an external tool
 
-Use a full [external tool](../external-tools/TOOL_STANDARD.md) when the command
+Use a full [external tool](../external-tools/TOOL_STANDARD.md) when the tool
 needs global discovery, system-prompt instructions, PATH installation, complicated auth (JWST),
 notifications, or daemon supervision.

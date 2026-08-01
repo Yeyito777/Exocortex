@@ -43,7 +43,7 @@ function startsShellComment(command: string, index: number, segmentStart: number
 }
 
 /**
- * Helper command lookup stays deliberately conservative. Heredoc bodies
+ * Helper tool lookup stays deliberately conservative. Heredoc bodies
  * are shell data rather than commands, and correctly pairing all heredocs would
  * turn this presentation feature into a second shell parser. Skip the complete
  * call instead of ever styling a command-looking line inside a heredoc body.
@@ -368,7 +368,7 @@ async function parseManifest(manifestPath: string): Promise<ManifestDisplay | nu
       bytesRead += result.bytesRead;
     }
     if (bytesRead > MAX_MANIFEST_BYTES) {
-      log("warn", `exo-command-manifest: ${manifestPath} exceeds ${MAX_MANIFEST_BYTES} bytes — ignoring`);
+      log("warn", `helper-tool-manifest: ${manifestPath} exceeds ${MAX_MANIFEST_BYTES} bytes — ignoring`);
       return null;
     }
 
@@ -386,14 +386,14 @@ async function parseManifest(manifestPath: string): Promise<ManifestDisplay | nu
       || typeof color !== "string"
       || !HEX_COLOR.test(color)
     ) {
-      log("warn", `exo-command-manifest: invalid manifest at ${manifestPath} — ignoring`);
+      log("warn", `helper-tool-manifest: invalid manifest at ${manifestPath} — ignoring`);
       return null;
     }
     return { label, color };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     const message = err instanceof Error ? err.message : String(err);
-    log("warn", `exo-command-manifest: failed to read ${manifestPath}: ${message}`);
+    log("warn", `helper-tool-manifest: failed to read ${manifestPath}: ${message}`);
     return null;
   } finally {
     await handle?.close().catch(() => {});
@@ -410,7 +410,7 @@ async function parseManifestWithinDeadline(manifestPath: string): Promise<Manife
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<null>((resolveTimeout) => {
     timer = setTimeout(() => {
-      log("warn", `exo-command-manifest: lookup timed out at ${manifestPath} — ignoring`);
+      log("warn", `helper-tool-manifest: lookup timed out at ${manifestPath} — ignoring`);
       resolveTimeout(null);
     }, MANIFEST_LOOKUP_TIMEOUT_MS);
     timer.unref?.();
@@ -422,8 +422,8 @@ async function parseManifestWithinDeadline(manifestPath: string): Promise<Manife
   }
 }
 
-/** Resolve presentation metadata for direct-path helper commands in one Bash call. */
-export async function resolveExoCommandPresentation(
+/** Resolve presentation metadata for direct-path helper tools in one Bash call. */
+export async function resolveHelperToolPresentation(
   command: string,
   initialCwd: string = process.cwd(),
 ): Promise<ToolCallPresentation | undefined> {
@@ -488,6 +488,6 @@ export async function resolveToolCallPresentation(
 ): Promise<ToolCallPresentation | undefined> {
   if (toolName !== "bash" || process.platform === "win32") return undefined;
   return typeof input.command === "string"
-    ? resolveExoCommandPresentation(input.command, process.cwd())
+    ? resolveHelperToolPresentation(input.command, process.cwd())
     : undefined;
 }
