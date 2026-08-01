@@ -1247,8 +1247,14 @@ export interface CallTranscriptEvent {
   convId: string;
   callId: string;
   role: "user" | "assistant";
+  /** Complete transcript accumulated so far, not merely the latest wire chunk. */
   text: string;
   final: boolean;
+  startedAt: number;
+  endedAt: number | null;
+  model: ModelId;
+  /** Actual provider output tokens when available, otherwise a live text estimate. */
+  tokens: number;
 }
 
 export interface ProviderAuthInfo {

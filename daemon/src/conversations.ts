@@ -2274,6 +2274,11 @@ export function appendRealtimeTranscript(
   role: "user" | "assistant",
   text: string,
   startedAt = Date.now(),
+  details: {
+    endedAt?: number;
+    model?: ModelId;
+    tokens?: number;
+  } = {},
 ): boolean {
   const conv = get(convId);
   const normalized = text.trim();
@@ -2290,7 +2295,10 @@ export function appendRealtimeTranscript(
       role: "assistant",
       content: normalized,
       metadata: {
-        ...createMessageMetadata(startedAt, conv.model, { endedAt: startedAt }),
+        ...createMessageMetadata(startedAt, details.model ?? conv.model, {
+          endedAt: details.endedAt ?? startedAt,
+          tokens: details.tokens ?? 0,
+        }),
         kind: REALTIME_TRANSCRIPT_KIND,
       },
     });

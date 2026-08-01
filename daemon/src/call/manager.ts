@@ -8,7 +8,7 @@ import { getCurrentAccountScope, getVerifiedSession } from "../providers/openai/
 import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "../conversation-events";
 import { log } from "../log";
 import { ChatGptRealtimeTransport, type NativeRealtimeTransport } from "./transport";
-import type { RealtimeInitialItem, RealtimeSidebandEvent } from "./protocol";
+import { REALTIME_MODEL, type RealtimeInitialItem, type RealtimeSidebandEvent } from "./protocol";
 
 const MAX_INITIAL_ITEMS = 64;
 const MAX_INITIAL_ITEM_CHARS = 8_000;
@@ -20,6 +20,16 @@ const REALTIME_PROMPT = [
   "Answer short self-contained questions directly, leading with the answer and skipping preambles.",
   "For actions, fresh research, detailed recall, multipart requests, or anything where completeness matters, create a client delegation to the owning Exocortex agent. Never mention the delegation or claim success before it returns.",
 ].join(" ");
+
+/** Frameless Bidi does not always report usage, so keep live metadata useful. */
+export function estimateRealtimeTokens(text: string): number {
+  const bytes = Buffer.byteLength(text.trim(), "utf8");
+  return bytes === 0 ? 0 : Math.max(1, Math.ceil(bytes / 4));
+}
+
+function transcriptKey(text: string): string {
+  return text.trim().toLocaleLowerCase().replace(/[.!?]+$/u, "").replace(/\s+/gu, " ");
+}
 
 function contentText(content: string | ApiContentBlock[]): string {
   if (typeof content === "string") return content.trim();
@@ -82,6 +92,7 @@ export interface RealtimeCallManagerDependencies {
 interface TranscriptAccumulator {
   text: string;
   finalKey: string | null;
+  startedAt: number | null;
 }
 
 interface ActiveCall {
@@ -93,6 +104,9 @@ interface ActiveCall {
   handoffInFlight: boolean;
   transcript: Record<"user" | "assistant", TranscriptAccumulator>;
   userTranscriptFinal: boolean;
+  /** A delegation can be followed by a duplicate user turn.done for the same speech. */
+  pendingHandoffUserKey: string | null;
+  assistantResponseStartedAt: number | null;
 }
 
 /** Owns the one restart-unsafe Bidi call allowed by this daemon process. */
@@ -150,10 +164,12 @@ export class RealtimeCallManager {
         initialItems: [],
         handoffInFlight: false,
         transcript: {
-          user: { text: "", finalKey: null },
-          assistant: { text: "", finalKey: null },
+          user: { text: "", finalKey: null, startedAt: null },
+          assistant: { text: "", finalKey: null, startedAt: null },
         },
         userTranscriptFinal: false,
+        pendingHandoffUserKey: null,
+        assistantResponseStartedAt: null,
       };
       this.active = provisional;
       this.emitState(provisional, "Preparing ChatGPT Bidi…");
@@ -288,7 +304,26 @@ export class RealtimeCallManager {
         break;
       case "transcript_delta": {
         const accumulator = call.transcript[event.role];
-        if (!accumulator.text) accumulator.finalKey = null;
+        if (event.role === "user" && call.pendingHandoffUserKey) {
+          const candidateText = accumulator.text + event.text;
+          const candidateKey = transcriptKey(candidateText);
+          // Frameless Bidi may publish the handoff's input transcript again as
+          // input_transcript.added/turn.done after delegation.created. Suppress
+          // that duplicate representation instead of treating it as the next
+          // user boundary and prematurely committing the spoken preamble.
+          if (candidateKey && call.pendingHandoffUserKey.startsWith(candidateKey)) {
+            accumulator.text = candidateText;
+            accumulator.startedAt ??= Date.now();
+            break;
+          }
+          call.pendingHandoffUserKey = null;
+        }
+        if (!accumulator.text) {
+          accumulator.finalKey = null;
+          accumulator.startedAt = event.role === "assistant"
+            ? call.assistantResponseStartedAt ?? Date.now()
+            : Date.now();
+        }
         accumulator.text += event.text;
         if (event.role === "user") {
           if (call.userTranscriptFinal && call.transcript.assistant.text.trim()) {
@@ -301,18 +336,33 @@ export class RealtimeCallManager {
           convId: call.convId,
           callId: call.callId,
           role: event.role,
-          text: event.text,
+          text: accumulator.text,
           final: false,
+          startedAt: accumulator.startedAt ?? Date.now(),
+          endedAt: null,
+          model: REALTIME_MODEL,
+          tokens: estimateRealtimeTokens(accumulator.text),
         });
         break;
       }
-      case "transcript_done":
+      case "transcript_done": {
+        if (event.role === "user" && call.pendingHandoffUserKey) {
+          const duplicateHandoffInput = transcriptKey(event.text) === call.pendingHandoffUserKey;
+          call.pendingHandoffUserKey = null;
+          if (duplicateHandoffInput) {
+            call.transcript.user.text = "";
+            call.transcript.user.startedAt = null;
+            call.userTranscriptFinal = true;
+            break;
+          }
+        }
         if (event.role === "user" && call.userTranscriptFinal && call.transcript.assistant.text.trim()) {
           this.finalizeTranscript(call, "assistant", call.transcript.assistant.text);
         }
-        this.finalizeTranscript(call, event.role, event.text);
+        this.finalizeTranscript(call, event.role, event.text, event.tokens);
         call.userTranscriptFinal = event.role === "user";
         break;
+      }
       case "handoff": {
         const text = event.text.trim();
         if (!text) break;
@@ -320,6 +370,7 @@ export class RealtimeCallManager {
         // delegation.created. Preserve the spoken request before routing it.
         this.finalizeTranscript(call, "user", text);
         call.userTranscriptFinal = true;
+        call.pendingHandoffUserKey = transcriptKey(text);
         void this.handleHandoff(call, event.handoffId, text);
         break;
       }
@@ -341,12 +392,23 @@ export class RealtimeCallManager {
     }
   }
 
-  private finalizeTranscript(call: ActiveCall, role: "user" | "assistant", text: string): void {
+  private finalizeTranscript(
+    call: ActiveCall,
+    role: "user" | "assistant",
+    text: string,
+    providerTokens?: number,
+  ): void {
     const normalized = text.trim();
     if (!normalized) return;
     const accumulator = call.transcript[role];
-    const key = normalized.toLocaleLowerCase().replace(/[.!?]+$/u, "").replace(/\s+/gu, " ");
+    const key = transcriptKey(normalized);
+    const endedAt = Date.now();
+    const startedAt = accumulator.startedAt
+      ?? (role === "assistant" ? call.assistantResponseStartedAt : null)
+      ?? endedAt;
+    const tokens = providerTokens ?? estimateRealtimeTokens(normalized);
     accumulator.text = "";
+    accumulator.startedAt = null;
     if (accumulator.finalKey === key) return;
     accumulator.finalKey = key;
     this.server.sendToSubscribers(call.convId, {
@@ -356,11 +418,19 @@ export class RealtimeCallManager {
       role,
       text: normalized,
       final: true,
+      startedAt,
+      endedAt,
+      model: REALTIME_MODEL,
+      tokens,
     });
-    if (this.persistTranscript(call.convId, role, normalized)) {
+    if (this.persistTranscript(call.convId, role, normalized, startedAt, {
+      endedAt,
+      ...(role === "assistant" ? { model: REALTIME_MODEL, tokens } : {}),
+    })) {
       broadcastConversationHistoryUpdated(this.server, call.convId);
       broadcastConversationUpdated(this.server, call.convId);
     }
+    if (role === "user") call.assistantResponseStartedAt = endedAt;
   }
 
   private persistCallStatus(call: ActiveCall, text: string): void {
@@ -373,13 +443,17 @@ export class RealtimeCallManager {
     this.finalizeTranscript(call, "user", call.transcript.user.text);
     this.finalizeTranscript(call, "assistant", call.transcript.assistant.text);
     call.userTranscriptFinal = false;
+    call.pendingHandoffUserKey = null;
   }
 
   private async handleHandoff(call: ActiveCall, handoffId: string, text: string): Promise<void> {
     if (!this.delegate || call.handoffInFlight || this.active !== call) return;
     call.handoffInFlight = true;
     call.state = "delegating";
-    this.emitState(call, "Delegating voice request to the Exocortex agent…");
+    // Delegation is an implementation detail of an otherwise continuous voice
+    // reply. Publish the state transition for adapters, but do not inject a
+    // visible lifecycle notice into conversation history.
+    this.emitState(call);
     try {
       const result = (await this.delegate(call.convId, text)).trim();
       if (result && this.active === call) await call.transport.appendHandoff(handoffId, result);

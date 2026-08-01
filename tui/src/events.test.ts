@@ -26,6 +26,144 @@ describe("auth browser opener", () => {
   });
 });
 
+describe("GPT-Live transcript events", () => {
+  test("projects assistant text and metadata before the response is finalized", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "assistant",
+      text: "Checking",
+      final: false,
+      startedAt: 1_000,
+      endedAt: null,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 2,
+    }, state, daemon);
+
+    expect(state.callAssistantDraft).toMatchObject({ callId: "call-1", final: false });
+    expect(state.callAssistantDraft?.message).toMatchObject({
+      role: "assistant",
+      blocks: [{ type: "text", text: "Checking" }],
+      metadata: {
+        startedAt: 1_000,
+        endedAt: null,
+        model: "gpt-live-1-boulder-alpha",
+        tokens: 2,
+        kind: "realtime_transcript",
+      },
+    });
+
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "assistant",
+      text: "Checking now.",
+      final: true,
+      startedAt: 1_000,
+      endedAt: 3_500,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 4,
+    }, state, daemon);
+
+    expect(state.callAssistantDraft?.final).toBe(true);
+    expect(state.callAssistantDraft?.message).toMatchObject({
+      blocks: [{ type: "text", text: "Checking now." }],
+      metadata: { endedAt: 3_500, tokens: 4 },
+    });
+    expect(state.messages).toHaveLength(0);
+  });
+
+  test("projects captured user speech until canonical history owns it", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "user",
+      text: "hello",
+      final: false,
+      startedAt: 1_000,
+      endedAt: null,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 1,
+    }, state, daemon);
+    expect(state.callUserDraft).toMatchObject({
+      callId: "call-1",
+      final: false,
+      message: {
+        role: "user",
+        text: "hello",
+        metadata: { kind: "realtime_transcript", startedAt: 1_000 },
+      },
+    });
+    expect(state.messages).toHaveLength(0);
+  });
+
+  test("keeps a streaming assistant stable while the preceding user transcript becomes canonical", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    const metadata = {
+      startedAt: 1_000,
+      endedAt: 1_500,
+      model: "gpt-live-1-boulder-alpha" as const,
+      tokens: 2,
+      kind: "realtime_transcript",
+    };
+
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "user",
+      text: "What time is it?",
+      final: true,
+      ...metadata,
+    }, state, daemon);
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "assistant",
+      text: "It is",
+      final: false,
+      startedAt: 1_500,
+      endedAt: null,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 2,
+    }, state, daemon);
+
+    const assistantProjection = state.callAssistantDraft?.message;
+    expect(state.messages).toHaveLength(0);
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-call",
+      entries: [{
+        type: "user",
+        text: "What time is it?",
+        metadata,
+      }],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(state.callUserDraft).toBeNull();
+    expect(state.callAssistantDraft?.message).toBe(assistantProjection);
+    expect(state.callAssistantDraft).toMatchObject({
+      final: false,
+      message: { blocks: [{ type: "text", text: "It is" }] },
+    });
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({ role: "user", text: "What time is it?" });
+  });
+});
+
 describe("usage reset results", () => {
   test("reports a successful reset and remaining balance", () => {
     const state = createInitialState();

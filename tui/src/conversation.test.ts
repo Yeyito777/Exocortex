@@ -109,18 +109,25 @@ describe("older history loading status", () => {
 });
 
 describe("call transcript rendering", () => {
-  test("labels captured user speech while reusing an unlabelled assistant render", () => {
-    const metadata = {
+  test("labels captured user speech and renders GPT-Live assistant metadata", () => {
+    const userMetadata = {
       startedAt: 1_000,
       endedAt: 1_000,
       model: "gpt-5.4",
       tokens: 0,
       kind: REALTIME_TRANSCRIPT_KIND,
     } as const;
+    const assistantMetadata = {
+      startedAt: 1_000,
+      endedAt: 3_500,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 12,
+      kind: REALTIME_TRANSCRIPT_KIND,
+    } as const;
     const state = {
       messages: [
-        { role: "user", text: "What is six plus one?", metadata },
-        { role: "assistant", blocks: [{ type: "text", text: "Six plus one is seven." }], metadata },
+        { role: "user", text: "What is six plus one?", metadata: userMetadata },
+        { role: "assistant", blocks: [{ type: "text", text: "Six plus one is seven." }], metadata: assistantMetadata },
       ],
       pendingAI: null,
       toolRegistry: [],
@@ -142,7 +149,58 @@ describe("call transcript rendering", () => {
     expect(labels).toHaveLength(1);
     expect(labels[0]!.index).toBeGreaterThan(userIndex);
     expect(labels[0]!.index).toBeLessThan(assistantIndex);
-    expect(rendered.some(line => line.includes("0 tokens"))).toBe(false);
+    expect(rendered).toContainEqual(expect.stringContaining("Gpt-live-1-boulder-alpha | 12 tokens | 2s"));
+  });
+
+  test("renders live captured speech before the live assistant without mutating canonical history", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    state.messages.push({
+      role: "assistant",
+      blocks: [{ type: "text", text: "Older canonical answer." }],
+      metadata: null,
+    });
+    state.callUserDraft = {
+      callId: "call-1",
+      final: false,
+      message: {
+        role: "user",
+        text: "New captured question.",
+        metadata: {
+          startedAt: 1_000,
+          endedAt: null,
+          model: "gpt-live-1-boulder-alpha",
+          tokens: 4,
+          kind: REALTIME_TRANSCRIPT_KIND,
+        },
+      },
+    };
+    state.callAssistantDraft = {
+      callId: "call-1",
+      final: false,
+      message: {
+        role: "assistant",
+        blocks: [{ type: "text", text: "Live answer" }],
+        metadata: {
+          startedAt: 1_500,
+          endedAt: null,
+          model: "gpt-live-1-boulder-alpha",
+          tokens: 2,
+          kind: REALTIME_TRANSCRIPT_KIND,
+        },
+      },
+    };
+
+    const rendered = buildMessageLines(state, 80).lines.map(stripAnsi);
+    const oldIndex = rendered.findIndex(line => line.includes("Older canonical answer."));
+    const userIndex = rendered.findIndex(line => line.includes("New captured question."));
+    const assistantIndex = rendered.findIndex(line => line.includes("Live answer"));
+
+    expect(oldIndex).toBeGreaterThanOrEqual(0);
+    expect(userIndex).toBeGreaterThan(oldIndex);
+    expect(assistantIndex).toBeGreaterThan(userIndex);
+    expect(rendered.slice(userIndex, assistantIndex)).toContainEqual(expect.stringContaining("call transcript"));
+    expect(state.messages).toHaveLength(1);
   });
 });
 
@@ -1080,6 +1138,40 @@ describe("assistant metadata spacing", () => {
       "  Still working",
       "  Gpt-5.4 | 35 tokens | 2h 0m 0s",
     ]);
+  });
+
+  test("keeps delegated-agent metadata when a GPT-Live transcript follows it", () => {
+    const state = createInitialState();
+    state.messages.push(
+      {
+        role: "assistant",
+        blocks: [
+          { type: "tool_call", toolCallId: "call-time", toolName: "bash", input: {}, summary: "$ date" },
+          { type: "text", text: "The delegated result." },
+        ],
+        metadata: { startedAt: 1_000, endedAt: 6_000, model: "gpt-5.6-sol", tokens: 40 },
+      },
+      {
+        role: "assistant",
+        blocks: [{ type: "text", text: "The spoken final answer." }],
+        metadata: {
+          startedAt: 1_000,
+          endedAt: 8_000,
+          model: "gpt-live-1-boulder-alpha",
+          tokens: 12,
+          kind: REALTIME_TRANSCRIPT_KIND,
+        },
+      },
+    );
+
+    const rendered = buildMessageLines(state, 120).lines.map(stripAnsi);
+    const delegatedMetadata = rendered.findIndex(line => line.includes("Gpt-5.6-sol | 40 tokens | 5s"));
+    const spokenAnswer = rendered.findIndex(line => line.includes("The spoken final answer."));
+    const spokenMetadata = rendered.findIndex(line => line.includes("Gpt-live-1-boulder-alpha | 12 tokens | 7s"));
+
+    expect(delegatedMetadata).toBeGreaterThanOrEqual(0);
+    expect(spokenAnswer).toBeGreaterThan(delegatedMetadata);
+    expect(spokenMetadata).toBeGreaterThan(spokenAnswer);
   });
 
   test("aggregates goal metadata across non-contiguous assistant entries through system notices", () => {

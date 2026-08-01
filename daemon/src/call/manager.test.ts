@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import type { Conversation } from "../messages";
 import type { RealtimeSidebandEvent } from "./protocol";
 import type { NativeRealtimeStartParams, NativeRealtimeTransport } from "./transport";
-import { buildRealtimeInitialItems, RealtimeCallManager } from "./manager";
+import { buildRealtimeInitialItems, estimateRealtimeTokens, RealtimeCallManager } from "./manager";
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -118,6 +118,15 @@ describe("realtime call manager", () => {
     expect(persisted).toEqual([{ role: "user", text: "Please inspect it" }]);
 
     await emit!({ type: "transcript_delta", role: "assistant", text: "Spoken " });
+    expect(server.subscriber).toContainEqual(expect.objectContaining({
+      type: "call_transcript",
+      role: "assistant",
+      text: "Spoken ",
+      final: false,
+      endedAt: null,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: expect.any(Number),
+    }));
     await Bun.sleep(5);
     await emit!({ type: "transcript_delta", role: "assistant", text: "reply." });
     expect(persisted.filter(entry => entry.role === "assistant")).toHaveLength(0);
@@ -127,11 +136,23 @@ describe("realtime call manager", () => {
     // quiet-period prefix that later becomes a duplicated assistant message.
     await emit!({ type: "transcript_delta", role: "user", text: "Next " });
     expect(persisted).toContainEqual({ role: "assistant", text: "Spoken reply." });
+    expect(server.subscriber).toContainEqual(expect.objectContaining({
+      type: "call_transcript",
+      role: "assistant",
+      text: "Spoken reply.",
+      final: true,
+      endedAt: expect.any(Number),
+      model: "gpt-live-1-boulder-alpha",
+      tokens: expect.any(Number),
+    }));
     await emit!({ type: "transcript_done", role: "assistant", text: "Spoken reply" });
     expect(persisted.filter(entry => entry.role === "assistant")).toHaveLength(1);
 
     await emit!({ type: "handoff", handoffId: "delegation-1", text: "inspect the repository" });
     expect(persisted).toContainEqual({ role: "user", text: "inspect the repository" });
+    expect(server.subscriber.some(event =>
+      event.type === "call_state" && typeof event.message === "string" && event.message.includes("Delegating")
+    )).toBe(false);
     expect(realtime.handoffs).toEqual([{
       handoffId: "delegation-1",
       text: "Agent completed: inspect the repository",
@@ -169,6 +190,47 @@ describe("realtime call manager", () => {
     expect(realtime.stopped).toBe(1);
     expect(manager.hasActiveCall()).toBe(false);
     expect(server.subscriber).toContainEqual(expect.objectContaining({ state: "closed" }));
+  });
+
+  test("does not split a delegation preamble when the handoff input is repeated as user turn.done", async () => {
+    const conv = conversation();
+    const realtime = new FakeTransport();
+    const server = fakeServer();
+    const persisted: Array<{ role: string; text: string }> = [];
+    let emit: ((event: RealtimeSidebandEvent) => void | Promise<void>) | null = null;
+    const manager = new RealtimeCallManager(server.server as never, {
+      createTransport: handler => {
+        emit = handler;
+        return realtime;
+      },
+      ensureAuthenticated: async () => {},
+      getConversation: id => id === conv.id ? conv : undefined,
+      getEffectiveInstructions: () => null,
+      getAccountScope: () => null,
+      persistTranscript: (_id, role, text) => {
+        persisted.push({ role, text });
+        return true;
+      },
+      delegate: async () => "The delegated answer.",
+    });
+
+    const started = await manager.start(conv.id);
+    await manager.attachMedia({} as never, conv.id, started.callId, "v=0\r\no=offer", "media-req");
+    await emit!({ type: "handoff", handoffId: "handoff-1", text: "Check the time" });
+    await emit!({ type: "transcript_delta", role: "assistant", text: "Lemme" });
+    // The service emits a second representation of the same input turn after
+    // delegation.created. This is not a new user boundary.
+    await emit!({ type: "transcript_done", role: "user", text: "Check the time" });
+
+    expect(persisted).toEqual([{ role: "user", text: "Check the time" }]);
+
+    await emit!({ type: "transcript_done", role: "assistant", text: "Lemme check." });
+    expect(persisted).toEqual([
+      { role: "user", text: "Check the time" },
+      { role: "assistant", text: "Lemme check." },
+    ]);
+    expect(persisted).not.toContainEqual({ role: "assistant", text: "Lemme" });
+    await manager.stopAll();
   });
 
   test("rejects non-OpenAI owners and enforces one global active call", async () => {
@@ -215,5 +277,12 @@ describe("buildRealtimeInitialItems", () => {
     expect(items.length).toBeLessThanOrEqual(64);
     expect(items.reduce((sum, item) => sum + item.text.length, 0)).toBeLessThanOrEqual(28_000);
     expect(items.at(-1)?.text).toContain("99:");
+  });
+});
+
+describe("estimateRealtimeTokens", () => {
+  test("keeps live metadata nonzero for spoken text", () => {
+    expect(estimateRealtimeTokens("")).toBe(0);
+    expect(estimateRealtimeTokens("One sec.")).toBeGreaterThan(0);
   });
 });

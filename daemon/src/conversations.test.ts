@@ -61,7 +61,11 @@ describe("realtime transcripts", () => {
     create(id, "openai", "gpt-5.4", "Call transcript");
 
     expect(appendRealtimeTranscript(id, "user", "  What is six plus one?  ", 1_000)).toBe(true);
-    expect(appendRealtimeTranscript(id, "assistant", "Seven.", 2_000)).toBe(true);
+    expect(appendRealtimeTranscript(id, "assistant", "Seven.", 2_000, {
+      endedAt: 4_500,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 3,
+    })).toBe(true);
 
     const messages = get(id)!.messages;
     expect(messages).toHaveLength(2);
@@ -74,7 +78,13 @@ describe("realtime transcripts", () => {
     expect(messages[1]).toMatchObject({
       role: "assistant",
       content: "Seven.",
-      metadata: { kind: "realtime_transcript" },
+      metadata: {
+        startedAt: 2_000,
+        endedAt: 4_500,
+        model: "gpt-live-1-boulder-alpha",
+        tokens: 3,
+        kind: "realtime_transcript",
+      },
     });
     expect(messages[0]!.metadata?.system).toBeUndefined();
     expect(messages[1]!.metadata?.system).toBeUndefined();

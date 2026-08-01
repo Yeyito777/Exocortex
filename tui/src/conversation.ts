@@ -127,6 +127,7 @@ function isRealUserMessage(msg: Message): boolean {
 }
 
 function isAssistantMetadataBoundary(msg: Message): boolean {
+  if (msg.role === "assistant" && msg.metadata?.kind === REALTIME_TRANSCRIPT_KIND) return true;
   // A replay is a fresh request even though it has no new user message. The
   // terminal notice is its only durable boundary from the interrupted request;
   // crossing it would charge the idle time before /replay as active model time.
@@ -388,11 +389,18 @@ export function buildMessageLines(
       for (const block of msg.blocks) {
         pushBlock(block, "assistant_block", renderAssistantBlock(block));
       }
-      const nextIsAssistant = state.messages[messageIndex + 1]?.role === "assistant"
-        || (messageIndex === state.messages.length - 1 && state.pendingAI?.role === "assistant");
+      const nextMessage = state.messages[messageIndex + 1];
+      const nextContinuesAssistantSegment = (
+        nextMessage?.role === "assistant"
+        && nextMessage.metadata?.kind !== REALTIME_TRANSCRIPT_KIND
+      ) || (messageIndex === state.messages.length - 1 && state.pendingAI?.role === "assistant");
       const isCallTranscript = msg.metadata?.kind === REALTIME_TRANSCRIPT_KIND;
-      const metadata = assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
-      const metadataLines = isCallTranscript ? [] : nextIsAssistant ? [] : renderMetadata(metadata);
+      const metadata = isCallTranscript
+        ? msg.metadata
+        : assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
+      const metadataLines = isCallTranscript
+        ? renderMetadata(metadata)
+        : nextContinuesAssistantSegment ? [] : renderMetadata(metadata);
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
       const contentEnd = lines.length;
       for (let i = 0; i < metadataLines.length; i++) {
@@ -439,6 +447,48 @@ export function buildMessageLines(
 
   if (state.historyLoadingOlder && historyLoadingInsertIndex === state.messages.length) {
     pushHistoryLoadingLine();
+  }
+
+  // GPT-Live transcript projections deliberately live outside canonical
+  // state.messages. Input transcription can finish after output speech starts;
+  // rendering both drafts here keeps their user → assistant order stable while
+  // canonical history refreshes replace each finalized draft independently.
+  if (state.callUserDraft) {
+    const msg = state.callUserDraft.message;
+    const start = lines.length;
+    if (!firstUser) pushLine("", msg, "user_margin_top");
+    const contentStart = lines.length;
+    const rendered = renderUserMessageCached(msg, msg.text, availableWidth, msg.images);
+    pushBlock(msg, "user_content", rendered);
+    const contentEnd = lines.length;
+    const flow = userMessageFlowMetadataCached(msg, msg.text, availableWidth, msg.images);
+    if (flow && flow.starts.length === contentEnd - contentStart) {
+      for (let row = 0; row < flow.starts.length; row++) {
+        lineAnchors[contentStart + row].userFlowDocument = flow.document;
+        lineAnchors[contentStart + row].userFlowStart = flow.starts[row];
+        lineAnchors[contentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
+      }
+    }
+    pushLine(rightAlignedProvenanceLabel("call transcript", availableWidth), msg, "transcript_label");
+    pushLine("", msg, "user_margin_bottom");
+    firstUser = false;
+    pushMessageBound(msg.role, start, contentStart, contentEnd);
+  }
+
+  if (state.callAssistantDraft) {
+    const msg = state.callAssistantDraft.message;
+    const start = lines.length;
+    const contentStart = lines.length;
+    for (const block of msg.blocks) {
+      pushBlock(block, "assistant_block", renderAssistantBlock(block));
+    }
+    const metadataLines = renderMetadata(msg.metadata);
+    if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
+    const contentEnd = lines.length;
+    for (let i = 0; i < metadataLines.length; i++) {
+      pushLine(metadataLines[i], msg, "assistant_metadata", i);
+    }
+    pushMessageBound(msg.role, start, contentStart, contentEnd);
   }
 
   // Currently streaming AI message — no margins

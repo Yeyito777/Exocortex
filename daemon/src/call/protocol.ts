@@ -6,12 +6,12 @@ export interface RealtimeInitialItem {
 export type RealtimeSidebandEvent =
   | { type: "started"; sessionId: string }
   | { type: "transcript_delta"; role: "user" | "assistant"; text: string }
-  | { type: "transcript_done"; role: "user" | "assistant"; text: string }
+  | { type: "transcript_done"; role: "user" | "assistant"; text: string; tokens?: number }
   | { type: "handoff"; handoffId: string; text: string }
   | { type: "error"; message: string }
   | { type: "closed"; reason?: string };
 
-const DEFAULT_MODEL = "gpt-live-1-boulder-alpha";
+export const REALTIME_MODEL = "gpt-live-1-boulder-alpha";
 const DEFAULT_VOICE = "cove";
 const CONTEXT_APPEND_MAX_BYTES = 500;
 
@@ -20,7 +20,7 @@ export function buildRealtimeSession(
   initialItems: RealtimeInitialItem[],
 ): Record<string, unknown> {
   return {
-    model: DEFAULT_MODEL,
+    model: REALTIME_MODEL,
     instructions: prompt,
     audio: { output: { voice: DEFAULT_VOICE } },
     delegation: { type: "client" },
@@ -80,7 +80,16 @@ export function parseRealtimeSidebandEvent(raw: string): RealtimeSidebandEvent |
     case "turn.done": {
       const turn = asRecord(payload.turn);
       if ((turn?.role !== "user" && turn?.role !== "assistant") || typeof turn.transcript !== "string") return null;
-      return { type: "transcript_done", role: turn.role, text: turn.transcript };
+      const turnUsage = asRecord(turn.usage);
+      const payloadUsage = asRecord(payload.usage);
+      const tokens = [turn.output_tokens, turnUsage?.output_tokens, payloadUsage?.output_tokens]
+        .find(value => typeof value === "number" && Number.isFinite(value) && value >= 0);
+      return {
+        type: "transcript_done",
+        role: turn.role,
+        text: turn.transcript,
+        ...(typeof tokens === "number" ? { tokens } : {}),
+      };
     }
     case "delegation.created": {
       const item = asRecord(payload.item);

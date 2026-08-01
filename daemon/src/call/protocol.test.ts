@@ -32,8 +32,8 @@ describe("Frameless Bidi protocol", () => {
     }))).toEqual({ type: "transcript_delta", role: "user", text: "hello" });
     expect(parseRealtimeSidebandEvent(JSON.stringify({
       type: "turn.done",
-      turn: { role: "assistant", transcript: "hi" },
-    }))).toEqual({ type: "transcript_done", role: "assistant", text: "hi" });
+      turn: { role: "assistant", transcript: "hi", usage: { output_tokens: 7 } },
+    }))).toEqual({ type: "transcript_done", role: "assistant", text: "hi", tokens: 7 });
     expect(parseRealtimeSidebandEvent(JSON.stringify({
       type: "delegation.created",
       item: {

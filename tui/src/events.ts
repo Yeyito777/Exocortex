@@ -53,6 +53,7 @@ import {
 import { handleToolOutputsLoaded } from "./events/tool-outputs";
 import { handleToolsAvailable } from "./events/provider";
 import type { DaemonActions } from "./events/types";
+import { handleCallTranscript, reconcileCallTranscriptDrafts } from "./events/call";
 
 export type { DaemonActions } from "./events/types";
 
@@ -185,8 +186,7 @@ export function handleEvent(
       break;
 
     case "call_transcript":
-      // Final transcript parts are persisted by the daemon and arrive through
-      // the canonical history update; deltas belong to media-aware clients.
+      handleCallTranscript(event, state);
       break;
 
     case "call_sdp_answer":
@@ -388,6 +388,11 @@ export function handleEvent(
           state.historyHasOlder = event.hasOlderHistory ?? false;
           if (event.resetHistoryWindow) state.scrollOffset = 0;
         }
+        // Replace only transcript drafts actually present in this canonical
+        // snapshot. A user-turn refresh can arrive while GPT-Live is already
+        // streaming its assistant response, so clearing every draft here makes
+        // that response disappear for a frame and then jump back lower.
+        reconcileCallTranscriptDrafts(state);
         state.historyTotalEntries = event.historyTotalEntries
           ?? event.entries.filter((entry) => entry.type !== "system_instructions").length;
         state.historyLoadingOlder = false;
