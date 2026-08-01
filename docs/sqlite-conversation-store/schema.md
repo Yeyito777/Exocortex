@@ -2,7 +2,7 @@
 
 Canonical database: `<dataDir>/exocortex.sqlite3`
 
-Current schema version: **2**
+Current schema version: **6**
 
 ## Lifecycle tables
 
@@ -32,12 +32,17 @@ folder IDs when projecting live summaries.
 One row per `(conversation_id, sequence)`, `WITHOUT ROWID`. Fields are split so
 small attribution/checkpoint changes do not rewrite large content:
 
-- role and canonical `content_json`
+- role and compact `content_json`
 - metadata, provider data, context-token attribution, and user checkpoint JSON
 - explicit `has_*` bits preserving the semantic distinction between an absent
   optional property and a present JSON `null` (schema v2)
 - indexed real-user/replay-history flags
 - byte size, content hash, and normalized message hash
+
+`content_json` contains ordinary text and block structure. Large tool-result bodies
+and image base64 are replaced by empty placeholders and stored in `message_blobs`.
+A full load joins those blobs and reconstructs the exact original message before it
+leaves the repository.
 
 `messages` cascades when a conversation is permanently removed. Normal user
 operations use soft delete, so rows remain available for instant restore.
@@ -55,7 +60,12 @@ message prefixes before use.
   affected user-turn suffix on append and fully rebuilt after destructive edits.
   Tool output is omitted. Old image base64 is stripped at query time.
 - `tool_outputs(conversation_id, message_sequence, ordinal, tool_call_id, output,
-  is_error)` — direct deferred tool-result lookup; tied to canonical message rows.
+  is_error)` — direct deferred tool-result identity lookup. As of schema v5 its
+  legacy `output` column is intentionally empty; payload bytes are not duplicated.
+- `message_blobs(conversation_id, message_sequence, kind, ordinal, payload_json,
+  payload_bytes, content_hash)` — separately selected tool-result and image payloads
+  introduced in schema v6. Its composite foreign key cascades from `messages`, so
+  deleting a message/conversation cannot leave orphan payloads.
 
 These are rebuildable but are committed in the same transaction as message
 changes, so readers never observe a projection generation different from
@@ -90,8 +100,9 @@ canonical history.
 - queue position/target indexes
 - undo/redo descending stack index
 
-Content/image/tool-output FTS is intentionally absent. Title search uses bounded
-metadata-only queries; raw tool outputs and base64 are never indexed.
+Schema v4 maintains `conversation_title_fts`, an FTS5 title-only index synchronized
+by insert/update/delete triggers. Content/image/tool-output FTS is intentionally
+absent; raw tool outputs and base64 are never indexed.
 
 ## SQLite configuration
 
@@ -107,3 +118,31 @@ wal_autocheckpoint = 1000 pages
 
 Clean shutdown truncates the WAL. Online backup checkpoints, uses `VACUUM INTO`
 a new path, and quick-checks the result before publishing it.
+
+## Migration history
+
+1. Normalized conversation, message, page, folder, queue, undo, unwind, BTW, and
+   import schema.
+2. Optional-message-field presence bits.
+3. Constant-time canonical content-byte totals on conversation rows.
+4. Trigger-maintained FTS5 title index.
+5. Removal of duplicate tool-output payload bytes from the direct lookup table.
+6. Separate message payload rows for tool results and image base64.
+
+Each migration is transactional. Startup rejects a database whose highest version
+is newer than the binary and leaves both SQLite and legacy JSON data untouched on
+failure.
+
+## Inspection
+
+Run the instance-aware administration script from the repository root:
+
+```bash
+bun scripts/dev/sqlite-store-admin.ts check
+bun scripts/dev/sqlite-store-admin.ts diagnostics
+bun scripts/dev/sqlite-store-admin.ts --database /explicit/path/exocortex.sqlite3 check
+```
+
+Diagnostics report schema/database/WAL sizes, live and soft-deleted rows, message
+and blob counts/bytes, display/tool references, queue and undo counts, and import
+state without reading transcript text.

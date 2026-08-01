@@ -79,12 +79,14 @@ adapter and force full canonical replay.
 
 ## Large content policy
 
-The first schema keeps message content inline in a dedicated SQLite column. This
-still prevents ordinary summary/page queries from reading it because SQLite
-queries select explicit columns; tool output has a separately indexed extraction
-row. A blob/content-addressed layer is intentionally deferred unless profiles
-show that inline values cause unacceptable write amplification or fragmentation.
-No base64 or tool output is indexed by FTS.
+Schema v6 keeps ordinary text and content-block structure in `messages.content_json`
+but moves tool-result bodies and image base64 into `message_blobs`. The compact
+message row retains an empty placeholder; full loads reconstruct the original value
+from blob rows. `tool_outputs` keeps only lookup identity, so payload bytes are not
+duplicated. Summary, sidebar, page, and ordinary message queries select no blob
+column. Composite foreign keys cascade blob deletion from canonical messages, and
+content hashes make integrity/diagnostic reporting possible. No base64 or raw tool
+output is indexed by FTS.
 
 ## Generation and faults
 
@@ -125,6 +127,13 @@ The backend is one explicit value:
 There is no ambiguous per-call mix of canonical backends. Import is resumable and
 idempotent. Legacy JSON is read-only once SQLite is canonical and remains the
 rollback snapshot until a separately approved cleanup.
+
+The approved repository design deliberately uses an instance-level direct cutover
+rather than dual writes. A JSON-first/SQLite-second shadow mutation cannot be atomic
+across the filesystem and SQLite and would introduce its own durable retry log and
+split-brain recovery protocol. Instead, the fixture verifier proves parity before
+cutover, SQLite transactions become the only acknowledged writes, and backup plus
+normalized JSON export provide current rollback snapshots.
 
 ## Windows/Bun compatibility
 

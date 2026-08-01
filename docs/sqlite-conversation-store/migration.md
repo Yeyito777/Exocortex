@@ -20,13 +20,16 @@
 4. Fold `.sidebar` and `.unwind` overlays by importing the compatibility loader's
    materialized `Conversation` result.
 5. Import unread, queue, BTW, and undo/redo snapshots when present.
-6. Verify counts/hashes and mark the import complete.
+6. Log bounded progress (every 100 sources or two seconds), verify counts/hashes,
+   persist the final import report, and mark the import complete.
 7. Read summaries directly from indexed rows and continue daemon startup.
 
 A crash before step 6 is safe: completed conversation source hashes are skipped,
 and a partially imported conversation cannot exist because each unit is a
 transaction. A corrupt source is reported and leaves the overall import
-incomplete rather than silently disappearing.
+incomplete rather than silently disappearing. Fixture creation performs an
+immediate strict source stability check; later fixture verification always checks
+the immutable copied hashes and reports ordinary live-main source drift separately.
 
 ## Canonical cutover
 
@@ -41,13 +44,22 @@ Once SQLite is canonical:
 - JSON remains a point-in-time rollback snapshot;
 - normalized JSON export is the way to create a newer rollback snapshot.
 
-## Backup
+## Inspection, backup, and restore
 
-1. Run integrity and foreign-key checks.
-2. Checkpoint WAL.
-3. Use SQLite online backup into a new temporary file.
-4. Open and quick-check the temporary backup.
-5. Atomically rename it to the requested backup destination.
+The administration surface uses the current worktree's detected instance by
+default. Pass `--database /explicit/path/exocortex.sqlite3` to target another store:
+
+```bash
+bun scripts/dev/sqlite-store-admin.ts diagnostics
+bun scripts/dev/sqlite-store-admin.ts check
+bun scripts/dev/sqlite-store-admin.ts backup /new/path/backup.sqlite3
+bun scripts/dev/sqlite-store-admin.ts restore-to-new /path/backup.sqlite3 /new/path/restored.sqlite3
+```
+
+Backup first runs integrity and foreign-key checks, checkpoints WAL, uses
+`VACUUM INTO` to create a temporary destination, opens and quick-checks it, then
+atomically renames it. It never copies only the main file from an uncheckpointed
+live WAL database.
 
 Never restore over an open database. Restore validates a source backup and copies
 it to a new path. The operator then stops only the target instance, swaps paths,
@@ -59,6 +71,14 @@ One-conversation export reproduces the current v18 normalized object. Full expor
 writes one JSON file per live conversation plus folders, instructions, unread,
 queue, BTW, and undo/redo metadata into a new directory. It never writes into an
 existing legacy corpus unless an explicit empty destination is supplied.
+
+```bash
+bun scripts/dev/sqlite-store-admin.ts export-one <id> /new/path/conversation.json
+bun scripts/dev/sqlite-store-admin.ts export-all /new/empty/export-directory
+```
+
+`export-one` refuses to overwrite an existing file; `export-all` refuses a non-empty
+destination.
 
 ## Rollback
 
@@ -81,6 +101,8 @@ This intentionally loses SQLite-only changes made after cutover.
 
 ## Cleanup policy
 
-No automatic cleanup removes JSON, sidecars, display pages, or a database. Archive
-cleanup is a separate command and remains deferred until the user accepts this
-worktree and an agreed bake-in release has passed.
+No automatic cleanup removes JSON, sidecars, display pages, or a database. The
+SQLite runtime does not read or update `conversations-index.json`, display-page
+files, `.sidebar`, or `.unwind` after canonical cutover, but those rollback inputs
+remain on disk. Archive cleanup is a separate future operation and remains deferred
+until the user accepts this worktree and an agreed bake-in release has passed.
