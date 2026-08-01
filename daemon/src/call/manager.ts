@@ -31,6 +31,72 @@ function transcriptKey(text: string): string {
   return text.trim().toLocaleLowerCase().replace(/[.!?]+$/u, "").replace(/\s+/gu, " ");
 }
 
+interface TranscriptWord {
+  key: string;
+  start: number;
+  end: number;
+}
+
+function transcriptWords(text: string): TranscriptWord[] {
+  return [...text.matchAll(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu)].map(match => ({
+    key: match[0]!.toLocaleLowerCase(),
+    start: match.index!,
+    end: match.index! + match[0]!.length,
+  }));
+}
+
+function removeTranscriptWordSpan(text: string, words: TranscriptWord[], start: number, count: number): string {
+  const first = words[start];
+  const last = words[start + count - 1];
+  if (!first || !last) return text;
+  const before = text.slice(0, first.start).trimEnd();
+  const after = text.slice(last.end).replace(/^[\s,.;:!?…—-]+/u, "").trimStart();
+  return [before, after].filter(Boolean).join(" ");
+}
+
+/**
+ * Frameless may split one physical utterance when it starts speaking during a
+ * pause, then include the already-finalized words again in the barge-in turn.
+ * Strip only a substantial replay at the edge of that immediately-following
+ * interrupted turn; ordinary repeated phrases in later turns remain intact.
+ */
+export function stripRepeatedInterruptedTranscript(previous: string, current: string): string {
+  const previousWords = transcriptWords(previous);
+  const currentWords = transcriptWords(current);
+  const minimumReplayWords = 4;
+  if (previousWords.length < minimumReplayWords || currentWords.length < minimumReplayWords) return current;
+
+  const sameWords = (currentStart: number, previousStart: number, count: number): boolean => {
+    for (let offset = 0; offset < count; offset++) {
+      if (currentWords[currentStart + offset]?.key !== previousWords[previousStart + offset]?.key) return false;
+    }
+    return true;
+  };
+
+  // A complete provider replay can prefix a correction or follow a short
+  // barge-in preamble. Do not remove matching text from the middle of a turn.
+  if (currentWords.length >= previousWords.length) {
+    if (sameWords(0, 0, previousWords.length)) {
+      return removeTranscriptWordSpan(current, currentWords, 0, previousWords.length);
+    }
+    const suffixStart = currentWords.length - previousWords.length;
+    if (sameWords(suffixStart, 0, previousWords.length)) {
+      return removeTranscriptWordSpan(current, currentWords, suffixStart, previousWords.length);
+    }
+  }
+
+  // While the replay is still streaming, hide a substantial prefix of the old
+  // utterance when it appears at the end of a new preamble.
+  const maxPartial = Math.min(previousWords.length - 1, currentWords.length - 1);
+  for (let count = maxPartial; count >= minimumReplayWords; count--) {
+    const suffixStart = currentWords.length - count;
+    if (sameWords(suffixStart, 0, count)) {
+      return removeTranscriptWordSpan(current, currentWords, suffixStart, count);
+    }
+  }
+  return current;
+}
+
 /**
  * Frameless Bidi normally supplies a complete turn.done transcript, but an
  * interrupted turn can contain only the suffix that follows already-emitted
@@ -130,6 +196,9 @@ interface ActiveCall {
   userTranscriptFinal: boolean;
   /** A delegation can be followed by a duplicate user turn.done for the same speech. */
   pendingHandoffUserKey: string | null;
+  lastFinalUserTranscript: string | null;
+  /** Prior user speech that Frameless may replay after interrupting its response. */
+  interruptedUserReplay: string | null;
   assistantResponseStartedAt: number | null;
 }
 
@@ -193,6 +262,8 @@ export class RealtimeCallManager {
         },
         userTranscriptFinal: false,
         pendingHandoffUserKey: null,
+        lastFinalUserTranscript: null,
+        interruptedUserReplay: null,
         assistantResponseStartedAt: null,
       };
       this.active = provisional;
@@ -350,22 +421,23 @@ export class RealtimeCallManager {
         }
         accumulator.text += event.text;
         if (event.role === "user") {
-          if (call.userTranscriptFinal && call.transcript.assistant.text.trim()) {
-            this.finalizeTranscript(call, "assistant", call.transcript.assistant.text);
-          }
+          this.finalizeInterruptedAssistant(call);
           call.userTranscriptFinal = false;
         }
+        const projectedText = event.role === "user" && call.interruptedUserReplay
+          ? stripRepeatedInterruptedTranscript(call.interruptedUserReplay, accumulator.text)
+          : accumulator.text;
         this.server.sendToSubscribers(call.convId, {
           type: "call_transcript",
           convId: call.convId,
           callId: call.callId,
           role: event.role,
-          text: accumulator.text,
+          text: projectedText,
           final: false,
           startedAt: accumulator.startedAt ?? Date.now(),
           endedAt: null,
           model: REALTIME_MODEL,
-          tokens: estimateRealtimeTokens(accumulator.text),
+          tokens: estimateRealtimeTokens(projectedText),
         });
         break;
       }
@@ -380,9 +452,7 @@ export class RealtimeCallManager {
             break;
           }
         }
-        if (event.role === "user" && call.userTranscriptFinal && call.transcript.assistant.text.trim()) {
-          this.finalizeTranscript(call, "assistant", call.transcript.assistant.text);
-        }
+        if (event.role === "user") this.finalizeInterruptedAssistant(call);
         this.finalizeTranscript(
           call,
           event.role,
@@ -395,6 +465,7 @@ export class RealtimeCallManager {
       case "handoff": {
         const text = event.text.trim();
         if (!text) break;
+        this.finalizeInterruptedAssistant(call);
         // Frameless Bidi can replace the user's turn.done with
         // delegation.created. Preserve the spoken request before routing it.
         this.finalizeTranscript(call, "user", text);
@@ -427,9 +498,12 @@ export class RealtimeCallManager {
     text: string,
     providerTokens?: number,
   ): void {
-    const normalized = text.trim();
-    if (!normalized) return;
     const accumulator = call.transcript[role];
+    let normalized = text.trim();
+    if (role === "user" && call.interruptedUserReplay) {
+      normalized = stripRepeatedInterruptedTranscript(call.interruptedUserReplay, normalized).trim();
+      call.interruptedUserReplay = null;
+    }
     const key = transcriptKey(normalized);
     const endedAt = Date.now();
     const startedAt = accumulator.startedAt
@@ -438,6 +512,21 @@ export class RealtimeCallManager {
     const tokens = providerTokens ?? estimateRealtimeTokens(normalized);
     accumulator.text = "";
     accumulator.startedAt = null;
+    if (!normalized) {
+      this.server.sendToSubscribers(call.convId, {
+        type: "call_transcript",
+        convId: call.convId,
+        callId: call.callId,
+        role,
+        text: "",
+        final: true,
+        startedAt,
+        endedAt,
+        model: REALTIME_MODEL,
+        tokens: 0,
+      });
+      return;
+    }
     if (accumulator.finalKey === key) return;
     accumulator.finalKey = key;
     this.server.sendToSubscribers(call.convId, {
@@ -459,7 +548,16 @@ export class RealtimeCallManager {
       broadcastConversationHistoryUpdated(this.server, call.convId);
       broadcastConversationUpdated(this.server, call.convId);
     }
-    if (role === "user") call.assistantResponseStartedAt = endedAt;
+    if (role === "user") {
+      call.lastFinalUserTranscript = normalized;
+      call.assistantResponseStartedAt = endedAt;
+    }
+  }
+
+  private finalizeInterruptedAssistant(call: ActiveCall): void {
+    if (!call.userTranscriptFinal || !call.transcript.assistant.text.trim()) return;
+    call.interruptedUserReplay = call.lastFinalUserTranscript;
+    this.finalizeTranscript(call, "assistant", call.transcript.assistant.text);
   }
 
   private persistCallStatus(call: ActiveCall, text: string): void {
@@ -473,6 +571,7 @@ export class RealtimeCallManager {
     this.finalizeTranscript(call, "assistant", call.transcript.assistant.text);
     call.userTranscriptFinal = false;
     call.pendingHandoffUserKey = null;
+    call.interruptedUserReplay = null;
   }
 
   private async handleHandoff(call: ActiveCall, handoffId: string, text: string): Promise<void> {

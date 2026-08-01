@@ -105,6 +105,39 @@ describe("GPT-Live transcript events", () => {
     expect(state.messages).toHaveLength(0);
   });
 
+  test("discards an empty finalized user projection without rendering a blank bubble", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "user",
+      text: "replayed words",
+      final: false,
+      startedAt: 1_000,
+      endedAt: null,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 2,
+    }, state, daemon);
+
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "user",
+      text: "",
+      final: true,
+      startedAt: 1_000,
+      endedAt: 1_500,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 0,
+    }, state, daemon);
+
+    expect(state.callUserDraft).toBeNull();
+    expect(state.messages).toHaveLength(0);
+  });
+
   test("keeps a streaming assistant stable while the preceding user transcript becomes canonical", () => {
     const state = createInitialState();
     state.convId = "conv-call";

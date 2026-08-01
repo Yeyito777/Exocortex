@@ -56,6 +56,12 @@ export function reconcileCallTranscriptDrafts(state: RenderState): void {
 }
 
 function handleUserTranscript(event: TranscriptEvent, state: RenderState): void {
+  // A final empty projection explicitly discards a provider-replayed barge-in
+  // turn. It must clear the optimistic draft without creating a blank bubble.
+  if (event.final && !event.text.trim()) {
+    state.callUserDraft = null;
+    return;
+  }
   if (event.final && state.pendingAI) {
     // A spoken turn can arrive while the delegated parent agent is streaming.
     // Split its completed visual prefix before inserting the transcript, exactly

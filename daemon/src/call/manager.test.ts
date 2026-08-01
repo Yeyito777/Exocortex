@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import type { Conversation } from "../messages";
 import type { RealtimeSidebandEvent } from "./protocol";
 import type { NativeRealtimeStartParams, NativeRealtimeTransport } from "./transport";
-import { buildRealtimeInitialItems, estimateRealtimeTokens, mergeCompletedTranscript, RealtimeCallManager } from "./manager";
+import { buildRealtimeInitialItems, estimateRealtimeTokens, mergeCompletedTranscript, RealtimeCallManager, stripRepeatedInterruptedTranscript } from "./manager";
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -233,6 +233,59 @@ describe("realtime call manager", () => {
     await manager.stopAll();
   });
 
+  test("removes a replayed user utterance when the model is interrupted mid-response", async () => {
+    const conv = conversation();
+    const realtime = new FakeTransport();
+    const server = fakeServer();
+    const persisted: Array<{ role: string; text: string }> = [];
+    let emit: ((event: RealtimeSidebandEvent) => void | Promise<void>) | null = null;
+    const manager = new RealtimeCallManager(server.server as never, {
+      createTransport: handler => {
+        emit = handler;
+        return realtime;
+      },
+      ensureAuthenticated: async () => {},
+      getConversation: id => id === conv.id ? conv : undefined,
+      getEffectiveInstructions: () => null,
+      getAccountScope: () => null,
+      persistTranscript: (_id, role, text) => {
+        persisted.push({ role, text });
+        return true;
+      },
+    });
+
+    const started = await manager.start(conv.id);
+    await manager.attachMedia({} as never, conv.id, started.callId, "v=0\r\no=offer", "media-req");
+    const request = "Would be cool if you read the files and tell me what this project is about";
+    await emit!({ type: "transcript_done", role: "user", text: request });
+    await emit!({ type: "transcript_delta", role: "assistant", text: "Sure. Checking the" });
+    await emit!({ type: "transcript_delta", role: "user", text: "Yo, sorry. Gimme a moment. " });
+    await emit!({ type: "transcript_delta", role: "user", text: request });
+    await emit!({
+      type: "transcript_done",
+      role: "user",
+      text: `Yo, sorry. Gimme a moment. ${request}`,
+    });
+
+    expect(persisted).toEqual([
+      { role: "user", text: request },
+      { role: "assistant", text: "Sure. Checking the" },
+      { role: "user", text: "Yo, sorry. Gimme a moment." },
+    ]);
+    const projectedUserEvents = server.subscriber.filter(event =>
+      event.type === "call_transcript" && event.role === "user"
+    );
+    expect(projectedUserEvents.at(-2)).toMatchObject({
+      text: "Yo, sorry. Gimme a moment.",
+      final: false,
+    });
+    expect(projectedUserEvents.at(-1)).toMatchObject({
+      text: "Yo, sorry. Gimme a moment.",
+      final: true,
+    });
+    await manager.stopAll();
+  });
+
   test("rejects non-OpenAI owners and enforces one global active call", async () => {
     const openAI = conversation();
     const deepSeek = conversation({ id: "deep", provider: "deepseek", model: "deepseek-chat" });
@@ -297,5 +350,31 @@ describe("mergeCompletedTranscript", () => {
     expect(mergeCompletedTranscript("Lemme", "Lemme check.")).toBe("Lemme check.");
     expect(mergeCompletedTranscript("Spoken reply.", "Spoken reply")).toBe("Spoken reply.");
     expect(mergeCompletedTranscript("hello wor", "world")).toBe("hello world");
+  });
+});
+
+describe("stripRepeatedInterruptedTranscript", () => {
+  const previous = "Would be cool if you read the files and explain the project";
+
+  test("strips a complete replay after a barge-in preamble", () => {
+    expect(stripRepeatedInterruptedTranscript(
+      previous,
+      `Yo, sorry. Gimme a moment. ${previous}`,
+    )).toBe("Yo, sorry. Gimme a moment.");
+  });
+
+  test("strips a complete replay before newly added words", () => {
+    expect(stripRepeatedInterruptedTranscript(
+      previous,
+      `${previous}. Also check the tests.`,
+    )).toBe("Also check the tests.");
+  });
+
+  test("does not remove short or embedded coincidental repetition", () => {
+    expect(stripRepeatedInterruptedTranscript("check the files", "Please check the files")).toBe("Please check the files");
+    expect(stripRepeatedInterruptedTranscript(
+      previous,
+      `I quoted: ${previous}, but that was only an example.`,
+    )).toContain(previous);
   });
 });
