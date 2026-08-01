@@ -43,7 +43,7 @@ function startsShellComment(command: string, index: number, segmentStart: number
 }
 
 /**
- * Sidecar command lookup stays deliberately conservative. Heredoc bodies
+ * Helper command lookup stays deliberately conservative. Heredoc bodies
  * are shell data rather than commands, and correctly pairing all heredocs would
  * turn this presentation feature into a second shell parser. Skip the complete
  * call instead of ever styling a command-looking line inside a heredoc body.

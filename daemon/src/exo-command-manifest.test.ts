@@ -23,7 +23,7 @@ function addCommand(root: string, dir: string, name: string, label: string, colo
   }));
 }
 
-describe("sidecar command manifests", () => {
+describe("helper command manifests", () => {
   test("resolves a manifest beside a direct-path exo command", () => withProject(async (root) => {
     addCommand(root, "scripts", "exo-deploy", "Deploy", "#7aa2f7");
 

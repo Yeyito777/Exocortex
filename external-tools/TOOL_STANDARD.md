@@ -21,9 +21,9 @@ Each tool is its own git repository, independently developed. Tools are
 installed by cloning into `external-tools/` — the daemon discovers them
 automatically.
 
-## Sidecar commands
+## Helper commands
 
-A **sidecar command** is an ordinary executable that opts into custom
+A **helper command** is an ordinary executable that opts into custom
 Exocortex TUI presentation through an adjacent `exo-manifest.json`. It is
 useful for project scripts and one-off tools that should remain outside the
 installed external-tool registry.
