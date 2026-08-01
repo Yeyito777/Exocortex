@@ -81,7 +81,7 @@ afterEach(() => {
 describe("native exo tool contract", () => {
   test("keeps a compact top-level orchestration surface", () => {
     expect(EXO_ACTIONS).toEqual([
-      "send", "list", "jobs", "tasks", "info", "history", "abort", "queue", "commands",
+      "send", "list", "jobs", "tasks", "stop_task", "info", "history", "abort", "queue", "commands",
     ]);
     expect(EXO_ACTIONS).not.toContain("transcribe" as never);
     expect(EXO_ACTIONS).not.toContain("llm" as never);
@@ -97,6 +97,8 @@ describe("native exo tool contract", () => {
     expect(schema).toContain("max_depth");
     expect(schema).toContain('"effort"');
     expect(schema).toContain('"allow_edits"');
+    expect(schema).toContain('"task_id"');
+    expect(schema).toContain("exact active background-task ID returned by action=tasks");
     expect(schema).toContain("Maximum number of additional subagent generations permitted");
     expect(schema).toContain("not a target. Use 0 unless the target clearly needs to delegate");
     expect(exo.description).toContain("Transcription and cross-instance targeting are intentionally excluded");
@@ -145,6 +147,10 @@ describe("native exo tool contract", () => {
       command: "help",
       args: { command: "rename", verbose: false },
     }).detail).toBe('commands: help --args {"command":"rename","verbose":false}');
+    expect(exo.summarize({
+      action: "stop_task",
+      task_id: "bash:42:one",
+    }).detail).toBe("stop_task: bash:42:one");
   });
 
   test("forwards calls through the daemon-injected runtime with the active parent id", async () => {
@@ -261,6 +267,64 @@ describe("native exo daemon runtime", () => {
       type: "conversation_updated",
       summary: expect.objectContaining({ id: parentId }),
     }));
+  });
+
+  test("stops an exact managed background task directly", async () => {
+    const parentId = id("direct-task-stop-parent");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "Task parent");
+    const stop = mock(() => true);
+    setBackgroundTaskActive(parentId, "bash:45:stop", true, {
+      title: "sleep 30",
+      startedAt: 200,
+      toolName: "bash",
+      pid: 45,
+      backgroundedAt: 250,
+      outputPath: "/tmp/bash-45.tmp",
+      stop,
+    });
+    const server = fakeServer();
+    const runtime = createExocortexToolRuntime({
+      server: server as never,
+      runTurn: async () => successfulOutcome(),
+      hasCredentials: () => true,
+    });
+
+    const result = await runtime.execute({
+      action: "stop_task",
+      task_id: "bash:45:stop",
+    }, parentId);
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.output)).toMatchObject({
+      task_id: "bash:45:stop",
+      owner_conversation_id: parentId,
+      status: "stopping",
+    });
+    expect(stop).toHaveBeenCalledWith(true);
+    expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({
+      type: "conversation_updated",
+      summary: expect.objectContaining({ id: parentId }),
+    }));
+  });
+
+  test("rejects aborting the conversation currently executing the tool", async () => {
+    const parentId = id("self-abort-parent");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "Self abort parent");
+    const active = new AbortController();
+    setActiveJob(parentId, active, Date.now());
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn: async () => successfulOutcome(),
+      hasCredentials: () => true,
+    });
+
+    const result = await runtime.execute({ action: "abort", conversation_id: parentId }, parentId);
+
+    expect(result).toEqual({
+      output: "Cannot abort the conversation currently executing this tool. Use action=stop_task to stop a background task.",
+      isError: true,
+    });
+    expect(active.signal.aborted).toBe(false);
   });
 
   test("spawns detached subagents directly and notifies their parent", async () => {

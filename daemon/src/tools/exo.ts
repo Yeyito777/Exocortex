@@ -6,6 +6,7 @@ export const EXO_ACTIONS = [
   "list",
   "jobs",
   "tasks",
+  "stop_task",
   "info",
   "history",
   "abort",
@@ -58,7 +59,7 @@ const EXO_SYSTEM_HINT = [
 
 export const exo: Tool = {
   name: "exo",
-  description: "Manage the current Exocortex daemon directly. Frequent conversation, subagent, and active-task inspection operations are direct actions. Use action=commands to discover lower-frequency management commands on demand. Transcription and cross-instance targeting are intentionally excluded.",
+  description: "Manage the current Exocortex daemon directly. Frequent conversation and subagent operations, active-task inspection, and background-task stopping are direct actions. Use action=commands to discover lower-frequency management commands on demand. Transcription and cross-instance targeting are intentionally excluded.",
   systemHint: EXO_SYSTEM_HINT,
   inputSchema: {
     type: "object",
@@ -66,7 +67,7 @@ export const exo: Tool = {
       action: {
         type: "string",
         enum: EXO_ACTIONS,
-        description: "Operation to perform on the current daemon.",
+        description: "Operation to perform on the current daemon. stop_task stops an exact managed background task without aborting its owner conversation.",
       },
       text: {
         type: "string",
@@ -75,6 +76,10 @@ export const exo: Tool = {
       conversation_id: {
         type: "string",
         description: "Conversation targeted by send, tasks, info, history, abort, or queue. For tasks, omit to inspect work owned by the active conversation. Omit for send to create a new subagent.",
+      },
+      task_id: {
+        type: "string",
+        description: "For action=stop_task, exact active background-task ID returned by action=tasks.",
       },
       title: {
         type: "string",
@@ -172,7 +177,9 @@ export const exo: Tool = {
     const detailKey = action === "send" || action === "queue"
       ? "text"
       : action === "commands"
-          ? "command"
+        ? "command"
+        : action === "stop_task"
+          ? "task_id"
           : "conversation_id";
     const detail = detailValue(input, detailKey);
     const primary = detail ? `${action}: ${detail}` : action;

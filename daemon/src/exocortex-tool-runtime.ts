@@ -1006,8 +1006,11 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     return ok(`Deleted ${convId}`);
   };
 
-  const executeAbort = (input: Record<string, unknown>): ToolResult => {
+  const executeAbort = (input: Record<string, unknown>, parentConvId: string | undefined): ToolResult => {
     const convId = stringInput(input, "conversation_id", true)!;
+    if (convId === parentConvId) {
+      throw new Error("Cannot abort the conversation currently executing this tool. Use action=stop_task to stop a background task.");
+    }
     if (!convStore.getSummary(convId)) throw new Error(`Conversation ${convId} not found`);
     const controller = convStore.getActiveJob(convId);
     if (!controller) return ok(`Conversation ${convId} has no active job.`);
@@ -1364,13 +1367,10 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }));
   };
 
-  const executeTaskCommand = (args: Record<string, unknown>, parentConversationId: string | undefined): ToolResult => {
-    const operation = stringInput(args, "operation", true)?.toLowerCase();
-    const taskId = stringInput(args, "task_id", true)!;
+  const executeStopTask = (input: Record<string, unknown>, parentConversationId: string | undefined): ToolResult => {
+    const taskId = stringInput(input, "task_id", true)!;
     const task = listActiveConversationTasks().find(candidate => candidate.id === taskId);
     if (!task) throw new Error(`Active task ${taskId} not found`);
-    if (operation === "info") return ok(pretty(compactTask(task)));
-    if (operation !== "stop") throw new Error("operation must be info or stop");
     if (task.kind === "subagent") throw new Error(`Task ${taskId} is a subagent; abort conversation ${task.id} instead.`);
     if (task.kind === "chrono") throw new Error(`Task ${taskId} is managed by Chrono; use the chrono tool to list/cancel schedules, or abort its conversation for an active wait/sleep.`);
 
@@ -1384,6 +1384,16 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       owner_conversation_id: task.ownerConversationId,
       status: stopped.result === "already-stopping" ? "stopping" : stopped.result,
     }));
+  };
+
+  const executeTaskCommand = (args: Record<string, unknown>, parentConversationId: string | undefined): ToolResult => {
+    const operation = stringInput(args, "operation", true)?.toLowerCase();
+    if (operation === "stop") return executeStopTask(args, parentConversationId);
+    if (operation !== "info") throw new Error("operation must be info or stop");
+    const taskId = stringInput(args, "task_id", true)!;
+    const task = listActiveConversationTasks().find(candidate => candidate.id === taskId);
+    if (!task) throw new Error(`Active task ${taskId} not found`);
+    return ok(pretty(compactTask(task)));
   };
 
   const executeNotificationsCommand = (args: Record<string, unknown>, parentConversationId: string | undefined): ToolResult => {
@@ -1794,10 +1804,11 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           case "list": return executeList(input, parentConversationId);
           case "jobs": return executeJobs(input, parentConversationId);
           case "tasks": return executeTasks(input, parentConversationId);
+          case "stop_task": return executeStopTask(input, parentConversationId);
           case "info": return executeInfo(input);
           case "history": return executeHistory(input);
           case "delete": return await executeDelete(input, parentConversationId, signal);
-          case "abort": return executeAbort(input);
+          case "abort": return executeAbort(input, parentConversationId);
           case "queue": return executeQueue(input, parentConversationId, callerMaxDepth);
           case "rename": return executeRename(input, parentConversationId);
           case "status": return executeStatus();
