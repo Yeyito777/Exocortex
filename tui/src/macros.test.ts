@@ -14,6 +14,10 @@ describe("macro expansion", () => {
     expect(expandMacros("/xenv")).toBe("You're going to test this in a xenv and go into a loop: build → test in xenv → fix anything that's wrong → ... until it's complete");
   });
 
+  test("/todo expands to the sequential TODO workflow prompt", () => {
+    expect(expandMacros("/todo")).toBe("Make a TODO.md for this with items - [ ] and finish it sequentially.");
+  });
+
   test("/subagents requests useful proactive delegation", () => {
     expect(expandMacros("/subagents")).toBe("Use subagents when parallel work would materially improve speed or quality.");
   });
