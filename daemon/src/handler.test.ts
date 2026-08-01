@@ -32,12 +32,14 @@ const makeAssistantOutcome = (overrides: Partial<TestAssistantOutcome> = {}): Te
 
 const orchestrateSendMessage = mock(async () => makeAssistantOutcome());
 const orchestrateReplayConversation = mock(async () => makeAssistantOutcome());
+const orchestrateRealtimeDelegation = mock(async () => makeAssistantOutcome());
 const orchestrateCompactConversation = mock(async () => makeAssistantOutcome());
 const orchestrateGoalContinuation = mock(async () => {});
 
 mock.module("./orchestrator", () => ({
   orchestrateSendMessage,
   orchestrateReplayConversation,
+  orchestrateRealtimeDelegation,
   orchestrateCompactConversation,
   orchestrateGoalContinuation,
 }));

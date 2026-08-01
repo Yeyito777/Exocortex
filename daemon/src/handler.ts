@@ -10,7 +10,7 @@
 import { log } from "./log";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
-import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
+import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateRealtimeDelegation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
 import { buildSystemPrompt } from "./system";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
@@ -893,15 +893,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       const conv = convStore.get(convId);
       if (!conv) throw new Error("Owning conversation no longer exists.");
       if (convStore.isStreaming(convId)) throw new Error("The owning conversation is already running another turn.");
-      const outcome = await orchestrateSendMessage(
+      const outcome = await orchestrateRealtimeDelegation(
         server,
-        null,
-        undefined,
         convId,
-        `[Realtime call handoff]\n${text}`,
+        text,
         Date.now(),
         buildOrchestrationCallbacks(convId),
-        undefined,
         { subagentMaxDepth: conv.subagentMaxDepth ?? null },
       );
       if (!outcome.ok) throw new Error(outcome.error ?? "Delegated agent turn failed.");

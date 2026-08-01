@@ -15,7 +15,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, REALTIME_TRANSCRIPT_KIND, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type MessageMetadata } from "./messages";
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
@@ -37,6 +37,7 @@ import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./provid
 import { buildCodexWindowId } from "./providers/openai/identity";
 import { resolveToolCallPresentation } from "./exo-command-manifest";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
+import { mergeTurnTranscript } from "./turn-transcript-merge";
 import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
 import { buildHistoryUpdatedEvents } from "./history-pagination";
@@ -137,6 +138,75 @@ function hasReplayableHistory(messages: StoredMessage[]): boolean {
   return messages.some(isHistoryMessage);
 }
 
+function modelVisibleText(content: string | ApiContentBlock[]): string {
+  if (typeof content === "string") return content.trim();
+  return content
+    .filter((block): block is Extract<ApiContentBlock, { type: "text" }> => block.type === "text")
+    .map(block => block.text)
+    .join("\n")
+    .trim();
+}
+
+function realtimeUtteranceKey(text: string): string {
+  return text
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[.!?]+$/u, "")
+    .replace(/\s+/gu, " ");
+}
+
+function escapeXmlText(text: string): string {
+  return text
+    .replace(/&/gu, "&amp;")
+    .replace(/</gu, "&lt;")
+    .replace(/>/gu, "&gt;")
+    .replace(/"/gu, "&quot;")
+    .replace(/'/gu, "&apos;");
+}
+
+/** Model-only marker matching Codex's typed realtime delegation boundary. */
+export function buildRealtimeDelegationEnvelope(input: string): string {
+  return [
+    "<realtime_delegation>",
+    `  <input>${escapeXmlText(input.trim())}</input>`,
+    "</realtime_delegation>",
+  ].join("\n");
+}
+
+interface RealtimeDelegationContextMessage {
+  role: string;
+  content: string | ApiContentBlock[];
+  metadata?: MessageMetadata | null;
+}
+
+/**
+ * Replace the latest matching persisted call transcript for provider replay.
+ * The canonical message array is never mutated and no second user item appears.
+ */
+export function applyRealtimeDelegationEnvelope<T extends RealtimeDelegationContextMessage>(
+  messages: readonly T[],
+  input: string,
+): T[] | null {
+  const expected = realtimeUtteranceKey(input);
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (
+      message.role !== "user"
+      || message.metadata?.kind !== REALTIME_TRANSCRIPT_KIND
+      || realtimeUtteranceKey(modelVisibleText(message.content)) !== expected
+    ) {
+      continue;
+    }
+    const contextualized = messages.filter((_, messageIndex) => messageIndex !== index);
+    contextualized.push({
+      ...message,
+      content: buildRealtimeDelegationEnvelope(input),
+    } as T);
+    return contextualized;
+  }
+  return null;
+}
+
 /**
  * Whether a partially streamed thinking block is safe to persist on abort/error.
  *
@@ -179,6 +249,10 @@ interface AssistantTurnOptions {
   queueEntryId?: string;
   /** Force one context compaction without requesting an assistant response. */
   manualCompaction?: boolean;
+  /** Run the already-persisted voice transcript as a typed realtime handoff. */
+  realtimeDelegation?: {
+    input: string;
+  };
 }
 
 export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId">;
@@ -210,6 +284,25 @@ export async function orchestrateReplayConversation(
   policy: SubagentTurnPolicy = {},
 ): Promise<AssistantTurnOutcome> {
   return await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext, policy);
+}
+
+/**
+ * Start an agent turn from an existing visible call transcript. The transcript
+ * remains the sole durable user message; only its provider-facing representation
+ * is wrapped as a typed handoff for this turn.
+ */
+export async function orchestrateRealtimeDelegation(
+  server: DaemonServer,
+  convId: string,
+  input: string,
+  startedAt: number,
+  ext: OrchestrationCallbacks,
+  policy: SubagentTurnPolicy = {},
+): Promise<AssistantTurnOutcome> {
+  return await orchestrateAssistantTurn(server, null, undefined, convId, startedAt, ext, {
+    ...policy,
+    realtimeDelegation: { input },
+  });
 }
 
 export async function orchestrateCompactConversation(
@@ -265,7 +358,12 @@ async function orchestrateAssistantTurn(
   }
   const subagentMaxDepth = conv.subagentMaxDepth ?? null;
 
-  const { userMessage: requestedUserMessage, goalContinuation = false, manualCompaction = false } = options;
+  const {
+    userMessage: requestedUserMessage,
+    goalContinuation = false,
+    manualCompaction = false,
+    realtimeDelegation,
+  } = options;
   // Goal continuations are daemon-authored notification turns, just like
   // background-task and subagent completion notifications. Persist and
   // broadcast them through the ordinary user-message path so the TUI shows
@@ -339,6 +437,9 @@ async function orchestrateAssistantTurn(
   if (goalContinuation && conv.goal?.status !== "active") {
     return buildErrorOutcome("No active goal to continue.");
   }
+  if (realtimeDelegation && !applyRealtimeDelegationEnvelope(conv.messages, realtimeDelegation.input)) {
+    return reportSendError("The realtime handoff no longer has a matching call transcript.");
+  }
   const hadGoalAtStart = !!conv.goal;
 
   // ── Start stream and broadcast initial state ──────────────────────
@@ -376,6 +477,8 @@ async function orchestrateAssistantTurn(
   }
   const turnTranscriptAnchor = conv.messages.at(-1);
   const initialTurnTranscriptStartIndex = conv.messages.length;
+  const persistedTurnMessages = new WeakSet<StoredMessage>();
+  let hadConcurrentTurnMessages = false;
 
   function currentTurnTranscriptStartIndex(): number {
     if (turnTranscriptAnchor) {
@@ -383,6 +486,20 @@ async function orchestrateAssistantTurn(
       if (anchorIndex >= 0) return anchorIndex + 1;
     }
     return Math.min(initialTurnTranscriptStartIndex, liveConv.messages.length);
+  }
+
+  function installCompletedTurnMessages(completed: StoredMessage[]): void {
+    const turnTranscriptStartIndex = currentTurnTranscriptStartIndex();
+    const currentTail = liveConv.messages.slice(turnTranscriptStartIndex);
+    if (currentTail.some(message => !persistedTurnMessages.has(message))) {
+      hadConcurrentTurnMessages = true;
+    }
+    const merged = mergeTurnTranscript(currentTail, persistedTurnMessages, completed);
+    liveConv.messages.splice(
+      turnTranscriptStartIndex,
+      liveConv.messages.length - turnTranscriptStartIndex,
+      ...merged,
+    );
   }
 
   conv.updatedAt = Date.now();
@@ -449,6 +566,17 @@ async function orchestrateAssistantTurn(
   const accountScope = conv.provider === "openai" ? getCurrentOpenAIAccountScope() ?? undefined : undefined;
   const initialContext = buildConversationApiContext(conv, accountScope);
   let apiMessages: ApiMessage[] = initialContext.messages;
+  if (realtimeDelegation) {
+    // Call speech is already visible and durable in the owning conversation.
+    // Replace that one provider-facing item rather than appending a duplicate
+    // user message just to trigger the backend agent.
+    apiMessages = applyRealtimeDelegationEnvelope(apiMessages, realtimeDelegation.input)
+      ?? [...apiMessages, {
+        role: "user",
+        content: buildRealtimeDelegationEnvelope(realtimeDelegation.input),
+        metadata: null,
+      }];
+  }
 
   // Track whether any next-turn messages were injected mid-stream.
   // When true, the success path sends history_updated so the TUI
@@ -682,12 +810,7 @@ async function orchestrateAssistantTurn(
       ...interleaveTranscriptMarkers(completedDisplayMessages(), transcriptMarkers),
       ...additionalMessages,
     ];
-    const turnTranscriptStartIndex = currentTurnTranscriptStartIndex();
-    liveConv.messages.splice(
-      turnTranscriptStartIndex,
-      liveConv.messages.length - turnTranscriptStartIndex,
-      ...completed,
-    );
+    installCompletedTurnMessages(completed);
     liveConv.updatedAt = Date.now();
     convStore.markDirty(convId);
     convStore.flush(convId);
@@ -1160,12 +1283,7 @@ async function orchestrateAssistantTurn(
       // Interleave status markers at the correct positions so system messages
       // appear between the rounds where they actually occurred.
       const interleavedMessages = interleaveTranscriptMarkers(storedMessages, transcriptMarkers);
-      const successTurnTranscriptStartIndex = currentTurnTranscriptStartIndex();
-      conv.messages.splice(
-        successTurnTranscriptStartIndex,
-        conv.messages.length - successTurnTranscriptStartIndex,
-        ...interleavedMessages,
-      );
+      installCompletedTurnMessages(interleavedMessages);
       syncActiveContext(result.contextMessages);
       conv.updatedAt = Date.now();
       // Do not bump on completion. The conversation was already brought to the
@@ -1249,12 +1367,7 @@ async function orchestrateAssistantTurn(
       }
     }
     const interleavedCompleted = interleaveTranscriptMarkers(completedStored, transcriptMarkers);
-    const recoveryTurnTranscriptStartIndex = currentTurnTranscriptStartIndex();
-    conv.messages.splice(
-      recoveryTurnTranscriptStartIndex,
-      conv.messages.length - recoveryTurnTranscriptStartIndex,
-      ...interleavedCompleted,
-    );
+    installCompletedTurnMessages(interleavedCompleted);
 
     // Persist the in-flight partial response (current round's streamed content),
     // dropping empty thinking placeholders while keeping non-empty reasoning text.
@@ -1381,7 +1494,7 @@ async function orchestrateAssistantTurn(
       // the TUI may be showing an approximate live view. Now that conv.messages
       // has the canonical interleaved structure, send history_updated so every
       // client rebuilds from the persisted ordering.
-      if (agentState.completedMessages.length > 0 || transcriptMarkers.length > 0 || hadNextTurnInjections) {
+      if (agentState.completedMessages.length > 0 || transcriptMarkers.length > 0 || hadNextTurnInjections || hadConcurrentTurnMessages) {
         const displayData = convStore.getRenderSnapshot(convId, false);
         if (displayData) {
           const events = buildHistoryUpdatedEvents(displayData);
