@@ -1,7 +1,9 @@
 # SQLite conversation-store performance report
 
-Date: 2026-08-01  
-Raw result: `results/conversation-store-full.json`  
+Date: 2026-08-01
+
+Raw result: `results/conversation-store-full.json`
+
 Harness: `conversation-store-benchmark.ts`
 
 ## Result

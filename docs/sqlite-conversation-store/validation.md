@@ -1,6 +1,7 @@
 # SQLite conversation-store validation
 
-Date: 2026-08-01  
+Date: 2026-08-01
+
 Worktree: `sqlite-conversation-store`
 
 All copied transcripts, databases, exports, screenshots, and per-conversation reports
