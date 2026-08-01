@@ -15,7 +15,12 @@ describe("macro expansion", () => {
   });
 
   test("/todo expands to the sequential TODO workflow prompt", () => {
-    expect(expandMacros("/todo")).toBe("Make a TODO.md for this with items - [ ] and finish it sequentially.");
+    expect(expandMacros("/todo")).toBe("Make a <name>-todo.md for this with items - [ ] and finish it sequentially.");
+  });
+
+  test("/todo wait exposes and expands the review-first TODO workflow", () => {
+    expect(getMacroArgs()["/todo"]?.map(arg => arg.name)).toEqual(["wait"]);
+    expect(expandMacros("/todo wait")).toBe("Make a <name>-todo.md for this with items - [ ] and tell me the abs path of it so I can review before you go and finish it sequentially.");
   });
 
   test("/subagents requests useful proactive delegation", () => {
