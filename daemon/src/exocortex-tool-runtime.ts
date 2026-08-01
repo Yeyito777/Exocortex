@@ -1264,7 +1264,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     if (scope === "conversation") {
       if (args.folder_id !== undefined) throw new Error("folder_id is only accepted for scope=folder");
       const convId = conversationIdInput(args, parentConversationId);
-      if (!convStore.get(convId)) throw new Error(`Conversation ${convId} not found`);
+      if (!convStore.hasConversation(convId)) throw new Error(`Conversation ${convId} not found`);
       currentText = convStore.getSystemInstructions(convId) ?? "";
       effectiveInstructions = convStore.getEffectiveSystemInstructions(convId);
       affectedConversationIds = [convId];

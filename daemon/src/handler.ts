@@ -175,12 +175,12 @@ export function createHandler(server: DaemonServer) {
   };
   const buildOrchestrationCallbacks = (convId: string) => ({
     onHeaders: (h: Headers) => {
-      const provider = convStore.get(convId)?.provider ?? getDefaultProvider().id;
+      const provider = convStore.getIndexedSummary(convId)?.provider ?? getDefaultProvider().id;
       if (provider === "openai") broadcastToolsAvailable();
       handleUsageHeaders(provider, h, (usage) => broadcastUsage(provider, usage));
     },
     onComplete: () => {
-      const provider = convStore.get(convId)?.provider ?? getDefaultProvider().id;
+      const provider = convStore.getIndexedSummary(convId)?.provider ?? getDefaultProvider().id;
       refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
       broadcastTokenStats();
     },
@@ -217,7 +217,7 @@ export function createHandler(server: DaemonServer) {
   ) => convStore.getRenderSnapshot(convId, false, diagnostics);
 
   const shouldAutoGenerateTitle = (convId: string): boolean => {
-    const title = convStore.get(convId)?.title.trim() ?? "";
+    const title = convStore.getIndexedSummary(convId)?.title.trim() ?? "";
     return title === "" || isPendingTitle(title);
   };
 
@@ -621,7 +621,7 @@ export function createHandler(server: DaemonServer) {
   };
 
   const sendGoalUpdated = (convId: string, reqId: string | undefined, message?: string) => {
-    const goal = convStore.get(convId)?.goal ?? null;
+    const goal = convStore.getIndexedSummary(convId)?.goal ?? null;
     server.sendToSubscribers(convId, { type: "goal_updated", reqId, convId, goal, message });
     broadcastConversationUpdated(server, convId);
     return goal;
@@ -811,7 +811,7 @@ export function createHandler(server: DaemonServer) {
     for (const entry of queued) {
       if (entry.source !== "daemon" || seenConversations.has(entry.convId)) continue;
       seenConversations.add(entry.convId);
-      if (!convStore.get(entry.convId)) {
+      if (!convStore.hasConversation(entry.convId)) {
         convStore.removeQueuedMessageById(entry.id);
         server.broadcast({ type: "queue_notice", queueId: entry.id, convId: entry.convId, message: "Dropped queued message because its conversation no longer exists.", level: "error" });
         continue;
@@ -827,7 +827,7 @@ export function createHandler(server: DaemonServer) {
     // later idle-wait entries until its dependency is ready and its turn ends.
     const idleEntry = queued.find(entry => entry.source === "global-idle");
     if (idleEntry && !globalIdleDispatchInFlight && !dispatchingQueueIds.has(idleEntry.id)) {
-      if (!convStore.get(idleEntry.convId) && idleEntry.target === "new-conversation") {
+      if (!convStore.hasConversation(idleEntry.convId) && idleEntry.target === "new-conversation") {
         const defaults = effectiveConversationDefaults();
         const provider = idleEntry.provider ?? defaults.provider;
         const providerInfo = getProvider(provider);
@@ -848,7 +848,7 @@ export function createHandler(server: DaemonServer) {
         }
       }
       const status = queueWaitStatus(idleEntry);
-      if (status === "missing-target" || !convStore.get(idleEntry.convId)) {
+      if (status === "missing-target" || !convStore.hasConversation(idleEntry.convId)) {
         convStore.removeQueuedMessageById(idleEntry.id);
         server.broadcast({
           type: "queue_notice",
@@ -977,7 +977,7 @@ export function createHandler(server: DaemonServer) {
 
       case "new_conversation": {
         const id = cmd.convId ?? convStore.generateId();
-        if (cmd.convId && (!isSafeClientConversationId(cmd.convId) || convStore.get(cmd.convId))) {
+        if (cmd.convId && (!isSafeClientConversationId(cmd.convId) || convStore.hasConversation(cmd.convId))) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid or duplicate client-supplied conversation id" });
           break;
         }
@@ -1745,7 +1745,7 @@ export function createHandler(server: DaemonServer) {
       }
 
       case "generate_title": {
-        if (!convStore.get(cmd.convId)) {
+        if (!convStore.hasConversation(cmd.convId)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           break;
         }
@@ -1879,7 +1879,7 @@ export function createHandler(server: DaemonServer) {
         }
 
         if (cmd.source === "global-idle" && cmd.target === "new-conversation") {
-          if (!isSafeClientConversationId(cmd.convId) || convStore.get(cmd.convId)) {
+          if (!isSafeClientConversationId(cmd.convId) || convStore.hasConversation(cmd.convId)) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid or duplicate client-supplied conversation id" });
             server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
             break;
@@ -1911,7 +1911,7 @@ export function createHandler(server: DaemonServer) {
             break;
           }
           queuedDraftSettings = { provider, model, effort, fastMode, folderId };
-        } else if (!convStore.get(cmd.convId)) {
+        } else if (!convStore.hasConversation(cmd.convId)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
           break;

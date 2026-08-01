@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, readFileSync } from "fs";
-import { clearActiveJob, consumeGoalContinuationAfterStream, create, get, getQueuedMessages, getSummary, pushQueuedMessage, remove, requestGoalContinuationAfterStream, setActiveJob, setGoal, updateGoalStatus } from "./conversations";
+import { clearActiveJob, consumeGoalContinuationAfterStream, conversationCacheInternalsForTest, create, get, getQueuedMessages, getSummary, pushQueuedMessage, remove, requestGoalContinuationAfterStream, setActiveJob, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_EFFORT } from "./messages";
 
 const orchestrateReplayConversation = mock(async () => ({ ok: true }));
@@ -324,6 +324,8 @@ describe("restart recovery file", () => {
     const pausedConvId = makeConversation("paused-goal");
     setGoal(pausedConvId, "do not resume");
     updateGoalStatus(pausedConvId, "paused");
+    conversationCacheInternalsForTest.evictClean();
+    expect(conversationCacheInternalsForTest.snapshot().ids).not.toContain(pausedConvId);
     writeActiveGoalRestartMarker();
     expect(existsSync(activeGoalRestartPath())).toBe(true);
 
@@ -334,6 +336,8 @@ describe("restart recovery file", () => {
     expect(orchestrateGoalContinuation).toHaveBeenCalledTimes(1);
     expect((orchestrateGoalContinuation.mock.calls[0] as unknown[] | undefined)?.[1]).toBe(activeConvId);
     expect(orchestrateReplayConversation).not.toHaveBeenCalled();
+    expect(conversationCacheInternalsForTest.snapshot().ids).toContain(activeConvId);
+    expect(conversationCacheInternalsForTest.snapshot().ids).not.toContain(pausedConvId);
   });
 
   test("daemon boot does not resume copied active goals without a restart marker", () => {

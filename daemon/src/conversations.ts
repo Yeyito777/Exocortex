@@ -62,6 +62,76 @@ const contextAttributionDirty = new Set<string>();
 const unread = new Set<string>();
 const renderSnapshotCache = new Map<string, Map<boolean, ConversationRenderSnapshot>>();
 
+// Full transcripts are lazy-loaded, but historically every load stayed resident
+// for the lifetime of the daemon. A startup scan (or enough ordinary opens) could
+// therefore materialize the entire conversation corpus and retain several GiB.
+// Keep summaries unbounded and cheap, while bounding only canonical transcripts.
+const DEFAULT_CONVERSATION_CACHE_MAX_ENTRIES = 64;
+const DEFAULT_CONVERSATION_CACHE_MAX_FILE_BYTES = 256 * 1024 * 1024;
+let conversationCacheMaxEntries = DEFAULT_CONVERSATION_CACHE_MAX_ENTRIES;
+let conversationCacheMaxFileBytes = DEFAULT_CONVERSATION_CACHE_MAX_FILE_BYTES;
+const conversationCacheLru = new Map<string, true>();
+const conversationCacheFileBytes = new Map<string, number>();
+let conversationCacheTotalFileBytes = 0;
+
+function cachedFileSize(id: string): number {
+  try {
+    return persistence.getConversationFileStat(id).fileSize;
+  } catch {
+    return 0;
+  }
+}
+
+function setCachedFileSize(id: string, fileBytes: number): void {
+  const previous = conversationCacheFileBytes.get(id) ?? 0;
+  const normalized = Number.isFinite(fileBytes) && fileBytes > 0 ? fileBytes : 0;
+  conversationCacheFileBytes.set(id, normalized);
+  conversationCacheTotalFileBytes += normalized - previous;
+}
+
+function touchCachedConversation(id: string): void {
+  conversationCacheLru.delete(id);
+  conversationCacheLru.set(id, true);
+}
+
+function cacheIsOverLimit(): boolean {
+  return conversations.size > conversationCacheMaxEntries
+    || conversationCacheTotalFileBytes > conversationCacheMaxFileBytes;
+}
+
+function canEvictCachedConversation(id: string): boolean {
+  if (dirty.has(id)) return false;
+  if (streaming.isStreaming(id) || streaming.isHistoryUnwindPending(id)) return false;
+  const activity = getConversationActivityCounts(id);
+  return activity.subagentCount === 0 && activity.backgroundTaskCount === 0;
+}
+
+function evictCachedConversation(id: string): boolean {
+  if (!conversations.delete(id)) return false;
+  renderSnapshotCache.delete(id);
+  conversationCacheLru.delete(id);
+  conversationCacheTotalFileBytes -= conversationCacheFileBytes.get(id) ?? 0;
+  conversationCacheFileBytes.delete(id);
+  return true;
+}
+
+function pruneConversationCache(protectedId?: string): void {
+  if (!cacheIsOverLimit()) return;
+  for (const id of conversationCacheLru.keys()) {
+    if (!cacheIsOverLimit()) break;
+    if (id === protectedId || !canEvictCachedConversation(id)) continue;
+    evictCachedConversation(id);
+  }
+}
+
+function retainConversation(conv: Conversation): void {
+  conversations.set(conv.id, conv);
+  touchCachedConversation(conv.id);
+  setCachedFileSize(conv.id, cachedFileSize(conv.id));
+  // Never evict the object being returned by the current synchronous operation.
+  pruneConversationCache(conv.id);
+}
+
 function saveUnreadState(): void {
   persistence.saveUnreadConversationIds([...unread].filter((id) => summaries.has(id) || conversations.has(id)));
 }
@@ -367,7 +437,11 @@ function formatFolderInstructionsForDisplay(folderId: string | null): string | n
 
 function loadConversation(id: string): Conversation | undefined {
   const cached = conversations.get(id);
-  if (cached) return cached;
+  if (cached) {
+    touchCachedConversation(id);
+    pruneConversationCache(id);
+    return cached;
+  }
 
   const conv = persistence.load(id);
   if (!conv) return undefined;
@@ -376,7 +450,7 @@ function loadConversation(id: string): Conversation | undefined {
     conv.effort = normalizedEffort;
     markDirty(conv.id);
   }
-  conversations.set(id, conv);
+  retainConversation(conv);
   updateSummaryFromConversation(conv);
   if (dirty.has(conv.id)) flush(conv.id);
   return conv;
@@ -410,7 +484,7 @@ export function generateId(): string {
 export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode = false, folderId: string | null = null): Conversation {
   const parentId = folderId && folders.has(folderId) ? folderId : null;
   const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
-  conversations.set(id, conv);
+  retainConversation(conv);
   markDirty(id);
   flush(id);
   return conv;
@@ -431,7 +505,7 @@ export function createWithInitialUserMessage(
   conv.messages.push(createStoredUserMessage(message.text, model, message.startedAt, message.images, {
     contextCheckpoint: createStoredUserContextCheckpoint(conv),
   }));
-  conversations.set(id, conv);
+  retainConversation(conv);
   markDirty(id);
   flush(id);
   return conv;
@@ -512,7 +586,7 @@ export function clone(id: string): Conversation | null {
     }
   }
 
-  conversations.set(newId, conv);
+  retainConversation(conv);
   markDirty(newId);
   flush(newId);
   recordSidebarUndo({ type: "conversation_removed", id: newId });
@@ -521,6 +595,11 @@ export function clone(id: string): Conversation | null {
 
 export function get(id: string): Conversation | undefined {
   return loadConversation(id);
+}
+
+/** Check indexed existence without parsing and retaining the canonical transcript. */
+export function hasConversation(id: string): boolean {
+  return summaries.has(id) || conversations.has(id);
 }
 
 export interface SetGoalOptions {
@@ -586,7 +665,7 @@ function removeConversationState(id: string): boolean {
   streaming.getActiveJob(id)?.abort();
   stopBackgroundTasksForConversation(id);
   notifyConversationRemoved(id);
-  conversations.delete(id);
+  evictCachedConversation(id);
   renderSnapshotCache.delete(id);
   summaries.delete(id);
   dirty.delete(id);
@@ -688,7 +767,7 @@ function pushOppositeSidebarEntry(direction: SidebarUndoDirection, entry: persis
 function restoreConversationsFromTrash(conversationIds: string[]): Conversation[] {
   const restored = persistence.restoreConversationsFromTrash(conversationIds);
   for (const conv of restored) {
-    conversations.set(conv.id, conv);
+    retainConversation(conv);
     updateSummaryFromConversation(conv);
     scheduleDisplayIndex(conv.id);
   }
@@ -1470,6 +1549,7 @@ export function loadFromDisk(): LoadFromDiskStats {
     if (dirty.size > 0) flushAll();
     else saveSummaryIndex();
   }
+  pruneConversationCache();
 
   return {
     loaded: index.summaries.length,
@@ -1507,8 +1587,10 @@ export function flush(id: string, options: { summaryIndex?: SummaryIndexFlushMod
   scheduleDisplayIndex(id);
   dirty.delete(id);
   contextAttributionDirty.delete(id);
+  setCachedFileSize(id, cachedFileSize(id));
   updateSummaryFromConversation(conv);
   saveSummaryIndex(options.summaryIndex ?? "immediate");
+  pruneConversationCache(id);
 }
 
 /** Flush all dirty conversations. */
@@ -1519,13 +1601,41 @@ export function flushAll(): void {
     if (!conv) continue;
     persistence.save(conv);
     scheduleDisplayIndex(id);
+    setCachedFileSize(id, cachedFileSize(id));
     updateSummaryFromConversation(conv);
   }
   dirty.clear();
   contextAttributionDirty.clear();
   summaryIndexDirty = false;
   saveSummaryIndexNow();
+  pruneConversationCache();
 }
+
+/** Explicit test hooks for deterministic cache-pressure coverage. */
+export const conversationCacheInternalsForTest = {
+  snapshot(): { ids: string[]; entries: number; fileBytes: number } {
+    return {
+      ids: [...conversationCacheLru.keys()],
+      entries: conversations.size,
+      fileBytes: conversationCacheTotalFileBytes,
+    };
+  },
+  setLimits(limits: { maxEntries: number; maxFileBytes: number }): void {
+    conversationCacheMaxEntries = Math.max(0, Math.floor(limits.maxEntries));
+    conversationCacheMaxFileBytes = Math.max(0, Math.floor(limits.maxFileBytes));
+    pruneConversationCache();
+  },
+  resetLimits(): void {
+    conversationCacheMaxEntries = DEFAULT_CONVERSATION_CACHE_MAX_ENTRIES;
+    conversationCacheMaxFileBytes = DEFAULT_CONVERSATION_CACHE_MAX_FILE_BYTES;
+    pruneConversationCache();
+  },
+  evictClean(): void {
+    for (const id of [...conversationCacheLru.keys()]) {
+      if (canEvictCachedConversation(id)) evictCachedConversation(id);
+    }
+  },
+};
 
 /** Track chunk count for throttled activity updates. Live blocks remain in streaming state. */
 export function onChunk(id: string): boolean {
@@ -1930,6 +2040,14 @@ export function getSummary(id: string): ConversationSummary | null {
     tasks: getConversationTasks(id),
     integrations: getConversationExternalIntegrations(id),
   };
+}
+
+/** Read durable/indexed metadata without loading or rescanning a full transcript. */
+export function getIndexedSummary(id: string): PersistedConversationSummary | null {
+  const summary = summaries.get(id);
+  if (summary) return { ...summary };
+  const loaded = conversations.get(id);
+  return loaded ? summarizeConversation(loaded) : null;
 }
 
 // ── Display data ───────────────────────────────────────────────────

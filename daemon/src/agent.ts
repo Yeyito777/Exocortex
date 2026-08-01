@@ -17,6 +17,7 @@ import type { ContentBlock as ProviderContentBlock, ServiceTier, StreamRetryMeta
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
 import { getMaxContext } from "./providers/registry";
 import { estimateContextTokens, isContextWindowError, shouldAutoCompact, type CompactionReason } from "./context-compaction";
+import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 
 // ── Callbacks ───────────────────────────────────────────────────────
 
@@ -172,6 +173,11 @@ export async function runAgentLoop(
   let lastInputTokens = 0;
   let lastOutputTokens = 0;
   let contextCompacted = false;
+  // Diagnostics should describe this turn's delta, not duplicate every historic
+  // tool result on every provider round. Object identity survives normal replay;
+  // checkpoint replacements are intentionally treated as newly submitted once.
+  const diagnosticsSubmittedMessages = new WeakSet<object>();
+  for (const message of messages) diagnosticsSubmittedMessages.add(message);
 
   // Expose state for abort recovery
   const state = options.state;
@@ -191,6 +197,9 @@ export async function runAgentLoop(
     let roundEmittedOutput = false;
     while (true) {
       try {
+        const diagnosticMessages = PERFORMANCE_PROFILING_ENABLED
+          ? messages.filter(message => !diagnosticsSubmittedMessages.has(message))
+          : [];
         result = await (options.streamMessageFn ?? streamMessage)(provider, messages, model, {
           onText: (text) => { roundEmittedOutput = true; callbacks.onTextChunk(text); },
           onThinking: (text) => { roundEmittedOutput = true; callbacks.onThinkingChunk(text); },
@@ -223,7 +232,9 @@ export async function runAgentLoop(
           accountScope: options.accountScope,
           codexTurnId: options.codexTurnId,
           codexTurnStartedAtMs: options.codexTurnStartedAtMs,
+          diagnosticMessages,
         });
+        for (const message of messages) diagnosticsSubmittedMessages.add(message);
         break;
       } catch (error) {
         if (roundEmittedOutput || retriedAfterContextError || !callbacks.compactContext || !isContextWindowError(error)) throw error;
@@ -371,13 +382,15 @@ export async function runAgentLoop(
 
     const toolExecStartedAt = Date.now();
     const execResults = await options.executor(result.toolCalls, options.signal);
-    recordToolCallDiagnostics({
-      conversationId: options.tracking?.conversationId,
-      round,
-      calls: result.toolCalls,
-      results: execResults,
-      batchDurationMs: Date.now() - toolExecStartedAt,
-    });
+    if (PERFORMANCE_PROFILING_ENABLED) {
+      recordToolCallDiagnostics({
+        conversationId: options.tracking?.conversationId,
+        round,
+        calls: result.toolCalls,
+        results: execResults,
+        batchDurationMs: Date.now() - toolExecStartedAt,
+      });
+    }
 
     // ── Emit tool result blocks + build API tool_result message ───
     const toolResultContent: ApiContentBlock[] = [];
