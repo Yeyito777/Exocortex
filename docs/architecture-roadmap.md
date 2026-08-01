@@ -2,7 +2,73 @@
 
 This is the ordered list of remaining architecture work for Exocortex.
 
-## 1. Introduce a conversation repository
+## 1. Add a workspace for every conversation
+
+Give every conversation a persistent, isolated default working directory under
+the instance's gitignored data directory.
+
+- [ ] Add `conversationWorkspacesDir()` and `conversationWorkspaceDir(id)` path
+  helpers.
+- [ ] Store main-instance workspaces at:
+  `config/data/workspaces/<conversation-id>/`.
+- [ ] Store linked-worktree instance workspaces under that instance's existing
+  namespaced `dataDir()`, for example:
+  `config/data/instances/<instance>/workspaces/<conversation-id>/`.
+- [ ] Keep the entire workspace root covered by the existing `config/data/`
+  gitignore rule.
+- [ ] Validate conversation IDs before using them as directory names and refuse
+  paths that escape the workspace root.
+- [ ] Create the directory when a new conversation is created.
+- [ ] Lazily create workspaces for existing conversations on first use.
+- [ ] Use restrictive directory permissions where the platform supports them.
+- [ ] Add a `WorkspaceService` that owns path resolution, creation, inspection,
+  trash, restore, and cleanup.
+
+### Tool and agent execution
+
+- [ ] Add `cwd` to the conversation/tool execution context.
+- [ ] Resolve the cwd from the active conversation ID at the start of every turn.
+- [ ] Pass the explicit cwd through every filesystem and process tool, including:
+  - bash and its isolated/background runners
+  - read, write, edit, patch, glob, and grep
+  - external CLI tools launched through bash
+- [ ] Stop filesystem tools from implicitly using the daemon-wide
+  `process.cwd()`.
+- [ ] Do not call `process.chdir()` per conversation; it is process-global and is
+  unsafe when conversations execute concurrently.
+- [ ] Make each native subagent use its own child conversation workspace rather
+  than inheriting the parent's workspace.
+- [ ] Make conversation-owned Chrono commands use their owner's workspace.
+- [ ] Define a separate service workspace for ownerless daemon/Chrono operations.
+- [ ] Include the effective conversation workspace path in the model's environment
+  instructions and relevant status/debug output.
+- [ ] Deprecate the daemon-wide `agent.workingDirectory` as the default for
+  conversation turns, retaining a clearly defined compatibility role only if
+  needed for ownerless operations.
+
+### Workspace lifecycle
+
+- [ ] Stop active tools and background processes before moving or deleting a
+  workspace.
+- [ ] Move a deleted conversation's workspace to trash rather than deleting it
+  immediately.
+- [ ] Restore the workspace when conversation deletion is undone.
+- [ ] Decide whether cloning a conversation creates an empty workspace, copies the
+  workspace, or offers an explicit choice; avoid silently copying very large
+  directories.
+- [ ] Decide whether conversation export/import includes the workspace and provide
+  explicit archive options.
+- [ ] Report workspace size in conversation/instance inspection commands.
+- [ ] Detect and safely prune orphaned workspace directories.
+- [ ] Add tests for creation, lazy migration, relative paths, subagent isolation,
+  background processes, trash/restore, unsafe IDs, and concurrent conversations.
+- [ ] Treat the workspace as a cwd and lifecycle boundary, not as a security
+  sandbox; absolute paths and symlinks require their existing safety policy.
+- [ ] Keep workspace file contents out of SQLite. Store only lifecycle metadata if
+  the repository needs it; derive the normal path from instance and conversation
+  identity.
+
+## 2. Introduce a conversation repository
 
 Create a storage boundary before changing the canonical storage format.
 
@@ -24,7 +90,7 @@ Create a storage boundary before changing the canonical storage format.
 - [ ] Return immutable snapshots and use generation-checked mutations instead of
   exposing long-lived mutable conversation objects.
 
-## 2. Add normalized SQLite storage
+## 3. Add normalized SQLite storage
 
 Use one SQLite database per Exocortex instance/worktree.
 
@@ -52,7 +118,7 @@ Use one SQLite database per Exocortex instance/worktree.
   acknowledged-message durability.
 - [ ] Add consistent backup, restore, and export operations.
 
-## 3. Build a safe JSON-to-SQLite migration
+## 4. Build a safe JSON-to-SQLite migration
 
 Keep JSON canonical until SQLite parity has been demonstrated in real use.
 
@@ -113,7 +179,7 @@ After the rollback period:
 - [ ] Walking the complete sidebar or corpus keeps memory bounded.
 - [ ] Backup, restore, export, schema migration, and rollback are tested.
 
-## 4. Make model-round history bookkeeping incremental
+## 5. Make model-round history bookkeeping incremental
 
 Stop rescanning and rehashing complete provider history on every tool/model round.
 
@@ -126,7 +192,7 @@ Stop rescanning and rehashing complete provider history on every tool/model roun
 - [ ] Instrument full-history walks so regressions are visible.
 - [ ] Benchmark tool-heavy, image-heavy, compacted, and very large conversations.
 
-## 5. Replace full-sidebar IPC with revisioned deltas
+## 6. Replace full-sidebar IPC with revisioned deltas
 
 Send complete sidebar state only for initial synchronization and recovery.
 
@@ -149,12 +215,13 @@ Send complete sidebar state only for initial synchronization and recovery.
   that cannot keep up.
 - [ ] Add initial-sidebar paging if archive growth makes snapshots too large.
 
-## 6. Split daemon responsibilities into services
+## 7. Split daemon responsibilities into services
 
 Extract boundaries around ownership and transaction behavior rather than merely
 moving code to reduce file sizes.
 
 - [ ] Create `ConversationService` for conversation invariants and mutations.
+- [ ] Create `WorkspaceService` for conversation cwd and workspace lifecycle.
 - [ ] Create `SidebarService` for folders, ordering, pinning, and revisions.
 - [ ] Create `QueueService` for durable intent, dispatch, and receipts.
 - [ ] Create `SchedulerService` for Chrono lifecycle.
@@ -171,7 +238,7 @@ moving code to reduce file sizes.
   - `exocortex-tool-runtime.ts`
   - `orchestrator.ts`
 
-## 7. Add versioned runtime schemas for IPC
+## 8. Add versioned runtime schemas for IPC
 
 Use runtime validation rather than relying only on TypeScript protocol types.
 
@@ -183,7 +250,7 @@ Use runtime validation rather than relying only on TypeScript protocol types.
 - [ ] Roll out sidebar deltas through capability negotiation.
 - [ ] Move scattered handler validation into schemas and service-level invariants.
 
-## 8. Add worktree-instance lifecycle management
+## 9. Add worktree-instance lifecycle management
 
 Track and safely remove state left by deleted or abandoned worktrees.
 
@@ -202,10 +269,11 @@ Track and safely remove state left by deleted or abandoned worktrees.
 - [ ] Refuse to prune an instance with a live daemon or socket.
 - [ ] Detect whether the corresponding Git worktree still exists.
 - [ ] Show the paths and storage size that will be removed.
+- [ ] Include conversation workspace storage in inspection and pruning.
 - [ ] Require explicit confirmation unless a separate retention policy is adopted.
 - [ ] Clean runtime, diagnostics, and data consistently.
 
-## 9. Finish diagnostics storage improvements
+## 10. Finish diagnostics storage improvements
 
 - [ ] Buffer diagnostic writes asynchronously.
 - [ ] Write one tool-call batch instead of one append per result.
@@ -215,7 +283,7 @@ Track and safely remove state left by deleted or abandoned worktrees.
 - [ ] Prefer request-level aggregates and bounded samples over verbose event copies.
 - [ ] Do not migrate the historical verbose JSONL shape into SQLite unchanged.
 
-## 10. Move small JSON state only when transactions require it
+## 11. Move small JSON state only when transactions require it
 
 Do not migrate small files solely to replace JSON. Move them when they need atomic
 updates with conversation state.
@@ -231,6 +299,10 @@ updates with conversation state.
 
 ## Decisions to make during implementation
 
+- [ ] Define clone behavior for conversation workspaces.
+- [ ] Define workspace inclusion in export, import, backup, and restore.
+- [ ] Decide whether workspace size warnings or quotas are needed.
+- [ ] Define the compatibility/deprecation path for `agent.workingDirectory`.
 - [ ] Select the large-content storage strategy for tool results and images.
 - [ ] Select SQLite journal, synchronous, and backup settings.
 - [ ] Set the JSON rollback retention period after SQLite cutover.
