@@ -18,7 +18,10 @@ const REALTIME_PROMPT = [
   "You are Exo, the realtime voice interface for this Exocortex conversation.",
   "Use the supplied conversation history and conversation instructions.",
   "Answer short self-contained questions directly, leading with the answer and skipping preambles.",
-  "For actions, fresh research, detailed recall, multipart requests, or anything where completeness matters, create a client delegation to the owning Exocortex agent. Never mention the delegation or claim success before it returns.",
+  "Handle conversational acknowledgements and social dialogue yourself.",
+  "For actions, fresh research, detailed recall, or anything where completeness matters, create a client delegation to the owning Exocortex agent.",
+  "When a request mixes conversation with backend work, delegate only the backend work and continue the conversational portion yourself.",
+  "Never mention the delegation or claim success before it returns.",
 ].join(" ");
 
 /** Frameless Bidi does not always report usage, so keep live metadata useful. */
@@ -176,7 +179,10 @@ export interface RealtimeCallManagerDependencies {
   getAccountScope?: () => string | null;
   persistTranscript?: typeof convStore.appendRealtimeTranscript;
   persistStatus?: typeof convStore.appendRealtimeCallStatus;
-  delegate?: (convId: string, text: string) => Promise<string>;
+  delegate?: (convId: string, delegation: {
+    originalUserUtterance: string;
+    backendTask: string;
+  }) => Promise<string>;
 }
 
 interface TranscriptAccumulator {
@@ -463,15 +469,25 @@ export class RealtimeCallManager {
         break;
       }
       case "handoff": {
-        const text = event.text.trim();
-        if (!text) break;
+        const backendTask = event.text.trim();
+        if (!backendTask) break;
         this.finalizeInterruptedAssistant(call);
-        // Frameless Bidi can replace the user's turn.done with
-        // delegation.created. Preserve the spoken request before routing it.
-        this.finalizeTranscript(call, "user", text);
+        // Prefer the independently transcribed speech as the visible/canonical
+        // utterance. Frameless is allowed to put a distilled backend task in the
+        // delegation item; only fall back to that text when no transcript event
+        // was available at all.
+        if (call.transcript.user.text.trim()) {
+          this.finalizeTranscript(call, "user", call.transcript.user.text);
+        } else if (!call.userTranscriptFinal || !call.lastFinalUserTranscript) {
+          this.finalizeTranscript(call, "user", backendTask);
+        }
         call.userTranscriptFinal = true;
-        call.pendingHandoffUserKey = transcriptKey(text);
-        void this.handleHandoff(call, event.handoffId, text);
+        const originalUserUtterance = call.lastFinalUserTranscript ?? backendTask;
+        call.pendingHandoffUserKey = transcriptKey(originalUserUtterance);
+        void this.handleHandoff(call, event.handoffId, {
+          originalUserUtterance,
+          backendTask,
+        });
         break;
       }
       case "error":
@@ -574,7 +590,11 @@ export class RealtimeCallManager {
     call.interruptedUserReplay = null;
   }
 
-  private async handleHandoff(call: ActiveCall, handoffId: string, text: string): Promise<void> {
+  private async handleHandoff(
+    call: ActiveCall,
+    handoffId: string,
+    delegation: { originalUserUtterance: string; backendTask: string },
+  ): Promise<void> {
     if (!this.delegate || call.handoffInFlight || this.active !== call) return;
     call.handoffInFlight = true;
     call.state = "delegating";
@@ -583,7 +603,7 @@ export class RealtimeCallManager {
     // visible lifecycle notice into conversation history.
     this.emitState(call);
     try {
-      const result = (await this.delegate(call.convId, text)).trim();
+      const result = (await this.delegate(call.convId, delegation)).trim();
       if (result && this.active === call) await call.transport.appendHandoff(handoffId, result);
     } catch (error) {
       log("warn", `realtime call: handoff failed for ${call.convId}: ${error instanceof Error ? error.message : String(error)}`);

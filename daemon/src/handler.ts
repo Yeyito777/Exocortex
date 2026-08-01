@@ -889,14 +889,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   };
 
   callManager = options.callManager ?? new RealtimeCallManager(server, {
-    delegate: async (convId, text) => {
+    delegate: async (convId, delegation) => {
       const conv = convStore.get(convId);
       if (!conv) throw new Error("Owning conversation no longer exists.");
       if (convStore.isStreaming(convId)) throw new Error("The owning conversation is already running another turn.");
       const outcome = await orchestrateRealtimeDelegation(
         server,
         convId,
-        text,
+        delegation,
         Date.now(),
         buildOrchestrationCallbacks(convId),
         { subagentMaxDepth: conv.subagentMaxDepth ?? null },

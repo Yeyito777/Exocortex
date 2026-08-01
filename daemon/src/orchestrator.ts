@@ -165,13 +165,25 @@ function escapeXmlText(text: string): string {
 }
 
 /** Model-only marker matching Codex's typed realtime delegation boundary. */
-export function buildRealtimeDelegationEnvelope(input: string): string {
+export function buildRealtimeDelegationEnvelope(
+  originalUserUtterance: string,
+  backendTask = originalUserUtterance,
+): string {
   return [
     "<realtime_delegation>",
-    `  <input>${escapeXmlText(input.trim())}</input>`,
+    `  <backend_task>${escapeXmlText(backendTask.trim())}</backend_task>`,
+    `  <original_user_utterance>${escapeXmlText(originalUserUtterance.trim())}</original_user_utterance>`,
     "</realtime_delegation>",
   ].join("\n");
 }
+
+export const REALTIME_DELEGATION_DEVELOPER_MESSAGE = [
+  "You are the backend worker for an active realtime voice session.",
+  "The user is speaking with a separate realtime voice model, which owns conversational acknowledgements, social dialogue, and spoken presentation.",
+  "Execute the <backend_task> inside the <realtime_delegation>; use <original_user_utterance> only as supporting context.",
+  "Do not answer conversational or social portions, imitate the live conversation, discuss your own experience, or add filler or status narration.",
+  "Return only the concrete findings or result needed to satisfy the backend portion, with no greeting or preamble.",
+].join(" ");
 
 interface RealtimeDelegationContextMessage {
   role: string;
@@ -185,9 +197,10 @@ interface RealtimeDelegationContextMessage {
  */
 export function applyRealtimeDelegationEnvelope<T extends RealtimeDelegationContextMessage>(
   messages: readonly T[],
-  input: string,
+  originalUserUtterance: string,
+  backendTask = originalUserUtterance,
 ): T[] | null {
-  const expected = realtimeUtteranceKey(input);
+  const expected = realtimeUtteranceKey(originalUserUtterance);
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]!;
     if (
@@ -200,7 +213,7 @@ export function applyRealtimeDelegationEnvelope<T extends RealtimeDelegationCont
     const contextualized = messages.filter((_, messageIndex) => messageIndex !== index);
     contextualized.push({
       ...message,
-      content: buildRealtimeDelegationEnvelope(input),
+      content: buildRealtimeDelegationEnvelope(originalUserUtterance, backendTask),
     } as T);
     return contextualized;
   }
@@ -251,7 +264,8 @@ interface AssistantTurnOptions {
   manualCompaction?: boolean;
   /** Run the already-persisted voice transcript as a typed realtime handoff. */
   realtimeDelegation?: {
-    input: string;
+    originalUserUtterance: string;
+    backendTask: string;
   };
 }
 
@@ -294,14 +308,14 @@ export async function orchestrateReplayConversation(
 export async function orchestrateRealtimeDelegation(
   server: DaemonServer,
   convId: string,
-  input: string,
+  delegation: { originalUserUtterance: string; backendTask: string },
   startedAt: number,
   ext: OrchestrationCallbacks,
   policy: SubagentTurnPolicy = {},
 ): Promise<AssistantTurnOutcome> {
   return await orchestrateAssistantTurn(server, null, undefined, convId, startedAt, ext, {
     ...policy,
-    realtimeDelegation: { input },
+    realtimeDelegation: delegation,
   });
 }
 
@@ -437,7 +451,11 @@ async function orchestrateAssistantTurn(
   if (goalContinuation && conv.goal?.status !== "active") {
     return buildErrorOutcome("No active goal to continue.");
   }
-  if (realtimeDelegation && !applyRealtimeDelegationEnvelope(conv.messages, realtimeDelegation.input)) {
+  if (realtimeDelegation && !applyRealtimeDelegationEnvelope(
+    conv.messages,
+    realtimeDelegation.originalUserUtterance,
+    realtimeDelegation.backendTask,
+  )) {
     return reportSendError("The realtime handoff no longer has a matching call transcript.");
   }
   const hadGoalAtStart = !!conv.goal;
@@ -570,10 +588,17 @@ async function orchestrateAssistantTurn(
     // Call speech is already visible and durable in the owning conversation.
     // Replace that one provider-facing item rather than appending a duplicate
     // user message just to trigger the backend agent.
-    apiMessages = applyRealtimeDelegationEnvelope(apiMessages, realtimeDelegation.input)
+    apiMessages = applyRealtimeDelegationEnvelope(
+      apiMessages,
+      realtimeDelegation.originalUserUtterance,
+      realtimeDelegation.backendTask,
+    )
       ?? [...apiMessages, {
         role: "user",
-        content: buildRealtimeDelegationEnvelope(realtimeDelegation.input),
+        content: buildRealtimeDelegationEnvelope(
+          realtimeDelegation.originalUserUtterance,
+          realtimeDelegation.backendTask,
+        ),
         metadata: null,
       }];
   }
@@ -1218,6 +1243,12 @@ async function orchestrateAssistantTurn(
     } else {
       const result = await runAgentLoop(apiMessages, conv.provider, conv.model, callbacks, {
         system: systemPrompt,
+        ...(realtimeDelegation ? {
+          ephemeralDeveloperMessage: {
+            text: REALTIME_DELEGATION_DEVELOPER_MESSAGE,
+            beforeUserTextPrefix: "<realtime_delegation>",
+          },
+        } : {}),
         signal: ac.signal,
         tools: toolDefs,
         executor,

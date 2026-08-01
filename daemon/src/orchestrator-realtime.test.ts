@@ -3,6 +3,7 @@ import type { ApiMessage } from "./messages";
 import {
   applyRealtimeDelegationEnvelope,
   buildRealtimeDelegationEnvelope,
+  REALTIME_DELEGATION_DEVELOPER_MESSAGE,
 } from "./orchestrator";
 
 describe("realtime delegation context", () => {
@@ -37,6 +38,7 @@ describe("realtime delegation context", () => {
     const contextualized = applyRealtimeDelegationEnvelope(
       messages,
       "Please inspect <this> & report back",
+      "Inspect <this> and report the concrete findings",
     );
 
     expect(contextualized).not.toBeNull();
@@ -45,7 +47,8 @@ describe("realtime delegation context", () => {
     expect(contextualized?.at(-2)?.content).toBe("Sure, I’ll hand that over.");
     expect(contextualized?.at(-1)?.content).toBe(
       "<realtime_delegation>\n" +
-      "  <input>Please inspect &lt;this&gt; &amp; report back</input>\n" +
+      "  <backend_task>Inspect &lt;this&gt; and report the concrete findings</backend_task>\n" +
+      "  <original_user_utterance>Please inspect &lt;this&gt; &amp; report back</original_user_utterance>\n" +
       "</realtime_delegation>",
     );
     expect(messages.at(-2)?.content).toBe("Please inspect <this> & report back.");
@@ -59,10 +62,21 @@ describe("realtime delegation context", () => {
   });
 
   test("escapes handoff text in the model-only envelope", () => {
-    expect(buildRealtimeDelegationEnvelope('read <a> & "b"')).toBe(
+    expect(buildRealtimeDelegationEnvelope('please read <a> & "b"', "read <a>")).toBe(
       "<realtime_delegation>\n" +
-      "  <input>read &lt;a&gt; &amp; &quot;b&quot;</input>\n" +
+      "  <backend_task>read &lt;a&gt;</backend_task>\n" +
+      "  <original_user_utterance>please read &lt;a&gt; &amp; &quot;b&quot;</original_user_utterance>\n" +
       "</realtime_delegation>",
+    );
+  });
+
+  test("defines a backend-only delegation contract", () => {
+    expect(REALTIME_DELEGATION_DEVELOPER_MESSAGE).toBe(
+      "You are the backend worker for an active realtime voice session. " +
+      "The user is speaking with a separate realtime voice model, which owns conversational acknowledgements, social dialogue, and spoken presentation. " +
+      "Execute the <backend_task> inside the <realtime_delegation>; use <original_user_utterance> only as supporting context. " +
+      "Do not answer conversational or social portions, imitate the live conversation, discuss your own experience, or add filler or status narration. " +
+      "Return only the concrete findings or result needed to satisfy the backend portion, with no greeting or preamble.",
     );
   });
 });

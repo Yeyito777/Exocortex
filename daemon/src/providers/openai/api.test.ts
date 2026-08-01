@@ -174,6 +174,45 @@ describe("OpenAI replay input", () => {
     expect(body.max_output_tokens).toBeUndefined();
   });
 
+  test("inserts an ephemeral developer message beside its delegated user item without changing instructions", () => {
+    const contract = "Execute only the backend-work portion.";
+    const body = buildRequestBodyForTest([
+      { role: "user", content: "earlier context" },
+      {
+        role: "user",
+        content: "<realtime_delegation>\n  <backend_task>inspect the repository</backend_task>\n  <original_user_utterance>inspect the repository while chatting with me</original_user_utterance>\n</realtime_delegation>",
+      },
+    ], "gpt-5.6-sol", 1234, {
+      system: "stable cached system prompt",
+      ephemeralDeveloperMessage: {
+        text: contract,
+        beforeUserTextPrefix: "<realtime_delegation>",
+      },
+    });
+
+    expect(body.instructions).toBe("stable cached system prompt");
+    expect(body.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "earlier context" }],
+      },
+      {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: contract }],
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{
+          type: "input_text",
+          text: "<realtime_delegation>\n  <backend_task>inspect the repository</backend_task>\n  <original_user_utterance>inspect the repository while chatting with me</original_user_utterance>\n</realtime_delegation>",
+        }],
+      },
+    ]);
+  });
+
   test("native compaction appends a trigger and replays opaque payloads without stored response IDs", () => {
     const body = buildRequestBodyForTest([
       { role: "user", content: "keep this request" },

@@ -8,6 +8,7 @@ import { isValidImagePayload } from "../../image-validation";
 
 export type OpenAIInputItem =
   | { type: "message"; role: "user"; content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string }> }
+  | { type: "message"; role: "developer"; content: Array<{ type: "input_text"; text: string }> }
   | { type: "message"; role: "assistant"; content: Array<{ type: "output_text"; text: string }>; id?: string }
   | { type: "function_call"; call_id: string; name: string; arguments: string; id?: string }
   | { type: "function_call_output"; call_id: string; output: string }
@@ -128,11 +129,29 @@ function extractToolResultImages(content: string | unknown[]): Array<{ mediaType
     .filter((image) => isValidImagePayload(image.mediaType, image.base64));
 }
 
-export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
+export function buildOpenAIInput(
+  messages: ApiMessage[],
+  ephemeralDeveloperMessage?: StreamOptions["ephemeralDeveloperMessage"],
+): OpenAIInputItem[] {
   const input: OpenAIInputItem[] = [];
   const imageLimiter = createImageReplayLimiter(messages);
+  let developerMessageInserted = false;
 
   for (const message of messages) {
+    if (
+      !developerMessageInserted
+      && ephemeralDeveloperMessage
+      && message.role === "user"
+      && typeof message.content === "string"
+      && message.content.trimStart().startsWith(ephemeralDeveloperMessage.beforeUserTextPrefix)
+    ) {
+      input.push({
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: ephemeralDeveloperMessage.text }],
+      });
+      developerMessageInserted = true;
+    }
     if (message.role === "user") {
       if (typeof message.content === "string") {
         input.push({
@@ -245,6 +264,16 @@ export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
     }
   }
 
+  // A compaction replacement can theoretically omit the anchor. Keep the
+  // turn-local authority rather than silently reverting to an ordinary turn.
+  if (ephemeralDeveloperMessage && !developerMessageInserted) {
+    input.push({
+      type: "message",
+      role: "developer",
+      content: [{ type: "input_text", text: ephemeralDeveloperMessage.text }],
+    });
+  }
+
   return input;
 }
 
@@ -302,7 +331,7 @@ export function buildRequestBody(
   model: ModelId,
   options: StreamOptions,
 ): Record<string, unknown> {
-  const input = buildOpenAIInput(messages);
+  const input = buildOpenAIInput(messages, options.ephemeralDeveloperMessage);
   if (options.compaction) input.push({ type: "compaction_trigger" });
   const shape = buildRequestShape(model, options);
   // Build the canonical full replay body. A turn-scoped websocket session may

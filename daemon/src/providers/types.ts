@@ -106,6 +106,15 @@ export interface StreamRequestBudget {
 
 export interface StreamOptions {
   system?: string;
+  /**
+   * Turn-local developer control inserted beside a matching user item rather
+   * than into the stable top-level instructions. This preserves prompt-prefix
+   * caching and is never written to canonical conversation history.
+   */
+  ephemeralDeveloperMessage?: {
+    text: string;
+    beforeUserTextPrefix: string;
+  };
   signal?: AbortSignal;
   maxTokens?: number;
   tools?: unknown[];

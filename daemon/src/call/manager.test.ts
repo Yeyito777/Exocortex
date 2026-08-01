@@ -79,7 +79,7 @@ describe("realtime call manager", () => {
         statuses.push(text);
         return true;
       },
-      delegate: async (_id, text) => `Agent completed: ${text}`,
+      delegate: async (_id, delegation) => `Agent completed: ${delegation.backendTask}`,
     });
 
     const started = await manager.start(conv.id);
@@ -98,7 +98,7 @@ describe("realtime call manager", () => {
       sessionId: started.callId,
       offerSdp: "v=0\r\no=offer",
     });
-    expect(realtime.starts[0]!.prompt).toContain("multipart requests");
+    expect(realtime.starts[0]!.prompt).toContain("delegate only the backend work");
     expect(realtime.starts[0]!.prompt).toContain("completeness matters");
     expect(realtime.starts[0]!.initialItems).toEqual([
       { role: "developer", text: "Prefer concise spoken replies." },
@@ -147,9 +147,11 @@ describe("realtime call manager", () => {
     }));
     await emit!({ type: "transcript_done", role: "assistant", text: "Spoken reply" });
     expect(persisted.filter(entry => entry.role === "assistant")).toHaveLength(1);
+    await emit!({ type: "transcript_done", role: "user", text: "Next request" });
 
     await emit!({ type: "handoff", handoffId: "delegation-1", text: "inspect the repository" });
-    expect(persisted).toContainEqual({ role: "user", text: "inspect the repository" });
+    expect(persisted).toContainEqual({ role: "user", text: "Next request" });
+    expect(persisted).not.toContainEqual({ role: "user", text: "inspect the repository" });
     expect(server.subscriber.some(event =>
       event.type === "call_state" && typeof event.message === "string" && event.message.includes("Delegating")
     )).toBe(false);
