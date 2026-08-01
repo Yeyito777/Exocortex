@@ -8,7 +8,6 @@
  * Usage: bun run src/main.ts
  */
 
-import { spawn } from "child_process";
 import { randomUUID } from "node:crypto";
 import { DaemonClient } from "./client";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
@@ -1264,23 +1263,10 @@ function confirmSelectedEditMessage(): void {
 }
 
 function requestDaemonRestart(): void {
-  const child = spawn("exocortexd", ["restart"], {
-    detached: true,
-    stdio: "ignore",
-  });
-  let childErrorReported = false;
-  child.once("error", (err) => {
-    childErrorReported = true;
-    pushSystemMessage(state, `✗ Failed to request daemon restart: ${err.message}`, theme.error);
-    scheduleRender();
-  });
-  child.once("exit", (code, signal) => {
-    if (code === 0 || childErrorReported) return;
-    const detail = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
-    pushSystemMessage(state, `✗ exocortexd restart failed (${detail}).`, theme.error);
-    scheduleRender();
-  });
-  child.unref();
+  // Do not add a "Daemon restarting" system message here. The ensuing
+  // "Lost connection to daemon" message plus reconnect/replay is the complete
+  // user-facing lifecycle signal; adding another chat-history entry is noise.
+  daemon.restartDaemon();
 }
 
 function handleKey(key: KeyEvent): void {

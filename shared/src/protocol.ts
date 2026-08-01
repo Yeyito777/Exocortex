@@ -25,6 +25,12 @@ export interface PrepareShutdownCommand {
   mode: "stop" | "restart";
 }
 
+/** Ask the daemon on this connection to restart its own process instance. */
+export interface RestartDaemonCommand {
+  type: "restart_daemon";
+  reqId?: string;
+}
+
 export interface NewConversationCommand {
   type: "new_conversation";
   reqId?: string;
@@ -682,6 +688,7 @@ export type Command =
   | PingCommand
   | ClientCapabilitiesCommand
   | PrepareShutdownCommand
+  | RestartDaemonCommand
   | NewConversationCommand
   | SendMessageCommand
   | ReplayConversationCommand

@@ -482,6 +482,25 @@ describe("DaemonClient commands", () => {
 });
 
 describe("DaemonClient reconnect behavior", () => {
+  test("sends restart only to the currently connected socket and never queues it", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    const writes: string[] = [];
+
+    expect(client.restartDaemon()).toBe(false);
+    expect(internal.pendingCommands).toEqual([]);
+
+    internal.socket = { write: (value: string) => { writes.push(value); } };
+    internal._connected = true;
+    expect(client.restartDaemon()).toBe(true);
+    expect(writes.map(line => JSON.parse(line))).toEqual([{ type: "restart_daemon" }]);
+
+    internal.socket = null;
+    internal._connected = false;
+    expect(client.restartDaemon()).toBe(false);
+    expect(internal.pendingCommands).toEqual([]);
+  });
+
   test("queues commands while disconnected and flushes them on reconnect", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;

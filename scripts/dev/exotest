@@ -17,7 +17,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=./worktree-common.sh
 source "$SCRIPT_DIR/worktree-common.sh"
+# exotest is intentionally runnable from either the main checkout's script or
+# the worktree's copy. Shared artifacts must always come from the common/main
+# checkout; otherwise a worktree script would replace node_modules/.bun with a
+# self-referential symlink before launching the instance.
+COMMON_GIT_DIR="$(git -C "$SCRIPT_DIR" rev-parse --path-format=absolute --git-common-dir)"
+EXOCORTEX_ROOT="$(dirname "$COMMON_GIT_DIR")"
 DAEMON_PID=""
+DAEMON_RESTART_EXIT_CODE=75
 
 cleanup() {
   if [[ -n "$DAEMON_PID" ]] && kill -0 "$DAEMON_PID" 2>/dev/null; then
@@ -83,7 +90,32 @@ else
   rm -f "$PID_FILE"
 
   echo "  Starting daemon (log: $LOG)"
-  (cd "$WORKTREE_DIR/daemon" && exec bun run src/main.ts >>"$LOG" 2>&1) &
+  # Keep the test daemon under an instance-local supervisor. A restart request
+  # exits only this worktree daemon with DAEMON_RESTART_EXIT_CODE; the supervisor
+  # relaunches it without involving the user's main systemd service.
+  (
+    child_pid=""
+    stop_child() {
+      if [[ -n "$child_pid" ]] && kill -0 "$child_pid" 2>/dev/null; then
+        kill "$child_pid" 2>/dev/null || true
+        wait "$child_pid" 2>/dev/null || true
+      fi
+      exit 0
+    }
+    trap stop_child TERM INT HUP
+
+    while true; do
+      set +e
+      (cd "$WORKTREE_DIR/daemon" && exec bun run src/main.ts >>"$LOG" 2>&1) &
+      child_pid=$!
+      wait "$child_pid"
+      status=$?
+      child_pid=""
+      set -e
+      [[ "$status" -eq "$DAEMON_RESTART_EXIT_CODE" ]] || exit "$status"
+      printf '  exotest: restarting daemon instance %s\n' "$WT_NAME" >>"$LOG"
+    done
+  ) &
   DAEMON_PID=$!
 
   # Wait for the new socket to appear (up to 5s)

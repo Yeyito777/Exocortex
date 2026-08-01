@@ -221,6 +221,17 @@ export class DaemonClient {
     this.send({ type: "background_tool", convId });
   }
 
+  /**
+   * Request an at-most-once restart from the daemon behind this exact socket.
+   * Never queue this across a disconnect: replaying it into the replacement
+   * daemon would create a restart loop.
+   */
+  restartDaemon(): boolean {
+    if (!this.socket || !this._connected) return false;
+    this.writeCommand({ type: "restart_daemon" });
+    return true;
+  }
+
   prewarmConversation(convId: string): void {
     this.send({ type: "prewarm_conversation", convId });
   }

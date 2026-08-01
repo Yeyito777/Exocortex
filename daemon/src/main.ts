@@ -28,7 +28,7 @@ import { startChronoService, stopChronoService, listChronoSchedules } from "./ch
 import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
 import { recoverPendingTitles } from "./titlegen";
-import { beginDaemonShutdown, resolveDaemonShutdownMode } from "./daemon-lifecycle";
+import { beginDaemonShutdown, DAEMON_RESTART_EXIT_CODE, resolveDaemonShutdownMode } from "./daemon-lifecycle";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getProviders, refreshProviders } from "./providers/registry";
 import { socketPath, pidPath, runtimeDir, worktreeName, isWindows } from "@exocortex/shared/paths";
@@ -114,7 +114,6 @@ async function startDaemon(): Promise<void> {
   // since the handler needs the server instance for sending events.
   let commandHandler: ((client: import("./server").ConnectedClient, cmd: import("./protocol").Command) => void | Promise<void>) | null = null;
   const server = new DaemonServer(SOCKET_PATH, (client, cmd) => commandHandler?.(client, cmd));
-  commandHandler = createHandler(server);
   profileMark("server_constructed");
 
   const formatFatal = (err: unknown): string => err instanceof Error ? (err.stack ?? err.message) : String(err);
@@ -174,6 +173,10 @@ async function startDaemon(): Promise<void> {
 
     return shutdownPromise;
   };
+
+  commandHandler = createHandler(server, {
+    requestRestart: () => { void shutdown(DAEMON_RESTART_EXIT_CODE, "client restart request"); },
+  });
 
   process.on("SIGINT", () => { void shutdown(0, "SIGINT"); });
   process.on("SIGTERM", () => { void shutdown(0, "SIGTERM"); });

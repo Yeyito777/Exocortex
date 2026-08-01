@@ -72,7 +72,12 @@ import { enqueueExternalNotificationSoftWake } from "./external-notification-sof
 
 let queueSchedulerGeneration = 0;
 
-export function createHandler(server: DaemonServer) {
+export interface HandlerLifecycle {
+  /** Restart the process that owns this exact server/socket instance. */
+  requestRestart?: () => void;
+}
+
+export function createHandler(server: DaemonServer, lifecycle: HandlerLifecycle = {}) {
   // ── Local helper functions ────────────────────────────────────────
 
   let openAIAccountMutationInFlight = false;
@@ -970,6 +975,20 @@ export function createHandler(server: DaemonServer) {
         const mode = beginDaemonShutdown(cmd.mode);
         log("info", `handler: service requested daemon shutdown mode=${mode}`);
         server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+        break;
+      }
+
+      case "restart_daemon": {
+        if (!lifecycle.requestRestart) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "This daemon instance cannot restart itself." });
+          break;
+        }
+        beginDaemonShutdown("restart");
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+        log("info", "handler: connected client requested an instance-local daemon restart");
+        // Let the acknowledgement enter the socket buffer before shutdown closes
+        // every client. The owning service/exotest supervisor performs relaunch.
+        setTimeout(() => lifecycle.requestRestart?.(), 0);
         break;
       }
 

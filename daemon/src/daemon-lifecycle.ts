@@ -2,6 +2,9 @@
 
 export type DaemonShutdownMode = "stop" | "restart";
 
+/** Exit status consumed by systemd and the exotest supervisor as a restart request. */
+export const DAEMON_RESTART_EXIT_CODE = 75;
+
 let shutdownMode: DaemonShutdownMode | null = null;
 
 export function beginDaemonShutdown(mode: DaemonShutdownMode): DaemonShutdownMode {

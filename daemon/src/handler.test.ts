@@ -84,6 +84,30 @@ describe("handler shutdown preparation", () => {
     expect(getDaemonShutdownMode()).toBe("stop");
     expect(sent).toContainEqual({ type: "ack", reqId: "prepare-stop" });
   });
+
+  test("acknowledges an instance-local restart before invoking its owner", async () => {
+    const order: string[] = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => {
+        order.push(`send:${event.type}:${event.reqId}`);
+      }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never, {
+      requestRestart: () => { order.push("restart"); },
+    });
+
+    await handle({} as never, { type: "restart_daemon", reqId: "restart-local" });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(getDaemonShutdownMode()).toBe("restart");
+    expect(order).toEqual(["send:ack:restart-local", "restart"]);
+  });
 });
 
 describe("handler daemon-owned queue", () => {
