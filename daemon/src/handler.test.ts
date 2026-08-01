@@ -1749,7 +1749,7 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     });
   });
 
-  test("late-join snapshots keep completed active-turn rounds in pendingAI even before the next tail starts", async () => {
+  test("late-join snapshots keep completed active-turn rounds canonical before the next tail starts", async () => {
     const convId = mkId("round-boundary");
     create(convId, "openai", "gpt-5.4");
     const conv = get(convId)!;
@@ -1792,24 +1792,26 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     expect(sent.map((event) => event.type)).toEqual(["conversation_loaded", "streaming_started"]);
     expect(sent[0]).toMatchObject({
       type: "conversation_loaded",
-      entries: [{ type: "user", text: "hi" }],
+      entries: [
+        { type: "user", text: "hi" },
+        {
+          type: "ai",
+          blocks: [
+            { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
+            { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
+            { type: "text", text: "done with the tool round" },
+          ],
+        },
+      ],
       pendingAI: {
-        blocks: [
-          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-          { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
-          { type: "text", text: "done with the tool round" },
-        ],
+        blocks: [],
         metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
       },
     });
     expect(sent[1]).toMatchObject({
       type: "streaming_started",
       startedAt: 100,
-      blocks: [
-        { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-        { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
-        { type: "text", text: "done with the tool round" },
-      ],
+      blocks: [],
       tokens: 0,
     });
   });
@@ -1855,21 +1857,23 @@ describe("handler load_conversation late-join streaming snapshots", () => {
 
     expect(sent[0]).toMatchObject({
       type: "conversation_loaded",
+      entries: [
+        { type: "user", text: "make a game" },
+        {
+          type: "ai",
+          blocks: [
+            { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "cc --version" },
+            { type: "tool_result", toolCallId: "call-1", output: "", isError: false },
+          ],
+        },
+      ],
       pendingAI: {
-        blocks: [
-          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "cc --version" },
-          { type: "tool_result", toolCallId: "call-1", output: "", isError: false },
-          { type: "text", text: "Planning an ncurses game after the compiler check." },
-        ],
+        blocks: [{ type: "text", text: "Planning an ncurses game after the compiler check." }],
       },
     });
     expect(sent[1]).toMatchObject({
       type: "streaming_started",
-      blocks: [
-        { type: "tool_call", toolCallId: "call-1" },
-        { type: "tool_result", toolCallId: "call-1" },
-        { type: "text", text: "Planning an ncurses game after the compiler check." },
-      ],
+      blocks: [{ type: "text", text: "Planning an ncurses game after the compiler check." }],
     });
   });
 
@@ -1919,22 +1923,20 @@ describe("handler load_conversation late-join streaming snapshots", () => {
           metadata: { startedAt: 2, endedAt: 3, model: "gpt-5.4", tokens: 12 },
         },
         { type: "system", text: "✗ Interrupted", color: "error" },
+        {
+          type: "ai",
+          blocks: [{ type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" }],
+        },
       ],
       pendingAI: {
-        blocks: [
-          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-          { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
-        ],
+        blocks: [{ type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false }],
         metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
       },
     });
     expect(sent[1]).toMatchObject({
       type: "streaming_started",
       startedAt: 100,
-      blocks: [
-        { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-        { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
-      ],
+      blocks: [{ type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false }],
       tokens: 0,
     });
   });
@@ -1999,12 +2001,13 @@ describe("handler load_conversation late-join streaming snapshots", () => {
           metadata: { startedAt: 2, endedAt: 3, model: "gpt-5.4", tokens: 12 },
         },
         { type: "system", text: "✗ Interrupted", color: "error" },
+        {
+          type: "ai",
+          blocks: [{ type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" }],
+        },
       ],
       pendingAI: {
-        blocks: [
-          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-          { type: "text", text: "hello" },
-        ],
+        blocks: [{ type: "text", text: "hello" }],
         metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
       },
     });
@@ -2014,21 +2017,27 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     expect(sentA2.map((event) => event.type)).toEqual(["conversation_loaded", "streaming_started"]);
     expect(sentA2[0]).toMatchObject({
       type: "conversation_loaded",
+      entries: [
+        { type: "user", text: "hi" },
+        {
+          type: "ai",
+          blocks: [{ type: "text", text: "partial old reply" }],
+        },
+        { type: "system", text: "✗ Interrupted", color: "error" },
+        {
+          type: "ai",
+          blocks: [{ type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" }],
+        },
+      ],
       pendingAI: {
-        blocks: [
-          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-          { type: "text", text: "hello world" },
-        ],
+        blocks: [{ type: "text", text: "hello world" }],
         metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
       },
     });
     expect(sentA2[1]).toMatchObject({
       type: "streaming_started",
       startedAt: 100,
-      blocks: [
-        { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-        { type: "text", text: "hello world" },
-      ],
+      blocks: [{ type: "text", text: "hello world" }],
       tokens: 0,
     });
   });

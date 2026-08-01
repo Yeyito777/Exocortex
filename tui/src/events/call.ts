@@ -6,6 +6,7 @@ import {
 } from "../messages";
 import type { Event } from "../protocol";
 import type { RenderState } from "../state";
+import { commitPendingAISegment } from "./pending-ai";
 
 type TranscriptEvent = Extract<Event, { type: "call_transcript" }>;
 
@@ -55,6 +56,17 @@ export function reconcileCallTranscriptDrafts(state: RenderState): void {
 }
 
 function handleUserTranscript(event: TranscriptEvent, state: RenderState): void {
+  if (event.final && state.pendingAI) {
+    // A spoken turn can arrive while the delegated parent agent is streaming.
+    // Split its completed visual prefix before inserting the transcript, exactly
+    // like an ordinary inline user_message. The following history refresh then
+    // replaces that prefix canonically while pendingAI contains only new blocks;
+    // retaining the unsplit pending message would render the whole agent turn a
+    // second time below the interjected speech.
+    const finalized = commitPendingAISegment(state);
+    if (finalized) state.messages.push(finalized);
+  }
+
   let draft = state.callUserDraft;
   if (draft && (draft.callId !== event.callId || (draft.final && !event.final))) draft = null;
 

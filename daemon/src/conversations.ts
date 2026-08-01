@@ -2107,28 +2107,41 @@ function isCurrentAssistantAlreadyCommitted(conv: Conversation, startedAt: numbe
     && conv.messages.some((msg) => msg.role === "assistant" && msg.metadata?.startedAt === startedAt);
 }
 
+function sameStreamingTranscriptMessage(persisted: StoredMessage, transient: StoredMessage): boolean {
+  const { contextTokens: _persistedContextTokens, ...persistedTranscript } = persisted;
+  const { contextTokens: _transientContextTokens, ...transientTranscript } = transient;
+  return isDeepStrictEqual(persistedTranscript, transientTranscript);
+}
+
 /**
- * Completed tool rounds are persisted before a potentially long next provider
- * request or context compaction, while the same messages remain in transient
- * streaming state so late joiners can reconstruct the complete active reply.
- * Exclude that identical persisted suffix from an active render snapshot;
- * otherwise it appears once in `entries` and again in `pendingAI`, then visibly
- * disappears when the final canonical history update de-duplicates the turn.
+ * Completed provider rounds are canonical as soon as they finish. The transient
+ * stream mirror is retained for recovery, but external events (voice transcripts,
+ * notices, queue injections) can be interleaved between those canonical rounds,
+ * so suffix subtraction is fundamentally incorrect. Match the mirror as an
+ * ordered subsequence instead and retain only genuinely unpersisted extras.
  */
-function withoutPersistedStreamingSuffix(messages: StoredMessage[], transientMessages: StoredMessage[]): StoredMessage[] {
-  if (transientMessages.length === 0 || transientMessages.length > messages.length) return messages;
-  const suffixStart = messages.length - transientMessages.length;
-  for (let index = 0; index < transientMessages.length; index++) {
-    const { contextTokens: _persistedContextTokens, ...persistedTranscript } = messages[suffixStart + index];
-    const { contextTokens: _transientContextTokens, ...transientTranscript } = transientMessages[index];
-    // Context-token attribution is mutable bookkeeping. The persisted recovery
-    // copy can receive newer attribution during the next provider round while
-    // the transient display copy still describes the exact same transcript.
-    // Comparing that bookkeeping duplicated the completed round in both entries
-    // and pendingAI until the final history refresh.
-    if (!isDeepStrictEqual(persistedTranscript, transientTranscript)) return messages;
+function unpersistedStreamingMessages(messages: StoredMessage[], transientMessages: StoredMessage[]): StoredMessage[] {
+  const extras: StoredMessage[] = [];
+  let persistedCursor = 0;
+  for (const transient of transientMessages) {
+    let matchedIndex = -1;
+    for (let index = persistedCursor; index < messages.length; index++) {
+      if (sameStreamingTranscriptMessage(messages[index]!, transient)) {
+        matchedIndex = index;
+        break;
+      }
+    }
+    if (matchedIndex >= 0) persistedCursor = matchedIndex + 1;
+    else extras.push(transient);
   }
-  return messages.slice(0, suffixStart);
+  return extras;
+}
+
+function messagesWithUnpersistedStreamingExtras(conv: Conversation): StoredMessage[] {
+  const transientMessages = streaming.getStreamingDisplayMessages(conv.id);
+  if (transientMessages.length === 0) return conv.messages;
+  const extras = unpersistedStreamingMessages(conv.messages, transientMessages);
+  return extras.length > 0 ? [...conv.messages, ...extras] : conv.messages;
 }
 
 export function getRenderSnapshot(
@@ -2186,34 +2199,18 @@ export function getRenderSnapshot(
     return finishDiagnostics(fullPersisted, false, buildStartedAt);
   }
 
-  const transientMessages = streaming.getStreamingDisplayMessages(id);
-  const snapshotPersistedMessages = withoutPersistedStreamingSuffix(conv.messages, transientMessages);
-  const persisted = snapshotPersistedMessages === conv.messages
+  const displayMessages = messagesWithUnpersistedStreamingExtras(conv);
+  const canonical = displayMessages === conv.messages
     ? fullPersisted
-    : buildSnapshotDisplayData(conv, snapshotPersistedMessages, includeToolOutputs);
-  const transient = buildSnapshotDisplayData(
-    conv,
-    transientMessages,
-    includeToolOutputs,
-    false,
-    snapshotPersistedMessages,
-    snapshotPersistedMessages !== conv.messages,
-  );
-  const transientEntries = [...transient.entries];
-  const trailingAssistant = transientEntries.at(-1);
+    : buildSnapshotDisplayData(conv, displayMessages, includeToolOutputs);
   const currentBlocks = streaming.getCurrentStreamingBlocks(id) ?? [];
-  const livePrefix = trailingAssistant?.type === "ai" ? trailingAssistant.blocks : [];
   const completedBlockCount = streaming.getStreamingCommittedBlockCount(id);
-  const blockOffset = Math.max(0, completedBlockCount - livePrefix.length);
-
-  if (trailingAssistant?.type === "ai") transientEntries.pop();
 
   const snapshot: ConversationRenderSnapshot = {
-    ...persisted,
-    entries: [...persisted.entries, ...transientEntries],
+    ...canonical,
     pendingAI: {
-      blocks: [...livePrefix, ...currentBlocks],
-      blockOffset,
+      blocks: [...currentBlocks],
+      blockOffset: completedBlockCount,
       metadata: createMessageMetadata(
         startedAt ?? Date.now(),
         conv.model,
@@ -2227,20 +2224,13 @@ export function getRenderSnapshot(
 export function getDisplayData(id: string, includeToolOutputs = true): ConversationDisplayData | null {
   const conv = get(id);
   if (!conv) return null;
-  const transientMessages = streaming.getStreamingDisplayMessages(id);
-  return buildSnapshotDisplayData(
-    conv,
-    transientMessages.length > 0 ? [...conv.messages, ...transientMessages] : conv.messages,
-    includeToolOutputs,
-  );
+  return buildSnapshotDisplayData(conv, messagesWithUnpersistedStreamingExtras(conv), includeToolOutputs);
 }
 
 export function getToolOutputs(id: string): ToolOutputInfo[] | null {
   const conv = get(id);
   if (!conv) return null;
-  const transientMessages = streaming.getStreamingDisplayMessages(id);
-  const messages = transientMessages.length > 0 ? [...conv.messages, ...transientMessages] : conv.messages;
-  return collectToolOutputs(messages);
+  return collectToolOutputs(messagesWithUnpersistedStreamingExtras(conv));
 }
 
 // ── Unread state ─────────────────────────────────────────────────────

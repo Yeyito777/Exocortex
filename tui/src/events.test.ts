@@ -162,6 +162,139 @@ describe("GPT-Live transcript events", () => {
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]).toMatchObject({ role: "user", text: "What time is it?" });
   });
+
+  test("splits delegated agent output around an interjected call transcript without duplicating its prefix", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    state.pendingAI = {
+      role: "assistant",
+      blocks: [
+        { type: "thinking", text: "Inspecting files" },
+        { type: "tool_call", toolCallId: "call-glob", toolName: "glob", input: {}, summary: "Glob src/**" },
+      ],
+      metadata: { startedAt: 1_000, endedAt: null, model: "gpt-5.6-sol", tokens: 12 },
+    };
+
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "user",
+      text: "Keep me posted while you work.",
+      final: true,
+      startedAt: 2_000,
+      endedAt: 2_500,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 7,
+    }, state, daemon);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      role: "assistant",
+      blocks: [
+        { type: "thinking", text: "Inspecting files" },
+        { type: "tool_call", toolCallId: "call-glob" },
+      ],
+    });
+    expect(state.pendingAI?.blocks).toEqual([]);
+    expect(state.pendingAIPartialCommittedBlocks).toHaveLength(2);
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-call",
+      entries: [
+        {
+          type: "ai",
+          blocks: [
+            { type: "thinking", text: "Inspecting files" },
+            { type: "tool_call", toolCallId: "call-glob", toolName: "glob", input: {}, summary: "Glob src/**" },
+          ],
+          metadata: { startedAt: 1_000, endedAt: null, model: "gpt-5.6-sol", tokens: 12 },
+        },
+        {
+          type: "user",
+          text: "Keep me posted while you work.",
+          metadata: {
+            startedAt: 2_000,
+            endedAt: 2_500,
+            model: "gpt-5.6-sol",
+            tokens: 0,
+            kind: "realtime_transcript",
+          },
+        },
+      ],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    const renderedGlobCalls = state.messages
+      .filter(message => message.role === "assistant")
+      .flatMap(message => message.blocks)
+      .filter(block => block.type === "tool_call" && block.toolCallId === "call-glob");
+    expect(renderedGlobCalls).toHaveLength(1);
+    expect(state.pendingAI?.blocks).toEqual([]);
+    expect(state.callUserDraft).toBeNull();
+  });
+
+  test("atomically replaces canonical history and the active stream tail", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    state.pendingAI = {
+      role: "assistant",
+      blocks: [
+        { type: "thinking", text: "Reading documentation" },
+        { type: "tool_call", toolCallId: "call-glob", toolName: "glob", input: {}, summary: "Glob docs/**" },
+        { type: "tool_call", toolCallId: "call-read", toolName: "read", input: {}, summary: "Read README.md" },
+      ],
+      metadata: { startedAt: 1_000, endedAt: null, model: "gpt-5.6-sol", tokens: 20 },
+    };
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-call",
+      entries: [
+        {
+          type: "ai",
+          blocks: [
+            { type: "thinking", text: "Reading documentation" },
+            { type: "tool_call", toolCallId: "call-glob", toolName: "glob", input: {}, summary: "Glob docs/**" },
+          ],
+          metadata: { startedAt: 1_000, endedAt: null, model: "gpt-5.6-sol", tokens: 10 },
+        },
+        {
+          type: "user",
+          text: "How long will this take?",
+          metadata: {
+            startedAt: 2_000,
+            endedAt: 2_000,
+            model: "gpt-5.6-sol",
+            tokens: 0,
+            kind: "realtime_transcript",
+          },
+        },
+      ],
+      pendingAI: {
+        blocks: [
+          { type: "tool_call", toolCallId: "call-read", toolName: "read", input: {}, summary: "Read README.md" },
+        ],
+        blockOffset: 2,
+        metadata: { startedAt: 1_000, endedAt: null, model: "gpt-5.6-sol", tokens: 20 },
+      },
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    const displayedBlocks = [
+      ...state.messages
+        .filter(message => message.role === "assistant")
+        .flatMap(message => message.blocks),
+      ...(state.pendingAI?.blocks ?? []),
+    ];
+    expect(displayedBlocks.filter(block => block.type === "tool_call" && block.toolCallId === "call-glob")).toHaveLength(1);
+    expect(displayedBlocks.filter(block => block.type === "tool_call" && block.toolCallId === "call-read")).toHaveLength(1);
+    expect(state.pendingAIBlockOffset).toBe(2);
+    expect(state.pendingAIPartialCommittedBlocks).toEqual([]);
+  });
 });
 
 describe("usage reset results", () => {

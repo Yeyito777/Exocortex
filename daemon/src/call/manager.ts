@@ -31,6 +31,30 @@ function transcriptKey(text: string): string {
   return text.trim().toLocaleLowerCase().replace(/[.!?]+$/u, "").replace(/\s+/gu, " ");
 }
 
+/**
+ * Frameless Bidi normally supplies a complete turn.done transcript, but an
+ * interrupted turn can contain only the suffix that follows already-emitted
+ * transcript deltas. Preserve either representation without duplicating a
+ * complete snapshot that overlaps the live accumulator.
+ */
+export function mergeCompletedTranscript(accumulated: string, done: string): string {
+  if (!accumulated) return done;
+  if (!done) return accumulated;
+  if (done.startsWith(accumulated)) return done;
+  if (accumulated.startsWith(done)) return accumulated;
+  if (transcriptKey(accumulated) === transcriptKey(done)) {
+    return accumulated.length >= done.length ? accumulated : done;
+  }
+
+  const maxOverlap = Math.min(accumulated.length, done.length);
+  for (let length = maxOverlap; length > 0; length--) {
+    if (accumulated.endsWith(done.slice(0, length))) {
+      return accumulated + done.slice(length);
+    }
+  }
+  return accumulated + done;
+}
+
 function contentText(content: string | ApiContentBlock[]): string {
   if (typeof content === "string") return content.trim();
   return content
@@ -359,7 +383,12 @@ export class RealtimeCallManager {
         if (event.role === "user" && call.userTranscriptFinal && call.transcript.assistant.text.trim()) {
           this.finalizeTranscript(call, "assistant", call.transcript.assistant.text);
         }
-        this.finalizeTranscript(call, event.role, event.text, event.tokens);
+        this.finalizeTranscript(
+          call,
+          event.role,
+          mergeCompletedTranscript(call.transcript[event.role].text, event.text),
+          event.tokens,
+        );
         call.userTranscriptFinal = event.role === "user";
         break;
       }

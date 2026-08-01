@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import type { Conversation } from "../messages";
 import type { RealtimeSidebandEvent } from "./protocol";
 import type { NativeRealtimeStartParams, NativeRealtimeTransport } from "./transport";
-import { buildRealtimeInitialItems, estimateRealtimeTokens, RealtimeCallManager } from "./manager";
+import { buildRealtimeInitialItems, estimateRealtimeTokens, mergeCompletedTranscript, RealtimeCallManager } from "./manager";
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -284,5 +284,18 @@ describe("estimateRealtimeTokens", () => {
   test("keeps live metadata nonzero for spoken text", () => {
     expect(estimateRealtimeTokens("")).toBe(0);
     expect(estimateRealtimeTokens("One sec.")).toBeGreaterThan(0);
+  });
+});
+
+describe("mergeCompletedTranscript", () => {
+  test("retains a live prefix when interrupted turn.done contains only a suffix", () => {
+    expect(mergeCompletedTranscript("Alright", ", no problem.")).toBe("Alright, no problem.");
+    expect(mergeCompletedTranscript("Spoken ", "reply.")).toBe("Spoken reply.");
+  });
+
+  test("does not duplicate complete or overlapping turn.done snapshots", () => {
+    expect(mergeCompletedTranscript("Lemme", "Lemme check.")).toBe("Lemme check.");
+    expect(mergeCompletedTranscript("Spoken reply.", "Spoken reply")).toBe("Spoken reply.");
+    expect(mergeCompletedTranscript("hello wor", "world")).toBe("hello world");
   });
 });

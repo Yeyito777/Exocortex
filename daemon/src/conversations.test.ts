@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
 import { HistoryUnwindRefreshRequiredError, appendRealtimeCallStatus, appendRealtimeTranscript, bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
-import { setActiveJob, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob, isHistoryUnwindPending } from "./streaming";
+import { setActiveJob, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
 import { load as loadPersisted } from "./persistence";
 
@@ -1492,17 +1492,79 @@ describe("getDisplayData", () => {
     conv.messages[1].contextTokens = null;
     setActiveJob(id, new AbortController(), 100);
     replaceStreamingDisplayMessages(id, completedRound);
+    setStreamingCommittedBlockCount(id, 3);
 
     const snapshot = getRenderSnapshot(id, false)!;
 
     expect(snapshot.entries).toMatchObject([
       { type: "user", text: "initial" },
+      {
+        type: "ai",
+        blocks: [
+          { type: "thinking", text: "checking" },
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash" },
+          { type: "tool_result", toolCallId: "call-1", isError: false },
+        ],
+      },
     ]);
-    expect(snapshot.pendingAI?.blocks).toEqual([
-      { type: "thinking", text: "checking" },
-      { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "pwd" }, summary: "pwd" },
-      { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
-    ]);
+    expect(snapshot.pendingAI).toMatchObject({ blocks: [], blockOffset: 3 });
+  });
+
+  test("keeps interleaved external transcripts canonical while exposing only the unfinished live tail", () => {
+    const id = mkId("display-interleaved-transcript");
+    create(id, "openai", "gpt-5.6-sol");
+    const conv = get(id)!;
+    const firstRound = {
+      role: "assistant" as const,
+      content: [{ type: "tool_use" as const, id: "call-glob", name: "glob", input: { pattern: "docs/**" } }],
+      metadata: null,
+    };
+    const firstResult = {
+      role: "user" as const,
+      content: [{ type: "tool_result" as const, tool_use_id: "call-glob", content: "README.md" }],
+      metadata: null,
+    };
+    const secondRound = {
+      role: "assistant" as const,
+      content: [{ type: "tool_use" as const, id: "call-read", name: "read", input: { file_path: "README.md" } }],
+      metadata: null,
+    };
+    const interjection = {
+      role: "user" as const,
+      content: "How long will this take?",
+      metadata: {
+        startedAt: 2_000,
+        endedAt: 2_000,
+        model: "gpt-5.6-sol" as const,
+        tokens: 0,
+        kind: "realtime_transcript",
+      },
+    };
+    conv.messages.push(
+      { role: "user", content: "initial", metadata: null },
+      structuredClone(firstRound),
+      structuredClone(firstResult),
+      interjection,
+      structuredClone(secondRound),
+    );
+    setActiveJob(id, new AbortController(), 1_000);
+    replaceStreamingDisplayMessages(id, [firstRound, firstResult, secondRound]);
+    replaceCurrentStreamingBlocks(id, [{ type: "text", text: "Still reading" }]);
+    setStreamingCommittedBlockCount(id, 3);
+
+    const snapshot = getRenderSnapshot(id, false)!;
+    const toolCallIds = snapshot.entries.flatMap(entry =>
+      entry.type === "ai"
+        ? entry.blocks.filter(block => block.type === "tool_call").map(block => block.toolCallId)
+        : []
+    );
+
+    expect(toolCallIds).toEqual(["call-glob", "call-read"]);
+    expect(snapshot.entries.filter(entry => entry.type === "user" && entry.text === interjection.content)).toHaveLength(1);
+    expect(snapshot.pendingAI).toMatchObject({
+      blocks: [{ type: "text", text: "Still reading" }],
+      blockOffset: 3,
+    });
   });
 
   test("late-join snapshots retain a durable compaction boundary without duplicating its assistant prefix", () => {

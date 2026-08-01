@@ -1317,6 +1317,8 @@ export interface HistoryUpdatedEvent {
   contextTokens: number | null;
   /** Whether tool_result block outputs are present in entries. */
   toolOutputsIncluded: boolean;
+  /** Authoritative live tail when this canonical update occurs during a stream. */
+  pendingAI?: AIMessagePayload | null;
 }
 
 export interface ToolOutputsLoadedEvent {

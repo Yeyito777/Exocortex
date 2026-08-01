@@ -52,6 +52,7 @@ import {
 } from "./events/streaming";
 import { handleToolOutputsLoaded } from "./events/tool-outputs";
 import { handleToolsAvailable } from "./events/provider";
+import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
 import type { DaemonActions } from "./events/types";
 import { handleCallTranscript, reconcileCallTranscriptDrafts } from "./events/call";
 
@@ -370,6 +371,22 @@ export function handleEvent(
         state.contextTokens = event.contextTokens;
         setCurrentConversationToolOutputAvailability(state, event.toolOutputsIncluded);
         pushDisplayEntries(state, event.entries);
+
+        // Canonical history and its live tail are one atomic daemon snapshot.
+        // Keeping the old local pendingAI while replacing only entries can show
+        // every completed provider round twice when an external transcript was
+        // interleaved into the active turn. New daemons always include this field;
+        // absence remains backward-compatible with older daemon payloads.
+        if (event.pendingAI !== undefined) {
+          clearPendingAI(state);
+          if (event.pendingAI) {
+            hydratePendingAIFromSnapshot(
+              state,
+              event.pendingAI,
+              event.pendingAI.blockOffset ?? 0,
+            );
+          }
+        }
 
         if (preservedPrefix.length === prefixEntryCount && prefixEntryCount > 0) {
           let incomingPinnedCount = 0;
