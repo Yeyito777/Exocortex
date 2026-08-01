@@ -76,5 +76,5 @@ Do not trim, decode, interpolate, or otherwise rewrite it.
 ## When to use an external tool
 
 Use a full [external tool](../external-tools/TOOL_STANDARD.md) when the command
-needs global discovery, system-prompt instructions, PATH installation, auth,
+needs global discovery, system-prompt instructions, PATH installation, complicated auth (JWST),
 notifications, or daemon supervision.
