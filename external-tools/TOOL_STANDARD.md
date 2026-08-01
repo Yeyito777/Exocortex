@@ -28,6 +28,10 @@ Exocortex TUI presentation through an adjacent `exo-manifest.json`. It is
 useful for project scripts and one-off tools that should remain outside the
 installed external-tool registry.
 
+See [`helper-commands/HELPER_COMMANDS_STANDARD.md`](../helper-commands/HELPER_COMMANDS_STANDARD.md)
+for the focused authoring standard and the repository's local helper-command
+directory.
+
 Use this layer when the model already knows about the command from the user's
 request, an `AGENTS.md`, or project documentation, and the only Exocortex
 integration needed is a recognizable label and color. Use a full external tool

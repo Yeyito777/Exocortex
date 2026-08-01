@@ -30,6 +30,10 @@ external-tools/*
 !external-tools/TOOL_STANDARD.md
 !external-tools/PORT_PROMPT.md
 
+# Helper commands are user-local; keep their standard tracked
+helper-commands/*
+!helper-commands/HELPER_COMMANDS_STANDARD.md
+
 # Environment and secrets
 .env
 .env.*
