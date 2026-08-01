@@ -9,7 +9,7 @@ this checklist has been reviewed and approved.
 
 ## Completion rules
 
-- `[x]` means not started.
+- `[ ]` means not started.
 - `[~]` means in progress and must include a note or linked result before stopping.
 - `[x]` means implemented, tested, and documented; code existing by itself is not
   enough.

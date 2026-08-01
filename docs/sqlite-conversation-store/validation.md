@@ -21,14 +21,18 @@ Git.
   conversation were excluded.
 - The selector performed stable pre/post stat/hash reads and immediately reverified
   main after copying. The immutable copied files still match all 26 manifest hashes.
-- One selected main conversation changed naturally after the immutable snapshot;
-  later `verify` reports this as live-source drift without confusing it with fixture
-  corruption. `verify --require-source-stable` remains available when a frozen
-  source is required.
+- Two selected main conversations changed naturally after the immutable snapshot,
+  and one folded `.sidebar` overlay disappeared. Later `verify` reports these three
+  live-source path drifts without confusing them with fixture corruption.
+  `verify --require-source-stable` remains available when a frozen source is
+  required.
 - Final migration verifier: **24 conversations, 0 mismatches**, `quick_check=ok`, no
   foreign-key errors, all goals absent, and no copied automation files.
+- Exhaustive pagination walked **346 pages / 3,568 display entries** with strict
+  cursor progress, no gaps or duplicates, and compared **23,377 deferred tool
+  outputs**. There were zero old-image payload violations and zero mismatches.
 - Every scalar, ordered message and optional field, active context/checkpoint,
-  transcript hash, newest/older page, deferred tool output, instruction composition,
+  transcript hash, all display pages, deferred tool output, instruction composition,
   and normalized export was compared.
 
 Gitignored evidence:
@@ -72,40 +76,51 @@ Gitignored evidence: `sqlite-fixture/feature-smoke-report.json`.
 - Root TypeScript typecheck: **passed**.
 - Shared: **13 passed, 0 failed** with an isolated test config.
 - TUI: **673 passed, 0 failed**.
-- Default JSON compatibility/full daemon run: **741 passed, 3 unrelated
-  environment-sensitive failures**. The failures are the existing bash background
-  timing assumption, native Exo availability under the test harness, and a
-  DeepSeek-auth test while a real key is injected. They are not storage failures.
-- Repository/maintenance/fault suite: **19 passed, 0 failed** across JSON and SQLite.
+- Default JSON compatibility/full daemon run: **744 passed, 2 unrelated
+  environment-sensitive failures**. One is the existing native-Exo hint expectation
+  under the repository harness; the other is a DeepSeek-auth assertion while a real
+  key is injected and passes when credentials are isolated. Neither changed from
+  main in the relevant source files, and neither is a SQLite failure.
+- Final repository/import/maintenance/fault gate: **27 passed, 0 failed** across JSON
+  and SQLite, including the deterministic differential state machine.
 - SQLite canonical integration matrix: **167 passed, 0 failed, 9 skipped**. The
   skipped tests assert obsolete JSON `.sidebar`, `.unwind`, and filesystem failure
   mechanics; those same tests still execute in JSON compatibility mode.
-- Fault injection proves rollback after message writes, during delete/undo, and
-  during unwind/queue receipt. A separate child-process test exits abruptly from
-  inside a live transaction and proves WAL rollback plus integrity on reopen.
-- Schema maintenance tests cover future-version refusal, backup, restore-to-new,
-  normalized export, separate large blobs, exact reconstruction, cascading orphan
-  cleanup, and scale-critical index query plans.
+- The resumable-import test covers valid v18 import, one corrupt source, resume after
+  repair, changed-source reimport before completion, overlays, folders/instructions,
+  unread, queue, BTW, and a completed-import no-scan startup.
+- Fault injection covers every save, unwind, and delete boundary and compares full
+  logical state, blob rows, FTS rows, auxiliary state, and undo/redo history before
+  and after rollback. A child-process test exits abruptly inside a transaction and
+  proves WAL rollback plus integrity on reopen.
+- Schema maintenance tests cover every v1→v6 checkpoint, immutable future-version
+  refusal, title-FTS lifecycle, backup, restore-to-new, normalized export, separate
+  large blobs, exact reconstruction, cascading orphan cleanup, and scale-critical
+  index query plans.
+- The differential state machine found and fixed one real defect: SQLite unwind did
+  not update the indexed `message_count` using the domain-calculated visible count.
 
-The pre-implementation baseline had four environment-sensitive failures. The final
-storage changes introduce no new default-backend test failure.
+The storage changes introduce no new default-backend compatibility failure.
 
 ## xenv/exotest
 
 The final worktree daemon and TUI were started through `xenv` plus `exotest`; main
 was never restarted.
 
-Validated manually:
+Validated manually in two complete sessions:
 
-- indexed startup with 29 fixture-plus-smoke conversations
+- indexed startup with 34 fixture-plus-smoke conversations
 - folders/sidebar rendering
-- two different migrated real conversations
-- newest and older history navigation
+- three migrated real conversations from `/`, `subagents`, and `record/done`
+- both OpenAI and DeepSeek conversations
+- newest-page rendering, automatic older-page backfill, and manual older navigation
 - explicit `Ctrl+O` deferred tool-output expansion
-- sidebar folder navigation
+- worktree-only folder creation and conversation create/rename/move/delete/undo
+- restored title and folder placement visible in the TUI
 - complete worktree daemon/TUI stop and fresh start against the same database
-- post-restart conversation loading
-- final clean stop and xenv removal
+- post-restart mutation persistence and integrity
+- fixture unread-state restoration, final clean stop, and xenv removal
+- unchanged main daemon PID throughout
 
 Screenshots were kept only under `/tmp`; transcript images are not committed.
 
@@ -114,19 +129,22 @@ Screenshots were kept only under `/tmp`; transcript images are not committed.
 Against the final real worktree database:
 
 - schema version 6
-- 29 live fixture-plus-smoke conversations
-- 38,591 canonical messages
-- 23,381 separated message payload rows
+- 35 live fixture-plus-smoke/manual conversations
+- 38,602 canonical messages
+- 23,382 separated message payload rows
+- 20 folders
 - `quick_check=ok`
 - no foreign-key errors
 - WAL cleanly checkpointed to zero bytes
 
-The administration script created and validated a real online backup, restored it
-to a distinct database file, and exported all 29 live conversations plus auxiliary
-state. The export was installed under an isolated config root. The JSON adapter then
-loaded **29/29** files with zero failures, and an actual JSON-backend daemon was
-started against that export. IPC ping, indexed listing (29), and real conversation
-load all passed before only that rollback-test daemon was stopped.
+Before the xenv-only mutation, the administration drill created and validated an
+online backup of the 34-conversation database and restored it to a distinct file;
+overwrite refusal also passed. An isolated SQLite daemon loaded that restore and
+passed ping, list/folders, recent history, older history, and deferred-tool-output
+IPC. The full normalized export was then installed under an isolated config root.
+The JSON adapter loaded **34/34** files with zero failures and 19 folders, and an
+actual JSON-backend daemon passed the same real history/folder IPC before only the
+rollback-test daemons were stopped.
 
 Gitignored evidence:
 
@@ -142,13 +160,15 @@ Gitignored evidence:
 See `autoresearch/exocortex-performance/CONVERSATION_STORE.md` and
 `results/conversation-store-full.json`.
 
-All approved gates pass:
+All approved gates pass; the executable verifier reports **13 passed, 0 failed**:
 
-- low scale: +0.467 ms startup/list median and +0.501 ms p95, inside the 2/5 ms
+- low scale: +0.874 ms startup/list median and +0.906 ms p95, inside the 2/5 ms
   absolute allowances
-- 10,000 startup/list: **4.69x faster**
-- 10 MiB append: **33.0x faster**
-- 50 MiB append: **138.8x faster**
-- 96 MiB append: **263.0x faster**
-- metadata and sidebar mutation p95: **2.44 ms** and **0.078 ms**
-- SQLite append median remains approximately 0.3 ms as historical size grows
+- 10,000 startup/list: **4.49x faster**
+- 50,000 startup/list: **4.18x faster**
+- 10 MiB append: **28.3x faster**
+- 50 MiB append: **148.0x faster**
+- 96 MiB append: **305.7x faster**
+- metadata and sidebar mutation p95: **3.275 ms** and **0.139 ms**
+- SQLite append historical-size spread: **1.16x** across 1–96 MiB
+- SQLite/JSON storage ratio at 10k: **0.957x**
