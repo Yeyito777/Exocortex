@@ -154,7 +154,12 @@ const MACROS: MacroDef[] = [
     ],
   },
   { name: "/noop", desc: "Thoughts only, no edits", expansion: "Don't do any destructive or modificating actions just yet just tell me your thoughts on this" },
-  { name: "/todo", desc: "Track and finish a TODO list", expansion: "Make a TODO.md for this with items - [ ] and finish it sequentially." },
+  {
+    name: "/todo", desc: "Track and finish a TODO list", expansion: "Make a <name>-todo.md for this with items - [ ] and finish it sequentially.",
+    args: [
+      { name: "wait", desc: "Pause for TODO review", expansion: "Make a <name>-todo.md for this with items - [ ] and tell me the abs path of it so I can review before you go and finish it sequentially." },
+    ],
+  },
   {
     name: "/plan", desc: "Plan only, no edits", expansion: "Come up with a plan for this and tell me it. Don't write or edit any files.",
     args: [
