@@ -70,6 +70,9 @@ make uninstall
 
 ## Architecture
 
+For the planned conversation-storage, IPC, and daemon-service migrations, see
+[Architecture Migration Roadmap](architecture-roadmap.md).
+
 **Four packages** in a Bun workspace:
 
 - **`shared/`** — The protocol contract. Type definitions for commands,
