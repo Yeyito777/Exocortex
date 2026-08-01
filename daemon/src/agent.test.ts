@@ -29,34 +29,6 @@ function state(): AgentState {
 }
 
 describe("automatic agent compaction", () => {
-  test("forwards a turn-local developer message to the provider", async () => {
-    const developerMessage = {
-      text: "Backend worker contract",
-      beforeUserTextPrefix: "<realtime_delegation>",
-    };
-    let received: unknown;
-    const fakeStream = (async (_provider, _messages, _model, _callbacks, options) => {
-      received = options?.ephemeralDeveloperMessage;
-      return {
-        text: "done",
-        thinking: "",
-        stopReason: "stop",
-        blocks: [{ type: "text", text: "done" }],
-        toolCalls: [],
-      };
-    }) as typeof streamMessage;
-
-    await runAgentLoop(
-      [{ role: "user", content: "<realtime_delegation>task</realtime_delegation>" }],
-      "openai",
-      "gpt-5.6-sol",
-      callbacks(),
-      { streamMessageFn: fakeStream, ephemeralDeveloperMessage: developerMessage },
-    );
-
-    expect(received).toEqual(developerMessage);
-  });
-
   test("records a completed raw tool round before a failing compaction", async () => {
     const recovery = state();
     let recoveryReadyBeforeCompaction = false;

@@ -139,7 +139,6 @@ export async function runAgentLoop(
   callbacks: AgentCallbacks,
   options: {
     system?: string;
-    ephemeralDeveloperMessage?: StreamOptions["ephemeralDeveloperMessage"];
     signal?: AbortSignal;
     executor?: ToolExecutor;
     summarizer?: ToolSummarizer;
@@ -212,7 +211,6 @@ export async function runAgentLoop(
           onRetryWaitEnd: callbacks.onRetryWaitEnd,
         }, {
           system: options.system,
-          ephemeralDeveloperMessage: options.ephemeralDeveloperMessage,
           signal: options.signal,
           maxTokens: options.maxTokens,
           tools: options.tools,

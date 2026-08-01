@@ -72,6 +72,7 @@ import { RealtimeCallManager } from "./call/manager";
 // ── Handler ─────────────────────────────────────────────────────────
 
 let queueSchedulerGeneration = 0;
+const DEFAULT_CALL_TITLE = "voice call";
 
 export interface DaemonCommandHandler {
   (client: ConnectedClient, cmd: Command): Promise<void>;
@@ -1102,7 +1103,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           }
         }
 
-        const title = cmd.title ?? (initialMessage || goalObjective || titleContext ? PENDING_TITLE : undefined);
+        const title = cmd.title ?? (
+          cmd.startCall
+            ? DEFAULT_CALL_TITLE
+            : (initialMessage || goalObjective || titleContext ? PENDING_TITLE : undefined)
+        );
         const subagentFolder = cmd.subagent ? convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME) : null;
         if (cmd.subagent && !subagentFolder) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Failed to create ${SUBAGENTS_FOLDER_NAME} folder` });

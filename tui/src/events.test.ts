@@ -196,6 +196,46 @@ describe("GPT-Live transcript events", () => {
     expect(state.messages[0]).toMatchObject({ role: "user", text: "What time is it?" });
   });
 
+  test("reconciles a user draft after its canonical transcript is promoted into a delegation", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "user",
+      text: "Please inspect the repository.",
+      final: true,
+      startedAt: 1_000,
+      endedAt: 1_500,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 4,
+    }, state, daemon);
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-call",
+      entries: [{
+        type: "user",
+        text: "[realtime delegation]\nTask: Inspect the repository.\nOriginal speech: Please inspect the repository.",
+        metadata: {
+          startedAt: 1_000,
+          endedAt: 1_500,
+          model: "gpt-5.6-sol",
+          tokens: 0,
+          kind: "realtime_transcript",
+        },
+      }],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(state.callUserDraft).toBeNull();
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]?.role).toBe("user");
+    expect(state.messages[0]?.role === "user" && state.messages[0].text.startsWith("[realtime delegation]")).toBe(true);
+  });
+
   test("splits delegated agent output around an interjected call transcript without duplicating its prefix", () => {
     const state = createInitialState();
     state.convId = "conv-call";

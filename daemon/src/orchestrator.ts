@@ -15,12 +15,12 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { getToolDefs, buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, REALTIME_TRANSCRIPT_KIND, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type MessageMetadata } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
-import { broadcastConversationUpdated } from "./conversation-events";
+import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
 import { goalContinuationUserMessage } from "./goals";
 import { createProviderTurnSession, streamMessage } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
@@ -138,86 +138,18 @@ function hasReplayableHistory(messages: StoredMessage[]): boolean {
   return messages.some(isHistoryMessage);
 }
 
-function modelVisibleText(content: string | ApiContentBlock[]): string {
-  if (typeof content === "string") return content.trim();
-  return content
-    .filter((block): block is Extract<ApiContentBlock, { type: "text" }> => block.type === "text")
-    .map(block => block.text)
-    .join("\n")
-    .trim();
-}
-
-function realtimeUtteranceKey(text: string): string {
-  return text
-    .trim()
-    .toLocaleLowerCase()
-    .replace(/[.!?]+$/u, "")
-    .replace(/\s+/gu, " ");
-}
-
-function escapeXmlText(text: string): string {
-  return text
-    .replace(/&/gu, "&amp;")
-    .replace(/</gu, "&lt;")
-    .replace(/>/gu, "&gt;")
-    .replace(/"/gu, "&quot;")
-    .replace(/'/gu, "&apos;");
-}
-
-/** Model-only marker matching Codex's typed realtime delegation boundary. */
-export function buildRealtimeDelegationEnvelope(
+/** One visible, durable request matching Exocortex's automated-event style. */
+export function buildRealtimeDelegationMessage(
   originalUserUtterance: string,
   backendTask = originalUserUtterance,
 ): string {
   return [
-    "<realtime_delegation>",
-    `  <backend_task>${escapeXmlText(backendTask.trim())}</backend_task>`,
-    `  <original_user_utterance>${escapeXmlText(originalUserUtterance.trim())}</original_user_utterance>`,
-    "</realtime_delegation>",
+    "[realtime delegation]",
+    `Task: ${backendTask.trim()}`,
+    `Original speech: ${originalUserUtterance.trim()}`,
+    "",
+    "Action: Complete only the backend task and return its result without conversational filler or progress narration. GPT-Live handles the live conversation.",
   ].join("\n");
-}
-
-export const REALTIME_DELEGATION_DEVELOPER_MESSAGE = [
-  "You are the backend worker for an active realtime voice session.",
-  "The user is speaking with a separate realtime voice model, which owns conversational acknowledgements, social dialogue, and spoken presentation.",
-  "Execute the <backend_task> inside the <realtime_delegation>; use <original_user_utterance> only as supporting context.",
-  "Do not answer conversational or social portions, imitate the live conversation, discuss your own experience, or add filler or status narration.",
-  "Return only the concrete findings or result needed to satisfy the backend portion, with no greeting or preamble.",
-].join(" ");
-
-interface RealtimeDelegationContextMessage {
-  role: string;
-  content: string | ApiContentBlock[];
-  metadata?: MessageMetadata | null;
-}
-
-/**
- * Replace the latest matching persisted call transcript for provider replay.
- * The canonical message array is never mutated and no second user item appears.
- */
-export function applyRealtimeDelegationEnvelope<T extends RealtimeDelegationContextMessage>(
-  messages: readonly T[],
-  originalUserUtterance: string,
-  backendTask = originalUserUtterance,
-): T[] | null {
-  const expected = realtimeUtteranceKey(originalUserUtterance);
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index]!;
-    if (
-      message.role !== "user"
-      || message.metadata?.kind !== REALTIME_TRANSCRIPT_KIND
-      || realtimeUtteranceKey(modelVisibleText(message.content)) !== expected
-    ) {
-      continue;
-    }
-    const contextualized = messages.filter((_, messageIndex) => messageIndex !== index);
-    contextualized.push({
-      ...message,
-      content: buildRealtimeDelegationEnvelope(originalUserUtterance, backendTask),
-    } as T);
-    return contextualized;
-  }
-  return null;
 }
 
 /**
@@ -262,7 +194,7 @@ interface AssistantTurnOptions {
   queueEntryId?: string;
   /** Force one context compaction without requesting an assistant response. */
   manualCompaction?: boolean;
-  /** Run the already-persisted voice transcript as a typed realtime handoff. */
+  /** Promote the persisted voice transcript into a visible backend request. */
   realtimeDelegation?: {
     originalUserUtterance: string;
     backendTask: string;
@@ -302,8 +234,7 @@ export async function orchestrateReplayConversation(
 
 /**
  * Start an agent turn from an existing visible call transcript. The transcript
- * remains the sole durable user message; only its provider-facing representation
- * is wrapped as a typed handoff for this turn.
+ * is promoted in place into the sole durable backend request before replay.
  */
 export async function orchestrateRealtimeDelegation(
   server: DaemonServer,
@@ -451,12 +382,22 @@ async function orchestrateAssistantTurn(
   if (goalContinuation && conv.goal?.status !== "active") {
     return buildErrorOutcome("No active goal to continue.");
   }
-  if (realtimeDelegation && !applyRealtimeDelegationEnvelope(
-    conv.messages,
-    realtimeDelegation.originalUserUtterance,
-    realtimeDelegation.backendTask,
-  )) {
-    return reportSendError("The realtime handoff no longer has a matching call transcript.");
+  if (realtimeDelegation) {
+    const delegatedMessage = buildRealtimeDelegationMessage(
+      realtimeDelegation.originalUserUtterance,
+      realtimeDelegation.backendTask,
+    );
+    if (!convStore.promoteRealtimeTranscript(
+      convId,
+      realtimeDelegation.originalUserUtterance,
+      delegatedMessage,
+    )) {
+      return reportSendError("The realtime handoff no longer has a matching call transcript.");
+    }
+    // The transcript draft and canonical history must reconcile before backend
+    // output begins streaming, so every client observes the exact model input.
+    broadcastConversationHistoryUpdated(server, convId);
+    broadcastConversationUpdated(server, convId);
   }
   const hadGoalAtStart = !!conv.goal;
 
@@ -584,24 +525,6 @@ async function orchestrateAssistantTurn(
   const accountScope = conv.provider === "openai" ? getCurrentOpenAIAccountScope() ?? undefined : undefined;
   const initialContext = buildConversationApiContext(conv, accountScope);
   let apiMessages: ApiMessage[] = initialContext.messages;
-  if (realtimeDelegation) {
-    // Call speech is already visible and durable in the owning conversation.
-    // Replace that one provider-facing item rather than appending a duplicate
-    // user message just to trigger the backend agent.
-    apiMessages = applyRealtimeDelegationEnvelope(
-      apiMessages,
-      realtimeDelegation.originalUserUtterance,
-      realtimeDelegation.backendTask,
-    )
-      ?? [...apiMessages, {
-        role: "user",
-        content: buildRealtimeDelegationEnvelope(
-          realtimeDelegation.originalUserUtterance,
-          realtimeDelegation.backendTask,
-        ),
-        metadata: null,
-      }];
-  }
 
   // Track whether any next-turn messages were injected mid-stream.
   // When true, the success path sends history_updated so the TUI
@@ -1243,12 +1166,6 @@ async function orchestrateAssistantTurn(
     } else {
       const result = await runAgentLoop(apiMessages, conv.provider, conv.model, callbacks, {
         system: systemPrompt,
-        ...(realtimeDelegation ? {
-          ephemeralDeveloperMessage: {
-            text: REALTIME_DELEGATION_DEVELOPER_MESSAGE,
-            beforeUserTextPrefix: "<realtime_delegation>",
-          },
-        } : {}),
         signal: ac.signal,
         tools: toolDefs,
         executor,

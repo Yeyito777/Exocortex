@@ -2300,6 +2300,57 @@ export function appendRealtimeTranscript(
   return true;
 }
 
+function visibleMessageText(content: StoredMessage["content"]): string {
+  if (typeof content === "string") return content;
+  return content
+    .filter((block): block is Extract<Block, { type: "text" }> => block.type === "text")
+    .map(block => block.text)
+    .join("\n");
+}
+
+function realtimeUtteranceKey(text: string): string {
+  return text
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[.!?]+$/u, "")
+    .replace(/\s+/gu, " ");
+}
+
+/**
+ * Promote the latest matching call transcript into the one canonical user
+ * request consumed by a delegated backend turn. The message keeps its original
+ * timestamp/checkpoint so live transcript projections can reconcile by identity.
+ */
+export function promoteRealtimeTranscript(
+  convId: string,
+  originalUserUtterance: string,
+  delegatedMessage: string,
+): boolean {
+  const conv = get(convId);
+  const expected = realtimeUtteranceKey(originalUserUtterance);
+  const replacement = delegatedMessage.trim();
+  if (!conv || !expected || !replacement) return false;
+
+  for (let index = conv.messages.length - 1; index >= 0; index--) {
+    const message = conv.messages[index]!;
+    if (
+      message.role !== "user"
+      || message.metadata?.kind !== REALTIME_TRANSCRIPT_KIND
+      || realtimeUtteranceKey(visibleMessageText(message.content)) !== expected
+    ) {
+      continue;
+    }
+
+    message.content = replacement;
+    message.contextTokens = null;
+    conv.updatedAt = Date.now();
+    markDirty(convId);
+    flush(convId);
+    return true;
+  }
+  return false;
+}
+
 /** Persist a model-hidden lifecycle marker so call boundaries survive history reloads. */
 export function appendRealtimeCallStatus(convId: string, text: string, startedAt = Date.now()): boolean {
   const conv = get(convId);

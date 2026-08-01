@@ -1224,6 +1224,7 @@ describe("handler start_call", () => {
 
     expect(get(convId)?.provider).toBe("openai");
     expect(get(convId)?.model).not.toBe("deepseek-chat");
+    expect(get(convId)?.title).toBe("voice call");
     expect(callManager.start).toHaveBeenCalledWith(convId);
   });
 
@@ -1253,7 +1254,7 @@ describe("handler start_call", () => {
       startCall: true,
     });
 
-    expect(get(convId)).toBeDefined();
+    expect(get(convId)).toMatchObject({ title: "voice call" });
     expect(sent).toContainEqual(expect.objectContaining({
       type: "conversation_created",
       reqId: "req-call-create",

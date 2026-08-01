@@ -18,18 +18,19 @@ function isCanonicalDraft(message: Message, draft: UserMessage | AIMessage): boo
   if (message.role !== draft.role) return false;
   if (message.metadata?.kind !== REALTIME_TRANSCRIPT_KIND) return false;
   if (message.metadata?.startedAt !== draft.metadata?.startedAt) return false;
-  const messageText = message.role === "user"
-    ? message.text
-    : message.blocks
-      .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
-      .map(block => block.text)
-      .join("");
-  const draftText = draft.role === "user"
-    ? draft.text
-    : draft.blocks
-      .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
-      .map(block => block.text)
-      .join("");
+  // A backend handoff promotes the finalized user transcript in place into a
+  // structured delegation request. Its stable timestamp is the identity; text
+  // equality applies only to ordinary transcripts and assistant projections.
+  if (message.role === "user") return true;
+  if (draft.role !== "assistant") return false;
+  const messageText = message.blocks
+    .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
+    .map(block => block.text)
+    .join("");
+  const draftText = draft.blocks
+    .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
+    .map(block => block.text)
+    .join("");
   return normalizedTranscript(messageText) === normalizedTranscript(draftText);
 }
 

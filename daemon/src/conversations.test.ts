@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
-import { HistoryUnwindRefreshRequiredError, appendRealtimeCallStatus, appendRealtimeTranscript, bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
+import { HistoryUnwindRefreshRequiredError, appendRealtimeCallStatus, appendRealtimeTranscript, bumpToTop, clearUnread, clone, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, promoteRealtimeTranscript, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
 import { setActiveJob, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
 import { load as loadPersisted } from "./persistence";
@@ -89,6 +89,51 @@ describe("realtime transcripts", () => {
     expect(messages[0]!.metadata?.system).toBeUndefined();
     expect(messages[1]!.metadata?.system).toBeUndefined();
     expect(getSummary(id)?.messageCount).toBe(2);
+  });
+
+  test("promotes a matching transcript in place without adding another user turn", () => {
+    const id = mkId("realtime-delegation");
+    create(id, "openai", "gpt-5.4", "Realtime delegation");
+    appendRealtimeTranscript(id, "user", "Please inspect the repository.", 1_000);
+    appendRealtimeTranscript(id, "assistant", "I’ll take a look.", 1_500);
+
+    const original = get(id)!.messages[0]!;
+    original.contextTokens = {
+      version: 1,
+      provider: "openai",
+      model: "gpt-5.4",
+      signature: "stale",
+      totalTokens: 10,
+      breakdown: {
+        userText: 10,
+        userImage: 0,
+        assistantText: 0,
+        toolUse: 0,
+        toolResultText: 0,
+        toolResultImage: 0,
+        thinking: 0,
+        providerReasoning: 0,
+        systemHint: 0,
+      },
+      source: "estimated",
+      updatedAt: 1_000,
+    };
+
+    const replacement = "[realtime delegation]\nTask: Inspect the repository.\nOriginal speech: Please inspect the repository.";
+    expect(promoteRealtimeTranscript(id, "Please inspect the repository", replacement)).toBe(true);
+
+    const messages = get(id)!.messages;
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toBe(original);
+    expect(messages[0]).toMatchObject({
+      role: "user",
+      content: replacement,
+      metadata: { startedAt: 1_000, kind: "realtime_transcript" },
+      contextCheckpoint: { version: 1, transcriptHistoryCount: 0 },
+      contextTokens: null,
+    });
+    expect(messages[1]).toMatchObject({ role: "assistant", content: "I’ll take a look." });
+    expect(promoteRealtimeTranscript(id, "unrelated speech", replacement)).toBe(false);
   });
 });
 
