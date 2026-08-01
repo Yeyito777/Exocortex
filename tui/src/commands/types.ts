@@ -1,6 +1,7 @@
 import type { RenderState } from "../state";
 import type { GoalAction, OpenAILoginMethod, TrimMode } from "../protocol";
 import type { ProviderId, ModelId, EffortLevel } from "../messages";
+import type { RealtimeVoice } from "@exocortex/shared/realtime";
 
 export interface CompletionItem {
   name: string;
@@ -20,6 +21,9 @@ export type CommandResult =
   | { type: "compact_requested" }
   | { type: "btw_requested"; query: string }
   | { type: "btw_close_requested" }
+  | { type: "call_requested"; voice?: RealtimeVoice }
+  | { type: "hangup_requested" }
+  | { type: "mic_gain_changed"; gainDb: number }
   | { type: "model_changed"; provider: ProviderId; model: ModelId }
   | { type: "trim_requested"; mode: TrimMode; count: number }
   | { type: "effort_changed"; effort: EffortLevel }

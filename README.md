@@ -37,6 +37,12 @@ Please install https://github.com/Yeyito777/Exocortex.git
 
 - **systemd** — comes with Arch by default.
 
+- **Native TUI call audio** — Node.js plus PulseAudio-compatible client tools
+  (PipeWire's PulseAudio server works):
+  ```bash
+  sudo pacman -S nodejs libpulse
+  ```
+
 #### Install
 
 ```bash

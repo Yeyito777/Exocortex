@@ -6,7 +6,7 @@
  * in blockrenderer.ts.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, type Message, type MessageMetadata } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Message, type MessageMetadata } from "./messages";
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { theme } from "./theme";
@@ -31,6 +31,11 @@ export function compactionSpinnerText(startedAt: number, now = Date.now()): stri
 export function historyLoadingSpinnerText(startedAt: number, now = Date.now()): string {
   const frameIndex = Math.max(0, Math.floor((now - startedAt) / COMPACTION_SPINNER_INTERVAL_MS));
   return `${COMPACTION_SPINNER_FRAMES[frameIndex % COMPACTION_SPINNER_FRAMES.length]} Loading...`;
+}
+
+function rightAlignedProvenanceLabel(label: string, availableWidth: number): string {
+  const padding = " ".repeat(Math.max(0, availableWidth - label.length - 3));
+  return `${padding}${theme.muted}${theme.italic}${label}${theme.reset}`;
 }
 
 /** Build the muted markdown-style completion divider, ending at the screen midpoint. */
@@ -122,6 +127,7 @@ function isRealUserMessage(msg: Message): boolean {
 }
 
 function isAssistantMetadataBoundary(msg: Message): boolean {
+  if (msg.role === "assistant" && msg.metadata?.kind === REALTIME_TRANSCRIPT_KIND) return true;
   // A replay is a fresh request even though it has no new user message. The
   // terminal notice is its only durable boundary from the interrupted request;
   // crossing it would charge the idle time before /replay as active model time.
@@ -189,6 +195,7 @@ export type RenderLineSegment =
   | "system_instructions_content"
   | "system_instructions_top"
   | "system_message"
+  | "transcript_label"
   | "user_content"
   | "user_margin_bottom"
   | "user_margin_top";
@@ -370,6 +377,9 @@ export function buildMessageLines(
           lineAnchors[contentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
         }
       }
+      if (msg.metadata?.kind === REALTIME_TRANSCRIPT_KIND) {
+        pushLine(rightAlignedProvenanceLabel("call transcript", availableWidth), msg, "transcript_label");
+      }
       pushLine("", msg, "user_margin_bottom");               // bottom margin
       firstUser = false;
       pushMessageBound(msg.role, start, contentStart, contentEnd);
@@ -379,13 +389,23 @@ export function buildMessageLines(
       for (const block of msg.blocks) {
         pushBlock(block, "assistant_block", renderAssistantBlock(block));
       }
-      const nextIsAssistant = state.messages[messageIndex + 1]?.role === "assistant"
-        || (messageIndex === state.messages.length - 1 && state.pendingAI?.role === "assistant");
-      const metadata = assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
-      const metadataLines = nextIsAssistant ? [] : renderMetadata(metadata);
+      const nextMessage = state.messages[messageIndex + 1];
+      const nextContinuesAssistantSegment = (
+        nextMessage?.role === "assistant"
+        && nextMessage.metadata?.kind !== REALTIME_TRANSCRIPT_KIND
+      ) || (messageIndex === state.messages.length - 1 && state.pendingAI?.role === "assistant");
+      const isCallTranscript = msg.metadata?.kind === REALTIME_TRANSCRIPT_KIND;
+      const metadata = isCallTranscript
+        ? msg.metadata
+        : assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
+      const metadataLines = isCallTranscript
+        ? renderMetadata(metadata)
+        : nextContinuesAssistantSegment ? [] : renderMetadata(metadata);
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
       const contentEnd = lines.length;
-      for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], msg, "assistant_metadata", i);
+      for (let i = 0; i < metadataLines.length; i++) {
+        pushLine(metadataLines[i], msg, "assistant_metadata", i);
+      }
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "system" && msg.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND) {
       pushLine("", msg, "compaction_margin_top");
@@ -465,6 +485,49 @@ export function buildMessageLines(
     pushMessageBound(state.pendingAI.role, start, start, contentEnd);
   }
 
+  // GPT-Live transcript projections deliberately live outside canonical
+  // state.messages. Keep them at the visual tail, after any delegated agent
+  // stream, so their position matches the canonical ordering that replaces
+  // them. Input transcription can finish after output speech starts, therefore
+  // the two drafts still render together in user → assistant order.
+  if (state.callUserDraft) {
+    const msg = state.callUserDraft.message;
+    const start = lines.length;
+    if (!firstUser) pushLine("", msg, "user_margin_top");
+    const contentStart = lines.length;
+    const rendered = renderUserMessageCached(msg, msg.text, availableWidth, msg.images);
+    pushBlock(msg, "user_content", rendered);
+    const contentEnd = lines.length;
+    const flow = userMessageFlowMetadataCached(msg, msg.text, availableWidth, msg.images);
+    if (flow && flow.starts.length === contentEnd - contentStart) {
+      for (let row = 0; row < flow.starts.length; row++) {
+        lineAnchors[contentStart + row].userFlowDocument = flow.document;
+        lineAnchors[contentStart + row].userFlowStart = flow.starts[row];
+        lineAnchors[contentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
+      }
+    }
+    pushLine(rightAlignedProvenanceLabel("call transcript", availableWidth), msg, "transcript_label");
+    pushLine("", msg, "user_margin_bottom");
+    firstUser = false;
+    pushMessageBound(msg.role, start, contentStart, contentEnd);
+  }
+
+  if (state.callAssistantDraft) {
+    const msg = state.callAssistantDraft.message;
+    const start = lines.length;
+    const contentStart = lines.length;
+    for (const block of msg.blocks) {
+      pushBlock(block, "assistant_block", renderAssistantBlock(block));
+    }
+    const metadataLines = renderMetadata(msg.metadata);
+    if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
+    const contentEnd = lines.length;
+    for (let i = 0; i < metadataLines.length; i++) {
+      pushLine(metadataLines[i], msg, "assistant_metadata", i);
+    }
+    pushMessageBound(msg.role, start, contentStart, contentEnd);
+  }
+
   // Live user-notice tail during streaming. These are buffered in state and
   // rendered after pendingAI so slash-command feedback stays visible at the
   // bottom instead of getting buried above a growing assistant message.
@@ -499,8 +562,7 @@ export function buildMessageLines(
         }
       }
       // Timing label — right-aligned, muted italic
-      const labelPad = " ".repeat(Math.max(0, availableWidth - timingLabel.length - 3));
-      pushLine(`${labelPad}${theme.muted}${theme.italic}${timingLabel}${theme.reset}`, qm, "queued_label");
+      pushLine(rightAlignedProvenanceLabel(timingLabel, availableWidth), qm, "queued_label");
     }
   }
 

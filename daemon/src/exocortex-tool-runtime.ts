@@ -77,6 +77,8 @@ export function getExocortexToolRuntime(server: DaemonServer): ExocortexToolRunt
 export interface ExocortexToolRuntimeDependencies {
   server: DaemonServer;
   runTurn(convId: string, text: string, maxDepth: number, startedAt: number): Promise<AssistantTurnOutcome>;
+  /** End the realtime call owned by a conversation. */
+  stopCall?(convId: string): Promise<void>;
   /** Durable lifecycle hooks used by production. */
   beginParentNotification?(
     parent: { convId: string; maxChars?: number },
@@ -1550,6 +1552,17 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }
   };
 
+  const executeHangupCommand = async (
+    args: Record<string, unknown>,
+    parentConversationId: string | undefined,
+  ): Promise<ToolResult> => {
+    const convId = stringInput(args, "conversation_id") ?? parentConversationId;
+    if (!convId) throw new Error("conversation_id is required without an active conversation context");
+    if (!deps.stopCall) throw new Error("Realtime call control is unavailable in this tool context");
+    await deps.stopCall(convId);
+    return ok(pretty({ hung_up: true, conversation_id: convId }));
+  };
+
   const commandSchema = (
     properties: Record<string, unknown>,
     required: string[] = [],
@@ -1702,6 +1715,15 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         { operation: "stop", task_id: "bash:<pid>:<nonce>" },
       ],
       execute: executeTaskCommand,
+    },
+    {
+      name: "hangup",
+      description: "End the realtime call owned by a conversation. Defaults to the active conversation.",
+      inputSchema: commandSchema({
+        conversation_id: { type: "string", description: "Defaults to the active conversation." },
+      }),
+      examples: [{}],
+      execute: executeHangupCommand,
     },
     {
       name: "status",

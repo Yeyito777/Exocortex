@@ -91,6 +91,7 @@ export function buildHistoryUpdatedEvents(
     convId: compactData.convId,
     contextTokens: compactData.contextTokens,
     toolOutputsIncluded: compactData.toolOutputsIncluded,
+    pendingAI: compactData.pendingAI ?? null,
     ...(options.resetHistoryWindow ? { resetHistoryWindow: true } : {}),
   };
   return {

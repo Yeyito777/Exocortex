@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { homedir } from "os";
 import { resolve } from "path";
-import { configuredConversationDefaults, effectiveConversationDefaults, productConversationDefaults, type ExocortexConfig, agentWorkingDirectory, performanceProfilingEnabled } from "./config";
+import { configuredConversationDefaults, effectiveConversationDefaults, effectiveRealtimeVoice, productConversationDefaults, type ExocortexConfig, agentWorkingDirectory, performanceProfilingEnabled } from "./config";
 import { agentCwdDir, repoRoot } from "./paths";
 
 describe("agentWorkingDirectory", () => {
@@ -30,6 +30,14 @@ describe("performance profiling config", () => {
     expect(performanceProfilingEnabled({})).toBe(false);
     expect(performanceProfilingEnabled({ diagnostics: { performanceProfiling: false } })).toBe(false);
     expect(performanceProfilingEnabled({ diagnostics: { performanceProfiling: true } })).toBe(true);
+  });
+});
+
+describe("realtime voice config", () => {
+  test("defaults to cove and accepts a supported saved voice", () => {
+    expect(effectiveRealtimeVoice({})).toBe("cove");
+    expect(effectiveRealtimeVoice({ audio: { callVoice: "sol" } })).toBe("sol");
+    expect(effectiveRealtimeVoice({ audio: { callVoice: "not-a-voice" as never } })).toBe("cove");
   });
 });
 

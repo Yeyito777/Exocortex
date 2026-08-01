@@ -9,6 +9,7 @@
  */
 
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery } from "./messages";
+import type { RealtimeVoice } from "./realtime";
 export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
@@ -65,6 +66,10 @@ export interface NewConversationCommand {
   goalPausable?: boolean;
   /** Optional goal permission. Defaults to true. If false, goalPausable is also forced false. */
   goalCompletable?: boolean;
+  /** Start a realtime call owned by the new conversation immediately after creation. */
+  startCall?: boolean;
+  /** Optional explicit voice for the initial realtime call. */
+  callVoice?: RealtimeVoice;
 }
 
 export interface ParentNotificationTarget {
@@ -143,6 +148,32 @@ export interface BackgroundToolCommand {
   type: "background_tool";
   reqId?: string;
   convId: string;
+}
+
+/** Request a realtime call owned by an existing conversation. */
+export interface StartCallCommand {
+  type: "start_call";
+  reqId?: string;
+  convId: string;
+  /** Explicit selection; omission reuses the persisted call voice. */
+  voice?: RealtimeVoice;
+}
+
+/** Attach a media adapter's WebRTC offer to a prepared conversation call. */
+export interface AttachCallMediaCommand {
+  type: "attach_call_media";
+  reqId?: string;
+  convId: string;
+  callId: string;
+  offerSdp: string;
+}
+
+/** Stop the active realtime call for a conversation. */
+export interface StopCallCommand {
+  type: "stop_call";
+  reqId?: string;
+  convId: string;
+  callId?: string;
 }
 
 export interface PrewarmConversationCommand {
@@ -710,6 +741,9 @@ export type Command =
   | TrimConversationCommand
   | AbortCommand
   | BackgroundToolCommand
+  | StartCallCommand
+  | AttachCallMediaCommand
+  | StopCallCommand
   | PrewarmConversationCommand
   | SubscribeCommand
   | UnsubscribeCommand
@@ -1191,6 +1225,50 @@ export interface SystemMessageEvent {
   color?: string;
 }
 
+export type RealtimeCallState =
+  | "starting"
+  | "waiting_for_media"
+  | "connecting"
+  | "live"
+  | "delegating"
+  | "stopping"
+  | "closed"
+  | "error";
+
+/** Canonical lifecycle snapshot for one conversation-owned realtime call. */
+export interface CallStateEvent {
+  type: "call_state";
+  convId: string;
+  callId: string;
+  state: RealtimeCallState;
+  message?: string;
+}
+
+/** WebRTC answer SDP returned to the media adapter that supplied the offer. */
+export interface CallSdpAnswerEvent {
+  type: "call_sdp_answer";
+  reqId?: string;
+  convId: string;
+  callId: string;
+  sdp: string;
+}
+
+/** Live or finalized Bidi transcript text. Only finalized text is persisted. */
+export interface CallTranscriptEvent {
+  type: "call_transcript";
+  convId: string;
+  callId: string;
+  role: "user" | "assistant";
+  /** Complete transcript accumulated so far, not merely the latest wire chunk. */
+  text: string;
+  final: boolean;
+  startedAt: number;
+  endedAt: number | null;
+  model: ModelId;
+  /** Actual provider output tokens when available, otherwise a live text estimate. */
+  tokens: number;
+}
+
 export interface ProviderAuthInfo {
   configured: boolean;
   authenticated: boolean;
@@ -1251,6 +1329,8 @@ export interface HistoryUpdatedEvent {
   contextTokens: number | null;
   /** Whether tool_result block outputs are present in entries. */
   toolOutputsIncluded: boolean;
+  /** Authoritative live tail when this canonical update occurs during a stream. */
+  pendingAI?: AIMessagePayload | null;
 }
 
 export interface ToolOutputsLoadedEvent {
@@ -1422,6 +1502,9 @@ export type Event =
   | StreamRetryEvent
   | ContextCompactionStatusEvent
   | SystemMessageEvent
+  | CallStateEvent
+  | CallSdpAnswerEvent
+  | CallTranscriptEvent
   | ToolsAvailableEvent
   | HistoryUpdatedEvent
   | ToolOutputsLoadedEvent
