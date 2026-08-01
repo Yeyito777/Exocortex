@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "verifiedAt": "2026-08-01T19:15:24.554Z",
+  "fullResult": "results/conversation-store-full.json",
+  "scaleResult": "results/conversation-store-50000-startup.json",
+  "passed": 13,
+  "failed": 0,
+  "checks": [
+    {
+      "name": "low-scale median regression ms",
+      "ok": true,
+      "actual": 0.8744229999992967,
+      "required": "<= 2"
+    },
+    {
+      "name": "low-scale p95 regression ms",
+      "ok": true,
+      "actual": 0.9055140000018582,
+      "required": "<= 5"
+    },
+    {
+      "name": "interactive metadata write p95 ms",
+      "ok": true,
+      "actual": 3.274964000000182,
+      "required": "< 50"
+    },
+    {
+      "name": "10k startup/list speedup",
+      "ok": true,
+      "actual": 4.49494646836632,
+      "required": ">= 2x"
+    },
+    {
+      "name": "10 MiB append speedup",
+      "ok": true,
+      "actual": 28.327293251593414,
+      "required": ">= 5x"
+    },
+    {
+      "name": "50 MiB append speedup",
+      "ok": true,
+      "actual": 148.007643818984,
+      "required": ">= 5x"
+    },
+    {
+      "name": "96 MiB append speedup",
+      "ok": true,
+      "actual": 305.7335478233049,
+      "required": ">= 5x"
+    },
+    {
+      "name": "SQLite append historical-size spread",
+      "ok": true,
+      "actual": 1.1603977141559074,
+      "required": "<= 2x max/min"
+    },
+    {
+      "name": "10k SQLite positive RSS delta MiB",
+      "ok": true,
+      "actual": 0.13671875,
+      "required": "<= 128 MiB"
+    },
+    {
+      "name": "10k SQLite/JSON storage ratio",
+      "ok": true,
+      "actual": 0.9571105342101344,
+      "required": "<= 1.5x"
+    },
+    {
+      "name": "50k dataset count",
+      "ok": true,
+      "actual": 50000,
+      "required": "= 50000"
+    },
+    {
+      "name": "50k startup/list speedup",
+      "ok": true,
+      "actual": 4.178703377633832,
+      "required": ">= 2x"
+    },
+    {
+      "name": "50k SQLite positive RSS delta MiB",
+      "ok": true,
+      "actual": -0.12109375,
+      "required": "<= 256 MiB"
+    }
+  ]
+}

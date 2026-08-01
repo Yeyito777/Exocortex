@@ -35,8 +35,16 @@ interface Stats {
 const RESULT_DIR = join(import.meta.dir, "results");
 mkdirSync(RESULT_DIR, { recursive: true });
 const quick = process.argv.includes("--quick");
-const repetitions = quick ? 3 : 7;
-const syntheticCount = quick ? 2_000 : 10_000;
+const startupOnly = process.argv.includes("--startup-only");
+function numericArg(name: string, fallback: number): number {
+  const index = process.argv.indexOf(name);
+  if (index < 0) return fallback;
+  const value = Number(process.argv[index + 1]);
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} requires a positive integer`);
+  return value;
+}
+const repetitions = numericArg("--repetitions", quick ? 3 : 7);
+const syntheticCount = numericArg("--count", quick ? 2_000 : 10_000);
 
 function percentile(values: number[], fraction: number): number {
   const sorted = [...values].sort((a, b) => a - b);
@@ -247,7 +255,7 @@ function appendDataset(sizeMiB: number): { json: Stats; sqlite: Stats; jsonBytes
   };
 }
 
-const appendSizes = quick ? [1, 10] : [1, 10, 50, 96];
+const appendSizes = startupOnly ? [] : (quick ? [1, 10] : [1, 10, 50, 96]);
 const largeAppend = Object.fromEntries(appendSizes.map((size) => [String(size), appendDataset(size)]));
 
 // Low-scale startup/list uses the copied real fixture and canonical SQLite DB.
@@ -291,7 +299,10 @@ const report = {
   largeAppend,
   storageBytes: { jsonSynthetic: dirSize(join(root, "json")), sqliteSynthetic: dirSize(join(root, "sqlite")) },
 };
-const suffix = quick ? "quick" : "full";
+const explicitCount = process.argv.includes("--count");
+const suffix = startupOnly
+  ? `${syntheticCount}-startup`
+  : (explicitCount ? `${syntheticCount}` : (quick ? "quick" : "full"));
 const resultPath = join(RESULT_DIR, `conversation-store-${suffix}.json`);
 writeFileSync(resultPath, JSON.stringify(report, null, 2));
 console.log(JSON.stringify({ resultPath, syntheticCount, lowScale: Object.fromEntries(Object.entries(lowScale).map(([key, value]: any) => [key, value.medianMs])), largeStartupSpeedup: largeScale.jsonStartupAndList.medianMs / largeScale.sqliteStartupAndList.medianMs, appendSpeedups: Object.fromEntries(Object.entries(largeAppend).map(([size, value]: any) => [size, value.json.medianMs / value.sqlite.medianMs])), storageBytes: report.storageBytes }, null, 2));

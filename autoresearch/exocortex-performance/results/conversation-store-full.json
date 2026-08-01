@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-01T07:39:41.086Z",
+  "generatedAt": "2026-08-01T18:52:08.731Z",
   "machine": {
     "platform": "linux",
     "arch": "x64",
@@ -25,209 +25,209 @@
   },
   "lowScale": {
     "jsonStartupAndList": {
-      "medianMs": 0.292051000000356,
-      "p95Ms": 0.3154919999997219,
-      "maxMs": 0.32433300000047893,
-      "medianCpuMs": 0.295,
+      "medianMs": 0.3316430000013497,
+      "p95Ms": 0.37144399999851885,
+      "maxMs": 0.4772179999999935,
+      "medianCpuMs": 0.332,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.2879509999993388,
-          "cpuMs": 0.29,
+          "wallMs": 0.326772999998866,
+          "cpuMs": 0.33,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.2882309999995414,
-          "cpuMs": 0.29,
+          "wallMs": 0.32853199999954086,
+          "cpuMs": 0.332,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.3154919999997219,
-          "cpuMs": 0.318,
+          "wallMs": 0.3316430000013497,
+          "cpuMs": 0.328,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.292051000000356,
-          "cpuMs": 0.295,
+          "wallMs": 0.36569299999973737,
+          "cpuMs": 0.354,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.32433300000047893,
-          "cpuMs": 0.315,
+          "wallMs": 0.37144399999851885,
+          "cpuMs": 0.375,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.28272000000015396,
-          "cpuMs": 0.285,
+          "wallMs": 0.3266220000004978,
+          "cpuMs": 0.329,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.3068519999997079,
-          "cpuMs": 0.453,
+          "wallMs": 0.4772179999999935,
+          "cpuMs": 0.475,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteStartupAndList": {
-      "medianMs": 0.7587290000001303,
-      "p95Ms": 0.8163919999997233,
-      "maxMs": 0.8196420000003855,
-      "medianCpuMs": 0.755,
+      "medianMs": 1.2060660000006465,
+      "p95Ms": 1.276958000000377,
+      "maxMs": 1.5707800000000134,
+      "medianCpuMs": 1.179,
       "maxRssDelta": 0,
       "medianWriteBytes": 32768,
       "samples": [
         {
-          "wallMs": 0.8163919999997233,
-          "cpuMs": 0.813,
+          "wallMs": 1.116621999999552,
+          "cpuMs": 1.107,
           "rssDelta": 0,
           "writeBytes": 32768
         },
         {
-          "wallMs": 0.7587290000001303,
-          "cpuMs": 0.755,
+          "wallMs": 1.2204859999983455,
+          "cpuMs": 1.186,
           "rssDelta": 0,
           "writeBytes": 32768
         },
         {
-          "wallMs": 0.7183380000005855,
-          "cpuMs": 0.715,
+          "wallMs": 1.276958000000377,
+          "cpuMs": 1.236,
           "rssDelta": 0,
           "writeBytes": 32768
         },
         {
-          "wallMs": 0.7521280000000843,
-          "cpuMs": 0.748,
+          "wallMs": 1.1547630000004574,
+          "cpuMs": 1.145,
           "rssDelta": 0,
           "writeBytes": 32768
         },
         {
-          "wallMs": 0.8196420000003855,
-          "cpuMs": 0.814,
+          "wallMs": 1.2060660000006465,
+          "cpuMs": 1.179,
           "rssDelta": 0,
           "writeBytes": 32768
         },
         {
-          "wallMs": 0.7779499999996915,
-          "cpuMs": 0.851,
+          "wallMs": 1.2013060000008409,
+          "cpuMs": 1.177,
           "rssDelta": 0,
           "writeBytes": 32768
         },
         {
-          "wallMs": 0.6641049999998359,
-          "cpuMs": 0.666,
+          "wallMs": 1.5707800000000134,
+          "cpuMs": 1.19,
           "rssDelta": 0,
           "writeBytes": 32768
         }
       ]
     },
     "sqliteRecentPage": {
-      "medianMs": 1.088380999999572,
-      "p95Ms": 1.0993310000003476,
-      "maxMs": 1.1239630000000034,
-      "medianCpuMs": 1.069,
+      "medianMs": 1.736086000000796,
+      "p95Ms": 1.843619999999646,
+      "maxMs": 1.8896909999984928,
+      "medianCpuMs": 1.716,
       "maxRssDelta": 131072,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 1.0993310000003476,
-          "cpuMs": 1.089,
-          "rssDelta": 0,
-          "writeBytes": 0
-        },
-        {
-          "wallMs": 1.0816720000002533,
-          "cpuMs": 1.069,
+          "wallMs": 1.8896909999984928,
+          "cpuMs": 1.854,
           "rssDelta": 131072,
           "writeBytes": 0
         },
         {
-          "wallMs": 1.088380999999572,
-          "cpuMs": 1.068,
+          "wallMs": 1.736086000000796,
+          "cpuMs": 1.721,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 1.08965199999966,
-          "cpuMs": 1.071,
+          "wallMs": 1.8346789999995963,
+          "cpuMs": 1.771,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 1.1239630000000034,
-          "cpuMs": 1.108,
+          "wallMs": 1.694974000000002,
+          "cpuMs": 1.697,
+          "rssDelta": 131072,
+          "writeBytes": 0
+        },
+        {
+          "wallMs": 1.732574999999997,
+          "cpuMs": 1.684,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 1.048399999999674,
-          "cpuMs": 1.04,
+          "wallMs": 1.7318059999997786,
+          "cpuMs": 1.715,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 1.0388100000000122,
-          "cpuMs": 1.036,
+          "wallMs": 1.843619999999646,
+          "cpuMs": 1.716,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteToolOutputs": {
-      "medianMs": 31.036255999999412,
-      "p95Ms": 32.05213499999991,
-      "maxMs": 44.44534900000053,
-      "medianCpuMs": 31.278,
-      "maxRssDelta": 1441792,
+      "medianMs": 46.53902300000118,
+      "p95Ms": 48.2124359999998,
+      "maxMs": 52.62925399999949,
+      "medianCpuMs": 44.849,
+      "maxRssDelta": 1835008,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 32.05213499999991,
-          "cpuMs": 31.695,
-          "rssDelta": 1441792,
+          "wallMs": 44.46016400000008,
+          "cpuMs": 44.115,
+          "rssDelta": 1835008,
           "writeBytes": 0
         },
         {
-          "wallMs": 27.657036999999946,
-          "cpuMs": 27.337,
-          "rssDelta": 0,
+          "wallMs": 52.62925399999949,
+          "cpuMs": 51.444,
+          "rssDelta": -10084352,
           "writeBytes": 0
         },
         {
-          "wallMs": 31.036255999999412,
-          "cpuMs": 51.168,
-          "rssDelta": -201334784,
+          "wallMs": 46.53902300000118,
+          "cpuMs": 44.849,
+          "rssDelta": 524288,
           "writeBytes": 0
         },
         {
-          "wallMs": 31.137249999999767,
-          "cpuMs": 31.278,
-          "rssDelta": 978944,
+          "wallMs": 48.2124359999998,
+          "cpuMs": 47.633,
+          "rssDelta": -368640,
           "writeBytes": 0
         },
         {
-          "wallMs": 27.037373000000116,
-          "cpuMs": 26.714,
-          "rssDelta": 0,
+          "wallMs": 43.947674999999435,
+          "cpuMs": 43.42,
+          "rssDelta": 262144,
           "writeBytes": 0
         },
         {
-          "wallMs": 28.033871999999974,
-          "cpuMs": 27.841,
-          "rssDelta": 0,
+          "wallMs": 47.70376699999906,
+          "cpuMs": 47.444,
+          "rssDelta": -1150976,
           "writeBytes": 0
         },
         {
-          "wallMs": 44.44534900000053,
-          "cpuMs": 54.629,
-          "rssDelta": -201158656,
+          "wallMs": 46.46277099999861,
+          "cpuMs": 44.408,
+          "rssDelta": -172032,
           "writeBytes": 0
         }
       ]
@@ -235,572 +235,572 @@
   },
   "largeScale": {
     "jsonStartupAndList": {
-      "medianMs": 90.10944400000017,
-      "p95Ms": 98.69874199999981,
-      "maxMs": 102.46055500000011,
-      "medianCpuMs": 90.483,
-      "maxRssDelta": 671744,
+      "medianMs": 142.81494500000008,
+      "p95Ms": 150.94595299999992,
+      "maxMs": 153.38391599999977,
+      "medianCpuMs": 129.775,
+      "maxRssDelta": 5615616,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 88.49052200000006,
-          "cpuMs": 90.483,
-          "rssDelta": -17018880,
+          "wallMs": 135.53935,
+          "cpuMs": 132.494,
+          "rssDelta": -17997824,
           "writeBytes": 0
         },
         {
-          "wallMs": 90.10944400000017,
-          "cpuMs": 88.557,
-          "rssDelta": -3538944,
+          "wallMs": 150.74997600000006,
+          "cpuMs": 132.966,
+          "rssDelta": 5615616,
           "writeBytes": 0
         },
         {
-          "wallMs": 98.69874199999981,
-          "cpuMs": 98.887,
-          "rssDelta": -933888,
+          "wallMs": 134.14510599999994,
+          "cpuMs": 128.31,
+          "rssDelta": -8192,
           "writeBytes": 0
         },
         {
-          "wallMs": 86.60113899999988,
-          "cpuMs": 86.362,
-          "rssDelta": -5029888,
+          "wallMs": 128.57364599999983,
+          "cpuMs": 124.503,
+          "rssDelta": 2613248,
           "writeBytes": 0
         },
         {
-          "wallMs": 98.09069900000009,
-          "cpuMs": 97.369,
-          "rssDelta": -2621440,
+          "wallMs": 142.81494500000008,
+          "cpuMs": 133.694,
+          "rssDelta": 5218304,
           "writeBytes": 0
         },
         {
-          "wallMs": 102.46055500000011,
-          "cpuMs": 100.038,
-          "rssDelta": 593920,
+          "wallMs": 153.38391599999977,
+          "cpuMs": 129.775,
+          "rssDelta": 4202496,
           "writeBytes": 0
         },
         {
-          "wallMs": 86.55437699999993,
-          "cpuMs": 85.24,
-          "rssDelta": 671744,
+          "wallMs": 150.94595299999992,
+          "cpuMs": 129.119,
+          "rssDelta": 5595136,
           "writeBytes": 0
         }
       ]
     },
     "sqliteStartupAndList": {
-      "medianMs": 19.222345000000132,
-      "p95Ms": 20.216003,
-      "maxMs": 22.98604800000021,
-      "medianCpuMs": 19.104,
-      "maxRssDelta": 3145728,
+      "medianMs": 31.772334999999657,
+      "p95Ms": 34.43867599999976,
+      "maxMs": 39.43886500000008,
+      "medianCpuMs": 28.814,
+      "maxRssDelta": 143360,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 20.216003,
-          "cpuMs": 20.366,
-          "rssDelta": -3416064,
+          "wallMs": 30.799457000000075,
+          "cpuMs": 29.195,
+          "rssDelta": -1105920,
           "writeBytes": 0
         },
         {
-          "wallMs": 20.062966999999844,
-          "cpuMs": 34.609,
-          "rssDelta": -16965632,
+          "wallMs": 39.43886500000008,
+          "cpuMs": 37.722,
+          "rssDelta": 143360,
           "writeBytes": 0
         },
         {
-          "wallMs": 19.222345000000132,
-          "cpuMs": 19.104,
-          "rssDelta": 2629632,
+          "wallMs": 29.377653999999893,
+          "cpuMs": 28.814,
+          "rssDelta": -12288,
           "writeBytes": 0
         },
         {
-          "wallMs": 17.616342999999688,
-          "cpuMs": 17.557,
-          "rssDelta": 36864,
+          "wallMs": 34.43867599999976,
+          "cpuMs": 28.926,
+          "rssDelta": -204800,
           "writeBytes": 0
         },
         {
-          "wallMs": 17.618762999999944,
-          "cpuMs": 17.443,
-          "rssDelta": 3014656,
+          "wallMs": 32.17838000000029,
+          "cpuMs": 28.491,
+          "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 22.98604800000021,
-          "cpuMs": 24.035,
-          "rssDelta": -5992448,
+          "wallMs": 28.830322999999225,
+          "cpuMs": 28.62,
+          "rssDelta": 12288,
           "writeBytes": 0
         },
         {
-          "wallMs": 18.070700000000215,
-          "cpuMs": 17.937,
-          "rssDelta": 3145728,
+          "wallMs": 31.772334999999657,
+          "cpuMs": 28.586,
+          "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "jsonWarmList": {
-      "medianMs": 13.066530000000057,
-      "p95Ms": 14.210072999999738,
-      "maxMs": 16.37454600000001,
-      "medianCpuMs": 12.924,
-      "maxRssDelta": 4718592,
+      "medianMs": 20.921033999999963,
+      "p95Ms": 23.18561899999986,
+      "maxMs": 24.663024999999834,
+      "medianCpuMs": 20.623,
+      "maxRssDelta": 4849664,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 12.434995999999956,
-          "cpuMs": 12.256,
-          "rssDelta": 1179648,
+          "wallMs": 20.921033999999963,
+          "cpuMs": 20.794,
+          "rssDelta": 3145728,
           "writeBytes": 0
         },
         {
-          "wallMs": 16.37454600000001,
-          "cpuMs": 18.559,
-          "rssDelta": 159744,
-          "writeBytes": 0
-        },
-        {
-          "wallMs": 12.123223999999936,
-          "cpuMs": 12.006,
-          "rssDelta": 655360,
-          "writeBytes": 0
-        },
-        {
-          "wallMs": 13.066530000000057,
-          "cpuMs": 12.924,
+          "wallMs": 21.06256900000062,
+          "cpuMs": 20.931,
           "rssDelta": 4718592,
           "writeBytes": 0
         },
         {
-          "wallMs": 11.484209000000192,
-          "cpuMs": 11.39,
+          "wallMs": 23.18561899999986,
+          "cpuMs": 22.763,
+          "rssDelta": -13152256,
+          "writeBytes": 0
+        },
+        {
+          "wallMs": 20.249507999999878,
+          "cpuMs": 19.739,
+          "rssDelta": 4849664,
+          "writeBytes": 0
+        },
+        {
+          "wallMs": 18.32627499999944,
+          "cpuMs": 17.953,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 13.12315099999978,
-          "cpuMs": 13.049,
+          "wallMs": 24.663024999999834,
+          "cpuMs": 20.623,
           "rssDelta": 4718592,
           "writeBytes": 0
         },
         {
-          "wallMs": 14.210072999999738,
-          "cpuMs": 16.942,
-          "rssDelta": -8310784,
+          "wallMs": 19.04706200000055,
+          "cpuMs": 18.178,
+          "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteWarmList": {
-      "medianMs": 17.055571999999756,
-      "p95Ms": 18.94234400000005,
-      "maxMs": 19.830477999999857,
-      "medianCpuMs": 16.842,
-      "maxRssDelta": 200704,
+      "medianMs": 29.91329399999995,
+      "p95Ms": 31.719002000000728,
+      "maxMs": 32.333536000000095,
+      "medianCpuMs": 26.662,
+      "maxRssDelta": 2994176,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 16.753321000000142,
-          "cpuMs": 16.623,
-          "rssDelta": -4251648,
+          "wallMs": 28.681047000000035,
+          "cpuMs": 28.456,
+          "rssDelta": 2994176,
           "writeBytes": 0
         },
         {
-          "wallMs": 19.830477999999857,
-          "cpuMs": 23.832,
-          "rssDelta": -13221888,
+          "wallMs": 28.918045999999777,
+          "cpuMs": 26.662,
+          "rssDelta": 36864,
           "writeBytes": 0
         },
         {
-          "wallMs": 17.055571999999756,
-          "cpuMs": 16.842,
-          "rssDelta": 151552,
+          "wallMs": 29.91329399999995,
+          "cpuMs": 25.974,
+          "rssDelta": 69632,
           "writeBytes": 0
         },
         {
-          "wallMs": 16.968819000000167,
-          "cpuMs": 16.834,
-          "rssDelta": 61440,
+          "wallMs": 32.333536000000095,
+          "cpuMs": 27.333,
+          "rssDelta": -409600,
           "writeBytes": 0
         },
         {
-          "wallMs": 16.96695800000043,
-          "cpuMs": 16.8,
+          "wallMs": 29.43403500000022,
+          "cpuMs": 26.25,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 18.94234400000005,
-          "cpuMs": 19.807,
-          "rssDelta": -1888256,
+          "wallMs": 31.719002000000728,
+          "cpuMs": 26.543,
+          "rssDelta": -471040,
           "writeBytes": 0
         },
         {
-          "wallMs": 17.383154000000104,
-          "cpuMs": 17.179,
-          "rssDelta": 200704,
+          "wallMs": 30.473484999999528,
+          "cpuMs": 26.677,
+          "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "jsonFindById": {
-      "medianMs": 0.05752200000006269,
-      "p95Ms": 0.10600400000021182,
-      "maxMs": 0.13027499999998327,
-      "medianCpuMs": 0.059,
+      "medianMs": 0.11715499999991152,
+      "p95Ms": 0.18227699999988545,
+      "maxMs": 0.27462000000014086,
+      "medianCpuMs": 0.122,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.13027499999998327,
-          "cpuMs": 0.132,
+          "wallMs": 0.27462000000014086,
+          "cpuMs": 0.279,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.10600400000021182,
-          "cpuMs": 0.108,
+          "wallMs": 0.18227699999988545,
+          "cpuMs": 0.187,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.08531299999958719,
-          "cpuMs": 0.087,
+          "wallMs": 0.11715499999991152,
+          "cpuMs": 0.122,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.05752200000006269,
-          "cpuMs": 0.059,
+          "wallMs": 0.11331499999960215,
+          "cpuMs": 0.117,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.04216200000018944,
-          "cpuMs": 0.044,
+          "wallMs": 0.11611400000037975,
+          "cpuMs": 0.122,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.04939200000035271,
-          "cpuMs": 0.052,
+          "wallMs": 0.13299499999993714,
+          "cpuMs": 0.138,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.04656100000011065,
-          "cpuMs": 0.049,
+          "wallMs": 0.11114499999985128,
+          "cpuMs": 0.116,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteFindById": {
-      "medianMs": 0.039451999999982945,
-      "p95Ms": 0.040151000000150816,
-      "maxMs": 0.049632000000201515,
-      "medianCpuMs": 0.042,
+      "medianMs": 0.056502000000364205,
+      "p95Ms": 0.07073299999956362,
+      "maxMs": 0.0785729999997784,
+      "medianCpuMs": 0.06,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.031432000000222615,
-          "cpuMs": 0.035,
+          "wallMs": 0.0785729999997784,
+          "cpuMs": 0.077,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.029271000000335334,
-          "cpuMs": 0.032,
+          "wallMs": 0.05293199999960052,
+          "cpuMs": 0.057,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.029121000000031927,
-          "cpuMs": 0.031,
+          "wallMs": 0.05427200000031007,
+          "cpuMs": 0.059,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.049632000000201515,
-          "cpuMs": 0.052,
+          "wallMs": 0.056502000000364205,
+          "cpuMs": 0.06,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.039451999999982945,
-          "cpuMs": 0.042,
+          "wallMs": 0.07073299999956362,
+          "cpuMs": 0.075,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.03960099999994782,
-          "cpuMs": 0.042,
+          "wallMs": 0.05625199999940378,
+          "cpuMs": 0.059,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.040151000000150816,
-          "cpuMs": 0.042,
+          "wallMs": 0.059363000000303145,
+          "cpuMs": 0.062,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "jsonTitleSearch": {
-      "medianMs": 0.308610999999928,
-      "p95Ms": 0.3154919999997219,
-      "maxMs": 0.42156599999998434,
-      "medianCpuMs": 0.296,
+      "medianMs": 0.5380409999997937,
+      "p95Ms": 0.649344999999812,
+      "maxMs": 0.7175269999997909,
+      "medianCpuMs": 0.535,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.42156599999998434,
-          "cpuMs": 0.424,
+          "wallMs": 0.7175269999997909,
+          "cpuMs": 0.975,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.3090919999999642,
-          "cpuMs": 0.311,
+          "wallMs": 0.5239900000005946,
+          "cpuMs": 0.529,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.3154919999997219,
-          "cpuMs": 0.318,
+          "wallMs": 0.649344999999812,
+          "cpuMs": 0.556,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.308610999999928,
-          "cpuMs": 0.296,
-          "rssDelta": -950272,
-          "writeBytes": 0
-        },
-        {
-          "wallMs": 0.25236000000040804,
-          "cpuMs": 0.254,
+          "wallMs": 0.5377099999996062,
+          "cpuMs": 0.531,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.23652900000024601,
-          "cpuMs": 0.238,
+          "wallMs": 0.5179200000002311,
+          "cpuMs": 0.522,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.30233099999986734,
-          "cpuMs": 0.295,
+          "wallMs": 0.624163999999837,
+          "cpuMs": 0.624,
+          "rssDelta": 0,
+          "writeBytes": 0
+        },
+        {
+          "wallMs": 0.5380409999997937,
+          "cpuMs": 0.535,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteTitleSearch": {
-      "medianMs": 0.20401700000002165,
-      "p95Ms": 0.2395200000000841,
-      "maxMs": 0.25264900000001944,
-      "medianCpuMs": 0.207,
+      "medianMs": 0.323432999999568,
+      "p95Ms": 0.34436299999924813,
+      "maxMs": 0.39015500000004977,
+      "medianCpuMs": 0.328,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.20401700000002165,
-          "cpuMs": 0.207,
+          "wallMs": 0.39015500000004977,
+          "cpuMs": 0.387,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.25264900000001944,
-          "cpuMs": 0.479,
+          "wallMs": 0.33828300000004674,
+          "cpuMs": 0.449,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.1920580000000882,
-          "cpuMs": 0.189,
+          "wallMs": 0.34436299999924813,
+          "cpuMs": 0.33,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.17648599999984071,
-          "cpuMs": 0.178,
+          "wallMs": 0.3075010000002294,
+          "cpuMs": 0.311,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.19856800000025032,
-          "cpuMs": 0.199,
+          "wallMs": 0.29136099999959697,
+          "cpuMs": 0.295,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.2162479999997231,
-          "cpuMs": 0.219,
+          "wallMs": 0.3007419999994454,
+          "cpuMs": 0.305,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.2395200000000841,
-          "cpuMs": 0.229,
+          "wallMs": 0.323432999999568,
+          "cpuMs": 0.328,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteRecentPage": {
-      "medianMs": 0.07995299999993222,
-      "p95Ms": 0.08633399999962421,
-      "maxMs": 0.08958299999994779,
-      "medianCpuMs": 0.082,
+      "medianMs": 0.14966499999991356,
+      "p95Ms": 0.15317600000071252,
+      "maxMs": 0.15981600000031904,
+      "medianCpuMs": 0.147,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.08958299999994779,
-          "cpuMs": 0.092,
+          "wallMs": 0.14966499999991356,
+          "cpuMs": 0.153,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.08076299999993353,
-          "cpuMs": 0.082,
+          "wallMs": 0.1304550000004383,
+          "cpuMs": 0.133,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.08633399999962421,
-          "cpuMs": 0.089,
+          "wallMs": 0.15317600000071252,
+          "cpuMs": 0.149,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.07543299999997544,
-          "cpuMs": 0.077,
+          "wallMs": 0.15068599999995058,
+          "cpuMs": 0.146,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.07995299999993222,
-          "cpuMs": 0.082,
+          "wallMs": 0.15981600000031904,
+          "cpuMs": 0.16,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.07808299999987867,
-          "cpuMs": 0.08,
+          "wallMs": 0.137854999999945,
+          "cpuMs": 0.142,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.07475299999987328,
-          "cpuMs": 0.077,
+          "wallMs": 0.14312499999959982,
+          "cpuMs": 0.147,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteMetadataWrite": {
-      "medianMs": 2.3704210000000785,
-      "p95Ms": 2.4421330000000125,
-      "maxMs": 2.5545979999997144,
-      "medianCpuMs": 2.34,
-      "maxRssDelta": 0,
+      "medianMs": 3.178740999999718,
+      "p95Ms": 3.274964000000182,
+      "maxMs": 3.44532000000072,
+      "medianCpuMs": 3.138,
+      "maxRssDelta": 262144,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 2.3492499999997563,
-          "cpuMs": 2.34,
+          "wallMs": 3.082746000000043,
+          "cpuMs": 3.067,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 2.3704210000000785,
-          "cpuMs": 2.338,
+          "wallMs": 3.0389160000004267,
+          "cpuMs": 3.032,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 2.3279090000000906,
-          "cpuMs": 2.314,
+          "wallMs": 3.44532000000072,
+          "cpuMs": 3.107,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 2.4155319999999847,
-          "cpuMs": 2.381,
+          "wallMs": 3.274964000000182,
+          "cpuMs": 6.095,
+          "rssDelta": 262144,
+          "writeBytes": 0
+        },
+        {
+          "wallMs": 3.1529899999995905,
+          "cpuMs": 3.138,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 2.2945079999999507,
-          "cpuMs": 2.281,
+          "wallMs": 3.1963310000001,
+          "cpuMs": 3.183,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 2.5545979999997144,
-          "cpuMs": 2.984,
-          "rssDelta": -1040384,
-          "writeBytes": 0
-        },
-        {
-          "wallMs": 2.4421330000000125,
-          "cpuMs": 2.805,
+          "wallMs": 3.178740999999718,
+          "cpuMs": 3.647,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteSidebarMove": {
-      "medianMs": 0.07512300000007599,
-      "p95Ms": 0.07757300000002942,
-      "maxMs": 0.0796930000001339,
-      "medianCpuMs": 0.076,
+      "medianMs": 0.13280499999927997,
+      "p95Ms": 0.13887499999964348,
+      "maxMs": 0.1579360000005181,
+      "medianCpuMs": 0.137,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.07743299999992814,
-          "cpuMs": 0.08,
+          "wallMs": 0.13555600000017876,
+          "cpuMs": 0.139,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.07512300000007599,
-          "cpuMs": 0.076,
+          "wallMs": 0.13078499999937776,
+          "cpuMs": 0.135,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.0796930000001339,
-          "cpuMs": 0.076,
+          "wallMs": 0.12725399999999354,
+          "cpuMs": 0.13,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.07325300000002244,
-          "cpuMs": 0.077,
+          "wallMs": 0.13887499999964348,
+          "cpuMs": 0.142,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.07757300000002942,
-          "cpuMs": 0.08,
+          "wallMs": 0.1579360000005181,
+          "cpuMs": 0.153,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.06755299999986164,
-          "cpuMs": 0.069,
+          "wallMs": 0.13280499999927997,
+          "cpuMs": 0.137,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.06925200000023324,
-          "cpuMs": 0.071,
+          "wallMs": 0.10904399999981251,
+          "cpuMs": 0.112,
           "rssDelta": 0,
           "writeBytes": 0
         }
@@ -810,80 +810,80 @@
   "largeAppend": {
     "1": {
       "json": {
-        "medianMs": 0.9313459999998486,
-        "p95Ms": 1.113491999999951,
-        "maxMs": 1.397233000000142,
-        "medianCpuMs": 0.929,
+        "medianMs": 1.1248230000001058,
+        "p95Ms": 1.1621139999997467,
+        "maxMs": 1.5941810000003898,
+        "medianCpuMs": 1.125,
         "maxRssDelta": 1048576,
         "medianWriteBytes": 0,
         "samples": [
           {
-            "wallMs": 1.113491999999951,
-            "cpuMs": 1.107,
+            "wallMs": 1.5941810000003898,
+            "cpuMs": 1.586,
             "rssDelta": 1048576,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.8244810000001053,
-            "cpuMs": 0.815,
+            "wallMs": 1.1621139999997467,
+            "cpuMs": 1.164,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 1.397233000000142,
-            "cpuMs": 1.387,
+            "wallMs": 1.1248230000001058,
+            "cpuMs": 1.125,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.9313459999998486,
-            "cpuMs": 0.929,
+            "wallMs": 1.1112020000000484,
+            "cpuMs": 1.112,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.746958000000177,
-            "cpuMs": 0.75,
+            "wallMs": 1.096281999999519,
+            "cpuMs": 1.097,
             "rssDelta": 0,
             "writeBytes": 0
           }
         ]
       },
       "sqlite": {
-        "medianMs": 0.3461440000000948,
-        "p95Ms": 0.37431500000002416,
-        "maxMs": 0.39433499999995547,
-        "medianCpuMs": 0.373,
+        "medianMs": 0.492619000000559,
+        "p95Ms": 0.4991089999994074,
+        "maxMs": 0.5092089999998279,
+        "medianCpuMs": 0.489,
         "maxRssDelta": 0,
         "medianWriteBytes": 0,
         "samples": [
           {
-            "wallMs": 0.39433499999995547,
-            "cpuMs": 0.39,
+            "wallMs": 0.492619000000559,
+            "cpuMs": 0.489,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.3461440000000948,
-            "cpuMs": 0.373,
+            "wallMs": 0.5092089999998279,
+            "cpuMs": 0.505,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.37431500000002416,
-            "cpuMs": 0.467,
+            "wallMs": 0.4991089999994074,
+            "cpuMs": 0.503,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.3394429999998465,
-            "cpuMs": 0.342,
+            "wallMs": 0.4409960000002684,
+            "cpuMs": 0.445,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.33000200000014956,
-            "cpuMs": 0.332,
+            "wallMs": 0.461287999999513,
+            "cpuMs": 0.46,
             "rssDelta": 0,
             "writeBytes": 0
           }
@@ -894,80 +894,80 @@
     },
     "10": {
       "json": {
-        "medianMs": 9.34985800000004,
-        "p95Ms": 9.414660000000367,
-        "maxMs": 10.275322999999844,
-        "medianCpuMs": 9.237,
-        "maxRssDelta": 4194304,
+        "medianMs": 12.52199500000006,
+        "p95Ms": 12.7103819999993,
+        "maxMs": 12.855387999999948,
+        "medianCpuMs": 12.213,
+        "maxRssDelta": 0,
         "medianWriteBytes": 0,
         "samples": [
           {
-            "wallMs": 10.275322999999844,
-            "cpuMs": 10.143,
-            "rssDelta": 4194304,
+            "wallMs": 12.52199500000006,
+            "cpuMs": 12.673,
+            "rssDelta": -1413120,
             "writeBytes": 0
           },
           {
-            "wallMs": 9.34985800000004,
-            "cpuMs": 9.237,
+            "wallMs": 12.33220799999981,
+            "cpuMs": 12.213,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 9.093547999999828,
-            "cpuMs": 8.988,
+            "wallMs": 11.601599999999962,
+            "cpuMs": 11.504,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 9.414660000000367,
-            "cpuMs": 10.275,
-            "rssDelta": -2232320,
+            "wallMs": 12.855387999999948,
+            "cpuMs": 11.568,
+            "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 8.614529000000402,
-            "cpuMs": 8.491,
-            "rssDelta": 0,
+            "wallMs": 12.7103819999993,
+            "cpuMs": 13.817,
+            "rssDelta": -10522624,
             "writeBytes": 0
           }
         ]
       },
       "sqlite": {
-        "medianMs": 0.2829910000000382,
-        "p95Ms": 0.2842209999998886,
-        "maxMs": 0.31739199999992707,
-        "medianCpuMs": 0.282,
+        "medianMs": 0.44204700000045705,
+        "p95Ms": 0.45396700000037526,
+        "maxMs": 0.4626170000001366,
+        "medianCpuMs": 0.435,
         "maxRssDelta": 0,
         "medianWriteBytes": 0,
         "samples": [
           {
-            "wallMs": 0.2268579999999929,
-            "cpuMs": 0.23,
+            "wallMs": 0.45396700000037526,
+            "cpuMs": 0.451,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.24634999999989304,
-            "cpuMs": 0.249,
+            "wallMs": 0.42992599999979575,
+            "cpuMs": 0.426,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.2842209999998886,
-            "cpuMs": 0.282,
+            "wallMs": 0.4626170000001366,
+            "cpuMs": 0.461,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.31739199999992707,
-            "cpuMs": 0.487,
+            "wallMs": 0.43848700000035024,
+            "cpuMs": 0.435,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.2829910000000382,
-            "cpuMs": 0.286,
+            "wallMs": 0.44204700000045705,
+            "cpuMs": 0.435,
             "rssDelta": 0,
             "writeBytes": 0
           }
@@ -978,80 +978,80 @@
     },
     "50": {
       "json": {
-        "medianMs": 38.073325000000295,
-        "p95Ms": 39.29504199999974,
-        "maxMs": 41.79244699999981,
-        "medianCpuMs": 37.769,
+        "medianMs": 62.8330930000011,
+        "p95Ms": 65.41380000000026,
+        "maxMs": 65.91234799999984,
+        "medianCpuMs": 60.694,
         "maxRssDelta": 0,
         "medianWriteBytes": 0,
         "samples": [
           {
-            "wallMs": 38.073325000000295,
-            "cpuMs": 37.769,
-            "rssDelta": -245760,
-            "writeBytes": 0
-          },
-          {
-            "wallMs": 41.79244699999981,
-            "cpuMs": 41.516,
+            "wallMs": 61.33011399999941,
+            "cpuMs": 60.694,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 39.29504199999974,
-            "cpuMs": 38.35,
+            "wallMs": 59.26877699999932,
+            "cpuMs": 58.358,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 37.533244000000195,
-            "cpuMs": 37.1,
+            "wallMs": 65.41380000000026,
+            "cpuMs": 62.538,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 37.2099019999996,
-            "cpuMs": 36.982,
+            "wallMs": 65.91234799999984,
+            "cpuMs": 59.576,
             "rssDelta": 0,
+            "writeBytes": 0
+          },
+          {
+            "wallMs": 62.8330930000011,
+            "cpuMs": 86.381,
+            "rssDelta": -158633984,
             "writeBytes": 0
           }
         ]
       },
       "sqlite": {
-        "medianMs": 0.27425100000073144,
-        "p95Ms": 0.2961619999996401,
-        "maxMs": 0.30408100000022387,
-        "medianCpuMs": 0.277,
+        "medianMs": 0.4245260000006965,
+        "p95Ms": 0.4311870000001363,
+        "maxMs": 0.477059000000736,
+        "medianCpuMs": 0.511,
         "maxRssDelta": 0,
         "medianWriteBytes": 0,
         "samples": [
           {
-            "wallMs": 0.2398700000003373,
-            "cpuMs": 0.242,
+            "wallMs": 0.4311870000001363,
+            "cpuMs": 1.493,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.30408100000022387,
-            "cpuMs": 0.298,
+            "wallMs": 0.477059000000736,
+            "cpuMs": 0.945,
+            "rssDelta": -6287360,
+            "writeBytes": 0
+          },
+          {
+            "wallMs": 0.4025549999987561,
+            "cpuMs": 0.407,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.27425100000073144,
-            "cpuMs": 0.277,
+            "wallMs": 0.4245260000006965,
+            "cpuMs": 0.511,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.2961619999996401,
-            "cpuMs": 0.498,
-            "rssDelta": 0,
-            "writeBytes": 0
-          },
-          {
-            "wallMs": 0.2682300000005853,
-            "cpuMs": 0.271,
+            "wallMs": 0.4182359999995242,
+            "cpuMs": 0.416,
             "rssDelta": 0,
             "writeBytes": 0
           }
@@ -1062,81 +1062,81 @@
     },
     "96": {
       "json": {
-        "medianMs": 72.2779929999997,
-        "p95Ms": 73.44050700000025,
-        "maxMs": 74.8467899999996,
-        "medianCpuMs": 71.667,
+        "medianMs": 132.8464239999994,
+        "p95Ms": 134.42967399999907,
+        "maxMs": 215.03152800000134,
+        "medianCpuMs": 120.282,
         "maxRssDelta": 0,
         "medianWriteBytes": 0,
         "samples": [
           {
-            "wallMs": 71.63900699999976,
-            "cpuMs": 71.633,
-            "rssDelta": -552960,
+            "wallMs": 215.03152800000134,
+            "cpuMs": 112.592,
+            "rssDelta": -131072,
             "writeBytes": 0
           },
           {
-            "wallMs": 74.8467899999996,
-            "cpuMs": 74.052,
+            "wallMs": 128.83553200000097,
+            "cpuMs": 112.643,
+            "rssDelta": -327680,
+            "writeBytes": 0
+          },
+          {
+            "wallMs": 134.42967399999907,
+            "cpuMs": 176.012,
+            "rssDelta": -503365632,
+            "writeBytes": 0
+          },
+          {
+            "wallMs": 132.8464239999994,
+            "cpuMs": 121.342,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 71.76334299999962,
-            "cpuMs": 70.928,
-            "rssDelta": 0,
-            "writeBytes": 0
-          },
-          {
-            "wallMs": 72.2779929999997,
-            "cpuMs": 71.667,
-            "rssDelta": 0,
-            "writeBytes": 0
-          },
-          {
-            "wallMs": 73.44050700000025,
-            "cpuMs": 108.421,
-            "rssDelta": -359784448,
+            "wallMs": 126.39372999999978,
+            "cpuMs": 120.282,
+            "rssDelta": -159744,
             "writeBytes": 0
           }
         ]
       },
       "sqlite": {
-        "medianMs": 0.27480000000014115,
-        "p95Ms": 0.33294300000034127,
-        "maxMs": 0.3522339999999531,
-        "medianCpuMs": 0.277,
-        "maxRssDelta": 0,
+        "medianMs": 0.43451700000150595,
+        "p95Ms": 0.4701070000010077,
+        "maxMs": 0.5211300000009942,
+        "medianCpuMs": 0.461,
+        "maxRssDelta": 131072,
         "medianWriteBytes": 0,
         "samples": [
           {
-            "wallMs": 0.24043900000015128,
-            "cpuMs": 0.243,
-            "rssDelta": -8388608,
-            "writeBytes": 0
-          },
-          {
-            "wallMs": 0.25428999999985535,
-            "cpuMs": 0.255,
-            "rssDelta": -3186688,
-            "writeBytes": 0
-          },
-          {
-            "wallMs": 0.27480000000014115,
-            "cpuMs": 0.277,
+            "wallMs": 0.5211300000009942,
+            "cpuMs": 0.518,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.33294300000034127,
-            "cpuMs": 1.311,
+            "wallMs": 0.3916349999999511,
+            "cpuMs": 0.396,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.3522339999999531,
-            "cpuMs": 0.355,
+            "wallMs": 0.4340169999995851,
+            "cpuMs": 0.537,
             "rssDelta": 0,
+            "writeBytes": 0
+          },
+          {
+            "wallMs": 0.43451700000150595,
+            "cpuMs": 0.433,
+            "rssDelta": 0,
+            "writeBytes": 0
+          },
+          {
+            "wallMs": 0.4701070000010077,
+            "cpuMs": 0.461,
+            "rssDelta": 131072,
             "writeBytes": 0
           }
         ]
