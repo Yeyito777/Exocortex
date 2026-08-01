@@ -357,26 +357,35 @@ function createFixture(sourceData: string, replace: boolean): void {
     includedFolderIds: folderState.ids.sort(),
   };
   writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2), { mode: 0o600 });
-  verifyFixture();
+  // The immediate strict verification proves that this snapshot operation did not
+  // mutate main. A later verification permits ordinary live-main drift while still
+  // requiring the copied fixture bytes to match the immutable manifest.
+  verifyFixture(true);
   console.log(JSON.stringify({ status: "created", manifest: MANIFEST_PATH, selected: manifest.selected, exclusionCounts: Object.fromEntries(Object.entries(exclusionSets).map(([key, ids]) => [key, ids.size])) }, null, 2));
 }
 
-function verifyFixture(): void {
+function verifyFixture(requireSourceStable = false): string[] {
   if (!existsSync(MANIFEST_PATH)) throw new Error(`Fixture manifest is missing: ${MANIFEST_PATH}`);
   const manifest = readJson(MANIFEST_PATH) as FixtureManifest;
   if (manifest.selected.length < 20) throw new Error(`Fixture contains only ${manifest.selected.length} conversations`);
   const excluded = new Set(Object.values(manifest.exclusions).flat());
   for (const selected of manifest.selected) if (excluded.has(selected.id)) throw new Error(`Excluded conversation was selected: ${selected.id}`);
+  const sourceDrift: string[] = [];
   for (const file of manifest.files) {
-    const source = statSync(file.sourcePath);
-    if (source.size !== file.bytes || source.mtimeMs !== file.sourceMtimeMs) throw new Error(`Main source changed since snapshot: ${file.sourcePath}`);
-    if (sha256(readFileSync(file.sourcePath)) !== file.sha256) throw new Error(`Main source hash changed: ${file.sourcePath}`);
     if (sha256(readFileSync(file.destinationPath)) !== file.sha256) throw new Error(`Copied fixture hash mismatch: ${file.destinationPath}`);
+    const source = statSync(file.sourcePath);
+    const stableMetadata = source.size === file.bytes && source.mtimeMs === file.sourceMtimeMs;
+    const stableHash = stableMetadata && sha256(readFileSync(file.sourcePath)) === file.sha256;
+    if (!stableHash) sourceDrift.push(file.sourcePath);
+  }
+  if (requireSourceStable && sourceDrift.length > 0) {
+    throw new Error(`Main source changed during snapshot verification: ${sourceDrift[0]}`);
   }
   for (const forbidden of ["chrono.json", "external-notifications.json", "subagent-notifications.json", "btw.json", "external-notification-soft-wakes.json"]) {
     if (existsSync(join(TARGET, forbidden))) throw new Error(`Forbidden live automation state appears in fixture: ${forbidden}`);
   }
-  console.error(`verified ${manifest.selected.length} safe conversations and ${manifest.files.length} stable copied files`);
+  console.error(`verified ${manifest.selected.length} safe conversations and ${manifest.files.length} immutable copied files; ${sourceDrift.length} live source file(s) changed after snapshot`);
+  return sourceDrift;
 }
 
 function cleanupFixture(): void {
@@ -390,11 +399,11 @@ if (command === "create") {
   const source = sourceIndex >= 0 ? process.argv[sourceIndex + 1] : "/home/yeyito/Workspace/exocortex/config/data";
   createFixture(source, process.argv.includes("--replace"));
 } else if (command === "verify") {
-  verifyFixture();
-  console.log(`fixture verified: ${MANIFEST_PATH}`);
+  const sourceDrift = verifyFixture(process.argv.includes("--require-source-stable"));
+  console.log(JSON.stringify({ status: "verified", manifest: MANIFEST_PATH, sourceDriftCount: sourceDrift.length, sourceDrift }, null, 2));
 } else if (command === "clean") {
   cleanupFixture();
 } else {
-  console.error("usage: sqlite-conversation-fixture.ts create [--source-data PATH] [--replace] | verify | clean");
+  console.error("usage: sqlite-conversation-fixture.ts create [--source-data PATH] [--replace] | verify [--require-source-stable] | clean");
   process.exit(2);
 }

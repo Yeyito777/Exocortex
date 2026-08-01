@@ -9,8 +9,9 @@ import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
 import { HistoryUnwindRefreshRequiredError, bumpToTop, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
 import { setActiveJob, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
-import { load as loadPersisted } from "./persistence";
+import { isSqliteConversationStore, load as loadPersisted } from "./persistence";
 
+const legacyFileTest = isSqliteConversationStore() ? test.skip : test;
 const IDS: string[] = [];
 const FOLDER_IDS: string[] = [];
 
@@ -218,7 +219,7 @@ describe("folders", () => {
     expect(getSummary(ids[1])).toMatchObject({ id: ids[1] });
   });
 
-  test("keeps live state when the conversation file cannot be moved to trash", () => {
+  legacyFileTest("keeps live state when the conversation file cannot be moved to trash", () => {
     const id = mkId("delete-missing-file");
     const conv = create(id, "openai", "gpt-5.6-sol", "missing file");
     rmSync(join(conversationsDir(), `${id}.json`));
@@ -561,7 +562,7 @@ describe("sidebar ordering", () => {
     expect(rootConversationOrder(ids)).toEqual([ids[0], ids[2], ids[1], ids[3]]);
   });
 
-  test("manual moves persist through tiny sidebar overlays without rewriting conversation history", () => {
+  legacyFileTest("manual moves persist through tiny sidebar overlays without rewriting conversation history", () => {
     const ids = ["overlay-move-one", "overlay-move-two", "overlay-move-three"].map(mkId);
     for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
     const paths = ids.map(id => join(conversationsDir(), `${id}.json`));
@@ -578,7 +579,7 @@ describe("sidebar ordering", () => {
     expect(rootConversationOrder(ids)).toEqual([ids[0], ids[2], ids[1]]);
   });
 
-  test("an ordinary save folds a sidebar overlay into the conversation file", () => {
+  legacyFileTest("an ordinary save folds a sidebar overlay into the conversation file", () => {
     const ids = ["overlay-fold-one", "overlay-fold-two"].map(mkId);
     for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
     const sidebarPath = join(conversationsDir(), `${ids[0]}.sidebar`);
@@ -607,7 +608,7 @@ describe("sidebar ordering", () => {
     expect(rootConversationOrder(ids)).toEqual([ids[0], ids[2], ids[1]]);
   });
 
-  test("a failed delete keeps the live generation synchronized after sidebar materialization", async () => {
+  legacyFileTest("a failed delete keeps the live generation synchronized after sidebar materialization", async () => {
     const ids = ["overlay-failed-delete", "overlay-failed-delete-neighbor"].map(mkId);
     for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.6-sol", id);
     const conv = get(ids[0])!;
@@ -634,7 +635,7 @@ describe("sidebar ordering", () => {
     expect(loadPersisted(ids[0])?.messages.map(message => message.content)).toEqual(["keep", "kept answer"]);
   });
 
-  test("a sidebar move survives an unwind that advances only the logical generation", async () => {
+  legacyFileTest("a sidebar move survives an unwind that advances only the logical generation", async () => {
     const ids = ["overlay-then-unwind", "overlay-then-unwind-neighbor"].map(mkId);
     for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.6-sol", id);
     const conv = get(ids[0])!;
@@ -659,7 +660,7 @@ describe("sidebar ordering", () => {
     expect(rootConversationOrder(ids)).toEqual([ids[1], ids[0]]);
   });
 
-  test("a malformed sidebar overlay rebuilds a cached moved summary from the base file", () => {
+  legacyFileTest("a malformed sidebar overlay rebuilds a cached moved summary from the base file", () => {
     const ids = ["overlay-corrupt-one", "overlay-corrupt-two"].map(mkId);
     for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
     expect(rootConversationOrder(ids)).toEqual(ids);
@@ -1096,7 +1097,7 @@ describe("unwindTo", () => {
     expect(loadPersisted(id)?.lastContextTokens).toBe(91_234);
   });
 
-  test("persists only a truncation overlay and does not rewrite the sidebar index", async () => {
+  legacyFileTest("persists only a truncation overlay and does not rewrite the sidebar index", async () => {
     const id = mkId("unwind-targeted-persistence");
     const conv = create(id, "openai", "gpt-5.6-sol", "targeted unwind");
     conv.messages.push(
@@ -1307,7 +1308,7 @@ describe("unwindTo", () => {
 });
 
 describe("stream chunk tracking", () => {
-  test("does not rewrite durable history for ephemeral live chunks", () => {
+  legacyFileTest("does not rewrite durable history for ephemeral live chunks", () => {
     const id = mkId("stream-chunks-ephemeral");
     const conv = create(id, "openai", "gpt-5.6-sol");
     const path = join(conversationsDir(), `${id}.json`);

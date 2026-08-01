@@ -2,8 +2,10 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { conversationsDir } from "@exocortex/shared/paths";
-import { save, saveUnwind } from "./persistence";
+import { isSqliteConversationStore, save, saveUnwind } from "./persistence";
 import type { Conversation } from "./messages";
+const legacyFileTest = isSqliteConversationStore() ? test.skip : test;
+
 import {
   clearAllQueuedMessages,
   drainQueuedMessages,
@@ -118,7 +120,7 @@ describe("durable daemon message queue", () => {
     expect(listQueuedMessages().map(message => message.id)).toEqual(["pending-id"]);
   });
 
-  test("durably acknowledges an orphan unwind tombstone after startup recovery", () => {
+  legacyFileTest("durably acknowledges an orphan unwind tombstone after startup recovery", () => {
     const id = `test-queue-orphan-unwind-${Date.now()}`;
     const conv: Conversation = {
       id,

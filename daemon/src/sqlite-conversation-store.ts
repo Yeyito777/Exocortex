@@ -24,11 +24,9 @@ import type {
 import {
   activeContextCompactionHistoryCount,
   countConversationMessages,
-  isModelVisibleSystemNotice,
   isRealUserMessage,
   isReplayHistoryMessage,
   isValidActiveContextCached,
-  sortConversations,
   summarizeConversation,
 } from "./messages";
 import type { ToolOutputInfo } from "./protocol";
@@ -49,7 +47,7 @@ import * as legacy from "./json-persistence";
 import { log } from "./log";
 import type { ConversationRepository } from "./conversation-repository";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 6;
 const DEFAULT_FILE = "exocortex.sqlite3";
 const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
 
@@ -57,6 +55,8 @@ export interface SqliteConversationStoreOptions {
   path?: string;
   autoImportLegacy?: boolean;
   readonly?: boolean;
+  /** Test-only crash/fault boundary hook; throwing rolls back the active transaction. */
+  faultInjection?: (point: string) => void;
 }
 
 export interface IntegrityReport {
@@ -82,6 +82,28 @@ export interface ExportManifest {
   files: Record<string, string>;
 }
 
+export interface StoreDiagnostics {
+  databasePath: string;
+  schemaVersion: number;
+  databaseBytes: number;
+  walBytes: number;
+  pageSize: number;
+  pageCount: number;
+  freePages: number;
+  liveConversations: number;
+  deletedConversations: number;
+  messages: number;
+  canonicalContentBytes: number;
+  messageBlobs: number;
+  messageBlobBytes: number;
+  displayEntries: number;
+  toolOutputReferences: number;
+  queuedMessages: number;
+  undoEntries: number;
+  redoEntries: number;
+  importStatus: string | null;
+}
+
 interface ConversationRow {
   id: string;
   provider: Conversation["provider"];
@@ -103,6 +125,7 @@ interface ConversationRow {
   message_count: number;
   stored_message_count: number;
   display_entry_count: number;
+  content_bytes: number;
   deleted_at: number | null;
 }
 
@@ -117,6 +140,13 @@ interface MessageRow {
   has_provider_data: number;
   has_context_tokens: number;
   has_context_checkpoint: number;
+}
+
+interface MessageBlobRow {
+  message_sequence: number;
+  ordinal: number;
+  kind: "tool_result" | "image";
+  payload_json: string;
 }
 
 interface LoadedMessageSnapshot {
@@ -137,10 +167,6 @@ interface LoadedConversationState {
   messages: LoadedMessageSnapshot[];
   activeContextRef: Conversation["activeContext"];
   lastUnwindReceipt: PersistedUnwindReceipt | null;
-}
-
-function json(value: unknown): string {
-  return JSON.stringify(value);
 }
 
 function optionalJson(value: unknown): string | null {
@@ -197,10 +223,20 @@ function messageShallowChanged(snapshot: LoadedMessageSnapshot, message: StoredM
   return snapshot.hasCheckpoint !== Object.hasOwn(message, "contextCheckpoint") || snapshot.checkpointJson !== optionalJson(message.contextCheckpoint);
 }
 
-function storedMessageFromRow(row: MessageRow): StoredMessage {
+function storedMessageFromRow(row: MessageRow, blobs: MessageBlobRow[] = []): StoredMessage {
+  const content = JSON.parse(row.content_json);
+  if (Array.isArray(content)) {
+    for (const blob of blobs) {
+      const payload = JSON.parse(blob.payload_json) as { blockIndex: number; value: unknown };
+      const block = content[payload.blockIndex];
+      if (!block || typeof block !== "object") continue;
+      if (blob.kind === "tool_result" && block.type === "tool_result") block.content = payload.value;
+      if (blob.kind === "image" && block.type === "image" && block.source) block.source.data = payload.value;
+    }
+  }
   const message: StoredMessage = {
     role: row.role,
-    content: JSON.parse(row.content_json),
+    content,
     metadata: parseOptional(row.metadata_json),
   };
   const providerData = parseOptional<NonNullable<StoredMessage["providerData"]>>(row.provider_data_json);
@@ -269,10 +305,12 @@ export class SqliteConversationStore implements ConversationRepository {
   private loadedById = new Map<string, WeakRef<Conversation>>();
   private closed = false;
   private readonly readOnly: boolean;
+  private readonly faultInjection?: (point: string) => void;
 
   constructor(options: SqliteConversationStoreOptions = {}) {
     this.path = resolve(options.path ?? sqliteConversationStorePath());
     this.readOnly = options.readonly ?? false;
+    this.faultInjection = options.faultInjection;
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     this.db = new Database(this.path, { create: !options.readonly, readonly: options.readonly ?? false });
     try { chmodSync(this.path, 0o600); } catch { /* best effort, especially on Windows */ }
@@ -495,6 +533,71 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(2, "preserve optional message field presence", Date.now());
       })();
     }
+    if (current < 3) {
+      this.db.transaction(() => {
+        this.db.exec(`
+          ALTER TABLE conversations ADD COLUMN content_bytes INTEGER NOT NULL DEFAULT 0;
+          UPDATE conversations SET content_bytes=(
+            SELECT COALESCE(SUM(content_bytes), 0) FROM messages
+            WHERE messages.conversation_id=conversations.id
+          );
+        `);
+        this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(3, "constant-time conversation byte totals", Date.now());
+      })();
+    }
+    if (current < 4) {
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE VIRTUAL TABLE conversation_title_fts USING fts5(
+            conversation_id UNINDEXED,
+            title,
+            tokenize='unicode61'
+          );
+          INSERT INTO conversation_title_fts(conversation_id, title)
+            SELECT id, title FROM conversations;
+          CREATE TRIGGER conversation_title_fts_insert AFTER INSERT ON conversations BEGIN
+            INSERT INTO conversation_title_fts(conversation_id, title) VALUES (new.id, new.title);
+          END;
+          CREATE TRIGGER conversation_title_fts_update AFTER UPDATE OF title ON conversations BEGIN
+            DELETE FROM conversation_title_fts WHERE conversation_id=old.id;
+            INSERT INTO conversation_title_fts(conversation_id, title) VALUES (new.id, new.title);
+          END;
+          CREATE TRIGGER conversation_title_fts_delete AFTER DELETE ON conversations BEGIN
+            DELETE FROM conversation_title_fts WHERE conversation_id=old.id;
+          END;
+        `);
+        this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(4, "indexed title search", Date.now());
+      })();
+    }
+    if (current < 5) {
+      this.db.transaction(() => {
+        // Canonical content already owns tool-result bytes. Keep only the direct
+        // lookup identity here so large outputs are not duplicated in storage.
+        this.db.query("UPDATE tool_outputs SET output='' WHERE output<>''").run();
+        this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(5, "deduplicate tool output payloads", Date.now());
+      })();
+    }
+    if (current < 6) {
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE message_blobs (
+            conversation_id TEXT NOT NULL,
+            message_sequence INTEGER NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('tool_result','image')),
+            ordinal INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            payload_bytes INTEGER NOT NULL,
+            content_hash TEXT NOT NULL,
+            PRIMARY KEY (conversation_id, message_sequence, kind, ordinal),
+            FOREIGN KEY (conversation_id, message_sequence)
+              REFERENCES messages(conversation_id, sequence) ON DELETE CASCADE
+          ) WITHOUT ROWID, STRICT;
+          CREATE INDEX message_blobs_lookup_idx
+            ON message_blobs(conversation_id, kind, message_sequence, ordinal);
+        `);
+        this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(6, "separate large message payloads", Date.now());
+      })();
+    }
   }
 
   close(): void {
@@ -516,31 +619,67 @@ export class SqliteConversationStore implements ConversationRepository {
     return { ok: quickCheck.length === 1 && quickCheck[0] === "ok" && foreignKeyErrors.length === 0, quickCheck, foreignKeyErrors };
   }
 
+  diagnostics(): StoreDiagnostics {
+    this.assertOpen();
+    const scalar = (sql: string): number => {
+      const row = this.db.query<Record<string, number>, []>(sql).get();
+      return Number(row ? Object.values(row)[0] : 0);
+    };
+    return {
+      databasePath: this.path,
+      schemaVersion: scalar("SELECT COALESCE(MAX(version), 0) FROM schema_migrations"),
+      databaseBytes: existsSync(this.path) ? statSync(this.path).size : 0,
+      walBytes: existsSync(`${this.path}-wal`) ? statSync(`${this.path}-wal`).size : 0,
+      pageSize: scalar("PRAGMA page_size"),
+      pageCount: scalar("PRAGMA page_count"),
+      freePages: scalar("PRAGMA freelist_count"),
+      liveConversations: scalar("SELECT COUNT(*) FROM conversations WHERE deleted_at IS NULL"),
+      deletedConversations: scalar("SELECT COUNT(*) FROM conversations WHERE deleted_at IS NOT NULL"),
+      messages: scalar("SELECT COUNT(*) FROM messages"),
+      canonicalContentBytes: scalar("SELECT COALESCE(SUM(content_bytes), 0) FROM conversations"),
+      messageBlobs: scalar("SELECT COUNT(*) FROM message_blobs"),
+      messageBlobBytes: scalar("SELECT COALESCE(SUM(payload_bytes), 0) FROM message_blobs"),
+      displayEntries: scalar("SELECT COUNT(*) FROM display_entries"),
+      toolOutputReferences: scalar("SELECT COUNT(*) FROM tool_outputs"),
+      queuedMessages: scalar("SELECT COUNT(*) FROM queued_messages"),
+      undoEntries: scalar("SELECT COUNT(*) FROM sidebar_history WHERE stack='undo'"),
+      redoEntries: scalar("SELECT COUNT(*) FROM sidebar_history WHERE stack='redo'"),
+      importStatus: this.metadata("legacy_import_complete") === "1"
+        ? "complete"
+        : (this.metadata("legacy_import_report") ? "incomplete" : "not-run"),
+    };
+  }
+
   backup(destination: string): string {
     this.assertOpen();
     const dest = resolve(destination);
     if (dest === this.path) throw new Error("Backup destination must differ from the active database");
+    if (existsSync(dest)) throw new Error(`Backup destination already exists: ${dest}`);
     mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
     const tmp = `${dest}.${randomUUID()}.tmp`;
-    rmSync(tmp, { force: true });
-    this.checkpoint("FULL");
-    this.db.query("VACUUM INTO ?").run(tmp);
-    const check = new Database(tmp, { readonly: true });
     try {
-      const result = check.query<Record<string, string>, []>("PRAGMA quick_check").all().flatMap((row) => Object.values(row));
-      if (result.length !== 1 || result[0] !== "ok") throw new Error(`Backup integrity check failed: ${result.join(", ")}`);
+      this.checkpoint("FULL");
+      this.db.query("VACUUM INTO ?").run(tmp);
+      const check = new Database(tmp, { readonly: true });
+      try {
+        const result = check.query<Record<string, string>, []>("PRAGMA quick_check").all().flatMap((row) => Object.values(row));
+        if (result.length !== 1 || result[0] !== "ok") throw new Error(`Backup integrity check failed: ${result.join(", ")}`);
+      } finally {
+        check.close();
+      }
+      renameSync(tmp, dest);
+      try { chmodSync(dest, 0o600); } catch { /* best effort */ }
+      return dest;
     } finally {
-      check.close();
+      rmSync(tmp, { force: true });
     }
-    renameSync(tmp, dest);
-    try { chmodSync(dest, 0o600); } catch { /* best effort */ }
-    return dest;
   }
 
   restoreToNewFile(source: string, destination: string): string {
     const src = resolve(source);
     const dest = resolve(destination);
     if (dest === this.path) throw new Error("Restore refuses to overwrite the active database");
+    if (existsSync(dest)) throw new Error(`Restore destination already exists: ${dest}`);
     const sourceDb = new Database(src, { readonly: true });
     try {
       const result = sourceDb.query<Record<string, string>, []>("PRAGMA quick_check").all().flatMap((row) => Object.values(row));
@@ -550,10 +689,14 @@ export class SqliteConversationStore implements ConversationRepository {
     }
     mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
     const tmp = `${dest}.${randomUUID()}.tmp`;
-    copyFileSync(src, tmp);
-    renameSync(tmp, dest);
-    try { chmodSync(dest, 0o600); } catch { /* best effort */ }
-    return dest;
+    try {
+      copyFileSync(src, tmp);
+      renameSync(tmp, dest);
+      try { chmodSync(dest, 0o600); } catch { /* best effort */ }
+      return dest;
+    } finally {
+      rmSync(tmp, { force: true });
+    }
   }
 
   private metadata(key: string): string | null {
@@ -598,14 +741,35 @@ export class SqliteConversationStore implements ConversationRepository {
   }
 
   listSummaries(): PersistedConversationSummary[] {
-    const rows = this.db.query<ConversationRow, []>(`
-      SELECT * FROM conversations
+    // Array-valued rows avoid allocating 20+ keyed properties per conversation,
+    // and selecting only summary columns keeps startup proportional to compact
+    // metadata rather than the complete canonical row shape.
+    const rows = this.db.query(`
+      SELECT id, provider, model, effort, fast_mode, created_at, updated_at,
+             message_count, title, goal_json, marked, pinned, sort_order, folder_id
+      FROM conversations
       WHERE deleted_at IS NULL
       ORDER BY pinned DESC, sort_order, id
-    `).all();
-    const summaries = rows.map((row) => this.summaryFromRow(row));
-    sortConversations(summaries);
-    return summaries;
+    `).values() as Array<[string, Conversation["provider"], string, Conversation["effort"], number, number, number, number, string, string | null, number, number, number, string | null]>;
+    return rows.map(([
+      id, provider, model, effort, fastMode, createdAt, updatedAt,
+      messageCount, title, goalJson, marked, pinned, sortOrder, folderId,
+    ]) => ({
+      id,
+      provider,
+      model,
+      effort,
+      fastMode: fastMode === 1,
+      createdAt,
+      updatedAt,
+      messageCount,
+      title,
+      goal: parseOptional(goalJson),
+      marked: marked === 1,
+      pinned: pinned === 1,
+      sortOrder,
+      folderId,
+    }));
   }
 
   getSummary(id: string): PersistedConversationSummary | null {
@@ -614,13 +778,11 @@ export class SqliteConversationStore implements ConversationRepository {
   }
 
   getConversationFileStat(id: string): { fileSize: number; fileMtimeMs: number } {
-    const row = this.db.query<{ bytes: number; updated_at: number }, [string]>(`
-      SELECT COALESCE(SUM(m.content_bytes),0) + LENGTH(c.title) AS bytes, c.updated_at
-      FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.id
-      WHERE c.id=? AND c.deleted_at IS NULL GROUP BY c.id
+    const row = this.db.query<{ content_bytes: number; updated_at: number }, [string]>(`
+      SELECT content_bytes, updated_at FROM conversations WHERE id=? AND deleted_at IS NULL
     `).get(id);
     if (!row) throw new Error(`Conversation not found: ${id}`);
-    return { fileSize: row.bytes, fileMtimeMs: row.updated_at };
+    return { fileSize: row.content_bytes, fileMtimeMs: row.updated_at };
   }
 
   indexEntryFromConversation(conv: Conversation): ConversationIndexEntry {
@@ -639,20 +801,30 @@ export class SqliteConversationStore implements ConversationRepository {
     return { summaries: this.listSummaries(), reused: this.db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM conversations WHERE deleted_at IS NULL").get()!.count, rebuilt: 0, removed: 0, saved: false };
   }
 
-  private messageRows(id: string): MessageRow[] {
-    return this.db.query<MessageRow, [string]>(`
+  private loadMessages(id: string): StoredMessage[] {
+    const rows = this.db.query<MessageRow, [string]>(`
       SELECT sequence, role, content_json, metadata_json, provider_data_json,
              context_tokens_json, context_checkpoint_json, has_provider_data,
              has_context_tokens, has_context_checkpoint
       FROM messages WHERE conversation_id=? ORDER BY sequence
     `).all(id);
+    const blobsBySequence = new Map<number, MessageBlobRow[]>();
+    for (const blob of this.db.query<MessageBlobRow, [string]>(`
+      SELECT message_sequence, ordinal, kind, payload_json FROM message_blobs
+      WHERE conversation_id=? ORDER BY message_sequence, kind, ordinal
+    `).all(id)) {
+      const blobs = blobsBySequence.get(blob.message_sequence) ?? [];
+      blobs.push(blob);
+      blobsBySequence.set(blob.message_sequence, blobs);
+    }
+    return rows.map((row) => storedMessageFromRow(row, blobsBySequence.get(row.sequence)));
   }
 
   load(id: string, includeDeleted = false): Conversation | null {
     const row = this.row(id, includeDeleted);
     if (!row) return null;
     try {
-      const messages = this.messageRows(id).map(storedMessageFromRow);
+      const messages = this.loadMessages(id);
       const activeRow = this.db.query<{ payload_json: string }, [string]>("SELECT payload_json FROM active_contexts WHERE conversation_id=?").get(id);
       const persistedActive = activeRow ? JSON.parse(activeRow.payload_json) as NonNullable<Conversation["activeContext"]> : null;
       const activeContext = persistedActive && isValidActiveContextCached(persistedActive, messages) ? persistedActive : null;
@@ -700,8 +872,31 @@ export class SqliteConversationStore implements ConversationRepository {
     return this.listSummaries().map((summary) => this.load(summary.id)).filter((conv): conv is Conversation => conv !== null);
   }
 
-  private insertMessage(id: string, sequence: number, message: StoredMessage): void {
-    const contentJson = JSON.stringify(message.content);
+  private insertMessage(id: string, sequence: number, message: StoredMessage): number {
+    const fullContentJson = JSON.stringify(message.content);
+    const contentBytes = Buffer.byteLength(fullContentJson);
+    const blobs: Array<{ kind: "tool_result" | "image"; ordinal: number; payload: string }> = [];
+    const tools: Array<{ ordinal: number; toolCallId: string; isError: boolean }> = [];
+    let storedContent: StoredMessage["content"] = message.content;
+    if (Array.isArray(message.content)) {
+      let toolOrdinal = 0;
+      let imageOrdinal = 0;
+      storedContent = message.content.map((part, blockIndex) => {
+        if (part.type === "tool_result") {
+          const ordinal = toolOrdinal++;
+          blobs.push({ kind: "tool_result", ordinal, payload: JSON.stringify({ blockIndex, value: part.content }) });
+          tools.push({ ordinal, toolCallId: part.tool_use_id, isError: part.is_error === true });
+          return { ...part, content: "" };
+        }
+        if (part.type === "image") {
+          const ordinal = imageOrdinal++;
+          blobs.push({ kind: "image", ordinal, payload: JSON.stringify({ blockIndex, value: part.source.data }) });
+          return { ...part, source: { ...part.source, data: "" } };
+        }
+        return part;
+      });
+    }
+    const contentJson = JSON.stringify(storedContent);
     const metadataJson = optionalJson(message.metadata);
     const providerDataJson = optionalJson(message.providerData);
     const contextTokensJson = optionalJson(message.contextTokens);
@@ -724,27 +919,27 @@ export class SqliteConversationStore implements ConversationRepository {
       checkpointJson,
       isRealUserMessage(message) ? 1 : 0,
       isReplayHistoryMessage(message) ? 1 : 0,
-      Buffer.byteLength(contentJson),
-      sha256(contentJson),
+      contentBytes,
+      sha256(fullContentJson),
       messageFingerprint(message),
       Object.hasOwn(message, "providerData") ? 1 : 0,
       Object.hasOwn(message, "contextTokens") ? 1 : 0,
       Object.hasOwn(message, "contextCheckpoint") ? 1 : 0,
     );
-    if (!Array.isArray(message.content)) return;
-    let ordinal = 0;
-    for (const part of message.content) {
-      if (part.type !== "tool_result") continue;
-      const output = typeof part.content === "string"
-        ? part.content
-        : Array.isArray(part.content)
-          ? part.content.filter((item: any) => item?.type === "text").map((item: any) => item.text ?? "").join("\n")
-          : String(part.content ?? "");
+    for (const tool of tools) {
       this.db.query(`
         INSERT INTO tool_outputs(conversation_id, message_sequence, ordinal, tool_call_id, output, is_error)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(id, sequence, ordinal++, part.tool_use_id, output, part.is_error ? 1 : 0);
+        VALUES (?, ?, ?, ?, '', ?)
+      `).run(id, sequence, tool.ordinal, tool.toolCallId, tool.isError ? 1 : 0);
     }
+    for (const blob of blobs) {
+      this.db.query(`
+        INSERT INTO message_blobs(
+          conversation_id, message_sequence, kind, ordinal, payload_json, payload_bytes, content_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(id, sequence, blob.kind, blob.ordinal, blob.payload, Buffer.byteLength(blob.payload), sha256(blob.payload));
+    }
+    return contentBytes;
   }
 
   private upsertConversationRow(conv: Conversation, generation: number): void {
@@ -920,14 +1115,27 @@ export class SqliteConversationStore implements ConversationRepository {
     const changedAt = this.firstChangedMessage(conv, options.forceMessages === true);
     this.db.transaction(() => {
       this.upsertConversationRow(conv, generation);
+      this.faultInjection?.("save.after-conversation");
       if (changedAt !== null) {
+        const removedBytes = existing && changedAt < existing.stored_message_count
+          ? this.db.query<{ bytes: number }, [string, number]>(`
+              SELECT COALESCE(SUM(content_bytes), 0) AS bytes FROM messages
+              WHERE conversation_id=? AND sequence>=?
+            `).get(conv.id, changedAt)!.bytes
+          : 0;
         this.db.query("DELETE FROM messages WHERE conversation_id=? AND sequence>=?").run(conv.id, changedAt);
+        let insertedBytes = 0;
         for (let sequence = changedAt; sequence < conv.messages.length; sequence++) {
-          this.insertMessage(conv.id, sequence, conv.messages[sequence]);
+          insertedBytes += this.insertMessage(conv.id, sequence, conv.messages[sequence]);
         }
+        this.faultInjection?.("save.after-messages");
         this.rebuildDisplay(conv, changedAt);
+        this.db.query("UPDATE conversations SET content_bytes=? WHERE id=?")
+          .run((existing?.content_bytes ?? 0) - removedBytes + insertedBytes, conv.id);
+        this.faultInjection?.("save.after-display");
       }
       if (!existing || loaded?.activeContextRef !== conv.activeContext) this.saveActiveContext(conv);
+      this.faultInjection?.("save.before-commit");
     })();
     const previousReceipt = loaded?.lastUnwindReceipt ?? null;
     this.loadedState.set(conv, {
@@ -981,11 +1189,15 @@ export class SqliteConversationStore implements ConversationRepository {
     };
     this.db.transaction(() => {
       this.upsertConversationRow(result, generation);
+      this.faultInjection?.("unwind.after-conversation");
       this.db.query("DELETE FROM messages WHERE conversation_id=?").run(base.id);
+      let contentBytes = 0;
       for (let sequence = 0; sequence < result.messages.length; sequence++) {
-        this.insertMessage(base.id, sequence, result.messages[sequence]);
+        contentBytes += this.insertMessage(base.id, sequence, result.messages[sequence]);
       }
+      this.faultInjection?.("unwind.after-messages");
       this.rebuildDisplay(result, 0);
+      this.db.query("UPDATE conversations SET content_bytes=? WHERE id=?").run(contentBytes, base.id);
       this.saveActiveContext(result);
       this.db.query(`
         INSERT INTO unwind_receipts(conversation_id, operation_id, user_message_index, history_total_entries, superseded_queue_ids_json)
@@ -999,6 +1211,7 @@ export class SqliteConversationStore implements ConversationRepository {
       if (options.supersededQueueIds.length > 0) {
         this.db.query(`DELETE FROM queued_messages WHERE id IN (${sqlPlaceholders(options.supersededQueueIds.length)})`).run(...options.supersededQueueIds);
       }
+      this.faultInjection?.("unwind.before-commit");
     })();
     this.loadedState.set(base, { generation, messages: result.messages.map(messageSnapshot), activeContextRef: result.activeContext, lastUnwindReceipt: receipt });
     this.loadedById.set(base.id, new WeakRef(base));
@@ -1195,12 +1408,14 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query("DELETE FROM btw_receipts WHERE conversation_id=?").run(id);
         this.db.query("DELETE FROM unread_conversations WHERE conversation_id=?").run(id);
       }
+      this.faultInjection?.("delete.after-conversations");
       if (recordUndo) {
         const undo = this.readStack("undo");
         undo.push(unique.length === 1 ? { type: "conversation", id: unique[0] } : { type: "conversations", ids: unique });
         this.writeStack("undo", undo);
         this.writeStack("redo", []);
       }
+      this.faultInjection?.("delete.before-commit");
     })();
     return unique;
   }
@@ -1244,10 +1459,31 @@ export class SqliteConversationStore implements ConversationRepository {
 
   loadToolOutputs(id: string): ToolOutputInfo[] | null {
     if (!this.has(id)) return null;
-    return this.db.query<{ tool_call_id: string; output: string }, [string]>(`
-      SELECT tool_call_id, output FROM tool_outputs
-      WHERE conversation_id=? ORDER BY message_sequence, ordinal
-    `).all(id).map((row) => ({ toolCallId: row.tool_call_id, output: row.output }));
+    return this.db.query<{ tool_call_id: string; content_json: string; payload_json: string | null }, [string]>(`
+      SELECT t.tool_call_id, m.content_json, b.payload_json FROM tool_outputs t
+      JOIN messages m ON m.conversation_id=t.conversation_id AND m.sequence=t.message_sequence
+      LEFT JOIN message_blobs b ON b.conversation_id=t.conversation_id
+        AND b.message_sequence=t.message_sequence AND b.kind='tool_result' AND b.ordinal=t.ordinal
+      WHERE t.conversation_id=? ORDER BY t.message_sequence, t.ordinal
+    `).all(id).map((row) => {
+      let raw: unknown;
+      if (row.payload_json != null) {
+        raw = (JSON.parse(row.payload_json) as { value: unknown }).value;
+      } else {
+        // Schema <=5 rows retain the complete content inline.
+        const content = JSON.parse(row.content_json);
+        const part = Array.isArray(content)
+          ? content.find((candidate: any) => candidate?.type === "tool_result" && candidate.tool_use_id === row.tool_call_id)
+          : null;
+        raw = part?.content;
+      }
+      const output = typeof raw === "string"
+        ? raw
+        : Array.isArray(raw)
+          ? raw.filter((item: any) => item?.type === "text").map((item: any) => item.text ?? "").join("\n")
+          : String(raw ?? "");
+      return { toolCallId: row.tool_call_id, output };
+    });
   }
 
   loadDisplayPage(id: string, turns: number, beforeEntryIndex?: number): StoredDisplayHistoryPage | null {
@@ -1301,11 +1537,15 @@ export class SqliteConversationStore implements ConversationRepository {
   }
 
   searchTitles(query: string, limit = 50): PersistedConversationSummary[] {
-    const escaped = `%${query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+    const terms = query.trim().split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return [];
+    const ftsQuery = terms.map((term) => `"${term.replaceAll('"', '""')}"*`).join(" AND ");
     return this.db.query<ConversationRow, [string, number]>(`
-      SELECT * FROM conversations WHERE deleted_at IS NULL AND title LIKE ? ESCAPE '\\'
-      ORDER BY updated_at DESC LIMIT ?
-    `).all(escaped, Math.max(1, Math.floor(limit))).map((row) => this.summaryFromRow(row));
+      SELECT c.* FROM conversation_title_fts f
+      JOIN conversations c ON c.id=f.conversation_id
+      WHERE conversation_title_fts MATCH ? AND c.deleted_at IS NULL
+      ORDER BY c.updated_at DESC LIMIT ?
+    `).all(ftsQuery, Math.max(1, Math.floor(limit))).map((row) => this.summaryFromRow(row));
   }
 
   exportConversation(id: string): Record<string, unknown> | null {
@@ -1388,6 +1628,8 @@ export class SqliteConversationStore implements ConversationRepository {
     let imported = 0;
     let reused = 0;
     const skipped: Array<{ id: string; error: string }> = [];
+    let lastProgressAt = startedAt;
+    log("info", `sqlite import: starting ${filenames.length} legacy conversation(s)`);
     try {
       this.saveFolders(legacy.loadFolders());
       this.saveFolderInstructions(legacy.loadFolderInstructions());
@@ -1395,7 +1637,8 @@ export class SqliteConversationStore implements ConversationRepository {
       return { status: "incomplete", discovered: filenames.length, imported, reused, skipped: [{ id: "<folders>", error: String(error) }], startedAt, completedAt: Date.now() };
     }
 
-    for (const filename of filenames) {
+    for (let index = 0; index < filenames.length; index++) {
+      const filename = filenames[index];
       const id = filename.slice(0, -5);
       const path = join(dir, filename);
       try {
@@ -1405,27 +1648,33 @@ export class SqliteConversationStore implements ConversationRepository {
         const prior = this.db.query<{ source_sha256: string }, [string]>("SELECT source_sha256 FROM import_sources WHERE conversation_id=?").get(id);
         if (prior?.source_sha256 === hash && this.row(id, true)) {
           reused++;
-          continue;
+        } else {
+          const conv = legacy.load(id);
+          if (!conv) throw new Error("legacy loader rejected the conversation");
+          const entry = legacy.indexEntryFromConversation(conv);
+          const statAfter = statSync(path);
+          if (statBefore.size !== statAfter.size || statBefore.mtimeMs !== statAfter.mtimeMs) throw new Error("source changed during stable read");
+          this.db.transaction(() => {
+            this.save(conv, { forceMessages: true, generation: Math.max(1, entry.storageGeneration) });
+            this.db.query(`
+              INSERT INTO import_sources(conversation_id, source_size, source_mtime_ms, source_generation, source_sha256, imported_at)
+              VALUES (?, ?, ?, ?, ?, ?)
+              ON CONFLICT(conversation_id) DO UPDATE SET source_size=excluded.source_size,
+                source_mtime_ms=excluded.source_mtime_ms, source_generation=excluded.source_generation,
+                source_sha256=excluded.source_sha256, imported_at=excluded.imported_at
+            `).run(id, statBefore.size, statBefore.mtimeMs, entry.storageGeneration, hash, Date.now());
+          })();
+          imported++;
         }
-        const conv = legacy.load(id);
-        if (!conv) throw new Error("legacy loader rejected the conversation");
-        const entry = legacy.indexEntryFromConversation(conv);
-        const statAfter = statSync(path);
-        if (statBefore.size !== statAfter.size || statBefore.mtimeMs !== statAfter.mtimeMs) throw new Error("source changed during stable read");
-        this.db.transaction(() => {
-          this.save(conv, { forceMessages: true, generation: Math.max(1, entry.storageGeneration) });
-          this.db.query(`
-            INSERT INTO import_sources(conversation_id, source_size, source_mtime_ms, source_generation, source_sha256, imported_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(conversation_id) DO UPDATE SET source_size=excluded.source_size,
-              source_mtime_ms=excluded.source_mtime_ms, source_generation=excluded.source_generation,
-              source_sha256=excluded.source_sha256, imported_at=excluded.imported_at
-          `).run(id, statBefore.size, statBefore.mtimeMs, entry.storageGeneration, hash, Date.now());
-        })();
-        imported++;
-        if ((imported + reused) % 100 === 0) log("info", `sqlite import: ${imported + reused}/${filenames.length}`);
       } catch (error) {
-        skipped.push({ id, error: error instanceof Error ? error.message : String(error) });
+        const message = error instanceof Error ? error.message : String(error);
+        skipped.push({ id, error: message });
+        log("error", `sqlite import: skipped ${id}: ${message}`);
+      }
+      const now = Date.now();
+      if (index + 1 === filenames.length || (index + 1) % 100 === 0 || now - lastProgressAt >= 2_000) {
+        log("info", `sqlite import: ${index + 1}/${filenames.length} source(s), ${imported} imported, ${reused} reused, ${skipped.length} skipped`);
+        lastProgressAt = now;
       }
     }
 
@@ -1445,6 +1694,7 @@ export class SqliteConversationStore implements ConversationRepository {
     }
     const report = { status, discovered: filenames.length, imported, reused, skipped, startedAt, completedAt: Date.now() } satisfies LegacyImportReport;
     this.setMetadata("legacy_import_report", JSON.stringify(report));
+    log(status === "complete" ? "info" : "error", `sqlite import: ${status} in ${report.completedAt - startedAt} ms (${imported} imported, ${reused} reused, ${skipped.length} skipped)`);
     return report;
   }
 
