@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy } from "./messages";
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, activeContextCompactionHistoryCount, createConversation, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, activeContextCompactionHistoryCount, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
@@ -57,6 +57,8 @@ const summaries = new Map<string, PersistedConversationSummary>();
 const folders = new Map<string, PersistedFolderSummary>();
 const folderInstructions = new Map<string, string>();
 const dirty = new Set<string>();
+/** Transcript content was mutated in place and requires field-level comparison. */
+const messageContentDirty = new Set<string>();
 /** Dirty state containing only rebuildable context-token attribution. */
 const contextAttributionDirty = new Set<string>();
 const unread = new Set<string>();
@@ -460,7 +462,7 @@ function applyConversationMutation(id: string, conv: Conversation): void {
   conv.lastContextTokens = null;
   conv.activeContext = null;
   conv.updatedAt = Date.now();
-  markDirty(id);
+  markDirty(id, "messages");
   flush(id);
 }
 
@@ -669,6 +671,7 @@ function removeConversationState(id: string): boolean {
   renderSnapshotCache.delete(id);
   summaries.delete(id);
   dirty.delete(id);
+  messageContentDirty.delete(id);
   contextAttributionDirty.delete(id);
   const wasUnread = unread.delete(id);
   streaming.clearActiveJob(id);
@@ -769,7 +772,7 @@ function restoreConversationsFromTrash(conversationIds: string[]): Conversation[
   for (const conv of restored) {
     retainConversation(conv);
     updateSummaryFromConversation(conv);
-    scheduleDisplayIndex(conv.id);
+    if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(conv.id);
   }
   if (restored.length > 0) saveSummaryIndex();
   return restored;
@@ -1061,7 +1064,7 @@ export function setSystemInstructions(id: string, text: string): boolean {
   }
 
   if (changed) conv.updatedAt = Date.now();
-  markDirty(id);
+  markDirty(id, "messages");
   flush(id);
   return true;
 }
@@ -1342,7 +1345,7 @@ async function performUnwindTo(
       messageCount: plannedSummary.messageCount,
       supersededQueueIds,
     });
-    scheduleDisplayIndex(id);
+    if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
     committed = true;
 
     conv.messages.splice(spliceAt);
@@ -1351,6 +1354,7 @@ async function performUnwindTo(
     conv.updatedAt = plannedConversation.updatedAt;
     renderSnapshotCache.delete(id);
     dirty.delete(id);
+    messageContentDirty.delete(id);
     contextAttributionDirty.delete(id);
     updateSummaryFromConversation(conv);
     try {
@@ -1565,9 +1569,10 @@ export function loadFromDisk(): LoadFromDiskStats {
 }
 
 /** Mark a conversation as needing a save. */
-export function markDirty(id: string): void {
+export function markDirty(id: string, mode: "auto" | "messages" = "auto"): void {
   renderSnapshotCache.delete(id);
   contextAttributionDirty.delete(id);
+  if (mode === "messages") messageContentDirty.add(id);
   dirty.add(id);
 }
 
@@ -1575,6 +1580,7 @@ export function markDirty(id: string): void {
 export function markContextAttributionDirty(id: string): void {
   renderSnapshotCache.delete(id);
   dirty.add(id);
+  messageContentDirty.delete(id);
   contextAttributionDirty.add(id);
 }
 
@@ -1583,9 +1589,13 @@ export function flush(id: string, options: { summaryIndex?: SummaryIndexFlushMod
   if (!dirty.has(id)) return;
   const conv = conversations.get(id);
   if (!conv) return;
-  persistence.save(conv);
-  scheduleDisplayIndex(id);
+  persistence.save(conv, {
+    forceMessages: messageContentDirty.has(id),
+    contextAttributionOnly: contextAttributionDirty.has(id),
+  });
+  if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
   dirty.delete(id);
+  messageContentDirty.delete(id);
   contextAttributionDirty.delete(id);
   setCachedFileSize(id, cachedFileSize(id));
   updateSummaryFromConversation(conv);
@@ -1599,12 +1609,16 @@ export function flushAll(): void {
   for (const id of dirty) {
     const conv = conversations.get(id);
     if (!conv) continue;
-    persistence.save(conv);
-    scheduleDisplayIndex(id);
+    persistence.save(conv, {
+      forceMessages: messageContentDirty.has(id),
+      contextAttributionOnly: contextAttributionDirty.has(id),
+    });
+    if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
     setCachedFileSize(id, cachedFileSize(id));
     updateSummaryFromConversation(conv);
   }
   dirty.clear();
+  messageContentDirty.clear();
   contextAttributionDirty.clear();
   summaryIndexDirty = false;
   saveSummaryIndexNow();
@@ -2098,6 +2112,35 @@ export function getStoredDisplayPage(
   if (!summaries.has(id) && !conversations.has(id)) return null;
   const totalStartedAt = diagnostics ? performance.now() : 0;
   const conversationCacheHit = diagnostics ? conversations.has(id) : false;
+  if (persistence.isSqliteConversationStore()) {
+    if (dirty.has(id)) return null;
+    const readStartedAt = diagnostics ? performance.now() : 0;
+    const page = persistence.loadDisplayPage(id, turns, beforeEntryIndex);
+    const loadedConversation = conversations.get(id);
+    // Preserve the existing safety fallback for direct in-memory mutations that
+    // have not yet been marked dirty/flushed (notably test and maintenance code).
+    if (!page || (loadedConversation && page.storedMessageCount !== loadedConversation.messages.length)) return null;
+    const summary = summaries.get(id) ?? summarizeConversation(conversations.get(id)!);
+    const folderInstructionsText = formatFolderInstructionsForDisplay(summary.folderId ?? null);
+    const pinnedEntries = folderInstructionsText
+      ? [{ type: "system_instructions" as const, text: folderInstructionsText }, ...page.pinnedEntries]
+      : page.pinnedEntries;
+    if (diagnostics) {
+      diagnostics.conversationCacheHit = conversationCacheHit;
+      diagnostics.snapshotCacheHit = false;
+      diagnostics.displayPageHit = true;
+      diagnostics.displayPageReadMs = performance.now() - readStartedAt;
+      diagnostics.displayPageWriteMs = 0;
+      diagnostics.streaming = false;
+      diagnostics.loadMs = 0;
+      diagnostics.buildMs = 0;
+      diagnostics.totalMs = performance.now() - totalStartedAt;
+      diagnostics.fileBytes = page.source.baseSize;
+      diagnostics.messageCount = summary.messageCount;
+      diagnostics.entryCount = page.totalEntries + pinnedEntries.length;
+    }
+    return { ...page, pinnedEntries };
+  }
   let readStartedAt = diagnostics ? performance.now() : 0;
   let page = displayPageStore.loadDisplayPage(id, turns, beforeEntryIndex);
   const loadedConversation = conversations.get(id);
@@ -2354,6 +2397,13 @@ export function getDisplayData(id: string, includeToolOutputs = true): Conversat
 }
 
 export function getToolOutputs(id: string): ToolOutputInfo[] | null {
+  if (persistence.isSqliteConversationStore() && !streaming.isStreaming(id)) {
+    const loaded = conversations.get(id);
+    const summary = summaries.get(id);
+    if (!loaded || !summary || countConversationMessages(loaded.messages) === summary.messageCount) {
+      return persistence.loadToolOutputs(id);
+    }
+  }
   const conv = get(id);
   if (!conv) return null;
   const transientMessages = streaming.getStreamingDisplayMessages(id);

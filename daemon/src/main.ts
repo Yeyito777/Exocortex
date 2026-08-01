@@ -22,6 +22,7 @@ import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
 import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
+import { closeConversationPersistence } from "./persistence";
 import { getRunningConversationIds, prepareRestartForReplay, prepareStopWithoutReplay } from "./control";
 import { clearRestartRecoveryForStop, deliverPendingSubagentNotifications, hasActiveGoalRestartMarker, prepareCatchableShutdownForReplay, prepareCatchableShutdownWithoutReplay, recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
 import { startChronoService, stopChronoService, listChronoSchedules } from "./chrono-service";
@@ -163,6 +164,7 @@ async function startDaemon(): Promise<void> {
         await stopExternalToolsAsync();
       }
       convStore.flushAll();
+      closeConversationPersistence();
       await server.stop();
       try { unlinkSync(PID_PATH); } catch { /* best-effort cleanup */ }
       process.exit(exitCode);

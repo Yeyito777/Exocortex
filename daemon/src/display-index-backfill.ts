@@ -1,5 +1,6 @@
 import { log } from "./log";
 import { isWindows } from "@exocortex/shared/paths";
+import { isSqliteConversationStore } from "./persistence";
 
 interface WorkerProgress {
   type: "progress" | "complete" | "indexed";
@@ -73,7 +74,7 @@ function scheduleWorkerStart(delayMs: number): void {
 
 /** Start one delayed, off-event-loop migration for legacy conversations. */
 export function startDisplayIndexBackfill(): void {
-  if (isWindows) return;
+  if (isWindows || isSqliteConversationStore()) return;
   enabled = true;
   scheduleWorkerStart(1_000);
 }
