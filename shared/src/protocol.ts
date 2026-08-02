@@ -150,6 +150,19 @@ export interface BackgroundToolCommand {
   convId: string;
 }
 
+/** Stable identity of the platform-specific media endpoint attached to a call. */
+export interface RealtimeCallAdapter {
+  type: "tui" | "discord";
+  /** Unique within the adapter type, for example `local` or `paramount:123456789`. */
+  id: string;
+  /** Optional user-facing source label such as `#yeyito-chill`. */
+  label?: string;
+  /** Discord account alias when type is `discord`. */
+  accountAlias?: string;
+  /** Discord voice/DM channel ID when type is `discord`. */
+  channelId?: string;
+}
+
 /** Request a realtime call owned by an existing conversation. */
 export interface StartCallCommand {
   type: "start_call";
@@ -157,6 +170,8 @@ export interface StartCallCommand {
   convId: string;
   /** Explicit selection; omission reuses the persisted call voice. */
   voice?: RealtimeVoice;
+  /** Omitted by native clients, which use the singleton local TUI adapter. */
+  adapter?: RealtimeCallAdapter;
 }
 
 /** Attach a media adapter's WebRTC offer to a prepared conversation call. */
@@ -1240,6 +1255,7 @@ export interface CallStateEvent {
   type: "call_state";
   convId: string;
   callId: string;
+  adapter?: RealtimeCallAdapter;
   state: RealtimeCallState;
   message?: string;
 }
@@ -1250,6 +1266,7 @@ export interface CallSdpAnswerEvent {
   reqId?: string;
   convId: string;
   callId: string;
+  adapter?: RealtimeCallAdapter;
   sdp: string;
 }
 
@@ -1258,6 +1275,7 @@ export interface CallTranscriptEvent {
   type: "call_transcript";
   convId: string;
   callId: string;
+  adapter?: RealtimeCallAdapter;
   role: "user" | "assistant";
   /** Complete transcript accumulated so far, not merely the latest wire chunk. */
   text: string;

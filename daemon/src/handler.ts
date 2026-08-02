@@ -10,6 +10,7 @@
 import { log } from "./log";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
+import type { RealtimeCallAdapter } from "@exocortex/shared/protocol";
 import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateRealtimeDelegation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
@@ -102,6 +103,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   let exocortexRuntime: ExocortexToolRuntime | undefined;
   let btwManager: BtwSessionManager;
   let callManager: RealtimeCallController;
+  const delegatedCallByConversation = new Map<string, string>();
   const pendingBackgroundNotifications = new Map<string, { convId: string; completion: BackgroundTaskCompletion }>();
   configureChronoService((convId) => broadcastConversationUpdated(server, convId));
   setExternalNotificationsChangedListener((convIds) => {
@@ -429,7 +431,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       return turn;
     },
     stopCall: async (convId) => {
-      await callManager.stopFromAgent(convId);
+      const callId = delegatedCallByConversation.get(convId);
+      if (callId) await callManager.stopFromAgent(convId, callId);
+      else await callManager.stopFromAgent(convId);
     },
     beginParentNotification: notificationRuntime.begin,
     completeParentNotification: notificationRuntime.complete,
@@ -904,15 +908,23 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       const conv = convStore.get(convId);
       if (!conv) throw new Error("Owning conversation no longer exists.");
       if (convStore.isStreaming(convId)) throw new Error("The owning conversation is already running another turn.");
-      const outcome = await orchestrateRealtimeDelegation(
-        server,
-        convId,
-        delegation,
-        Date.now(),
-        buildOrchestrationCallbacks(convId),
-        { subagentMaxDepth: conv.subagentMaxDepth ?? null },
-        signal,
-      );
+      delegatedCallByConversation.set(convId, delegation.callId);
+      let outcome: AssistantTurnOutcome;
+      try {
+        outcome = await orchestrateRealtimeDelegation(
+          server,
+          convId,
+          delegation,
+          Date.now(),
+          buildOrchestrationCallbacks(convId),
+          { subagentMaxDepth: conv.subagentMaxDepth ?? null },
+          signal,
+        );
+      } finally {
+        if (delegatedCallByConversation.get(convId) === delegation.callId) {
+          delegatedCallByConversation.delete(convId);
+        }
+      }
       if (outcome.aborted && !outcome.watchdog && !outcome.daemonRestart) {
         return { status: "cancelled" as const };
       }
@@ -926,7 +938,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     },
   });
 
-  const startCall = async (client: ConnectedClient, convId: string, reqId?: string, voice?: RealtimeVoice): Promise<void> => {
+  const startCall = async (
+    client: ConnectedClient,
+    convId: string,
+    reqId?: string,
+    voice?: RealtimeVoice,
+    adapter?: RealtimeCallAdapter,
+  ): Promise<void> => {
     if (!convStore.get(convId)) {
       server.sendTo(client, {
         type: "error",
@@ -940,7 +958,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     // publishing lifecycle events; this also covers an atomic create + call.
     server.subscribe(client, convId);
     try {
-      if (voice) await callManager.start(convId, voice);
+      if (adapter) await callManager.start(convId, voice, adapter);
+      else if (voice) await callManager.start(convId, voice);
       else await callManager.start(convId);
       server.sendTo(client, { type: "ack", reqId, convId });
     } catch (error) {
@@ -1260,7 +1279,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "start_call": {
-        await startCall(client, cmd.convId, cmd.reqId, cmd.voice);
+        await startCall(client, cmd.convId, cmd.reqId, cmd.voice, cmd.adapter);
         break;
       }
 

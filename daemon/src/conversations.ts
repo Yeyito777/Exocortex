@@ -2386,6 +2386,12 @@ export function appendRealtimeTranscript(
     endedAt?: number;
     model?: ModelId;
     tokens?: number;
+    callId?: string;
+    adapterType?: "tui" | "discord";
+    adapterId?: string;
+    sourceLabel?: string;
+    accountAlias?: string;
+    channelId?: string;
   } = {},
 ): boolean {
   const conv = get(convId);
@@ -2396,7 +2402,7 @@ export function appendRealtimeTranscript(
     const message = createStoredUserMessage(normalized, conv.model, startedAt, undefined, {
       contextCheckpoint: createStoredUserContextCheckpoint(conv),
     });
-    message.metadata!.kind = REALTIME_TRANSCRIPT_KIND;
+    Object.assign(message.metadata!, realtimeSourceMetadata(details), { kind: REALTIME_TRANSCRIPT_KIND });
     conv.messages.push(message);
   } else {
     conv.messages.push({
@@ -2407,6 +2413,7 @@ export function appendRealtimeTranscript(
           endedAt: details.endedAt ?? startedAt,
           tokens: details.tokens ?? 0,
         }),
+        ...realtimeSourceMetadata(details),
         kind: REALTIME_TRANSCRIPT_KIND,
       },
     });
@@ -2443,6 +2450,7 @@ export function promoteRealtimeTranscript(
   convId: string,
   originalUserUtterance: string,
   delegatedMessage: string,
+  callId?: string,
 ): boolean {
   const conv = get(convId);
   const expected = realtimeUtteranceKey(originalUserUtterance);
@@ -2454,6 +2462,7 @@ export function promoteRealtimeTranscript(
     if (
       message.role !== "user"
       || message.metadata?.kind !== REALTIME_TRANSCRIPT_KIND
+      || (callId !== undefined && message.metadata.realtimeCallId !== callId)
       || realtimeUtteranceKey(visibleMessageText(message.content)) !== expected
     ) {
       continue;
@@ -2469,8 +2478,31 @@ export function promoteRealtimeTranscript(
   return false;
 }
 
+function realtimeSourceMetadata(details: {
+  callId?: string;
+  adapterType?: "tui" | "discord";
+  adapterId?: string;
+  sourceLabel?: string;
+  accountAlias?: string;
+  channelId?: string;
+}): Partial<MessageMetadata> {
+  return {
+    ...(details.callId ? { realtimeCallId: details.callId } : {}),
+    ...(details.adapterType ? { realtimeAdapterType: details.adapterType } : {}),
+    ...(details.adapterId ? { realtimeAdapterId: details.adapterId } : {}),
+    ...(details.sourceLabel ? { realtimeSourceLabel: details.sourceLabel } : {}),
+    ...(details.accountAlias ? { realtimeAccountAlias: details.accountAlias } : {}),
+    ...(details.channelId ? { realtimeChannelId: details.channelId } : {}),
+  };
+}
+
 /** Persist a model-hidden lifecycle marker so call boundaries survive history reloads. */
-export function appendRealtimeCallStatus(convId: string, text: string, startedAt = Date.now()): boolean {
+export function appendRealtimeCallStatus(
+  convId: string,
+  text: string,
+  startedAt = Date.now(),
+  details: Parameters<typeof realtimeSourceMetadata>[0] = {},
+): boolean {
   const conv = get(convId);
   const normalized = text.trim();
   if (!conv || !normalized) return false;
@@ -2479,6 +2511,7 @@ export function appendRealtimeCallStatus(convId: string, text: string, startedAt
     content: normalized,
     metadata: {
       ...createMessageMetadata(startedAt, conv.model, { endedAt: startedAt }),
+      ...realtimeSourceMetadata(details),
       kind: REALTIME_CALL_STATUS_KIND,
     },
   });

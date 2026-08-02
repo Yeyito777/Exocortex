@@ -42,8 +42,10 @@ describe("TUI call media controller", () => {
       type: "call_state",
       convId: "conv-1",
       callId: "call-1",
+      adapter: { type: "tui", id: "local" },
       state: "waiting_for_media",
     });
+    expect(controller.callIdForConversation("conv-1")).toBe("call-1");
     child.stdout.write(`${JSON.stringify({ type: "offer", sdp: "v=0\r\no=offer" })}\n`);
 
     expect(api.attachCallMedia).toHaveBeenCalledTimes(1);
@@ -72,9 +74,11 @@ describe("TUI call media controller", () => {
       type: "call_state",
       convId: "conv-1",
       callId: "call-1",
+      adapter: { type: "tui", id: "local" },
       state: "closed",
     });
     expect(sent.map(line => JSON.parse(line))).toContainEqual({ type: "stop" });
+    expect(controller.callIdForConversation("conv-1")).toBeUndefined();
   });
 
   test("stops the daemon call when the helper fails", () => {
@@ -115,5 +119,24 @@ describe("TUI call media controller", () => {
 
     expect(spawnHelper).toHaveBeenCalledTimes(1);
     controller.stop();
+  });
+
+  test("ignores Discord adapter lifecycle events", () => {
+    const spawnHelper = mock(() => new FakeChild().asChild());
+    const controller = new CallMediaController(daemon(), { spawnHelper });
+    controller.handleEvent({
+      type: "call_state",
+      convId: "conv-discord",
+      callId: "call-discord",
+      adapter: {
+        type: "discord",
+        id: "paramount:voice",
+        accountAlias: "paramount",
+        channelId: "voice",
+      },
+      state: "waiting_for_media",
+    });
+    expect(spawnHelper).not.toHaveBeenCalled();
+    expect(controller.callIdForConversation("conv-discord")).toBeUndefined();
   });
 });

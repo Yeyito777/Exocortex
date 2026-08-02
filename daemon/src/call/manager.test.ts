@@ -61,6 +61,7 @@ describe("realtime call manager", () => {
     const realtime = new FakeTransport();
     const server = fakeServer();
     const persisted: Array<{ role: string; text: string }> = [];
+    const persistedSources: Array<Record<string, unknown>> = [];
     const statuses: string[] = [];
     let emit: ((event: RealtimeSidebandEvent) => void | Promise<void>) | null = null;
     const manager = new RealtimeCallManager(server.server as never, {
@@ -72,8 +73,9 @@ describe("realtime call manager", () => {
       getConversation: id => id === conv.id ? conv : undefined,
       getEffectiveInstructions: () => "Prefer concise spoken replies.",
       getAccountScope: () => "scope",
-      persistTranscript: (_id, role, text) => {
+      persistTranscript: (_id, role, text, _startedAt, details) => {
         persisted.push({ role, text });
+        persistedSources.push(details ?? {});
         return true;
       },
       persistStatus: (_id, text) => {
@@ -117,11 +119,17 @@ describe("realtime call manager", () => {
       reqId: "media-req",
       convId: conv.id,
       callId: started.callId,
+      adapter: { type: "tui", id: "local" },
       sdp: "v=0\r\no=answer",
     });
 
     await emit!({ type: "transcript_done", role: "user", text: "Please inspect it" });
     expect(persisted).toEqual([{ role: "user", text: "Please inspect it" }]);
+    expect(persistedSources[0]).toMatchObject({
+      callId: started.callId,
+      adapterType: "tui",
+      adapterId: "local",
+    });
 
     await emit!({ type: "transcript_delta", role: "assistant", text: "Spoken " });
     expect(server.subscriber).toContainEqual(expect.objectContaining({
@@ -156,6 +164,7 @@ describe("realtime call manager", () => {
     await emit!({ type: "transcript_done", role: "user", text: "Next request" });
 
     await emit!({ type: "handoff", handoffId: "delegation-1", text: "inspect the repository" });
+    await Bun.sleep(0);
     expect(persisted).toContainEqual({ role: "user", text: "Next request" });
     expect(persisted).not.toContainEqual({ role: "user", text: "inspect the repository" });
     expect(server.subscriber.some(event =>
@@ -407,24 +416,88 @@ describe("realtime call manager", () => {
     expect(realtime.handoffs).toEqual([]);
   });
 
-  test("rejects non-OpenAI owners and enforces one global active call", async () => {
+  test("rejects non-OpenAI owners while allowing independent media adapters", async () => {
     const openAI = conversation();
+    const otherOpenAI = conversation({ id: "other-openai", title: "Discord call" });
     const deepSeek = conversation({ id: "deep", provider: "deepseek", model: "deepseek-chat" });
-    const realtime = new FakeTransport();
+    const transports: FakeTransport[] = [];
     const server = fakeServer();
     const manager = new RealtimeCallManager(server.server as never, {
-      createTransport: () => realtime,
+      createTransport: () => {
+        const transport = new FakeTransport();
+        transports.push(transport);
+        return transport;
+      },
       ensureAuthenticated: async () => {},
-      getConversation: id => id === openAI.id ? openAI : id === deepSeek.id ? deepSeek : undefined,
+      getConversation: id => id === openAI.id ? openAI : id === otherOpenAI.id ? otherOpenAI : id === deepSeek.id ? deepSeek : undefined,
       getEffectiveInstructions: () => null,
       getAccountScope: () => null,
       persistTranscript: () => true,
     });
 
     await expect(manager.start(deepSeek.id)).rejects.toThrow("OpenAI conversation");
-    await manager.start(openAI.id);
-    await expect(manager.start(deepSeek.id)).rejects.toThrow("already active");
+    const tui = await manager.start(openAI.id);
+    const discord = await manager.start(otherOpenAI.id, undefined, {
+      type: "discord",
+      id: "paramount:voice-1",
+      accountAlias: "paramount",
+      channelId: "voice-1",
+      label: "#voice",
+    });
+    expect(tui.callId).not.toBe(discord.callId);
+    expect(transports).toHaveLength(2);
+    await expect(manager.start(otherOpenAI.id)).rejects.toThrow("tui media adapter");
+    await manager.stop(openAI.id, tui.callId);
+    expect(manager.hasActiveCall()).toBe(true);
+    await manager.stop(otherOpenAI.id, discord.callId);
+    expect(manager.hasActiveCall()).toBe(false);
     await manager.stopAll();
+  });
+
+  test("targets events and hangup by call ID when one conversation has multiple adapters", async () => {
+    const conv = conversation();
+    const server = fakeServer();
+    const transports: FakeTransport[] = [];
+    const emitters: Array<(event: RealtimeSidebandEvent) => void | Promise<void>> = [];
+    const manager = new RealtimeCallManager(server.server as never, {
+      createTransport: handler => {
+        const transport = new FakeTransport();
+        transports.push(transport);
+        emitters.push(handler);
+        return transport;
+      },
+      ensureAuthenticated: async () => {},
+      getConversation: id => id === conv.id ? conv : undefined,
+      getEffectiveInstructions: () => null,
+      getAccountScope: () => null,
+      persistTranscript: () => true,
+      persistStatus: () => true,
+    });
+
+    const tui = await manager.start(conv.id);
+    const discordAdapter = {
+      type: "discord" as const,
+      id: "paramount:voice-1",
+      accountAlias: "paramount",
+      channelId: "voice-1",
+    };
+    const discord = await manager.start(conv.id, undefined, discordAdapter);
+    await manager.attachMedia({} as never, conv.id, tui.callId, "v=0");
+    await manager.attachMedia({} as never, conv.id, discord.callId, "v=0");
+
+    await emitters[1]!({ type: "transcript_delta", role: "assistant", text: "Discord reply" });
+    expect(server.subscriber.at(-1)).toMatchObject({
+      type: "call_transcript",
+      callId: discord.callId,
+      adapter: discordAdapter,
+    });
+    await expect(manager.stop(conv.id)).rejects.toThrow("Multiple realtime calls");
+    await manager.stop(conv.id, discord.callId);
+    expect(transports[1]!.stopped).toBe(1);
+    expect(transports[0]!.stopped).toBe(0);
+    expect(manager.hasActiveCall()).toBe(true);
+    await manager.stop(conv.id, tui.callId);
+    expect(manager.hasActiveCall()).toBe(false);
   });
 });
 

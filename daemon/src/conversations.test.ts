@@ -105,6 +105,12 @@ describe("realtime transcripts", () => {
       endedAt: 4_500,
       model: "gpt-live-1-boulder-alpha",
       tokens: 3,
+      callId: "call-discord",
+      adapterType: "discord",
+      adapterId: "paramount:voice",
+      sourceLabel: "#voice",
+      accountAlias: "paramount",
+      channelId: "voice",
     })).toBe(true);
 
     const messages = get(id)!.messages;
@@ -123,6 +129,12 @@ describe("realtime transcripts", () => {
         endedAt: 4_500,
         model: "gpt-live-1-boulder-alpha",
         tokens: 3,
+        realtimeCallId: "call-discord",
+        realtimeAdapterType: "discord",
+        realtimeAdapterId: "paramount:voice",
+        realtimeSourceLabel: "#voice",
+        realtimeAccountAlias: "paramount",
+        realtimeChannelId: "voice",
         kind: "realtime_transcript",
       },
     });
@@ -174,6 +186,24 @@ describe("realtime transcripts", () => {
     });
     expect(messages[1]).toMatchObject({ role: "assistant", content: "I’ll take a look." });
     expect(promoteRealtimeTranscript(id, "unrelated speech", replacement)).toBe(false);
+  });
+
+  test("promotes only the transcript owned by the delegated call", () => {
+    const id = mkId("realtime-delegation-call-id");
+    create(id, "openai", "gpt-5.4", "Parallel realtime delegation");
+    appendRealtimeTranscript(id, "user", "Check this", 1_000, {
+      callId: "call-tui",
+      adapterType: "tui",
+      adapterId: "local",
+    });
+    appendRealtimeTranscript(id, "user", "Check this", 2_000, {
+      callId: "call-discord",
+      adapterType: "discord",
+      adapterId: "paramount:voice",
+    });
+
+    expect(promoteRealtimeTranscript(id, "Check this", "Discord delegated", "call-discord")).toBe(true);
+    expect(get(id)!.messages.map(message => message.content)).toEqual(["Check this", "Discord delegated"]);
   });
 });
 

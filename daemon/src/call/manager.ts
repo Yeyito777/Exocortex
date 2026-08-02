@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RealtimeCallState } from "../protocol";
+import type { RealtimeCallAdapter, RealtimeCallState } from "../protocol";
 import type { ConnectedClient, DaemonServer } from "../server";
 import type { ApiContentBlock, ApiMessage, Conversation } from "../messages";
 import * as convStore from "../conversations";
@@ -185,6 +185,8 @@ export interface RealtimeCallManagerDependencies {
   getVoice?: () => RealtimeVoice;
   saveVoice?: (voice: RealtimeVoice) => void;
   delegate?: (convId: string, delegation: {
+    callId: string;
+    adapter: RealtimeCallAdapter;
     originalUserUtterance: string;
     backendTask: string;
   }, signal: AbortSignal) => Promise<
@@ -202,6 +204,7 @@ interface TranscriptAccumulator {
 interface ActiveCall {
   convId: string;
   callId: string;
+  adapter: RealtimeCallAdapter;
   state: RealtimeCallState;
   transport: NativeRealtimeTransport;
   initialItems: RealtimeInitialItem[];
@@ -218,10 +221,38 @@ interface ActiveCall {
   assistantResponseStartedAt: number | null;
 }
 
-/** Owns the one restart-unsafe Bidi call allowed by this daemon process. */
+function persistedCallSource(call: ActiveCall) {
+  return {
+    callId: call.callId,
+    adapterType: call.adapter.type,
+    adapterId: call.adapter.id,
+    ...(call.adapter.label ? { sourceLabel: call.adapter.label } : {}),
+    ...(call.adapter.accountAlias ? { accountAlias: call.adapter.accountAlias } : {}),
+    ...(call.adapter.channelId ? { channelId: call.adapter.channelId } : {}),
+  };
+}
+
+const DEFAULT_TUI_ADAPTER: RealtimeCallAdapter = { type: "tui", id: "local" };
+
+function callAdapterKey(adapter: RealtimeCallAdapter): string {
+  if (adapter.type !== "tui" && adapter.type !== "discord") {
+    throw new Error(`Unsupported realtime call adapter type: ${String(adapter.type)}.`);
+  }
+  const id = adapter.id.trim();
+  if (!id) throw new Error("Realtime call adapter ID is required.");
+  if (adapter.type === "discord") {
+    if (!adapter.accountAlias?.trim()) throw new Error("Discord call adapters require an account alias.");
+    if (!adapter.channelId?.trim()) throw new Error("Discord call adapters require a channel ID.");
+  }
+  return `${adapter.type}:${id}`;
+}
+
+/** Owns independent restart-unsafe Bidi sessions for platform media adapters. */
 export class RealtimeCallManager {
-  private active: ActiveCall | null = null;
-  private starting: Promise<ActiveCall> | null = null;
+  private readonly calls = new Map<string, ActiveCall>();
+  private readonly callByAdapter = new Map<string, string>();
+  private readonly startingByAdapter = new Map<string, Promise<ActiveCall>>();
+  private readonly delegationTailByConversation = new Map<string, Promise<void>>();
   private readonly getConversation: typeof convStore.get;
   private readonly getEffectiveInstructions: typeof convStore.getEffectiveSystemInstructions;
   private readonly getAccountScope: () => string | null;
@@ -251,14 +282,21 @@ export class RealtimeCallManager {
   }
 
   hasActiveCall(): boolean {
-    return this.active !== null || this.starting !== null;
+    return this.calls.size > 0 || this.startingByAdapter.size > 0;
   }
 
-  async start(convId: string, requestedVoice?: RealtimeVoice): Promise<{ callId: string; state: RealtimeCallState }> {
+  async start(
+    convId: string,
+    requestedVoice?: RealtimeVoice,
+    requestedAdapter: RealtimeCallAdapter = DEFAULT_TUI_ADAPTER,
+  ): Promise<{ callId: string; state: RealtimeCallState }> {
     if (requestedVoice !== undefined && !isRealtimeVoice(requestedVoice)) {
       throw new Error(`Unsupported realtime voice: ${String(requestedVoice)}.`);
     }
-    const existing = this.active;
+    const adapter = { ...requestedAdapter, id: requestedAdapter.id.trim() };
+    const adapterKey = callAdapterKey(adapter);
+    const existingCallId = this.callByAdapter.get(adapterKey);
+    const existing = existingCallId ? this.calls.get(existingCallId) : undefined;
     if (existing?.convId === convId) {
       if (requestedVoice && requestedVoice !== existing.voice) {
         throw new Error(`This call is already using ${existing.voice}; hang up before changing voices.`);
@@ -266,7 +304,13 @@ export class RealtimeCallManager {
       this.emitState(existing);
       return { callId: existing.callId, state: existing.state };
     }
-    if (existing || this.starting) throw new Error("Another realtime call is already active.");
+    if (existing) throw new Error(`The ${adapter.type} media adapter is already attached to another realtime call.`);
+    const existingStart = this.startingByAdapter.get(adapterKey);
+    if (existingStart) {
+      const starting = await existingStart;
+      if (starting.convId !== convId) throw new Error(`The ${adapter.type} media adapter is already starting another realtime call.`);
+      return { callId: starting.callId, state: starting.state };
+    }
 
     const conv = this.getConversation(convId);
     if (!conv) throw new Error("Conversation not found.");
@@ -274,11 +318,12 @@ export class RealtimeCallManager {
 
     const callId = randomUUID();
     const voice = requestedVoice ?? this.getVoice();
-    const transport = this.createTransport(event => this.handleEvent(event));
+    const transport = this.createTransport(event => this.handleEvent(callId, event));
     const start = (async () => {
       const provisional: ActiveCall = {
         convId,
         callId,
+        adapter,
         state: "starting",
         transport,
         initialItems: [],
@@ -295,11 +340,12 @@ export class RealtimeCallManager {
         interruptedUserReplay: null,
         assistantResponseStartedAt: null,
       };
-      this.active = provisional;
+      this.calls.set(callId, provisional);
+      this.callByAdapter.set(adapterKey, callId);
       this.emitState(provisional, "Preparing ChatGPT Bidi…");
       try {
         await this.ensureAuthenticated();
-        if (this.active !== provisional || provisional.state === "stopping" || provisional.state === "closed") {
+        if (this.calls.get(callId) !== provisional || provisional.state === "stopping" || provisional.state === "closed") {
           throw new Error("Realtime call was stopped while starting.");
         }
         const freshConv = this.getConversation(convId);
@@ -314,24 +360,24 @@ export class RealtimeCallManager {
         this.emitState(provisional, "Bidi is ready; waiting for the client microphone/speaker connection.");
         return provisional;
       } catch (error) {
-        const interrupted = this.active !== provisional
+        const interrupted = this.calls.get(callId) !== provisional
           || provisional.state === "stopping"
           || provisional.state === "closed";
         if (!interrupted) {
           provisional.state = "error";
           this.emitState(provisional, error instanceof Error ? error.message : String(error));
-          if (this.active === provisional) this.active = null;
+          this.removeCall(provisional);
           await transport.stop();
         }
         throw error;
       }
     })();
-    this.starting = start;
+    this.startingByAdapter.set(adapterKey, start);
     try {
       const active = await start;
       return { callId: active.callId, state: active.state };
     } finally {
-      if (this.starting === start) this.starting = null;
+      if (this.startingByAdapter.get(adapterKey) === start) this.startingByAdapter.delete(adapterKey);
     }
   }
 
@@ -365,6 +411,7 @@ export class RealtimeCallManager {
         reqId,
         convId: call.convId,
         callId: call.callId,
+        adapter: call.adapter,
         sdp: result.answerSdp,
       });
       call.state = "live";
@@ -386,15 +433,12 @@ export class RealtimeCallManager {
    * user's hangup request. Unlike an external /hangup, this must not abort the
    * very turn executing the hangup tool.
    */
-  async stopFromAgent(convId: string): Promise<void> {
-    await this.stopCall(convId, undefined, false);
+  async stopFromAgent(convId: string, callId?: string): Promise<void> {
+    await this.stopCall(convId, callId, false);
   }
 
   private async stopCall(convId: string, callId: string | undefined, abortHandoff: boolean): Promise<void> {
-    const call = this.active;
-    if (!call || call.convId !== convId || (callId && call.callId !== callId)) {
-      throw new Error("No matching realtime call is active.");
-    }
+    const call = this.resolveCall(convId, callId);
     if (call.state === "stopping" || call.state === "closed") return;
     call.state = "stopping";
     this.emitState(call, "Stopping realtime call…");
@@ -406,24 +450,37 @@ export class RealtimeCallManager {
       call.state = "closed";
       this.persistCallStatus(call, "Realtime call ended.");
       this.emitState(call);
-      if (this.active === call) this.active = null;
+      this.removeCall(call);
     }
   }
 
   async stopAll(): Promise<void> {
-    const call = this.active;
-    if (!call) return;
-    await this.stop(call.convId, call.callId).catch(error => {
-      log("warn", `realtime call: shutdown cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
-    });
+    const calls = [...this.calls.values()];
+    await Promise.all(calls.map(call => this.stop(call.convId, call.callId).catch(error => {
+      log("warn", `realtime call: shutdown cleanup failed for ${call.callId}: ${error instanceof Error ? error.message : String(error)}`);
+    })));
   }
 
   private requireCall(convId: string, callId: string): ActiveCall {
-    const call = this.active;
-    if (!call || call.convId !== convId || call.callId !== callId) {
+    const call = this.calls.get(callId);
+    if (!call || call.convId !== convId) {
       throw new Error("No matching realtime call is active.");
     }
     return call;
+  }
+
+  private resolveCall(convId: string, callId?: string): ActiveCall {
+    if (callId) return this.requireCall(convId, callId);
+    const matches = [...this.calls.values()].filter(call => call.convId === convId);
+    if (matches.length === 0) throw new Error("No matching realtime call is active.");
+    if (matches.length > 1) throw new Error("Multiple realtime calls are active for this conversation; specify a call ID.");
+    return matches[0]!;
+  }
+
+  private removeCall(call: ActiveCall): void {
+    if (this.calls.get(call.callId) === call) this.calls.delete(call.callId);
+    const key = callAdapterKey(call.adapter);
+    if (this.callByAdapter.get(key) === call.callId) this.callByAdapter.delete(key);
   }
 
   private emitState(call: ActiveCall, message?: string): void {
@@ -431,13 +488,14 @@ export class RealtimeCallManager {
       type: "call_state",
       convId: call.convId,
       callId: call.callId,
+      adapter: call.adapter,
       state: call.state,
       ...(message ? { message } : {}),
     });
   }
 
-  private async handleEvent(event: RealtimeSidebandEvent): Promise<void> {
-    const call = this.active;
+  private async handleEvent(callId: string, event: RealtimeSidebandEvent): Promise<void> {
+    const call = this.calls.get(callId);
     if (!call) return;
     switch (event.type) {
       case "started":
@@ -476,6 +534,7 @@ export class RealtimeCallManager {
           type: "call_transcript",
           convId: call.convId,
           callId: call.callId,
+          adapter: call.adapter,
           role: event.role,
           text: projectedText,
           final: false,
@@ -524,6 +583,8 @@ export class RealtimeCallManager {
         const originalUserUtterance = call.lastFinalUserTranscript ?? backendTask;
         call.pendingHandoffUserKey = transcriptKey(originalUserUtterance);
         void this.handleHandoff(call, event.handoffId, {
+          callId: call.callId,
+          adapter: call.adapter,
           originalUserUtterance,
           backendTask,
         });
@@ -542,7 +603,7 @@ export class RealtimeCallManager {
           ? `Realtime call ended: ${event.reason}`
           : "Realtime call ended.");
         this.emitState(call);
-        if (this.active === call) this.active = null;
+        this.removeCall(call);
         break;
     }
   }
@@ -572,6 +633,7 @@ export class RealtimeCallManager {
         type: "call_transcript",
         convId: call.convId,
         callId: call.callId,
+        adapter: call.adapter,
         role,
         text: "",
         final: true,
@@ -588,6 +650,7 @@ export class RealtimeCallManager {
       type: "call_transcript",
       convId: call.convId,
       callId: call.callId,
+      adapter: call.adapter,
       role,
       text: normalized,
       final: true,
@@ -598,6 +661,7 @@ export class RealtimeCallManager {
     });
     if (this.persistTranscript(call.convId, role, normalized, startedAt, {
       endedAt,
+      ...persistedCallSource(call),
       ...(role === "assistant" ? { model: REALTIME_MODEL, tokens } : {}),
     })) {
       broadcastConversationHistoryUpdated(this.server, call.convId);
@@ -616,7 +680,7 @@ export class RealtimeCallManager {
   }
 
   private persistCallStatus(call: ActiveCall, text: string): void {
-    if (!this.persistStatus(call.convId, text)) return;
+    if (!this.persistStatus(call.convId, text, Date.now(), persistedCallSource(call))) return;
     broadcastConversationHistoryUpdated(this.server, call.convId);
     broadcastConversationUpdated(this.server, call.convId);
   }
@@ -632,9 +696,14 @@ export class RealtimeCallManager {
   private async handleHandoff(
     call: ActiveCall,
     handoffId: string,
-    delegation: { originalUserUtterance: string; backendTask: string },
+    delegation: {
+      callId: string;
+      adapter: RealtimeCallAdapter;
+      originalUserUtterance: string;
+      backendTask: string;
+    },
   ): Promise<void> {
-    if (!this.delegate || call.handoffInFlight || this.active !== call) return;
+    if (!this.delegate || call.handoffInFlight || this.calls.get(call.callId) !== call) return;
     const abortController = new AbortController();
     call.handoffInFlight = true;
     call.handoffAbortController = abortController;
@@ -643,25 +712,36 @@ export class RealtimeCallManager {
     // reply. Publish the state transition for adapters, but do not inject a
     // visible lifecycle notice into conversation history.
     this.emitState(call);
-    try {
-      const result = await this.delegate(call.convId, delegation, abortController.signal);
-      if (this.active === call && call.state === "delegating") {
-        if (result.status === "completed") {
-          const text = result.text.trim();
-          if (text) await call.transport.appendHandoff(handoffId, text);
-        } else {
-          await call.transport.appendHandoff(handoffId, "The delegated request was canceled.");
+    const previous = this.delegationTailByConversation.get(call.convId) ?? Promise.resolve();
+    const task = previous.catch(() => {}).then(async () => {
+      if (abortController.signal.aborted || this.calls.get(call.callId) !== call) return;
+      try {
+        const result = await this.delegate!(call.convId, delegation, abortController.signal);
+        if (this.calls.get(call.callId) === call && call.state === "delegating") {
+          if (result.status === "completed") {
+            const text = result.text.trim();
+            if (text) await call.transport.appendHandoff(handoffId, text);
+          } else {
+            await call.transport.appendHandoff(handoffId, "The delegated request was canceled.");
+          }
+        }
+      } catch (error) {
+        log("warn", `realtime call: handoff failed for ${call.convId}: ${error instanceof Error ? error.message : String(error)}`);
+        if (this.calls.get(call.callId) === call) {
+          await call.transport.appendHandoff(handoffId, "I couldn't complete that delegated request.").catch(() => {});
         }
       }
-    } catch (error) {
-      log("warn", `realtime call: handoff failed for ${call.convId}: ${error instanceof Error ? error.message : String(error)}`);
-      if (this.active === call) {
-        await call.transport.appendHandoff(handoffId, "I couldn't complete that delegated request.").catch(() => {});
-      }
+    });
+    this.delegationTailByConversation.set(call.convId, task);
+    try {
+      await task;
     } finally {
+      if (this.delegationTailByConversation.get(call.convId) === task) {
+        this.delegationTailByConversation.delete(call.convId);
+      }
       call.handoffInFlight = false;
       if (call.handoffAbortController === abortController) call.handoffAbortController = null;
-      if (this.active === call && call.state === "delegating") {
+      if (this.calls.get(call.callId) === call && call.state === "delegating") {
         call.state = "live";
         this.emitState(call);
       }

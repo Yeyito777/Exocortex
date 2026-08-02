@@ -45,6 +45,7 @@ function defaultSpawnHelper(): ChildProcessWithoutNullStreams {
 /** Owns the TUI's local microphone/speaker WebRTC peer for one daemon call. */
 export class CallMediaController {
   private active: ActiveAdapter | null = null;
+  private readonly tuiCallByConversation = new Map<string, string>();
   private readonly spawnHelper: () => ChildProcessWithoutNullStreams;
   private readonly onError: (message: string) => void;
   private micGainDb: number;
@@ -60,11 +61,20 @@ export class CallMediaController {
 
   handleEvent(event: Event): void {
     if (event.type === "call_state") {
+      if (event.adapter && event.adapter.type !== "tui") return;
+      if (event.state === "closed" || event.state === "error") {
+        if (this.tuiCallByConversation.get(event.convId) === event.callId) {
+          this.tuiCallByConversation.delete(event.convId);
+        }
+      } else {
+        this.tuiCallByConversation.set(event.convId, event.callId);
+      }
       if (event.state === "waiting_for_media") this.start(event.convId, event.callId);
       if (event.state === "closed" || event.state === "error") this.stopLocal(event.convId, event.callId);
       return;
     }
     if (event.type === "call_sdp_answer") {
+      if (event.adapter && event.adapter.type !== "tui") return;
       const active = this.active;
       if (!active || active.convId !== event.convId || active.callId !== event.callId) return;
       this.send(active, { type: "answer", sdp: event.sdp });
@@ -80,6 +90,10 @@ export class CallMediaController {
     const active = this.active;
     if (!active) return;
     this.stopAdapter(active);
+  }
+
+  callIdForConversation(convId: string): string | undefined {
+    return this.tuiCallByConversation.get(convId);
   }
 
   setMicGainDb(gainDb: number): void {
