@@ -182,6 +182,13 @@ export interface MessageMetadata {
   subagentNotificationId?: string;
   /** Durable id used to deduplicate a user message accepted from the persistent queue. */
   queueEntryId?: string;
+  /** Session/source identity for persisted realtime call turns and lifecycle markers. */
+  realtimeCallId?: string;
+  realtimeAdapterType?: "tui" | "discord";
+  realtimeAdapterId?: string;
+  realtimeSourceLabel?: string;
+  realtimeAccountAlias?: string;
+  realtimeChannelId?: string;
 }
 
 /** Build standard message metadata with sensible defaults. */

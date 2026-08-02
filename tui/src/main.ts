@@ -752,7 +752,11 @@ function handleSubmit(): void {
           }
           break;
         case "hangup_requested":
-          if (state.convId) daemon.stopCall(state.convId);
+          if (state.convId) {
+            const callId = callMedia?.callIdForConversation(state.convId);
+            if (callId) daemon.stopCall(state.convId, callId);
+            else pushSystemMessage(state, "No local TUI call is active for this conversation.");
+          }
           break;
         case "mic_gain_changed": {
           callMedia?.setMicGainDb(cmdResult.gainDb);

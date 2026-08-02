@@ -196,6 +196,7 @@ interface AssistantTurnOptions {
   manualCompaction?: boolean;
   /** Promote the persisted voice transcript into a visible backend request. */
   realtimeDelegation?: {
+    callId: string;
     originalUserUtterance: string;
     backendTask: string;
   };
@@ -241,7 +242,7 @@ export async function orchestrateReplayConversation(
 export async function orchestrateRealtimeDelegation(
   server: DaemonServer,
   convId: string,
-  delegation: { originalUserUtterance: string; backendTask: string },
+  delegation: { callId: string; originalUserUtterance: string; backendTask: string },
   startedAt: number,
   ext: OrchestrationCallbacks,
   policy: SubagentTurnPolicy = {},
@@ -395,6 +396,7 @@ async function orchestrateAssistantTurn(
       convId,
       realtimeDelegation.originalUserUtterance,
       delegatedMessage,
+      realtimeDelegation.callId,
     )) {
       return reportSendError("The realtime handoff no longer has a matching call transcript.");
     }
