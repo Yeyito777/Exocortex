@@ -8,4 +8,4 @@
 - [x] Bind each Discord call to an owning Exocortex conversation with explicit account/channel/source metadata and independent lifecycle.
 - [x] Remove local ASR/TTS from Discord Bidi mode while retaining the existing legacy Discord call mode.
 - [x] Verify a native TUI call and a Discord call can run concurrently, delegate independently, and hang up independently.
-- [ ] Run full relevant test suites, update documentation/help, commit and push each repository, merge the Exocortex worktree, and clean it up.
+- [x] Run full relevant test suites, update documentation/help, commit and push each repository, merge the Exocortex worktree, and clean it up.
