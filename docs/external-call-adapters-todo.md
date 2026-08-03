@@ -9,4 +9,4 @@
 - [x] Replace platform-specific core adapter fields with generic tool/account/endpoint metadata.
 - [x] Make Exocortex-backed calling canonical in Discord CLI and remove its legacy ASR/TTS call pipeline.
 - [x] Verify native TUI and external calls can run concurrently, delegate independently, and hang up independently.
-- [ ] Run final test suites, commit and push both repositories, merge the worktree, and clean it up.
+- [x] Run final test suites, commit and push both repositories, merge the worktree, and clean it up.
