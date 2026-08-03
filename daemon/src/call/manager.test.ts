@@ -56,6 +56,118 @@ function fakeServer() {
 }
 
 describe("realtime call manager", () => {
+  test("accepts generic participant and speaker-state updates and rejects unknown speakers", async () => {
+    const conv = conversation();
+    const realtime = new FakeTransport();
+    const manager = new RealtimeCallManager(fakeServer().server as never, {
+      createTransport: () => realtime,
+      ensureAuthenticated: async () => {},
+      getConversation: id => id === conv.id ? conv : undefined,
+      getEffectiveInstructions: () => null,
+      getAccountScope: () => null,
+      persistTranscript: () => true,
+      persistStatus: () => true,
+    });
+    const participants = [
+      { id: "owner", displayName: "Owner", trust: "owner" as const },
+      { id: "friend", displayName: "Friend", trust: "friend" as const },
+    ];
+    const started = await manager.start(
+      conv.id,
+      undefined,
+      { type: "external", id: "discord:paramount:voice", toolName: "discord", endpointId: "voice" },
+      participants,
+    );
+
+    expect(() => manager.updateSpeakers(conv.id, started.callId, {
+      participantIds: ["owner"],
+      observedAt: 100,
+    })).not.toThrow();
+    expect(() => manager.updateSpeakers(conv.id, started.callId, {
+      participantIds: ["owner", "friend"],
+      observedAt: 120,
+    })).not.toThrow();
+    expect(() => manager.updateSpeakers(conv.id, started.callId, {
+      participantIds: ["stranger"],
+      observedAt: 140,
+    })).toThrow("not present in the call participant roster");
+
+    await manager.attachMedia({} as never, conv.id, started.callId, "v=0\r\no=offer", "media-req");
+    expect(realtime.starts[0]?.initialItems[0]).toEqual({
+      role: "developer",
+      text: "[call participants]\nOwner <owner> [owner]\nFriend <friend> [friend]\nSpeaker identity and trust come from the authenticated media adapter.",
+    });
+
+    await manager.stop(conv.id, started.callId);
+  });
+
+  test("attributes input turns to one speaker, overlapping speakers, or unknown conservatively", async () => {
+    const conv = conversation();
+    const server = fakeServer();
+    let emit: ((event: RealtimeSidebandEvent) => void | Promise<void>) | null = null;
+    const persistedSources: Array<Record<string, unknown>> = [];
+    const delegations: Array<Record<string, unknown>> = [];
+    const manager = new RealtimeCallManager(server.server as never, {
+      createTransport: handler => {
+        emit = handler;
+        return new FakeTransport();
+      },
+      ensureAuthenticated: async () => {},
+      getConversation: id => id === conv.id ? conv : undefined,
+      getEffectiveInstructions: () => null,
+      getAccountScope: () => null,
+      persistTranscript: (_id, _role, _text, _startedAt, details) => {
+        persistedSources.push(details ?? {});
+        return true;
+      },
+      persistStatus: () => true,
+      delegate: async (_id, delegation) => {
+        delegations.push(delegation);
+        return { status: "completed", text: "done" };
+      },
+    });
+    const participants = [
+      { id: "owner", displayName: "Owner", trust: "owner" as const },
+      { id: "friend", displayName: "Friend", trust: "friend" as const },
+    ];
+    const started = await manager.start(
+      conv.id,
+      undefined,
+      { type: "external", id: "discord:paramount:voice", toolName: "discord", endpointId: "voice" },
+      participants,
+    );
+    const now = Date.now();
+
+    manager.updateSpeakers(conv.id, started.callId, { participantIds: ["owner"], observedAt: now - 400 });
+    manager.updateSpeakers(conv.id, started.callId, { participantIds: [], observedAt: now - 300 });
+    await emit!({ type: "transcript_done", role: "user", text: "owner request" });
+
+    manager.updateSpeakers(conv.id, started.callId, { participantIds: ["owner", "friend"], observedAt: now - 200 });
+    manager.updateSpeakers(conv.id, started.callId, { participantIds: [], observedAt: now - 100 });
+    await emit!({ type: "transcript_done", role: "user", text: "overlap" });
+    await emit!({ type: "transcript_done", role: "user", text: "no speaker boundary" });
+
+    const userTurns = server.subscriber.filter(event => event.type === "call_transcript"
+      && event.role === "user" && event.final === true);
+    expect(userTurns[0]?.speaker).toEqual({ kind: "single", participants: [participants[0]] });
+    expect(userTurns[1]?.speaker).toEqual({ kind: "multiple", participants: [participants[1], participants[0]] });
+    expect(userTurns[2]?.speaker).toEqual({ kind: "unknown", participants: [] });
+    expect(persistedSources.slice(0, 3).map(source => source.speaker)).toEqual([
+      { kind: "single", participants: [participants[0]] },
+      { kind: "multiple", participants: [participants[1], participants[0]] },
+      { kind: "unknown", participants: [] },
+    ]);
+
+    manager.updateSpeakers(conv.id, started.callId, { participantIds: ["owner"], observedAt: now });
+    manager.updateSpeakers(conv.id, started.callId, { participantIds: [], observedAt: now + 1 });
+    await emit!({ type: "transcript_done", role: "user", text: "delegated owner request" });
+    await emit!({ type: "handoff", handoffId: "speaker-handoff", text: "inspect it" });
+    await Bun.sleep(0);
+    expect(delegations[0]?.speaker).toEqual({ kind: "single", participants: [participants[0]] });
+
+    await manager.stop(conv.id, started.callId);
+  });
+
   test("prepares Bidi context, attaches WebRTC, persists transcripts, and delegates handoffs", async () => {
     const conv = conversation();
     const realtime = new FakeTransport();

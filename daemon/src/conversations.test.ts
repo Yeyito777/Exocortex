@@ -100,7 +100,16 @@ describe("realtime transcripts", () => {
     const id = mkId("realtime-transcript");
     create(id, "openai", "gpt-5.4", "Call transcript");
 
-    expect(appendRealtimeTranscript(id, "user", "  What is six plus one?  ", 1_000)).toBe(true);
+    const speaker = {
+      kind: "single" as const,
+      participants: [{ id: "owner-id", displayName: "Owner", trust: "owner" as const }],
+    };
+    expect(appendRealtimeTranscript(id, "user", "  What is six plus one?  ", 1_000, {
+      callId: "call-discord",
+      adapterType: "external",
+      adapterId: "discord:paramount:voice",
+      speaker,
+    })).toBe(true);
     expect(appendRealtimeTranscript(id, "assistant", "Seven.", 2_000, {
       endedAt: 4_500,
       model: "gpt-live-1-boulder-alpha",
@@ -119,7 +128,7 @@ describe("realtime transcripts", () => {
     expect(messages[0]).toMatchObject({
       role: "user",
       content: "What is six plus one?",
-      metadata: { kind: "realtime_transcript" },
+      metadata: { kind: "realtime_transcript", realtimeSpeaker: speaker },
       contextCheckpoint: { version: 1, transcriptHistoryCount: 0 },
     });
     expect(messages[1]).toMatchObject({
@@ -188,6 +197,24 @@ describe("realtime transcripts", () => {
     });
     expect(messages[1]).toMatchObject({ role: "assistant", content: "I’ll take a look." });
     expect(promoteRealtimeTranscript(id, "unrelated speech", replacement)).toBe(false);
+  });
+
+  test("preserves speaker attribution when promoting a call transcript into a delegation", () => {
+    const id = mkId("realtime-speaker-promotion");
+    create(id, "openai", "gpt-5.4", "Speaker delegation");
+    const speaker = {
+      kind: "single" as const,
+      participants: [{ id: "owner-id", displayName: "Owner", trust: "owner" as const }],
+    };
+    appendRealtimeTranscript(id, "user", "Inspect this", 1_000, {
+      callId: "call-discord",
+      adapterType: "external",
+      adapterId: "discord:paramount:voice",
+      speaker,
+    });
+
+    expect(promoteRealtimeTranscript(id, "Inspect this", "[realtime delegation]\nTask: Inspect this", "call-discord")).toBe(true);
+    expect(get(id)!.messages[0]?.metadata?.realtimeSpeaker).toEqual(speaker);
   });
 
   test("promotes only the transcript owned by the delegated call", () => {

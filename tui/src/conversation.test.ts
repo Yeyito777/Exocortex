@@ -116,6 +116,10 @@ describe("call transcript rendering", () => {
       model: "gpt-5.4",
       tokens: 0,
       kind: REALTIME_TRANSCRIPT_KIND,
+      realtimeSpeaker: {
+        kind: "single" as const,
+        participants: [{ id: "owner-id", displayName: "Owner", trust: "owner" as const }],
+      },
     } as const;
     const assistantMetadata = {
       startedAt: 1_000,
@@ -142,7 +146,7 @@ describe("call transcript rendering", () => {
     const assistantIndex = rendered.findIndex(line => line.includes("Six plus one is seven."));
     const labels = rendered
       .map((line, index) => ({ line: line.trim(), index }))
-      .filter(entry => entry.line === "call transcript");
+      .filter(entry => entry.line === "Owner [owner] · call transcript");
 
     expect(userIndex).toBeGreaterThanOrEqual(0);
     expect(assistantIndex).toBeGreaterThan(userIndex);

@@ -38,6 +38,18 @@ function rightAlignedProvenanceLabel(label: string, availableWidth: number): str
   return `${padding}${theme.muted}${theme.italic}${label}${theme.reset}`;
 }
 
+function callTranscriptProvenance(metadata: MessageMetadata | null | undefined): string {
+  const speaker = metadata?.realtimeSpeaker;
+  if (!speaker) return "call transcript";
+  if (speaker.kind === "unknown" || speaker.participants.length === 0) {
+    return "unknown speaker · call transcript";
+  }
+  const names = speaker.participants
+    .map(participant => `${participant.displayName} [${participant.trust}]`)
+    .join(" + ");
+  return `${names} · call transcript`;
+}
+
 /** Build the muted markdown-style completion divider, ending at the screen midpoint. */
 export function compactionFinishedDivider(availableWidth: number): string {
   const maxWidth = Math.max(1, availableWidth - 2); // two-space assistant indent
@@ -378,7 +390,7 @@ export function buildMessageLines(
         }
       }
       if (msg.metadata?.kind === REALTIME_TRANSCRIPT_KIND) {
-        pushLine(rightAlignedProvenanceLabel("call transcript", availableWidth), msg, "transcript_label");
+        pushLine(rightAlignedProvenanceLabel(callTranscriptProvenance(msg.metadata), availableWidth), msg, "transcript_label");
       }
       pushLine("", msg, "user_margin_bottom");               // bottom margin
       firstUser = false;
@@ -506,7 +518,7 @@ export function buildMessageLines(
         lineAnchors[contentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
       }
     }
-    pushLine(rightAlignedProvenanceLabel("call transcript", availableWidth), msg, "transcript_label");
+    pushLine(rightAlignedProvenanceLabel(callTranscriptProvenance(msg.metadata), availableWidth), msg, "transcript_label");
     pushLine("", msg, "user_margin_bottom");
     firstUser = false;
     pushMessageBound(msg.role, start, contentStart, contentEnd);

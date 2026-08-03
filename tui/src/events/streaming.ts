@@ -332,6 +332,19 @@ export function handleContextCompactionStatus(
 }
 
 export function handleUserMessage(event: Extract<Event, { type: "user_message" }>, state: RenderState): void {
+  // Queue delivery and an unrelated history refresh (for example external call
+  // startup persisting its status) can cross on the socket. If the canonical
+  // snapshot wins that race, the later live event describes a user turn that is
+  // already rendered. Reconcile by the daemon-owned queue identity rather than
+  // text: repeated text is a valid pair of distinct user turns.
+  if (event.queueId && state.messages.some(message => (
+    message.role === "user" && message.metadata?.queueEntryId === event.queueId
+  ))) {
+    removeLocalQueueEntry(state, event.convId, event.text, event.queueId);
+    state.scrollOffset = 0;
+    return;
+  }
+
   // During streaming: split pendingAI so the user message appears inline between
   // tool rounds (after completed blocks, before new ones). This is purely for
   // visual correctness during streaming — after completion, history_updated
@@ -341,13 +354,15 @@ export function handleUserMessage(event: Extract<Event, { type: "user_message" }
     if (finalized) state.messages.push(finalized);
   }
 
+  const metadata = typeof event.startedAt === "number"
+    ? createMessageMetadata(event.startedAt, state.model, { endedAt: event.startedAt })
+    : null;
+  if (metadata && event.queueId) metadata.queueEntryId = event.queueId;
   state.messages.push({
     role: "user",
     text: event.text,
     images: event.images,
-    metadata: typeof event.startedAt === "number"
-      ? createMessageMetadata(event.startedAt, state.model, { endedAt: event.startedAt })
-      : null,
+    metadata,
   });
 
   // Remove matching local shadow — the daemon already injected it.

@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { RealtimeCallAdapter, RealtimeCallState } from "../protocol";
+import type {
+  RealtimeCallAdapter,
+  RealtimeCallParticipant,
+  RealtimeCallSpeakerAttribution,
+  RealtimeCallSpeakerState,
+  RealtimeCallState,
+} from "../protocol";
 import type { ConnectedClient, DaemonServer } from "../server";
 import type { ApiContentBlock, ApiMessage, Conversation } from "../messages";
 import * as convStore from "../conversations";
@@ -15,6 +21,7 @@ import { isRealtimeVoice, type RealtimeVoice } from "@exocortex/shared/realtime"
 const MAX_INITIAL_ITEMS = 64;
 const MAX_INITIAL_ITEM_CHARS = 8_000;
 const MAX_INITIAL_TOTAL_CHARS = 28_000;
+const SPEAKER_TRANSCRIPT_LOOKBACK_MS = 10_000;
 
 const REALTIME_PROMPT = [
   "You are Exo, the realtime voice interface for this Exocortex conversation.",
@@ -148,10 +155,21 @@ export function buildRealtimeInitialItems(
   conv: Conversation,
   effectiveInstructions: string | null,
   accountScope?: string,
+  participants: RealtimeCallParticipant[] = [],
 ): RealtimeInitialItem[] {
   const instructionText = effectiveInstructions?.trim();
   const developer = instructionText
     ? { role: "developer" as const, text: boundedText(instructionText) }
+    : null;
+  const participantRoster = participants.length > 0
+    ? {
+      role: "developer" as const,
+      text: boundedText([
+        "[call participants]",
+        ...participants.map(participant => `${participant.displayName} <${participant.id}> [${participant.trust}]`),
+        "Speaker identity and trust come from the authenticated media adapter.",
+      ].join("\n")),
+    }
     : null;
   const replay = buildConversationApiContext(conv, accountScope).messages;
   const candidates: RealtimeInitialItem[] = replay.flatMap((message: ApiMessage) => {
@@ -159,8 +177,13 @@ export function buildRealtimeInitialItems(
     return text ? [{ role: message.role, text: boundedText(text) }] : [];
   });
 
-  let remainingChars = MAX_INITIAL_TOTAL_CHARS - (developer?.text.length ?? 0);
-  const maxReplayItems = MAX_INITIAL_ITEMS - (developer ? 1 : 0);
+  let remainingChars = MAX_INITIAL_TOTAL_CHARS
+    - (developer?.text.length ?? 0)
+    - (participantRoster?.text.length ?? 0);
+  const prefixItems: RealtimeInitialItem[] = [];
+  if (developer) prefixItems.push(developer);
+  if (participantRoster) prefixItems.push(participantRoster);
+  const maxReplayItems = MAX_INITIAL_ITEMS - prefixItems.length;
   const selected: RealtimeInitialItem[] = [];
   for (let index = candidates.length - 1; index >= 0 && selected.length < maxReplayItems; index--) {
     if (remainingChars <= 0) break;
@@ -171,7 +194,7 @@ export function buildRealtimeInitialItems(
     remainingChars -= text.length;
   }
   selected.reverse();
-  return developer ? [developer, ...selected] : selected;
+  return [...prefixItems, ...selected];
 }
 
 export interface RealtimeCallManagerDependencies {
@@ -189,6 +212,7 @@ export interface RealtimeCallManagerDependencies {
     adapter: RealtimeCallAdapter;
     originalUserUtterance: string;
     backendTask: string;
+    speaker?: RealtimeCallSpeakerAttribution;
   }, signal: AbortSignal) => Promise<
     | { status: "completed"; text: string }
     | { status: "cancelled" }
@@ -219,6 +243,22 @@ interface ActiveCall {
   /** Prior user speech that Frameless may replay after interrupting its response. */
   interruptedUserReplay: string | null;
   assistantResponseStartedAt: number | null;
+  participants: Map<string, RealtimeCallParticipant>;
+  knownParticipants: Map<string, RealtimeCallParticipant>;
+  speakerSegments: SpeakerSegment[];
+  activeSpeakerSegment: SpeakerSegment | null;
+  nextSpeakerSegmentSequence: number;
+  consumedSpeakerSegmentSequence: number;
+  userSpeakerWindowStartedAt: number | null;
+  userSpeakerParticipantIds: Set<string>;
+  lastFinalUserSpeaker: RealtimeCallSpeakerAttribution | null;
+}
+
+interface SpeakerSegment {
+  sequence: number;
+  participantIds: string[];
+  startedAt: number;
+  endedAt: number | null;
 }
 
 function persistedCallSource(call: ActiveCall) {
@@ -290,6 +330,7 @@ export class RealtimeCallManager {
     convId: string,
     requestedVoice?: RealtimeVoice,
     requestedAdapter: RealtimeCallAdapter = DEFAULT_TUI_ADAPTER,
+    initialParticipants: RealtimeCallParticipant[] = [],
   ): Promise<{ callId: string; state: RealtimeCallState }> {
     if (requestedVoice !== undefined && !isRealtimeVoice(requestedVoice)) {
       throw new Error(`Unsupported realtime voice: ${String(requestedVoice)}.`);
@@ -328,6 +369,7 @@ export class RealtimeCallManager {
     const voice = requestedVoice ?? this.getVoice();
     const transport = this.createTransport(event => this.handleEvent(callId, event));
     const start = (async () => {
+      const participants = this.normalizeParticipants(initialParticipants);
       const provisional: ActiveCall = {
         convId,
         callId,
@@ -347,6 +389,15 @@ export class RealtimeCallManager {
         lastFinalUserTranscript: null,
         interruptedUserReplay: null,
         assistantResponseStartedAt: null,
+        participants,
+        knownParticipants: new Map(participants),
+        speakerSegments: [],
+        activeSpeakerSegment: null,
+        nextSpeakerSegmentSequence: 1,
+        consumedSpeakerSegmentSequence: 0,
+        userSpeakerWindowStartedAt: null,
+        userSpeakerParticipantIds: new Set(),
+        lastFinalUserSpeaker: null,
       };
       this.calls.set(callId, provisional);
       this.callByAdapter.set(adapterKey, callId);
@@ -362,6 +413,7 @@ export class RealtimeCallManager {
           freshConv,
           this.getEffectiveInstructions(convId),
           this.getAccountScope() ?? undefined,
+          [...provisional.participants.values()],
         );
         if (requestedVoice) this.saveVoice(requestedVoice);
         provisional.state = "waiting_for_media";
@@ -389,6 +441,91 @@ export class RealtimeCallManager {
     }
   }
 
+  updateParticipants(
+    convId: string,
+    callId: string,
+    participants: RealtimeCallParticipant[],
+  ): void {
+    const call = this.requireCall(convId, callId);
+    call.participants = this.normalizeParticipants(participants);
+    for (const [id, participant] of call.participants) call.knownParticipants.set(id, participant);
+  }
+
+  updateSpeakers(convId: string, callId: string, speakers: RealtimeCallSpeakerState): void {
+    const call = this.requireCall(convId, callId);
+    if (!Number.isFinite(speakers.observedAt) || speakers.observedAt < 0) {
+      throw new Error("Speaker observation time must be a non-negative timestamp.");
+    }
+    const participantIds = [...new Set(speakers.participantIds.map(id => id.trim()).filter(Boolean))].sort();
+    const unknown = participantIds.find(id => !call.participants.has(id));
+    if (unknown) throw new Error(`Speaker ${unknown} is not present in the call participant roster.`);
+    const previous = call.activeSpeakerSegment;
+    if (previous && previous.participantIds.length === participantIds.length
+      && previous.participantIds.every((id, index) => id === participantIds[index])) return;
+    if (previous) previous.endedAt = Math.max(previous.startedAt, speakers.observedAt);
+    if (participantIds.length === 0) {
+      call.activeSpeakerSegment = null;
+      return;
+    }
+    const segment: SpeakerSegment = {
+      sequence: call.nextSpeakerSegmentSequence++,
+      participantIds,
+      startedAt: speakers.observedAt,
+      endedAt: null,
+    };
+    call.speakerSegments.push(segment);
+    if (call.speakerSegments.length > 128) call.speakerSegments.splice(0, call.speakerSegments.length - 128);
+    call.activeSpeakerSegment = segment;
+  }
+
+  private collectUserSpeakers(call: ActiveCall, observedAt = Date.now()): void {
+    if (call.adapter.type !== "external") return;
+    call.userSpeakerWindowStartedAt ??= observedAt - SPEAKER_TRANSCRIPT_LOOKBACK_MS;
+    for (const segment of call.speakerSegments) {
+      if (segment.sequence <= call.consumedSpeakerSegmentSequence) continue;
+      const endedAt = segment.endedAt ?? observedAt;
+      if (endedAt < call.userSpeakerWindowStartedAt) continue;
+      for (const participantId of segment.participantIds) call.userSpeakerParticipantIds.add(participantId);
+    }
+  }
+
+  private userSpeakerAttribution(call: ActiveCall): RealtimeCallSpeakerAttribution | undefined {
+    if (call.adapter.type !== "external") return undefined;
+    const participants = [...call.userSpeakerParticipantIds]
+      .map(id => call.knownParticipants.get(id))
+      .filter((participant): participant is RealtimeCallParticipant => participant !== undefined)
+      .sort((left, right) => left.id.localeCompare(right.id));
+    return {
+      kind: participants.length === 0 ? "unknown" : participants.length === 1 ? "single" : "multiple",
+      participants,
+    };
+  }
+
+  private consumeUserSpeakerAttribution(call: ActiveCall, observedAt: number): RealtimeCallSpeakerAttribution | undefined {
+    this.collectUserSpeakers(call, observedAt);
+    const attribution = this.userSpeakerAttribution(call);
+    const lastSegment = call.speakerSegments[call.speakerSegments.length - 1];
+    if (lastSegment) call.consumedSpeakerSegmentSequence = lastSegment.sequence;
+    call.userSpeakerWindowStartedAt = null;
+    call.userSpeakerParticipantIds.clear();
+    call.lastFinalUserSpeaker = attribution ?? null;
+    return attribution;
+  }
+
+  private normalizeParticipants(participants: RealtimeCallParticipant[]): Map<string, RealtimeCallParticipant> {
+    const normalized = new Map<string, RealtimeCallParticipant>();
+    for (const participant of participants) {
+      const id = participant.id.trim();
+      const displayName = participant.displayName.trim();
+      if (!id || !displayName) throw new Error("Call participants require an ID and display name.");
+      if (participant.trust !== "owner" && participant.trust !== "friend" && participant.trust !== "untrusted") {
+        throw new Error(`Unsupported call participant trust level: ${String(participant.trust)}.`);
+      }
+      normalized.set(id, { id, displayName, trust: participant.trust });
+    }
+    return normalized;
+  }
+
   async attachMedia(
     client: ConnectedClient,
     convId: string,
@@ -406,6 +543,14 @@ export class RealtimeCallManager {
     call.state = "connecting";
     this.emitState(call, "Connecting media to ChatGPT Bidi…");
     try {
+      const freshConv = this.getConversation(convId);
+      if (!freshConv) throw new Error("Conversation was deleted before media attached.");
+      call.initialItems = buildRealtimeInitialItems(
+        freshConv,
+        this.getEffectiveInstructions(convId),
+        this.getAccountScope() ?? undefined,
+        [...call.participants.values()],
+      );
       const result = await call.transport.start({
         offerSdp,
         initialItems: call.initialItems,
@@ -532,6 +677,7 @@ export class RealtimeCallManager {
         }
         accumulator.text += event.text;
         if (event.role === "user") {
+          this.collectUserSpeakers(call);
           this.finalizeInterruptedAssistant(call);
           call.userTranscriptFinal = false;
         }
@@ -550,6 +696,7 @@ export class RealtimeCallManager {
           endedAt: null,
           model: REALTIME_MODEL,
           tokens: estimateRealtimeTokens(projectedText),
+          ...(event.role === "user" ? { speaker: this.userSpeakerAttribution(call) } : {}),
         });
         break;
       }
@@ -561,6 +708,10 @@ export class RealtimeCallManager {
             call.transcript.user.text = "";
             call.transcript.user.startedAt = null;
             call.userTranscriptFinal = true;
+            const lastSegment = call.speakerSegments[call.speakerSegments.length - 1];
+            if (lastSegment) call.consumedSpeakerSegmentSequence = lastSegment.sequence;
+            call.userSpeakerWindowStartedAt = null;
+            call.userSpeakerParticipantIds.clear();
             break;
           }
         }
@@ -578,6 +729,7 @@ export class RealtimeCallManager {
         const backendTask = event.text.trim();
         if (!backendTask) break;
         this.finalizeInterruptedAssistant(call);
+        this.collectUserSpeakers(call);
         // Prefer the independently transcribed speech as the visible/canonical
         // utterance. Frameless is allowed to put a distilled backend task in the
         // delegation item; only fall back to that text when no transcript event
@@ -595,6 +747,7 @@ export class RealtimeCallManager {
           adapter: call.adapter,
           originalUserUtterance,
           backendTask,
+          ...(call.lastFinalUserSpeaker ? { speaker: call.lastFinalUserSpeaker } : {}),
         });
         break;
       }
@@ -634,6 +787,7 @@ export class RealtimeCallManager {
       ?? (role === "assistant" ? call.assistantResponseStartedAt : null)
       ?? endedAt;
     const tokens = providerTokens ?? estimateRealtimeTokens(normalized);
+    const speaker = role === "user" ? this.consumeUserSpeakerAttribution(call, endedAt) : undefined;
     accumulator.text = "";
     accumulator.startedAt = null;
     if (!normalized) {
@@ -649,6 +803,7 @@ export class RealtimeCallManager {
         endedAt,
         model: REALTIME_MODEL,
         tokens: 0,
+        ...(speaker ? { speaker } : {}),
       });
       return;
     }
@@ -666,10 +821,12 @@ export class RealtimeCallManager {
       endedAt,
       model: REALTIME_MODEL,
       tokens,
+      ...(speaker ? { speaker } : {}),
     });
     if (this.persistTranscript(call.convId, role, normalized, startedAt, {
       endedAt,
       ...persistedCallSource(call),
+      ...(speaker ? { speaker } : {}),
       ...(role === "assistant" ? { model: REALTIME_MODEL, tokens } : {}),
     })) {
       broadcastConversationHistoryUpdated(this.server, call.convId);
@@ -709,6 +866,7 @@ export class RealtimeCallManager {
       adapter: RealtimeCallAdapter;
       originalUserUtterance: string;
       backendTask: string;
+      speaker?: RealtimeCallSpeakerAttribution;
     },
   ): Promise<void> {
     if (!this.delegate || call.handoffInFlight || this.calls.get(call.callId) !== call) return;

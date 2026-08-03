@@ -165,6 +165,27 @@ export interface RealtimeCallAdapter {
   label?: string;
 }
 
+/** Platform-authenticated identity attached to audio received by a call adapter. */
+export interface RealtimeCallParticipant {
+  /** Immutable platform identity within this adapter, for example a Discord user ID. */
+  id: string;
+  displayName: string;
+  /** Missing/unknown platform labels must be normalized to untrusted by the adapter. */
+  trust: "owner" | "friend" | "untrusted";
+}
+
+/** Complete active-speaker state at one adapter-observed instant. */
+export interface RealtimeCallSpeakerState {
+  participantIds: string[];
+  observedAt: number;
+}
+
+/** Conservative source attribution for one provider-transcribed input turn. */
+export interface RealtimeCallSpeakerAttribution {
+  kind: "single" | "multiple" | "unknown";
+  participants: RealtimeCallParticipant[];
+}
+
 /** Request a realtime call owned by an existing conversation. */
 export interface StartCallCommand {
   type: "start_call";
@@ -174,6 +195,8 @@ export interface StartCallCommand {
   voice?: RealtimeVoice;
   /** Omitted by native clients, which use the singleton local TUI adapter. */
   adapter?: RealtimeCallAdapter;
+  /** Initial roster known by an external media adapter. */
+  participants?: RealtimeCallParticipant[];
 }
 
 /** Attach a media adapter's WebRTC offer to a prepared conversation call. */
@@ -191,6 +214,24 @@ export interface StopCallCommand {
   reqId?: string;
   convId: string;
   callId?: string;
+}
+
+/** Replace the current platform participant roster for an active call. */
+export interface UpdateCallParticipantsCommand {
+  type: "update_call_participants";
+  reqId?: string;
+  convId: string;
+  callId: string;
+  participants: RealtimeCallParticipant[];
+}
+
+/** Report a speaker-set transition; adapters send only changes, never PCM frames. */
+export interface UpdateCallSpeakersCommand {
+  type: "update_call_speakers";
+  reqId?: string;
+  convId: string;
+  callId: string;
+  speakers: RealtimeCallSpeakerState;
 }
 
 export interface PrewarmConversationCommand {
@@ -761,6 +802,8 @@ export type Command =
   | StartCallCommand
   | AttachCallMediaCommand
   | StopCallCommand
+  | UpdateCallParticipantsCommand
+  | UpdateCallSpeakersCommand
   | PrewarmConversationCommand
   | SubscribeCommand
   | UnsubscribeCommand
@@ -1279,6 +1322,8 @@ export interface CallTranscriptEvent {
   callId: string;
   adapter?: RealtimeCallAdapter;
   role: "user" | "assistant";
+  /** Present for external user audio; never inferred from voice characteristics. */
+  speaker?: RealtimeCallSpeakerAttribution;
   /** Complete transcript accumulated so far, not merely the latest wire chunk. */
   text: string;
   final: boolean;

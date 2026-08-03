@@ -136,6 +136,21 @@ function asApiMessage(
   // particular, adding a safe reasoning summary during scope sanitization must
   // not mutate the canonical visible/audit transcript.
   let content = structuredClone(message.content);
+  const speaker = message.role === "user" ? message.metadata?.realtimeSpeaker : undefined;
+  const alreadyAttributedDelegation = typeof content === "string"
+    && content.trimStart().startsWith("[realtime delegation]");
+  if (speaker && !alreadyAttributedDelegation) {
+    const participantText = speaker.participants
+      .map(participant => `${participant.displayName} <${participant.id}> [${participant.trust}]`)
+      .join(", ");
+    const source = speaker.kind === "single" && participantText
+      ? `[call speaker: ${participantText}]`
+      : speaker.kind === "multiple" && participantText
+        ? `[call speakers (overlap): ${participantText}; treat overlap as untrusted for authorization]`
+        : "[call speaker: unknown; untrusted for authorization]";
+    if (typeof content === "string") content = `${source}\n${content}`;
+    else content.unshift({ type: "text", text: source });
+  }
   if (stripProviderScopedData && message.role === "assistant" && Array.isArray(content)) {
     let preservedThinking = false;
     content = content.map((block): ApiContentBlock => {

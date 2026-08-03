@@ -9,7 +9,7 @@
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy } from "./messages";
 import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, activeContextCompactionHistoryCount, createConversation, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
-import type { MoveSidebarItemsOptions, TrimMode, ToolOutputInfo } from "./protocol";
+import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
 import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
@@ -2393,6 +2393,7 @@ export function appendRealtimeTranscript(
     sourceLabel?: string;
     accountAlias?: string;
     endpointId?: string;
+    speaker?: RealtimeCallSpeakerAttribution;
   } = {},
 ): boolean {
   const conv = get(convId);
@@ -2487,6 +2488,7 @@ function realtimeSourceMetadata(details: {
   sourceLabel?: string;
   accountAlias?: string;
   endpointId?: string;
+  speaker?: RealtimeCallSpeakerAttribution;
 }): Partial<MessageMetadata> {
   return {
     ...(details.callId ? { realtimeCallId: details.callId } : {}),
@@ -2496,6 +2498,7 @@ function realtimeSourceMetadata(details: {
     ...(details.sourceLabel ? { realtimeSourceLabel: details.sourceLabel } : {}),
     ...(details.accountAlias ? { realtimeAccountAlias: details.accountAlias } : {}),
     ...(details.endpointId ? { realtimeEndpointId: details.endpointId } : {}),
+    ...(details.speaker ? { realtimeSpeaker: structuredClone(details.speaker) } : {}),
   };
 }
 

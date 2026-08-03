@@ -10,7 +10,7 @@
 import { log } from "./log";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
-import type { RealtimeCallAdapter } from "@exocortex/shared/protocol";
+import type { RealtimeCallAdapter, RealtimeCallParticipant } from "@exocortex/shared/protocol";
 import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateRealtimeDelegation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
@@ -87,7 +87,7 @@ export interface DaemonCommandHandler {
 }
 
 type RealtimeCallController = Pick<RealtimeCallManager,
-  "hasActiveCall" | "start" | "attachMedia" | "stop" | "stopFromAgent" | "stopAll"
+  "hasActiveCall" | "start" | "attachMedia" | "updateParticipants" | "updateSpeakers" | "stop" | "stopFromAgent" | "stopAll"
 >;
 
 export interface HandlerOptions extends HandlerLifecycle {
@@ -944,6 +944,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     reqId?: string,
     voice?: RealtimeVoice,
     adapter?: RealtimeCallAdapter,
+    participants: RealtimeCallParticipant[] = [],
   ): Promise<void> => {
     if (!convStore.get(convId)) {
       server.sendTo(client, {
@@ -958,7 +959,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     // publishing lifecycle events; this also covers an atomic create + call.
     server.subscribe(client, convId);
     try {
-      if (adapter) await callManager.start(convId, voice, adapter);
+      if (adapter) await callManager.start(convId, voice, adapter, participants);
       else if (voice) await callManager.start(convId, voice);
       else await callManager.start(convId);
       server.sendTo(client, { type: "ack", reqId, convId });
@@ -1279,7 +1280,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "start_call": {
-        await startCall(client, cmd.convId, cmd.reqId, cmd.voice, cmd.adapter);
+        await startCall(client, cmd.convId, cmd.reqId, cmd.voice, cmd.adapter, cmd.participants);
         break;
       }
 
@@ -1287,6 +1288,36 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         server.subscribe(client, cmd.convId);
         try {
           await callManager.attachMedia(client, cmd.convId, cmd.callId, cmd.offerSdp, cmd.reqId);
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        } catch (error) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+        break;
+      }
+
+      case "update_call_participants": {
+        try {
+          callManager.updateParticipants(cmd.convId, cmd.callId, cmd.participants);
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        } catch (error) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+        break;
+      }
+
+      case "update_call_speakers": {
+        try {
+          callManager.updateSpeakers(cmd.convId, cmd.callId, cmd.speakers);
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         } catch (error) {
           server.sendTo(client, {

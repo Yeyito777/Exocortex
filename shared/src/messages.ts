@@ -190,6 +190,15 @@ export interface MessageMetadata {
   realtimeSourceLabel?: string;
   realtimeAccountAlias?: string;
   realtimeEndpointId?: string;
+  /** Adapter-authenticated source attribution for a realtime user transcript. */
+  realtimeSpeaker?: {
+    kind: "single" | "multiple" | "unknown";
+    participants: Array<{
+      id: string;
+      displayName: string;
+      trust: "owner" | "friend" | "untrusted";
+    }>;
+  };
 }
 
 /** Build standard message metadata with sensible defaults. */

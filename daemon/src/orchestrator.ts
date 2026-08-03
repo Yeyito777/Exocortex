@@ -24,7 +24,8 @@ import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } fro
 import { goalContinuationUserMessage } from "./goals";
 import { createProviderTurnSession, streamMessage } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
-import type { StreamingStopReason } from "./protocol";
+import type { RealtimeCallSpeakerAttribution, StreamingStopReason } from "./protocol";
+import { buildRealtimeDelegationMessage } from "./realtime-delegation";
 import {
   buildConversationApiContext,
   compactContextMessages,
@@ -138,20 +139,6 @@ function hasReplayableHistory(messages: StoredMessage[]): boolean {
   return messages.some(isHistoryMessage);
 }
 
-/** One visible, durable request matching Exocortex's automated-event style. */
-export function buildRealtimeDelegationMessage(
-  originalUserUtterance: string,
-  backendTask = originalUserUtterance,
-): string {
-  return [
-    "[realtime delegation]",
-    `Task: ${backendTask.trim()}`,
-    `Original speech: ${originalUserUtterance.trim()}`,
-    "",
-    "Action: Complete only the backend task and return its result without conversational filler or progress narration. GPT-Live handles the live conversation.",
-  ].join("\n");
-}
-
 /**
  * Whether a partially streamed thinking block is safe to persist on abort/error.
  *
@@ -199,6 +186,7 @@ interface AssistantTurnOptions {
     callId: string;
     originalUserUtterance: string;
     backendTask: string;
+    speaker?: RealtimeCallSpeakerAttribution;
   };
   /** Optional owner lifecycle that can cancel this turn without daemon IPC. */
   externalAbortSignal?: AbortSignal;
@@ -242,7 +230,12 @@ export async function orchestrateReplayConversation(
 export async function orchestrateRealtimeDelegation(
   server: DaemonServer,
   convId: string,
-  delegation: { callId: string; originalUserUtterance: string; backendTask: string },
+  delegation: {
+    callId: string;
+    originalUserUtterance: string;
+    backendTask: string;
+    speaker?: RealtimeCallSpeakerAttribution;
+  },
   startedAt: number,
   ext: OrchestrationCallbacks,
   policy: SubagentTurnPolicy = {},
@@ -391,6 +384,7 @@ async function orchestrateAssistantTurn(
     const delegatedMessage = buildRealtimeDelegationMessage(
       realtimeDelegation.originalUserUtterance,
       realtimeDelegation.backendTask,
+      realtimeDelegation.speaker,
     );
     if (!convStore.promoteRealtimeTranscript(
       convId,

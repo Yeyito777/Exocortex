@@ -126,6 +126,10 @@ describe("GPT-Live transcript events", () => {
       endedAt: null,
       model: "gpt-live-1-boulder-alpha",
       tokens: 1,
+      speaker: {
+        kind: "single",
+        participants: [{ id: "owner-id", displayName: "Owner", trust: "owner" }],
+      },
     }, state, daemon);
     expect(state.callUserDraft).toMatchObject({
       callId: "call-1",
@@ -133,7 +137,14 @@ describe("GPT-Live transcript events", () => {
       message: {
         role: "user",
         text: "hello",
-        metadata: { kind: "realtime_transcript", startedAt: 1_000 },
+        metadata: {
+          kind: "realtime_transcript",
+          startedAt: 1_000,
+          realtimeSpeaker: {
+            kind: "single",
+            participants: [{ id: "owner-id", displayName: "Owner", trust: "owner" }],
+          },
+        },
       },
     });
     expect(state.messages).toHaveLength(0);
@@ -1067,6 +1078,69 @@ describe("disk sync assistant diagnostics", () => {
 });
 
 describe("streaming assistant metadata", () => {
+  test("does not duplicate a queued user turn when canonical history wins the race", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    state.messages.push({
+      role: "user",
+      text: "join the call",
+      metadata: {
+        startedAt: 2,
+        endedAt: 2,
+        model: "gpt-5.5",
+        tokens: 0,
+        queueEntryId: "queue-call-1",
+      },
+    });
+    state.queuedMessages.push({
+      id: "queue-call-1",
+      convId: "conv-1",
+      text: "join the call",
+      timing: "next-turn",
+      createdAt: 1,
+    });
+
+    handleEvent({
+      type: "user_message",
+      convId: "conv-1",
+      text: "join the call",
+      startedAt: 2,
+      queueId: "queue-call-1",
+    }, state, daemon);
+
+    expect(state.messages.filter(message => message.role === "user")).toHaveLength(1);
+    expect(state.queuedMessages).toHaveLength(0);
+  });
+
+  test("keeps repeated queued text when the stable identities differ", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    state.messages.push({
+      role: "user",
+      text: "again",
+      metadata: {
+        startedAt: 1,
+        endedAt: 1,
+        model: "gpt-5.5",
+        tokens: 0,
+        queueEntryId: "queue-1",
+      },
+    });
+
+    handleEvent({
+      type: "user_message",
+      convId: "conv-1",
+      text: "again",
+      startedAt: 2,
+      queueId: "queue-2",
+    }, state, daemon);
+
+    expect(state.messages.filter(message => message.role === "user")).toHaveLength(2);
+    expect(state.messages[1]?.metadata?.queueEntryId).toBe("queue-2");
+  });
+
   test("heartbeat offsets do not invalidate locally committed completion blocks", () => {
     const state = createInitialState();
     state.convId = "conv-1";

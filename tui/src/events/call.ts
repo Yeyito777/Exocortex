@@ -87,6 +87,7 @@ function handleUserTranscript(event: TranscriptEvent, state: RenderState): void 
         model: event.model,
         tokens: event.tokens,
         kind: REALTIME_TRANSCRIPT_KIND,
+        ...(event.speaker ? { realtimeSpeaker: structuredClone(event.speaker) } : {}),
       },
     };
     state.callUserDraft = { callId: event.callId, message, final: event.final };
@@ -100,6 +101,7 @@ function handleUserTranscript(event: TranscriptEvent, state: RenderState): void 
     model: event.model,
     tokens: event.tokens,
     kind: REALTIME_TRANSCRIPT_KIND,
+    ...(event.speaker ? { realtimeSpeaker: structuredClone(event.speaker) } : {}),
   };
   draft.final = event.final;
 }

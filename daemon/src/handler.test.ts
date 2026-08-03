@@ -1125,6 +1125,8 @@ describe("handler start_call", () => {
     hasActiveCall: mock(() => false),
     start: mock(async () => ({ callId: "call-1", state: "waiting_for_media" as const })),
     attachMedia: mock(async () => {}),
+    updateParticipants: mock(() => {}),
+    updateSpeakers: mock(() => {}),
     stop: mock(async () => {}),
     stopFromAgent: mock(async () => {}),
     stopAll: mock(async () => {}),
@@ -1221,6 +1223,64 @@ describe("handler start_call", () => {
     expect(callManager.stop).toHaveBeenCalledWith(convId, "call-1");
     expect(sent).toContainEqual({ type: "ack", reqId: "req-media", convId });
     expect(sent).toContainEqual({ type: "ack", reqId: "req-stop-call", convId });
+  });
+
+  test("routes participant rosters and speaker transitions through the generic call protocol", async () => {
+    const convId = mkId("call-speakers");
+    create(convId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    const handle = createHandler(server as never, { callManager });
+    const participants = [{ id: "310", displayName: "Owner", trust: "owner" as const }];
+
+    await handle({} as never, {
+      type: "start_call",
+      reqId: "req-start-speakers",
+      convId,
+      adapter: { type: "external", id: "discord:paramount:voice", toolName: "discord" },
+      participants,
+    });
+    await handle({} as never, {
+      type: "update_call_participants",
+      reqId: "req-participants",
+      convId,
+      callId: "call-1",
+      participants,
+    });
+    await handle({} as never, {
+      type: "update_call_speakers",
+      reqId: "req-speakers",
+      convId,
+      callId: "call-1",
+      speakers: { participantIds: ["310"], observedAt: 1234 },
+    });
+
+    expect(callManager.start).toHaveBeenCalledWith(
+      convId,
+      undefined,
+      { type: "external", id: "discord:paramount:voice", toolName: "discord" },
+      participants,
+    );
+    expect(callManager.updateParticipants).toHaveBeenCalledWith(convId, "call-1", participants);
+    expect(callManager.updateSpeakers).toHaveBeenCalledWith(
+      convId,
+      "call-1",
+      { participantIds: ["310"], observedAt: 1234 },
+    );
+    expect(sent).toEqual(expect.arrayContaining([
+      { type: "ack", reqId: "req-start-speakers", convId },
+      { type: "ack", reqId: "req-participants", convId },
+      { type: "ack", reqId: "req-speakers", convId },
+    ]));
   });
 
   test("lets the owning agent hang up through the discovered Exocortex command", async () => {
