@@ -631,6 +631,45 @@ describe("paged conversation history events", () => {
     expect(state.historyStartUserIndex).toBe(0);
   });
 
+  test("history refresh keeps the canonical copy of a locally echoed direct turn", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages = [
+      {
+        role: "user",
+        text: "older",
+        metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.5", tokens: 0 },
+      },
+      {
+        role: "user",
+        text: "join call",
+        metadata: { startedAt: 2, endedAt: 2, model: "gpt-5.5", tokens: 0 },
+      },
+    ];
+    state.historyStartIndex = 0;
+    state.historyStartUserIndex = 0;
+    state.historyTotalEntries = 2;
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-1",
+      entries: [{
+        type: "user",
+        text: "join call",
+        metadata: { startedAt: 2, endedAt: 2, model: "gpt-5.5", tokens: 9 },
+      }],
+      historyStartIndex: 2,
+      historyStartUserIndex: 1,
+      historyTotalEntries: 3,
+      hasOlderHistory: true,
+      contextTokens: 10,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(state.messages.map(message => message.role === "user" && message.text)).toEqual(["older", "join call"]);
+    expect(state.messages[1]?.metadata?.tokens).toBe(9);
+  });
+
   test("drops invalid ranges and resets scroll after a destructive canonical rewrite", () => {
     const state = createInitialState();
     state.convId = "conv-1";
@@ -1111,6 +1150,51 @@ describe("streaming assistant metadata", () => {
 
     expect(state.messages.filter(message => message.role === "user")).toHaveLength(1);
     expect(state.queuedMessages).toHaveLength(0);
+  });
+
+  test("does not duplicate a direct user turn when canonical history wins the race", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    state.messages.push({
+      role: "user",
+      text: "join the call",
+      metadata: {
+        startedAt: 2,
+        endedAt: 2,
+        model: "gpt-5.5",
+        tokens: 0,
+      },
+    });
+
+    handleEvent({
+      type: "user_message",
+      convId: "conv-1",
+      text: "join the call",
+      startedAt: 2,
+    }, state, daemon);
+
+    expect(state.messages).toHaveLength(1);
+  });
+
+  test("keeps direct repeated text with different client timestamps", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    state.messages.push({
+      role: "user",
+      text: "same text",
+      metadata: { startedAt: 2, endedAt: 2, model: "gpt-5.5", tokens: 0 },
+    });
+
+    handleEvent({
+      type: "user_message",
+      convId: "conv-1",
+      text: "same text",
+      startedAt: 3,
+    }, state, daemon);
+
+    expect(state.messages).toHaveLength(2);
   });
 
   test("keeps repeated queued text when the stable identities differ", () => {

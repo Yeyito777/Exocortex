@@ -337,9 +337,12 @@ export function handleUserMessage(event: Extract<Event, { type: "user_message" }
   // snapshot wins that race, the later live event describes a user turn that is
   // already rendered. Reconcile by the daemon-owned queue identity rather than
   // text: repeated text is a valid pair of distinct user turns.
-  if (event.queueId && state.messages.some(message => (
-    message.role === "user" && message.metadata?.queueEntryId === event.queueId
-  ))) {
+  const alreadyCanonical = state.messages.some(message => message.role === "user" && (
+    event.queueId
+      ? message.metadata?.queueEntryId === event.queueId
+      : typeof event.startedAt === "number" && message.metadata?.startedAt === event.startedAt
+  ));
+  if (alreadyCanonical) {
     removeLocalQueueEntry(state, event.convId, event.text, event.queueId);
     state.scrollOffset = 0;
     return;

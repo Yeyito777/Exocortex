@@ -405,6 +405,27 @@ export function handleEvent(
           state.historyHasOlder = event.hasOlderHistory ?? false;
           if (event.resetHistoryWindow) state.scrollOffset = 0;
         }
+        // A call-status/history refresh can race a locally echoed direct send.
+        // If pagination preserves that optimistic row while the incoming window
+        // already contains its canonical replacement, keep the rightmost
+        // (canonical) copy by the client-originated stable timestamp. Queue turns
+        // use their stronger daemon identity when available.
+        const seenUserIds = new Set<string>();
+        const dedupedReversed: typeof state.messages = [];
+        for (let index = state.messages.length - 1; index >= 0; index--) {
+          const message = state.messages[index]!;
+          if (message.role !== "user" || !message.metadata) {
+            dedupedReversed.push(message);
+            continue;
+          }
+          const stableId = message.metadata.queueEntryId
+            ? `queue:${message.metadata.queueEntryId}`
+            : `started:${message.metadata.startedAt}`;
+          if (seenUserIds.has(stableId)) continue;
+          seenUserIds.add(stableId);
+          dedupedReversed.push(message);
+        }
+        state.messages = dedupedReversed.reverse();
         // Replace only transcript drafts actually present in this canonical
         // snapshot. A user-turn refresh can arrive while GPT-Live is already
         // streaming its assistant response, so clearing every draft here makes
