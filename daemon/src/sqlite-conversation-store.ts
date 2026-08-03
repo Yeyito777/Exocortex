@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { dataDir, conversationsDir } from "@exocortex/shared/paths";
+import { dataDir, conversationsDir, trashDir } from "@exocortex/shared/paths";
 import type {
   Conversation,
   ConversationBtw,
@@ -80,7 +80,7 @@ export interface LegacyImportReport {
 export interface ExportManifest {
   version: 1;
   exportedAt: number;
-  conversations: Array<{ id: string; sha256: string; bytes: number }>;
+  conversations: Array<{ id: string; sha256: string; bytes: number; deleted?: boolean }>;
   files: Record<string, string>;
 }
 
@@ -1556,10 +1556,10 @@ export class SqliteConversationStore implements ConversationRepository {
     `).all(ftsQuery, Math.max(1, Math.floor(limit))).map((row) => this.summaryFromRow(row));
   }
 
-  exportConversation(id: string): Record<string, unknown> | null {
-    const conv = this.load(id);
+  exportConversation(id: string, includeDeleted = false): Record<string, unknown> | null {
+    const conv = this.load(id, includeDeleted);
     if (!conv) return null;
-    const generation = this.row(id)!.storage_generation;
+    const generation = this.row(id, includeDeleted)!.storage_generation;
     return {
       version: 18,
       id: conv.id,
@@ -1591,12 +1591,23 @@ export class SqliteConversationStore implements ConversationRepository {
     mkdirSync(dest, { recursive: true, mode: 0o700 });
     const convDir = join(dest, "conversations");
     mkdirSync(convDir, { recursive: true, mode: 0o700 });
+    const deletedDir = join(dest, "trash");
+    mkdirSync(deletedDir, { recursive: true, mode: 0o700 });
     const manifest: ExportManifest = { version: 1, exportedAt: Date.now(), conversations: [], files: {} };
     for (const summary of this.listSummaries()) {
       const value = this.exportConversation(summary.id)!;
       const body = JSON.stringify(value, null, 2);
       writeFileSync(join(convDir, `${summary.id}.json`), body, { mode: 0o600 });
       manifest.conversations.push({ id: summary.id, sha256: sha256(body), bytes: Buffer.byteLength(body) });
+    }
+    const deletedIds = this.db.query<{ id: string }, []>(
+      "SELECT id FROM conversations WHERE deleted_at IS NOT NULL ORDER BY id",
+    ).all().map((row) => row.id);
+    for (const id of deletedIds) {
+      const value = this.exportConversation(id, true)!;
+      const body = JSON.stringify(value, null, 2);
+      writeFileSync(join(deletedDir, `${id}.json`), body, { mode: 0o600 });
+      manifest.conversations.push({ id, sha256: sha256(body), bytes: Buffer.byteLength(body), deleted: true });
     }
     const auxiliary: Record<string, unknown> = {
       "folders.json": { version: 1, folders: this.loadFolders() },
@@ -1608,8 +1619,8 @@ export class SqliteConversationStore implements ConversationRepository {
         conversations: Object.fromEntries(this.loadConversationBtwState().btws),
         seenSessionIds: Object.fromEntries([...this.loadConversationBtwState().seenSessionIds].map(([id, ids]) => [id, [...ids]])),
       },
-      "trash.json": this.readStack("undo"),
-      "redo.json": this.readStack("redo"),
+      "trash/trash.json": this.readStack("undo"),
+      "trash/redo.json": this.readStack("redo"),
     };
     for (const [name, value] of Object.entries(auxiliary)) {
       const body = JSON.stringify(value, null, 2);
@@ -1625,45 +1636,76 @@ export class SqliteConversationStore implements ConversationRepository {
     if (this.metadata("legacy_import_complete") === "1") {
       return { status: "not-needed", discovered: 0, imported: 0, reused: 0, skipped: [], startedAt, completedAt: Date.now() };
     }
-    const dir = conversationsDir();
-    const filenames = existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith(".json")) : [];
-    if (filenames.length === 0) {
-      this.setMetadata("legacy_import_complete", "1");
-      this.setMetadata("canonical_backend", "sqlite");
-      return { status: "complete", discovered: 0, imported: 0, reused: 0, skipped: [], startedAt, completedAt: Date.now() };
-    }
+    const liveDir = conversationsDir();
+    const liveSources = (existsSync(liveDir) ? readdirSync(liveDir) : [])
+      .filter((name) => name.endsWith(".json"))
+      .map((filename) => ({
+        id: filename.slice(0, -5),
+        path: join(liveDir, filename),
+        deleted: false,
+      }));
+    const deletedSources = legacy.listTrashedConversationIds().map((id) => ({
+      id,
+      path: join(trashDir(), `${id}.json`),
+      deleted: true,
+    }));
+    const sources = [...liveSources, ...deletedSources]
+      .sort((a, b) => a.id.localeCompare(b.id) || Number(a.deleted) - Number(b.deleted));
+    const sourceCounts = new Map<string, number>();
+    for (const source of sources) sourceCounts.set(source.id, (sourceCounts.get(source.id) ?? 0) + 1);
+    const duplicateIds = new Set([...sourceCounts].filter(([, count]) => count > 1).map(([id]) => id));
 
     let imported = 0;
     let reused = 0;
-    const skipped: Array<{ id: string; error: string }> = [];
+    const skipped: Array<{ id: string; error: string }> = [...duplicateIds].map((id) => ({
+      id,
+      error: "conversation exists in both live and trash legacy directories",
+    }));
     let lastProgressAt = startedAt;
-    log("info", `sqlite import: starting ${filenames.length} legacy conversation(s)`);
+    log("info", `sqlite import: starting ${sources.length} legacy conversation(s) (${liveSources.length} live, ${deletedSources.length} deleted)`);
     try {
       this.saveFolders(legacy.loadFolders());
       this.saveFolderInstructions(legacy.loadFolderInstructions());
     } catch (error) {
-      return { status: "incomplete", discovered: filenames.length, imported, reused, skipped: [{ id: "<folders>", error: String(error) }], startedAt, completedAt: Date.now() };
+      return { status: "incomplete", discovered: sources.length, imported, reused, skipped: [...skipped, { id: "<folders>", error: String(error) }], startedAt, completedAt: Date.now() };
     }
 
-    for (let index = 0; index < filenames.length; index++) {
-      const filename = filenames[index];
-      const id = filename.slice(0, -5);
-      const path = join(dir, filename);
+    for (let index = 0; index < sources.length; index++) {
+      const sourceInfo = sources[index];
+      const { id, path, deleted } = sourceInfo;
+      if (duplicateIds.has(id)) continue;
       try {
         const statBefore = statSync(path);
         const source = readFileSync(path);
         const hash = sha256(source);
         const prior = this.db.query<{ source_sha256: string }, [string]>("SELECT source_sha256 FROM import_sources WHERE conversation_id=?").get(id);
-        if (prior?.source_sha256 === hash && this.row(id, true)) {
+        const priorRow = this.row(id, true);
+        if (prior?.source_sha256 === hash && priorRow && (priorRow.deleted_at !== null) === deleted) {
           reused++;
         } else {
-          const conv = legacy.load(id);
+          const conv = deleted ? legacy.loadTrashedConversation(id) : legacy.load(id);
           if (!conv) throw new Error("legacy loader rejected the conversation");
           const entry = legacy.indexEntryFromConversation(conv);
+          const receipt = legacy.getLastUnwindReceipt(conv);
           const statAfter = statSync(path);
           if (statBefore.size !== statAfter.size || statBefore.mtimeMs !== statAfter.mtimeMs) throw new Error("source changed during stable read");
           this.db.transaction(() => {
             this.save(conv, { forceMessages: true, generation: Math.max(1, entry.storageGeneration) });
+            this.db.query("DELETE FROM unwind_receipts WHERE conversation_id=?").run(id);
+            if (receipt) {
+              this.db.query(`
+                INSERT INTO unwind_receipts(
+                  conversation_id, operation_id, user_message_index,
+                  history_total_entries, superseded_queue_ids_json
+                ) VALUES (?, ?, ?, ?, '[]')
+              `).run(id, receipt.operationId, receipt.userMessageIndex, receipt.historyTotalEntries);
+            }
+            if (deleted) {
+              this.db.query("UPDATE conversations SET deleted_at=? WHERE id=?").run(startedAt, id);
+              this.db.query("DELETE FROM unread_conversations WHERE conversation_id=?").run(id);
+              this.db.query("DELETE FROM btw_sessions WHERE conversation_id=?").run(id);
+              this.db.query("DELETE FROM btw_receipts WHERE conversation_id=?").run(id);
+            }
             this.db.query(`
               INSERT INTO import_sources(conversation_id, source_size, source_mtime_ms, source_generation, source_sha256, imported_at)
               VALUES (?, ?, ?, ?, ?, ?)
@@ -1680,17 +1722,21 @@ export class SqliteConversationStore implements ConversationRepository {
         log("error", `sqlite import: skipped ${id}: ${message}`);
       }
       const now = Date.now();
-      if (index + 1 === filenames.length || (index + 1) % 100 === 0 || now - lastProgressAt >= 2_000) {
-        log("info", `sqlite import: ${index + 1}/${filenames.length} source(s), ${imported} imported, ${reused} reused, ${skipped.length} skipped`);
+      if (index + 1 === sources.length || (index + 1) % 100 === 0 || now - lastProgressAt >= 2_000) {
+        log("info", `sqlite import: ${index + 1}/${sources.length} source(s), ${imported} imported, ${reused} reused, ${skipped.length} skipped`);
         lastProgressAt = now;
       }
     }
 
     if (skipped.length === 0) {
       try {
-        this.saveUnreadConversationIds(legacy.loadUnreadConversationIds());
-        this.saveQueuedMessages(legacy.loadQueuedMessages());
-        this.saveConversationBtwState(legacy.loadConversationBtwState());
+        this.db.transaction(() => {
+          this.saveUnreadConversationIds(legacy.loadUnreadConversationIds());
+          this.saveQueuedMessages(legacy.loadQueuedMessages());
+          this.saveConversationBtwState(legacy.loadConversationBtwState());
+          this.writeStack("undo", legacy.loadTrashStackSnapshot());
+          this.writeStack("redo", legacy.loadRedoStackSnapshot());
+        })();
       } catch (error) {
         skipped.push({ id: "<auxiliary>", error: error instanceof Error ? error.message : String(error) });
       }
@@ -1700,7 +1746,7 @@ export class SqliteConversationStore implements ConversationRepository {
       this.setMetadata("legacy_import_complete", "1");
       this.setMetadata("canonical_backend", "sqlite");
     }
-    const report = { status, discovered: filenames.length, imported, reused, skipped, startedAt, completedAt: Date.now() } satisfies LegacyImportReport;
+    const report = { status, discovered: sources.length, imported, reused, skipped, startedAt, completedAt: Date.now() } satisfies LegacyImportReport;
     this.setMetadata("legacy_import_report", JSON.stringify(report));
     log(status === "complete" ? "info" : "error", `sqlite import: ${status} in ${report.completedAt - startedAt} ms (${imported} imported, ${reused} reused, ${skipped.length} skipped)`);
     return report;

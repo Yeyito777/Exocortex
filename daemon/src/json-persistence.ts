@@ -702,6 +702,15 @@ function readRedoStack(): TrashStackEntry[] {
   return readStack(REDO_META);
 }
 
+/** Read-only snapshots used by the one-time SQLite importer. */
+export function loadTrashStackSnapshot(): TrashStackEntry[] {
+  return readTrashStack();
+}
+
+export function loadRedoStackSnapshot(): TrashStackEntry[] {
+  return readRedoStack();
+}
+
 /** Write a sidebar undo/redo stack back to disk. */
 function writeStack(path: string, stack: TrashStackEntry[]): void {
   ensureTrashDir();
@@ -1883,6 +1892,28 @@ export function load(id: string): Conversation | null {
     return applyConversationSidebarFile(conv, storageStateFor(conv).baseGeneration);
   } catch (err) {
     log("error", `persistence: failed to load ${id}: ${err}`);
+    return null;
+  }
+}
+
+/** List legacy soft-deleted conversation files, excluding stack metadata. */
+export function listTrashedConversationIds(): string[] {
+  if (!existsSync(TRASH_DIR)) return [];
+  return readdirSync(TRASH_DIR)
+    .filter((name) => name.endsWith(".json") && name !== "trash.json" && name !== "redo.json")
+    .map((name) => name.slice(0, -5))
+    .sort();
+}
+
+/** Load a soft-deleted legacy conversation without moving it back to the live directory. */
+export function loadTrashedConversation(id: string): Conversation | null {
+  assertSafeId(id);
+  const path = trashPath(id);
+  if (!existsSync(path)) return null;
+  try {
+    return fromFile(parseConversationFile(path));
+  } catch (err) {
+    log("error", `persistence: failed to load trashed ${id}: ${err}`);
     return null;
   }
 }

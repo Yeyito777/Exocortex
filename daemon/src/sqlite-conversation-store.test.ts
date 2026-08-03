@@ -267,6 +267,9 @@ describe("SQLite maintenance", () => {
     const { root, path } = pathFor("maintenance");
     const store = new SqliteConversationStore({ path });
     savedFixture(store, "maintenance");
+    savedFixture(store, "maintenance-deleted");
+    expect(store.trashConversations(["maintenance-deleted"])).toEqual(["maintenance-deleted"]);
+    store.pushRedoEntry({ type: "conversation_removed", id: "maintenance" });
     const backup = store.backup(join(root, "backup.sqlite3"));
     const backupDb = new Database(backup, { readonly: true });
     const check = backupDb.query<Record<string, string>, []>("PRAGMA quick_check").get();
@@ -278,16 +281,27 @@ describe("SQLite maintenance", () => {
     expect(() => store.restoreToNewFile(backup, restored)).toThrow("already exists");
     const restoredStore = new SqliteConversationStore({ path: restored });
     expect(restoredStore.load("maintenance")?.messages).toHaveLength(2);
+    expect(restoredStore.load("maintenance-deleted")).toBeNull();
+    expect(restoredStore.load("maintenance-deleted", true)?.messages).toHaveLength(2);
     restoredStore.close();
 
     const exportRoot = join(root, "export");
     const manifest = store.exportAll(exportRoot);
-    expect(manifest.conversations).toHaveLength(1);
+    expect(manifest.conversations).toHaveLength(2);
+    expect(manifest.conversations.find((entry) => entry.id === "maintenance-deleted")?.deleted).toBe(true);
     expect(JSON.parse(readFileSync(join(exportRoot, "conversations", "maintenance.json"), "utf8"))).toMatchObject({ version: 18, id: "maintenance" });
+    expect(JSON.parse(readFileSync(join(exportRoot, "trash", "maintenance-deleted.json"), "utf8"))).toMatchObject({ version: 18, id: "maintenance-deleted" });
+    expect(JSON.parse(readFileSync(join(exportRoot, "trash", "trash.json"), "utf8"))).toEqual([
+      { type: "conversation", id: "maintenance-deleted" },
+    ]);
+    expect(JSON.parse(readFileSync(join(exportRoot, "trash", "redo.json"), "utf8"))).toEqual([
+      { type: "conversation_removed", id: "maintenance" },
+    ]);
     expect(store.diagnostics()).toMatchObject({
       schemaVersion: 6,
       liveConversations: 1,
-      messages: 2,
+      deletedConversations: 1,
+      messages: 4,
       importStatus: "not-run",
     });
     store.close();

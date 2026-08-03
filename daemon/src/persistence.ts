@@ -53,7 +53,7 @@ let sqlite: SqliteConversationStore | null = null;
 function store(): SqliteConversationStore {
   if (backend !== "sqlite") throw new Error("SQLite conversation store is not selected");
   if (!sqlite) {
-    sqlite = new SqliteConversationStore({ autoImportLegacy: true });
+    sqlite = new SqliteConversationStore();
     const report = sqlite.importLegacyIfNeeded();
     if (report.status === "incomplete") {
       const detail = report.skipped.slice(0, 5).map((item) => `${item.id}: ${item.error}`).join("; ");
