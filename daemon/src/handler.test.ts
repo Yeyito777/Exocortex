@@ -1127,6 +1127,7 @@ describe("handler start_call", () => {
     attachMedia: mock(async () => {}),
     updateParticipants: mock(() => {}),
     updateSpeakers: mock(() => {}),
+    submitUtterance: mock(() => {}),
     stop: mock(async () => {}),
     stopFromAgent: mock(async () => {}),
     stopAll: mock(async () => {}),
@@ -1263,6 +1264,18 @@ describe("handler start_call", () => {
       callId: "call-1",
       speakers: { participantIds: ["310"], observedAt: 1234 },
     });
+    await handle({} as never, {
+      type: "submit_call_utterance",
+      reqId: "req-utterance",
+      convId,
+      callId: "call-1",
+      utteranceId: "utterance-1",
+      participantId: "310",
+      audioBase64: Buffer.from("wav").toString("base64"),
+      mimeType: "audio/wav",
+      startedAt: 1000,
+      endedAt: 1200,
+    });
 
     expect(callManager.start).toHaveBeenCalledWith(
       convId,
@@ -1276,10 +1289,19 @@ describe("handler start_call", () => {
       "call-1",
       { participantIds: ["310"], observedAt: 1234 },
     );
+    expect(callManager.submitUtterance).toHaveBeenCalledWith(convId, "call-1", {
+      utteranceId: "utterance-1",
+      participantId: "310",
+      audioBytes: new Uint8Array(Buffer.from("wav")),
+      mimeType: "audio/wav",
+      startedAt: 1000,
+      endedAt: 1200,
+    });
     expect(sent).toEqual(expect.arrayContaining([
       { type: "ack", reqId: "req-start-speakers", convId },
       { type: "ack", reqId: "req-participants", convId },
       { type: "ack", reqId: "req-speakers", convId },
+      { type: "ack", reqId: "req-utterance", convId },
     ]));
   });
 

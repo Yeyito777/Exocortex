@@ -87,7 +87,7 @@ export interface DaemonCommandHandler {
 }
 
 type RealtimeCallController = Pick<RealtimeCallManager,
-  "hasActiveCall" | "start" | "attachMedia" | "updateParticipants" | "updateSpeakers" | "stop" | "stopFromAgent" | "stopAll"
+  "hasActiveCall" | "start" | "attachMedia" | "updateParticipants" | "updateSpeakers" | "submitUtterance" | "stop" | "stopFromAgent" | "stopAll"
 >;
 
 export interface HandlerOptions extends HandlerLifecycle {
@@ -1318,6 +1318,29 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       case "update_call_speakers": {
         try {
           callManager.updateSpeakers(cmd.convId, cmd.callId, cmd.speakers);
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        } catch (error) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+        break;
+      }
+
+      case "submit_call_utterance": {
+        try {
+          const audioBytes = Buffer.from(cmd.audioBase64, "base64");
+          callManager.submitUtterance(cmd.convId, cmd.callId, {
+            utteranceId: cmd.utteranceId,
+            participantId: cmd.participantId,
+            audioBytes,
+            mimeType: cmd.mimeType,
+            startedAt: cmd.startedAt,
+            endedAt: cmd.endedAt,
+          });
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         } catch (error) {
           server.sendTo(client, {

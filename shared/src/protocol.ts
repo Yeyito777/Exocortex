@@ -163,6 +163,12 @@ export interface RealtimeCallAdapter {
   endpointId?: string;
   /** Optional user-facing source label such as `#yeyito-chill` or `Family`. */
   label?: string;
+  /**
+   * `audio` sends a conventional microphone track to the realtime model.
+   * `attributed_utterances` keeps platform speakers separate and submits each
+   * completed utterance for application-owned transcription and attribution.
+   */
+  inputMode?: "audio" | "attributed_utterances";
 }
 
 /** Platform-authenticated identity attached to audio received by a call adapter. */
@@ -180,7 +186,7 @@ export interface RealtimeCallSpeakerState {
   observedAt: number;
 }
 
-/** Conservative source attribution for one provider-transcribed input turn. */
+/** Source attribution for one call transcript turn. */
 export interface RealtimeCallSpeakerAttribution {
   kind: "single" | "multiple" | "unknown";
   participants: RealtimeCallParticipant[];
@@ -232,6 +238,23 @@ export interface UpdateCallSpeakersCommand {
   convId: string;
   callId: string;
   speakers: RealtimeCallSpeakerState;
+}
+
+/** Submit one platform-separated speaker utterance to an active realtime call. */
+export interface SubmitCallUtteranceCommand {
+  type: "submit_call_utterance";
+  reqId?: string;
+  convId: string;
+  callId: string;
+  /** Adapter-generated idempotency key. */
+  utteranceId: string;
+  /** Immutable platform ID present in the current participant roster. */
+  participantId: string;
+  /** Complete encoded utterance, normally mono WAV, as base64. */
+  audioBase64: string;
+  mimeType: string;
+  startedAt: number;
+  endedAt: number;
 }
 
 export interface PrewarmConversationCommand {
@@ -804,6 +827,7 @@ export type Command =
   | StopCallCommand
   | UpdateCallParticipantsCommand
   | UpdateCallSpeakersCommand
+  | SubmitCallUtteranceCommand
   | PrewarmConversationCommand
   | SubscribeCommand
   | UnsubscribeCommand

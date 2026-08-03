@@ -141,3 +141,15 @@ export function buildDelegationAppend(handoffId: string, text: string): Record<s
     content: [{ type: "input_text", text: chunk }],
   }));
 }
+
+/** Add application-attributed live input to Frameless Bidi's speakable stream. */
+export function buildSessionInputAppend(text: string): Record<string, unknown>[] {
+  const chunks = chunkRealtimeContext(text);
+  return chunks.map((chunk, index) => ({
+    type: "session.context.append",
+    // Long utterances are silent context until the final chunk. This preserves
+    // one model response per platform utterance instead of one per 500 bytes.
+    channel: index === chunks.length - 1 ? "speakable" : "commentary",
+    content: [{ type: "input_text", text: chunk }],
+  }));
+}

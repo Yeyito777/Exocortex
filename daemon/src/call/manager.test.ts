@@ -31,12 +31,16 @@ class FakeTransport implements NativeRealtimeTransport {
   stopped = 0;
   starts: NativeRealtimeStartParams[] = [];
   handoffs: Array<{ handoffId: string; text: string }> = [];
+  inputs: string[] = [];
+  cancellations = 0;
 
   async start(params: NativeRealtimeStartParams) {
     this.starts.push(params);
     return { answerSdp: "v=0\r\no=answer", callId: "rtc-test" };
   }
   async appendHandoff(handoffId: string, text: string): Promise<void> { this.handoffs.push({ handoffId, text }); }
+  async appendInput(text: string): Promise<void> { this.inputs.push(text); }
+  async cancelResponse(): Promise<void> { this.cancellations++; }
   async stop(): Promise<void> { this.stopped++; }
 }
 
@@ -164,6 +168,81 @@ describe("realtime call manager", () => {
     await emit!({ type: "handoff", handoffId: "speaker-handoff", text: "inspect it" });
     await Bun.sleep(0);
     expect(delegations[0]?.speaker).toEqual({ kind: "single", participants: [participants[0]] });
+
+    await manager.stop(conv.id, started.callId);
+  });
+
+  test("transcribes platform-separated utterances and sends attributed text to Bidi", async () => {
+    const conv = conversation();
+    const realtime = new FakeTransport();
+    const server = fakeServer();
+    const persisted: Array<{ role: string; text: string; startedAt: number; details: Record<string, unknown> }> = [];
+    const manager = new RealtimeCallManager(server.server as never, {
+      createTransport: () => realtime,
+      ensureAuthenticated: async () => {},
+      getConversation: id => id === conv.id ? conv : undefined,
+      getEffectiveInstructions: () => null,
+      getAccountScope: () => null,
+      persistTranscript: (_id, role, text, startedAt, details) => {
+        persisted.push({ role, text, startedAt: startedAt ?? -1, details: details ?? {} });
+        return true;
+      },
+      persistStatus: () => true,
+      transcribeUtterance: async () => "separate speaker transcript",
+    });
+    const participant = { id: "owner", displayName: "Owner", trust: "owner" as const };
+    const started = await manager.start(
+      conv.id,
+      undefined,
+      {
+        type: "external",
+        id: "discord:paramount:voice",
+        toolName: "discord",
+        endpointId: "voice",
+        inputMode: "attributed_utterances",
+      },
+      [participant],
+    );
+    await manager.attachMedia({} as never, conv.id, started.callId, "v=0\r\no=offer", "media-req");
+
+    manager.submitUtterance(conv.id, started.callId, {
+      utteranceId: "utterance-1",
+      participantId: participant.id,
+      audioBytes: new Uint8Array([1, 2, 3]),
+      mimeType: "audio/wav",
+      startedAt: 1_000,
+      endedAt: 2_000,
+    });
+    // A transport retry with the same idempotency key must not duplicate speech.
+    manager.submitUtterance(conv.id, started.callId, {
+      utteranceId: "utterance-1",
+      participantId: participant.id,
+      audioBytes: new Uint8Array([1, 2, 3]),
+      mimeType: "audio/wav",
+      startedAt: 1_000,
+      endedAt: 2_000,
+    });
+    for (let attempt = 0; attempt < 20 && realtime.inputs.length === 0; attempt++) await Bun.sleep(0);
+
+    expect(realtime.inputs).toEqual([
+      "[call speaker: Owner <owner> [owner]]\nseparate speaker transcript",
+    ]);
+    expect(persisted.filter(entry => entry.role === "user")).toEqual([{
+      role: "user",
+      text: "separate speaker transcript",
+      startedAt: 1_000,
+      details: expect.objectContaining({
+        endedAt: 2_000,
+        speaker: { kind: "single", participants: [participant] },
+      }),
+    }]);
+    expect(server.subscriber).toContainEqual(expect.objectContaining({
+      type: "call_transcript",
+      role: "user",
+      text: "separate speaker transcript",
+      speaker: { kind: "single", participants: [participant] },
+      final: true,
+    }));
 
     await manager.stop(conv.id, started.callId);
   });

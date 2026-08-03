@@ -92,6 +92,14 @@ describe("native ChatGPT realtime transport", () => {
       channel: "speakable",
       content: [{ type: "input_text", text: "done" }],
     });
+    await transport.appendInput("[call speaker: Owner <1> [owner]]\nhello");
+    expect(sockets[0]!.socket.sent.map(value => JSON.parse(value))).toContainEqual({
+      type: "session.context.append",
+      channel: "speakable",
+      content: [{ type: "input_text", text: "[call speaker: Owner <1> [owner]]\nhello" }],
+    });
+    await transport.cancelResponse();
+    expect(sockets[0]!.socket.sent.map(value => JSON.parse(value))).toContainEqual({ type: "response.cancel" });
     await transport.stop();
     expect(sockets[0]!.socket.sent.map(value => JSON.parse(value))).toContainEqual({ type: "session.close" });
   });

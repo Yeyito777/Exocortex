@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildDelegationAppend,
   buildRealtimeSession,
+  buildSessionInputAppend,
   chunkRealtimeContext,
   parseRealtimeSidebandEvent,
 } from "./protocol";
@@ -70,5 +71,17 @@ describe("Frameless Bidi protocol", () => {
       && message.delegation_item_id === "delegation-1"
       && message.channel === "speakable"
     ))).toBe(true);
+  });
+
+  test("builds attributed live input on the speakable session stream", () => {
+    expect(buildSessionInputAppend("[call speaker: Owner <1> [owner]]\nhello")).toEqual([{
+      type: "session.context.append",
+      channel: "speakable",
+      content: [{ type: "input_text", text: "[call speaker: Owner <1> [owner]]\nhello" }],
+    }]);
+    const long = buildSessionInputAppend("x".repeat(700));
+    expect(long.map(message => message.channel)).toEqual(["commentary", "speakable"]);
+    expect(long.flatMap(message => (message.content as Array<{ text: string }>).map(content => content.text)).join(""))
+      .toBe("x".repeat(700));
   });
 });

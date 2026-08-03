@@ -6,6 +6,7 @@ import { log } from "../log";
 import {
   buildDelegationAppend,
   buildRealtimeSession,
+  buildSessionInputAppend,
   parseRealtimeSidebandEvent,
   type RealtimeInitialItem,
   type RealtimeSidebandEvent,
@@ -29,6 +30,8 @@ export interface NativeRealtimeStartResult {
 export interface NativeRealtimeTransport {
   start(params: NativeRealtimeStartParams): Promise<NativeRealtimeStartResult>;
   appendHandoff(handoffId: string, text: string): Promise<void>;
+  appendInput(text: string): Promise<void>;
+  cancelResponse(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -148,6 +151,14 @@ export class ChatGptRealtimeTransport implements NativeRealtimeTransport {
 
   async appendHandoff(handoffId: string, text: string): Promise<void> {
     for (const message of buildDelegationAppend(handoffId, text)) this.send(message);
+  }
+
+  async appendInput(text: string): Promise<void> {
+    for (const message of buildSessionInputAppend(text)) this.send(message);
+  }
+
+  async cancelResponse(): Promise<void> {
+    this.send({ type: "response.cancel" });
   }
 
   async stop(): Promise<void> {
