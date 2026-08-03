@@ -44,29 +44,29 @@ under gitignored worktree `config/data/` paths or `/tmp`.
 
 ## 5. Fixture, feature, and performance regression
 
-- [ ] Reverify immutable real-fixture hashes and report live-main drift separately.
-- [ ] Rerun exact 24-conversation migration parity.
-- [ ] Rerun exhaustive cursor/page/tool-output parity and integrity checks.
-- [ ] Rerun the sequential SQLite feature smoke from a fresh synthetic prefix.
-- [ ] Restore fixture unread state and remove any empty synthetic automation files.
-- [ ] Run the quick low/large-scale benchmark and the committed performance gate verifier.
-- [ ] Confirm no aggregate result contains real IDs, titles, transcript text, credentials, or absolute private paths.
+- [x] Reverify immutable real-fixture hashes and report live-main drift separately.
+- [x] Rerun exact 24-conversation migration parity.
+- [x] Rerun exhaustive cursor/page/tool-output parity and integrity checks.
+- [x] Rerun the sequential SQLite feature smoke from a fresh synthetic prefix.
+- [x] Restore fixture unread state and remove any empty synthetic automation files.
+- [x] Run the quick low/large-scale benchmark and the committed performance gate verifier.
+- [x] Confirm no aggregate result contains real IDs, titles, transcript text, credentials, or absolute private paths.
 
 ## 6. xenv/exotest merged user paths
 
-- [ ] Start a fresh worktree `xenv` plus `exotest` session against the merged code and existing SQLite fixture.
-- [ ] Verify indexed startup, sidebar/folders, and a migrated real conversation.
-- [ ] Verify recent/older history and deferred tool-output expansion.
-- [ ] Verify the merged realtime-call commands/rendering are available without initiating an external call.
-- [ ] Stop the full session, restart once against the same database, and verify persisted state/integrity.
-- [ ] Stop the worktree daemon, remove only the test xenv, and restore fixture unread state.
+- [x] Start a fresh worktree `xenv` plus `exotest` session against the merged code and existing SQLite fixture.
+- [x] Verify indexed startup, sidebar/folders, and a migrated real conversation.
+- [x] Verify recent/older history and deferred tool-output expansion.
+- [x] Verify the merged realtime-call commands/rendering are available without initiating an external call.
+- [x] Stop the full session, restart once against the same database, and verify persisted state/integrity.
+- [x] Stop the worktree daemon, remove only the test xenv, and restore fixture unread state.
 
 ## 7. Final safety and handoff
 
-- [ ] Confirm the main daemon PID is unchanged and main remains healthy.
-- [ ] Confirm no merge/test command mutated main-instance conversation, automation, database, or runtime state.
-- [ ] Confirm all worktree/rollback daemons, test processes, and the test xenv are stopped.
-- [ ] Rerun final typecheck, targeted repository/fault tests, fixture parity, integrity checks, and `git diff --check`.
-- [ ] Scan tracked changes for secrets, real transcript content, databases, exports, screenshots, sockets, PIDs, logs, and other generated artifacts.
-- [ ] Write an aggregate main-sync result report and commit durable fixes/docs in reviewable commits.
-- [ ] Leave the worktree clean, unmerged, and available for user review.
+- [x] Confirm the main daemon PID is unchanged and main remains healthy.
+- [x] Confirm no merge/test command mutated main-instance conversation, automation, database, or runtime state.
+- [x] Confirm all worktree/rollback daemons, test processes, and the test xenv are stopped.
+- [x] Rerun final typecheck, targeted repository/fault tests, fixture parity, integrity checks, and `git diff --check`.
+- [x] Scan tracked changes for secrets, real transcript content, databases, exports, screenshots, sockets, PIDs, logs, and other generated artifacts.
+- [x] Write an aggregate main-sync result report and commit durable fixes/docs in reviewable commits.
+- [x] Leave the worktree clean, unmerged, and available for user review.

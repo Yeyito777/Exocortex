@@ -183,6 +183,10 @@ Track and safely remove state left by deleted or abandoned worktrees.
   - schema/storage version
   - approximate storage usage
   - active PID/socket identity
+- [ ] Define one runtime-endpoint contract (or descriptor) consumed by the daemon,
+  TUI, `exotest`, and external `exo` CLI instead of duplicating socket-path logic.
+- [ ] Make every client honor the same short Unix-socket fallback for deep worktrees
+  and cover cross-instance discovery with integration tests.
 - [ ] Add `exo instances list`.
 - [ ] Add `exo instances inspect <name>`.
 - [ ] Add `exo instances prune`.

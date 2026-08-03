@@ -21,11 +21,10 @@ Git.
   conversation were excluded.
 - The selector performed stable pre/post stat/hash reads and immediately reverified
   main after copying. The immutable copied files still match all 26 manifest hashes.
-- Two selected main conversations changed naturally after the immutable snapshot,
-  and one folded `.sidebar` overlay disappeared. Later `verify` reports these three
-  live-source path drifts without confusing them with fixture corruption.
-  `verify --require-source-stable` remains available when a frozen source is
-  required.
+- Five live-main source paths now differ naturally from the immutable snapshot.
+  Later `verify` reports that live drift separately without confusing it with fixture
+  corruption. `verify --require-source-stable` remains available when a frozen source
+  is required.
 - Final migration verifier: **24 conversations, 0 mismatches**, `quick_check=ok`, no
   foreign-key errors, all goals absent, and no copied automation files.
 - Exhaustive pagination walked **346 pages / 3,568 display entries** with strict
@@ -103,58 +102,68 @@ Initial SQLite-targeted realtime gate: **6 passed, 0 failed**.
 
 The remaining-only architecture roadmap was updated to remove the completed
 repository/SQLite/migration program and add JSON retirement plus realtime service and
-runtime-validation follow-up work.
+runtime-validation follow-up work. The post-merge aggregate is in
+[`main-sync-results.md`](./main-sync-results.md).
 
 ## Automated tests
 
 - Root TypeScript typecheck: **passed**.
-- Shared: **13 passed, 0 failed** with an isolated test config.
-- TUI: **673 passed, 0 failed**.
-- Default JSON compatibility/full daemon run: **744 passed, 2 unrelated
-  environment-sensitive failures**. One is the existing native-Exo hint expectation
-  under the repository harness; the other is a DeepSeek-auth assertion while a real
-  key is injected and passes when credentials are isolated. Neither changed from
-  main in the relevant source files, and neither is a SQLite failure.
-- Final repository/import/maintenance/fault gate: **27 passed, 0 failed** across JSON
-  and SQLite, including the deterministic differential state machine.
-- SQLite canonical integration matrix: **167 passed, 0 failed, 9 skipped**. The
-  skipped tests assert obsolete JSON `.sidebar`, `.unwind`, and filesystem failure
-  mechanics; those same tests still execute in JSON compatibility mode.
+- Shared: **15 passed, 0 failed** with an isolated test config.
+- TUI: **711 passed, 0 failed**.
+- Default JSON compatibility/full daemon run: **813 passed, 2 unrelated
+  environment-sensitive failures** across 79 files. One is the existing native-Exo
+  hint expectation under the repository harness; the other is a DeepSeek no-key
+  assertion while real/stored credentials are available. Neither relevant source
+  file differs from merged main, and neither failure is storage-related.
+- Final repository/import/differential/schema/maintenance/fault gate: **28 passed,
+  0 failed** across JSON and SQLite.
+- Merged SQLite conversation/realtime/call gate: **182 passed, 0 failed, 8 skipped**.
+- Broad SQLite canonical matrix: **654 passed, 0 failed, 9 skipped** across 65 files.
+  The skips explicitly assert obsolete JSON `.sidebar`, `.unwind`, filesystem-failure,
+  or orphan-tombstone mechanics; those paths still execute in JSON mode.
+- An exploratory all-file SQLite run was classified rather than used as a gate:
+  direct JSON persistence and display-projection tests intentionally expect JSON
+  files from the process-wide facade. The canonical matrix excludes those
+  implementation-specific files and had zero failures.
 - The resumable-import test covers valid v18 import, one corrupt source, resume after
   repair, changed-source reimport before completion, overlays, folders/instructions,
-  unread, queue, BTW, and a completed-import no-scan startup.
+  unread, queue, BTW, and a completed-import no-scan startup. Its assertions are now
+  robust when other full-suite tests leave unrelated legacy fixtures in the shared
+  isolated root.
 - Fault injection covers every save, unwind, and delete boundary and compares full
   logical state, blob rows, FTS rows, auxiliary state, and undo/redo history before
   and after rollback. A child-process test exits abruptly inside a transaction and
   proves WAL rollback plus integrity on reopen.
 - Schema maintenance tests cover every v1→v6 checkpoint, immutable future-version
   refusal, title-FTS lifecycle, backup, restore-to-new, normalized export, separate
-  large blobs, exact reconstruction, cascading orphan cleanup, and scale-critical
-  index query plans.
-- The differential state machine found and fixed one real defect: SQLite unwind did
-  not update the indexed `message_count` using the domain-calculated visible count.
+  large blobs, exact reconstruction, cascading orphan cleanup, realtime metadata
+  promotion, and scale-critical index query plans.
 
-The storage changes introduce no new default-backend compatibility failure.
+The merged storage changes introduce no new default-backend compatibility failure.
 
 ## xenv/exotest
 
-The final worktree daemon and TUI were started through `xenv` plus `exotest`; main
-was never restarted.
+The merged worktree daemon and TUI were started through `xenv` plus the worktree's
+`exotest`; main was never restarted.
 
-Validated manually in two complete sessions:
+Validated manually:
 
-- indexed startup with 34 fixture-plus-smoke conversations
-- folders/sidebar rendering
-- three migrated real conversations from `/`, `subagents`, and `record/done`
-- both OpenAI and DeepSeek conversations
-- newest-page rendering, automatic older-page backfill, and manual older navigation
-- explicit `Ctrl+O` deferred tool-output expansion
-- worktree-only folder creation and conversation create/rename/move/delete/undo
-- restored title and folder placement visible in the TUI
-- complete worktree daemon/TUI stop and fresh start against the same database
-- post-restart mutation persistence and integrity
-- fixture unread-state restoration, final clean stop, and xenv removal
+- indexed startup with 40 fixture-plus-smoke conversations
+- folders/sidebar rendering and a migrated real conversation
+- newest-page rendering and manual older-page navigation
+- explicit `Ctrl+O` deferred tool-output loading and expansion
+- `/call`, `/hangup`, and `/mic` autocomplete/rendering without initiating a call
+- `Ctrl+Shift+R` replacing only the worktree daemon child and reconnecting to the
+  same conversation/database
+- complete worktree daemon/TUI stop and a cold reopen against the same database
+- fixture unread-state restoration, empty-Chrono removal, final clean stop, integrity,
+  and xenv removal
 - unchanged main daemon PID throughout
+
+This test found that `exotest` still polled the pre-fallback long Unix socket path.
+It now obtains the endpoint from the same shared resolver used by the daemon and TUI.
+The separately linked external `exo` CLI still duplicates endpoint logic; consolidating
+that contract and testing cross-instance discovery are now roadmap items.
 
 Screenshots were kept only under `/tmp`; transcript images are not committed.
 
@@ -163,13 +172,12 @@ Screenshots were kept only under `/tmp`; transcript images are not committed.
 Against the final real worktree database:
 
 - schema version 6
-- 35 live fixture-plus-smoke/manual conversations
-- 38,602 canonical messages
-- 23,382 separated message payload rows
-- 20 folders
+- 40 live fixture-plus-smoke conversations
+- 38,613 canonical messages
+- 23,383 separated message payload rows
 - `quick_check=ok`
 - no foreign-key errors
-- WAL cleanly checkpointed to zero bytes
+- WAL mode with a clean zero-byte checkpointed WAL
 
 Before the xenv-only mutation, the administration drill created and validated an
 online backup of the 34-conversation database and restored it to a distinct file;
@@ -206,3 +214,7 @@ All approved gates pass; the executable verifier reports **13 passed, 0 failed**
 - metadata and sidebar mutation p95: **3.275 ms** and **0.139 ms**
 - SQLite append historical-size spread: **1.16x** across 1–96 MiB
 - SQLite/JSON storage ratio at 10k: **0.957x**
+
+The post-main-merge 2,000-conversation quick rerun on Bun 1.3.14 measured a
+**0.416 ms** low-scale absolute SQLite delta, **4.38x** startup/list speedup at 2k,
+**2.91x** append speedup at 1 MiB, and **38.83x** at 10 MiB.
