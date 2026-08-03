@@ -83,3 +83,18 @@ under gitignored worktree `config/data/` paths or `/tmp`.
   rollback undo in isolated child-process tests.
 - [x] Confirm import leaves legacy JSON byte hashes unchanged.
 - [x] Update migration/design/validation documents and leave the worktree unmerged for review.
+
+## 9. Final preparation merge and isolated migration smoke
+
+- [x] Confirm the worktree is clean and both local `main` and `origin/main` are at `7a3f4b6`.
+- [x] Merge the four latest main commits without rebasing or touching the main checkout.
+- [x] Confirm the TUI-only changes require no schema or persistence reconciliation.
+- [x] Run root typecheck and the complete TUI suite.
+- [x] Rerun resumable live/trash/undo/redo migration tests.
+- [x] Copy the 24-conversation legacy fixture into a fresh temporary config root.
+- [x] Start the production daemon path and require automatic import completion.
+- [x] Verify every migrated conversation, page, tool output, export, and legacy source hash.
+- [x] Hide all legacy conversation JSON and prove a second daemon serves SQLite without rescanning.
+- [x] Run final integrity/foreign-key checks and remove temporary migration artifacts.
+- [x] Run a fresh worktree `xenv`/`exotest` startup and clean shutdown.
+- [x] Confirm the main daemon PID is unchanged and leave the worktree unmerged for review.

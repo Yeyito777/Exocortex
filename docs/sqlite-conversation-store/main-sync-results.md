@@ -4,11 +4,37 @@ Date: 2026-08-03
 
 Branch: `sqlite-conversation-store`
 
-Merged baseline: `main` / `origin/main` at `ba3d155`
+Merged baseline: `main` / `origin/main` through `7a3f4b6` (initial synchronization at `ba3d155`)
 
 This report covers the post-implementation synchronization of current `main` into
 the SQLite conversation-store worktree. The worktree remains unmerged and available
 for review.
+
+## Final preparation synchronization — 2026-08-03
+
+A second clean merge brought the worktree from the initial `ba3d155` baseline through
+`7a3f4b6`. The four additional commits add macOS voice capture/call-audio support,
+hide the pinned label inside folders, and fix multiline external-tool stdin rendering.
+They touch only TUI code, merged without conflicts, and require no conversation schema,
+importer, or persistence adaptation.
+
+Post-merge checks:
+
+- root TypeScript typecheck passed;
+- the complete TUI suite passed **717/717** across 69 files;
+- focused resumable/live/trash/undo/redo migration tests passed **5/5**;
+- a fresh `xenv` plus the worktree's `exotest` opened and stopped cleanly; and
+- the main daemon PID remained unchanged.
+
+A fresh isolated first-start smoke copied only the existing worktree fixture—not live
+main data—into a temporary config root. The input contained **24 legacy JSON
+conversations, 249.7 MiB, and 38,580 messages**. The production daemon path completed
+migration and became socket-ready in **6,977 ms**: 24 discovered, 24 imported, zero
+reused, and zero skipped. Exact per-field/transcript/page/tool-output verification
+reported **24 conversations and zero mismatches**; `quick_check=ok`, foreign-key errors
+were zero, and every legacy file hash was unchanged. After hiding the entire legacy
+`conversations/` directory, a second daemon start became ready in **405 ms** and served
+all 24 conversations through list/recent/older/tool-output IPC from SQLite alone.
 
 ## Merge and architecture reconciliation
 
@@ -63,7 +89,7 @@ for review.
 | --- | ---: |
 | Root TypeScript typecheck | passed |
 | Shared suite | 15 passed, 0 failed |
-| TUI suite | 711 passed, 0 failed |
+| TUI suite | 717 passed, 0 failed |
 | Default JSON-compatible daemon suite | 817 passed, 2 classified baseline failures |
 | Repository/import/differential/schema/fault/maintenance gate | 32 passed, 0 failed |
 | Merged SQLite conversation/realtime/call gate | 182 passed, 8 intentional JSON-file skips, 0 failed |

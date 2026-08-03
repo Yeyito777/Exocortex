@@ -72,7 +72,8 @@ Gitignored evidence: `sqlite-fixture/feature-smoke-report.json`.
 
 ## Main synchronization — 2026-08-03
 
-Current `main` through `ba3d155` was merged into the worktree. The merge adds
+Current `main` through `7a3f4b6` was merged into the worktree in two clean merge
+commits. The initial synchronization through `ba3d155` adds
 realtime calls, external call adapters, authenticated speaker attribution, direct
 attributed utterances, transcript reconciliation, exact task stopping,
 instance-local daemon restart, long Unix-socket fallback, and the helper-tool rename.
@@ -128,11 +129,38 @@ Four isolated child-process tests prove full JSON setup → SQLite import → se
 undo/redo behavior, trash-only import, safe duplicate-ID refusal, and SQLite export →
 JSON rollback/undo. The migration tests use synthetic IDs and fresh config roots only.
 
+## Final main refresh and isolated first-start smoke — 2026-08-03
+
+The final preparation merge advanced the worktree through `7a3f4b6`. Its four new
+main commits are TUI-only: macOS voice/call audio, nested-folder pinned-label rendering,
+and multiline external-tool stdin rendering. They merged without conflict and did not
+change the SQLite schema or migration design. Root typecheck, **717/717** TUI tests,
+and **5/5** focused migration tests passed afterward. A fresh `xenv`/`exotest` session
+also opened and stopped cleanly.
+
+The first-start smoke used a temporary isolated config root populated only from the
+existing safe worktree fixture. It did not read or write live main data:
+
+- input: **24 legacy conversations, 249.7 MiB, 38,580 messages**;
+- first production-daemon startup through automatic import: **6,977 ms** to socket
+  readiness;
+- import report: **24 discovered, 24 imported, 0 reused, 0 skipped**;
+- parity: **24 conversations, 0 mismatches** across normalized conversation fields,
+  messages, recent/older pages, deferred tool outputs, and export;
+- integrity: `quick_check=ok` and **0 foreign-key errors**;
+- source safety: all legacy file SHA-256 hashes unchanged; and
+- no-rescan proof: with the entire legacy `conversations/` directory hidden, the
+  second daemon became ready in **405 ms** and served all 24 conversations through
+  list/recent/older/tool-output IPC from SQLite.
+
+The temporary config, database, logs, report, and socket were deleted after the test.
+No worktree daemon or xenv remained, and the main daemon PID was unchanged.
+
 ## Automated tests
 
 - Root TypeScript typecheck: **passed**.
 - Shared: **15 passed, 0 failed** with an isolated test config.
-- TUI: **711 passed, 0 failed**.
+- TUI: **717 passed, 0 failed**.
 - Default JSON compatibility/full daemon run: **817 passed, 2 unrelated
   environment-sensitive failures** across 80 files. One is the existing native-Exo
   hint expectation under the repository harness; the other is a DeepSeek no-key
