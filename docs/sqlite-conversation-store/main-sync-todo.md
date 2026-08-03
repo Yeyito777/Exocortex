@@ -34,13 +34,13 @@ under gitignored worktree `config/data/` paths or `/tmp`.
 
 ## 4. Automated correctness validation
 
-- [ ] Run root TypeScript typecheck.
-- [ ] Run the complete shared test suite under an isolated config root.
-- [ ] Run the complete TUI test suite.
-- [ ] Run the complete default JSON-compatible daemon test suite and classify any failures.
-- [ ] Run repository contract, differential, importer, schema, fault-injection, and maintenance tests.
-- [ ] Run conversation, handler, compaction, transcript-merge, realtime-delegation, and call-manager tests with SQLite selected where applicable.
-- [ ] Run the SQLite canonical integration matrix and confirm only intentional JSON-file-specific skips remain.
+- [x] Run root TypeScript typecheck.
+- [x] Run the complete shared test suite under an isolated config root.
+- [x] Run the complete TUI test suite.
+- [x] Run the complete default JSON-compatible daemon test suite and classify any failures.
+- [x] Run repository contract, differential, importer, schema, fault-injection, and maintenance tests.
+- [x] Run conversation, handler, compaction, transcript-merge, realtime-delegation, and call-manager tests with SQLite selected where applicable.
+- [x] Run the SQLite canonical integration matrix and confirm only intentional JSON-file-specific skips remain.
 
 ## 5. Fixture, feature, and performance regression
 
