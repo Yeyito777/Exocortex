@@ -102,7 +102,31 @@ interface FixtureManifest {
 const TARGET = dataDir();
 const FIXTURE_DIR = join(TARGET, "sqlite-fixture");
 const MANIFEST_PATH = join(FIXTURE_DIR, "manifest.json");
-const CURRENT_CONVERSATION_ID = process.env.EXOCORTEX_CONVERSATION_ID ?? "1785451035032-yqb8ll";
+
+function argumentValue(name: string): string | null {
+  const index = process.argv.indexOf(name);
+  if (index < 0) return null;
+  const value = process.argv[index + 1]?.trim();
+  if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
+  return value;
+}
+
+const CURRENT_CONVERSATION_ID = process.env.EXOCORTEX_CONVERSATION_ID?.trim()
+  || argumentValue("--exclude-conversation")
+  || "";
+
+function defaultMainDataDir(): string {
+  const result = Bun.spawnSync(
+    ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { cwd: import.meta.dir, stdout: "pipe", stderr: "pipe" },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(`Cannot resolve the main checkout: ${result.stderr.toString().trim()}`);
+  }
+  const commonGitDir = result.stdout.toString().trim();
+  if (!commonGitDir) throw new Error("Git returned an empty common directory");
+  return join(resolve(commonGitDir, ".."), "config", "data");
+}
 
 function sha256(bytes: Buffer | string): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -264,6 +288,9 @@ function filteredFolders(sourceData: string, selected: Candidate[]): { folders: 
 }
 
 function createFixture(sourceData: string, replace: boolean): void {
+  if (!CURRENT_CONVERSATION_ID) {
+    throw new Error("create requires --exclude-conversation ID (or EXOCORTEX_CONVERSATION_ID) so the implementation conversation cannot enter the fixture");
+  }
   const source = resolve(sourceData);
   const sourceConversations = join(source, "conversations");
   if (!existsSync(sourceConversations)) throw new Error(`Source conversations directory is missing: ${sourceConversations}`);
@@ -399,8 +426,7 @@ function cleanupFixture(): void {
 
 const command = process.argv[2];
 if (command === "create") {
-  const sourceIndex = process.argv.indexOf("--source-data");
-  const source = sourceIndex >= 0 ? process.argv[sourceIndex + 1] : "/home/yeyito/Workspace/exocortex/config/data";
+  const source = argumentValue("--source-data") ?? defaultMainDataDir();
   createFixture(source, process.argv.includes("--replace"));
 } else if (command === "verify") {
   const sourceDrift = verifyFixture(process.argv.includes("--require-source-stable"));
@@ -408,6 +434,6 @@ if (command === "create") {
 } else if (command === "clean") {
   cleanupFixture();
 } else {
-  console.error("usage: sqlite-conversation-fixture.ts create [--source-data PATH] [--replace] | verify [--require-source-stable] | clean");
+  console.error("usage: sqlite-conversation-fixture.ts create [--source-data PATH] --exclude-conversation ID [--replace] | verify [--require-source-stable] | clean");
   process.exit(2);
 }

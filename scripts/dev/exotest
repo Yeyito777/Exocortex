@@ -67,7 +67,11 @@ sync_external_tools "$WORKTREE_DIR"
 CONFIG_DIR="$WORKTREE_DIR/config"
 RUNTIME_DIR="$CONFIG_DIR/runtime/$WT_NAME"
 PID_FILE="$RUNTIME_DIR/exocortexd.pid"
-SOCKET="$RUNTIME_DIR/exocortexd.sock"
+# Resolve through the same shared helper as the daemon and clients. Deep
+# worktree paths exceed the Unix-domain socket limit and intentionally hash to
+# /tmp; hardcoding the runtime-dir path makes exotest time out after a healthy
+# daemon has already bound the fallback socket.
+SOCKET="$(cd "$WORKTREE_DIR" && bun -e 'import { socketPath } from "./shared/src/paths"; process.stdout.write(socketPath())')"
 LOG="$RUNTIME_DIR/exocortexd.log"
 
 # Check if a daemon is already alive for this worktree
