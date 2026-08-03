@@ -46,6 +46,27 @@ function entryIds(sidebar: SidebarState): string[] {
 }
 
 describe("sidebar optimistic pinning", () => {
+  test("omits the Pinned section title inside folders", () => {
+    const sidebar = createSidebarState();
+    sidebar.currentFolderId = "project";
+    sidebar.folders = [folder("project", 0)];
+    sidebar.conversations = [
+      conversation("pinned", 1, { folderId: "project", pinned: true }),
+      conversation("unpinned", 2, { folderId: "project" }),
+    ];
+
+    const rows = buildDisplayRows(sidebar);
+
+    expect(rows.some(row => row.type === "label" && row.text === " Pinned")).toBe(false);
+    expect(rows.map(row => row.type === "entry" ? row.item?.type : row.type)).toEqual([
+      "up",
+      "folder_instructions",
+      "conversation",
+      "delimiter",
+      "conversation",
+    ]);
+  });
+
   test("pinning a conversation places it at the bottom of the pinned section", () => {
     const sidebar = createSidebarState();
     sidebar.conversations = [
