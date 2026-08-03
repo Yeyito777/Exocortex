@@ -120,7 +120,7 @@ describe("bash inline output budget", () => {
 describe("bash process-tree timeout", () => {
   test("treats unexpected command signals as failures", async () => {
     if (process.platform === "win32") return;
-    const result = await executeBashBackgroundable({ command: "kill -TERM $$", timeout: 2_000 });
+    const result = await executeBashBackgroundable({ command: "kill -TERM $$", timeout_seconds: 2 });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("terminated by signal SIGTERM");
   });
@@ -163,7 +163,7 @@ describe("bash process-tree timeout", () => {
     if (process.platform === "win32") return;
     const result = await executeBashBackgroundable({
       command: "(trap '' TERM; sleep 30) & child=$!; echo $child; wait",
-      timeout: 100,
+      timeout_seconds: 0.1,
       await: 10,
     });
 
@@ -175,9 +175,19 @@ describe("bash process-tree timeout", () => {
   });
 
   test("rejects a non-positive timeout before spawning", async () => {
-    const result = await executeBashBackgroundable({ command: "echo should-not-run", timeout: 0 });
+    const result = await executeBashBackgroundable({ command: "echo should-not-run", timeout_seconds: 0 });
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("greater than 0 milliseconds");
+    expect(result.output).toContain("greater than 0 seconds");
+  });
+
+  test("exposes only the new timeout_seconds parameter", async () => {
+    const properties = bash.inputSchema.properties as Record<string, unknown>;
+    expect(properties.timeout_seconds).toBeDefined();
+    expect(properties.timeout).toBeUndefined();
+
+    const result = await executeBashBackgroundable({ command: "echo should-not-run", timeout: 1_000 });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("use 'timeout_seconds' instead");
   });
 
   test("does not orphan commands when timeout wins the runner startup race", async () => {
@@ -185,7 +195,7 @@ describe("bash process-tree timeout", () => {
     const markerPath = join(tmpdir(), `exocortex-bash-timeout-race-${process.pid}-${Date.now()}`);
     const calls = Array.from({ length: 20 }, () => executeBashBackgroundable({
       command: `(sleep 0.15; echo leaked >> '${markerPath}') & wait`,
-      timeout: 1,
+      timeout_seconds: 0.001,
       await: 10,
     }));
 

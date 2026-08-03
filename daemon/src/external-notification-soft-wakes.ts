@@ -357,7 +357,7 @@ async function executeOccurrence(occurrence: PendingExternalNotificationSoftWake
         const result = await executeBashBackgroundable({
           command: occurrence.softWake.command,
           stdin: commandInput(occurrence),
-          timeout: occurrence.softWake.timeoutMs,
+          timeout_seconds: occurrence.softWake.timeoutMs / 1_000,
           max_output_chars: 12_000,
           discard_output_file: true,
           terminate_on_parent_exit: true,

@@ -741,7 +741,7 @@ async function executeOccurrence(occurrence: PendingOccurrence): Promise<void> {
               // Chrono's controller owns the real deadline and kills the whole
               // process group. Keep Bash's spawn timeout later so its one-hour
               // default cannot terminate long soft-wakes first.
-              timeout: commandTarget.timeoutMs + 60_000,
+              timeout_seconds: commandTarget.timeoutMs / 1_000 + 60,
               max_output_chars: 12_000,
             }, controller.signal, undefined, occurrence.ownerConversationId ? { conversationId: occurrence.ownerConversationId } : undefined);
           } finally {

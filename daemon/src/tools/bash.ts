@@ -27,7 +27,7 @@ import { log } from "../log";
 
 // ── Constants ──────────────────────────────────────────────────────
 
-const DEFAULT_TIMEOUT_MS = 3_600_000; // 1 hour
+const DEFAULT_TIMEOUT_SECONDS = 3_600; // 1 hour
 const MAX_OUTPUT_BYTES = 1_000_000;   // 1MB process capture limit
 const DEFAULT_INLINE_OUTPUT_CHARS = 12_000;
 const MIN_INLINE_OUTPUT_CHARS = 1_000;
@@ -320,8 +320,12 @@ async function executeBashImpl(
     const msg = err instanceof Error ? err.message : String(err);
     return { output: `Error preparing external tool command: ${msg}`, isError: true, failureKind: "infrastructure" };
   }
-  const timeout = getNumber(input, "timeout") ?? DEFAULT_TIMEOUT_MS;
-  if (timeout <= 0) return { output: "Error: 'timeout' must be greater than 0 milliseconds", isError: true };
+  if (input.timeout !== undefined) {
+    return { output: "Error: unsupported 'timeout' parameter; use 'timeout_seconds' instead", isError: true };
+  }
+  const timeoutSeconds = getNumber(input, "timeout_seconds") ?? DEFAULT_TIMEOUT_SECONDS;
+  if (timeoutSeconds <= 0) return { output: "Error: 'timeout_seconds' must be greater than 0 seconds", isError: true };
+  const timeoutMs = timeoutSeconds * 1000;
 
   const intentionalStops = markIntentionalBackgroundTaskStops(command, context?.conversationId);
 
@@ -714,7 +718,7 @@ async function executeBashImpl(
       if (commandPid) killProcessGroup(commandPid);
       else try { runner.kill(); } catch { /* already exited */ }
       scheduleRunnerFallbackKill();
-    }, timeout);
+    }, timeoutMs);
     timeoutTimer.unref?.();
   });
 }
@@ -741,7 +745,7 @@ export const bash: Tool = {
     properties: {
       command: { type: "string", description: `The ${shellName} command to execute` },
       stdin: { type: "string", description: "Optional literal text provided to the command on standard input." },
-      timeout: { type: "number", description: "Timeout in milliseconds (default 3600000)" },
+      timeout_seconds: { type: "number", description: `Timeout in seconds (default ${DEFAULT_TIMEOUT_SECONDS})` },
       background: { type: "boolean", description: "Background immediately after spawning and return the PID/output file without waiting. Cannot be combined with await." },
       await: { type: "number", description: "Seconds greater than 0 to wait before backgrounding this command. Cannot be combined with background=true." },
       max_output_chars: { type: "number", description: `Maximum command-output characters to include inline before spilling full output to a temp file (default ${DEFAULT_INLINE_OUTPUT_CHARS}, min ${MIN_INLINE_OUTPUT_CHARS}, max ${MAX_INLINE_OUTPUT_CHARS}).` },
