@@ -10,7 +10,8 @@
   folder, system instructions, subagent policy, and timestamps
 - goals: set, status transitions, clear, turn count, and restart-recoverable lists
 - history: trim, unwind, complete replay, render snapshots, paged display history,
-  deferred tool outputs, context attribution, and active context
+  deferred tool outputs, context attribution, active context, finalized realtime
+  transcripts/call markers, and in-place realtime delegation promotion
 - sidebar: summary/folder lists, folder CRUD, nested moves, batch moves, pinning,
   recursive delete, unwrap delete, and folder instructions
 - inbox state: unread and external inbox notices
@@ -18,8 +19,10 @@
 
 `handler.ts` maps IPC commands for every user-visible operation, including
 creation/send/replay/compact, all metadata and sidebar mutations, queue CRUD,
-load/history/tool-output reads, BTW, goals, external notifications, and account
-operations. IPC shapes remain unchanged by this migration.
+load/history/tool-output reads, BTW, goals, realtime-call lifecycle/media adapter
+commands, external notifications, and account operations. IPC shapes remain outside
+the repository; finalized call history reaches storage through ordinary conversation
+mutations.
 
 ## Existing file inventory
 
@@ -42,6 +45,9 @@ operations. IPC shapes remain unchanged by this migration.
 | `data/chrono.json` | schedules/occurrences | retained Chrono-owned file; conversation IDs validated through repository |
 | `data/external-notifications.json` | source routes/subscriptions/receipts | retained service-owned file; targets validated/pruned through repository |
 | `data/external-notification-soft-wakes.json` | command wake delivery | retained service-owned file |
+| `config.json` `audio.callVoice` / `audio.micGainDb` | editable realtime/TUI preference | retained human-editable instance configuration; never stored in SQLite |
+| finalized realtime transcript/status messages | previously normal conversation JSON messages with provenance metadata | canonical `messages` rows; metadata round-trips through `metadata_json` without a schema migration |
+| live WebRTC/Bidi call, SDP, audio, transcript deltas, roster/speaker windows | process-owned media/session state | ephemeral; never imported/exported or resumed |
 | runtime interrupted/goal markers | restart coordination | retained ephemeral/runtime file; candidate IDs filtered by SQLite summaries |
 | sockets, PIDs, logs, diagnostics, token stats | runtime/accounting | unchanged and never imported |
 | credentials/secrets | authentication | unchanged and forbidden from SQLite |
@@ -51,7 +57,8 @@ operations. IPC shapes remain unchanged by this migration.
 Canonical SQLite state:
 
 - scalar conversation metadata and generation
-- ordered stored messages and all message fields
+- ordered stored messages and all message fields, including finalized realtime
+  transcript provenance/speaker attribution and call boundary markers
 - active context/checkpoints
 - folder/order/instruction state
 - unread state
@@ -62,7 +69,8 @@ Canonical SQLite state:
 
 Derived/rebuildable state:
 
-- message count and summary query projections
+- message count and summary query projections (`realtime_call_status` markers are
+  intentionally excluded from the visible message count)
 - compact display entries
 - extracted tool-output lookup rows
 - optional FTS title index
@@ -70,6 +78,8 @@ Derived/rebuildable state:
 Ephemeral state:
 
 - live streaming blocks and sequence counters
+- active realtime-call manager/transport state, SDP, audio, partial transcripts,
+  participant/speaker windows, and adapter/utterance dedupe caches
 - AbortControllers and history-unwind leases
 - active subagent/background processes and projected task counts
 - connected clients/subscriptions and render caches
@@ -88,7 +98,10 @@ Chrono, pending titles, interrupted stream markers, active-goal markers, and
 subagent notification delivery. SQLite changes the first four: schema/open and
 resumable import happen first, then indexed summary/folder/unread/queue reads.
 Remaining service startup order stays the same and uses indexed existence checks.
-The display-page backfill worker is disabled for SQLite.
+The display-page backfill worker is disabled for SQLite. Instance-local restart closes
+active realtime transports, flushes/then closes SQLite, and reopens the same namespaced
+database; finalized call messages recover with ordinary history, but no live media
+session is reconstructed.
 
 ## Legacy schema handling
 

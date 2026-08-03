@@ -18,7 +18,9 @@
 3. If no completed import exists and legacy JSON exists, import folders and folder
    instructions, then each conversation through the v1-v18 compatibility loader.
 4. Fold `.sidebar` and `.unwind` overlays by importing the compatibility loader's
-   materialized `Conversation` result.
+   materialized `Conversation` result. Finalized realtime transcript/status messages,
+   including speaker and adapter provenance, require no special import because they
+   are ordinary v18 messages whose metadata is preserved exactly.
 5. Import unread, queue, BTW, and undo/redo snapshots when present.
 6. Log bounded progress (every 100 sources or two seconds), verify counts/hashes,
    persist the final import report, and mark the import complete.
@@ -63,14 +65,19 @@ live WAL database.
 
 Never restore over an open database. Restore validates a source backup and copies
 it to a new path. The operator then stops only the target instance, swaps paths,
-and restarts that instance.
+and restarts that instance. An instance-local daemon restart uses the same shutdown
+order: stop active call transports, flush canonical messages, close/checkpoint the
+SQLite connection, and let the instance supervisor reopen the same `dataDir()`.
 
 ## JSON export
 
-One-conversation export reproduces the current v18 normalized object. Full export
-writes one JSON file per live conversation plus folders, instructions, unread,
-queue, BTW, and undo/redo metadata into a new directory. It never writes into an
-existing legacy corpus unless an explicit empty destination is supplied.
+One-conversation export reproduces the current v18 normalized object, including
+finalized realtime transcript/status metadata. Full export writes one JSON file per
+live conversation plus folders, instructions, unread, queue, BTW, and undo/redo
+metadata into a new directory. Active call transports, raw audio, partial deltas,
+and participant/speaker windows are ephemeral and are intentionally absent. Export
+never writes into an existing legacy corpus unless an explicit empty destination is
+supplied.
 
 ```bash
 bun scripts/dev/sqlite-store-admin.ts export-one <id> /new/path/conversation.json

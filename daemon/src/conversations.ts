@@ -2523,7 +2523,9 @@ export function promoteRealtimeTranscript(
     message.content = replacement;
     message.contextTokens = null;
     conv.updatedAt = Date.now();
-    markDirty(convId);
+    // This edits an existing canonical row in place rather than appending a new
+    // object. Force field-level SQLite comparison from the changed sequence.
+    markDirty(convId, "messages");
     flush(convId);
     return true;
   }

@@ -18,19 +18,19 @@ under gitignored worktree `config/data/` paths or `/tmp`.
 
 ## 2. Merge current main
 
-- [ ] Merge local `main` into `sqlite-conversation-store` without rebasing or touching the main checkout.
-- [ ] Resolve every conflict deliberately, preserving current main behavior and the SQLite canonical repository/cutover.
-- [ ] Verify renamed helper-tool files, package dependencies, lockfile state, worktree scripts, and ignore rules landed correctly.
-- [ ] Run `git diff --check` and inspect the merge result for dropped changes or conflict markers.
+- [x] Merge local `main` into `sqlite-conversation-store` without rebasing or touching the main checkout.
+- [x] Resolve every conflict deliberately, preserving current main behavior and the SQLite canonical repository/cutover.
+- [x] Verify renamed helper-tool files, package dependencies, lockfile state, worktree scripts, and ignore rules landed correctly.
+- [x] Run `git diff --check` and inspect the merge result for dropped changes or conflict markers.
 
 ## 3. Storage and architecture reconciliation
 
-- [ ] Trace new realtime-call, attributed-input, transcript-reconciliation, active-stream, task-stop, compaction, and restart behavior through conversation persistence.
-- [ ] Verify new message/provider/context fields round-trip through JSON and SQLite without schema loss.
-- [ ] Verify new startup/restart and instance-path behavior remains compatible with one SQLite database per instance.
-- [ ] Add or adjust regression tests wherever the merged behavior is not already exercised against SQLite.
-- [ ] Update the SQLite design, state map, migration, schema, roadmap/TODO, and validation documents for relevant main changes.
-- [ ] Explicitly document which realtime-call state is canonical conversation history versus ephemeral transport/session state.
+- [x] Trace new realtime-call, attributed-input, transcript-reconciliation, active-stream, task-stop, compaction, and restart behavior through conversation persistence.
+- [x] Verify new message/provider/context fields round-trip through JSON and SQLite without schema loss.
+- [x] Verify new startup/restart and instance-path behavior remains compatible with one SQLite database per instance.
+- [x] Add or adjust regression tests wherever the merged behavior is not already exercised against SQLite.
+- [x] Update the SQLite design, state map, migration, schema, roadmap/TODO, and validation documents for relevant main changes.
+- [x] Explicitly document which realtime-call state is canonical conversation history versus ephemeral transport/session state.
 
 ## 4. Automated correctness validation
 

@@ -71,6 +71,40 @@ Covered:
 
 Gitignored evidence: `sqlite-fixture/feature-smoke-report.json`.
 
+## Main synchronization — 2026-08-03
+
+Current `main` through `ba3d155` was merged into the worktree. The merge adds
+realtime calls, external call adapters, authenticated speaker attribution, direct
+attributed utterances, transcript reconciliation, exact task stopping,
+instance-local daemon restart, long Unix-socket fallback, and the helper-tool rename.
+One textual conflict in `conversations.ts` was resolved by retaining both the SQLite
+direct page/tool-output paths and main's streaming-extra reconciliation.
+
+Storage reconciliation:
+
+- finalized call utterances and call boundary markers use ordinary canonical message
+  rows;
+- all new call/adapter/speaker fields round-trip through `metadata_json`, so schema
+  version 6 remains sufficient;
+- call status rows are canonical but excluded from `message_count`;
+- promotion of a persisted call transcript into a backend delegation forces
+  field-level comparison from the edited sequence;
+- orchestrator transcript replacement retains external messages appended while the
+  stream is active;
+- WebRTC/Bidi transport, audio, SDP, partial deltas, participants, speaker windows,
+  and active call identity remain ephemeral and are not restart-recovered;
+- instance restart stops calls, flushes and closes SQLite, then reopens the same
+  namespaced database. The short-socket fallback changes only IPC location.
+
+A new direct SQLite regression test covers complete realtime provenance/speaker
+metadata, status-count semantics, promoted-content rewrite, reopen, and integrity.
+The merged domain realtime tests also reload promoted content from persistence.
+Initial SQLite-targeted realtime gate: **6 passed, 0 failed**.
+
+The remaining-only architecture roadmap was updated to remove the completed
+repository/SQLite/migration program and add JSON retirement plus realtime service and
+runtime-validation follow-up work.
+
 ## Automated tests
 
 - Root TypeScript typecheck: **passed**.

@@ -105,8 +105,27 @@ Implementation result:
 - The approved rollback-retention default defers physical deletion/archive cleanup
   of legacy JSON/projection/sidecar files until a later accepted release.
 - Content FTS remains excluded by approved scope; title-only FTS is implemented.
-- Updating the architecture roadmap, merging, and worktree cleanup remain blocked
-  on explicit user acceptance as requested.
+- Merging this worktree back to main and worktree cleanup remain blocked on explicit
+  user acceptance as requested; the roadmap now contains only remaining follow-up work.
+
+## Post-implementation main sync: realtime and restart semantics
+
+- [x] Merge current main realtime-call, attributed-input, transcript-reconciliation,
+  task-stop, helper-tool, instance-restart, and long-socket-path behavior.
+- [x] Keep finalized realtime user/assistant transcripts canonical as ordinary
+  `messages` rows with complete provenance/speaker metadata.
+- [x] Keep model-hidden call start/end markers canonical while excluding them from
+  the indexed visible message count.
+- [x] Keep WebRTC/Bidi transport, SDP/audio, partial deltas, participant/speaker
+  windows, adapter connections, and active call identity ephemeral.
+- [x] Promote delegated realtime transcripts in place and force field-level SQLite
+  comparison from the changed message so no duplicate user turn is appended.
+- [x] Preserve externally appended call messages when reconciling an orchestrator
+  stream's owned transcript prefix.
+- [x] Stop call transports before flush/SQLite close during instance-local restart;
+  reopen the same per-instance database without attempting to resume the call.
+- [x] Verify realtime metadata and promoted content round-trip through SQLite without
+  a schema migration; existing `metadata_json` owns the new fields.
 
 ---
 

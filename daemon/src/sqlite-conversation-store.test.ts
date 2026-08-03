@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createConversation, type StoredMessage } from "./messages";
+import { REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, createConversation, type StoredMessage } from "./messages";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
 
 const roots: string[] = [];
@@ -317,6 +317,99 @@ describe("SQLite maintenance", () => {
 
     store.db.query("DELETE FROM conversations WHERE id='blobs'").run();
     expect(store.diagnostics()).toMatchObject({ messageBlobs: 0, toolOutputReferences: 0, messages: 0 });
+    expect(store.integrityCheck().ok).toBe(true);
+    store.close();
+  });
+
+  test("round-trips realtime provenance and rewrites promoted transcript content", () => {
+    const { path } = pathFor("realtime-provenance");
+    let store = new SqliteConversationStore({ path });
+    const conv = createConversation("realtime-provenance", "openai", "gpt-5.6-sol", 0, "Realtime provenance");
+    const speaker = {
+      kind: "single" as const,
+      participants: [{ id: "owner-id", displayName: "Owner", trust: "owner" as const }],
+    };
+    conv.messages.push(
+      {
+        role: "user",
+        content: "Inspect the repository",
+        metadata: {
+          startedAt: 1,
+          endedAt: 2,
+          model: conv.model,
+          tokens: 3,
+          kind: REALTIME_TRANSCRIPT_KIND,
+          realtimeCallId: "call-1",
+          realtimeAdapterType: "external",
+          realtimeAdapterId: "adapter-1",
+          realtimeToolName: "adapter-tool",
+          realtimeSourceLabel: "Test call",
+          realtimeAccountAlias: "test-account",
+          realtimeEndpointId: "endpoint-1",
+          realtimeSpeaker: speaker,
+        },
+      },
+      {
+        role: "system",
+        content: "Realtime call started.",
+        metadata: {
+          startedAt: 3,
+          endedAt: 3,
+          model: conv.model,
+          tokens: 0,
+          kind: REALTIME_CALL_STATUS_KIND,
+          realtimeCallId: "call-1",
+          realtimeAdapterType: "external",
+          realtimeAdapterId: "adapter-1",
+        },
+      },
+      {
+        role: "assistant",
+        content: "I can help with that.",
+        metadata: {
+          startedAt: 4,
+          endedAt: 5,
+          model: "gpt-live-1-boulder-alpha",
+          tokens: 6,
+          kind: REALTIME_TRANSCRIPT_KIND,
+          realtimeCallId: "call-1",
+          realtimeAdapterType: "external",
+          realtimeAdapterId: "adapter-1",
+        },
+      },
+    );
+    store.save(conv);
+    expect(store.getSummary(conv.id)?.messageCount).toBe(2);
+    expect(store.load(conv.id)?.messages).toEqual(conv.messages);
+    store.close();
+
+    store = new SqliteConversationStore({ path });
+    const promoted = store.load(conv.id)!;
+    promoted.messages[0]!.content = "[realtime delegation]\nTask: Inspect the repository";
+    promoted.messages[0]!.contextTokens = null;
+    promoted.updatedAt += 1;
+    store.save(promoted, { forceMessages: true });
+    store.close();
+
+    store = new SqliteConversationStore({ path });
+    const reopened = store.load(conv.id)!;
+    expect(reopened.messages[0]).toMatchObject({
+      content: "[realtime delegation]\nTask: Inspect the repository",
+      metadata: {
+        kind: REALTIME_TRANSCRIPT_KIND,
+        realtimeCallId: "call-1",
+        realtimeAdapterType: "external",
+        realtimeAdapterId: "adapter-1",
+        realtimeToolName: "adapter-tool",
+        realtimeSourceLabel: "Test call",
+        realtimeAccountAlias: "test-account",
+        realtimeEndpointId: "endpoint-1",
+        realtimeSpeaker: speaker,
+      },
+      contextTokens: null,
+    });
+    expect(reopened.messages[1]?.metadata?.kind).toBe(REALTIME_CALL_STATUS_KIND);
+    expect(store.getSummary(conv.id)?.messageCount).toBe(2);
     expect(store.integrityCheck().ok).toBe(true);
     store.close();
   });
