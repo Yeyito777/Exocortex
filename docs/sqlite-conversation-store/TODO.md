@@ -423,8 +423,12 @@ Finalize numeric thresholds during approval, then enforce them:
 - [x] Preserve message order and all optional fields.
 - [x] Preserve active contexts and checkpoints.
 - [x] Preserve unread state and queue receipts.
-- [x] Preserve undo/redo state where safely representable.
-- [x] Store source generation/hash for resumability and verification.
+- [x] Import `trash/*.json` as soft-deleted rows with complete message history.
+- [x] Preserve ordered undo/redo state, including a trash-only corpus with zero live
+  conversations.
+- [x] Refuse an ambiguous source ID present in both live and trash directories.
+- [x] Store source generation/hash and live/deleted state for resumability and
+  verification.
 - [x] Resume after interruption without duplication.
 - [-] Re-import changed JSON safely during shadow mode. — superseded with shadow mode by the approved direct-cutover design.
 - [x] Produce progress, skipped-file, corrupt-file, and mismatch reports.
@@ -731,6 +735,8 @@ Use synthetic routes only; do not copy live main subscriptions.
   state.
 - [x] Stop acknowledging JSON-only writes.
 - [x] Keep normalized JSON export output for current-state rollback observation.
+- [x] Export deleted conversations and ordered undo/redo files in the exact legacy
+  `trash/` layout, and prove JSON rollback can undo a deletion.
 - [x] Test daemon restart plus representative save/delete/unwind transaction faults and abrupt in-transaction process exit.
 - [x] Verify WAL recovery and integrity after forced process termination.
 - [x] Run all shared/daemon/TUI tests.

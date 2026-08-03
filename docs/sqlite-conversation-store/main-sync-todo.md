@@ -70,3 +70,16 @@ under gitignored worktree `config/data/` paths or `/tmp`.
 - [x] Scan tracked changes for secrets, real transcript content, databases, exports, screenshots, sockets, PIDs, logs, and other generated artifacts.
 - [x] Write an aggregate main-sync result report and commit durable fixes/docs in reviewable commits.
 - [x] Leave the worktree clean, unmerged, and available for user review.
+
+## 8. Post-review lossless legacy trash migration
+
+- [x] Audit the automatic cutover path against the actual JSON trash and history files.
+- [x] Import `trash/*.json` as soft-deleted SQLite conversations with complete messages.
+- [x] Import `trash/trash.json` and `trash/redo.json` without changing stack order.
+- [x] Handle trash-only legacy state when there are zero live conversations.
+- [x] Refuse duplicate IDs across live and trash directories without marking import complete.
+- [x] Export deleted conversations and both stacks in a directly usable JSON rollback tree.
+- [x] Prove recursive delete, unwrap, conversation undo/redo, duplicate refusal, and
+  rollback undo in isolated child-process tests.
+- [x] Confirm import leaves legacy JSON byte hashes unchanged.
+- [x] Update migration/design/validation documents and leave the worktree unmerged for review.

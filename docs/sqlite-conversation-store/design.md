@@ -145,7 +145,8 @@ The repository exposes:
 - `PRAGMA quick_check` and full foreign-key checks
 - checkpoint plus SQLite online backup to a new file
 - restore validation into a new file (never overwrite an open database)
-- normalized JSON export for one conversation or the full instance
+- normalized JSON export for one conversation or the full instance, including
+  soft-deleted conversations and ordered undo/redo history
 
 Backups and exports use temporary destinations followed by atomic rename where
 the filesystem permits it.
@@ -159,8 +160,13 @@ The backend is one explicit value:
   the database has no completed import
 
 There is no ambiguous per-call mix of canonical backends. Import is resumable and
-idempotent. Legacy JSON is read-only once SQLite is canonical and remains the
-rollback snapshot until a separately approved cleanup.
+idempotent. It treats live and soft-deleted JSON conversations as distinct source
+states, preserves deleted message rows plus ordered undo/redo stacks, and refuses a
+source ID found in both directories rather than choosing nondeterministically. A
+trash-only corpus still imports and can be undone after cutover. Legacy JSON is
+read-only once SQLite is canonical and remains the rollback snapshot until a
+separately approved cleanup. Full normalized export recreates the same live/trash
+layout so rollback retains delete undo.
 
 The approved repository design deliberately uses an instance-level direct cutover
 rather than dual writes. A JSON-first/SQLite-second shadow mutation cannot be atomic

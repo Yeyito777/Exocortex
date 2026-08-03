@@ -105,39 +105,63 @@ repository/SQLite/migration program and add JSON retirement plus realtime servic
 runtime-validation follow-up work. The post-merge aggregate is in
 [`main-sync-results.md`](./main-sync-results.md).
 
+## Legacy trash and history migration completion — 2026-08-03
+
+A post-review audit found that the first importer implementation migrated live
+conversation files but did not actually import `trash/*.json`, `trash/trash.json`, or
+`trash/redo.json`, despite the earlier architecture documents saying that it did. The
+cutover path now:
+
+- enumerates both live and soft-deleted sources and retains deleted messages under a
+  non-null `deleted_at`;
+- rejects the same ID appearing in both source directories instead of guessing;
+- imports ordered undo and redo stacks after all source conversations succeed,
+  including a trash-only corpus with zero live conversations;
+- preserves folder-recursive delete, folder-unwrap, and conversation delete/restore
+  ordering across a JSON-to-SQLite process restart;
+- leaves every legacy JSON byte unchanged; and
+- exports soft-deleted conversations plus `trash/trash.json` and `trash/redo.json` in
+  the exact directory layout accepted by the JSON backend, so deletion undo survives
+  rollback.
+
+Four isolated child-process tests prove full JSON setup → SQLite import → sequential
+undo/redo behavior, trash-only import, safe duplicate-ID refusal, and SQLite export →
+JSON rollback/undo. The migration tests use synthetic IDs and fresh config roots only.
+
 ## Automated tests
 
 - Root TypeScript typecheck: **passed**.
 - Shared: **15 passed, 0 failed** with an isolated test config.
 - TUI: **711 passed, 0 failed**.
-- Default JSON compatibility/full daemon run: **813 passed, 2 unrelated
-  environment-sensitive failures** across 79 files. One is the existing native-Exo
+- Default JSON compatibility/full daemon run: **817 passed, 2 unrelated
+  environment-sensitive failures** across 80 files. One is the existing native-Exo
   hint expectation under the repository harness; the other is a DeepSeek no-key
   assertion while real/stored credentials are available. Neither relevant source
   file differs from merged main, and neither failure is storage-related.
-- Final repository/import/differential/schema/maintenance/fault gate: **28 passed,
+- Final repository/import/differential/schema/maintenance/fault gate: **32 passed,
   0 failed** across JSON and SQLite.
 - Merged SQLite conversation/realtime/call gate: **182 passed, 0 failed, 8 skipped**.
-- Broad SQLite canonical matrix: **654 passed, 0 failed, 9 skipped** across 65 files.
+- Broad SQLite canonical matrix: **658 passed, 0 failed, 9 skipped** across 66 files.
   The skips explicitly assert obsolete JSON `.sidebar`, `.unwind`, filesystem-failure,
   or orphan-tombstone mechanics; those paths still execute in JSON mode.
 - An exploratory all-file SQLite run was classified rather than used as a gate:
   direct JSON persistence and display-projection tests intentionally expect JSON
   files from the process-wide facade. The canonical matrix excludes those
   implementation-specific files and had zero failures.
-- The resumable-import test covers valid v18 import, one corrupt source, resume after
+- The resumable-import tests cover valid v18 import, one corrupt source, resume after
   repair, changed-source reimport before completion, overlays, folders/instructions,
-  unread, queue, BTW, and a completed-import no-scan startup. Its assertions are now
-  robust when other full-suite tests leave unrelated legacy fixtures in the shared
-  isolated root.
+  unread, queue, BTW, deleted source rows, ordered undo/redo stacks, a trash-only
+  corpus, duplicate live/trash refusal, JSON rollback undo, and a completed-import
+  no-scan startup. Their assertions are robust when other full-suite tests leave
+  unrelated legacy fixtures in the shared isolated root.
 - Fault injection covers every save, unwind, and delete boundary and compares full
   logical state, blob rows, FTS rows, auxiliary state, and undo/redo history before
   and after rollback. A child-process test exits abruptly inside a transaction and
   proves WAL rollback plus integrity on reopen.
 - Schema maintenance tests cover every v1→v6 checkpoint, immutable future-version
-  refusal, title-FTS lifecycle, backup, restore-to-new, normalized export, separate
-  large blobs, exact reconstruction, cascading orphan cleanup, realtime metadata
-  promotion, and scale-critical index query plans.
+  refusal, title-FTS lifecycle, backup, restore-to-new, normalized live/deleted export
+  with undo/redo history, separate large blobs, exact reconstruction, cascading orphan
+  cleanup, realtime metadata promotion, and scale-critical index query plans.
 
 The merged storage changes introduce no new default-backend compatibility failure.
 

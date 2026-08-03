@@ -50,6 +50,12 @@ for review.
    the main checkout and was not modified outside this worktree. The architecture
    roadmap now requires one endpoint contract/descriptor and a cross-instance
    integration test. This does not affect daemon/TUI operation or SQLite correctness.
+4. **Legacy trash cutover gap.** A post-review audit found that the importer handled
+   only live conversation JSON even though the earlier design claimed trash and
+   undo/redo parity. It now imports soft-deleted conversation rows and ordered history,
+   handles a zero-live trash-only corpus, and refuses duplicate IDs across live/trash
+   source directories. Full export now includes deleted JSON plus stack files under the
+   JSON adapter's actual `trash/` layout, so rollback preserves deletion undo.
 
 ## Automated validation
 
@@ -58,10 +64,10 @@ for review.
 | Root TypeScript typecheck | passed |
 | Shared suite | 15 passed, 0 failed |
 | TUI suite | 711 passed, 0 failed |
-| Default JSON-compatible daemon suite | 813 passed, 2 classified baseline failures |
-| Repository/import/differential/schema/fault/maintenance gate | 28 passed, 0 failed |
+| Default JSON-compatible daemon suite | 817 passed, 2 classified baseline failures |
+| Repository/import/differential/schema/fault/maintenance gate | 32 passed, 0 failed |
 | Merged SQLite conversation/realtime/call gate | 182 passed, 8 intentional JSON-file skips, 0 failed |
-| Broad SQLite canonical matrix | 654 passed, 9 intentional JSON-file skips, 0 failed |
+| Broad SQLite canonical matrix | 658 passed, 9 intentional JSON-file skips, 0 failed |
 | Sequential feature smoke | 21 passed, 0 failed |
 | Performance gate verifier | 13 passed, 0 failed |
 
@@ -70,7 +76,7 @@ the repository harness text differs from an exact native-Exo hint assertion, and
 DeepSeek no-key case sees real/stored credentials. Relevant source files are
 byte-identical to merged `main`.
 
-The broad SQLite matrix ran 663 tests across 65 behavior/integration files. It
+The broad SQLite matrix ran 667 tests across 66 behavior/integration files. It
 excluded direct JSON persistence/display-projection implementation tests and the two
 classified environment-sensitive files. Nine skips explicitly assert obsolete JSON
 `.sidebar`, `.unwind`, filesystem-failure, or orphan-tombstone mechanics; those paths
@@ -80,6 +86,12 @@ An exploratory all-file run with SQLite forced was also classified rather than u
 as a gate: direct `persistence.test.ts` and `display-page-store.test.ts` cases expect
 the compatibility facade itself to write JSON files, so they fail by design when the
 process-wide backend is forced to SQLite. No canonical SQLite behavior test failed.
+
+The four additional passing tests use isolated child processes and fresh synthetic
+config roots to exercise JSON delete/unwrap/recursive-delete state through SQLite
+cutover, a trash-only corpus, safe duplicate-ID refusal, and a full SQLite-export to
+JSON-rollback undo round trip. They also verify that import never changes the legacy
+JSON byte hashes.
 
 ## Real fixture and migration parity
 

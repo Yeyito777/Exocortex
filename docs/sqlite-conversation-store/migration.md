@@ -15,21 +15,28 @@
 
 1. Open `<dataDir>/exocortex.sqlite3` and apply schema migrations.
 2. If `store_metadata.canonical_backend=sqlite` exists, do not scan JSON.
-3. If no completed import exists and legacy JSON exists, import folders and folder
-   instructions, then each conversation through the v1-v18 compatibility loader.
-4. Fold `.sidebar` and `.unwind` overlays by importing the compatibility loader's
+3. If no completed import exists, enumerate both live `conversations/*.json` and
+   soft-deleted `trash/*.json` sources. Refuse an ambiguous ID present in both.
+4. Import folders and folder instructions, then load every live and deleted
+   conversation through the v1-v18 compatibility loader. Deleted sources are inserted
+   with `deleted_at` set, their canonical messages retained, and no live summary.
+5. Fold live `.sidebar` and `.unwind` overlays by importing the compatibility loader's
    materialized `Conversation` result. Finalized realtime transcript/status messages,
    including speaker and adapter provenance, require no special import because they
    are ordinary v18 messages whose metadata is preserved exactly.
-5. Import unread, queue, BTW, and undo/redo snapshots when present.
-6. Log bounded progress (every 100 sources or two seconds), verify counts/hashes,
+6. Import unread, queue, BTW, and the normalized `trash/trash.json` undo and
+   `trash/redo.json` redo stacks in their original order. This also runs when there
+   are no live conversations and the legacy corpus consists only of trash/history.
+7. Log bounded progress (every 100 sources or two seconds), verify counts/hashes,
    persist the final import report, and mark the import complete.
-7. Read summaries directly from indexed rows and continue daemon startup.
+8. Read summaries directly from indexed rows and continue daemon startup.
 
-A crash before step 6 is safe: completed conversation source hashes are skipped,
-and a partially imported conversation cannot exist because each unit is a
-transaction. A corrupt source is reported and leaves the overall import
-incomplete rather than silently disappearing. Fixture creation performs an
+A crash before the completion marker is safe: completed live and deleted source
+hashes are skipped, source state (live versus deleted) is checked before reuse, and a
+partially imported conversation cannot exist because each unit is a transaction.
+Auxiliary state and both history stacks commit together only after all conversation
+sources succeed. A corrupt or ambiguous source is reported and leaves the overall
+import incomplete rather than silently disappearing. Fixture creation performs an
 immediate strict source stability check; later fixture verification always checks
 the immutable copied hashes and reports ordinary live-main source drift separately.
 
@@ -72,12 +79,14 @@ SQLite connection, and let the instance supervisor reopen the same `dataDir()`.
 ## JSON export
 
 One-conversation export reproduces the current v18 normalized object, including
-finalized realtime transcript/status metadata. Full export writes one JSON file per
-live conversation plus folders, instructions, unread, queue, BTW, and undo/redo
-metadata into a new directory. Active call transports, raw audio, partial deltas,
-and participant/speaker windows are ephemeral and are intentionally absent. Export
-never writes into an existing legacy corpus unless an explicit empty destination is
-supplied.
+finalized realtime transcript/status metadata. Full export writes live conversations
+under `conversations/`, soft-deleted conversations under `trash/`, and undo/redo
+metadata as `trash/trash.json` and `trash/redo.json`, alongside folders, instructions,
+unread, queue, and BTW state. The result is directly usable as a JSON rollback tree;
+delete undo remains functional after rollback. Active call transports, raw audio,
+partial deltas, and participant/speaker windows are ephemeral and are intentionally
+absent. Export never writes into an existing legacy corpus unless an explicit empty
+destination is supplied.
 
 ```bash
 bun scripts/dev/sqlite-store-admin.ts export-one <id> /new/path/conversation.json
