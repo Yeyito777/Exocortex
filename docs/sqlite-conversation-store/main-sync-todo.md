@@ -10,11 +10,11 @@ under gitignored worktree `config/data/` paths or `/tmp`.
 
 ## 1. Baseline and safety
 
-- [ ] Confirm the repository root, worktree branch, and clean starting state.
-- [ ] Confirm local `main` and `origin/main` agree and record branch divergence.
-- [ ] Record the main daemon PID/status without restarting it.
-- [ ] Confirm the worktree daemon and worktree xenv are stopped before merging.
-- [ ] Inventory main-only commits and changed paths that intersect conversation storage, transcript semantics, configuration paths, lifecycle, IPC, and testing.
+- [x] Confirm the repository root, worktree branch, and clean starting state.
+- [x] Confirm local `main` and `origin/main` agree and record branch divergence.
+- [x] Record the main daemon PID/status without restarting it.
+- [x] Confirm the worktree daemon and worktree xenv are stopped before merging.
+- [x] Inventory main-only commits and changed paths that intersect conversation storage, transcript semantics, configuration paths, lifecycle, IPC, and testing.
 
 ## 2. Merge current main
 
