@@ -18,6 +18,7 @@ import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
 import { getMaxContext } from "./providers/registry";
 import { estimateContextTokens, isContextWindowError, shouldAutoCompact, type CompactionReason } from "./context-compaction";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
+import { createAbortError } from "./abort";
 
 // ── Callbacks ───────────────────────────────────────────────────────
 
@@ -53,8 +54,8 @@ export interface AgentCallbacks {
   onRecoveryStateUpdate?(): void;
   /**
    * Drain "next-turn" queued messages between tool rounds.
-   * Called after onRoundComplete — returns user messages to inject
-   * into the conversation before the next API call.
+   * Called after onRoundComplete only while the turn remains active — returns
+   * user messages to inject into the conversation before the next API call.
    */
   drainNextTurnMessages?(): ApiMessage[];
   /** Atomically replace active provider replay with an automatic checkpoint. */
@@ -446,6 +447,12 @@ export async function runAgentLoop(
       state.tokens = totalOutputTokens;
     }
     callbacks.onRoundComplete?.();
+
+    // Ctrl+Q can land while a tool is settling even when that tool cannot stop
+    // cooperatively. Keep its completed result as recovery state, but do not
+    // consume queued user intent into a turn that is already doomed to abort.
+    // The orchestrator will deliver the still-durable entry as a fresh turn.
+    if (options.signal?.aborted) throw createAbortError();
 
     // Inject "next-turn" queued messages between tool rounds.
     const nextTurn = callbacks.drainNextTurnMessages?.() ?? [];
