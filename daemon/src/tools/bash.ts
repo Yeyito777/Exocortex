@@ -21,7 +21,7 @@ import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./type
 import { getString, getNumber, getBoolean, safeSlice, summarizeParams } from "./util";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage } from "../abort";
-import { isWindows } from "@exocortex/shared/paths";
+import { isWindows, socketPath } from "@exocortex/shared/paths";
 import { rewriteExternalToolShellCommandForExecution } from "../external-tools";
 import { log } from "../log";
 
@@ -340,6 +340,7 @@ async function executeBashImpl(
         env: {
           ...process.env,
           ...(context?.conversationId ? { EXOCORTEX_PARENT_CONV_ID: context.conversationId } : {}),
+          EXOCORTEX_SOCKET: socketPath(),
           ...(context?.provider ? { EXOCORTEX_PARENT_PROVIDER: context.provider } : {}),
           ...(context?.model ? { EXOCORTEX_PARENT_MODEL: context.model } : {}),
           ...inputEnv,

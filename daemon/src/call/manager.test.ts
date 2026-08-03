@@ -438,10 +438,11 @@ describe("realtime call manager", () => {
     await expect(manager.start(deepSeek.id)).rejects.toThrow("OpenAI conversation");
     const tui = await manager.start(openAI.id);
     const discord = await manager.start(otherOpenAI.id, undefined, {
-      type: "discord",
-      id: "paramount:voice-1",
+      type: "external",
+      id: "discord:paramount:voice-1",
+      toolName: "discord",
       accountAlias: "paramount",
-      channelId: "voice-1",
+      endpointId: "voice-1",
       label: "#voice",
     });
     expect(tui.callId).not.toBe(discord.callId);
@@ -476,10 +477,11 @@ describe("realtime call manager", () => {
 
     const tui = await manager.start(conv.id);
     const discordAdapter = {
-      type: "discord" as const,
-      id: "paramount:voice-1",
+      type: "external" as const,
+      id: "discord:paramount:voice-1",
+      toolName: "discord",
       accountAlias: "paramount",
-      channelId: "voice-1",
+      endpointId: "voice-1",
     };
     const discord = await manager.start(conv.id, undefined, discordAdapter);
     await manager.attachMedia({} as never, conv.id, tui.callId, "v=0");

@@ -2387,11 +2387,12 @@ export function appendRealtimeTranscript(
     model?: ModelId;
     tokens?: number;
     callId?: string;
-    adapterType?: "tui" | "discord";
+    adapterType?: "tui" | "external";
     adapterId?: string;
+    toolName?: string;
     sourceLabel?: string;
     accountAlias?: string;
-    channelId?: string;
+    endpointId?: string;
   } = {},
 ): boolean {
   const conv = get(convId);
@@ -2480,19 +2481,21 @@ export function promoteRealtimeTranscript(
 
 function realtimeSourceMetadata(details: {
   callId?: string;
-  adapterType?: "tui" | "discord";
+  adapterType?: "tui" | "external";
   adapterId?: string;
+  toolName?: string;
   sourceLabel?: string;
   accountAlias?: string;
-  channelId?: string;
+  endpointId?: string;
 }): Partial<MessageMetadata> {
   return {
     ...(details.callId ? { realtimeCallId: details.callId } : {}),
     ...(details.adapterType ? { realtimeAdapterType: details.adapterType } : {}),
     ...(details.adapterId ? { realtimeAdapterId: details.adapterId } : {}),
+    ...(details.toolName ? { realtimeToolName: details.toolName } : {}),
     ...(details.sourceLabel ? { realtimeSourceLabel: details.sourceLabel } : {}),
     ...(details.accountAlias ? { realtimeAccountAlias: details.accountAlias } : {}),
-    ...(details.channelId ? { realtimeChannelId: details.channelId } : {}),
+    ...(details.endpointId ? { realtimeEndpointId: details.endpointId } : {}),
   };
 }
 

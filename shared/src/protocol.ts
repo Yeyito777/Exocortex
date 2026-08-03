@@ -152,15 +152,17 @@ export interface BackgroundToolCommand {
 
 /** Stable identity of the platform-specific media endpoint attached to a call. */
 export interface RealtimeCallAdapter {
-  type: "tui" | "discord";
-  /** Unique within the adapter type, for example `local` or `paramount:123456789`. */
+  type: "tui" | "external";
+  /** Unique within the adapter type, for example `local` or `discord:paramount:123456789`. */
   id: string;
-  /** Optional user-facing source label such as `#yeyito-chill`. */
-  label?: string;
-  /** Discord account alias when type is `discord`. */
+  /** External-tool manifest name when type is `external`. */
+  toolName?: string;
+  /** Optional account/profile selected by the external tool. */
   accountAlias?: string;
-  /** Discord voice/DM channel ID when type is `discord`. */
-  channelId?: string;
+  /** Platform endpoint or call ID when type is `external`. */
+  endpointId?: string;
+  /** Optional user-facing source label such as `#yeyito-chill` or `Family`. */
+  label?: string;
 }
 
 /** Request a realtime call owned by an existing conversation. */

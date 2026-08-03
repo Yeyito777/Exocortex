@@ -142,6 +142,39 @@ structured source. Document the contract in top-level and command-specific
 `-h` output. Commands with a valid bodyless mode may explicitly allow empty
 stdin.
 
+## External call media adapters
+
+Tools that join or answer platform calls act only as media adapters. Exocortex
+owns the realtime model, conversation context, transcript, delegation, and call
+lifecycle. A model-launched tool process receives:
+
+```text
+EXOCORTEX_PARENT_CONV_ID=<invoking conversation>
+EXOCORTEX_SOCKET=<current daemon endpoint>
+```
+
+Use an explicit conversation override when supplied; otherwise bind the call to
+`EXOCORTEX_PARENT_CONV_ID`. Only a manually-launched adapter with no invoking
+conversation should create a dedicated conversation.
+
+Start the call over the daemon JSONL protocol with a generic adapter identity:
+
+```json
+{"type":"start_call","reqId":"1","convId":"…","adapter":{"type":"external","id":"discord:paramount:1482111776505204953","toolName":"discord","accountAlias":"paramount","endpointId":"1482111776505204953","label":"#voice"}}
+```
+
+Wait for that adapter's `call_state: waiting_for_media`, send its WebRTC offer
+with `attach_call_media`, apply the matching `call_sdp_answer`, and stop the
+exact `callId` with `stop_call`. Adapter IDs must be stable and unique per
+simultaneously usable platform endpoint. Platform input audio feeds the WebRTC
+input track; WebRTC output returns directly to the platform.
+
+Calling commands should expose one canonical behavior such as
+`discord call join CHANNEL`, not a backend-selection flag. Keep platform session,
+encryption, codec, participant, and mute/deafen mechanics in the external tool;
+do not duplicate ASR, conversation transcripts, delegation, or spoken-response
+generation there. See [`docs/external-call-adapters.md`](../docs/external-call-adapters.md).
+
 ### Optional: daemon supervision
 
 Tools that need a long-running background process declare a `daemon` field.

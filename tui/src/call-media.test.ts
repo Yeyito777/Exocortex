@@ -121,7 +121,7 @@ describe("TUI call media controller", () => {
     controller.stop();
   });
 
-  test("ignores Discord adapter lifecycle events", () => {
+  test("ignores external adapter lifecycle events", () => {
     const spawnHelper = mock(() => new FakeChild().asChild());
     const controller = new CallMediaController(daemon(), { spawnHelper });
     controller.handleEvent({
@@ -129,10 +129,11 @@ describe("TUI call media controller", () => {
       convId: "conv-discord",
       callId: "call-discord",
       adapter: {
-        type: "discord",
-        id: "paramount:voice",
+        type: "external",
+        id: "discord:paramount:voice",
+        toolName: "discord",
         accountAlias: "paramount",
-        channelId: "voice",
+        endpointId: "voice",
       },
       state: "waiting_for_media",
     });
