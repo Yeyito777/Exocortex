@@ -23,6 +23,8 @@
  */
 
 import { execSync } from "child_process";
+import { createHash } from "crypto";
+import { tmpdir } from "os";
 import { join, basename, resolve, dirname } from "path";
 
 // ── Repo root ───────────────────────────────────────────────────────
@@ -184,7 +186,15 @@ export function socketPath(): string {
     const wt = detectWorktree();
     return wt ? `\\\\.\\pipe\\exocortexd-${wt}` : `\\\\.\\pipe\\exocortexd`;
   }
-  return join(runtimeDir(), "exocortexd.sock");
+  const candidate = join(runtimeDir(), "exocortexd.sock");
+  // Linux sockaddr_un.sun_path is only 108 bytes. Deep linked-worktree paths
+  // can exceed it even though Node appears to accept the listen request, and
+  // external Python/Rust adapters then cannot connect. Use one deterministic,
+  // per-user short path for only those long instances.
+  if (Buffer.byteLength(candidate) < 104) return candidate;
+  const digest = createHash("sha256").update(candidate).digest("hex").slice(0, 16);
+  const uid = typeof process.getuid === "function" ? process.getuid() : "user";
+  return join(tmpdir(), `exocortexd-${uid}-${digest}.sock`);
 }
 
 /** Full path to the daemon PID file. */

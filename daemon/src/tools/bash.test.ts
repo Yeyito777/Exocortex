@@ -55,6 +55,19 @@ describe("bash spill preview", () => {
 });
 
 describe("bash inline output budget", () => {
+  test("exposes the invoking conversation and current daemon socket", async () => {
+    const result = await executeBashBackgroundable(
+      { command: "printf '%s|%s' \"$EXOCORTEX_PARENT_CONV_ID\" \"$EXOCORTEX_SOCKET\"" },
+      undefined,
+      undefined,
+      { conversationId: "conversation-123" },
+    );
+
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("conversation-123|");
+    expect(result.output).toContain("exocortexd.sock");
+  });
+
   test("passes literal stdin and internal environment overrides to the command", async () => {
     const result = await executeBashBackgroundable({
       command: "IFS= read -r line; printf '%s|%s' \"$line\" \"$SOFT_WAKE_MARKER\"",

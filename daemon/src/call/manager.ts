@@ -226,23 +226,24 @@ function persistedCallSource(call: ActiveCall) {
     callId: call.callId,
     adapterType: call.adapter.type,
     adapterId: call.adapter.id,
+    ...(call.adapter.toolName ? { toolName: call.adapter.toolName } : {}),
     ...(call.adapter.label ? { sourceLabel: call.adapter.label } : {}),
     ...(call.adapter.accountAlias ? { accountAlias: call.adapter.accountAlias } : {}),
-    ...(call.adapter.channelId ? { channelId: call.adapter.channelId } : {}),
+    ...(call.adapter.endpointId ? { endpointId: call.adapter.endpointId } : {}),
   };
 }
 
 const DEFAULT_TUI_ADAPTER: RealtimeCallAdapter = { type: "tui", id: "local" };
 
 function callAdapterKey(adapter: RealtimeCallAdapter): string {
-  if (adapter.type !== "tui" && adapter.type !== "discord") {
+  if (adapter.type !== "tui" && adapter.type !== "external") {
     throw new Error(`Unsupported realtime call adapter type: ${String(adapter.type)}.`);
   }
   const id = adapter.id.trim();
   if (!id) throw new Error("Realtime call adapter ID is required.");
-  if (adapter.type === "discord") {
-    if (!adapter.accountAlias?.trim()) throw new Error("Discord call adapters require an account alias.");
-    if (!adapter.channelId?.trim()) throw new Error("Discord call adapters require a channel ID.");
+  if (adapter.type === "external") {
+    if (!adapter.toolName?.trim()) throw new Error("External call adapters require a tool name.");
+    if (!adapter.endpointId?.trim()) throw new Error("External call adapters require an endpoint ID.");
   }
   return `${adapter.type}:${id}`;
 }
@@ -293,7 +294,14 @@ export class RealtimeCallManager {
     if (requestedVoice !== undefined && !isRealtimeVoice(requestedVoice)) {
       throw new Error(`Unsupported realtime voice: ${String(requestedVoice)}.`);
     }
-    const adapter = { ...requestedAdapter, id: requestedAdapter.id.trim() };
+    const adapter: RealtimeCallAdapter = {
+      ...requestedAdapter,
+      id: requestedAdapter.id.trim(),
+      ...(requestedAdapter.toolName !== undefined ? { toolName: requestedAdapter.toolName.trim() } : {}),
+      ...(requestedAdapter.accountAlias !== undefined ? { accountAlias: requestedAdapter.accountAlias.trim() } : {}),
+      ...(requestedAdapter.endpointId !== undefined ? { endpointId: requestedAdapter.endpointId.trim() } : {}),
+      ...(requestedAdapter.label !== undefined ? { label: requestedAdapter.label.trim() } : {}),
+    };
     const adapterKey = callAdapterKey(adapter);
     const existingCallId = this.callByAdapter.get(adapterKey);
     const existing = existingCallId ? this.calls.get(existingCallId) : undefined;

@@ -106,11 +106,12 @@ describe("realtime transcripts", () => {
       model: "gpt-live-1-boulder-alpha",
       tokens: 3,
       callId: "call-discord",
-      adapterType: "discord",
-      adapterId: "paramount:voice",
+      adapterType: "external",
+      adapterId: "discord:paramount:voice",
+      toolName: "discord",
       sourceLabel: "#voice",
       accountAlias: "paramount",
-      channelId: "voice",
+      endpointId: "voice",
     })).toBe(true);
 
     const messages = get(id)!.messages;
@@ -130,11 +131,12 @@ describe("realtime transcripts", () => {
         model: "gpt-live-1-boulder-alpha",
         tokens: 3,
         realtimeCallId: "call-discord",
-        realtimeAdapterType: "discord",
-        realtimeAdapterId: "paramount:voice",
+        realtimeAdapterType: "external",
+        realtimeAdapterId: "discord:paramount:voice",
+        realtimeToolName: "discord",
         realtimeSourceLabel: "#voice",
         realtimeAccountAlias: "paramount",
-        realtimeChannelId: "voice",
+        realtimeEndpointId: "voice",
         kind: "realtime_transcript",
       },
     });
@@ -198,8 +200,10 @@ describe("realtime transcripts", () => {
     });
     appendRealtimeTranscript(id, "user", "Check this", 2_000, {
       callId: "call-discord",
-      adapterType: "discord",
-      adapterId: "paramount:voice",
+      adapterType: "external",
+      adapterId: "discord:paramount:voice",
+      toolName: "discord",
+      endpointId: "voice",
     });
 
     expect(promoteRealtimeTranscript(id, "Check this", "Discord delegated", "call-discord")).toBe(true);

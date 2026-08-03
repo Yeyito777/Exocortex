@@ -184,11 +184,12 @@ export interface MessageMetadata {
   queueEntryId?: string;
   /** Session/source identity for persisted realtime call turns and lifecycle markers. */
   realtimeCallId?: string;
-  realtimeAdapterType?: "tui" | "discord";
+  realtimeAdapterType?: "tui" | "external";
   realtimeAdapterId?: string;
+  realtimeToolName?: string;
   realtimeSourceLabel?: string;
   realtimeAccountAlias?: string;
-  realtimeChannelId?: string;
+  realtimeEndpointId?: string;
 }
 
 /** Build standard message metadata with sensible defaults. */
