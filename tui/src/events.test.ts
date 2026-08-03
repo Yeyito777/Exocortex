@@ -26,6 +26,395 @@ describe("auth browser opener", () => {
   });
 });
 
+describe("GPT-Live transcript events", () => {
+  test("projects assistant text and metadata before the response is finalized", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "assistant",
+      text: "Checking",
+      final: false,
+      startedAt: 1_000,
+      endedAt: null,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 2,
+    }, state, daemon);
+
+    expect(state.callAssistantDraft).toMatchObject({ callId: "call-1", final: false });
+    expect(state.callAssistantDraft?.message).toMatchObject({
+      role: "assistant",
+      blocks: [{ type: "text", text: "Checking" }],
+      metadata: {
+        startedAt: 1_000,
+        endedAt: null,
+        model: "gpt-live-1-boulder-alpha",
+        tokens: 2,
+        kind: "realtime_transcript",
+      },
+    });
+
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "assistant",
+      text: "Checking now.",
+      final: true,
+      startedAt: 1_000,
+      endedAt: 3_500,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 4,
+    }, state, daemon);
+
+    expect(state.callAssistantDraft?.final).toBe(true);
+    expect(state.callAssistantDraft?.message).toMatchObject({
+      blocks: [{ type: "text", text: "Checking now." }],
+      metadata: { endedAt: 3_500, tokens: 4 },
+    });
+    expect(state.messages).toHaveLength(0);
+  });
+
+  test("discards an empty finalized assistant projection during hangup", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "assistant",
+      text: "Got it. I'll pause.",
+      final: true,
+      startedAt: 1_000,
+      endedAt: 3_500,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 5,
+    }, state, daemon);
+    expect(state.callAssistantDraft).not.toBeNull();
+
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "assistant",
+      text: "",
+      final: true,
+      startedAt: 1_000,
+      endedAt: 5_000,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 0,
+    }, state, daemon);
+
+    expect(state.callAssistantDraft).toBeNull();
+    expect(state.messages).toHaveLength(0);
+  });
+
+  test("projects captured user speech until canonical history owns it", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "user",
+      text: "hello",
+      final: false,
+      startedAt: 1_000,
+      endedAt: null,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 1,
+      speaker: {
+        kind: "single",
+        participants: [{ id: "owner-id", displayName: "Owner", trust: "owner" }],
+      },
+    }, state, daemon);
+    expect(state.callUserDraft).toMatchObject({
+      callId: "call-1",
+      final: false,
+      message: {
+        role: "user",
+        text: "hello",
+        metadata: {
+          kind: "realtime_transcript",
+          startedAt: 1_000,
+          realtimeSpeaker: {
+            kind: "single",
+            participants: [{ id: "owner-id", displayName: "Owner", trust: "owner" }],
+          },
+        },
+      },
+    });
+    expect(state.messages).toHaveLength(0);
+  });
+
+  test("discards an empty finalized user projection without rendering a blank bubble", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "user",
+      text: "replayed words",
+      final: false,
+      startedAt: 1_000,
+      endedAt: null,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 2,
+    }, state, daemon);
+
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "user",
+      text: "",
+      final: true,
+      startedAt: 1_000,
+      endedAt: 1_500,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 0,
+    }, state, daemon);
+
+    expect(state.callUserDraft).toBeNull();
+    expect(state.messages).toHaveLength(0);
+  });
+
+  test("keeps a streaming assistant stable while the preceding user transcript becomes canonical", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    const metadata = {
+      startedAt: 1_000,
+      endedAt: 1_500,
+      model: "gpt-live-1-boulder-alpha" as const,
+      tokens: 2,
+      kind: "realtime_transcript",
+    };
+
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "user",
+      text: "What time is it?",
+      final: true,
+      ...metadata,
+    }, state, daemon);
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "assistant",
+      text: "It is",
+      final: false,
+      startedAt: 1_500,
+      endedAt: null,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 2,
+    }, state, daemon);
+
+    const assistantProjection = state.callAssistantDraft?.message;
+    expect(state.messages).toHaveLength(0);
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-call",
+      entries: [{
+        type: "user",
+        text: "What time is it?",
+        metadata,
+      }],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(state.callUserDraft).toBeNull();
+    expect(state.callAssistantDraft?.message).toBe(assistantProjection);
+    expect(state.callAssistantDraft).toMatchObject({
+      final: false,
+      message: { blocks: [{ type: "text", text: "It is" }] },
+    });
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({ role: "user", text: "What time is it?" });
+  });
+
+  test("reconciles a user draft after its canonical transcript is promoted into a delegation", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "user",
+      text: "Please inspect the repository.",
+      final: true,
+      startedAt: 1_000,
+      endedAt: 1_500,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 4,
+    }, state, daemon);
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-call",
+      entries: [{
+        type: "user",
+        text: "[realtime delegation]\nTask: Inspect the repository.\nOriginal speech: Please inspect the repository.",
+        metadata: {
+          startedAt: 1_000,
+          endedAt: 1_500,
+          model: "gpt-5.6-sol",
+          tokens: 0,
+          kind: "realtime_transcript",
+        },
+      }],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(state.callUserDraft).toBeNull();
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]?.role).toBe("user");
+    expect(state.messages[0]?.role === "user" && state.messages[0].text.startsWith("[realtime delegation]")).toBe(true);
+  });
+
+  test("splits delegated agent output around an interjected call transcript without duplicating its prefix", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    state.pendingAI = {
+      role: "assistant",
+      blocks: [
+        { type: "thinking", text: "Inspecting files" },
+        { type: "tool_call", toolCallId: "call-glob", toolName: "glob", input: {}, summary: "Glob src/**" },
+      ],
+      metadata: { startedAt: 1_000, endedAt: null, model: "gpt-5.6-sol", tokens: 12 },
+    };
+
+    handleEvent({
+      type: "call_transcript",
+      convId: "conv-call",
+      callId: "call-1",
+      role: "user",
+      text: "Keep me posted while you work.",
+      final: true,
+      startedAt: 2_000,
+      endedAt: 2_500,
+      model: "gpt-live-1-boulder-alpha",
+      tokens: 7,
+    }, state, daemon);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      role: "assistant",
+      blocks: [
+        { type: "thinking", text: "Inspecting files" },
+        { type: "tool_call", toolCallId: "call-glob" },
+      ],
+    });
+    expect(state.pendingAI?.blocks).toEqual([]);
+    expect(state.pendingAIPartialCommittedBlocks).toHaveLength(2);
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-call",
+      entries: [
+        {
+          type: "ai",
+          blocks: [
+            { type: "thinking", text: "Inspecting files" },
+            { type: "tool_call", toolCallId: "call-glob", toolName: "glob", input: {}, summary: "Glob src/**" },
+          ],
+          metadata: { startedAt: 1_000, endedAt: null, model: "gpt-5.6-sol", tokens: 12 },
+        },
+        {
+          type: "user",
+          text: "Keep me posted while you work.",
+          metadata: {
+            startedAt: 2_000,
+            endedAt: 2_500,
+            model: "gpt-5.6-sol",
+            tokens: 0,
+            kind: "realtime_transcript",
+          },
+        },
+      ],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    const renderedGlobCalls = state.messages
+      .filter(message => message.role === "assistant")
+      .flatMap(message => message.blocks)
+      .filter(block => block.type === "tool_call" && block.toolCallId === "call-glob");
+    expect(renderedGlobCalls).toHaveLength(1);
+    expect(state.pendingAI?.blocks).toEqual([]);
+    expect(state.callUserDraft).toBeNull();
+  });
+
+  test("atomically replaces canonical history and the active stream tail", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+    state.pendingAI = {
+      role: "assistant",
+      blocks: [
+        { type: "thinking", text: "Reading documentation" },
+        { type: "tool_call", toolCallId: "call-glob", toolName: "glob", input: {}, summary: "Glob docs/**" },
+        { type: "tool_call", toolCallId: "call-read", toolName: "read", input: {}, summary: "Read README.md" },
+      ],
+      metadata: { startedAt: 1_000, endedAt: null, model: "gpt-5.6-sol", tokens: 20 },
+    };
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-call",
+      entries: [
+        {
+          type: "ai",
+          blocks: [
+            { type: "thinking", text: "Reading documentation" },
+            { type: "tool_call", toolCallId: "call-glob", toolName: "glob", input: {}, summary: "Glob docs/**" },
+          ],
+          metadata: { startedAt: 1_000, endedAt: null, model: "gpt-5.6-sol", tokens: 10 },
+        },
+        {
+          type: "user",
+          text: "How long will this take?",
+          metadata: {
+            startedAt: 2_000,
+            endedAt: 2_000,
+            model: "gpt-5.6-sol",
+            tokens: 0,
+            kind: "realtime_transcript",
+          },
+        },
+      ],
+      pendingAI: {
+        blocks: [
+          { type: "tool_call", toolCallId: "call-read", toolName: "read", input: {}, summary: "Read README.md" },
+        ],
+        blockOffset: 2,
+        metadata: { startedAt: 1_000, endedAt: null, model: "gpt-5.6-sol", tokens: 20 },
+      },
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    const displayedBlocks = [
+      ...state.messages
+        .filter(message => message.role === "assistant")
+        .flatMap(message => message.blocks),
+      ...(state.pendingAI?.blocks ?? []),
+    ];
+    expect(displayedBlocks.filter(block => block.type === "tool_call" && block.toolCallId === "call-glob")).toHaveLength(1);
+    expect(displayedBlocks.filter(block => block.type === "tool_call" && block.toolCallId === "call-read")).toHaveLength(1);
+    expect(state.pendingAIBlockOffset).toBe(2);
+    expect(state.pendingAIPartialCommittedBlocks).toEqual([]);
+  });
+});
+
 describe("usage reset results", () => {
   test("reports a successful reset and remaining balance", () => {
     const state = createInitialState();
@@ -240,6 +629,45 @@ describe("paged conversation history events", () => {
       .toEqual(["u1", "a1", "u2 canonical", "a2 canonical", "u3 canonical", "a3 canonical"]);
     expect(state.historyStartIndex).toBe(0);
     expect(state.historyStartUserIndex).toBe(0);
+  });
+
+  test("history refresh keeps the canonical copy of a locally echoed direct turn", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages = [
+      {
+        role: "user",
+        text: "older",
+        metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.5", tokens: 0 },
+      },
+      {
+        role: "user",
+        text: "join call",
+        metadata: { startedAt: 2, endedAt: 2, model: "gpt-5.5", tokens: 0 },
+      },
+    ];
+    state.historyStartIndex = 0;
+    state.historyStartUserIndex = 0;
+    state.historyTotalEntries = 2;
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-1",
+      entries: [{
+        type: "user",
+        text: "join call",
+        metadata: { startedAt: 2, endedAt: 2, model: "gpt-5.5", tokens: 9 },
+      }],
+      historyStartIndex: 2,
+      historyStartUserIndex: 1,
+      historyTotalEntries: 3,
+      hasOlderHistory: true,
+      contextTokens: 10,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(state.messages.map(message => message.role === "user" && message.text)).toEqual(["older", "join call"]);
+    expect(state.messages[1]?.metadata?.tokens).toBe(9);
   });
 
   test("drops invalid ranges and resets scroll after a destructive canonical rewrite", () => {
@@ -689,6 +1117,114 @@ describe("disk sync assistant diagnostics", () => {
 });
 
 describe("streaming assistant metadata", () => {
+  test("does not duplicate a queued user turn when canonical history wins the race", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    state.messages.push({
+      role: "user",
+      text: "join the call",
+      metadata: {
+        startedAt: 2,
+        endedAt: 2,
+        model: "gpt-5.5",
+        tokens: 0,
+        queueEntryId: "queue-call-1",
+      },
+    });
+    state.queuedMessages.push({
+      id: "queue-call-1",
+      convId: "conv-1",
+      text: "join the call",
+      timing: "next-turn",
+      createdAt: 1,
+    });
+
+    handleEvent({
+      type: "user_message",
+      convId: "conv-1",
+      text: "join the call",
+      startedAt: 2,
+      queueId: "queue-call-1",
+    }, state, daemon);
+
+    expect(state.messages.filter(message => message.role === "user")).toHaveLength(1);
+    expect(state.queuedMessages).toHaveLength(0);
+  });
+
+  test("does not duplicate a direct user turn when canonical history wins the race", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    state.messages.push({
+      role: "user",
+      text: "join the call",
+      metadata: {
+        startedAt: 2,
+        endedAt: 2,
+        model: "gpt-5.5",
+        tokens: 0,
+      },
+    });
+
+    handleEvent({
+      type: "user_message",
+      convId: "conv-1",
+      text: "join the call",
+      startedAt: 2,
+    }, state, daemon);
+
+    expect(state.messages).toHaveLength(1);
+  });
+
+  test("keeps direct repeated text with different client timestamps", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    state.messages.push({
+      role: "user",
+      text: "same text",
+      metadata: { startedAt: 2, endedAt: 2, model: "gpt-5.5", tokens: 0 },
+    });
+
+    handleEvent({
+      type: "user_message",
+      convId: "conv-1",
+      text: "same text",
+      startedAt: 3,
+    }, state, daemon);
+
+    expect(state.messages).toHaveLength(2);
+  });
+
+  test("keeps repeated queued text when the stable identities differ", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+    state.messages.push({
+      role: "user",
+      text: "again",
+      metadata: {
+        startedAt: 1,
+        endedAt: 1,
+        model: "gpt-5.5",
+        tokens: 0,
+        queueEntryId: "queue-1",
+      },
+    });
+
+    handleEvent({
+      type: "user_message",
+      convId: "conv-1",
+      text: "again",
+      startedAt: 2,
+      queueId: "queue-2",
+    }, state, daemon);
+
+    expect(state.messages.filter(message => message.role === "user")).toHaveLength(2);
+    expect(state.messages[1]?.metadata?.queueEntryId).toBe("queue-2");
+  });
+
   test("heartbeat offsets do not invalidate locally committed completion blocks", () => {
     const state = createInitialState();
     state.convId = "conv-1";

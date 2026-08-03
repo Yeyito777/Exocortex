@@ -21,28 +21,28 @@ Each tool is its own git repository, independently developed. Tools are
 installed by cloning into `external-tools/` — the daemon discovers them
 automatically.
 
-## Helper commands
+## Helper tools
 
-A **helper command** is an ordinary executable that opts into custom
+A **helper tool** is an ordinary executable that opts into custom
 Exocortex TUI presentation through an adjacent `exo-manifest.json`. It is
 useful for project scripts and one-off tools that should remain outside the
 installed external-tool registry.
 
-See [`helper-commands/HELPER_COMMANDS_STANDARD.md`](../helper-commands/HELPER_COMMANDS_STANDARD.md)
-for the focused authoring standard and the repository's local helper-command
+See [`helper-tools/HELPER_TOOLS_STANDARD.md`](../helper-tools/HELPER_TOOLS_STANDARD.md)
+for the focused authoring standard and the repository's local helper-tool
 directory.
 
-Use this layer when the model already knows about the command from the user's
+Use this layer when the model already knows about the tool from the user's
 request, an `AGENTS.md`, or project documentation, and the only Exocortex
 integration needed is a recognizable label and color. Use a full external tool
-manifest below when the command needs global discovery, system-prompt
-instructions, PATH installation, auth, notifications, or daemon supervision.
+manifest below when the tool needs global discovery, system-prompt instructions,
+PATH installation, auth, notifications, or daemon supervision.
 
 ### Creating one
 
-1. Create an executable whose basename starts with `exo-`.
+1. Create an executable with the desired tool name.
 2. Put `exo-manifest.json` in the same directory.
-3. Tell the model when to use the command in `AGENTS.md`, project documentation,
+3. Tell the model when to use the tool in `AGENTS.md`, project documentation,
    or the request itself. The display manifest is deliberately not a discovery
    or instruction mechanism.
 4. Invoke it through a static relative or absolute path.
@@ -52,7 +52,7 @@ For example:
 ```
 project/
   scripts/
-    exo-deploy
+    deploy
     exo-manifest.json
 ```
 
@@ -60,7 +60,7 @@ project/
 #!/usr/bin/env bash
 set -euo pipefail
 
-environment="${1:?usage: exo-deploy <environment>}"
+environment="${1:?usage: deploy <environment>}"
 # Perform the project-local operation.
 printf 'Deployed to %s.\n' "$environment"
 ```
@@ -76,36 +76,36 @@ printf 'Deployed to %s.\n' "$environment"
 ```
 
 ```bash
-chmod +x ./scripts/exo-deploy
-./scripts/exo-deploy production
+chmod +x ./scripts/deploy
+./scripts/deploy production
 ```
 
 The Bash tool call is rendered as `Deploy production`, while execution and
 stdout remain those of the original command. One manifest applies to every
-eligible `exo-*` executable in its directory; put commands in separate
+eligible executable in its directory; put commands in separate
 directories when they need different labels or colors.
 
 ### Contract and boundaries
 
-- The executable is still an ordinary Bash command. The manifest cannot affect
-  arguments, stdin, environment, permissions, execution, output, auth, or
-  daemon supervision.
+- The helper tool is still an ordinary executable invoked through Bash. The
+  manifest cannot affect arguments, stdin, environment, permissions, execution,
+  output, auth, or daemon supervision.
 - The executable must be called through a static relative or absolute path.
-  PATH-only `exo-deploy`, `bash exo-deploy`, shell expansion, and command
+  PATH-only `deploy`, `bash deploy`, shell expansion, and command
   substitution are not eligible.
 - Relative lookup uses the Bash tool's initial working directory. Relative
   invocations after a preceding `cd`, `pushd`, `popd`, `source`, or `eval` are
   conservatively left unstyled; use a direct path from the initial directory or
   an absolute path instead.
-- The basename must be `exo-<name>`, with a non-empty `<name>`, and the manifest
-  must be in the executable's lexical directory.
+- The executable must have a non-empty basename, and the manifest must be in
+  the executable's lexical directory.
 - `version` must be `1`; `display.label` is at most 64 characters and
   `display.color` is a six-digit hex color.
 - Missing, unreadable, oversized, slow, or invalid manifests fall back to
   ordinary Bash presentation and never block command execution.
 - Presentation is snapshotted into the tool call, so conversation history does
   not change when the manifest is edited or removed later.
-- Commands with a primary opaque payload should follow the stdin convention
+- Helper tools with a primary opaque payload should follow the stdin convention
   described below. A display manifest does not make freeform inline shell
   arguments literal-safe.
 
@@ -141,6 +141,39 @@ If a command needs a second opaque payload, give it an explicit file or other
 structured source. Document the contract in top-level and command-specific
 `-h` output. Commands with a valid bodyless mode may explicitly allow empty
 stdin.
+
+## External call media adapters
+
+Tools that join or answer platform calls act only as media adapters. Exocortex
+owns the realtime model, conversation context, transcript, delegation, and call
+lifecycle. A model-launched tool process receives:
+
+```text
+EXOCORTEX_PARENT_CONV_ID=<invoking conversation>
+EXOCORTEX_SOCKET=<current daemon endpoint>
+```
+
+Use an explicit conversation override when supplied; otherwise bind the call to
+`EXOCORTEX_PARENT_CONV_ID`. Only a manually-launched adapter with no invoking
+conversation should create a dedicated conversation.
+
+Start the call over the daemon JSONL protocol with a generic adapter identity:
+
+```json
+{"type":"start_call","reqId":"1","convId":"…","adapter":{"type":"external","id":"discord:paramount:1482111776505204953","toolName":"discord","accountAlias":"paramount","endpointId":"1482111776505204953","label":"#voice"}}
+```
+
+Wait for that adapter's `call_state: waiting_for_media`, send its WebRTC offer
+with `attach_call_media`, apply the matching `call_sdp_answer`, and stop the
+exact `callId` with `stop_call`. Adapter IDs must be stable and unique per
+simultaneously usable platform endpoint. Platform input audio feeds the WebRTC
+input track; WebRTC output returns directly to the platform.
+
+Calling commands should expose one canonical behavior such as
+`discord call join CHANNEL`, not a backend-selection flag. Keep platform session,
+encryption, codec, participant, and mute/deafen mechanics in the external tool;
+do not duplicate ASR, conversation transcripts, delegation, or spoken-response
+generation there. See [`docs/external-call-adapters.md`](../docs/external-call-adapters.md).
 
 ### Optional: daemon supervision
 

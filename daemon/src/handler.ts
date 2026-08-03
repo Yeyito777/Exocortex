@@ -9,8 +9,10 @@
 
 import { log } from "./log";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
+import type { RealtimeVoice } from "@exocortex/shared/realtime";
+import type { RealtimeCallAdapter, RealtimeCallParticipant } from "@exocortex/shared/protocol";
 import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
-import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
+import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateRealtimeDelegation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
 import { buildSystemPrompt } from "./system";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
@@ -67,18 +69,41 @@ import {
 } from "./external-notifications";
 import { BtwSessionManager } from "./btw";
 import { enqueueExternalNotificationSoftWake } from "./external-notification-soft-wakes";
+import { RealtimeCallManager } from "./call/manager";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
 let queueSchedulerGeneration = 0;
+const DEFAULT_CALL_TITLE = "voice call";
 
-export function createHandler(server: DaemonServer) {
+export interface HandlerLifecycle {
+  /** Restart the process that owns this exact server/socket instance. */
+  requestRestart?: () => void;
+}
+
+export interface DaemonCommandHandler {
+  (client: ConnectedClient, cmd: Command): Promise<void>;
+  stop(): Promise<void>;
+}
+
+type RealtimeCallController = Pick<RealtimeCallManager,
+  "hasActiveCall" | "start" | "attachMedia" | "updateParticipants" | "updateSpeakers" | "submitUtterance" | "stop" | "stopFromAgent" | "stopAll"
+>;
+
+export interface HandlerOptions extends HandlerLifecycle {
+  callManager?: RealtimeCallController;
+}
+
+export function createHandler(server: DaemonServer, options: HandlerOptions = {}): DaemonCommandHandler {
+  const lifecycle = options;
   // ── Local helper functions ────────────────────────────────────────
 
   let openAIAccountMutationInFlight = false;
   let openAIUsageResetInFlight = false;
   let exocortexRuntime: ExocortexToolRuntime | undefined;
   let btwManager: BtwSessionManager;
+  let callManager: RealtimeCallController;
+  const delegatedCallByConversation = new Map<string, string>();
   const pendingBackgroundNotifications = new Map<string, { convId: string; completion: BackgroundTaskCompletion }>();
   configureChronoService((convId) => broadcastConversationUpdated(server, convId));
   setExternalNotificationsChangedListener((convIds) => {
@@ -136,6 +161,7 @@ export function createHandler(server: DaemonServer) {
   const hasStreamingOpenAIConversation = (): boolean => (
     convStore.listSummaries().some((conversation) => conversation.provider === "openai" && conversation.streaming)
     || btwManager?.hasRunningProvider("openai") === true
+    || callManager?.hasActiveCall() === true
   );
   const rejectOpenAIAccountMutationWhileStreaming = (client: ConnectedClient, reqId?: string): boolean => {
     if (!hasStreamingOpenAIConversation()) return false;
@@ -403,6 +429,11 @@ export function createHandler(server: DaemonServer) {
       );
       maybeStartAutoTitleGeneration(convId);
       return turn;
+    },
+    stopCall: async (convId) => {
+      const callId = delegatedCallByConversation.get(convId);
+      if (callId) await callManager.stopFromAgent(convId, callId);
+      else await callManager.stopFromAgent(convId);
     },
     beginParentNotification: notificationRuntime.begin,
     completeParentNotification: notificationRuntime.complete,
@@ -872,12 +903,82 @@ export function createHandler(server: DaemonServer) {
     else if (Number.isFinite(earliestRetryAt)) scheduleQueuePump(Math.max(120, earliestRetryAt - Date.now()));
   };
 
+  callManager = options.callManager ?? new RealtimeCallManager(server, {
+    delegate: async (convId, delegation, signal) => {
+      const conv = convStore.get(convId);
+      if (!conv) throw new Error("Owning conversation no longer exists.");
+      if (convStore.isStreaming(convId)) throw new Error("The owning conversation is already running another turn.");
+      delegatedCallByConversation.set(convId, delegation.callId);
+      let outcome: AssistantTurnOutcome;
+      try {
+        outcome = await orchestrateRealtimeDelegation(
+          server,
+          convId,
+          delegation,
+          Date.now(),
+          buildOrchestrationCallbacks(convId),
+          { subagentMaxDepth: conv.subagentMaxDepth ?? null },
+          signal,
+        );
+      } finally {
+        if (delegatedCallByConversation.get(convId) === delegation.callId) {
+          delegatedCallByConversation.delete(convId);
+        }
+      }
+      if (outcome.aborted && !outcome.watchdog && !outcome.daemonRestart) {
+        return { status: "cancelled" as const };
+      }
+      if (!outcome.ok) throw new Error(outcome.error ?? "Delegated agent turn failed.");
+      const reply = outcome.blocks
+        .flatMap(block => block.type === "text" ? [block.text] : [])
+        .join("\n")
+        .trim();
+      if (!reply) throw new Error("Delegated agent turn returned no spoken reply.");
+      return { status: "completed" as const, text: reply };
+    },
+  });
+
+  const startCall = async (
+    client: ConnectedClient,
+    convId: string,
+    reqId?: string,
+    voice?: RealtimeVoice,
+    adapter?: RealtimeCallAdapter,
+    participants: RealtimeCallParticipant[] = [],
+  ): Promise<void> => {
+    if (!convStore.get(convId)) {
+      server.sendTo(client, {
+        type: "error",
+        reqId,
+        convId,
+        message: "Conversation not found.",
+      });
+      return;
+    }
+    // The daemon owns the call request. Subscribe the initiating client before
+    // publishing lifecycle events; this also covers an atomic create + call.
+    server.subscribe(client, convId);
+    try {
+      if (adapter) await callManager.start(convId, voice, adapter, participants);
+      else if (voice) await callManager.start(convId, voice);
+      else await callManager.start(convId);
+      server.sendTo(client, { type: "ack", reqId, convId });
+    } catch (error) {
+      server.sendTo(client, {
+        type: "error",
+        reqId,
+        convId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   convStore.setQueuedMessagesChangedListener((messages) => {
     server.broadcast({ type: "queue_updated", messages });
     scheduleQueuePump();
   });
 
-  return async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
+  const handleCommand = async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
     switch (cmd.type) {
 
       // ── Connection/bootstrap commands ──────────────────────────────
@@ -973,6 +1074,20 @@ export function createHandler(server: DaemonServer) {
         break;
       }
 
+      case "restart_daemon": {
+        if (!lifecycle.requestRestart) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "This daemon instance cannot restart itself." });
+          break;
+        }
+        beginDaemonShutdown("restart");
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+        log("info", "handler: connected client requested an instance-local daemon restart");
+        // Let the acknowledgement enter the socket buffer before shutdown closes
+        // every client. The owning service/exotest supervisor performs relaunch.
+        setTimeout(() => lifecycle.requestRestart?.(), 0);
+        break;
+      }
+
       // ── Conversation lifecycle commands ───────────────────────────
 
       case "new_conversation": {
@@ -982,22 +1097,29 @@ export function createHandler(server: DaemonServer) {
           break;
         }
         const conversationDefaults = effectiveConversationDefaults();
-        const provider = cmd.provider ?? inferProviderForModel(cmd.model) ?? conversationDefaults.provider;
+        const inferredProvider = inferProviderForModel(cmd.model);
+        const provider = cmd.startCall
+          ? "openai"
+          : cmd.provider ?? inferredProvider ?? conversationDefaults.provider;
+        const requestedModel = cmd.startCall && (
+          (cmd.provider !== undefined && cmd.provider !== "openai")
+          || (inferredProvider !== undefined && inferredProvider !== "openai")
+        ) ? undefined : cmd.model;
         const providerInfo = getProvider(provider);
         if (!providerInfo) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Unknown provider: ${provider}` });
           break;
         }
-        if (cmd.model && !isKnownModel(provider, cmd.model) && !allowsCustomModels(provider)) {
+        if (requestedModel && !isKnownModel(provider, requestedModel) && !allowsCustomModels(provider)) {
           server.sendTo(client, {
             type: "error",
             reqId: cmd.reqId,
             convId: id,
-            message: unknownModelMessage(provider, cmd.model),
+            message: unknownModelMessage(provider, requestedModel),
           });
           break;
         }
-        const model = cmd.model ?? (provider === conversationDefaults.provider ? conversationDefaults.model : getDefaultModel(provider));
+        const model = requestedModel ?? (provider === conversationDefaults.provider ? conversationDefaults.model : getDefaultModel(provider));
         const defaultEffort = provider === conversationDefaults.provider && model === conversationDefaults.model
           ? conversationDefaults.effort
           : undefined;
@@ -1030,7 +1152,11 @@ export function createHandler(server: DaemonServer) {
           }
         }
 
-        const title = cmd.title ?? (initialMessage || goalObjective || titleContext ? PENDING_TITLE : undefined);
+        const title = cmd.title ?? (
+          cmd.startCall
+            ? DEFAULT_CALL_TITLE
+            : (initialMessage || goalObjective || titleContext ? PENDING_TITLE : undefined)
+        );
         const subagentFolder = cmd.subagent ? convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME) : null;
         if (cmd.subagent && !subagentFolder) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Failed to create ${SUBAGENTS_FOLDER_NAME} folder` });
@@ -1065,6 +1191,8 @@ export function createHandler(server: DaemonServer) {
         });
         broadcastConversationUpdated(server, id);
         if (cmd.subagent) server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+
+        if (cmd.startCall) await startCall(client, id, cmd.reqId, cmd.callVoice);
 
         if (goalObjective && !initialMessage) {
           server.subscribe(client, id);
@@ -1148,6 +1276,95 @@ export function createHandler(server: DaemonServer) {
         }
         log("info", `handler: background_tool requested for ${cmd.convId}: ${result}`);
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        break;
+      }
+
+      case "start_call": {
+        await startCall(client, cmd.convId, cmd.reqId, cmd.voice, cmd.adapter, cmd.participants);
+        break;
+      }
+
+      case "attach_call_media": {
+        server.subscribe(client, cmd.convId);
+        try {
+          await callManager.attachMedia(client, cmd.convId, cmd.callId, cmd.offerSdp, cmd.reqId);
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        } catch (error) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+        break;
+      }
+
+      case "update_call_participants": {
+        try {
+          callManager.updateParticipants(cmd.convId, cmd.callId, cmd.participants);
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        } catch (error) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+        break;
+      }
+
+      case "update_call_speakers": {
+        try {
+          callManager.updateSpeakers(cmd.convId, cmd.callId, cmd.speakers);
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        } catch (error) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+        break;
+      }
+
+      case "submit_call_utterance": {
+        try {
+          const audioBytes = Buffer.from(cmd.audioBase64, "base64");
+          callManager.submitUtterance(cmd.convId, cmd.callId, {
+            utteranceId: cmd.utteranceId,
+            participantId: cmd.participantId,
+            audioBytes,
+            mimeType: cmd.mimeType,
+            startedAt: cmd.startedAt,
+            endedAt: cmd.endedAt,
+          });
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        } catch (error) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+        break;
+      }
+
+      case "stop_call": {
+        try {
+          await callManager.stop(cmd.convId, cmd.callId);
+          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        } catch (error) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
         break;
       }
 
@@ -2514,4 +2731,8 @@ export function createHandler(server: DaemonServer) {
       }
     }
   };
+
+  return Object.assign(handleCommand, {
+    stop: () => callManager.stopAll(),
+  });
 }

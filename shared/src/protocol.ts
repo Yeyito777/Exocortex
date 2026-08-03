@@ -9,6 +9,7 @@
  */
 
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery } from "./messages";
+import type { RealtimeVoice } from "./realtime";
 export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
@@ -23,6 +24,12 @@ export interface PrepareShutdownCommand {
   type: "prepare_shutdown";
   reqId?: string;
   mode: "stop" | "restart";
+}
+
+/** Ask the daemon on this connection to restart its own process instance. */
+export interface RestartDaemonCommand {
+  type: "restart_daemon";
+  reqId?: string;
 }
 
 export interface NewConversationCommand {
@@ -59,6 +66,10 @@ export interface NewConversationCommand {
   goalPausable?: boolean;
   /** Optional goal permission. Defaults to true. If false, goalPausable is also forced false. */
   goalCompletable?: boolean;
+  /** Start a realtime call owned by the new conversation immediately after creation. */
+  startCall?: boolean;
+  /** Optional explicit voice for the initial realtime call. */
+  callVoice?: RealtimeVoice;
 }
 
 export interface ParentNotificationTarget {
@@ -137,6 +148,113 @@ export interface BackgroundToolCommand {
   type: "background_tool";
   reqId?: string;
   convId: string;
+}
+
+/** Stable identity of the platform-specific media endpoint attached to a call. */
+export interface RealtimeCallAdapter {
+  type: "tui" | "external";
+  /** Unique within the adapter type, for example `local` or `discord:paramount:123456789`. */
+  id: string;
+  /** External-tool manifest name when type is `external`. */
+  toolName?: string;
+  /** Optional account/profile selected by the external tool. */
+  accountAlias?: string;
+  /** Platform endpoint or call ID when type is `external`. */
+  endpointId?: string;
+  /** Optional user-facing source label such as `#yeyito-chill` or `Family`. */
+  label?: string;
+  /**
+   * `audio` sends a conventional microphone track to the realtime model.
+   * `attributed_utterances` keeps platform speakers separate and submits each
+   * completed utterance for application-owned transcription and attribution.
+   */
+  inputMode?: "audio" | "attributed_utterances";
+}
+
+/** Platform-authenticated identity attached to audio received by a call adapter. */
+export interface RealtimeCallParticipant {
+  /** Immutable platform identity within this adapter, for example a Discord user ID. */
+  id: string;
+  displayName: string;
+  /** Missing/unknown platform labels must be normalized to untrusted by the adapter. */
+  trust: "owner" | "friend" | "untrusted";
+}
+
+/** Complete active-speaker state at one adapter-observed instant. */
+export interface RealtimeCallSpeakerState {
+  participantIds: string[];
+  observedAt: number;
+}
+
+/** Source attribution for one call transcript turn. */
+export interface RealtimeCallSpeakerAttribution {
+  kind: "single" | "multiple" | "unknown";
+  participants: RealtimeCallParticipant[];
+}
+
+/** Request a realtime call owned by an existing conversation. */
+export interface StartCallCommand {
+  type: "start_call";
+  reqId?: string;
+  convId: string;
+  /** Explicit selection; omission reuses the persisted call voice. */
+  voice?: RealtimeVoice;
+  /** Omitted by native clients, which use the singleton local TUI adapter. */
+  adapter?: RealtimeCallAdapter;
+  /** Initial roster known by an external media adapter. */
+  participants?: RealtimeCallParticipant[];
+}
+
+/** Attach a media adapter's WebRTC offer to a prepared conversation call. */
+export interface AttachCallMediaCommand {
+  type: "attach_call_media";
+  reqId?: string;
+  convId: string;
+  callId: string;
+  offerSdp: string;
+}
+
+/** Stop the active realtime call for a conversation. */
+export interface StopCallCommand {
+  type: "stop_call";
+  reqId?: string;
+  convId: string;
+  callId?: string;
+}
+
+/** Replace the current platform participant roster for an active call. */
+export interface UpdateCallParticipantsCommand {
+  type: "update_call_participants";
+  reqId?: string;
+  convId: string;
+  callId: string;
+  participants: RealtimeCallParticipant[];
+}
+
+/** Report a speaker-set transition; adapters send only changes, never PCM frames. */
+export interface UpdateCallSpeakersCommand {
+  type: "update_call_speakers";
+  reqId?: string;
+  convId: string;
+  callId: string;
+  speakers: RealtimeCallSpeakerState;
+}
+
+/** Submit one platform-separated speaker utterance to an active realtime call. */
+export interface SubmitCallUtteranceCommand {
+  type: "submit_call_utterance";
+  reqId?: string;
+  convId: string;
+  callId: string;
+  /** Adapter-generated idempotency key. */
+  utteranceId: string;
+  /** Immutable platform ID present in the current participant roster. */
+  participantId: string;
+  /** Complete encoded utterance, normally mono WAV, as base64. */
+  audioBase64: string;
+  mimeType: string;
+  startedAt: number;
+  endedAt: number;
 }
 
 export interface PrewarmConversationCommand {
@@ -682,6 +800,7 @@ export type Command =
   | PingCommand
   | ClientCapabilitiesCommand
   | PrepareShutdownCommand
+  | RestartDaemonCommand
   | NewConversationCommand
   | SendMessageCommand
   | ReplayConversationCommand
@@ -703,6 +822,12 @@ export type Command =
   | TrimConversationCommand
   | AbortCommand
   | BackgroundToolCommand
+  | StartCallCommand
+  | AttachCallMediaCommand
+  | StopCallCommand
+  | UpdateCallParticipantsCommand
+  | UpdateCallSpeakersCommand
+  | SubmitCallUtteranceCommand
   | PrewarmConversationCommand
   | SubscribeCommand
   | UnsubscribeCommand
@@ -1184,6 +1309,55 @@ export interface SystemMessageEvent {
   color?: string;
 }
 
+export type RealtimeCallState =
+  | "starting"
+  | "waiting_for_media"
+  | "connecting"
+  | "live"
+  | "delegating"
+  | "stopping"
+  | "closed"
+  | "error";
+
+/** Canonical lifecycle snapshot for one conversation-owned realtime call. */
+export interface CallStateEvent {
+  type: "call_state";
+  convId: string;
+  callId: string;
+  adapter?: RealtimeCallAdapter;
+  state: RealtimeCallState;
+  message?: string;
+}
+
+/** WebRTC answer SDP returned to the media adapter that supplied the offer. */
+export interface CallSdpAnswerEvent {
+  type: "call_sdp_answer";
+  reqId?: string;
+  convId: string;
+  callId: string;
+  adapter?: RealtimeCallAdapter;
+  sdp: string;
+}
+
+/** Live or finalized Bidi transcript text. Only finalized text is persisted. */
+export interface CallTranscriptEvent {
+  type: "call_transcript";
+  convId: string;
+  callId: string;
+  adapter?: RealtimeCallAdapter;
+  role: "user" | "assistant";
+  /** Present for external user audio; never inferred from voice characteristics. */
+  speaker?: RealtimeCallSpeakerAttribution;
+  /** Complete transcript accumulated so far, not merely the latest wire chunk. */
+  text: string;
+  final: boolean;
+  startedAt: number;
+  endedAt: number | null;
+  model: ModelId;
+  /** Actual provider output tokens when available, otherwise a live text estimate. */
+  tokens: number;
+}
+
 export interface ProviderAuthInfo {
   configured: boolean;
   authenticated: boolean;
@@ -1244,6 +1418,8 @@ export interface HistoryUpdatedEvent {
   contextTokens: number | null;
   /** Whether tool_result block outputs are present in entries. */
   toolOutputsIncluded: boolean;
+  /** Authoritative live tail when this canonical update occurs during a stream. */
+  pendingAI?: AIMessagePayload | null;
 }
 
 export interface ToolOutputsLoadedEvent {
@@ -1415,6 +1591,9 @@ export type Event =
   | StreamRetryEvent
   | ContextCompactionStatusEvent
   | SystemMessageEvent
+  | CallStateEvent
+  | CallSdpAnswerEvent
+  | CallTranscriptEvent
   | ToolsAvailableEvent
   | HistoryUpdatedEvent
   | ToolOutputsLoadedEvent

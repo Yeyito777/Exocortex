@@ -113,6 +113,52 @@ describe("automatic context compaction state", () => {
     expect(conv.messages).toHaveLength(2);
   });
 
+  test("projects persisted call speaker attribution to the model without changing canonical history", () => {
+    const conv = createConversation("speaker-replay", "openai", "gpt-5.6-sol");
+    conv.messages = [{
+      role: "user",
+      content: "Please inspect it.",
+      metadata: {
+        startedAt: 1,
+        endedAt: 2,
+        model: "gpt-live-1-boulder-alpha",
+        tokens: 4,
+        kind: "realtime_transcript",
+        realtimeSpeaker: {
+          kind: "single",
+          participants: [{ id: "owner-id", displayName: "Owner", trust: "owner" }],
+        },
+      },
+    }];
+
+    expect(buildConversationApiContext(conv, "account-a").messages[0]?.content).toBe(
+      "[call speaker: Owner <owner-id> [owner]]\nPlease inspect it.",
+    );
+    expect(conv.messages[0]?.content).toBe("Please inspect it.");
+  });
+
+  test("does not duplicate speaker attribution already visible in a realtime delegation", () => {
+    const conv = createConversation("speaker-delegation", "openai", "gpt-5.6-sol");
+    const delegated = "[realtime delegation]\nSpeaker: Owner <owner-id> [owner]\nTask: Inspect it.";
+    conv.messages = [{
+      role: "user",
+      content: delegated,
+      metadata: {
+        startedAt: 1,
+        endedAt: 2,
+        model: "gpt-live-1-boulder-alpha",
+        tokens: 4,
+        kind: "realtime_transcript",
+        realtimeSpeaker: {
+          kind: "single",
+          participants: [{ id: "owner-id", displayName: "Owner", trust: "owner" }],
+        },
+      },
+    }];
+
+    expect(buildConversationApiContext(conv, "account-a").messages[0]?.content).toBe(delegated);
+  });
+
   test("rejects a checkpoint after represented transcript history is edited", () => {
     const messages = history();
     const active = activeContext(messages);

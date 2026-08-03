@@ -155,6 +155,8 @@ export type Block = ThinkingBlock | TextBlock | ToolCallBlock | ToolResultBlock;
 /** Machine-readable identity and fallback text for persisted compaction dividers. */
 export const CONTEXT_COMPACTION_FINISHED_KIND = "context_compaction_finished";
 export const CONTEXT_COMPACTION_FINISHED_TEXT = "--- Compaction finished ---";
+export const REALTIME_TRANSCRIPT_KIND = "realtime_transcript";
+export const REALTIME_CALL_STATUS_KIND = "realtime_call_status";
 
 /**
  * Metadata attached to a message. Persisted by the daemon,
@@ -180,6 +182,23 @@ export interface MessageMetadata {
   subagentNotificationId?: string;
   /** Durable id used to deduplicate a user message accepted from the persistent queue. */
   queueEntryId?: string;
+  /** Session/source identity for persisted realtime call turns and lifecycle markers. */
+  realtimeCallId?: string;
+  realtimeAdapterType?: "tui" | "external";
+  realtimeAdapterId?: string;
+  realtimeToolName?: string;
+  realtimeSourceLabel?: string;
+  realtimeAccountAlias?: string;
+  realtimeEndpointId?: string;
+  /** Adapter-authenticated source attribution for a realtime user transcript. */
+  realtimeSpeaker?: {
+    kind: "single" | "multiple" | "unknown";
+    participants: Array<{
+      id: string;
+      displayName: string;
+      trust: "owner" | "friend" | "untrusted";
+    }>;
+  };
 }
 
 /** Build standard message metadata with sensible defaults. */

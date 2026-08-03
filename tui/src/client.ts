@@ -11,6 +11,7 @@ import type { Command, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMe
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
+import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import { log } from "./log";
 
 export type EventHandler = (event: Event) => void;
@@ -177,8 +178,29 @@ export class DaemonClient {
     goalPausable?: boolean,
     goalCompletable?: boolean,
     titleContext?: string,
+    startCall?: boolean,
   ): void {
-    this.send({ type: "new_conversation", ...(convId ? { convId } : {}), provider, model, title, titleContext, effort, fastMode, initialMessage, folderId, goalObjective, goalPausable, goalCompletable });
+    this.send({ type: "new_conversation", ...(convId ? { convId } : {}), provider, model, title, titleContext, effort, fastMode, initialMessage, folderId, goalObjective, goalPausable, goalCompletable, startCall });
+  }
+
+  createConversationForCall(
+    provider: ProviderId,
+    model: ModelId,
+    effort: EffortLevel,
+    fastMode: boolean,
+    folderId?: string | null,
+    voice?: RealtimeVoice,
+  ): void {
+    this.send({
+      type: "new_conversation",
+      provider,
+      model,
+      effort,
+      fastMode,
+      folderId,
+      startCall: true,
+      ...(voice ? { callVoice: voice } : {}),
+    });
   }
 
   subscribe(convId: string): void {
@@ -219,6 +241,29 @@ export class DaemonClient {
 
   backgroundTool(convId: string): void {
     this.send({ type: "background_tool", convId });
+  }
+
+  /**
+   * Request an at-most-once restart from the daemon behind this exact socket.
+   * Never queue this across a disconnect: replaying it into the replacement
+   * daemon would create a restart loop.
+   */
+  restartDaemon(): boolean {
+    if (!this.socket || !this._connected) return false;
+    this.writeCommand({ type: "restart_daemon" });
+    return true;
+  }
+
+  startCall(convId: string, voice?: RealtimeVoice): void {
+    this.send({ type: "start_call", convId, ...(voice ? { voice } : {}) });
+  }
+
+  attachCallMedia(convId: string, callId: string, offerSdp: string, reqId?: string): void {
+    this.send({ type: "attach_call_media", convId, callId, offerSdp, reqId });
+  }
+
+  stopCall(convId: string, callId?: string): void {
+    this.send({ type: "stop_call", convId, callId });
   }
 
   prewarmConversation(convId: string): void {

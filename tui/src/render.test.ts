@@ -92,7 +92,7 @@ describe("render caching and frame diffing", () => {
     const writes = positionedWrites(captureRenderOutput(state));
     const panelTop = writes.find(write => (
       write.col === SIDEBAR_WIDTH + 1
-      && stripAnsi(write.text).includes("BTW ·")
+      && stripAnsi(write.text).includes("Summarize this conversation")
     ));
     expect(panelTop).toBeDefined();
 

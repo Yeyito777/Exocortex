@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@devhub-io/latex-to-unicode": "2.0.1",
-    "@exocortex/shared": "workspace:*"
+    "@exocortex/shared": "workspace:*",
+    "@roamhq/wrtc": "0.10.0"
   },
   "devDependencies": {
     "@types/bun": "latest",

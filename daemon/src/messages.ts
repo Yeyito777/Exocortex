@@ -12,7 +12,7 @@ export * from "@exocortex/shared/messages";
 
 // ── API-level types (for stored conversations / API replay) ─────────
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal, type ToolCallPresentation } from "@exocortex/shared/messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, REALTIME_CALL_STATUS_KIND, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal, type ToolCallPresentation } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
 import { createHash } from "crypto";
 
@@ -771,6 +771,7 @@ export function countConversationMessages(messages: StoredMessage[]): number {
     msg.role !== "system_instructions"
     && !isModelVisibleSystemNotice(msg)
     && msg.metadata?.kind !== CONTEXT_COMPACTION_FINISHED_KIND
+    && msg.metadata?.kind !== REALTIME_CALL_STATUS_KIND
   ).length;
 }
 

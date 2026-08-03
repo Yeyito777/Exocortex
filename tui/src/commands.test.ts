@@ -171,6 +171,89 @@ describe("/new", () => {
   });
 });
 
+describe("/call", () => {
+  test("requests a call for the active conversation", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+
+    const result = tryCommand("/call", state);
+
+    expect(result).toEqual({ type: "call_requested" });
+    expect(state.inputBuffer).toBe("");
+  });
+
+  test("also requests a call from an empty conversation draft", () => {
+    const state = createInitialState();
+
+    const result = tryCommand("/call", state);
+
+    expect(result).toEqual({ type: "call_requested" });
+    expect(state.inputBuffer).toBe("");
+  });
+
+  test("accepts and normalizes a supported voice", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+
+    const result = tryCommand("/call SOL", state);
+
+    expect(result).toEqual({ type: "call_requested", voice: "sol" });
+    expect(state.inputBuffer).toBe("");
+  });
+
+  test("rejects unsupported voices", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+
+    const result = tryCommand("/call somebody", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toContain("Unknown call voice: somebody");
+  });
+
+  test("rejects more than one argument", () => {
+    const state = createInitialState();
+
+    const result = tryCommand("/call sol extra", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Usage: /call [voice]");
+  });
+});
+
+describe("/hangup", () => {
+  test("requests call termination for the active conversation", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+
+    expect(tryCommand("/hangup", state)).toEqual({ type: "hangup_requested" });
+  });
+
+  test("requires an active conversation", () => {
+    const state = createInitialState();
+
+    expect(tryCommand("/hangup", state)).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("No conversation is open.");
+  });
+});
+
+describe("/mic", () => {
+  test("parses microphone gain in decibels", () => {
+    const state = createInitialState();
+
+    expect(tryCommand("/mic volume -12", state)).toEqual({ type: "mic_gain_changed", gainDb: -12 });
+    expect(tryCommand("/mic volume +3.5dB", state)).toEqual({ type: "mic_gain_changed", gainDb: 3.5 });
+    expect(tryCommand("/mic volume reset", state)).toEqual({ type: "mic_gain_changed", gainDb: 0 });
+  });
+
+  test("rejects malformed gain values", () => {
+    const state = createInitialState();
+
+    expect(tryCommand("/mic volume loud", state)).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Usage: /mic volume [gain]");
+  });
+});
+
 describe("/default-model command", () => {
   test("saves an explicit provider/model/effort/fast default and applies it to a draft", () => {
     const state = createInitialState();

@@ -9,6 +9,7 @@ import { invalidateCredentialsCache } from "./auth";
 import { clearProviderAuth, saveProviderAuth } from "./store";
 import { resetExternalNotificationsForTest } from "./external-notifications";
 import { listPendingExternalNotificationSoftWakes, resetExternalNotificationSoftWakesForTest } from "./external-notification-soft-wakes";
+import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
 
 interface TestAssistantOutcome {
   ok: boolean;
@@ -32,12 +33,14 @@ const makeAssistantOutcome = (overrides: Partial<TestAssistantOutcome> = {}): Te
 
 const orchestrateSendMessage = mock(async () => makeAssistantOutcome());
 const orchestrateReplayConversation = mock(async () => makeAssistantOutcome());
+const orchestrateRealtimeDelegation = mock(async () => makeAssistantOutcome());
 const orchestrateCompactConversation = mock(async () => makeAssistantOutcome());
 const orchestrateGoalContinuation = mock(async () => {});
 
 mock.module("./orchestrator", () => ({
   orchestrateSendMessage,
   orchestrateReplayConversation,
+  orchestrateRealtimeDelegation,
   orchestrateCompactConversation,
   orchestrateGoalContinuation,
 }));
@@ -83,6 +86,30 @@ describe("handler shutdown preparation", () => {
 
     expect(getDaemonShutdownMode()).toBe("stop");
     expect(sent).toContainEqual({ type: "ack", reqId: "prepare-stop" });
+  });
+
+  test("acknowledges an instance-local restart before invoking its owner", async () => {
+    const order: string[] = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => {
+        order.push(`send:${event.type}:${event.reqId}`);
+      }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never, {
+      requestRestart: () => { order.push("restart"); },
+    });
+
+    await handle({} as never, { type: "restart_daemon", reqId: "restart-local" });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(getDaemonShutdownMode()).toBe("restart");
+    expect(order).toEqual(["send:ack:restart-local", "restart"]);
   });
 });
 
@@ -1091,6 +1118,289 @@ describe("handler compact_conversation", () => {
   });
 });
 
+describe("handler start_call", () => {
+  afterEach(cleanupIds);
+
+  const fakeCallManager = () => ({
+    hasActiveCall: mock(() => false),
+    start: mock(async () => ({ callId: "call-1", state: "waiting_for_media" as const })),
+    attachMedia: mock(async () => {}),
+    updateParticipants: mock(() => {}),
+    updateSpeakers: mock(() => {}),
+    submitUtterance: mock(() => {}),
+    stop: mock(async () => {}),
+    stopFromAgent: mock(async () => {}),
+    stopAll: mock(async () => {}),
+  });
+
+  test("keeps call ownership in the daemon while the media backend is pending", async () => {
+    const convId = mkId("call");
+    create(convId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const sent: Array<Record<string, unknown>> = [];
+    const subscriberEvents: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock((_convId: string, event: Record<string, unknown>) => { subscriberEvents.push(event); }),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    const handle = createHandler(server as never, { callManager });
+
+    await handle({} as never, { type: "start_call", reqId: "req-call", convId, voice: "sol" });
+
+    expect(callManager.start).toHaveBeenCalledWith(convId, "sol");
+    expect(subscriberEvents).toEqual([]);
+    expect(sent).toContainEqual({ type: "ack", reqId: "req-call", convId });
+  });
+
+  test("rejects a missing owner conversation", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    const handle = createHandler(server as never, { callManager });
+
+    await handle({} as never, { type: "start_call", reqId: "req-call-missing", convId: "missing" });
+
+    expect(sent).toContainEqual({
+      type: "error",
+      reqId: "req-call-missing",
+      convId: "missing",
+      message: "Conversation not found.",
+    });
+  });
+
+  test("routes media attachment and stop commands through the daemon-owned call manager", async () => {
+    const convId = mkId("call-media");
+    create(convId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const sent: Array<Record<string, unknown>> = [];
+    const subscribe = mock(() => {});
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe,
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    const handle = createHandler(server as never, { callManager });
+    const client = {} as never;
+
+    await handle(client, {
+      type: "attach_call_media",
+      reqId: "req-media",
+      convId,
+      callId: "call-1",
+      offerSdp: "v=0\\r\\no=offer",
+    });
+    await handle(client, {
+      type: "stop_call",
+      reqId: "req-stop-call",
+      convId,
+      callId: "call-1",
+    });
+
+    expect(subscribe).toHaveBeenCalledWith(client, convId);
+    expect(callManager.attachMedia).toHaveBeenCalledWith(
+      client,
+      convId,
+      "call-1",
+      "v=0\\r\\no=offer",
+      "req-media",
+    );
+    expect(callManager.stop).toHaveBeenCalledWith(convId, "call-1");
+    expect(sent).toContainEqual({ type: "ack", reqId: "req-media", convId });
+    expect(sent).toContainEqual({ type: "ack", reqId: "req-stop-call", convId });
+  });
+
+  test("routes participant rosters and speaker transitions through the generic call protocol", async () => {
+    const convId = mkId("call-speakers");
+    create(convId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    const handle = createHandler(server as never, { callManager });
+    const participants = [{ id: "310", displayName: "Owner", trust: "owner" as const }];
+
+    await handle({} as never, {
+      type: "start_call",
+      reqId: "req-start-speakers",
+      convId,
+      adapter: { type: "external", id: "discord:paramount:voice", toolName: "discord" },
+      participants,
+    });
+    await handle({} as never, {
+      type: "update_call_participants",
+      reqId: "req-participants",
+      convId,
+      callId: "call-1",
+      participants,
+    });
+    await handle({} as never, {
+      type: "update_call_speakers",
+      reqId: "req-speakers",
+      convId,
+      callId: "call-1",
+      speakers: { participantIds: ["310"], observedAt: 1234 },
+    });
+    await handle({} as never, {
+      type: "submit_call_utterance",
+      reqId: "req-utterance",
+      convId,
+      callId: "call-1",
+      utteranceId: "utterance-1",
+      participantId: "310",
+      audioBase64: Buffer.from("wav").toString("base64"),
+      mimeType: "audio/wav",
+      startedAt: 1000,
+      endedAt: 1200,
+    });
+
+    expect(callManager.start).toHaveBeenCalledWith(
+      convId,
+      undefined,
+      { type: "external", id: "discord:paramount:voice", toolName: "discord" },
+      participants,
+    );
+    expect(callManager.updateParticipants).toHaveBeenCalledWith(convId, "call-1", participants);
+    expect(callManager.updateSpeakers).toHaveBeenCalledWith(
+      convId,
+      "call-1",
+      { participantIds: ["310"], observedAt: 1234 },
+    );
+    expect(callManager.submitUtterance).toHaveBeenCalledWith(convId, "call-1", {
+      utteranceId: "utterance-1",
+      participantId: "310",
+      audioBytes: new Uint8Array(Buffer.from("wav")),
+      mimeType: "audio/wav",
+      startedAt: 1000,
+      endedAt: 1200,
+    });
+    expect(sent).toEqual(expect.arrayContaining([
+      { type: "ack", reqId: "req-start-speakers", convId },
+      { type: "ack", reqId: "req-participants", convId },
+      { type: "ack", reqId: "req-speakers", convId },
+      { type: "ack", reqId: "req-utterance", convId },
+    ]));
+  });
+
+  test("lets the owning agent hang up through the discovered Exocortex command", async () => {
+    const convId = mkId("call-tool-hangup");
+    create(convId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const server = {
+      sendTo: mock(() => {}),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    createHandler(server as never, { callManager });
+    const runtime = getExocortexToolRuntime(server as never)!;
+
+    const result = await runtime.execute({
+      action: "commands",
+      command: "hangup",
+      args: {},
+    }, convId);
+
+    expect(result.isError).toBe(false);
+    expect(callManager.stopFromAgent).toHaveBeenCalledWith(convId);
+  });
+
+  test("creates empty-draft calls as OpenAI conversations even when the draft selected another provider", async () => {
+    const convId = `${Date.now()}-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
+    IDS.push(convId);
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    const handle = createHandler(server as never, { callManager });
+
+    await handle({} as never, {
+      type: "new_conversation",
+      reqId: "req-call-provider",
+      convId,
+      provider: "deepseek",
+      model: "deepseek-chat",
+      startCall: true,
+    });
+
+    expect(get(convId)?.provider).toBe("openai");
+    expect(get(convId)?.model).not.toBe("deepseek-chat");
+    expect(get(convId)?.title).toBe("voice call");
+    expect(callManager.start).toHaveBeenCalledWith(convId);
+  });
+
+  test("atomically creates and starts a call from an empty client conversation", async () => {
+    const convId = `${Date.now()}-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
+    IDS.push(convId);
+    const sent: Array<Record<string, unknown>> = [];
+    const subscriberEvents: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock((_convId: string, event: Record<string, unknown>) => { subscriberEvents.push(event); }),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const callManager = fakeCallManager();
+    const handle = createHandler(server as never, { callManager });
+
+    await handle({} as never, {
+      type: "new_conversation",
+      reqId: "req-call-create",
+      convId,
+      provider: DEFAULT_PROVIDER_ID,
+      model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID],
+      startCall: true,
+      callVoice: "maple",
+    });
+
+    expect(get(convId)).toMatchObject({ title: "voice call" });
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "conversation_created",
+      reqId: "req-call-create",
+      convId,
+    }));
+    expect(callManager.start).toHaveBeenCalledWith(convId, "maple");
+    expect(subscriberEvents).toEqual([]);
+    expect(sent).toContainEqual({ type: "ack", reqId: "req-call-create", convId });
+  });
+});
+
 describe("handler set_goal resume", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
@@ -1575,7 +1885,7 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     });
   });
 
-  test("late-join snapshots keep completed active-turn rounds in pendingAI even before the next tail starts", async () => {
+  test("late-join snapshots keep completed active-turn rounds canonical before the next tail starts", async () => {
     const convId = mkId("round-boundary");
     create(convId, "openai", "gpt-5.4");
     const conv = get(convId)!;
@@ -1618,24 +1928,26 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     expect(sent.map((event) => event.type)).toEqual(["conversation_loaded", "streaming_started"]);
     expect(sent[0]).toMatchObject({
       type: "conversation_loaded",
-      entries: [{ type: "user", text: "hi" }],
+      entries: [
+        { type: "user", text: "hi" },
+        {
+          type: "ai",
+          blocks: [
+            { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
+            { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
+            { type: "text", text: "done with the tool round" },
+          ],
+        },
+      ],
       pendingAI: {
-        blocks: [
-          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-          { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
-          { type: "text", text: "done with the tool round" },
-        ],
+        blocks: [],
         metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
       },
     });
     expect(sent[1]).toMatchObject({
       type: "streaming_started",
       startedAt: 100,
-      blocks: [
-        { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-        { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
-        { type: "text", text: "done with the tool round" },
-      ],
+      blocks: [],
       tokens: 0,
     });
   });
@@ -1681,21 +1993,23 @@ describe("handler load_conversation late-join streaming snapshots", () => {
 
     expect(sent[0]).toMatchObject({
       type: "conversation_loaded",
+      entries: [
+        { type: "user", text: "make a game" },
+        {
+          type: "ai",
+          blocks: [
+            { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "cc --version" },
+            { type: "tool_result", toolCallId: "call-1", output: "", isError: false },
+          ],
+        },
+      ],
       pendingAI: {
-        blocks: [
-          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "cc --version" },
-          { type: "tool_result", toolCallId: "call-1", output: "", isError: false },
-          { type: "text", text: "Planning an ncurses game after the compiler check." },
-        ],
+        blocks: [{ type: "text", text: "Planning an ncurses game after the compiler check." }],
       },
     });
     expect(sent[1]).toMatchObject({
       type: "streaming_started",
-      blocks: [
-        { type: "tool_call", toolCallId: "call-1" },
-        { type: "tool_result", toolCallId: "call-1" },
-        { type: "text", text: "Planning an ncurses game after the compiler check." },
-      ],
+      blocks: [{ type: "text", text: "Planning an ncurses game after the compiler check." }],
     });
   });
 
@@ -1745,22 +2059,20 @@ describe("handler load_conversation late-join streaming snapshots", () => {
           metadata: { startedAt: 2, endedAt: 3, model: "gpt-5.4", tokens: 12 },
         },
         { type: "system", text: "✗ Interrupted", color: "error" },
+        {
+          type: "ai",
+          blocks: [{ type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" }],
+        },
       ],
       pendingAI: {
-        blocks: [
-          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-          { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
-        ],
+        blocks: [{ type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false }],
         metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
       },
     });
     expect(sent[1]).toMatchObject({
       type: "streaming_started",
       startedAt: 100,
-      blocks: [
-        { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-        { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false },
-      ],
+      blocks: [{ type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "/tmp", isError: false }],
       tokens: 0,
     });
   });
@@ -1825,12 +2137,13 @@ describe("handler load_conversation late-join streaming snapshots", () => {
           metadata: { startedAt: 2, endedAt: 3, model: "gpt-5.4", tokens: 12 },
         },
         { type: "system", text: "✗ Interrupted", color: "error" },
+        {
+          type: "ai",
+          blocks: [{ type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" }],
+        },
       ],
       pendingAI: {
-        blocks: [
-          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-          { type: "text", text: "hello" },
-        ],
+        blocks: [{ type: "text", text: "hello" }],
         metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
       },
     });
@@ -1840,21 +2153,27 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     expect(sentA2.map((event) => event.type)).toEqual(["conversation_loaded", "streaming_started"]);
     expect(sentA2[0]).toMatchObject({
       type: "conversation_loaded",
+      entries: [
+        { type: "user", text: "hi" },
+        {
+          type: "ai",
+          blocks: [{ type: "text", text: "partial old reply" }],
+        },
+        { type: "system", text: "✗ Interrupted", color: "error" },
+        {
+          type: "ai",
+          blocks: [{ type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" }],
+        },
+      ],
       pendingAI: {
-        blocks: [
-          { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-          { type: "text", text: "hello world" },
-        ],
+        blocks: [{ type: "text", text: "hello world" }],
         metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
       },
     });
     expect(sentA2[1]).toMatchObject({
       type: "streaming_started",
       startedAt: 100,
-      blocks: [
-        { type: "tool_call", toolCallId: "call-1", toolName: "bash", summary: "pwd" },
-        { type: "text", text: "hello world" },
-      ],
+      blocks: [{ type: "text", text: "hello world" }],
       tokens: 0,
     });
   });

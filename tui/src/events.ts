@@ -52,7 +52,9 @@ import {
 } from "./events/streaming";
 import { handleToolOutputsLoaded } from "./events/tool-outputs";
 import { handleToolsAvailable } from "./events/provider";
+import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
 import type { DaemonActions } from "./events/types";
+import { handleCallTranscript, reconcileCallTranscriptDrafts } from "./events/call";
 
 export type { DaemonActions } from "./events/types";
 
@@ -178,6 +180,18 @@ export function handleEvent(
 
     case "streaming_stopped":
       handleStreamingStopped(event, state);
+      break;
+
+    case "call_state":
+      if (event.message) pushSystemMessage(state, event.message, event.state === "error" ? theme.error : theme.muted);
+      break;
+
+    case "call_transcript":
+      handleCallTranscript(event, state);
+      break;
+
+    case "call_sdp_answer":
+      // Consumed by the media adapter that supplied the matching offer.
       break;
 
     case "error":
@@ -358,6 +372,22 @@ export function handleEvent(
         setCurrentConversationToolOutputAvailability(state, event.toolOutputsIncluded);
         pushDisplayEntries(state, event.entries);
 
+        // Canonical history and its live tail are one atomic daemon snapshot.
+        // Keeping the old local pendingAI while replacing only entries can show
+        // every completed provider round twice when an external transcript was
+        // interleaved into the active turn. New daemons always include this field;
+        // absence remains backward-compatible with older daemon payloads.
+        if (event.pendingAI !== undefined) {
+          clearPendingAI(state);
+          if (event.pendingAI) {
+            hydratePendingAIFromSnapshot(
+              state,
+              event.pendingAI,
+              event.pendingAI.blockOffset ?? 0,
+            );
+          }
+        }
+
         if (preservedPrefix.length === prefixEntryCount && prefixEntryCount > 0) {
           let incomingPinnedCount = 0;
           while (state.messages[incomingPinnedCount]?.role === "system_instructions") incomingPinnedCount += 1;
@@ -375,6 +405,32 @@ export function handleEvent(
           state.historyHasOlder = event.hasOlderHistory ?? false;
           if (event.resetHistoryWindow) state.scrollOffset = 0;
         }
+        // A call-status/history refresh can race a locally echoed direct send.
+        // If pagination preserves that optimistic row while the incoming window
+        // already contains its canonical replacement, keep the rightmost
+        // (canonical) copy by the client-originated stable timestamp. Queue turns
+        // use their stronger daemon identity when available.
+        const seenUserIds = new Set<string>();
+        const dedupedReversed: typeof state.messages = [];
+        for (let index = state.messages.length - 1; index >= 0; index--) {
+          const message = state.messages[index]!;
+          if (message.role !== "user" || !message.metadata) {
+            dedupedReversed.push(message);
+            continue;
+          }
+          const stableId = message.metadata.queueEntryId
+            ? `queue:${message.metadata.queueEntryId}`
+            : `started:${message.metadata.startedAt}`;
+          if (seenUserIds.has(stableId)) continue;
+          seenUserIds.add(stableId);
+          dedupedReversed.push(message);
+        }
+        state.messages = dedupedReversed.reverse();
+        // Replace only transcript drafts actually present in this canonical
+        // snapshot. A user-turn refresh can arrive while GPT-Live is already
+        // streaming its assistant response, so clearing every draft here makes
+        // that response disappear for a frame and then jump back lower.
+        reconcileCallTranscriptDrafts(state);
         state.historyTotalEntries = event.historyTotalEntries
           ?? event.entries.filter((entry) => entry.type !== "system_instructions").length;
         state.historyLoadingOlder = false;

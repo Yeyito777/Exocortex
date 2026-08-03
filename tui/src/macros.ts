@@ -155,6 +155,12 @@ const MACROS: MacroDef[] = [
   },
   { name: "/noop", desc: "Thoughts only, no edits", expansion: "Don't do any destructive or modificating actions just yet just tell me your thoughts on this" },
   {
+    name: "/todo", desc: "Track and finish a TODO list", expansion: "Make a <name>-todo.md for this with items - [ ] and finish it sequentially.",
+    args: [
+      { name: "wait", desc: "Pause for TODO review", expansion: "Make a <name>-todo.md for this with items - [ ] and tell me the abs path of it so I can review before you go and finish it sequentially." },
+    ],
+  },
+  {
     name: "/plan", desc: "Plan only, no edits", expansion: "Come up with a plan for this and tell me it. Don't write or edit any files.",
     args: [
       { name: "other", desc: "Draft plan for another instance", expansion: "Draft a plan for this as a prompt for another instance. Write it as a kebab-case markdown file inside ~/.config/exocortex/storage/playground/. The file should be self-contained so I can send it to another instance and he gets all the context he needs to work on it." },

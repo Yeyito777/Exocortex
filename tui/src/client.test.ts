@@ -390,6 +390,66 @@ describe("DaemonClient commands", () => {
     });
   });
 
+  test("can request a realtime call owned by a conversation", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.startCall("conv-1");
+
+    expect(internal.pendingCommands[0]).toEqual({
+      type: "start_call",
+      convId: "conv-1",
+    });
+  });
+
+  test("can request an explicit realtime voice", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.startCall("conv-1", "sol");
+
+    expect(internal.pendingCommands[0]).toEqual({
+      type: "start_call",
+      convId: "conv-1",
+      voice: "sol",
+    });
+  });
+
+  test("can atomically create a conversation for a realtime call", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.createConversationForCall("openai", "gpt-5.4", "high", false, "folder-1");
+
+    expect(internal.pendingCommands[0]).toEqual({
+      type: "new_conversation",
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "high",
+      fastMode: false,
+      folderId: "folder-1",
+      startCall: true,
+    });
+  });
+
+  test("carries an explicit voice through atomic call conversation creation", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.createConversationForCall("openai", "gpt-5.4", "high", false, "folder-1", "maple");
+
+    expect(internal.pendingCommands[0]).toEqual({
+      type: "new_conversation",
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "high",
+      fastMode: false,
+      folderId: "folder-1",
+      startCall: true,
+      callVoice: "maple",
+    });
+  });
+
   test("closes a BTW through its owning conversation", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;
@@ -482,6 +542,25 @@ describe("DaemonClient commands", () => {
 });
 
 describe("DaemonClient reconnect behavior", () => {
+  test("sends restart only to the currently connected socket and never queues it", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    const writes: string[] = [];
+
+    expect(client.restartDaemon()).toBe(false);
+    expect(internal.pendingCommands).toEqual([]);
+
+    internal.socket = { write: (value: string) => { writes.push(value); } };
+    internal._connected = true;
+    expect(client.restartDaemon()).toBe(true);
+    expect(writes.map(line => JSON.parse(line))).toEqual([{ type: "restart_daemon" }]);
+
+    internal.socket = null;
+    internal._connected = false;
+    expect(client.restartDaemon()).toBe(false);
+    expect(internal.pendingCommands).toEqual([]);
+  });
+
   test("queues commands while disconnected and flushes them on reconnect", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;

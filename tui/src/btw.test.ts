@@ -241,9 +241,9 @@ describe("BTW foreground panel", () => {
     const rendered = renderBtwPanel(btw, 100, 4, 20, 31);
     expect(rendered).not.toBeNull();
     const plain = stripAnsi(rendered!.payload);
-    expect(plain).toContain("BTW");
-    expect(plain).toContain("Gpt-5.4");
     expect(plain).toContain("What does this code do?");
+    expect(plain).not.toContain("BTW");
+    expect(plain).not.toContain("Gpt-5.4");
     expect(plain).toContain("The answer");
     expect(plain).not.toContain("complete");
     expect(plain).not.toContain("/btw close");
@@ -259,7 +259,9 @@ describe("BTW foreground panel", () => {
     const rendered = renderBtwPanel(panelState(), 20, 1, 5, 3);
     expect(rendered).not.toBeNull();
     const plain = stripAnsi(rendered!.payload);
-    expect(plain).toContain("BTW");
+    expect(plain).toContain("What does this");
+    expect(plain).not.toContain("BTW");
+    expect(plain).not.toContain("Gpt-5.4");
     expect(plain).not.toContain("running");
     expect(plain).not.toContain("complete");
     expect(plain).not.toContain("^Q");

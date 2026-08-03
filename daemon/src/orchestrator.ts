@@ -20,11 +20,12 @@ import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
-import { broadcastConversationUpdated } from "./conversation-events";
+import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
 import { goalContinuationUserMessage } from "./goals";
 import { createProviderTurnSession, streamMessage } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
-import type { StreamingStopReason } from "./protocol";
+import type { RealtimeCallSpeakerAttribution, StreamingStopReason } from "./protocol";
+import { buildRealtimeDelegationMessage } from "./realtime-delegation";
 import {
   buildConversationApiContext,
   compactContextMessages,
@@ -35,8 +36,9 @@ import {
 } from "./context-compaction";
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./providers/openai/auth";
 import { buildCodexWindowId } from "./providers/openai/identity";
-import { resolveToolCallPresentation } from "./exo-command-manifest";
+import { resolveToolCallPresentation } from "./helper-tool-manifest";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
+import { mergeTurnTranscript } from "./turn-transcript-merge";
 import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
 import { buildHistoryUpdatedEvents } from "./history-pagination";
@@ -179,6 +181,15 @@ interface AssistantTurnOptions {
   queueEntryId?: string;
   /** Force one context compaction without requesting an assistant response. */
   manualCompaction?: boolean;
+  /** Promote the persisted voice transcript into a visible backend request. */
+  realtimeDelegation?: {
+    callId: string;
+    originalUserUtterance: string;
+    backendTask: string;
+    speaker?: RealtimeCallSpeakerAttribution;
+  };
+  /** Optional owner lifecycle that can cancel this turn without daemon IPC. */
+  externalAbortSignal?: AbortSignal;
 }
 
 export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId">;
@@ -210,6 +221,31 @@ export async function orchestrateReplayConversation(
   policy: SubagentTurnPolicy = {},
 ): Promise<AssistantTurnOutcome> {
   return await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext, policy);
+}
+
+/**
+ * Start an agent turn from an existing visible call transcript. The transcript
+ * is promoted in place into the sole durable backend request before replay.
+ */
+export async function orchestrateRealtimeDelegation(
+  server: DaemonServer,
+  convId: string,
+  delegation: {
+    callId: string;
+    originalUserUtterance: string;
+    backendTask: string;
+    speaker?: RealtimeCallSpeakerAttribution;
+  },
+  startedAt: number,
+  ext: OrchestrationCallbacks,
+  policy: SubagentTurnPolicy = {},
+  signal?: AbortSignal,
+): Promise<AssistantTurnOutcome> {
+  return await orchestrateAssistantTurn(server, null, undefined, convId, startedAt, ext, {
+    ...policy,
+    realtimeDelegation: delegation,
+    externalAbortSignal: signal,
+  });
 }
 
 export async function orchestrateCompactConversation(
@@ -265,7 +301,12 @@ async function orchestrateAssistantTurn(
   }
   const subagentMaxDepth = conv.subagentMaxDepth ?? null;
 
-  const { userMessage: requestedUserMessage, goalContinuation = false, manualCompaction = false } = options;
+  const {
+    userMessage: requestedUserMessage,
+    goalContinuation = false,
+    manualCompaction = false,
+    realtimeDelegation,
+  } = options;
   // Goal continuations are daemon-authored notification turns, just like
   // background-task and subagent completion notifications. Persist and
   // broadcast them through the ordinary user-message path so the TUI shows
@@ -339,6 +380,25 @@ async function orchestrateAssistantTurn(
   if (goalContinuation && conv.goal?.status !== "active") {
     return buildErrorOutcome("No active goal to continue.");
   }
+  if (realtimeDelegation) {
+    const delegatedMessage = buildRealtimeDelegationMessage(
+      realtimeDelegation.originalUserUtterance,
+      realtimeDelegation.backendTask,
+      realtimeDelegation.speaker,
+    );
+    if (!convStore.promoteRealtimeTranscript(
+      convId,
+      realtimeDelegation.originalUserUtterance,
+      delegatedMessage,
+      realtimeDelegation.callId,
+    )) {
+      return reportSendError("The realtime handoff no longer has a matching call transcript.");
+    }
+    // The transcript draft and canonical history must reconcile before backend
+    // output begins streaming, so every client observes the exact model input.
+    broadcastConversationHistoryUpdated(server, convId);
+    broadcastConversationUpdated(server, convId);
+  }
   const hadGoalAtStart = !!conv.goal;
 
   // ── Start stream and broadcast initial state ──────────────────────
@@ -376,6 +436,8 @@ async function orchestrateAssistantTurn(
   }
   const turnTranscriptAnchor = conv.messages.at(-1);
   const initialTurnTranscriptStartIndex = conv.messages.length;
+  const persistedTurnMessages = new WeakSet<StoredMessage>();
+  let hadConcurrentTurnMessages = false;
 
   function currentTurnTranscriptStartIndex(): number {
     if (turnTranscriptAnchor) {
@@ -383,6 +445,20 @@ async function orchestrateAssistantTurn(
       if (anchorIndex >= 0) return anchorIndex + 1;
     }
     return Math.min(initialTurnTranscriptStartIndex, liveConv.messages.length);
+  }
+
+  function installCompletedTurnMessages(completed: StoredMessage[]): void {
+    const turnTranscriptStartIndex = currentTurnTranscriptStartIndex();
+    const currentTail = liveConv.messages.slice(turnTranscriptStartIndex);
+    if (currentTail.some(message => !persistedTurnMessages.has(message))) {
+      hadConcurrentTurnMessages = true;
+    }
+    const merged = mergeTurnTranscript(currentTail, persistedTurnMessages, completed);
+    liveConv.messages.splice(
+      turnTranscriptStartIndex,
+      liveConv.messages.length - turnTranscriptStartIndex,
+      ...merged,
+    );
   }
 
   conv.updatedAt = Date.now();
@@ -397,6 +473,10 @@ async function orchestrateAssistantTurn(
   if (options.subagentNotificationId) acknowledgeSubagentNotification(options.subagentNotificationId);
 
   const ac = new RetryableStreamAbortController();
+  const externalAbortSignal = options.externalAbortSignal;
+  const abortFromExternalOwner = () => ac.abort(externalAbortSignal?.reason);
+  if (externalAbortSignal?.aborted) abortFromExternalOwner();
+  else externalAbortSignal?.addEventListener("abort", abortFromExternalOwner, { once: true });
   // A standalone compaction has no unfinished assistant turn to replay after a
   // daemon restart. It is still an active job so abort, queueing, and shutdown
   // can coordinate with it normally.
@@ -682,12 +762,7 @@ async function orchestrateAssistantTurn(
       ...interleaveTranscriptMarkers(completedDisplayMessages(), transcriptMarkers),
       ...additionalMessages,
     ];
-    const turnTranscriptStartIndex = currentTurnTranscriptStartIndex();
-    liveConv.messages.splice(
-      turnTranscriptStartIndex,
-      liveConv.messages.length - turnTranscriptStartIndex,
-      ...completed,
-    );
+    installCompletedTurnMessages(completed);
     liveConv.updatedAt = Date.now();
     convStore.markDirty(convId);
     convStore.flush(convId);
@@ -1160,12 +1235,7 @@ async function orchestrateAssistantTurn(
       // Interleave status markers at the correct positions so system messages
       // appear between the rounds where they actually occurred.
       const interleavedMessages = interleaveTranscriptMarkers(storedMessages, transcriptMarkers);
-      const successTurnTranscriptStartIndex = currentTurnTranscriptStartIndex();
-      conv.messages.splice(
-        successTurnTranscriptStartIndex,
-        conv.messages.length - successTurnTranscriptStartIndex,
-        ...interleavedMessages,
-      );
+      installCompletedTurnMessages(interleavedMessages);
       syncActiveContext(result.contextMessages);
       conv.updatedAt = Date.now();
       // Do not bump on completion. The conversation was already brought to the
@@ -1249,12 +1319,7 @@ async function orchestrateAssistantTurn(
       }
     }
     const interleavedCompleted = interleaveTranscriptMarkers(completedStored, transcriptMarkers);
-    const recoveryTurnTranscriptStartIndex = currentTurnTranscriptStartIndex();
-    conv.messages.splice(
-      recoveryTurnTranscriptStartIndex,
-      conv.messages.length - recoveryTurnTranscriptStartIndex,
-      ...interleavedCompleted,
-    );
+    installCompletedTurnMessages(interleavedCompleted);
 
     // Persist the in-flight partial response (current round's streamed content),
     // dropping empty thinking placeholders while keeping non-empty reasoning text.
@@ -1340,6 +1405,7 @@ async function orchestrateAssistantTurn(
       daemonRestart: isDaemonRestart,
     };
   } finally {
+    externalAbortSignal?.removeEventListener("abort", abortFromExternalOwner);
     if (providerTurnSession) {
       try {
         if (outcome?.ok) await providerTurnSession.close();
@@ -1381,7 +1447,7 @@ async function orchestrateAssistantTurn(
       // the TUI may be showing an approximate live view. Now that conv.messages
       // has the canonical interleaved structure, send history_updated so every
       // client rebuilds from the persisted ordering.
-      if (agentState.completedMessages.length > 0 || transcriptMarkers.length > 0 || hadNextTurnInjections) {
+      if (agentState.completedMessages.length > 0 || transcriptMarkers.length > 0 || hadNextTurnInjections || hadConcurrentTurnMessages) {
         const displayData = convStore.getRenderSnapshot(convId, false);
         if (displayData) {
           const events = buildHistoryUpdatedEvents(displayData);
