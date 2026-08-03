@@ -20,6 +20,7 @@ import {
   splitTopLevelShellSegmentsWithState,
   type ShellQuoteState,
 } from "./bashsegments";
+import { sanitizeUntrustedText } from "./terminaltext";
 
 export interface ToolCallLogicalLine {
   display: ResolvedToolDisplay;
@@ -49,6 +50,43 @@ interface ShellCommandContinuationState {
   lineContinuation: boolean;
 }
 
+interface BashStdinLineRange {
+  /** Line containing the start of the daemon-appended `--stdin` value. */
+  startLineIndex: number;
+  /** Last line touched by that value, including a line created by a trailing newline. */
+  endLineIndex: number;
+}
+
+/**
+ * Locate physical lines introduced by bash's synthetic `--stdin <value>`
+ * summary argument. They are data, not additional shell commands, so the
+ * renderer must not run its usual linewise command detection over them.
+ */
+function bashStdinLineRange(
+  summary: string,
+  toolInput: Record<string, unknown> | undefined,
+): BashStdinLineRange | null {
+  if (typeof toolInput?.stdin !== "string") return null;
+
+  const stdin = sanitizeUntrustedText(toolInput.stdin);
+  if (!stdin.includes("\n")) return null;
+
+  const source = summary.trimStart();
+  const prefix = "--stdin ";
+  const markerStart = source.lastIndexOf(`${prefix}${stdin}`);
+  if (markerStart < 0) return null;
+
+  const valueStart = markerStart + prefix.length;
+  const startLineIndex = (source.slice(0, valueStart).match(/\n/g) ?? []).length;
+  return {
+    startLineIndex,
+    endLineIndex: startLineIndex + (stdin.match(/\n/g) ?? []).length,
+  };
+}
+
+function isBashStdinContinuationLine(range: BashStdinLineRange | null, lineIndex: number): boolean {
+  return !!range && lineIndex > range.startLineIndex && lineIndex <= range.endLineIndex;
+}
 
 function isPromptedBashTranscript(summary: string): boolean {
   const lines = summary.trimStart().split("\n");
@@ -275,11 +313,17 @@ function maybeContinueExternalCommand(
     : null;
 }
 
-function shouldPreferLinewiseExternalRender(match: BashExternalMatch): boolean {
+function shouldPreferLinewiseExternalRender(
+  match: BashExternalMatch,
+  stdinRange: BashStdinLineRange | null,
+): boolean {
   const firstMatchedLine = match.lines[match.matchLineIndex]?.slice(match.matchStart) ?? "";
   let continuation = maybeContinueExternalCommand(match.display, firstMatchedLine);
 
   for (let i = match.matchLineIndex + 1; i < match.lines.length; i++) {
+    // Literal stdin is flattened into the bash summary after `--stdin`. Its
+    // newlines do not terminate the matched external command.
+    if (isBashStdinContinuationLine(stdinRange, i)) continue;
     if (!continuation) return true;
     continuation = maybeContinueExternalCommand(continuation.display, match.lines[i], continuation.state);
   }
@@ -315,6 +359,7 @@ function renderSegmentedBashLines(
   toolRegistry: ToolDisplayInfo[],
   externalToolStyles: ExternalToolStyle[],
   options: SegmentedBashRenderOptions,
+  stdinRange: BashStdinLineRange | null,
 ): ToolCallLogicalLine[] | null {
   if (options.requirePrompts && !isPromptedBashTranscript(summary)) return null;
 
@@ -375,7 +420,13 @@ function renderSegmentedBashLines(
   const bashDisplay = resolveToolDisplay("bash", "", toolRegistry, []);
   let pendingExternal: PendingExternalCommand | null = null;
 
-  for (const { rawLine, lineText, lineMatch, segments, matches, nonEmptySegments, hasSegmentMatch, inHeredocBody } of parsedLines) {
+  for (const [lineIndex, { rawLine, lineText, lineMatch, segments, matches, nonEmptySegments, hasSegmentMatch, inHeredocBody }] of parsedLines.entries()) {
+    if (pendingExternal && stdinRange && isBashStdinContinuationLine(stdinRange, lineIndex)) {
+      pushLogicalLine(logical, pendingExternal.display, lineText, false);
+      if (lineIndex >= stdinRange.endLineIndex) pendingExternal = null;
+      continue;
+    }
+
     if (pendingExternal?.state.pendingHeredocs.length) {
       pushLogicalLine(logical, pendingExternal.display, lineText, false);
       pendingExternal = maybeContinueExternalCommand(pendingExternal.display, lineText, pendingExternal.state);
@@ -419,6 +470,17 @@ function renderSegmentedBashLines(
 
     if (inHeredocBody || lineMatch || nonEmptySegments.length <= 1 || !hasSegmentMatch) {
       pendingExternal = appendRenderedBashSegment(logical, bashDisplay, lineText, "", inHeredocBody ? null : lineMatch);
+      if (
+        lineMatch
+        && stdinRange
+        && lineIndex === stdinRange.startLineIndex
+        && stdinRange.endLineIndex > lineIndex
+      ) {
+        // The first stdin line is appended to the real command line. Keep its
+        // external-tool display active for the remaining literal data lines;
+        // do not derive shell quote/heredoc state from that unquoted data.
+        pendingExternal = { display: lineMatch.display, state: createShellCommandContinuationState() };
+      }
       continue;
     }
 
@@ -438,8 +500,10 @@ export function renderToolCallLogicalLines(
   summary: string,
   toolRegistry: ToolDisplayInfo[],
   externalToolStyles: ExternalToolStyle[],
+  toolInput?: Record<string, unknown>,
 ): ToolCallLogicalLine[] {
   const display = resolveToolDisplay(toolName, summary, toolRegistry, externalToolStyles);
+  const stdinRange = toolName === "bash" ? bashStdinLineRange(summary, toolInput) : null;
 
   // Build logical display lines. Each entry carries its own display, so bash
   // blocks can mix plain bash prelude lines with styled external-tool lines
@@ -448,11 +512,11 @@ export function renderToolCallLogicalLines(
     ? renderSegmentedBashLines(summary, toolRegistry, externalToolStyles, {
         requirePrompts: true,
         stripPromptPrefix: true,
-      })
+      }, stdinRange)
       ?? renderSegmentedBashLines(summary, toolRegistry, externalToolStyles, {
         requirePrompts: false,
         stripPromptPrefix: true,
-      })
+      }, stdinRange)
       ?? []
     : [];
 
@@ -463,12 +527,12 @@ export function renderToolCallLogicalLines(
     : null;
 
   if (bashExternal) {
-    const segmented = shouldPreferLinewiseExternalRender(bashExternal)
+    const segmented = shouldPreferLinewiseExternalRender(bashExternal, stdinRange)
       ? renderSegmentedBashLines(summary, toolRegistry, externalToolStyles, {
           requirePrompts: false,
           stripPromptPrefix: true,
           allowSimpleExternalLines: true,
-        })
+        }, stdinRange)
       : null;
 
     if (segmented) return segmented;
@@ -499,7 +563,7 @@ export function renderToolCallLogicalLines(
         requirePrompts: false,
         stripPromptPrefix: true,
         allowSimpleExternalLines: true,
-      })
+      }, stdinRange)
     : null;
 
   if (segmented) return segmented;

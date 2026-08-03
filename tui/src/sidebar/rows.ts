@@ -55,7 +55,7 @@ export function buildDisplayRows(sidebar: SidebarRowsState): DisplayRow[] {
   const pinned = entries.filter(entry => entry.pinned);
   const unpinned = entries.filter(entry => !entry.pinned);
   if (pinned.length > 0) {
-    rows.push({ type: "label", text: " Pinned" });
+    if (!sidebar.currentFolderId) rows.push({ type: "label", text: " Pinned" });
     for (const entry of pinned) rows.push(entry.row);
     if (unpinned.length > 0) rows.push({ type: "delimiter" });
   }

@@ -282,6 +282,17 @@ function cleanupPath(path: string): void {
   }
 }
 
+const MACOS_CONTINUITY_CAMERA_WARNING = /^(?:\d{4}-\d{2}-\d{2} [^ ]+ )?ffmpeg\[\d+:\d+\] WARNING: (?:Add NSCameraUseContinuityCameraDeviceType to your Info\.plist to use AVCaptureDeviceTypeContinuityCamera\.|AVCaptureDeviceTypeExternal is deprecated for Continuity Cameras\. Please use AVCaptureDeviceTypeContinuityCamera and add NSCameraUseContinuityCameraDeviceType to your Info\.plist\.)$/;
+
+/** Remove AVFoundation camera diagnostics that ffmpeg emits during audio-only capture. */
+export function recorderErrorMessage(stderr: string): string {
+  return stderr
+    .split(/\r?\n/)
+    .filter(line => !MACOS_CONTINUITY_CAMERA_WARNING.test(line.trim()))
+    .join("\n")
+    .trim();
+}
+
 export class VoiceRecorder {
   private readonly child: ChildProcess;
   private readonly filePath: string;
@@ -350,11 +361,11 @@ export class VoiceRecorder {
 
     try {
       if (!existsSync(this.filePath)) {
-        throw new Error(this.stderr.trim() || "no audio file was captured");
+        throw new Error(recorderErrorMessage(this.stderr) || "no audio file was captured; check microphone access and hold Space while speaking");
       }
       const bytes = readFileSync(this.filePath);
       if (bytes.length === 0) {
-        throw new Error(this.stderr.trim() || "captured audio file was empty");
+        throw new Error(recorderErrorMessage(this.stderr) || "captured audio file was empty; check microphone access and hold Space while speaking");
       }
       return { bytes, mimeType: "audio/wav" };
     } finally {

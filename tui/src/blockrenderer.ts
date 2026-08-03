@@ -235,6 +235,7 @@ function renderBlock(
         summary,
         toolRegistry,
         localStyles.length > 0 ? [...localStyles, ...externalToolStyles] : externalToolStyles,
+        block.input,
       );
 
       for (const entry of logical) {

@@ -204,6 +204,8 @@ describe("voice input controller", () => {
 
     let clock = 5_000;
     let transcribeCalls = 0;
+    let stopCalls = 0;
+    let abortCalls = 0;
     const controller = createVoiceInputController(
       state,
       {
@@ -214,8 +216,13 @@ describe("voice input controller", () => {
       () => {},
       {
         startRecorder: () => ({
-          stop: async () => ({ bytes: Buffer.from([1]), mimeType: "audio/wav" }),
-          abort() {},
+          stop: async () => {
+            stopCalls++;
+            return { bytes: Buffer.from([1]), mimeType: "audio/wav" };
+          },
+          abort() {
+            abortCalls++;
+          },
         }),
         now: () => clock,
       },
@@ -228,6 +235,8 @@ describe("voice input controller", () => {
       await Promise.resolve();
 
       expect(transcribeCalls).toBe(0);
+      expect(stopCalls).toBe(0);
+      expect(abortCalls).toBe(1);
       expect(state.inputBuffer).toBe("");
       expect(state.voicePrompt).toBeNull();
     } finally {

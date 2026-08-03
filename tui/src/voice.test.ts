@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyVoicePlaceholder, chooseDarwinRecorderCommand, chooseLinuxRecorderCommand, chooseRecorderCommand, getRenderedVoicePrompt, insertVoiceTranscript, voicePlaceholderText, type VoicePromptState } from "./voice";
+import { applyVoicePlaceholder, chooseDarwinRecorderCommand, chooseLinuxRecorderCommand, chooseRecorderCommand, getRenderedVoicePrompt, insertVoiceTranscript, recorderErrorMessage, voicePlaceholderText, type VoicePromptState } from "./voice";
 
 describe("voice prompt helpers", () => {
   test("renders the requested spinner frames for recording and transcription", () => {
@@ -77,5 +77,15 @@ describe("voice prompt helpers", () => {
     expect(chooseRecorderCommand("darwin", (name) => name === "ffmpeg", "/tmp/input.wav")?.args).toContain("avfoundation");
     expect(chooseRecorderCommand("linux", (name) => name === "pw-record", "/tmp/input.wav")?.command).toBe("pw-record");
     expect(chooseRecorderCommand("win32", () => true, "/tmp/input.wav")).toBeNull();
+  });
+
+  test("hides irrelevant macOS Continuity Camera warnings from audio capture errors", () => {
+    const stderr = [
+      "2026-08-03 09:55:50.392 ffmpeg[34575:5711156] WARNING: Add NSCameraUseContinuityCameraDeviceType to your Info.plist to use AVCaptureDeviceTypeContinuityCamera.",
+      "2026-08-03 09:55:50.595 ffmpeg[34575:5711156] WARNING: AVCaptureDeviceTypeExternal is deprecated for Continuity Cameras. Please use AVCaptureDeviceTypeContinuityCamera and add NSCameraUseContinuityCameraDeviceType to your Info.plist.",
+      "Error opening input: Permission denied",
+    ].join("\n");
+
+    expect(recorderErrorMessage(stderr)).toBe("Error opening input: Permission denied");
   });
 });

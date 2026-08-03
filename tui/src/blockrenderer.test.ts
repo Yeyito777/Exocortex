@@ -81,6 +81,32 @@ describe("tool-call presentation", () => {
     expect(stripAnsi(rendered.lines[0] ?? "")).toBe("  Deploy >result.txt");
   });
 
+  test("keeps multiline stdin attached to its parent external tool call", () => {
+    const stdin = "first line\n\nprintf 'data, not bash'\nlast line";
+    const block: Block = {
+      type: "tool_call",
+      toolCallId: "external-stdin",
+      toolName: "bash",
+      input: { command: "image generate", stdin, timeout: 30_000 },
+      summary: `image generate --stdin ${stdin} --timeout 30000`,
+    };
+
+    const rendered = renderBlockCached(
+      block,
+      120,
+      [{ name: "bash", label: "$", color: "#d19a66" }],
+      [{ cmd: "image", label: "Image", color: "#ff79c6" }],
+      false,
+    );
+
+    expect(rendered.lines.map(stripAnsi)).toEqual([
+      "  Image generate --stdin first line",
+      "  ",
+      "  printf 'data, not bash'",
+      "  last line --timeout 30000",
+    ]);
+  });
+
   test("rejects malformed persisted presentation metadata", () => {
     const block = {
       type: "tool_call" as const,

@@ -594,6 +594,21 @@ export function createVoiceInputController(
 
     const promptJobId = enterTranscribingPhase(insertionPos);
 
+    // In particular on macOS, AVFoundation may still be discovering camera
+    // devices when an accidental tap is released. Stopping ffmpeg at that point
+    // can produce no output file and surface unrelated Continuity Camera
+    // warnings as a capture failure. Discard known-too-short clips directly.
+    if (recordingDurationMs < VOICE_MIN_RECORDING_MS) {
+      recorder.abort();
+      if (session.submitted) {
+        applySubmittedJobTranscript(recordingJobId, "");
+      } else if (promptJobId !== null) {
+        removePromptJob(promptJobId);
+        scheduleRender();
+      }
+      return;
+    }
+
     let clip: RecordedVoiceClip;
     try {
       clip = await recorder.stop();
@@ -606,16 +621,6 @@ export function createVoiceInputController(
       } else {
         showVoiceError("Voice capture failed", err);
       }
-      return;
-    }
-
-    if (recordingDurationMs < VOICE_MIN_RECORDING_MS) {
-      if (session.submitted) {
-        applySubmittedJobTranscript(recordingJobId, "");
-        return;
-      }
-      if (promptJobId !== null) removePromptJob(promptJobId);
-      scheduleRender();
       return;
     }
 

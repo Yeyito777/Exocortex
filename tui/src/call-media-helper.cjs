@@ -4,6 +4,7 @@
 const { spawn } = require("node:child_process");
 const readline = require("node:readline");
 const wrtc = require("@roamhq/wrtc");
+const { captureSpec, playbackSpec } = require("./call-media-platform.cjs");
 
 const SAMPLE_RATE = 48_000;
 const CHANNEL_COUNT = 1;
@@ -48,17 +49,6 @@ function waitForIceGathering(peer) {
   });
 }
 
-function pulseArgs(mode, sampleRate = SAMPLE_RATE, channels = CHANNEL_COUNT) {
-  return [
-    mode,
-    "--raw",
-    "--format=s16le",
-    `--rate=${sampleRate}`,
-    `--channels=${channels}`,
-    "--latency-msec=20",
-  ];
-}
-
 const source = new wrtc.nonstandard.RTCAudioSource();
 const localTrack = source.createTrack();
 const peer = new wrtc.RTCPeerConnection();
@@ -88,7 +78,14 @@ function applyMicGain(samples) {
 
 function startCapture() {
   if (capture || stopping) return;
-  const child = spawn("parec", pulseArgs("--record"), { stdio: ["ignore", "pipe", "pipe"] });
+  let spec;
+  try {
+    spec = captureSpec();
+  } catch (error) {
+    fail(error);
+    return;
+  }
+  const child = spawn(spec.command, spec.args, { stdio: ["ignore", "pipe", "pipe"] });
   capture = child;
   let stderr = "";
   child.stderr.on("data", chunk => { stderr = `${stderr}${chunk}`.slice(-2_000); });
@@ -127,7 +124,8 @@ function ensurePlayback(sampleRate, channels) {
   if (playback && playbackFormat === format) return playback;
   stopChild(playback);
   playbackFormat = format;
-  const child = spawn("pacat", pulseArgs("--playback", sampleRate, channels), { stdio: ["pipe", "ignore", "pipe"] });
+  const spec = playbackSpec(sampleRate, channels);
+  const child = spawn(spec.command, spec.args, { stdio: ["pipe", "ignore", "pipe"] });
   playback = child;
   let stderr = "";
   child.stderr.on("data", chunk => { stderr = `${stderr}${chunk}`.slice(-2_000); });
