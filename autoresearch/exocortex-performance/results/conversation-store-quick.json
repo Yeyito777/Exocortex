@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-01T08:29:18.847Z",
+  "generatedAt": "2026-08-03T15:11:19.823Z",
   "machine": {
     "platform": "linux",
     "arch": "x64",
-    "bun": "1.3.6"
+    "bun": "1.3.14"
   },
   "methodology": {
     "quick": true,
@@ -23,113 +23,113 @@
   },
   "lowScale": {
     "jsonStartupAndList": {
-      "medianMs": 0.39851599999974496,
-      "p95Ms": 0.39851599999974496,
-      "maxMs": 0.4033159999999043,
-      "medianCpuMs": 0.402,
+      "medianMs": 0.2234090000000606,
+      "p95Ms": 0.2234090000000606,
+      "maxMs": 0.22493999999994685,
+      "medianCpuMs": 0.226,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.37841500000013184,
-          "cpuMs": 0.375,
+          "wallMs": 0.2234090000000606,
+          "cpuMs": 0.226,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.39851599999974496,
-          "cpuMs": 0.402,
+          "wallMs": 0.22493999999994685,
+          "cpuMs": 0.228,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.4033159999999043,
-          "cpuMs": 0.407,
+          "wallMs": 0.2190890000000536,
+          "cpuMs": 0.221,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteStartupAndList": {
-      "medianMs": 1.0885630000002493,
-      "p95Ms": 1.0885630000002493,
-      "maxMs": 1.1036129999997684,
-      "medianCpuMs": 1.083,
+      "medianMs": 0.6389360000000579,
+      "p95Ms": 0.6389360000000579,
+      "maxMs": 0.678957999999966,
+      "medianCpuMs": 0.641,
       "maxRssDelta": 0,
       "medianWriteBytes": 32768,
       "samples": [
         {
-          "wallMs": 1.0885630000002493,
-          "cpuMs": 1.083,
+          "wallMs": 0.678957999999966,
+          "cpuMs": 0.676,
+          "rssDelta": -9281536,
+          "writeBytes": 32768
+        },
+        {
+          "wallMs": 0.6389360000000579,
+          "cpuMs": 0.641,
           "rssDelta": 0,
           "writeBytes": 32768
         },
         {
-          "wallMs": 1.064730999999938,
-          "cpuMs": 1.062,
-          "rssDelta": 0,
-          "writeBytes": 32768
-        },
-        {
-          "wallMs": 1.1036129999997684,
-          "cpuMs": 1.097,
+          "wallMs": 0.6154050000000097,
+          "cpuMs": 0.609,
           "rssDelta": 0,
           "writeBytes": 32768
         }
       ]
     },
     "sqliteRecentPage": {
-      "medianMs": 1.8419409999996788,
-      "p95Ms": 1.8419409999996788,
-      "maxMs": 5.256275000000187,
-      "medianCpuMs": 1.821,
-      "maxRssDelta": 524288,
+      "medianMs": 1.040862000000061,
+      "p95Ms": 1.040862000000061,
+      "maxMs": 1.1353469999999106,
+      "medianCpuMs": 1.038,
+      "maxRssDelta": 262144,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 5.256275000000187,
-          "cpuMs": 2.243,
-          "rssDelta": 524288,
-          "writeBytes": 0
-        },
-        {
-          "wallMs": 1.8419409999996788,
-          "cpuMs": 1.821,
+          "wallMs": 1.1353469999999106,
+          "cpuMs": 1.13,
           "rssDelta": 262144,
           "writeBytes": 0
         },
         {
-          "wallMs": 1.6419140000002699,
-          "cpuMs": 1.634,
+          "wallMs": 1.040862000000061,
+          "cpuMs": 1.038,
+          "rssDelta": 131072,
+          "writeBytes": 0
+        },
+        {
+          "wallMs": 0.9553690000000188,
+          "cpuMs": 0.951,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteToolOutputs": {
-      "medianMs": 48.57815400000027,
-      "p95Ms": 48.57815400000027,
-      "maxMs": 86.93308900000011,
-      "medianCpuMs": 48.714,
-      "maxRssDelta": 2228224,
+      "medianMs": 29.58137600000009,
+      "p95Ms": 29.58137600000009,
+      "maxMs": 33.84051999999997,
+      "medianCpuMs": 29.319,
+      "maxRssDelta": 524288,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 48.57815400000027,
-          "cpuMs": 54.868,
-          "rssDelta": -40816640,
+          "wallMs": 28.92156799999998,
+          "cpuMs": 29.295,
+          "rssDelta": 524288,
           "writeBytes": 0
         },
         {
-          "wallMs": 86.93308900000011,
-          "cpuMs": 48.714,
-          "rssDelta": -733184,
+          "wallMs": 29.58137600000009,
+          "cpuMs": 29.319,
+          "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 47.980081000000155,
-          "cpuMs": 45.272,
-          "rssDelta": 2228224,
+          "wallMs": 33.84051999999997,
+          "cpuMs": 37.477,
+          "rssDelta": -93667328,
           "writeBytes": 0
         }
       ]
@@ -137,308 +137,308 @@
   },
   "largeScale": {
     "jsonStartupAndList": {
-      "medianMs": 53.87179000000003,
-      "p95Ms": 53.87179000000003,
-      "maxMs": 55.889728000000105,
-      "medianCpuMs": 26.094,
-      "maxRssDelta": 1835008,
+      "medianMs": 17.231587999999988,
+      "p95Ms": 17.231587999999988,
+      "maxMs": 18.01518999999996,
+      "medianCpuMs": 17.039,
+      "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 53.87179000000003,
-          "cpuMs": 27.164,
-          "rssDelta": 1835008,
+          "wallMs": 16.933245999999997,
+          "cpuMs": 17.039,
+          "rssDelta": -909312,
           "writeBytes": 0
         },
         {
-          "wallMs": 55.889728000000105,
-          "cpuMs": 26.094,
-          "rssDelta": 1048576,
+          "wallMs": 17.231587999999988,
+          "cpuMs": 16.763,
+          "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 24.223243999999795,
-          "cpuMs": 23.653,
-          "rssDelta": 1048576,
+          "wallMs": 18.01518999999996,
+          "cpuMs": 17.702,
+          "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteStartupAndList": {
-      "medianMs": 12.22694700000011,
-      "p95Ms": 12.22694700000011,
-      "maxMs": 12.243998000000147,
-      "medianCpuMs": 6.195,
-      "maxRssDelta": -28672,
+      "medianMs": 3.9371319999999628,
+      "p95Ms": 3.9371319999999628,
+      "maxMs": 3.992494000000022,
+      "medianCpuMs": 3.874,
+      "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 12.243998000000147,
-          "cpuMs": 7.188,
-          "rssDelta": -3493888,
+          "wallMs": 3.992494000000022,
+          "cpuMs": 4.014,
+          "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 12.22694700000011,
-          "cpuMs": 6.195,
-          "rssDelta": -45056,
+          "wallMs": 3.9371319999999628,
+          "cpuMs": 3.874,
+          "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 12.192315000000008,
-          "cpuMs": 6.15,
-          "rssDelta": -28672,
+          "wallMs": 3.916841999999974,
+          "cpuMs": 3.847,
+          "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "jsonWarmList": {
-      "medianMs": 4.292348000000175,
-      "p95Ms": 4.292348000000175,
-      "maxMs": 4.773855999999796,
-      "medianCpuMs": 4.18,
-      "maxRssDelta": 917504,
+      "medianMs": 2.513923000000034,
+      "p95Ms": 2.513923000000034,
+      "maxMs": 2.547914999999989,
+      "medianCpuMs": 2.505,
+      "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 4.773855999999796,
-          "cpuMs": 6.66,
-          "rssDelta": -4976640,
+          "wallMs": 2.547914999999989,
+          "cpuMs": 2.954,
+          "rssDelta": -2207744,
           "writeBytes": 0
         },
         {
-          "wallMs": 4.292348000000175,
-          "cpuMs": 4.18,
-          "rssDelta": 917504,
+          "wallMs": 2.513923000000034,
+          "cpuMs": 2.505,
+          "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 3.6652930000000197,
-          "cpuMs": 3.65,
+          "wallMs": 2.3811880000000087,
+          "cpuMs": 2.364,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteWarmList": {
-      "medianMs": 4.3060079999997924,
-      "p95Ms": 4.3060079999997924,
-      "maxMs": 4.735674000000017,
-      "medianCpuMs": 4.714,
-      "maxRssDelta": 786432,
+      "medianMs": 3.285174999999981,
+      "p95Ms": 3.285174999999981,
+      "maxMs": 3.362487999999985,
+      "medianCpuMs": 3.276,
+      "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 4.735674000000017,
-          "cpuMs": 4.714,
-          "rssDelta": 786432,
-          "writeBytes": 0
-        },
-        {
-          "wallMs": 4.295377000000144,
-          "cpuMs": 4.28,
+          "wallMs": 3.285174999999981,
+          "cpuMs": 3.276,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 4.3060079999997924,
-          "cpuMs": 7.442,
-          "rssDelta": 524288,
+          "wallMs": 3.362487999999985,
+          "cpuMs": 3.325,
+          "rssDelta": 0,
+          "writeBytes": 0
+        },
+        {
+          "wallMs": 3.223801999999978,
+          "cpuMs": 3.184,
+          "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "jsonFindById": {
-      "medianMs": 0.0557019999998829,
-      "p95Ms": 0.0557019999998829,
-      "maxMs": 0.06131299999992734,
-      "medianCpuMs": 0.059,
+      "medianMs": 0.016709999999989122,
+      "p95Ms": 0.016709999999989122,
+      "maxMs": 0.03398200000003726,
+      "medianCpuMs": 0.019,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.06131299999992734,
-          "cpuMs": 0.065,
+          "wallMs": 0.03398200000003726,
+          "cpuMs": 0.455,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.0557019999998829,
-          "cpuMs": 0.059,
+          "wallMs": 0.016709999999989122,
+          "cpuMs": 0.019,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.04584199999999328,
-          "cpuMs": 0.05,
+          "wallMs": 0.013640000000009422,
+          "cpuMs": 0.016,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteFindById": {
-      "medianMs": 0.049761999999873296,
-      "p95Ms": 0.049761999999873296,
-      "maxMs": 0.05750199999988581,
-      "medianCpuMs": 0.053,
+      "medianMs": 0.02271100000007209,
+      "p95Ms": 0.02271100000007209,
+      "maxMs": 0.023261000000047716,
+      "medianCpuMs": 0.025,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.049761999999873296,
-          "cpuMs": 0.053,
+          "wallMs": 0.018790999999964697,
+          "cpuMs": 0.021,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.04574200000001838,
-          "cpuMs": 0.049,
+          "wallMs": 0.02271100000007209,
+          "cpuMs": 0.025,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.05750199999988581,
-          "cpuMs": 0.053,
+          "wallMs": 0.023261000000047716,
+          "cpuMs": 0.025,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "jsonTitleSearch": {
-      "medianMs": 0.14100600000006125,
-      "p95Ms": 0.14100600000006125,
-      "maxMs": 0.14101599999980863,
-      "medianCpuMs": 0.144,
+      "medianMs": 0.07266299999992043,
+      "p95Ms": 0.07266299999992043,
+      "maxMs": 0.07356299999992189,
+      "medianCpuMs": 0.075,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.14101599999980863,
-          "cpuMs": 0.144,
+          "wallMs": 0.07356299999992189,
+          "cpuMs": 0.076,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.14100600000006125,
-          "cpuMs": 0.144,
+          "wallMs": 0.07107299999995575,
+          "cpuMs": 0.074,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.13037499999995816,
-          "cpuMs": 0.134,
+          "wallMs": 0.07266299999992043,
+          "cpuMs": 0.075,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteTitleSearch": {
-      "medianMs": 0.2592299999998886,
-      "p95Ms": 0.2592299999998886,
-      "maxMs": 0.44805699999983517,
-      "medianCpuMs": 0.256,
+      "medianMs": 0.09923499999990781,
+      "p95Ms": 0.09923499999990781,
+      "maxMs": 0.10615499999994427,
+      "medianCpuMs": 0.101,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.44805699999983517,
-          "cpuMs": 0.262,
+          "wallMs": 0.09923499999990781,
+          "cpuMs": 0.101,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.2460599999999431,
-          "cpuMs": 0.25,
+          "wallMs": 0.10615499999994427,
+          "cpuMs": 0.102,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.2592299999998886,
-          "cpuMs": 0.256,
+          "wallMs": 0.09283400000003894,
+          "cpuMs": 0.095,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteRecentPage": {
-      "medianMs": 0.11829400000010537,
-      "p95Ms": 0.11829400000010537,
-      "maxMs": 0.1266650000000027,
-      "medianCpuMs": 0.122,
+      "medianMs": 0.05330299999991439,
+      "p95Ms": 0.05330299999991439,
+      "maxMs": 0.05399199999999382,
+      "medianCpuMs": 0.055,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.1266650000000027,
-          "cpuMs": 0.13,
+          "wallMs": 0.052162000000066655,
+          "cpuMs": 0.054,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.11829400000010537,
-          "cpuMs": 0.122,
+          "wallMs": 0.05330299999991439,
+          "cpuMs": 0.055,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.11626400000000103,
-          "cpuMs": 0.119,
+          "wallMs": 0.05399199999999382,
+          "cpuMs": 0.056,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteMetadataWrite": {
-      "medianMs": 0.8486330000000635,
-      "p95Ms": 0.8486330000000635,
-      "maxMs": 0.8941439999998693,
-      "medianCpuMs": 0.827,
+      "medianMs": 0.5257820000000493,
+      "p95Ms": 0.5257820000000493,
+      "maxMs": 0.5391119999999319,
+      "medianCpuMs": 0.515,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.8486330000000635,
-          "cpuMs": 0.827,
+          "wallMs": 0.5391119999999319,
+          "cpuMs": 0.515,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.8941439999998693,
-          "cpuMs": 0.892,
+          "wallMs": 0.5257820000000493,
+          "cpuMs": 0.511,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.8364530000001196,
-          "cpuMs": 0.825,
+          "wallMs": 0.5253420000000233,
+          "cpuMs": 0.515,
           "rssDelta": 0,
           "writeBytes": 0
         }
       ]
     },
     "sqliteSidebarMove": {
-      "medianMs": 0.12406399999986206,
-      "p95Ms": 0.12406399999986206,
-      "maxMs": 0.127475000000004,
-      "medianCpuMs": 0.128,
+      "medianMs": 0.05020200000001296,
+      "p95Ms": 0.05020200000001296,
+      "maxMs": 0.06960199999991801,
+      "medianCpuMs": 0.053,
       "maxRssDelta": 0,
       "medianWriteBytes": 0,
       "samples": [
         {
-          "wallMs": 0.11992499999996653,
-          "cpuMs": 0.124,
+          "wallMs": 0.06960199999991801,
+          "cpuMs": 0.055,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.127475000000004,
-          "cpuMs": 0.131,
+          "wallMs": 0.04492199999992863,
+          "cpuMs": 0.047,
           "rssDelta": 0,
           "writeBytes": 0
         },
         {
-          "wallMs": 0.12406399999986206,
-          "cpuMs": 0.128,
+          "wallMs": 0.05020200000001296,
+          "cpuMs": 0.053,
           "rssDelta": 0,
           "writeBytes": 0
         }
@@ -448,103 +448,103 @@
   "largeAppend": {
     "1": {
       "json": {
-        "medianMs": 1.1684049999998933,
-        "p95Ms": 1.1684049999998933,
-        "maxMs": 2.3291710000000876,
-        "medianCpuMs": 1.17,
+        "medianMs": 0.7168699999999717,
+        "p95Ms": 0.7168699999999717,
+        "maxMs": 0.7381809999999405,
+        "medianCpuMs": 0.713,
         "maxRssDelta": 0,
         "medianWriteBytes": 0,
         "samples": [
           {
-            "wallMs": 2.3291710000000876,
-            "cpuMs": 1.216,
+            "wallMs": 0.7168699999999717,
+            "cpuMs": 0.713,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 1.1684049999998933,
-            "cpuMs": 1.17,
+            "wallMs": 0.7381809999999405,
+            "cpuMs": 0.74,
             "rssDelta": 0,
             "writeBytes": 0
           }
         ]
       },
       "sqlite": {
-        "medianMs": 0.4948490000001584,
-        "p95Ms": 0.4948490000001584,
-        "maxMs": 0.5072600000000875,
-        "medianCpuMs": 0.491,
+        "medianMs": 0.24596099999996568,
+        "p95Ms": 0.24596099999996568,
+        "maxMs": 0.2505310000000236,
+        "medianCpuMs": 0.274,
         "maxRssDelta": 0,
         "medianWriteBytes": 0,
         "samples": [
           {
-            "wallMs": 0.5072600000000875,
-            "cpuMs": 0.577,
+            "wallMs": 0.2505310000000236,
+            "cpuMs": 0.296,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.4948490000001584,
-            "cpuMs": 0.491,
+            "wallMs": 0.24596099999996568,
+            "cpuMs": 0.274,
             "rssDelta": 0,
             "writeBytes": 0
           }
         ]
       },
       "jsonBytes": 1050535,
-      "sqliteBytes": 1273856
+      "sqliteBytes": 1241088
     },
     "10": {
       "json": {
-        "medianMs": 12.515848000000005,
-        "p95Ms": 12.515848000000005,
-        "maxMs": 12.750646999999844,
-        "medianCpuMs": 12.077,
+        "medianMs": 7.56559100000004,
+        "p95Ms": 7.56559100000004,
+        "maxMs": 7.621473000000037,
+        "medianCpuMs": 7.521,
         "maxRssDelta": 0,
         "medianWriteBytes": 0,
         "samples": [
           {
-            "wallMs": 12.515848000000005,
-            "cpuMs": 12.407,
-            "rssDelta": -786432,
+            "wallMs": 7.621473000000037,
+            "cpuMs": 7.526,
+            "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 12.750646999999844,
-            "cpuMs": 12.077,
+            "wallMs": 7.56559100000004,
+            "cpuMs": 7.521,
             "rssDelta": 0,
             "writeBytes": 0
           }
         ]
       },
       "sqlite": {
-        "medianMs": 0.37905399999999645,
-        "p95Ms": 0.37905399999999645,
-        "maxMs": 0.40079500000001644,
-        "medianCpuMs": 0.384,
+        "medianMs": 0.19482799999991585,
+        "p95Ms": 0.19482799999991585,
+        "maxMs": 0.200717999999938,
+        "medianCpuMs": 0.196,
         "maxRssDelta": 0,
         "medianWriteBytes": 0,
         "samples": [
           {
-            "wallMs": 0.37905399999999645,
-            "cpuMs": 0.384,
+            "wallMs": 0.200717999999938,
+            "cpuMs": 0.196,
             "rssDelta": 0,
             "writeBytes": 0
           },
           {
-            "wallMs": 0.40079500000001644,
-            "cpuMs": 0.404,
+            "wallMs": 0.19482799999991585,
+            "cpuMs": 0.197,
             "rssDelta": 0,
             "writeBytes": 0
           }
         ]
       },
       "jsonBytes": 10487721,
-      "sqliteBytes": 10719232
+      "sqliteBytes": 10686464
     }
   },
   "storageBytes": {
-    "jsonSynthetic": 2345921,
-    "sqliteSynthetic": 2408448
+    "jsonSynthetic": 2355483,
+    "sqliteSynthetic": 2375680
   }
 }
