@@ -108,17 +108,17 @@ describe("tool macros", () => {
     expect(expandMacros("/tool uninstall")).toBe("Explain to me how the uninstallation process for a tool looks in Exocortex.");
   });
 
-  test("/tool install exposes the static install tool list", () => {
-    expect(getMacroArgs()["/tool install"]?.map(arg => arg.name)).toEqual([
-      "discord",
-      "exo",
-      "gmail",
-      "google",
-      "image",
-      "linkedin",
-      "transcribe",
-      "twitter",
-      "whatsapp",
+  test("/tool install exposes the canonical tool catalog", () => {
+    expect(getMacroArgs()["/tool install"]).toEqual([
+      { name: "discord", desc: "Discord messages and calls" },
+      { name: "exo", desc: "Debug other Exocortex instances" },
+      { name: "gmail", desc: "Read, search, and send email" },
+      { name: "google", desc: "Search the web" },
+      { name: "image", desc: "Generate AI images" },
+      { name: "linkedin", desc: "LinkedIn profiles and connections" },
+      { name: "transcribe", desc: "Transcribe audio files" },
+      { name: "twitter", desc: "Read and post on X" },
+      { name: "whatsapp", desc: "Read and send WhatsApp messages" },
     ]);
   });
 

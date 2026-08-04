@@ -73,6 +73,7 @@ interface MacroDef {
 
 interface ExternalToolSpec {
   cliName: string;
+  description: string;
   repo: string;
 }
 
@@ -82,15 +83,15 @@ interface InstalledExternalTool {
 }
 
 const EXTERNAL_TOOL_SPECS: ExternalToolSpec[] = [
-  { cliName: "discord-cli", repo: "https://github.com/Yeyito777/discord-cli.git" },
-  { cliName: "exo-cli", repo: "https://github.com/Yeyito777/exo-cli.git" },
-  { cliName: "gmail-cli", repo: "https://github.com/Yeyito777/gmail-cli.git" },
-  { cliName: "google-cli", repo: "https://github.com/Yeyito777/Google.git" },
-  { cliName: "image-cli", repo: "https://github.com/Yeyito777/image-cli.git" },
-  { cliName: "linkedin-cli", repo: "https://github.com/Yeyito777/linkedin-cli.git" },
-  { cliName: "transcribe-cli", repo: "https://github.com/Yeyito777/transcribe-cli.git" },
-  { cliName: "twitter-cli", repo: "https://github.com/Yeyito777/twitter-cli.git" },
-  { cliName: "whatsapp-cli", repo: "https://github.com/Yeyito777/whatsapp-cli.git" },
+  { cliName: "discord-cli", description: "Discord messages and calls", repo: "https://github.com/Yeyito777/discord-cli.git" },
+  { cliName: "exo-cli", description: "Debug other Exocortex instances", repo: "https://github.com/Yeyito777/exo-cli.git" },
+  { cliName: "gmail-cli", description: "Read, search, and send email", repo: "https://github.com/Yeyito777/gmail-cli.git" },
+  { cliName: "google-cli", description: "Search the web", repo: "https://github.com/Yeyito777/Google.git" },
+  { cliName: "image-cli", description: "Generate AI images", repo: "https://github.com/Yeyito777/image-cli.git" },
+  { cliName: "linkedin-cli", description: "LinkedIn profiles and connections", repo: "https://github.com/Yeyito777/linkedin-cli.git" },
+  { cliName: "transcribe-cli", description: "Transcribe audio files", repo: "https://github.com/Yeyito777/transcribe-cli.git" },
+  { cliName: "twitter-cli", description: "Read and post on X", repo: "https://github.com/Yeyito777/twitter-cli.git" },
+  { cliName: "whatsapp-cli", description: "Read and send WhatsApp messages", repo: "https://github.com/Yeyito777/whatsapp-cli.git" },
 ];
 
 function externalToolShortName(cliName: string): string {
@@ -114,9 +115,9 @@ function installedExternalTools(): InstalledExternalTool[] {
 
 /** Build a tool-install expansion string with the dynamic paths. */
 function toolInstall(spec: ExternalToolSpec): MacroArg {
-  const { cliName, repo } = spec;
+  const { cliName, description, repo } = spec;
   return {
-    name: externalToolShortName(cliName), desc: cliName,
+    name: externalToolShortName(cliName), desc: description,
     expansion: `Install the ${cliName} tool for yourself. Clone ${repo} into ${TOOLS_DIR}/${cliName}, then follow the README/setup instructions to build and install it. If the tool requires authentication or API tokens, walk me through the setup step by step — ask me for any credentials or config values you need.`,
   };
 }
