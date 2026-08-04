@@ -5,7 +5,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { buildToolSystemHints } from "./tools/registry";
-import { getExternalToolHints } from "./external-tools";
+import { getExternalToolHints, getExternalToolHintsForNames } from "./external-tools";
 import { configDir } from "@exocortex/shared/paths";
 
 let _userAddendum = "";
@@ -88,8 +88,10 @@ export interface BuildSystemPromptOptions {
   subagentMaxDepth?: number | null;
   /** Restrict tool-specific prompt hints to this explicit session allowlist. */
   toolNames?: readonly string[];
-  /** External tools are shell-backed and can be disabled for restricted sessions. */
+  /** Managed external tool hints can be disabled for utility/restricted sessions. */
   includeExternalToolHints?: boolean;
+  /** Restrict external manifest hints to this exact resolved allowlist. */
+  externalToolNames?: readonly string[];
   /** Session-specific behavior placed near the top of the system prompt. */
   wrapperNote?: string;
   /** Session-specific assistant identity. */
@@ -118,7 +120,9 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
   }
 
   if (options.includeExternalHints) {
-    const externalHints = getExternalToolHints();
+    const externalHints = options.externalToolNames === undefined
+      ? getExternalToolHints()
+      : getExternalToolHintsForNames(options.externalToolNames);
     if (externalHints) parts.push("# External tools\n" + externalHints);
   }
 

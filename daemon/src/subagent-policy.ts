@@ -1,5 +1,6 @@
 import type { Conversation } from "./messages";
 import type { BuildSystemPromptOptions } from "./system";
+import { getDefaultSubagentInternalToolNames, resolveConversationToolPolicy } from "./tool-policy";
 
 export const SCOPED_SUBAGENT_IDENTITY = "You are a scoped subagent working for a parent agent.";
 
@@ -11,16 +12,9 @@ export const SCOPED_SUBAGENT_WRAPPER_NOTE = [
   "Return only: conclusion, path:line evidence, and unresolved uncertainty.",
 ].join("\n");
 
-const BASE_SUBAGENT_TOOLS = ["read", "glob", "grep", "browse"] as const;
-const SUBAGENT_EDIT_TOOLS = ["bash", "write", "edit", "patch", "chrono"] as const;
-
-/** Tool capabilities are daemon-owned; callers can opt into mutation tools but not external hints. */
+/** Backward-compatible projection for callers/tests that have not selected exact tools. */
 export function subagentToolNames(maxDepth: number | null, allowEdits: boolean): string[] {
-  return [
-    ...BASE_SUBAGENT_TOOLS,
-    ...(allowEdits ? SUBAGENT_EDIT_TOOLS : []),
-    ...(typeof maxDepth === "number" && maxDepth > 0 ? ["exo"] : []),
-  ];
+  return getDefaultSubagentInternalToolNames(maxDepth, allowEdits);
 }
 
 export function isScopedSubagent(conversation: Pick<Conversation, "subagentPolicy">): boolean {
@@ -28,19 +22,25 @@ export function isScopedSubagent(conversation: Pick<Conversation, "subagentPolic
 }
 
 type ScopedPromptOptions = Pick<BuildSystemPromptOptions,
-  "identity" | "wrapperNote" | "toolNames" | "includeExternalToolHints"
+  "identity" | "wrapperNote" | "toolNames" | "includeExternalToolHints" | "externalToolNames"
 >;
 
-/** Return the immutable prompt restrictions for a scoped worker, or null for a normal conversation. */
+/** Return the scoped identity/wrapper plus this turn's resolved tool projection. */
 export function scopedSubagentPromptOptions(
-  conversation: Pick<Conversation, "subagentPolicy">,
+  conversation: Pick<Conversation, "subagentPolicy" | "toolPolicy">,
   maxDepth: number | null,
 ): ScopedPromptOptions | null {
   if (!isScopedSubagent(conversation)) return null;
+  const resolved = resolveConversationToolPolicy({
+    ...conversation,
+    subagentMaxDepth: maxDepth,
+    toolPolicy: conversation.toolPolicy ?? null,
+  }, maxDepth);
   return {
     identity: SCOPED_SUBAGENT_IDENTITY,
     wrapperNote: SCOPED_SUBAGENT_WRAPPER_NOTE,
-    toolNames: subagentToolNames(maxDepth, conversation.subagentPolicy?.allowEdits === true),
-    includeExternalToolHints: false,
+    toolNames: resolved.internalToolNames,
+    includeExternalToolHints: true,
+    externalToolNames: resolved.externalToolNames,
   };
 }

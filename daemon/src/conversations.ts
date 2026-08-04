@@ -6,7 +6,7 @@
  * In-flight stream tracking lives in streaming.ts.
  */
 
-import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy } from "./messages";
+import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, ConversationToolPolicy } from "./messages";
 import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, activeContextCompactionHistoryCount, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, TrimMode, ToolOutputInfo } from "./protocol";
@@ -526,6 +526,18 @@ export function setSubagentPolicy(id: string, policy: SubagentPolicy): boolean {
   return true;
 }
 
+export function setToolPolicy(id: string, policy: ConversationToolPolicy | null): boolean {
+  const conv = get(id);
+  if (!conv) return false;
+  conv.toolPolicy = policy ? {
+    internal: [...new Set(policy.internal)],
+    external: [...new Set(policy.external)],
+  } : null;
+  markDirty(id);
+  flush(id);
+  return true;
+}
+
 /** Bump an unpinned conversation to the top of the unpinned section. No-op for pinned conversations. */
 export function bumpToTop(id: string): boolean {
   const conv = get(id);
@@ -579,6 +591,7 @@ export function clone(id: string): Conversation | null {
     sortOrder: newOrder,
     folderId: src.folderId ?? null,
     title: (src.title || "clone") + " 📋",
+    toolPolicy: src.toolPolicy ? structuredClone(src.toolPolicy) : null,
   };
   if (src.activeContext && conv.activeContext) {
     for (const message of [...conv.messages, ...conv.activeContext.messages]) {

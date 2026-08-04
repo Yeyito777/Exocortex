@@ -7,7 +7,7 @@
 import { connect, type Socket } from "net";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
-import type { Command, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef } from "./protocol";
+import type { Command, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueueTiming, QueueWaitTarget, ToolPolicyMutation, TrimMode, SidebarItemRef } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
@@ -494,6 +494,14 @@ export class DaemonClient {
 
   getSystemPrompt(convId?: string): void {
     this.send({ type: "get_system_prompt", convId });
+  }
+
+  getToolPolicy(convId: string): void {
+    this.send({ type: "get_tool_policy", convId });
+  }
+
+  setToolPolicy(convId: string, mutation: ToolPolicyMutation): void {
+    this.send({ type: "set_tool_policy", convId, mutation });
   }
 
   llmComplete(

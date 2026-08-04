@@ -20,7 +20,7 @@ import type { QueuedMessageInfo } from "./protocol";
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 18;
+const CURRENT_VERSION = 19;
 
 interface ConversationFileV1 {
   version: 1;
@@ -235,7 +235,12 @@ interface ConversationFileV18 extends Omit<ConversationFileV17, "version"> {
   subagentPolicy: Conversation["subagentPolicy"];
 }
 
-type ConversationFile = ConversationFileV18;
+interface ConversationFileV19 extends Omit<ConversationFileV18, "version"> {
+  version: 19;
+  toolPolicy: Conversation["toolPolicy"];
+}
+
+type ConversationFile = ConversationFileV19;
 
 function normalizeProviderId(provider: unknown): ProviderId {
   return typeof provider === "string" && (DEFAULT_PROVIDER_ORDER as readonly string[]).includes(provider)
@@ -444,6 +449,11 @@ function migrateV17toV18(data: ConversationFileV17): ConversationFileV18 {
   };
 }
 
+/** v18 → v19: Persist exact internal/external per-conversation allowlists. */
+function migrateV18toV19(data: ConversationFileV18): ConversationFileV19 {
+  return { ...data, version: 19, toolPolicy: null };
+}
+
 function migrate(raw: Record<string, unknown>): ConversationFile {
   // Progressive migration — each function validates and upgrades one version.
   // `any` is intentional at this deserialization boundary: the data is parsed
@@ -467,6 +477,7 @@ function migrate(raw: Record<string, unknown>): ConversationFile {
   if (data.version < 16) data = migrateV15toV16(data);
   if (data.version < 17) data = migrateV16toV17(data);
   if (data.version < 18) data = migrateV17toV18(data);
+  if (data.version < 19) data = migrateV18toV19(data);
 
   if (data.version !== CURRENT_VERSION) {
     log("warn", `persistence: unknown schema version ${data.version}, attempting to load as v${CURRENT_VERSION}`);
@@ -828,6 +839,7 @@ function toFile(
     goal: conv.goal ?? null,
     subagentMaxDepth: conv.subagentMaxDepth ?? null,
     subagentPolicy: conv.subagentPolicy ?? null,
+    toolPolicy: conv.toolPolicy ?? null,
     storageGeneration,
     lastUnwindReceipt,
   };
@@ -873,6 +885,16 @@ function fromFile(file: ConversationFile, validateActiveContext = true): Convers
       allowEdits: policy.allowEdits === true,
       parentSystemInstructions: typeof policy.parentSystemInstructions === "string" ? policy.parentSystemInstructions : "",
     };
+  }
+  if (file.toolPolicy && typeof file.toolPolicy === "object") {
+    const policy = file.toolPolicy as unknown as Record<string, unknown>;
+    if (Array.isArray(policy.internal) && policy.internal.every((name) => typeof name === "string")
+        && Array.isArray(policy.external) && policy.external.every((name) => typeof name === "string")) {
+      conv.toolPolicy = {
+        internal: [...new Set(policy.internal as string[])],
+        external: [...new Set(policy.external as string[])],
+      };
+    }
   }
   if (file.folderId != null) conv.folderId = file.folderId;
   if (file.goal != null && file.goal.status !== "complete") conv.goal = file.goal;

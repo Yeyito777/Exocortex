@@ -18,6 +18,7 @@ import { buildSystemPrompt } from "./system";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
+import { applyToolPolicyMutation, buildToolPolicySnapshot, resolveConversationToolPolicy } from "./tool-policy";
 import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME } from "./messages";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode, supportsImageInputs } from "./providers/registry";
 import { transcribeAudioBytes } from "./transcription";
@@ -2473,6 +2474,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const scopedPromptOptions = conversation
           ? scopedSubagentPromptOptions(conversation, subagentMaxDepth)
           : null;
+        const resolvedToolPolicy = conversation
+          ? resolveConversationToolPolicy(conversation, subagentMaxDepth)
+          : null;
         server.sendTo(client, {
           type: "system_prompt",
           reqId: cmd.reqId,
@@ -2481,8 +2485,61 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             conversationId: cmd.convId,
             subagentMaxDepth,
             ...(scopedPromptOptions ?? {}),
+            ...(resolvedToolPolicy ? {
+              toolNames: resolvedToolPolicy.internalToolNames,
+              includeExternalToolHints: true,
+              externalToolNames: resolvedToolPolicy.externalToolNames,
+            } : {}),
           }),
         });
+        break;
+      }
+
+      case "get_tool_policy": {
+        const conversation = convStore.get(cmd.convId);
+        if (!conversation) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Conversation not found" });
+          break;
+        }
+        server.sendTo(client, {
+          type: "tool_policy",
+          reqId: cmd.reqId,
+          convId: cmd.convId,
+          snapshot: buildToolPolicySnapshot(conversation),
+          changed: false,
+        });
+        break;
+      }
+
+      case "set_tool_policy": {
+        const conversation = convStore.get(cmd.convId);
+        if (!conversation) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Conversation not found" });
+          break;
+        }
+        if (convStore.isStreaming(cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot change tool availability while the conversation is streaming." });
+          break;
+        }
+        try {
+          const policy = applyToolPolicyMutation(conversation, cmd.mutation);
+          convStore.setToolPolicy(cmd.convId, policy);
+          const updated = convStore.get(cmd.convId)!;
+          server.sendTo(client, {
+            type: "tool_policy",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            snapshot: buildToolPolicySnapshot(updated),
+            changed: true,
+          });
+        } catch (error) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
         break;
       }
 

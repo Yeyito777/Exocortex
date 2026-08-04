@@ -20,6 +20,7 @@ import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
+import { resolveConversationToolPolicy } from "./tool-policy";
 import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
 import { goalContinuationUserMessage } from "./goals";
 import { createProviderTurnSession, streamMessage } from "./api";
@@ -589,12 +590,17 @@ async function orchestrateAssistantTurn(
   // Expose a child turn's remaining delegation budget to prevent predictable
   // rejected send/queue attempts when its max depth is zero.
   const scopedPromptOptions = scopedSubagentPromptOptions(liveConv, subagentMaxDepth);
-  const allowedToolNames = scopedPromptOptions?.toolNames;
+  const resolvedToolPolicy = resolveConversationToolPolicy(liveConv, subagentMaxDepth);
+  const allowedToolNames = resolvedToolPolicy.internalToolNames;
+  toolContext.externalToolNames = resolvedToolPolicy.externalToolNames;
   const systemPrompt = buildSystemPrompt({
     conversationInstructions: systemInstructionsText || undefined,
     conversationId: convId,
     subagentMaxDepth,
     ...(scopedPromptOptions ?? {}),
+    toolNames: allowedToolNames,
+    includeExternalToolHints: true,
+    externalToolNames: resolvedToolPolicy.externalToolNames,
   });
   const toolDefs = getToolDefs(allowedToolNames);
   const contextLimit = getMaxContext(conv.provider, conv.model);

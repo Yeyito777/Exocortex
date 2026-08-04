@@ -51,7 +51,7 @@ function summarizeExoParams(primary: string, input: Record<string, unknown>, ski
 
 const EXO_SYSTEM_HINT = [
   "### subagents",
-  "For work, don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents are read-only by default. Set allow_edits=true if needed.",
+  "Use the native `exo` tool for delegated work. Don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents get research tools and no external tools by default. Use internal_tools/external_tools for exact delegation; allow_edits=true remains legacy shorthand for shell and mutation access.",
   "### subscriptions",
   "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
   "Subagents start in the daemon's working directory, so include the target absolute directory and all necessary task context.",
@@ -132,7 +132,17 @@ export const exo: Tool = {
       },
       allow_edits: {
         type: "boolean",
-        description: "For a new subagent, opt into shell and write/edit/patch tools. Defaults to false, cannot be changed by later sends, and cannot be granted by a scoped parent that lacks edit access.",
+        description: "Legacy shorthand for a new subagent: add shell, write/edit/patch, and chrono to the research tools. Cannot be combined with internal_tools.",
+      },
+      internal_tools: {
+        type: "array",
+        items: { type: "string" },
+        description: "Exact configurable internal-tool allowlist for a new subagent. Defaults to research tools (plus legacy allow_edits additions) and cannot exceed the caller's effective tools.",
+      },
+      external_tools: {
+        type: "array",
+        items: { type: "string" },
+        description: "Exact external-tool allowlist for a new subagent. Defaults to none; selected manifest hints and the restricted external runner are provided without granting bash.",
       },
       mode: {
         type: "string",

@@ -1216,3 +1216,55 @@ describe("/instructions", () => {
     });
   });
 });
+
+describe("/tools", () => {
+  test("shows the active conversation policy", () => {
+    const state = createInitialState();
+    state.convId = "conversation-1";
+    expect(tryCommand("/tools", state)).toEqual({ type: "tool_policy" });
+  });
+
+  test("parses incremental policy changes, profiles, and reset", () => {
+    const state = createInitialState();
+    state.convId = "conversation-1";
+    expect(tryCommand("/tools allow internal:write external:gmail", state)).toEqual({
+      type: "tool_policy",
+      mutation: {
+        action: "allow",
+        tools: [
+          { kind: "internal", name: "write" },
+          { kind: "external", name: "gmail" },
+        ],
+      },
+    });
+    expect(tryCommand("/tools profile workspace", state)).toEqual({
+      type: "tool_policy",
+      mutation: { action: "profile", profile: "workspace" },
+    });
+    expect(tryCommand("/tools reset", state)).toEqual({
+      type: "tool_policy",
+      mutation: { action: "reset" },
+    });
+  });
+
+  test("offers installed internal and external tools in autocomplete", () => {
+    const state = createInitialState();
+    state.toolRegistry = [
+      { name: "read", label: "Read", color: "#ffffff" },
+      { name: "external", label: "External", color: "#ffffff" },
+    ];
+    state.externalToolStyles = [{ cmd: "gmail", label: "Gmail", color: "#ffffff" }];
+    const args = getCommandArgs(state, "/tools");
+    expect(args["/tools allow"]?.map((item) => item.name)).toEqual(["internal:read", "external:gmail"]);
+    expect(args["/tools profile"]?.map((item) => item.name)).toEqual(["research", "workspace", "shell", "full"]);
+  });
+
+  test("requires an open conversation and rejects malformed references", () => {
+    const state = createInitialState();
+    expect(tryCommand("/tools", state)).toEqual({ type: "handled" });
+    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "Start or open a conversation before using /tools." });
+    state.convId = "conversation-1";
+    expect(tryCommand("/tools allow gmail", state)).toEqual({ type: "handled" });
+    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: expect.stringContaining("Invalid /tools command") });
+  });
+});

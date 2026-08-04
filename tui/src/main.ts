@@ -824,6 +824,12 @@ function handleSubmit(): void {
         case "get_system_prompt":
           daemon.getSystemPrompt(state.convId ?? undefined);
           break;
+        case "tool_policy":
+          if (state.convId) {
+            if (cmdResult.mutation) daemon.setToolPolicy(state.convId, cmdResult.mutation);
+            else daemon.getToolPolicy(state.convId);
+          }
+          break;
         case "set_system_instructions":
           if (state.convId) daemon.setSystemInstructions(state.convId, cmdResult.text);
           break;

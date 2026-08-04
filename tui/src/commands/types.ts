@@ -1,5 +1,5 @@
 import type { RenderState } from "../state";
-import type { GoalAction, OpenAILoginMethod, TrimMode } from "../protocol";
+import type { GoalAction, OpenAILoginMethod, ToolPolicyMutation, TrimMode } from "../protocol";
 import type { ProviderId, ModelId, EffortLevel } from "../messages";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
 
@@ -37,6 +37,7 @@ export type CommandResult =
   | { type: "logout"; provider?: ProviderId }
   | { type: "theme_changed" }
   | { type: "get_system_prompt" }
+  | { type: "tool_policy"; mutation?: ToolPolicyMutation }
   | { type: "set_system_instructions"; text: string };
 
 export interface SlashCommand {

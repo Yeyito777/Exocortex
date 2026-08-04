@@ -19,6 +19,7 @@ import { browse } from "./browse";
 import { goal } from "./goal";
 import { exo } from "./exo";
 import { chrono } from "./chrono";
+import { external } from "./external";
 import { computerUseTools } from "./computer-use";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage, isToolTimeoutReason, toolTimeoutReason } from "../abort";
@@ -40,6 +41,7 @@ const TOOLS: Tool[] = [
   goal,
   exo,
   chrono,
+  external,
   ...computerUseTools,
 ];
 

@@ -8,9 +8,9 @@
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery } from "./messages";
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, ToolPolicyMutation, ToolPolicySnapshot } from "./messages";
 import type { RealtimeVoice } from "./realtime";
-export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery };
+export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, ToolPolicyMutation, ToolPolicySnapshot };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
@@ -744,6 +744,19 @@ export interface GetSystemPromptCommand {
   convId?: string;
 }
 
+export interface GetToolPolicyCommand {
+  type: "get_tool_policy";
+  reqId?: string;
+  convId: string;
+}
+
+export interface SetToolPolicyCommand {
+  type: "set_tool_policy";
+  reqId?: string;
+  convId: string;
+  mutation: ToolPolicyMutation;
+}
+
 export interface TranscribeAudioCommand {
   type: "transcribe_audio";
   reqId?: string;
@@ -862,6 +875,8 @@ export type Command =
   | SetSystemInstructionsCommand
   | LlmCompleteCommand
   | GetSystemPromptCommand
+  | GetToolPolicyCommand
+  | SetToolPolicyCommand
   | TranscribeAudioCommand
   | LoginCommand
   | AccountCommand
@@ -1462,6 +1477,14 @@ export interface SystemPromptEvent {
   systemPrompt: string;
 }
 
+export interface ToolPolicyEvent {
+  type: "tool_policy";
+  reqId?: string;
+  convId: string;
+  snapshot: ToolPolicySnapshot;
+  changed: boolean;
+}
+
 export interface TranscriptionResultEvent {
   type: "transcription_result";
   reqId?: string;
@@ -1602,6 +1625,7 @@ export type Event =
   | FolderInstructionsUpdatedEvent
   | LlmCompleteResultEvent
   | SystemPromptEvent
+  | ToolPolicyEvent
   | TranscriptionResultEvent
   | ExternalToolDaemonResultEvent
   | ExternalNotificationSourceEvent

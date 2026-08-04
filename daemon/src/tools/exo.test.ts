@@ -97,6 +97,8 @@ describe("native exo tool contract", () => {
     expect(schema).toContain("max_depth");
     expect(schema).toContain('"effort"');
     expect(schema).toContain('"allow_edits"');
+    expect(schema).toContain('"internal_tools"');
+    expect(schema).toContain('"external_tools"');
     expect(schema).toContain('"task_id"');
     expect(schema).toContain("exact active background-task ID returned by action=tasks");
     expect(schema).toContain("Maximum number of additional subagent generations permitted");
@@ -104,7 +106,7 @@ describe("native exo tool contract", () => {
     expect(exo.description).toContain("Transcription and cross-instance targeting are intentionally excluded");
     expect(exo.systemHint).toBe([
       "### subagents",
-      "For work, don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents are read-only by default. Set allow_edits=true if needed.",
+      "Use the native `exo` tool for delegated work. Don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents get research tools and no external tools by default. Use internal_tools/external_tools for exact delegation; allow_edits=true remains legacy shorthand for shell and mutation access.",
       "### subscriptions",
       "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
       "Subagents start in the daemon's working directory, so include the target absolute directory and all necessary task context.",
@@ -451,6 +453,40 @@ describe("native exo daemon runtime", () => {
     }, parentId);
     expect(immutable).toMatchObject({ isError: true });
     expect(immutable.output).toContain("allow_edits can only be specified when creating a new subagent");
+  });
+
+  test("delegates an exact internal-tool allowlist to a new child", async () => {
+    const parentId = id("exact-tools-parent");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn: async () => successfulOutcome("inspected"),
+      hasCredentials: () => true,
+    });
+
+    const result = await runtime.execute({
+      action: "send",
+      text: "Inspect two files",
+      title: "Inspect exact files",
+      internal_tools: ["read", "grep"],
+      mode: "wait",
+      max_depth: 0,
+    }, parentId);
+    const childId = result.output.match(/exo:([^\s]+)/)?.[1];
+    expect(childId).toBeTruthy();
+    if (!childId) return;
+    conversationIds.push(childId);
+    expect(get(childId)?.toolPolicy).toEqual({ internal: ["read", "grep"], external: [] });
+
+    const prompt = await runtime.execute({
+      action: "commands",
+      command: "system_prompt",
+      args: { conversation_id: childId },
+    }, parentId);
+    expect(prompt.output).toContain("Prefer the read tool over cat/head/tail");
+    expect(prompt.output).toContain("Prefer the grep tool over grep/rg");
+    expect(prompt.output).not.toContain("Prefer the glob tool over find/ls");
+    expect(prompt.output).not.toContain("## bash");
   });
 
   test("prevents scoped children from escalating edit access or targeting unrelated conversations", async () => {

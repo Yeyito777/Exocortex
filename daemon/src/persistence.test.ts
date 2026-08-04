@@ -722,6 +722,10 @@ describe("save / load round-trip", () => {
         allowEdits: true,
         parentSystemInstructions: "Inherited constraint",
       },
+      toolPolicy: {
+        internal: ["read", "glob", "grep", "browse", "write", "edit", "patch"],
+        external: ["google"],
+      },
     };
 
     save(original);
@@ -758,6 +762,35 @@ describe("save / load round-trip", () => {
       allowEdits: false,
       parentSystemInstructions: "",
     });
+  });
+
+  test("migrates v18 conversations to the default tool policy", () => {
+    const id = mkId("legacy-tool-policy");
+    writeFixture(id, {
+      version: 18,
+      id,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      fastMode: false,
+      messages: [],
+      activeContext: null,
+      createdAt: 14_200_000,
+      updatedAt: 14_200_001,
+      lastContextTokens: null,
+      marked: false,
+      pinned: false,
+      sortOrder: -14_200_001,
+      folderId: null,
+      title: "Legacy policy",
+      goal: null,
+      subagentMaxDepth: null,
+      subagentPolicy: null,
+      storageGeneration: 1,
+      lastUnwindReceipt: null,
+    });
+
+    expect(load(id)?.toolPolicy).toBeUndefined();
   });
 
   test("save then load returns a deeply equal conversation", () => {

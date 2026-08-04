@@ -67,6 +67,8 @@ export interface ToolExecutionContext {
   subagentMaxDepth?: number | null;
   /** Model backing the active conversation, when the tool is run from one. */
   model?: string;
+  /** Managed external CLI names enabled for this turn. Undefined preserves legacy all-access behavior. */
+  externalToolNames?: readonly string[];
   /** Provider-assigned tool call id for the currently executing tool. */
   toolCallId?: string;
   /** Native current-daemon management and subagent capability. */

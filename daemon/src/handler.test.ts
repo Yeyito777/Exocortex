@@ -113,6 +113,43 @@ describe("handler shutdown preparation", () => {
   });
 });
 
+describe("handler conversation tool policy", () => {
+  afterEach(cleanupIds);
+
+  test("shows, mutates, and resets daemon-owned policy", async () => {
+    const id = mkId("tool-policy");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const sent: Array<Record<string, any>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "get_tool_policy", reqId: "show", convId: id });
+    expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "show", changed: false, snapshot: { source: "default" } });
+
+    await handle({} as never, {
+      type: "set_tool_policy",
+      reqId: "workspace",
+      convId: id,
+      mutation: { action: "profile", profile: "workspace" },
+    });
+    expect(get(id)?.toolPolicy).toEqual({ internal: ["read", "write", "glob", "grep", "edit", "patch", "browse"], external: [] });
+    expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "workspace", changed: true, snapshot: { source: "explicit", shellWarning: false } });
+
+    await handle({} as never, {
+      type: "set_tool_policy",
+      reqId: "reset",
+      convId: id,
+      mutation: { action: "reset" },
+    });
+    expect(get(id)?.toolPolicy).toBeNull();
+    expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "reset", changed: true, snapshot: { source: "default" } });
+  });
+});
+
 describe("handler daemon-owned queue", () => {
   afterEach(cleanupIds);
 

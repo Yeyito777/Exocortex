@@ -137,10 +137,16 @@ export const MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL = 32;
 export interface SubagentPolicy {
   /** Conversation that created this worker. Null is reserved for external/debug clients. */
   parentConversationId: string | null;
-  /** Shell and mutation capabilities are opt-in for scoped workers. */
+  /** Legacy allow_edits shorthand; an exact toolPolicy supersedes it. */
   allowEdits: boolean;
   /** Snapshot of the parent's effective folder/conversation instructions at creation. */
   parentSystemInstructions: string;
+}
+
+/** Exact per-conversation selection. Omission uses the root/scoped defaults. */
+export interface ConversationToolPolicy {
+  internal: string[];
+  external: string[];
 }
 
 export interface Conversation {
@@ -171,6 +177,8 @@ export interface Conversation {
   subagentMaxDepth?: number | null;
   /** Restricted worker capabilities and inherited parent constraints. */
   subagentPolicy?: SubagentPolicy | null;
+  /** User/delegator-selected internal and external tool allowlists. */
+  toolPolicy?: ConversationToolPolicy | null;
 }
 
 /**

@@ -47,7 +47,7 @@ import * as legacy from "./json-persistence";
 import { log } from "./log";
 import type { ConversationRepository } from "./conversation-repository";
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const DEFAULT_FILE = "exocortex.sqlite3";
 const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
 
@@ -123,6 +123,7 @@ interface ConversationRow {
   goal_json: string | null;
   subagent_max_depth: number | null;
   subagent_policy_json: string | null;
+  tool_policy_json: string | null;
   storage_generation: number;
   message_count: number;
   stored_message_count: number;
@@ -603,6 +604,12 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(6, "separate large message payloads", Date.now());
       })();
     }
+    if (current < 7 && targetVersion >= 7) {
+      this.db.transaction(() => {
+        this.db.exec("ALTER TABLE conversations ADD COLUMN tool_policy_json TEXT;");
+        this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(7, "per-conversation tool policy", Date.now());
+      })();
+    }
   }
 
   close(): void {
@@ -853,6 +860,7 @@ export class SqliteConversationStore implements ConversationRepository {
         goal: parseOptional(row.goal_json),
         subagentMaxDepth: row.subagent_max_depth,
         subagentPolicy: parseOptional(row.subagent_policy_json),
+        toolPolicy: parseOptional(row.tool_policy_json),
       };
       const receiptRow = this.db.query<{
         operation_id: string;
@@ -953,9 +961,9 @@ export class SqliteConversationStore implements ConversationRepository {
       INSERT INTO conversations(
         id, provider, model, effort, fast_mode, created_at, updated_at,
         last_context_tokens, marked, pinned, sort_order, folder_id, title,
-        goal_json, subagent_max_depth, subagent_policy_json, storage_generation,
+        goal_json, subagent_max_depth, subagent_policy_json, tool_policy_json, storage_generation,
         message_count, stored_message_count, display_entry_count, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
       ON CONFLICT(id) DO UPDATE SET
         provider=excluded.provider, model=excluded.model, effort=excluded.effort,
         fast_mode=excluded.fast_mode, created_at=excluded.created_at,
@@ -964,6 +972,7 @@ export class SqliteConversationStore implements ConversationRepository {
         folder_id=excluded.folder_id, title=excluded.title, goal_json=excluded.goal_json,
         subagent_max_depth=excluded.subagent_max_depth,
         subagent_policy_json=excluded.subagent_policy_json,
+        tool_policy_json=excluded.tool_policy_json,
         storage_generation=excluded.storage_generation, message_count=excluded.message_count,
         stored_message_count=excluded.stored_message_count, deleted_at=NULL
     `).run(
@@ -983,6 +992,7 @@ export class SqliteConversationStore implements ConversationRepository {
       optionalJson(conv.goal?.status === "complete" ? null : conv.goal),
       conv.subagentMaxDepth ?? null,
       optionalJson(conv.subagentPolicy),
+      optionalJson(conv.toolPolicy),
       generation,
       summary.messageCount,
       conv.messages.length,
@@ -1561,7 +1571,7 @@ export class SqliteConversationStore implements ConversationRepository {
     if (!conv) return null;
     const generation = this.row(id, includeDeleted)!.storage_generation;
     return {
-      version: 18,
+      version: 19,
       id: conv.id,
       provider: conv.provider,
       model: conv.model,
@@ -1580,6 +1590,7 @@ export class SqliteConversationStore implements ConversationRepository {
       goal: conv.goal ?? null,
       subagentMaxDepth: conv.subagentMaxDepth ?? null,
       subagentPolicy: conv.subagentPolicy ?? null,
+      toolPolicy: conv.toolPolicy ?? null,
       storageGeneration: generation,
       lastUnwindReceipt: this.getLastUnwindReceipt(conv),
     };

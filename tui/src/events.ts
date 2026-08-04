@@ -55,6 +55,7 @@ import { handleToolsAvailable } from "./events/provider";
 import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
 import type { DaemonActions } from "./events/types";
 import { handleCallTranscript, reconcileCallTranscriptDrafts } from "./events/call";
+import { formatToolPolicySnapshot } from "./commands/tools";
 
 export type { DaemonActions } from "./events/types";
 
@@ -498,6 +499,10 @@ export function handleEvent(
 
     case "system_prompt":
       pushSystemMessage(state, event.systemPrompt);
+      break;
+
+    case "tool_policy":
+      pushSystemMessage(state, formatToolPolicySnapshot(event.snapshot, event.changed));
       break;
 
     case "system_instructions_updated":

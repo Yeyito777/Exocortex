@@ -466,6 +466,38 @@ export interface ToolDisplayInfo {
   color: string;    // hex color "#d19a66"
 }
 
+// ── Per-conversation tool policy ───────────────────────────────────
+
+export type ToolPolicyKind = "internal" | "external";
+export type ToolPolicyProfile = "research" | "workspace" | "shell" | "full";
+
+export interface ToolPolicyRef {
+  kind: ToolPolicyKind;
+  name: string;
+}
+
+export type ToolPolicyMutation =
+  | { action: "allow" | "deny"; tools: ToolPolicyRef[] }
+  | { action: "profile"; profile: ToolPolicyProfile }
+  | { action: "reset" };
+
+export interface ToolPolicyAvailability {
+  name: string;
+  label: string;
+  enabled: boolean;
+}
+
+/** Daemon-resolved policy shown by `/tools`; installed and enabled are distinct. */
+export interface ToolPolicySnapshot {
+  convId: string;
+  scoped: boolean;
+  source: "default" | "explicit";
+  internal: ToolPolicyAvailability[];
+  external: ToolPolicyAvailability[];
+  /** Bash or command-capable scheduling makes denials non-sandbox boundaries. */
+  shellWarning: boolean;
+}
+
 /**
  * Bash command style — maps a command prefix to TUI display properties.
  * Global external-tool styles are sent alongside ToolDisplayInfo; local styles

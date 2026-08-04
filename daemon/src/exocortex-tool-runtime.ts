@@ -57,6 +57,13 @@ import {
 } from "./conversation-activity";
 import { buildSystemPrompt, reloadUserAddendum, setUserAddendum } from "./system";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
+import {
+  assertDelegatedSubset,
+  buildToolPolicySnapshot,
+  getDefaultSubagentInternalToolNames,
+  resolveConversationToolPolicy,
+  validateToolSelection,
+} from "./tool-policy";
 import { getLastUsage } from "./usage";
 import {
   listExternalNotificationSources,
@@ -160,6 +167,15 @@ function optionalBooleanInput(input: Record<string, unknown>, key: string): bool
   if (value === undefined) return undefined;
   if (typeof value !== "boolean") throw new Error(`${key} must be a boolean`);
   return value;
+}
+
+function optionalStringArrayInput(input: Record<string, unknown>, key: string): string[] | undefined {
+  const value = input[key];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || !entry.trim())) {
+    throw new Error(`${key} must be an array of non-empty strings`);
+  }
+  return [...new Set(value.map((entry) => (entry as string).trim()))];
 }
 
 function effortInput(value: unknown): EffortLevel | undefined {
@@ -700,12 +716,16 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const maxDepth = requestedMaxDepth(input, callerMaxDepth);
     let convId = stringInput(input, "conversation_id");
     const requestedAllowEdits = optionalBooleanInput(input, "allow_edits");
+    const requestedInternalTools = optionalStringArrayInput(input, "internal_tools");
+    const requestedExternalTools = optionalStringArrayInput(input, "external_tools");
+    if (requestedInternalTools && requestedAllowEdits !== undefined) {
+      throw new Error("internal_tools and allow_edits cannot be specified together");
+    }
     if (convId && requestedAllowEdits !== undefined) {
       throw new Error("allow_edits can only be specified when creating a new subagent");
     }
-    const callerPolicy = scopedCallerPolicy(parentConvId);
-    if (requestedAllowEdits === true && callerPolicy && !callerPolicy.allowEdits) {
-      throw new Error("A scoped subagent without edit access cannot grant edit access to a child.");
+    if (convId && (requestedInternalTools !== undefined || requestedExternalTools !== undefined)) {
+      throw new Error("internal_tools and external_tools can only be specified when creating a new subagent");
     }
     const requestedTitle = convId ? undefined : subagentTitleInput(input);
     let taskTitle: string;
@@ -715,6 +735,31 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       ensureSubagentCapacity(parentConvId);
       const selection = resolveModelSelection(input, "medium");
       ensureCanStart(selection.provider);
+      const parent = parentConvId ? convStore.get(parentConvId) : undefined;
+      const parentTools = parent ? resolveConversationToolPolicy(parent, callerMaxDepth ?? parent.subagentMaxDepth ?? null) : null;
+      let childInternalTools = validateToolSelection(
+        "internal",
+        requestedInternalTools ?? getDefaultSubagentInternalToolNames(maxDepth, requestedAllowEdits === true),
+      );
+      const childExternalTools = validateToolSelection("external", requestedExternalTools ?? []);
+      if (maxDepth <= 0 && childInternalTools.includes("exo")) {
+        throw new Error("Cannot enable internal tool exo for a child with max_depth=0");
+      }
+      if (parentTools) {
+        if (requestedInternalTools) {
+          assertDelegatedSubset("internal", childInternalTools, parentTools.configurableInternalToolNames);
+        } else {
+          const parentInternal = new Set(parentTools.configurableInternalToolNames);
+          childInternalTools = childInternalTools.filter((name) => parentInternal.has(name));
+          if (requestedAllowEdits === true) {
+            const editTools = getDefaultSubagentInternalToolNames(maxDepth, true);
+            if (editTools.some((name) => !parentInternal.has(name))) {
+              throw new Error("A scoped subagent without edit access cannot grant edit access to a child.");
+            }
+          }
+        }
+        assertDelegatedSubset("external", childExternalTools, parentTools.externalToolNames);
+      }
       const folder = convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME);
       if (!folder) throw new Error(`Failed to create ${SUBAGENTS_FOLDER_NAME} folder`);
       convId = convStore.generateId();
@@ -724,6 +769,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         allowEdits: requestedAllowEdits === true,
         parentSystemInstructions: parentConvId ? convStore.getEffectiveSystemInstructions(parentConvId) ?? "" : "",
       });
+      convStore.setToolPolicy(convId, { internal: childInternalTools, external: childExternalTools });
       taskTitle = requestedTitle!;
       created = true;
       broadcastConversationUpdated(server, convId);
@@ -798,6 +844,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         max_depth: maxDepth,
         effort: child?.effort ?? null,
         allow_edits: child?.subagentPolicy?.allowEdits === true,
+        internal_tools: child ? resolveConversationToolPolicy(child).configurableInternalToolNames : [],
+        external_tools: child ? resolveConversationToolPolicy(child).externalToolNames : [],
         notify_parent: notify ? parentConvId : null,
       }));
     }
@@ -945,6 +993,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const snapshot = convStore.getRenderSnapshot(convId, false);
     if (!summary || !snapshot) throw new Error(`Conversation ${convId} not found`);
     const policy = convStore.get(convId)?.subagentPolicy;
+    const conversation = convStore.get(convId)!;
     const result = ok(pretty({
       conversation_id: convId,
       title: summary.title,
@@ -966,6 +1015,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         parent_conversation_id: policy.parentConversationId,
         allow_edits: policy.allowEdits,
       } : null,
+      tool_policy: buildToolPolicySnapshot(conversation),
       queued_messages: convStore.getQueuedMessages(convId).map(message => ({
         text: message.text,
         timing: message.timing,
@@ -1234,11 +1284,15 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     if (!conversation) throw new Error(`Conversation ${convId} not found`);
     const instructions = convStore.getEffectiveSystemInstructions(convId);
     const scopedPromptOptions = scopedSubagentPromptOptions(conversation, conversation.subagentMaxDepth ?? 0);
+    const resolvedToolPolicy = resolveConversationToolPolicy(conversation, conversation.subagentMaxDepth ?? null);
     return ok(buildSystemPrompt({
       conversationInstructions: instructions ?? undefined,
       conversationId: convId,
       subagentMaxDepth: conversation.subagentMaxDepth ?? null,
       ...(scopedPromptOptions ?? {}),
+      toolNames: resolvedToolPolicy.internalToolNames,
+      includeExternalToolHints: true,
+      externalToolNames: resolvedToolPolicy.externalToolNames,
     }));
   };
 

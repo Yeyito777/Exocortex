@@ -2,7 +2,7 @@
 
 Canonical database: `<dataDir>/exocortex.sqlite3`
 
-Current schema version: **6**
+Current schema version: **7**
 
 ## Lifecycle tables
 
@@ -19,8 +19,9 @@ Current schema version: **6**
 
 One live or soft-deleted row per conversation. It stores provider/model/effort,
 fast mode, timestamps, context total, marked/pinned/order/folder/title, goal,
-subagent policy/depth, `storage_generation`, summary message counts, compact
-display count, and `deleted_at`.
+subagent policy/depth, exact per-conversation `tool_policy_json`,
+`storage_generation`, summary message counts, compact display count, and
+`deleted_at`.
 
 `folder_id` intentionally has no foreign key. A soft-deleted conversation must
 retain its historical folder membership while its folder is temporarily absent
