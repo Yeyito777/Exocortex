@@ -43,6 +43,11 @@ import {
 } from "./streaming-snapshot";
 import type { DaemonActions } from "./types";
 import { clearCallTranscriptDrafts, reconcileCallTranscriptDrafts } from "./call";
+import {
+  clearFolderNotificationBuffer,
+  pruneFolderNotificationBuffers,
+  reconcileFolderNotificationBuffer,
+} from "../sidebar/notifications";
 
 export function handleConversationCreated(
   event: Extract<Event, { type: "conversation_created" }>,
@@ -81,6 +86,7 @@ export function handleConversationCreated(
 
 export function handleConversationsList(event: Extract<Event, { type: "conversations_list" }>, state: RenderState): void {
   updateConversationList(state.sidebar, event.conversations, event.folders ?? []);
+  pruneFolderNotificationBuffers(state.sidebar);
   const activeConvId = state.convId;
   if (activeConvId && !event.conversations.some(conversation => conversation.id === activeConvId)) {
     // The list is authoritative reconnect catch-up. If this client missed a
@@ -110,6 +116,8 @@ export function handleConversationUpdated(event: Extract<Event, { type: "convers
   const summary = event.summary;
   if (!summary) return;
 
+  const wasStreaming = state.sidebar.conversations.find(conversation => conversation.id === summary.id)?.streaming ?? false;
+  reconcileFolderNotificationBuffer(state.sidebar, summary, wasStreaming);
   updateConversation(state.sidebar, summary);
   // Sync provider/model/effort if this is the active conversation.
   if (summary.id === state.convId) {
@@ -136,6 +144,7 @@ export function handleConversationRestored(event: Extract<Event, { type: "conver
 }
 
 export function handleConversationDeleted(event: Extract<Event, { type: "conversation_deleted" }>, state: RenderState): void {
+  clearFolderNotificationBuffer(state.sidebar, event.convId);
   // Remove from sidebar (in case another client deleted it).
   const idx = state.sidebar.conversations.findIndex(c => c.id === event.convId);
   if (idx !== -1) {

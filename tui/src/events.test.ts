@@ -3,6 +3,7 @@ import { browserOpenCommand, handleEvent, type DaemonActions } from "./events";
 import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostics";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary } from "./messages";
 import { createInitialState } from "./state";
+import { STREAM_COMPLETION_SETTLE_MS } from "./sidebar/notifications";
 
 const daemon: DaemonActions = {
   subscribe() {},
@@ -1467,5 +1468,27 @@ describe("conversation_updated", () => {
     }).not.toThrow();
 
     expect(state.sidebar.conversations).toEqual([summary()]);
+  });
+
+  test("buffers an unread stop summary and cancels it when queued streaming resumes", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [summary({ id: "queued-chain", streaming: true, unread: true })];
+
+    const beforeStop = Date.now();
+    handleEvent({
+      type: "conversation_updated",
+      summary: summary({ id: "queued-chain", streaming: false, unread: true }),
+    }, state, daemon);
+
+    const bufferUntil = state.sidebar.folderNotificationBufferUntil["queued-chain"];
+    expect(bufferUntil).toBeGreaterThanOrEqual(beforeStop + STREAM_COMPLETION_SETTLE_MS);
+    expect(bufferUntil).toBeLessThanOrEqual(Date.now() + STREAM_COMPLETION_SETTLE_MS);
+
+    handleEvent({
+      type: "conversation_updated",
+      summary: summary({ id: "queued-chain", streaming: true, unread: true }),
+    }, state, daemon);
+
+    expect(state.sidebar.folderNotificationBufferUntil["queued-chain"]).toBeUndefined();
   });
 });

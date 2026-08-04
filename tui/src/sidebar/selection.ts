@@ -7,6 +7,7 @@ import {
   getVisibleConversationIndicesForQuery,
 } from "../sidebarsearch";
 import { subagentsFolderIds } from "./folders";
+import { isSettledUnreadConversation } from "./notifications";
 
 export function focusSidebarItem(sidebar: SidebarState, item: SidebarSelectableItem | null): void {
   sidebar.selectedItem = item;
@@ -69,7 +70,7 @@ function activityConversations(
   return sidebar.conversations
     .filter((conv) => {
       if (conv.folderId && subagentFolderIdSet.has(conv.folderId)) return false;
-      return status === "streaming" ? conv.streaming : conv.unread && !conv.streaming;
+      return status === "streaming" ? conv.streaming : isSettledUnreadConversation(sidebar, conv);
     })
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }

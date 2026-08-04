@@ -362,7 +362,7 @@ describe("OpenAI replay input", () => {
     for (let i = 0; i < 7; i++) {
       messages.push({
         role: "assistant",
-        content: [{ type: "tool_use", id: `call_${i}`, name: "computer_get_app_state", input: { app: "vimbrowser" } }],
+        content: [{ type: "tool_use", id: `call_${i}`, name: "screenshot_tool", input: { app: "example" } }],
       });
       messages.push({
         role: "user",
