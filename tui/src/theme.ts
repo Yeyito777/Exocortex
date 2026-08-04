@@ -12,6 +12,7 @@
 import { readExocortexConfig, updateExocortexConfig } from "@exocortex/shared/config";
 import { whale } from "./themes/whale";
 import { cerberus } from "./themes/cerberus";
+import { tonikawa } from "./themes/tonikawa";
 import { adaptAnsiTruecolor, detectTerminalColorLevel, hexToAnsiColor } from "./terminalcolors";
 
 // ── Theme interface ─────────────────────────────────────────────────
@@ -72,6 +73,7 @@ export interface Theme {
 export const themes: Record<string, Theme> = {
   whale,
   cerberus,
+  tonikawa,
 };
 
 export const THEME_NAMES = Object.keys(themes) as ThemeName[];
