@@ -1,4 +1,4 @@
-# SQLite conversation rewind profile
+# SQLite conversation rewind optimization
 
 Date: 2026-08-04
 
@@ -6,20 +6,32 @@ Raw aggregate: `results/sqlite-rewind-real-clones.json`
 
 ## Result
 
-The user's hypothesis is confirmed. The shipped SQLite `saveUnwind()` is a major
-cause of the visible **“Finishing conversation rewind”** window.
+The initial profile confirmed the user's hypothesis: the shipped SQLite rewind was a
+major cause of the visible **“Finishing conversation rewind”** window. Editing the
+latest user message spent **1.09–2.58 seconds** in `saveUnwind()` and **2.54–5.48
+seconds** in the complete idle `conversations.unwindTo()` operation.
 
-For the common operation—editing the latest user message—the current persistence
-method took **1.09–2.58 seconds median** on five of the largest main-instance
-conversations. A correctness-preserving tail-diff prototype took **19.3–25.7 ms**,
-a **47x–133x speedup**. The current method wrote **68.9–117.5 MB** to the WAL for
-cuts that removed only **3–59 messages / 136 bytes–156 KB** of canonical content;
-the tail prototype wrote **144–235 KB**.
+The optimized implementation now:
 
-The full idle domain operation was slower still: `conversations.unwindTo()` took
-**2.54–5.48 seconds median** for a latest-message edit before any active-stream
-abort wait. This directly explains why a person can edit and press Enter before the
-correlated rewind completion arrives.
+- deletes only `messages.sequence >= cutSequence`, allowing foreign-key cascades to
+  remove only doomed tool/image payloads;
+- preserves every immutable prefix message/blob row and its loaded-state snapshot;
+- rebuilds only the affected display suffix;
+- updates content/message/display counts, active context, queue tombstones, and the
+  unwind receipt in one transaction;
+- uses the indexed target-user display boundary instead of reconstructing the full
+  display merely to count retained entries;
+- reuses cached active-context validation and the target user's atomically persisted
+  context checkpoint instead of repeatedly serializing/hashing the retained prefix;
+- preserves a lagging but valid compact replay when the cut removes only canonical
+  history it has not represented, without rewriting that potentially large payload;
+- caches the safely derived rewound context for the next submission; and
+- requires no schema migration.
+
+After optimization, latest-edit persistence is **11.8–17.0 ms median** and complete
+idle domain latency is **16.1–30.0 ms median / 22.9–34.4 ms p95** across the same five
+real clones. Persistence improved **68x–218x**, end-to-end rewind improved
+**100x–340x**, and WAL traffic fell from **68.9–117.5 MB** to **136–223 KB**.
 
 ## Safe real-clone fixture
 
@@ -41,106 +53,88 @@ modified. Main remained healthy during and after cloning/profiling.
 
 ## Methodology
 
-- Three independent repetitions per reported case.
+- Three independent repetitions per reported case before and after the change.
 - Each repetition began from a fresh file copy of its one-conversation baseline.
-- Database copy and initial full conversation load were excluded from timed storage
-  operations, matching an already-open conversation in the daemon.
+- Database copy and initial full conversation load were excluded, matching an
+  already-open conversation in the daemon.
 - No conversation had an active stream, so results exclude provider/tool abort delay.
 - Every trial checked message truncation, unwind receipt presence, `quick_check`, and
   foreign keys.
-- **Current** calls the shipped `SqliteConversationStore.saveUnwind()`.
-- **Tail prototype** mutates the loaded conversation to the target suffix boundary,
-  uses the repository's existing suffix-diff `save()` path, and writes the unwind
-  receipt in the same outer transaction. This is an upper bound for a dedicated
-  tail-delete unwind; it still performs shallow prefix comparison/snapshot work.
-- Full-domain results call `conversations.unwindTo()` through the canonical SQLite
-  persistence facade after preloading the conversation.
+- Storage trials call `SqliteConversationStore.saveUnwind()` directly.
+- Full-domain trials call `conversations.unwindTo()` through the canonical SQLite
+  facade after preloading the conversation.
+- The pre-change tail-diff prototype used the repository's generic suffix save plus
+  a receipt in one outer transaction. It established the expected scaling law before
+  production code changed.
 
 ## Latest-user-message persistence
 
-| Clone | Retained / removed messages | Retained / removed bytes | Current | Tail prototype | Speedup | Current / tail WAL |
-|---|---:|---:|---:|---:|---:|---:|
-| largest-1 | 5,409 / 26 | 94.0 MB / 33.5 KB | 2,577 ms | 21.4 ms | 120.3x | 117.5 MB / 165 KB |
-| largest-2 | 2,681 / 3 | 90.8 MB / 136 B | 2,565 ms | 19.3 ms | 132.8x | 102.3 MB / 235 KB |
-| largest-3 | 8,866 / 59 | 63.7 MB / 155.5 KB | 1,905 ms | 25.6 ms | 74.5x | 101.0 MB / 181 KB |
-| largest-4 | 9,611 / 14 | 61.8 MB / 130.8 KB | 1,858 ms | 25.7 ms | 72.4x | 101.3 MB / 169 KB |
-| largest-5 | 7,996 / 22 | 34.9 MB / 14.8 KB | 1,093 ms | 23.0 ms | 47.4x | 68.9 MB / 144 KB |
+This is the common edit case: retain nearly all history and remove a tiny final suffix.
 
-The current time follows the **retained prefix**. The prototype time follows the
-**removed suffix**, which is the desired scaling law for an edit rewind.
+| Clone | Removed messages / bytes | Before | After | Speedup | WAL before / after |
+|---|---:|---:|---:|---:|---:|
+| largest-1 | 26 / 33.5 KB | 2,577 ms | 11.8 ms | 218.1x | 117.5 MB / 157 KB |
+| largest-2 | 3 / 136 B | 2,565 ms | 14.2 ms | 180.8x | 102.3 MB / 223 KB |
+| largest-3 | 59 / 155.5 KB | 1,905 ms | 17.0 ms | 111.9x | 101.0 MB / 173 KB |
+| largest-4 | 14 / 130.8 KB | 1,858 ms | 15.7 ms | 118.6x | 101.3 MB / 161 KB |
+| largest-5 | 22 / 14.8 KB | 1,093 ms | 16.0 ms | 68.3x | 68.9 MB / 136 KB |
 
-## Earlier cuts
-
-| Clone | Cut | Retained / removed bytes | Current | Tail prototype | Speedup |
-|---|---|---:|---:|---:|---:|
-| largest-1 | 90% user boundary | 92.9 MB / 1.1 MB | 2,713 ms | 34.7 ms | 78.3x |
-| largest-4 | 90% user boundary | 60.0 MB / 2.0 MB | 1,777 ms | 46.0 ms | 38.6x |
-| largest-1 | Half user boundary | 19.8 MB / 74.2 MB | 1,752 ms | 649.5 ms | 2.7x |
-| largest-4 | Half user boundary | 29.4 MB / 32.5 MB | 2,110 ms | 383.4 ms | 5.5x |
-
-Large early cuts legitimately cost more because SQLite must delete tens of megabytes
-of suffix rows and cascading blobs. They still avoid rewriting the retained prefix.
+The optimized dedicated method is faster than the original generic tail prototype
+because it knows the exact cut boundary and reuses prefix snapshots rather than
+shallow-comparing/snapshotting every retained message.
 
 ## Full idle-domain latency
 
-| Clone | `unwindTo()` median | p95 |
-|---|---:|---:|
-| largest-1 | 5,482 ms | 7,031 ms |
-| largest-2 | 4,188 ms | 4,232 ms |
-| largest-3 | 4,111 ms | 4,146 ms |
-| largest-4 | 4,162 ms | 4,183 ms |
-| largest-5 | 2,544 ms | 2,563 ms |
+| Clone | Before median | After median | After p95 | Speedup |
+|---|---:|---:|---:|---:|
+| largest-1 | 5,482 ms | 16.1 ms | 24.1 ms | 340.1x |
+| largest-2 | 4,188 ms | 21.4 ms | 22.9 ms | 196.0x |
+| largest-3 | 4,111 ms | 30.0 ms | 32.2 ms | 137.0x |
+| largest-4 | 4,162 ms | 26.0 ms | 33.9 ms | 160.2x |
+| largest-5 | 2,544 ms | 25.5 ms | 34.4 ms | 99.7x |
 
-These values contain no stream abort/finalizer wait. Editing during an active response
-can add further latency, up to the existing ten-second safety timeout.
+These results contain no stream abort/finalizer wait. Editing during an active response
+still must wait for that writer to release the conversation; that is a separate,
+necessary correctness boundary.
 
-## CPU profile
+## CPU profiles
 
-A 500 µs sampled CPU profile of the latest-message domain rewind on `largest-1`
-reported 6.27 seconds inside `unwindTo()` under profiler overhead:
+Before optimization, a 500 µs sampled profile of `largest-1` reported 6.27 seconds
+inside `unwindTo()` under profiler overhead:
 
 - `saveUnwind`: **3.79 s / 54.1%**
 - active-context validation: **1.44 s / 20.5%**
 - `historyPrefixHashes`: **1.42 s / 20.2%**
-- copying retained loaded-state snapshots: **816 ms / 11.6%**
-- display reconstruction/fingerprints and repeated active-context boundary work make
-  up much of the remaining time
+- retained loaded-state snapshots: **816 ms / 11.6%**
+- process self-time: `JSON.stringify` **47.8%**, SQLite execution **24.0%**, crypto
+  updates **18.4%**
 
-Across the process, native `JSON.stringify` was **47.8% self time**, SQLite statement
-execution was **24.0%**, and crypto hash updates were **18.4%**. Percentages in nested
-call-tree entries overlap and must not be summed.
+After the final optimization, a 250 µs profile measured **31.1 ms** inside
+`unwindTo()` and **19.4 ms** in `saveUnwind` under profiler overhead. No retained-prefix
+hashing appeared beneath `unwindTo`; the large hash visible in the process profile was
+the deliberately excluded, one-time conversation-load validation. Nested profile
+percentages overlap and are not summed.
 
-The storage transaction is the largest single problem, but it is not the only one:
-active-context validation and prefix hashing repeatedly serialize/hash large retained
-tool payloads.
+## Correctness and regression gates
 
-## Root cause
+The optimized path retains all existing transaction/fault semantics. New direct
+coverage installs temporary message-row triggers and proves that an unwind:
 
-The shipped method performs:
+- deletes exactly the tail sequences;
+- inserts no prefix message rows;
+- leaves a large retained blob row byte-identical;
+- preserves display, receipt, generation, and integrity behavior; and
+- rolls back conversation, message, payload, display, queue, and receipt state at each
+  injected transaction boundary.
 
-1. `DELETE FROM messages WHERE conversation_id=?`
-2. reinsertion of every retained message and separated blob
-3. full display projection rebuild
-4. full retained-message snapshots
+The post-change targeted SQLite matrix passes **185 tests, 9 intentional JSON-file
+skips, 0 failures**. Root typecheck and the JSON/domain contract suite also pass.
 
-The generic repository `save()` path already knows how to delete and rebuild only a
-changed suffix, but `saveUnwind()` does not use it and ignores its
-`_targetHistoryCount` argument.
+## Remaining UX follow-up
 
-## Recommended optimization target
-
-1. Make `saveUnwind()` delete only `sequence >= cutSequence`, preserving prefix
-   message/blob rows.
-2. Rebuild only the display suffix at the affected user boundary.
-3. Update content/message/display counts and the unwind receipt in one transaction.
-4. Preserve the active context without repeatedly rehashing an already validated
-   immutable prefix; hash only the changed boundary when required.
-5. Avoid generating all user unwind fingerprints merely to calculate
-   `historyTotalEntries`.
-6. Add this real-clone profile plus deterministic synthetic 1/10/50/100 MB rewind
-   gates to the performance suite.
-7. Separately improve the TUI protocol so a submit during the safety window is queued
-   or rewind-plus-replacement is one command.
-
-A reasonable idle latest-edit gate is **<50 ms median** for these real clones and WAL
-traffic proportional to the removed suffix, not the retained history.
+The performance cause of the ordinary idle warning window is resolved: 16–30 ms is
+shorter than normal human edit-and-submit time. A warning may still legitimately
+appear when editing while a provider/tool stream is being aborted. Separately, the
+protocol could queue an Enter pressed during that abort window or combine rewind and
+replacement submission into one command; that is a UX improvement rather than a
+storage-performance requirement.
