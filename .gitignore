@@ -33,6 +33,8 @@ external-tools/*
 # Helper tools are user-local; keep their standard tracked
 helper-tools/*
 !helper-tools/HELPER_TOOLS_STANDARD.md
+!helper-tools/computer/
+!helper-tools/computer/**
 
 # Environment and secrets
 .env

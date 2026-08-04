@@ -118,10 +118,10 @@ describe("prompt highlighting", () => {
   test("highlights subsequent macros in the same message", () => {
     const state = createInitialState();
 
-    const input = "Use /xenv then /tool install xenv please";
+    const input = "Use /xenv then /tool install linkedin please";
     const [line] = highlightPromptInput(state, [input], input, 120, 0);
 
-    expect(line).toBe(`Use ${theme.command}/xenv${theme.reset} then ${theme.command}/tool install xenv${theme.reset} please`);
+    expect(line).toBe(`Use ${theme.command}/xenv${theme.reset} then ${theme.command}/tool install linkedin${theme.reset} please`);
   });
 
   test("highlights inline commands but not other mid-message slash commands", () => {

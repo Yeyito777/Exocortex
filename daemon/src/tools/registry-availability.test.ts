@@ -36,7 +36,7 @@ describe("tool availability", () => {
     expect(actionEnum).not.toContain("status");
     expect(JSON.stringify(definition?.input_schema)).not.toContain("system_prompt");
     expect(getToolDisplayInfo().find((tool) => tool.name === "exo")?.label).toBe("Exocortex");
-    expect(buildToolSystemHints()).toContain("Use the native `exo` tool");
+    expect(buildToolSystemHints()).toContain("## exo\n### subagents");
   });
 
   test("tool schemas avoid OpenAI-rejected top-level JSON Schema composition keywords", () => {
@@ -50,24 +50,11 @@ describe("tool availability", () => {
     }
   });
 
-  test("computer use tools are gated by an opt-in feature flag", () => {
+  test("desktop control is shell-backed rather than exposed as internal API tools", () => {
     writeExocortexConfig({});
-    const defaultTools = getToolDefs().map((tool) => tool.name);
-    expect(defaultTools).not.toContain("computer_list_apps");
-    expect(defaultTools).not.toContain("computer_get_app_state");
-
-    writeExocortexConfig({ features: { computerUse: true } });
-    const enabledTools = getToolDefs().map((tool) => tool.name);
-    expect(enabledTools).toContain("computer_list_apps");
-    expect(enabledTools).toContain("computer_get_app_state");
-    expect(enabledTools).toContain("computer_click");
-    expect(buildToolSystemHints()).toContain("Use computer_list_apps");
-    expect(getToolDisplayInfo().find((tool) => tool.name === "computer_click")?.color).toBe("#ff79c6");
-
-    writeExocortexConfig({ features: { computerUse: false } });
-    const disabledTools = getToolDefs().map((tool) => tool.name);
-    expect(disabledTools).not.toContain("computer_list_apps");
-    expect(disabledTools).not.toContain("computer_get_app_state");
+    expect(getToolDefs().map((tool) => tool.name).some((name) => name.startsWith("computer_"))).toBe(false);
+    expect(getToolDisplayInfo().map((tool) => tool.name).some((name) => name.startsWith("computer_"))).toBe(false);
+    expect(buildToolSystemHints()).not.toContain("desktop control");
   });
 
   test("goal tool is enabled by default and can be disabled by feature flag", () => {
