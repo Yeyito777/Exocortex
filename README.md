@@ -143,7 +143,19 @@ If you want to build the daemon and TUI from a specific commit:
   powershell -c "irm bun.sh/install.ps1 | iex"
   ```
 
-**Build** (from a Linux machine or WSL):
+**Build and install natively on Windows:**
+
+```powershell
+git clone https://github.com/Yeyito777/Exocortex.git
+cd Exocortex
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+```
+
+The installer builds the source into `dist\`, copies the commands to
+`~\.local\bin`, and adds that directory to your user `PATH`. Open a new
+terminal after the first install.
+
+**Cross-build from Linux or WSL:**
 
 ```bash
 git clone https://github.com/Yeyito777/Exocortex.git
@@ -152,9 +164,10 @@ bun install
 make windows
 ```
 
-This cross-compiles standalone executables into `dist/`:
+Both methods produce standalone executables in `dist/`:
 - `exocortexd.exe` — the daemon
 - `exocortex.exe` — the TUI client
+- `exo.exe` — the external debugging/automation CLI
 - `exocortex.bat` — launcher script
 
 Copy the contents of `dist/` wherever you like and follow the same authenticate & launch steps from above.

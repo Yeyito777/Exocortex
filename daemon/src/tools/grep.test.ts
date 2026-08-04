@@ -60,7 +60,7 @@ describe("grep tool hardening", () => {
   });
 
   test("skips unreadable descendant directories instead of failing the whole search", async () => {
-    if (process.getuid?.() === 0) return;
+    if (process.platform === "win32" || process.getuid?.() === 0) return;
     const root = await makeTempDir();
     await writeFixture(root, "visible.txt", "needle\n");
     await writeFixture(root, "blocked/secret.txt", "needle\n");
@@ -75,7 +75,7 @@ describe("grep tool hardening", () => {
   });
 
   test("reports no matches plus traversal warnings when only skipped descendants had matches", async () => {
-    if (process.getuid?.() === 0) return;
+    if (process.platform === "win32" || process.getuid?.() === 0) return;
     const root = await makeTempDir();
     await writeFixture(root, "visible.txt", "haystack\n");
     await writeFixture(root, "blocked/secret.txt", "needle\n");
@@ -108,7 +108,7 @@ describe("grep tool hardening", () => {
     const result = await grep.execute({ pattern: "needle", path: root, output_mode: "files_with_matches", follow_symlinks: true, head_limit: 5 });
 
     expect(result.isError).toBe(false);
-    expect(result.output).toContain("real/file.txt");
+    expect(result.output).toContain(join("real", "file.txt"));
     expect(result.output).toContain("[grep skipped");
   });
 

@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const roots: string[] = [];
 const instance = basename(resolve(import.meta.dir, "../.."));
@@ -14,7 +14,8 @@ function testRoot(): string {
 }
 
 function dataRoot(root: string): string {
-  return join(root, "data", "instances", instance);
+  const instanceRoot = join(root, "data", "instances", instance);
+  return existsSync(instanceRoot) ? instanceRoot : join(root, "data");
 }
 const conversationsModule = join(import.meta.dir, "conversations.ts");
 const persistenceModule = join(import.meta.dir, "persistence.ts");
@@ -50,7 +51,7 @@ function fileHashes(path: string, prefix = ""): Record<string, string> {
   for (const name of readdirSync(path).sort()) {
     if (name === "exocortex.sqlite3" || name.startsWith("exocortex.sqlite3-")) continue;
     const absolute = join(path, name);
-    const relative = join(prefix, name);
+    const relative = prefix ? `${prefix}/${name}` : name;
     const stat = statSync(absolute);
     if (stat.isDirectory()) Object.assign(result, fileHashes(absolute, relative));
     else result[relative] = createHash("sha256").update(readFileSync(absolute)).digest("hex");
@@ -238,8 +239,13 @@ describe("SQLite legacy trash and history import", () => {
       }
     `);
 
-    const rollbackData = dataRoot(rollbackRoot);
-    mkdirSync(rollbackData, { recursive: true });
+    const sqliteData = dataRoot(sqliteRoot);
+    const instanceScoped = sqliteData === join(sqliteRoot, "data", "instances", instance);
+    const rollbackData = instanceScoped
+      ? join(rollbackRoot, "data", "instances", instance)
+      : join(rollbackRoot, "data");
+    rmSync(rollbackData, { recursive: true, force: true });
+    mkdirSync(dirname(rollbackData), { recursive: true });
     cpSync(exportRoot, rollbackData, { recursive: true });
     runPhase(rollbackRoot, "json", `
       const conversations = await import(${JSON.stringify(conversationsModule)});
