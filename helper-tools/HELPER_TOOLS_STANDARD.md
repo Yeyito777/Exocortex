@@ -17,8 +17,8 @@ helper-tools/
     exo-manifest.json
 ```
 
-Local entries in this directory are ignored by Git. The standard remains
-tracked.
+Local entries in this directory are ignored by Git. The standard and any
+explicitly bundled helpers unignored by the repository remain tracked.
 
 ## Tool
 
