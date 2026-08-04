@@ -1068,6 +1068,72 @@ describe("unwindTo", () => {
     expect(loadPersisted(id)?.activeContext).toEqual(checkpoint);
   });
 
+  test("uses a canonical tail checkpoint without advancing a lagging compact replay", async () => {
+    const id = mkId("unwind-lagging-compact-replay");
+    const conv = create(id, "openai", "gpt-5.6-sol");
+    conv.messages.push(
+      { role: "user", content: "represented prompt", metadata: null },
+      { role: "assistant", content: "represented answer", metadata: null },
+    );
+    const compactedPrefixHash = historyPrefixHash(conv.messages, 2);
+    conv.activeContext = {
+      version: 1,
+      kind: "openai_native",
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      messages: [{
+        role: "assistant",
+        content: [],
+        providerData: { openai: { compactionItems: [{ encryptedContent: "opaque" }] } },
+      }],
+      transcriptHistoryCount: 2,
+      transcriptPrefixHash: compactedPrefixHash,
+      compactionHistoryCount: 2,
+      compactionPrefixHash: compactedPrefixHash,
+      windowId: `${id}:1`,
+      windowNumber: 1,
+      compactedAt: 123,
+      compactionCount: 1,
+    };
+    const checkpoint = structuredClone(conv.activeContext);
+    conv.messages.push(
+      { role: "user", content: "unrepresented but retained", metadata: null },
+      { role: "assistant", content: "retained answer", metadata: null },
+    );
+    const targetHistoryCount = 4;
+    conv.messages.push(
+      {
+        role: "user",
+        content: "edit me",
+        metadata: null,
+        contextCheckpoint: {
+          version: 1,
+          provider: "openai",
+          model: "gpt-5.6-sol",
+          windowId: `${id}:1`,
+          transcriptHistoryCount: targetHistoryCount,
+          transcriptPrefixHash: historyPrefixHash(conv.messages, targetHistoryCount),
+          contextTokens: 54_321,
+        },
+      },
+      { role: "assistant", content: "remove me", metadata: null },
+    );
+    markDirty(id);
+    flush(id);
+
+    expect(await unwindTo(id, 2)).not.toBeNull();
+    expect(get(id)?.messages.map((message) => message.content)).toEqual([
+      "represented prompt",
+      "represented answer",
+      "unrepresented but retained",
+      "retained answer",
+    ]);
+    expect(get(id)?.activeContext).toEqual(checkpoint);
+    expect(get(id)?.lastContextTokens).toBe(54_321);
+    expect(loadPersisted(id)?.activeContext).toEqual(checkpoint);
+    expect(loadPersisted(id)?.lastContextTokens).toBe(54_321);
+  });
+
   test("rewinds a legacy advanced checkpoint when abort recovery crosses the unwind point", async () => {
     const id = mkId("unwind-restore-pre-abort-context");
     const conv = create(id, "openai", "gpt-5.6-sol");
@@ -1268,6 +1334,67 @@ describe("unwindTo", () => {
     expect(get(id)?.lastContextTokens).toBe(91_234);
     expect(loadPersisted(id)?.activeContext?.messages).toEqual(baseMessages);
     expect(loadPersisted(id)?.lastContextTokens).toBe(91_234);
+  });
+
+  test("falls back to canonical hashing for a corrupt user context checkpoint", async () => {
+    const id = mkId("unwind-corrupt-user-checkpoint");
+    const conv = create(id, "openai", "gpt-5.6-sol");
+    conv.messages.push(
+      { role: "user", content: "represented prompt", metadata: null },
+      { role: "assistant", content: "represented answer", metadata: null },
+    );
+    const basePrefixHash = historyPrefixHash(conv.messages, 2);
+    const compactedMessages = [{
+      role: "assistant" as const,
+      content: [],
+      providerData: { openai: { compactionItems: [{ encryptedContent: "opaque" }] } },
+    }];
+    conv.activeContext = {
+      version: 1,
+      kind: "openai_native",
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      messages: structuredClone(compactedMessages),
+      transcriptHistoryCount: 2,
+      transcriptPrefixHash: basePrefixHash,
+      compactionHistoryCount: 2,
+      compactionPrefixHash: basePrefixHash,
+      windowId: `${id}:1`,
+      windowNumber: 1,
+      compactedAt: 123,
+      compactionCount: 1,
+    };
+    conv.messages.push(
+      {
+        role: "user",
+        content: "edit me",
+        metadata: null,
+        contextCheckpoint: {
+          version: 1,
+          provider: "openai",
+          model: "gpt-5.6-sol",
+          windowId: `${id}:1`,
+          transcriptHistoryCount: 2,
+          transcriptPrefixHash: "f".repeat(24),
+          contextTokens: 999_999,
+        },
+      },
+      { role: "assistant", content: "remove me", metadata: null },
+    );
+    conv.activeContext.messages.push(
+      { role: "user", content: "edit me" },
+      { role: "assistant", content: "remove me" },
+    );
+    conv.activeContext.transcriptHistoryCount = 4;
+    conv.activeContext.transcriptPrefixHash = historyPrefixHash(conv.messages, 4);
+    markDirty(id);
+    flush(id);
+
+    expect(await unwindTo(id, 1)).not.toBeNull();
+    expect(get(id)?.activeContext?.messages).toEqual(compactedMessages);
+    expect(get(id)?.activeContext?.transcriptPrefixHash).toBe(basePrefixHash);
+    expect(get(id)?.lastContextTokens).not.toBe(999_999);
+    expect(loadPersisted(id)?.activeContext?.transcriptPrefixHash).toBe(basePrefixHash);
   });
 
   legacyFileTest("persists only a truncation overlay and does not rewrite the sidebar index", async () => {

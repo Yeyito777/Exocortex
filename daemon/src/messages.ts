@@ -341,6 +341,7 @@ interface ActiveContextValidationFingerprint {
   compactionPrefixHash: string | undefined;
   transcriptHistoryCount: number;
   transcriptPrefixHash: string;
+  userPrefixHashes: WeakMap<StoredMessage, string>;
   transcriptPrefix: Array<{
     message: StoredMessage;
     role: StoredMessage["role"];
@@ -354,6 +355,7 @@ const validatedActiveContexts = new WeakMap<ActiveContext, WeakMap<StoredMessage
 function activeContextValidationFingerprint(
   active: ActiveContext,
   transcript: StoredMessage[],
+  userPrefixHashes: WeakMap<StoredMessage, string> = new WeakMap(),
 ): ActiveContextValidationFingerprint {
   const transcriptPrefix: ActiveContextValidationFingerprint["transcriptPrefix"] = [];
   for (const message of transcript) {
@@ -379,6 +381,7 @@ function activeContextValidationFingerprint(
     compactionPrefixHash: active.compactionPrefixHash,
     transcriptHistoryCount: active.transcriptHistoryCount,
     transcriptPrefixHash: active.transcriptPrefixHash,
+    userPrefixHashes,
     transcriptPrefix,
   };
 }
@@ -413,6 +416,20 @@ function activeContextValidationFingerprintMatches(
   return prefixIndex === fingerprint.transcriptPrefix.length;
 }
 
+/** Cache a context whose relationship to this exact transcript was established by a trusted derivation. */
+export function rememberValidatedActiveContext(
+  active: ActiveContext,
+  transcript: StoredMessage[],
+  userPrefixHashes: WeakMap<StoredMessage, string> = new WeakMap(),
+): void {
+  let byTranscript = validatedActiveContexts.get(active);
+  if (!byTranscript) {
+    byTranscript = new WeakMap();
+    validatedActiveContexts.set(active, byTranscript);
+  }
+  byTranscript.set(transcript, activeContextValidationFingerprint(active, transcript, userPrefixHashes));
+}
+
 /**
  * Validate an immutable active context, reusing a successful check for the same
  * in-memory transcript. Invalid state is deliberately not cached.
@@ -423,14 +440,25 @@ export function isValidActiveContextCached(
 ): boolean {
   const cached = validatedActiveContexts.get(active)?.get(transcript);
   if (cached && activeContextValidationFingerprintMatches(active, transcript, cached)) return true;
-  if (!isValidActiveContext(active, transcript)) return false;
-  let byTranscript = validatedActiveContexts.get(active);
-  if (!byTranscript) {
-    byTranscript = new WeakMap();
-    validatedActiveContexts.set(active, byTranscript);
-  }
-  byTranscript.set(transcript, activeContextValidationFingerprint(active, transcript));
+  const validation = validateActiveContext(active, transcript);
+  if (!validation) return false;
+  rememberValidatedActiveContext(active, transcript, validation.userPrefixHashes);
   return true;
+}
+
+/**
+ * Return a user boundary hash captured during the active context's full
+ * integrity validation. A cache miss deliberately does not hash here: callers
+ * can use their existing defensive slow path instead.
+ */
+export function cachedValidatedHistoryPrefixHashBeforeMessage(
+  active: ActiveContext,
+  transcript: StoredMessage[],
+  message: StoredMessage,
+): string | null {
+  const cached = validatedActiveContexts.get(active)?.get(transcript);
+  if (!cached || !activeContextValidationFingerprintMatches(active, transcript, cached)) return null;
+  return cached.userPrefixHashes.get(message) ?? null;
 }
 
 /** Validate an active context and return its fixed compaction boundary. */
@@ -439,6 +467,9 @@ export function validatedActiveContextCompactionHistoryCount(
   transcript: StoredMessage[],
 ): number | null {
   if (!isValidActiveContextCached(active, transcript)) return null;
+  // The cached validation above has already checked both persisted prefix
+  // hashes. Rehashing the compaction prefix here makes a recent-message rewind
+  // serialize tens of megabytes a second time for no additional safety.
   return active.compactionHistoryCount !== undefined
     ? active.compactionHistoryCount
     : activeContextCompactionHistoryCount(active, transcript);
@@ -615,18 +646,21 @@ function countValidNativeCompactionItems(messages: ApiMessage[]): number | null 
 }
 
 /** Derived replay is disposable: reject malformed/stale state and use transcript. */
-export function isValidActiveContext(active: unknown, transcript: StoredMessage[]): active is ActiveContext {
-  if (!active || typeof active !== "object") return false;
+function validateActiveContext(
+  active: unknown,
+  transcript: StoredMessage[],
+): { active: ActiveContext; userPrefixHashes: WeakMap<StoredMessage, string> } | null {
+  if (!active || typeof active !== "object") return null;
   const value = active as Partial<ActiveContext>;
-  if (value.version !== 1) return false;
-  if (value.kind !== "openai_native" && value.kind !== "plaintext") return false;
+  if (value.version !== 1) return null;
+  if (value.kind !== "openai_native" && value.kind !== "plaintext") return null;
   if (typeof value.provider !== "string" || value.provider.length === 0
-      || typeof value.model !== "string" || value.model.length === 0) return false;
+      || typeof value.model !== "string" || value.model.length === 0) return null;
   if (value.accountScope !== undefined
-      && (typeof value.accountScope !== "string" || value.accountScope.length === 0)) return false;
-  if (value.kind === "openai_native" && value.provider !== "openai") return false;
-  if (!Array.isArray(value.messages) || !validActiveReplayMessages(value.messages)) return false;
-  if (value.kind === "openai_native" && countValidNativeCompactionItems(value.messages as ApiMessage[]) !== 1) return false;
+      && (typeof value.accountScope !== "string" || value.accountScope.length === 0)) return null;
+  if (value.kind === "openai_native" && value.provider !== "openai") return null;
+  if (!Array.isArray(value.messages) || !validActiveReplayMessages(value.messages)) return null;
+  if (value.kind === "openai_native" && countValidNativeCompactionItems(value.messages as ApiMessage[]) !== 1) return null;
   if (value.kind === "plaintext") {
     const checkpointCount = (value.messages as ApiMessage[]).filter((message) =>
       message.role === "user"
@@ -635,38 +669,56 @@ export function isValidActiveContext(active: unknown, transcript: StoredMessage[
       && typeof message.content === "string"
       && message.content.length > 0
     ).length;
-    if (checkpointCount !== 1) return false;
+    if (checkpointCount !== 1) return null;
   }
-  if (!Number.isSafeInteger(value.transcriptHistoryCount) || value.transcriptHistoryCount! < 0) return false;
+  if (!Number.isSafeInteger(value.transcriptHistoryCount) || value.transcriptHistoryCount! < 0) return null;
   const historyCount = transcript.filter(isReplayHistoryMessage).length;
-  if (value.transcriptHistoryCount! > historyCount) return false;
-  if (typeof value.transcriptPrefixHash !== "string" || !/^[0-9a-f]{24}$/.test(value.transcriptPrefixHash)) return false;
+  if (value.transcriptHistoryCount! > historyCount) return null;
+  if (typeof value.transcriptPrefixHash !== "string" || !/^[0-9a-f]{24}$/.test(value.transcriptPrefixHash)) return null;
   const hasCompactionCount = value.compactionHistoryCount !== undefined;
   const hasCompactionHash = value.compactionPrefixHash !== undefined;
-  if (hasCompactionCount !== hasCompactionHash) return false;
+  if (hasCompactionCount !== hasCompactionHash) return null;
   if (hasCompactionCount) {
     if (!Number.isSafeInteger(value.compactionHistoryCount)
         || value.compactionHistoryCount! < 0
         || value.compactionHistoryCount! > value.transcriptHistoryCount!
         || typeof value.compactionPrefixHash !== "string"
-        || !/^[0-9a-f]{24}$/.test(value.compactionPrefixHash)) return false;
+        || !/^[0-9a-f]{24}$/.test(value.compactionPrefixHash)) return null;
     // Every replay message after the fixed compaction boundary is a suffix of
     // active.messages. Without this invariant a rewind could cut into the opaque
     // checkpoint itself.
-    if (value.transcriptHistoryCount! - value.compactionHistoryCount! > value.messages.length) return false;
+    if (value.transcriptHistoryCount! - value.compactionHistoryCount! > value.messages.length) return null;
+  }
+  const userHistoryCounts = new Map<StoredMessage, number>();
+  let replayHistoryCount = 0;
+  for (const message of transcript) {
+    if (!isReplayHistoryMessage(message)) continue;
+    if (replayHistoryCount >= value.transcriptHistoryCount!) break;
+    if (isRealUserMessage(message)) userHistoryCounts.set(message, replayHistoryCount);
+    replayHistoryCount += 1;
   }
   const prefixHashes = historyPrefixHashes(transcript, [
     value.transcriptHistoryCount!,
     ...(hasCompactionCount ? [value.compactionHistoryCount!] : []),
+    ...userHistoryCounts.values(),
   ]);
-  if (prefixHashes.get(value.transcriptHistoryCount!) !== value.transcriptPrefixHash) return false;
+  if (prefixHashes.get(value.transcriptHistoryCount!) !== value.transcriptPrefixHash) return null;
   if (hasCompactionCount
-      && prefixHashes.get(value.compactionHistoryCount!) !== value.compactionPrefixHash) return false;
-  if (typeof value.windowId !== "string" || value.windowId.length === 0) return false;
-  if (!Number.isSafeInteger(value.windowNumber) || value.windowNumber! < 1) return false;
+      && prefixHashes.get(value.compactionHistoryCount!) !== value.compactionPrefixHash) return null;
+  if (typeof value.windowId !== "string" || value.windowId.length === 0) return null;
+  if (!Number.isSafeInteger(value.windowNumber) || value.windowNumber! < 1) return null;
   if (!Number.isSafeInteger(value.compactedAt) || value.compactedAt! < 0
-      || !Number.isSafeInteger(value.compactionCount) || value.compactionCount! < 1) return false;
-  return true;
+      || !Number.isSafeInteger(value.compactionCount) || value.compactionCount! < 1) return null;
+  const userPrefixHashes = new WeakMap<StoredMessage, string>();
+  for (const [message, count] of userHistoryCounts) {
+    const hash = prefixHashes.get(count);
+    if (hash) userPrefixHashes.set(message, hash);
+  }
+  return { active: value as ActiveContext, userPrefixHashes };
+}
+
+export function isValidActiveContext(active: unknown, transcript: StoredMessage[]): active is ActiveContext {
+  return validateActiveContext(active, transcript) !== null;
 }
 
 /**
@@ -693,6 +745,41 @@ export function rewindActiveContextToHistoryCount(
     rewound.transcriptPrefixHash = historyPrefixHash(transcript, targetHistoryCount);
   }
   return isValidActiveContext(rewound, transcript) ? rewound : null;
+}
+
+/**
+ * Rewind an active context after its immutable transcript prefix and target user
+ * checkpoint have already been validated by the caller.
+ *
+ * The ordinary defensive helper above remains available for untrusted callers.
+ * This variant avoids hashing the same retained tool/image payloads repeatedly
+ * during the serialized edit-message transaction.
+ */
+export function rewindValidatedActiveContextToHistoryCount(
+  active: ActiveContext,
+  targetHistoryCount: number,
+  compactionHistoryCount: number,
+  targetPrefixHash: string,
+): ActiveContext | null {
+  if (!Number.isSafeInteger(targetHistoryCount) || targetHistoryCount < 0
+      || !Number.isSafeInteger(compactionHistoryCount) || compactionHistoryCount < 0
+      || compactionHistoryCount > active.transcriptHistoryCount
+      || targetHistoryCount < compactionHistoryCount
+      || !/^[0-9a-f]{24}$/.test(targetPrefixHash)) return null;
+  // The checkpoint may lag canonical history (for example while queued user
+  // turns are being injected). Cutting an unrepresented suffix does not change
+  // the active replay cursor.
+  if (targetHistoryCount >= active.transcriptHistoryCount) return active;
+  const removeCount = active.transcriptHistoryCount - targetHistoryCount;
+  if (removeCount > active.messages.length) return null;
+  return {
+    ...active,
+    messages: removeCount > 0
+      ? active.messages.slice(0, active.messages.length - removeCount)
+      : active.messages,
+    transcriptHistoryCount: targetHistoryCount,
+    transcriptPrefixHash: targetPrefixHash,
+  };
 }
 
 /** True for user-authored prompts, excluding tool_result containers and model-visible system notices. */
