@@ -132,12 +132,12 @@ describe("handler conversation tool policy", () => {
 
     await handle({} as never, {
       type: "set_tool_policy",
-      reqId: "workspace",
+      reqId: "deny-bash",
       convId: id,
-      mutation: { action: "profile", profile: "workspace" },
+      mutation: { action: "deny", tools: [{ kind: "internal", name: "bash" }] },
     });
-    expect(get(id)?.toolPolicy).toEqual({ internal: ["read", "write", "glob", "grep", "edit", "patch", "browse"], external: [] });
-    expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "workspace", changed: true, snapshot: { source: "explicit", shellWarning: false } });
+    expect(get(id)?.toolPolicy?.internal).not.toContain("bash");
+    expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "deny-bash", changed: true, snapshot: { source: "explicit" } });
 
     await handle({} as never, {
       type: "set_tool_policy",

@@ -103,22 +103,6 @@ export function applyToolPolicyMutation(
 
   const availableInternal = getConfigurableInternalToolNames();
   const availableExternal = getExternalToolNames();
-  if (mutation.action === "profile") {
-    switch (mutation.profile) {
-      case "research":
-        return { internal: availableInternal.filter((name) => (RESEARCH_INTERNAL_TOOLS as readonly string[]).includes(name)), external: [] };
-      case "workspace":
-        return {
-          internal: availableInternal.filter((name) => [...RESEARCH_INTERNAL_TOOLS, "write", "edit", "patch"].includes(name)),
-          external: [],
-        };
-      case "shell":
-        return { internal: availableInternal, external: [] };
-      case "full":
-        return { internal: availableInternal, external: availableExternal };
-    }
-  }
-
   if (mutation.tools.length === 0) throw new Error(`/tools ${mutation.action} requires at least one tool`);
   const current = resolveConversationToolPolicy(conversation);
   const internal = new Set(current.configurableInternalToolNames);

@@ -1224,7 +1224,7 @@ describe("/tools", () => {
     expect(tryCommand("/tools", state)).toEqual({ type: "tool_policy" });
   });
 
-  test("parses incremental policy changes, profiles, and reset", () => {
+  test("parses incremental policy changes and reset", () => {
     const state = createInitialState();
     state.convId = "conversation-1";
     expect(tryCommand("/tools allow internal:write external:gmail", state)).toEqual({
@@ -1236,10 +1236,6 @@ describe("/tools", () => {
           { kind: "external", name: "gmail" },
         ],
       },
-    });
-    expect(tryCommand("/tools profile workspace", state)).toEqual({
-      type: "tool_policy",
-      mutation: { action: "profile", profile: "workspace" },
     });
     expect(tryCommand("/tools reset", state)).toEqual({
       type: "tool_policy",
@@ -1255,8 +1251,9 @@ describe("/tools", () => {
     ];
     state.externalToolStyles = [{ cmd: "gmail", label: "Gmail", color: "#ffffff" }];
     const args = getCommandArgs(state, "/tools");
-    expect(args["/tools allow"]?.map((item) => item.name)).toEqual(["internal:read", "external:gmail"]);
-    expect(args["/tools profile"]?.map((item) => item.name)).toEqual(["research", "workspace", "shell", "full"]);
+    expect(args["/tools"]?.map((item) => item.name)).toEqual(["allow", "deny", "reset"]);
+    expect(args["/tools allow"]?.map((item) => item.name)).toEqual(["read", "gmail"]);
+    expect(args["/tools allow"]?.map((item) => item.insertText)).toEqual(["internal:read", "external:gmail"]);
   });
 
   test("requires an open conversation and rejects malformed references", () => {

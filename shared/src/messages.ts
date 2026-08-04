@@ -469,7 +469,6 @@ export interface ToolDisplayInfo {
 // ── Per-conversation tool policy ───────────────────────────────────
 
 export type ToolPolicyKind = "internal" | "external";
-export type ToolPolicyProfile = "research" | "workspace" | "shell" | "full";
 
 export interface ToolPolicyRef {
   kind: ToolPolicyKind;
@@ -478,7 +477,6 @@ export interface ToolPolicyRef {
 
 export type ToolPolicyMutation =
   | { action: "allow" | "deny"; tools: ToolPolicyRef[] }
-  | { action: "profile"; profile: ToolPolicyProfile }
   | { action: "reset" };
 
 export interface ToolPolicyAvailability {

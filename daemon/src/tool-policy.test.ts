@@ -40,11 +40,9 @@ describe("conversation tool policy", () => {
     expect(resolveConversationToolPolicy(conv).configurableInternalToolNames).toEqual(["read", "write"]);
   });
 
-  test("allow, deny, profiles, and reset produce persisted exact policies", () => {
+  test("allow, deny, and reset produce persisted exact policies", () => {
     const conv = createConversation("mutations", "openai", "gpt-5.6-sol");
-    const research = applyToolPolicyMutation(conv, { action: "profile", profile: "research" });
-    expect(research).toEqual({ internal: ["read", "glob", "grep", "browse"], external: [] });
-    conv.toolPolicy = research;
+    conv.toolPolicy = { internal: ["read", "glob", "grep", "browse"], external: [] };
 
     const withWrite = applyToolPolicyMutation(conv, { action: "allow", tools: [{ kind: "internal", name: "write" }] });
     expect(withWrite?.internal).toContain("write");
