@@ -4,6 +4,7 @@ import type { ConversationSummary } from "./messages";
 import { SIDEBAR_WIDTH } from "./sidebar/layout";
 import { theme } from "./theme";
 import { visibleLength } from "./textwidth";
+import { reconcileFolderNotificationBuffer } from "./sidebar/notifications";
 
 function conversation(id: string, sortOrder: number, overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
@@ -235,6 +236,54 @@ describe("sidebar rendering", () => {
     expect(folderRow).toBeDefined();
     expect(folderRow).toContain(`${theme.notificationBg}${theme.notificationFg} 2 ${theme.reset}`);
     expect(visibleLength(folderRow!)).toBe(SIDEBAR_WIDTH);
+  });
+
+  test("does not count streaming unread conversations in folder notification badges", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [
+      { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
+    ];
+    sidebar.conversations = [
+      conversation("settled", 0, { folderId: "work", unread: true }),
+      conversation("still-streaming", 1, { folderId: "work", unread: true, streaming: true }),
+    ];
+
+    const folderRow = renderSidebar(sidebar, 8, true, null).find(row => row.includes("Work"));
+
+    expect(folderRow).toContain(`${theme.accent}◉ `);
+    expect(folderRow).toContain(`${theme.notificationBg}${theme.notificationFg} 1 ${theme.reset}`);
+    expect(folderRow).not.toContain(`${theme.notificationBg}${theme.notificationFg} 2 ${theme.reset}`);
+  });
+
+  test("buffers a finished folder notification and cancels it when a queued turn starts", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [
+      { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
+    ];
+    const completed = conversation("queued-chain", 0, { folderId: "work", unread: true });
+    sidebar.conversations = [completed];
+    reconcileFolderNotificationBuffer(sidebar, completed, true, 1_000);
+
+    let folderRow = renderSidebar(sidebar, 8, true, null, new Set(), 1_100).find(row => row.includes("Work"));
+    expect(folderRow).not.toContain(theme.notificationBg);
+    expect(folderRow).not.toContain(`${theme.success}◉ `);
+
+    const queuedTurn = { ...completed, streaming: true };
+    sidebar.conversations = [queuedTurn];
+    reconcileFolderNotificationBuffer(sidebar, queuedTurn, false, 1_150);
+
+    folderRow = renderSidebar(sidebar, 8, true, null, new Set(), 1_500).find(row => row.includes("Work"));
+    expect(folderRow).toContain(`${theme.accent}◉ `);
+    expect(folderRow).not.toContain(theme.notificationBg);
+
+    const finalCompletion = { ...queuedTurn, streaming: false };
+    sidebar.conversations = [finalCompletion];
+    reconcileFolderNotificationBuffer(sidebar, finalCompletion, true, 2_000);
+
+    folderRow = renderSidebar(sidebar, 8, true, null, new Set(), 2_100).find(row => row.includes("Work"));
+    expect(folderRow).not.toContain(theme.notificationBg);
+    folderRow = renderSidebar(sidebar, 8, true, null, new Set(), 2_200).find(row => row.includes("Work"));
+    expect(folderRow).toContain(`${theme.notificationBg}${theme.notificationFg} 1 ${theme.reset}`);
   });
 
   test("does not render finished indicators or unread-count badges anywhere under top-level subagents", () => {
