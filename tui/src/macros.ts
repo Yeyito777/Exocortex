@@ -82,13 +82,15 @@ interface InstalledExternalTool {
 }
 
 const EXTERNAL_TOOL_SPECS: ExternalToolSpec[] = [
-  { cliName: "discord-cli", repo: "git@github.com:Yeyito777/discord-cli.git" },
+  { cliName: "discord-cli", repo: "https://github.com/Yeyito777/discord-cli.git" },
   { cliName: "exo-cli", repo: "https://github.com/Yeyito777/exo-cli.git" },
   { cliName: "gmail-cli", repo: "https://github.com/Yeyito777/gmail-cli.git" },
-  { cliName: "qutebrowser-cli", repo: "https://github.com/Yeyito777/qutebrowser-cli.git" },
+  { cliName: "google-cli", repo: "https://github.com/Yeyito777/Google.git" },
+  { cliName: "image-cli", repo: "https://github.com/Yeyito777/image-cli.git" },
+  { cliName: "linkedin-cli", repo: "https://github.com/Yeyito777/linkedin-cli.git" },
+  { cliName: "transcribe-cli", repo: "https://github.com/Yeyito777/transcribe-cli.git" },
   { cliName: "twitter-cli", repo: "https://github.com/Yeyito777/twitter-cli.git" },
   { cliName: "whatsapp-cli", repo: "https://github.com/Yeyito777/whatsapp-cli.git" },
-  { cliName: "xenv-cli", repo: "https://github.com/Yeyito777/xenv-cli.git" },
 ];
 
 function externalToolShortName(cliName: string): string {

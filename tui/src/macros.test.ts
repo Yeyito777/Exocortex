@@ -113,10 +113,12 @@ describe("tool macros", () => {
       "discord",
       "exo",
       "gmail",
-      "qutebrowser",
+      "google",
+      "image",
+      "linkedin",
+      "transcribe",
       "twitter",
       "whatsapp",
-      "xenv",
     ]);
   });
 
