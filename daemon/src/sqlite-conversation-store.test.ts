@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, createConversation, type StoredMessage } from "./messages";
+import { REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, createConversation, historyPrefixHash, type StoredMessage } from "./messages";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
 
 const roots: string[] = [];
@@ -109,6 +109,151 @@ describe("SQLite transaction fault boundaries", () => {
     `).all(conv.id);
     expect(after.slice(0, before.length)).toEqual(before);
     expect(after).toHaveLength(before.length + 1);
+    store.close();
+  });
+
+  test("unwind preserves prefix rows and deletes only the canonical suffix", () => {
+    const { path } = pathFor("targeted-unwind");
+    const store = new SqliteConversationStore({ path });
+    const conv = createConversation("targeted-unwind", "openai", "gpt-5.6-sol", 0, "targeted");
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: [{ type: "tool_use", id: "keep-tool", name: "bash", input: {} }], metadata: null },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "keep-tool", content: "prefix payload".repeat(10_000) }], metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+      { role: "user", content: "remove", metadata: null },
+      { role: "assistant", content: "removed answer", metadata: null },
+    );
+    const compactedPrefixHash = historyPrefixHash(conv.messages, 4);
+    conv.activeContext = {
+      version: 1,
+      kind: "openai_native",
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      messages: [{
+        role: "assistant",
+        content: [],
+        providerData: { openai: { compactionItems: [{ encryptedContent: "opaque" }] } },
+      }],
+      transcriptHistoryCount: 4,
+      transcriptPrefixHash: compactedPrefixHash,
+      compactionHistoryCount: 4,
+      compactionPrefixHash: compactedPrefixHash,
+      windowId: `${conv.id}:1`,
+      windowNumber: 1,
+      compactedAt: 123,
+      compactionCount: 1,
+    };
+    store.save(conv);
+    const targetEntryIndex = store.displayEntryCountBeforeUser(conv.id, 1);
+    expect(targetEntryIndex).not.toBeNull();
+    const prefixRows = store.db.query<Record<string, unknown>, [string, number]>(`
+      SELECT sequence, content_json, content_hash, message_hash
+      FROM messages WHERE conversation_id=? AND sequence<? ORDER BY sequence
+    `).all(conv.id, 4);
+    const prefixBlob = store.db.query<Record<string, unknown>, [string, number]>(`
+      SELECT message_sequence, kind, ordinal, payload_bytes, content_hash
+      FROM message_blobs WHERE conversation_id=? AND message_sequence<?
+    `).all(conv.id, 4);
+    expect(prefixBlob).toHaveLength(1);
+
+    store.db.exec(`
+      CREATE TEMP TABLE message_mutations(kind TEXT NOT NULL, sequence INTEGER NOT NULL);
+      CREATE TEMP TABLE active_context_mutations(kind TEXT NOT NULL);
+      CREATE TEMP TRIGGER profile_message_delete AFTER DELETE ON main.messages BEGIN
+        INSERT INTO message_mutations(kind, sequence) VALUES ('delete', old.sequence);
+      END;
+      CREATE TEMP TRIGGER profile_message_insert AFTER INSERT ON main.messages BEGIN
+        INSERT INTO message_mutations(kind, sequence) VALUES ('insert', new.sequence);
+      END;
+      CREATE TEMP TRIGGER profile_active_delete AFTER DELETE ON main.active_contexts BEGIN
+        INSERT INTO active_context_mutations(kind) VALUES ('delete');
+      END;
+      CREATE TEMP TRIGGER profile_active_insert AFTER INSERT ON main.active_contexts BEGIN
+        INSERT INTO active_context_mutations(kind) VALUES ('insert');
+      END;
+    `);
+    const result = { ...conv, messages: conv.messages.slice(0, 4), updatedAt: conv.updatedAt + 1 };
+    store.saveUnwind(conv, result, 4, {
+      operationId: "targeted-unwind-operation",
+      userMessageIndex: 1,
+      historyTotalEntries: targetEntryIndex!,
+      messageCount: 4,
+      supersededQueueIds: [],
+    });
+
+    expect(store.db.query<{ kind: string; sequence: number }, []>(
+      "SELECT kind, sequence FROM message_mutations ORDER BY sequence",
+    ).all()).toEqual([
+      { kind: "delete", sequence: 4 },
+      { kind: "delete", sequence: 5 },
+    ]);
+    expect(store.db.query<{ kind: string }, []>(
+      "SELECT kind FROM active_context_mutations",
+    ).all()).toEqual([]);
+    expect(store.db.query<Record<string, unknown>, [string, number]>(`
+      SELECT sequence, content_json, content_hash, message_hash
+      FROM messages WHERE conversation_id=? AND sequence<? ORDER BY sequence
+    `).all(conv.id, 4)).toEqual(prefixRows);
+    expect(store.db.query<Record<string, unknown>, [string, number]>(`
+      SELECT message_sequence, kind, ordinal, payload_bytes, content_hash
+      FROM message_blobs WHERE conversation_id=? AND message_sequence<?
+    `).all(conv.id, 4)).toEqual(prefixBlob);
+    expect(store.load(conv.id)?.messages).toHaveLength(4);
+    expect(store.getLastUnwindReceipt(conv)).toMatchObject({
+      operationId: "targeted-unwind-operation",
+      userMessageIndex: 1,
+      historyTotalEntries: targetEntryIndex,
+    });
+    expect(store.integrityCheck().ok).toBe(true);
+    store.close();
+  });
+
+  test("unwind folds pending retained context attribution into the same transaction", () => {
+    const { path } = pathFor("unwind-context-attribution");
+    const store = new SqliteConversationStore({ path });
+    const conv = createConversation("unwind-context-attribution", "openai", "gpt-5.6-sol", 0, "attribution");
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+      { role: "user", content: "remove", metadata: null },
+      { role: "assistant", content: "removed answer", metadata: null },
+    );
+    store.save(conv);
+    const before = store.db.query<{ content_json: string; content_hash: string }, [string, number]>(`
+      SELECT content_json, content_hash FROM messages WHERE conversation_id=? AND sequence=?
+    `).get(conv.id, 0)!;
+
+    // Provider usage can arrive while the edit request is waiting for a stream
+    // abort. It is the one permitted retained-prefix mutation during unwind.
+    conv.messages[0].contextTokens = null;
+    const result = { ...conv, messages: conv.messages.slice(0, 2), updatedAt: conv.updatedAt + 1 };
+    store.saveUnwind(conv, result, 2, {
+      operationId: "attribution-unwind-operation",
+      userMessageIndex: 1,
+      historyTotalEntries: 2,
+      messageCount: 2,
+      supersededQueueIds: [],
+    });
+
+    const retained = store.db.query<{
+      content_json: string;
+      content_hash: string;
+      context_tokens_json: string | null;
+      has_context_tokens: number;
+    }, [string, number]>(`
+      SELECT content_json, content_hash, context_tokens_json, has_context_tokens
+      FROM messages WHERE conversation_id=? AND sequence=?
+    `).get(conv.id, 0)!;
+    expect(retained).toEqual({
+      ...before,
+      context_tokens_json: null,
+      has_context_tokens: 1,
+    });
+    const loaded = store.load(conv.id)!;
+    expect(Object.hasOwn(loaded.messages[0], "contextTokens")).toBe(true);
+    expect(loaded.messages[0].contextTokens).toBeNull();
+    expect(store.integrityCheck().ok).toBe(true);
     store.close();
   });
 

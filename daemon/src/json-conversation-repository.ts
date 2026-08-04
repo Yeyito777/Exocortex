@@ -57,6 +57,8 @@ export class JsonConversationRepository implements ConversationRepository {
     json.saveUnwind(base, result, target, options);
   }
 
+  displayEntryCountBeforeUser() { return null; }
+
   loadDisplayPage(id: string, turns: number, beforeEntryIndex?: number) {
     let page = displayPages.loadDisplayPage(id, turns, beforeEntryIndex);
     if (page) return page;

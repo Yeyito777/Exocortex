@@ -182,6 +182,10 @@ export function saveUnwind(base: Conversation, result: Conversation, targetHisto
   else jsonPersistence.saveUnwind(base, result, targetHistoryCount, options);
 }
 
+export function displayEntryCountBeforeUser(id: string, userMessageIndex: number): number | null {
+  return backend === "sqlite" ? store().displayEntryCountBeforeUser(id, userMessageIndex) : null;
+}
+
 export function loadUnwindQueueTombstones(): Set<string> {
   return backend === "sqlite" ? store().loadUnwindQueueTombstones() : jsonPersistence.loadUnwindQueueTombstones();
 }

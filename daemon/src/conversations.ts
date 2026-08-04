@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy } from "./messages";
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, activeContextCompactionHistoryCount, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
@@ -1248,9 +1248,7 @@ async function performUnwindTo(
   // written after its fixed boundary can be edited. Enforce this in the daemon
   // as well as the TUI so stale/third-party clients cannot destroy the checkpoint.
   if (conv.activeContext) {
-    const compactionHistoryCount = isValidActiveContext(conv.activeContext, conv.messages)
-      ? activeContextCompactionHistoryCount(conv.activeContext, conv.messages)
-      : null;
+    const compactionHistoryCount = validatedActiveContextCompactionHistoryCount(conv.activeContext, conv.messages);
     if (compactionHistoryCount == null || targetHistoryCount < compactionHistoryCount) {
       log("warn", `conversations: refusing unwind before active compaction boundary for ${id} (target=${targetHistoryCount}, boundary=${compactionHistoryCount ?? "unknown"})`);
       return null;
@@ -1292,8 +1290,8 @@ async function performUnwindTo(
     // A compaction or another destructive mutation can win the race with abort.
     // Revalidate both the immutable boundary and the exact target object before
     // committing a durable cut.
-    const postAbortCompactionHistoryCount = conv.activeContext && isValidActiveContext(conv.activeContext, conv.messages)
-      ? activeContextCompactionHistoryCount(conv.activeContext, conv.messages)
+    const postAbortCompactionHistoryCount = conv.activeContext
+      ? validatedActiveContextCompactionHistoryCount(conv.activeContext, conv.messages)
       : null;
     const lostCheckpointDuringAbort = hadActiveContextBeforeAbort && conv.activeContext == null;
     if (conversations.get(id) !== conv
@@ -1312,8 +1310,27 @@ async function performUnwindTo(
     // linearization point; live history and queue state remain untouched until it
     // succeeds.
     const plannedMessages = conv.messages.slice(0, spliceAt);
+    const targetCheckpointPrefixHash = trustedUserCheckpointPrefixHash(
+      conv,
+      targetMessage,
+      targetContextCheckpoint,
+      targetHistoryCount,
+      conv.activeContext?.windowId ?? null,
+    );
     const recoveredActiveContext = conv.activeContext
-      ? rewindActiveContextToHistoryCount(conv.activeContext, plannedMessages, targetHistoryCount)
+      ? (postAbortCompactionHistoryCount != null
+        && targetHistoryCount >= conv.activeContext.transcriptHistoryCount
+        // The cut removes only canonical history that this compact replay has
+        // never represented, so its already-validated cursor is unchanged.
+        ? conv.activeContext
+        : (postAbortCompactionHistoryCount != null && targetCheckpointPrefixHash
+          ? rewindValidatedActiveContextToHistoryCount(
+            conv.activeContext,
+            targetHistoryCount,
+            postAbortCompactionHistoryCount,
+            targetCheckpointPrefixHash,
+          )
+          : rewindActiveContextToHistoryCount(conv.activeContext, plannedMessages, targetHistoryCount)))
       : null;
     const plannedConversation: Conversation = {
       ...conv,
@@ -1326,10 +1343,17 @@ async function performUnwindTo(
       targetContextCheckpoint,
       targetHistoryCount,
       recoveredActiveContext?.windowId ?? null,
-    ) ?? estimateCurrentReplayTokens(plannedConversation);
-    const plannedDisplay = buildSnapshotDisplayData(plannedConversation, plannedMessages, false);
-    const historyTotalEntries = plannedDisplay.entries
-      .filter((entry) => entry.type !== "system_instructions").length;
+      targetCheckpointPrefixHash,
+    ) ?? estimateRewoundReplayTokens(conv, plannedConversation, spliceAt);
+    const historyTotalEntries = persistence.displayEntryCountBeforeUser(id, userMessageIndex)
+      ?? buildSnapshotDisplayData(
+        plannedConversation,
+        plannedMessages,
+        false,
+        true,
+        undefined,
+        false,
+      ).entries.filter((entry) => entry.type !== "system_instructions").length;
     const plannedSummary = summarizeConversation(plannedConversation);
     const supersededQueueIds = messageQueue.listInternalQueuedMessages()
       .filter((entry) => entry.convId === id)
@@ -1350,6 +1374,7 @@ async function performUnwindTo(
 
     conv.messages.splice(spliceAt);
     conv.activeContext = recoveredActiveContext;
+    if (recoveredActiveContext) rememberValidatedActiveContext(recoveredActiveContext, conv.messages);
     conv.lastContextTokens = plannedConversation.lastContextTokens;
     conv.updatedAt = plannedConversation.updatedAt;
     renderSnapshotCache.delete(id);
@@ -1416,6 +1441,7 @@ function contextTokensAtUserCheckpoint(
   checkpoint: StoredUserContextCheckpoint | undefined,
   targetHistoryCount: number,
   windowId: string | null,
+  trustedPrefixHash: string | null = null,
 ): number | null {
   if (!checkpoint
       || checkpoint.version !== 1
@@ -1423,17 +1449,75 @@ function contextTokensAtUserCheckpoint(
       || checkpoint.model !== conv.model
       || checkpoint.windowId !== windowId
       || checkpoint.transcriptHistoryCount !== targetHistoryCount
-      || checkpoint.transcriptPrefixHash !== historyPrefixHash(conv.messages, targetHistoryCount)
       || checkpoint.contextTokens == null
       || !Number.isFinite(checkpoint.contextTokens)
-      || checkpoint.contextTokens < 0) return null;
+      || checkpoint.contextTokens < 0
+      // Avoid serializing a large prefix when this legacy checkpoint has no
+      // usable token value anyway.
+      || checkpoint.transcriptPrefixHash !== (trustedPrefixHash ?? historyPrefixHash(conv.messages, targetHistoryCount))) return null;
   return checkpoint.contextTokens;
 }
 
+/**
+ * A user checkpoint is written atomically with the canonical message and is
+ * immutable under the generation/target-identity checks above. Prefer its
+ * already-computed rolling prefix hash when it either matches the value captured
+ * during full active-context validation or lies in the canonical append-only
+ * tail beyond that validated cursor. Malformed, stale, and legacy checkpoints
+ * inside represented history fall back to full hashing.
+ */
+function trustedUserCheckpointPrefixHash(
+  conv: Conversation,
+  targetMessage: StoredMessage,
+  checkpoint: StoredUserContextCheckpoint | undefined,
+  targetHistoryCount: number,
+  windowId: string | null,
+): string | null {
+  if (!checkpoint
+      || checkpoint.version !== 1
+      || checkpoint.provider !== conv.provider
+      || checkpoint.model !== conv.model
+      || checkpoint.windowId !== windowId
+      || checkpoint.transcriptHistoryCount !== targetHistoryCount
+      || !/^[0-9a-f]{24}$/.test(checkpoint.transcriptPrefixHash)) return null;
+  const active = conv.activeContext;
+  if (!active) return null;
+  // Active-context validation proves the immutable prefix through this cursor.
+  // Later canonical messages and their checkpoints are append-only, and the
+  // target object/generation is checked again after abort immediately before
+  // commit. Trust that persisted checkpoint without serializing the whole tail.
+  if (targetHistoryCount > active.transcriptHistoryCount) return checkpoint.transcriptPrefixHash;
+  const validatedHash = targetHistoryCount === active.transcriptHistoryCount
+    ? active.transcriptPrefixHash
+    : cachedValidatedHistoryPrefixHashBeforeMessage(active, conv.messages, targetMessage);
+  return validatedHash === checkpoint.transcriptPrefixHash ? validatedHash : null;
+}
+
 /** Best-effort statusline value when an older user turn has no stored token snapshot. */
+function estimateRewoundReplayTokens(
+  base: Conversation,
+  planned: Conversation,
+  spliceAt: number,
+): number {
+  // When the compact replay cursor is unchanged, the current provider total is
+  // already a calibrated estimate of the same replay plus the removed canonical
+  // suffix. Subtract only that suffix instead of walking large retained tool and
+  // image payloads. Exact provider usage on the replacement turn supersedes this
+  // best-effort statusline value.
+  if (planned.activeContext && planned.activeContext === base.activeContext
+      && base.lastContextTokens != null && Number.isFinite(base.lastContextTokens)) {
+    const removedChars = base.messages.slice(spliceAt)
+      .filter(isReplayHistoryMessage)
+      .reduce((sum, message) => sum + contextMessageChars(message, base.provider), 0);
+    return Math.max(0, Math.round(base.lastContextTokens) - Math.ceil(removedChars / 4));
+  }
+  return estimateCurrentReplayTokens(planned);
+}
+
+/** Full replay estimate for legacy/malformed checkpoints and changed compact cursors. */
 function estimateCurrentReplayTokens(conv: Conversation): number {
   const history = conv.messages.filter(isReplayHistoryMessage);
-  const replay = conv.activeContext && isValidActiveContext(conv.activeContext, conv.messages)
+  const replay = conv.activeContext && isValidActiveContextCached(conv.activeContext, conv.messages)
     ? [
         ...conv.activeContext.messages.map((message) => ({
           role: message.role,

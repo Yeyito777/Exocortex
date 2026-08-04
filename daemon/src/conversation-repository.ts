@@ -57,6 +57,8 @@ export interface ConversationRepository {
     options: SaveUnwindOptions,
   ): void;
 
+  /** Indexed non-pinned display entry count immediately before a user turn. */
+  displayEntryCountBeforeUser(id: string, userMessageIndex: number): number | null;
   loadDisplayPage(id: string, turns: number, beforeEntryIndex?: number): StoredDisplayHistoryPage | null;
   loadToolOutputs(id: string): ToolOutputInfo[] | null;
 }
