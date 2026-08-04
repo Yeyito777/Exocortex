@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { resolveToolDisplay, resolveBashExternalMatch } from "./toolstyles";
 import type { ExternalToolStyle, ToolDisplayInfo } from "./messages";
+import { hexToAnsi } from "./theme";
 
 const registry: ToolDisplayInfo[] = [
   { name: "bash", label: "$", color: "#d19a66" },
@@ -19,6 +20,15 @@ describe("bash external tool styling", () => {
     expect(display.label).toBe("Exocortex");
     expect(display.detail).toBe("status --json");
     expect(display.cmd).toBe("exo");
+  });
+
+  test("keeps each external manifest's label and color on its Bash call", () => {
+    const display = resolveToolDisplay("bash", "gmail search newer_than:1d", registry, externalToolStyles);
+
+    expect(display.label).toBe("Gmail");
+    expect(display.detail).toBe("search newer_than:1d");
+    expect(display.fg).toBe(hexToAnsi("#4ddbb7"));
+    expect(display.cmd).toBe("gmail");
   });
 
   test("matches through setup-line prelude", () => {

@@ -1247,7 +1247,6 @@ describe("/tools", () => {
     const state = createInitialState();
     state.toolRegistry = [
       { name: "read", label: "Read", color: "#ffffff" },
-      { name: "external", label: "External", color: "#ffffff" },
     ];
     state.externalToolStyles = [{ cmd: "gmail", label: "Gmail", color: "#ffffff" }];
     const args = getCommandArgs(state, "/tools");

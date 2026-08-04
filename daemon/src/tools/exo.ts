@@ -51,7 +51,7 @@ function summarizeExoParams(primary: string, input: Record<string, unknown>, ski
 
 const EXO_SYSTEM_HINT = [
   "### subagents",
-  "Use the native `exo` tool for delegated work. Don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents get research tools and no external tools by default. Use internal_tools/external_tools for exact delegation; allow_edits=true remains legacy shorthand for shell and mutation access.",
+  "Use the native `exo` tool for delegated work. Don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents get research tools and no external tools by default. Use internal_tools/external_tools for exact delegation; external CLIs retain their established Bash transport, and allow_edits=true remains legacy shorthand for shell and mutation access.",
   "### subscriptions",
   "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
   "Subagents start in the daemon's working directory, so include the target absolute directory and all necessary task context.",
@@ -142,7 +142,7 @@ export const exo: Tool = {
       external_tools: {
         type: "array",
         items: { type: "string" },
-        description: "Exact external-tool allowlist for a new subagent. Defaults to none; selected manifest hints and the restricted external runner are provided without granting bash.",
+        description: "Exact external-tool allowlist for a new subagent. Defaults to none. External CLIs remain ordinary Bash commands, so selecting any external tool also enables Bash and its established manifest-based TUI presentation.",
       },
       mode: {
         type: "string",

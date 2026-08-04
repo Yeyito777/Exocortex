@@ -5,14 +5,14 @@ import { getRegisteredTools } from "./tools/registry";
 
 export const RESEARCH_INTERNAL_TOOLS = ["read", "glob", "grep", "browse"] as const;
 export const LEGACY_EDIT_INTERNAL_TOOLS = ["bash", "write", "edit", "patch", "chrono"] as const;
-export const EXTERNAL_RUNNER_TOOL = "external";
+const EXTERNAL_TOOL_TRANSPORT = "bash";
 
 function uniqueNames(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 export function getConfigurableInternalToolNames(): string[] {
-  return getRegisteredTools().map((tool) => tool.name).filter((name) => name !== EXTERNAL_RUNNER_TOOL);
+  return getRegisteredTools().map((tool) => tool.name);
 }
 
 export function getDefaultSubagentInternalToolNames(maxDepth: number | null, allowEdits: boolean): string[] {
@@ -54,13 +54,21 @@ export function resolveConversationToolPolicy(
   const defaultExternal = scoped ? [] : installedExternal;
   const externalToolNames = uniqueNames(selected?.external ?? defaultExternal)
     .filter((name) => installedExternalSet.has(name));
-  const internalToolNames = [...configurableInternalToolNames];
-  if (externalToolNames.length > 0 && getRegisteredTools().some((tool) => tool.name === EXTERNAL_RUNNER_TOOL)) {
-    internalToolNames.push(EXTERNAL_RUNNER_TOOL);
+
+  // External tools are deliberately not native tool schemas. They remain
+  // ordinary commands invoked through Bash so the existing summary matcher can
+  // render each manifest's own label and color. Keep Bash explicit/effective
+  // whenever an external CLI is delegated; never introduce a generic external
+  // broker here, because that wrapper would become the visible tool call.
+  if (externalToolNames.length > 0 && registeredInternalSet.has(EXTERNAL_TOOL_TRANSPORT)) {
+    configurableInternalToolNames = orderedSelection(
+      new Set([...configurableInternalToolNames, EXTERNAL_TOOL_TRANSPORT]),
+      registeredInternal,
+    );
   }
 
   return {
-    internalToolNames,
+    internalToolNames: [...configurableInternalToolNames],
     configurableInternalToolNames,
     externalToolNames,
     source: selected ? "explicit" : "default",
@@ -77,6 +85,23 @@ export function validateToolSelection(
   const unknown = normalized.filter((name) => !available.has(name));
   if (unknown.length > 0) throw new Error(`Unknown or unavailable ${kind} tool${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}`);
   return normalized;
+}
+
+/** Validate and canonicalize one exact policy, including Bash for external CLIs. */
+export function normalizeToolPolicySelection(
+  internalNames: readonly string[],
+  externalNames: readonly string[],
+): ConversationToolPolicy {
+  const availableInternal = getConfigurableInternalToolNames();
+  const internal = new Set(validateToolSelection("internal", internalNames));
+  const external = validateToolSelection("external", externalNames);
+  if (external.length > 0 && availableInternal.includes(EXTERNAL_TOOL_TRANSPORT)) {
+    internal.add(EXTERNAL_TOOL_TRANSPORT);
+  }
+  return {
+    internal: orderedSelection(internal, availableInternal),
+    external,
+  };
 }
 
 export function assertDelegatedSubset(
@@ -116,10 +141,17 @@ export function applyToolPolicyMutation(
     if (mutation.action === "allow") selected.add(name);
     else selected.delete(name);
   }
-  return {
-    internal: orderedSelection(internal, availableInternal),
-    external: orderedSelection(external, availableExternal),
-  };
+  if (
+    mutation.action === "deny"
+    && mutation.tools.some((ref) => ref.kind === "internal" && ref.name.trim() === EXTERNAL_TOOL_TRANSPORT)
+    && external.size > 0
+  ) {
+    throw new Error("Cannot disable bash while external tools are enabled; disable those external tools first");
+  }
+  return normalizeToolPolicySelection(
+    orderedSelection(internal, availableInternal),
+    orderedSelection(external, availableExternal),
+  );
 }
 
 export function buildToolPolicySnapshot(conversation: Conversation): ToolPolicySnapshot {
@@ -131,7 +163,6 @@ export function buildToolPolicySnapshot(conversation: Conversation): ToolPolicyS
     scoped: resolved.scoped,
     source: resolved.source,
     internal: getRegisteredTools()
-      .filter((tool) => tool.name !== EXTERNAL_RUNNER_TOOL)
       .map((tool) => ({ name: tool.name, label: tool.display.label, enabled: enabledInternal.has(tool.name) })),
     external: getExternalToolStyles().map((tool) => ({
       name: tool.cmd,

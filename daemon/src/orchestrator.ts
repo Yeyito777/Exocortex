@@ -592,7 +592,6 @@ async function orchestrateAssistantTurn(
   const scopedPromptOptions = scopedSubagentPromptOptions(liveConv, subagentMaxDepth);
   const resolvedToolPolicy = resolveConversationToolPolicy(liveConv, subagentMaxDepth);
   const allowedToolNames = resolvedToolPolicy.internalToolNames;
-  toolContext.externalToolNames = resolvedToolPolicy.externalToolNames;
   const systemPrompt = buildSystemPrompt({
     conversationInstructions: systemInstructionsText || undefined,
     conversationId: convId,

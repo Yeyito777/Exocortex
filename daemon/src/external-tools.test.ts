@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawn } from "child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { LoadedTool, Manifest } from "./external-tools";
@@ -14,8 +14,6 @@ import {
   isLikelyManagedDaemonPid,
   killProcessGroup,
   reapStaleManagedDaemonPid,
-  rewriteExternalToolShellCommandForPolicy,
-  runExternalTool,
   shouldSuperviseExternalToolDaemons,
 } from "./external-tools";
 import { rewriteExternalToolShellCommandForToolsWithAuth } from "./external-tools-shell";
@@ -268,45 +266,6 @@ describe("getExternalToolHints", () => {
     ];
     expect(getExternalToolHintsForNames(["gmail"], loaded)).toBe("## gmail\nGmail hint");
     expect(getExternalToolHintsForNames([], loaded)).toBe("");
-  });
-});
-
-describe("runExternalTool", () => {
-  test("executes a selected manifest binary with literal argv, stdin, and scoped environment", async () => {
-    const root = mkdtempSync(join(tmpdir(), "exo-external-run-"));
-    try {
-      const binDir = join(root, "bin");
-      mkdirSync(binDir);
-      const binary = join(binDir, "fake");
-      writeFileSync(binary, "#!/usr/bin/env bash\nprintf 'args=%s\\n' \"$*\"\nprintf 'stdin='\ncat\nprintf '\\nenv=%s\\n' \"$POLICY_TEST\"\n");
-      chmodSync(binary, 0o755);
-      const tool = makeTool({
-        manifest: { name: "fake", bin: "./bin/fake", systemHint: "Fake hint" },
-        binDir,
-        toolDir: root,
-      });
-      const result = await runExternalTool("fake", ["one", "two words"], "opaque body", undefined, 5_000, [tool], { POLICY_TEST: "scoped" });
-      expect(result).toMatchObject({ exitCode: 0, signal: null, timedOut: false });
-      expect(result.output).toContain("args=one two words");
-      expect(result.output).toContain("stdin=opaque body");
-      expect(result.output).toContain("env=scoped");
-      await expect(runExternalTool("other", [], undefined, undefined, 5_000, [tool])).rejects.toThrow("Unknown or unavailable external tool");
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("external shell policy", () => {
-  test("blocks recognized direct commands outside the allowlist", async () => {
-    const loaded = [
-      makeTool({ manifest: { name: "gmail" } }),
-      makeTool({ manifest: { name: "google" } }),
-    ];
-    await expect(rewriteExternalToolShellCommandForPolicy("gmail search inbox", ["google"], loaded)).rejects.toThrow(
-      "External tool unavailable in this conversation: gmail",
-    );
-    expect(await rewriteExternalToolShellCommandForPolicy("google search cats", ["google"], loaded)).toBe("google search cats");
   });
 });
 

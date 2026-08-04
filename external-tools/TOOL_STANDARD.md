@@ -128,14 +128,14 @@ directories when they need different labels or colors.
 - **systemHint**: Injected into the system prompt so the model knows the tool exists.
 - **display**: TUI styling for bash sub-command matching (label + hex color).
 
-External manifests are enabled per conversation. The model normally invokes an
-enabled command through the native `external` broker with the manifest name, a
-literal argv array, and optional stdin. This provides external tools without
-granting an agent arbitrary Bash access. If Bash is enabled too, only selected
-managed tool directories are projected into its PATH and direct recognized
-invocations are policy-checked. Bash is still a broad host capability rather
-than a security sandbox, so tool denials must not be represented as a hard
-boundary while unrestricted process execution is enabled.
+External tools intentionally remain ordinary executables invoked through the
+native Bash tool. Their manifest name selects which system-prompt instructions
+a conversation receives, while the existing Bash summary matcher supplies the
+tool-specific TUI label and color. Do not add a generic native external-tool
+broker or wrapper: that extra call layer bypasses the established manifest
+presentation and makes every tool render as the wrapper instead. Because Bash
+is a broad host capability, per-conversation external-tool selection is a
+discovery/delegation policy rather than a hard process sandbox.
 
 ## Primary opaque payloads
 

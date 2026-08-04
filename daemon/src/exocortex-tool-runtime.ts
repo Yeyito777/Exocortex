@@ -61,6 +61,7 @@ import {
   assertDelegatedSubset,
   buildToolPolicySnapshot,
   getDefaultSubagentInternalToolNames,
+  normalizeToolPolicySelection,
   resolveConversationToolPolicy,
   validateToolSelection,
 } from "./tool-policy";
@@ -123,7 +124,12 @@ interface ExoCommandDefinition {
   description: string;
   inputSchema: Record<string, unknown>;
   examples?: Record<string, unknown>[];
-  execute(args: Record<string, unknown>, parentConversationId: string | undefined, signal?: AbortSignal): Promise<ToolResult> | ToolResult;
+  execute(
+    args: Record<string, unknown>,
+    parentConversationId: string | undefined,
+    signal?: AbortSignal,
+    callerMaxDepth?: number | null,
+  ): Promise<ToolResult> | ToolResult;
 }
 
 const DEFAULT_LIST_LIMIT = 25;
@@ -683,7 +689,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     if (!callerPolicy || targetConvId === parentConvId) return;
     const targetPolicy = convStore.get(targetConvId)?.subagentPolicy;
     if (!targetPolicy || targetPolicy.parentConversationId !== parentConvId) {
-      throw new Error("Scoped subagents can only send or queue work to themselves or their own direct subagents.");
+      throw new Error("Scoped subagents can only target themselves or their own direct subagents.");
     }
   };
 
@@ -741,7 +747,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         "internal",
         requestedInternalTools ?? getDefaultSubagentInternalToolNames(maxDepth, requestedAllowEdits === true),
       );
-      const childExternalTools = validateToolSelection("external", requestedExternalTools ?? []);
+      let childExternalTools = validateToolSelection("external", requestedExternalTools ?? []);
       if (maxDepth <= 0 && childInternalTools.includes("exo")) {
         throw new Error("Cannot enable internal tool exo for a child with max_depth=0");
       }
@@ -760,6 +766,10 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         }
         assertDelegatedSubset("external", childExternalTools, parentTools.externalToolNames);
       }
+      ({ internal: childInternalTools, external: childExternalTools } = normalizeToolPolicySelection(
+        childInternalTools,
+        childExternalTools,
+      ));
       const folder = convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME);
       if (!folder) throw new Error(`Failed to create ${SUBAGENTS_FOLDER_NAME} folder`);
       convId = convStore.generateId();
@@ -1296,6 +1306,82 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }));
   };
 
+  const executeToolsCommand = (
+    args: Record<string, unknown>,
+    parentConversationId: string | undefined,
+    _signal?: AbortSignal,
+    callerMaxDepth?: number | null,
+  ): ToolResult => {
+    const operation = stringInput(args, "operation", true)!.toLowerCase();
+    if (operation !== "get" && operation !== "set" && operation !== "reset") {
+      throw new Error("operation must be get, set, or reset");
+    }
+    const convId = conversationIdInput(args, parentConversationId);
+    const conversation = convStore.get(convId);
+    if (!conversation) throw new Error(`Conversation ${convId} not found`);
+    ensureScopedDelegationTarget(parentConversationId, convId);
+
+    if (operation === "get") {
+      if (args.internal_tools !== undefined || args.external_tools !== undefined) {
+        throw new Error("internal_tools and external_tools are only accepted for operation=set");
+      }
+      return ok(pretty({
+        conversation_id: convId,
+        tool_policy: buildToolPolicySnapshot(conversation),
+      }));
+    }
+
+    const assertWithinCallerCeiling = (internal: readonly string[], external: readonly string[]) => {
+      if (!parentConversationId) return;
+      const caller = convStore.get(parentConversationId);
+      if (!caller) throw new Error(`Calling conversation ${parentConversationId} not found`);
+      const ceiling = resolveConversationToolPolicy(
+        caller,
+        callerMaxDepth ?? caller.subagentMaxDepth ?? null,
+      );
+      assertDelegatedSubset("internal", internal, ceiling.configurableInternalToolNames);
+      assertDelegatedSubset("external", external, ceiling.externalToolNames);
+    };
+
+    let nextPolicy: ReturnType<typeof normalizeToolPolicySelection> | null;
+    if (operation === "reset") {
+      if (args.internal_tools !== undefined || args.external_tools !== undefined) {
+        throw new Error("internal_tools and external_tools are only accepted for operation=set");
+      }
+      const defaults = resolveConversationToolPolicy({ ...conversation, toolPolicy: null });
+      assertWithinCallerCeiling(defaults.configurableInternalToolNames, defaults.externalToolNames);
+      nextPolicy = null;
+    } else {
+      const internal = optionalStringArrayInput(args, "internal_tools");
+      const external = optionalStringArrayInput(args, "external_tools");
+      if (!internal || !external) {
+        throw new Error("internal_tools and external_tools are both required for operation=set; use empty arrays to select none");
+      }
+      nextPolicy = normalizeToolPolicySelection(internal, external);
+      if ((conversation.subagentMaxDepth ?? null) !== null
+        && (conversation.subagentMaxDepth ?? 0) <= 0
+        && nextPolicy.internal.includes("exo")) {
+        throw new Error("Cannot enable internal tool exo for a conversation with max_depth=0");
+      }
+      assertWithinCallerCeiling(nextPolicy.internal, nextPolicy.external);
+    }
+
+    const previousPolicy = conversation.toolPolicy;
+    const changed = JSON.stringify(previousPolicy) !== JSON.stringify(nextPolicy);
+    if (changed) {
+      if (!convStore.setToolPolicy(convId, nextPolicy)) throw new Error(`Conversation ${convId} not found`);
+      broadcastConversationUpdated(server, convId);
+    }
+    return ok(pretty({
+      conversation_id: convId,
+      operation,
+      changed,
+      applies_from: "next_turn",
+      active_turn_unchanged: convStore.isStreaming(convId),
+      tool_policy: buildToolPolicySnapshot(convStore.get(convId)!),
+    }));
+  };
+
   const executeInstructionsCommand = (args: Record<string, unknown>, parentConversationId: string | undefined): ToolResult => {
     const allowedKeys = new Set(["operation", "scope", "conversation_id", "folder_id", "text", "expected_revision"]);
     const unknownKeys = Object.keys(args).filter(key => !allowedKeys.has(key));
@@ -1740,6 +1826,22 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       execute: executeSystemPromptCommand,
     },
     {
+      name: "tools",
+      description: "View, replace, or reset a conversation's next-turn tool policy. Mutations cannot exceed the caller's effective tools.",
+      inputSchema: commandSchema({
+        operation: { type: "string", enum: ["get", "set", "reset"] },
+        conversation_id: { type: "string", description: "Target conversation. Defaults to the active conversation." },
+        internal_tools: { type: "array", items: { type: "string" }, description: "Exact internal-tool list for set. Required with external_tools; external CLIs automatically retain Bash as their established transport." },
+        external_tools: { type: "array", items: { type: "string" }, description: "Exact external manifest-name list for set. Required with internal_tools." },
+      }, ["operation"]),
+      examples: [
+        { operation: "get", conversation_id: "<conversation-id>" },
+        { operation: "set", conversation_id: "<conversation-id>", internal_tools: ["read", "grep"], external_tools: [] },
+        { operation: "reset", conversation_id: "<conversation-id>" },
+      ],
+      execute: executeToolsCommand,
+    },
+    {
       name: "instructions",
       description: "View or change persistent instructions. Only use when the user explicitly asks.",
       inputSchema: commandSchema({
@@ -1840,7 +1942,12 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     examples: command.examples ?? [],
   });
 
-  const executeCommands = async (input: Record<string, unknown>, parentConversationId: string | undefined, signal?: AbortSignal): Promise<ToolResult> => {
+  const executeCommands = async (
+    input: Record<string, unknown>,
+    parentConversationId: string | undefined,
+    signal?: AbortSignal,
+    callerMaxDepth?: number | null,
+  ): Promise<ToolResult> => {
     const commandName = (stringInput(input, "command") ?? "ls").toLowerCase();
     const args = objectInput(input, "args");
     if (commandName === "ls" || commandName === "list") {
@@ -1859,7 +1966,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const command = commandMap.get(commandName);
     if (!command) throw new Error(`Unknown exo command: ${commandName}. Run action=commands with command=ls.`);
     try {
-      return await command.execute(args, parentConversationId, signal);
+      return await command.execute(args, parentConversationId, signal, callerMaxDepth);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") throw error;
       const message = error instanceof Error ? error.message : String(error);
@@ -1888,7 +1995,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           case "queue": return executeQueue(input, parentConversationId, callerMaxDepth);
           case "rename": return executeRename(input, parentConversationId);
           case "status": return executeStatus();
-          case "commands": return await executeCommands(input, parentConversationId, signal);
+          case "commands": return await executeCommands(input, parentConversationId, signal, callerMaxDepth);
           // Undocumented compatibility aliases for conversations that learned
           // the pre-registry schema before these operations moved under commands.
           case "llm": return await executeLlm(input, parentConversationId, signal);

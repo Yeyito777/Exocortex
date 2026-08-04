@@ -21,6 +21,7 @@ import {
   setActiveJob,
   setSubagentPolicy,
   setSystemInstructions,
+  setToolPolicy,
 } from "../conversations";
 import { resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive, setSubagentActive } from "../conversation-activity";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "../messages";
@@ -106,7 +107,7 @@ describe("native exo tool contract", () => {
     expect(exo.description).toContain("Transcription and cross-instance targeting are intentionally excluded");
     expect(exo.systemHint).toBe([
       "### subagents",
-      "Use the native `exo` tool for delegated work. Don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents get research tools and no external tools by default. Use internal_tools/external_tools for exact delegation; allow_edits=true remains legacy shorthand for shell and mutation access.",
+      "Use the native `exo` tool for delegated work. Don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents get research tools and no external tools by default. Use internal_tools/external_tools for exact delegation; external CLIs retain their established Bash transport, and allow_edits=true remains legacy shorthand for shell and mutation access.",
       "### subscriptions",
       "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
       "Subagents start in the daemon's working directory, so include the target absolute directory and all necessary task context.",
@@ -749,7 +750,7 @@ describe("native exo daemon runtime", () => {
 
     const listed = JSON.parse((await runtime.execute({ action: "commands" }, undefined)).output);
     expect(listed.commands.map((command: { name: string }) => command.name)).toEqual([
-      "folder", "mark", "pin", "reorder", "rename", "delete", "llm", "clone", "system_prompt", "instructions", "stats", "task", "hangup", "status", "notifications",
+      "folder", "mark", "pin", "reorder", "rename", "delete", "llm", "clone", "system_prompt", "tools", "instructions", "stats", "task", "hangup", "status", "notifications",
     ]);
 
     const help = JSON.parse((await runtime.execute({
@@ -767,6 +768,93 @@ describe("native exo daemon runtime", () => {
       },
       examples: expect.any(Array),
     });
+  });
+
+  test("changes an existing conversation's next-turn tools through the discovered command", async () => {
+    const parentId = id("tools-command-parent");
+    const childId = id("tools-command-child");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
+    create(childId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "child");
+    setSubagentPolicy(childId, {
+      parentConversationId: parentId,
+      allowEdits: false,
+      parentSystemInstructions: "",
+    });
+    setToolPolicy(childId, { internal: ["read"], external: [] });
+    const server = fakeServer();
+    const runtime = createExocortexToolRuntime({
+      server: server as never,
+      runTurn: async () => successfulOutcome(),
+      hasCredentials: () => true,
+    });
+
+    const help = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "help",
+      args: { command: "tools" },
+    }, parentId)).output);
+    expect(help).toMatchObject({
+      command: "tools",
+      input_schema: {
+        properties: {
+          operation: { enum: ["get", "set", "reset"] },
+          internal_tools: { type: "array" },
+          external_tools: { type: "array" },
+        },
+      },
+    });
+
+    const before = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "tools",
+      args: { operation: "get", conversation_id: childId },
+    }, parentId)).output);
+    expect(before.tool_policy).toMatchObject({ source: "explicit" });
+    expect(before.tool_policy.internal.find((tool: { name: string }) => tool.name === "read").enabled).toBe(true);
+
+    const changed = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "tools",
+      args: {
+        operation: "set",
+        conversation_id: childId,
+        internal_tools: ["read", "grep"],
+        external_tools: [],
+      },
+    }, parentId)).output);
+    expect(changed).toMatchObject({
+      conversation_id: childId,
+      operation: "set",
+      changed: true,
+      applies_from: "next_turn",
+      active_turn_unchanged: false,
+    });
+    expect(get(childId)?.toolPolicy).toEqual({ internal: ["read", "grep"], external: [] });
+    expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({
+      type: "conversation_updated",
+      summary: expect.objectContaining({ id: childId }),
+    }));
+
+    const escalation = await runtime.execute({
+      action: "commands",
+      command: "tools",
+      args: {
+        operation: "set",
+        conversation_id: childId,
+        internal_tools: ["read", "write"],
+        external_tools: [],
+      },
+    }, childId, undefined, 1);
+    expect(escalation.isError).toBe(true);
+    expect(escalation.output).toContain("Cannot delegate unavailable internal tool: write");
+
+    const reset = JSON.parse((await runtime.execute({
+      action: "commands",
+      command: "tools",
+      args: { operation: "reset", conversation_id: childId },
+    }, parentId)).output);
+    expect(reset).toMatchObject({ operation: "reset", changed: true, applies_from: "next_turn" });
+    expect(get(childId)?.toolPolicy).toBeNull();
   });
 
   test("discovers notification sources and subscribes the active conversation", async () => {

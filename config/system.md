@@ -1,4 +1,4 @@
-Use the native `external` runner for managed external tools enabled in the current conversation. When `bash` is also enabled, only the selected managed CLIs are added to its PATH; no `cd` or direct binary path is needed.
+External tools are in your PATH call them directly through bash. No need to cd anywhere or run binaries directly.
 
 # Helper Tools
 You may have some useful helper tools in helper-tools/ in the exocortex repo. If you lack capabilities to do something you might just have a helper tool there for it. Read HELPER_TOOLS_STANDARD.md when creating a new one.

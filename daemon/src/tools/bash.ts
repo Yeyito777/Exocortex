@@ -22,7 +22,7 @@ import { getString, getNumber, getBoolean, safeSlice, summarizeParams } from "./
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage } from "../abort";
 import { isWindows, socketPath } from "@exocortex/shared/paths";
-import { getExternalToolPath, rewriteExternalToolShellCommandForPolicy } from "../external-tools";
+import { rewriteExternalToolShellCommandForExecution } from "../external-tools";
 import { log } from "../log";
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -315,7 +315,11 @@ async function executeBashImpl(
 
   let rewrittenCommand: string;
   try {
-    rewrittenCommand = isWindows ? command : await rewriteExternalToolShellCommandForPolicy(command, context?.externalToolNames);
+    // External CLIs intentionally remain ordinary Bash commands. The TUI
+    // recognizes this Bash summary and replaces `$` with the manifest's own
+    // label/color. Do not route managed CLIs through a generic native broker:
+    // that changes both the model-facing call path and their established UI.
+    rewrittenCommand = isWindows ? command : await rewriteExternalToolShellCommandForExecution(command);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { output: `Error preparing external tool command: ${msg}`, isError: true, failureKind: "infrastructure" };
@@ -343,7 +347,6 @@ async function executeBashImpl(
         cwd: process.cwd(),
         env: {
           ...process.env,
-          PATH: getExternalToolPath(context?.externalToolNames),
           ...(context?.conversationId ? { EXOCORTEX_PARENT_CONV_ID: context.conversationId } : {}),
           EXOCORTEX_SOCKET: socketPath(),
           ...(context?.provider ? { EXOCORTEX_PARENT_PROVIDER: context.provider } : {}),

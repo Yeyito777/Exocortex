@@ -58,7 +58,6 @@ export const TOOLS_COMMAND: SlashCommand = {
   getArgs: (state) => {
     const refs: CompletionItem[] = [
       ...state.toolRegistry
-        .filter((tool) => tool.name !== "external")
         .map((tool) => ({ name: tool.name, insertText: `internal:${tool.name}`, desc: `Internal · ${tool.label}` })),
       ...state.externalToolStyles.map((tool) => ({ name: tool.cmd, insertText: `external:${tool.cmd}`, desc: `External · ${tool.label}` })),
     ];

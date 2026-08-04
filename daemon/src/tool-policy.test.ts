@@ -65,7 +65,37 @@ describe("conversation tool policy", () => {
     expect(buildToolPolicySnapshot(conv).shellWarning).toBe(true);
   });
 
-  test("selected external tools add only their broker and manifest hints", () => {
+  test("external policy mutations preserve Bash as the existing transport", () => {
+    const loaded: LoadedTool = {
+      manifest: {
+        name: "google",
+        bin: "./bin/google",
+        systemHint: "Google hint",
+        display: { label: "Google", color: "#ffffff" },
+      },
+      binDir: "/tmp/google/bin",
+      toolDir: "/tmp/google",
+    };
+    const restore = setLoadedExternalToolsForTest([loaded]);
+    try {
+      const conv = createConversation("external-mutation", "openai", "gpt-5.6-sol");
+      conv.toolPolicy = { internal: ["read"], external: [] };
+      const enabled = applyToolPolicyMutation(conv, {
+        action: "allow",
+        tools: [{ kind: "external", name: "google" }],
+      });
+      expect(enabled).toEqual({ internal: ["bash", "read"], external: ["google"] });
+      conv.toolPolicy = enabled;
+      expect(() => applyToolPolicyMutation(conv, {
+        action: "deny",
+        tools: [{ kind: "internal", name: "bash" }],
+      })).toThrow("Cannot disable bash while external tools are enabled");
+    } finally {
+      restore();
+    }
+  });
+
+  test("selected external tools keep the established Bash transport and manifest hints", () => {
     const loaded: LoadedTool[] = ["gmail", "google"].map((name) => ({
       manifest: {
         name,
@@ -83,8 +113,9 @@ describe("conversation tool policy", () => {
       conv.subagentPolicy = { parentConversationId: "root", allowEdits: false, parentSystemInstructions: "" };
       conv.toolPolicy = { internal: ["read"], external: ["google"] };
       const resolved = resolveConversationToolPolicy(conv);
-      expect(resolved.internalToolNames).toEqual(["read", "external"]);
-      expect(getToolDefs(resolved.internalToolNames).map((tool) => tool.name)).toEqual(["read", "external"]);
+      expect(resolved.internalToolNames).toEqual(["bash", "read"]);
+      expect(getToolDefs(resolved.internalToolNames).map((tool) => tool.name)).toEqual(["bash", "read"]);
+      expect(buildToolPolicySnapshot(conv).internal.find((tool) => tool.name === "bash")?.enabled).toBe(true);
 
       const prompt = buildSystemPrompt({
         conversationId: conv.id,

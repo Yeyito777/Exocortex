@@ -19,7 +19,6 @@ import { browse } from "./browse";
 import { goal } from "./goal";
 import { exo } from "./exo";
 import { chrono } from "./chrono";
-import { external } from "./external";
 import { computerUseTools } from "./computer-use";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage, isToolTimeoutReason, toolTimeoutReason } from "../abort";
@@ -41,9 +40,13 @@ const TOOLS: Tool[] = [
   goal,
   exo,
   chrono,
-  external,
   ...computerUseTools,
 ];
+
+// External manifests intentionally do not become native entries in TOOLS.
+// Models invoke those CLIs through Bash, and the TUI styles the Bash summary
+// with each manifest's label/color. A generic external wrapper would erase
+// that per-tool presentation and add an unnecessary execution layer.
 
 const toolMap = new Map<string, Tool>(TOOLS.map(t => [t.name, t]));
 
