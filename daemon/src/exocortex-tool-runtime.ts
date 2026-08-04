@@ -693,6 +693,23 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }
   };
 
+  const assertWithinCallerToolCeiling = (
+    parentConvId: string | undefined,
+    callerMaxDepth: number | null | undefined,
+    internal: readonly string[],
+    external: readonly string[],
+  ): void => {
+    if (!parentConvId) return;
+    const caller = convStore.get(parentConvId);
+    if (!caller) throw new Error(`Calling conversation ${parentConvId} not found`);
+    const ceiling = resolveConversationToolPolicy(
+      caller,
+      callerMaxDepth ?? caller.subagentMaxDepth ?? null,
+    );
+    assertDelegatedSubset("internal", internal, ceiling.configurableInternalToolNames);
+    assertDelegatedSubset("external", external, ceiling.externalToolNames);
+  };
+
   const setRequestedModel = (convId: string, input: Record<string, unknown>): void => {
     const requestedEffort = effortInput(input.effort);
     const hasRequestedModel = typeof input.model === "string" && Boolean(input.model.trim());
@@ -730,12 +747,43 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     if (convId && requestedAllowEdits !== undefined) {
       throw new Error("allow_edits can only be specified when creating a new subagent");
     }
-    if (convId && (requestedInternalTools !== undefined || requestedExternalTools !== undefined)) {
-      throw new Error("internal_tools and external_tools can only be specified when creating a new subagent");
+    const existingToolPolicyRequested = Boolean(convId)
+      && (requestedInternalTools !== undefined || requestedExternalTools !== undefined);
+    if (existingToolPolicyRequested && (requestedInternalTools === undefined || requestedExternalTools === undefined)) {
+      throw new Error("internal_tools and external_tools must both be specified when changing an existing conversation's persistent tool policy; use an empty array to select none");
     }
     const requestedTitle = convId ? undefined : subagentTitleInput(input);
     let taskTitle: string;
     let created = false;
+    let requestedExistingToolPolicy: ReturnType<typeof normalizeToolPolicySelection> | null = null;
+    let existingToolPolicyChanged = false;
+
+    const persistRequestedExistingToolPolicy = (): void => {
+      if (!existingToolPolicyRequested || !requestedExistingToolPolicy || !convId) return;
+      const conversation = convStore.get(convId);
+      if (!conversation) throw new Error(`Conversation ${convId} not found`);
+      existingToolPolicyChanged = JSON.stringify(conversation.toolPolicy) !== JSON.stringify(requestedExistingToolPolicy);
+      if (!existingToolPolicyChanged) return;
+      if (!convStore.setToolPolicy(convId, requestedExistingToolPolicy)) throw new Error(`Conversation ${convId} not found`);
+      broadcastConversationUpdated(server, convId);
+    };
+
+    const queuedExistingSendResult = (): ToolResult => {
+      if (!existingToolPolicyRequested || !requestedExistingToolPolicy || !convId) {
+        return ok(`Conversation ${convId} is busy; queued the message for its next turn.`);
+      }
+      return ok(pretty({
+        conversation_id: convId,
+        status: "queued",
+        timing: "next-turn",
+        tool_policy_updated: existingToolPolicyChanged,
+        tool_policy_persistent: true,
+        applies_from: "next_turn",
+        active_turn_unchanged: true,
+        internal_tools: requestedExistingToolPolicy.internal,
+        external_tools: requestedExistingToolPolicy.external,
+      }));
+    };
 
     if (!convId) {
       ensureSubagentCapacity(parentConvId);
@@ -790,11 +838,26 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       if (!target) throw new Error(`Conversation ${convId} not found`);
       ensureScopedDelegationTarget(parentConvId, convId);
       taskTitle = target.title || "Subagent task";
+      if (existingToolPolicyRequested) {
+        requestedExistingToolPolicy = normalizeToolPolicySelection(requestedInternalTools!, requestedExternalTools!);
+        if (maxDepth <= 0 && requestedExistingToolPolicy.internal.includes("exo")) {
+          throw new Error("Cannot enable internal tool exo for a conversation when this send has max_depth=0");
+        }
+        assertWithinCallerToolCeiling(
+          parentConvId,
+          callerMaxDepth,
+          requestedExistingToolPolicy.internal,
+          requestedExistingToolPolicy.external,
+        );
+      }
       // A busy target cannot safely change models or start a nested turn. Preserve
-      // the send as durable intent and let the queue scheduler run it next.
+      // the send as durable intent and let the queue scheduler run it next. An
+      // explicitly supplied tool policy is conversation state, so it persists
+      // now but cannot alter schemas already assembled for the active turn.
       if (convStore.isStreaming(convId)) {
+        persistRequestedExistingToolPolicy();
         convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth);
-        return ok(`Conversation ${convId} is busy; queued the message for its next turn.`);
+        return queuedExistingSendResult();
       }
       setRequestedModel(convId, input);
       ensureCanStart(convStore.get(convId)!.provider);
@@ -806,8 +869,9 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     // Keep this guard close to turn startup as well, in case a synchronous hook
     // made the target busy after the initial existing-conversation check.
     if (convStore.isStreaming(convId)) {
+      persistRequestedExistingToolPolicy();
       convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth);
-      return ok(`Conversation ${convId} is busy; queued the message for its next turn.`);
+      return queuedExistingSendResult();
     }
 
     // Sending to the currently executing conversation cannot recursively start a
@@ -816,10 +880,12 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       if (mode === "detach" || mode === "wait") {
         throw new Error("Cannot start a nested turn on the active parent conversation; use mode=auto or action=queue.");
       }
+      persistRequestedExistingToolPolicy();
       convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth);
-      return ok(`Conversation ${convId} is active; queued the message for its next turn.`);
+      return queuedExistingSendResult();
     }
     if (!created) ensureSubagentCapacity(parentConvId);
+    persistRequestedExistingToolPolicy();
     const shouldDetach = mode !== "wait";
     const startedAt = Date.now();
 
@@ -857,6 +923,11 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         internal_tools: child ? resolveConversationToolPolicy(child).configurableInternalToolNames : [],
         external_tools: child ? resolveConversationToolPolicy(child).externalToolNames : [],
         notify_parent: notify ? parentConvId : null,
+        ...(existingToolPolicyRequested ? {
+          tool_policy_updated: existingToolPolicyChanged,
+          tool_policy_persistent: true,
+          applies_from: "sent_turn",
+        } : {}),
       }));
     }
 
@@ -870,8 +941,11 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       const body = outcome.ok
         ? formatBlocks(outcome.blocks, full) || "(subagent completed without text output)"
         : outcome.error || "Subagent failed";
+      const toolPolicyNotice = existingToolPolicyRequested
+        ? `\n\nPersistent tool policy ${existingToolPolicyChanged ? "updated" : "confirmed"} for this and future turns.`
+        : "";
       return {
-        output: `${body}\n\nexo:${convId}`,
+        output: `${body}${toolPolicyNotice}\n\nexo:${convId}`,
         isError: !outcome.ok,
       };
     } finally {
@@ -1331,25 +1405,18 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       }));
     }
 
-    const assertWithinCallerCeiling = (internal: readonly string[], external: readonly string[]) => {
-      if (!parentConversationId) return;
-      const caller = convStore.get(parentConversationId);
-      if (!caller) throw new Error(`Calling conversation ${parentConversationId} not found`);
-      const ceiling = resolveConversationToolPolicy(
-        caller,
-        callerMaxDepth ?? caller.subagentMaxDepth ?? null,
-      );
-      assertDelegatedSubset("internal", internal, ceiling.configurableInternalToolNames);
-      assertDelegatedSubset("external", external, ceiling.externalToolNames);
-    };
-
     let nextPolicy: ReturnType<typeof normalizeToolPolicySelection> | null;
     if (operation === "reset") {
       if (args.internal_tools !== undefined || args.external_tools !== undefined) {
         throw new Error("internal_tools and external_tools are only accepted for operation=set");
       }
       const defaults = resolveConversationToolPolicy({ ...conversation, toolPolicy: null });
-      assertWithinCallerCeiling(defaults.configurableInternalToolNames, defaults.externalToolNames);
+      assertWithinCallerToolCeiling(
+        parentConversationId,
+        callerMaxDepth,
+        defaults.configurableInternalToolNames,
+        defaults.externalToolNames,
+      );
       nextPolicy = null;
     } else {
       const internal = optionalStringArrayInput(args, "internal_tools");
@@ -1363,7 +1430,12 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         && nextPolicy.internal.includes("exo")) {
         throw new Error("Cannot enable internal tool exo for a conversation with max_depth=0");
       }
-      assertWithinCallerCeiling(nextPolicy.internal, nextPolicy.external);
+      assertWithinCallerToolCeiling(
+        parentConversationId,
+        callerMaxDepth,
+        nextPolicy.internal,
+        nextPolicy.external,
+      );
     }
 
     const previousPolicy = conversation.toolPolicy;

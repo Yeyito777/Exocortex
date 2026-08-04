@@ -100,6 +100,7 @@ describe("native exo tool contract", () => {
     expect(schema).toContain('"allow_edits"');
     expect(schema).toContain('"internal_tools"');
     expect(schema).toContain('"external_tools"');
+    expect(schema).toContain("persistently replace");
     expect(schema).toContain('"task_id"');
     expect(schema).toContain("exact active background-task ID returned by action=tasks");
     expect(schema).toContain("Maximum number of additional subagent generations permitted");
@@ -107,7 +108,7 @@ describe("native exo tool contract", () => {
     expect(exo.description).toContain("Transcription and cross-instance targeting are intentionally excluded");
     expect(exo.systemHint).toBe([
       "### subagents",
-      "Use the native `exo` tool for delegated work. Don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents get research tools and no external tools by default. Use internal_tools/external_tools for exact delegation; external CLIs retain their established Bash transport, and allow_edits=true remains legacy shorthand for shell and mutation access.",
+      "Use the native `exo` tool for delegated work. Don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents get research tools and no external tools by default. Use internal_tools/external_tools for exact delegation. When send targets an existing conversation, supplying both lists persistently replaces its policy before the sent or queued turn; use the discovered tools command to change policy without sending. External CLIs retain their established Bash transport, and allow_edits=true remains legacy shorthand for shell and mutation access.",
       "### subscriptions",
       "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
       "Subagents start in the daemon's working directory, so include the target absolute directory and all necessary task context.",
@@ -490,6 +491,57 @@ describe("native exo daemon runtime", () => {
     expect(prompt.output).not.toContain("## bash");
   });
 
+  test("persistently replaces an existing target's policy when both tool lists accompany send", async () => {
+    const parentId = id("existing-tools-parent");
+    const childId = id("existing-tools-child");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
+    create(childId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "child");
+    setSubagentPolicy(childId, {
+      parentConversationId: parentId,
+      allowEdits: false,
+      parentSystemInstructions: "",
+    });
+    setToolPolicy(childId, { internal: [], external: [] });
+    const runTurn = mock(async () => successfulOutcome("permission confirmed"));
+    const server = fakeServer();
+    const runtime = createExocortexToolRuntime({
+      server: server as never,
+      runTurn,
+      hasCredentials: () => true,
+    });
+
+    const incomplete = await runtime.execute({
+      action: "send",
+      conversation_id: childId,
+      text: "incomplete policy",
+      internal_tools: ["read"],
+      max_depth: 0,
+      mode: "wait",
+    }, parentId);
+    expect(incomplete.isError).toBe(true);
+    expect(incomplete.output).toContain("internal_tools and external_tools must both be specified");
+    expect(get(childId)?.toolPolicy).toEqual({ internal: [], external: [] });
+
+    const result = await runtime.execute({
+      action: "send",
+      conversation_id: childId,
+      text: "confirm the new policy",
+      internal_tools: ["read"],
+      external_tools: [],
+      max_depth: 0,
+      mode: "wait",
+    }, parentId);
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("permission confirmed");
+    expect(result.output).toContain("Persistent tool policy updated for this and future turns.");
+    expect(get(childId)?.toolPolicy).toEqual({ internal: ["read"], external: [] });
+    expect(runTurn).toHaveBeenCalledWith(childId, "confirm the new policy", 0, expect.any(Number));
+    expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({
+      type: "conversation_updated",
+      summary: expect.objectContaining({ id: childId }),
+    }));
+  });
+
   test("prevents scoped children from escalating edit access or targeting unrelated conversations", async () => {
     const rootId = id("scoped-root");
     const childId = id("scoped-caller");
@@ -636,6 +688,32 @@ describe("native exo daemon runtime", () => {
       timing: "next-turn",
       subagentMaxDepth: 0,
     })));
+
+    const policyResult = await runtime.execute({
+      action: "send",
+      conversation_id: targetId,
+      text: "read-only follow up",
+      internal_tools: ["read"],
+      external_tools: [],
+      max_depth: 0,
+      mode: "wait",
+    }, parentId);
+    expect(JSON.parse(policyResult.output)).toMatchObject({
+      conversation_id: targetId,
+      status: "queued",
+      tool_policy_updated: true,
+      tool_policy_persistent: true,
+      applies_from: "next_turn",
+      active_turn_unchanged: true,
+      internal_tools: ["read"],
+      external_tools: [],
+    });
+    expect(get(targetId)?.toolPolicy).toEqual({ internal: ["read"], external: [] });
+    expect(getQueuedMessages(targetId).at(-1)).toMatchObject({
+      text: "read-only follow up",
+      timing: "next-turn",
+      subagentMaxDepth: 0,
+    });
     expect(runTurn).not.toHaveBeenCalled();
   });
 
