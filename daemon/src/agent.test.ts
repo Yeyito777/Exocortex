@@ -191,6 +191,58 @@ describe("automatic agent compaction", () => {
   });
 });
 
+describe("queued-message handoff", () => {
+  test("does not drain a next-turn message after the active turn is interrupted", async () => {
+    const controller = new AbortController();
+    const recovery = state();
+    let streamCalls = 0;
+    let drainCalls = 0;
+    const fakeStream = (async () => {
+      streamCalls += 1;
+      if (streamCalls > 1) throw new Error("interrupted turn started another provider round");
+      return {
+        text: "",
+        thinking: "",
+        stopReason: "tool_use",
+        blocks: [],
+        toolCalls: [{ id: "call-before-interrupt", name: "read", input: { file_path: "/tmp/x" } }],
+      } satisfies StreamResult;
+    }) as typeof streamMessage;
+
+    await expect(runAgentLoop(
+      [{ role: "user", content: "inspect it" }],
+      "openai",
+      "gpt-5.6-sol",
+      callbacks({
+        drainNextTurnMessages: () => {
+          drainCalls += 1;
+          return [{ role: "user", content: "queued follow-up" }];
+        },
+      }),
+      {
+        signal: controller.signal,
+        state: recovery,
+        streamMessageFn: fakeStream,
+        executor: async () => {
+          // Ctrl+Q can arrive while a tool is settling. The completed tool round
+          // remains recoverable, but the queued prompt belongs to a fresh turn.
+          controller.abort();
+          return [{
+            toolCallId: "call-before-interrupt",
+            toolName: "read",
+            output: "file contents",
+            isError: false,
+          }];
+        },
+      },
+    )).rejects.toThrow();
+
+    expect(streamCalls).toBe(1);
+    expect(drainCalls).toBe(0);
+    expect(recovery.completedMessages).toHaveLength(2);
+  });
+});
+
 describe("tool-call presentation", () => {
   test("snapshots presentation into live blocks and durable tool-use messages", async () => {
     let streamCalls = 0;
