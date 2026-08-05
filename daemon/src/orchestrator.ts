@@ -22,6 +22,7 @@ import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionConte
 import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { resolveConversationToolPolicy } from "./tool-policy";
 import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
+import { quarantineActiveContext } from "./active-context-quarantine";
 import { goalContinuationUserMessage } from "./goals";
 import { createProviderTurnSession, streamMessage } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
@@ -521,7 +522,19 @@ async function orchestrateAssistantTurn(
   // The visible transcript remains append-only. Provider replay may start from
   // a compact checkpoint and append only the transcript tail written since it.
   if (conv.activeContext && !isValidActiveContextCached(conv.activeContext, conv.messages)) {
-    log("warn", `orchestrator: discarded invalid active context for ${convId}; replaying the complete transcript`);
+    let quarantinePath: string;
+    try {
+      quarantinePath = quarantineActiveContext(
+        convId,
+        conv.activeContext,
+        "Active context failed integrity validation before provider replay",
+      );
+    } catch (error) {
+      throw new Error(
+        `Active context failed validation and could not be safely quarantined: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    log("warn", `orchestrator: quarantined invalid active context for ${convId} at ${quarantinePath}; replaying the complete transcript`);
     conv.activeContext = null;
     conv.lastContextTokens = null;
     convStore.markDirty(convId);
@@ -732,7 +745,7 @@ async function orchestrateAssistantTurn(
       ? latestCompactionAccountScope
       : previous?.accountScope ?? accountScope;
     const transcriptHistoryCount = liveConv.messages.filter(isReplayHistoryMessage).length;
-    liveConv.activeContext = {
+    const candidate: ActiveContext = {
       version: 1,
       kind: latestCompactionKind ?? previous!.kind,
       provider: liveConv.provider,
@@ -748,6 +761,14 @@ async function orchestrateAssistantTurn(
       compactedAt: latestCompactedAt ?? previous!.compactedAt,
       compactionCount: startingCompactionCount + compactionsThisTurn,
     };
+    // A compaction result is derived, disposable state, but installing an
+    // invalid result makes the next turn discard its only bounded replay and
+    // fall back to an arbitrarily large canonical transcript. Enforce the
+    // integrity invariant before the replacement becomes durable.
+    if (!isValidActiveContextCached(candidate, liveConv.messages)) {
+      throw new Error("Refusing to install an invalid context-compaction checkpoint");
+    }
+    liveConv.activeContext = candidate;
   }
 
   function completedDisplayMessages(): StoredMessage[] {

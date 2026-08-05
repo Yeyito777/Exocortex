@@ -177,7 +177,13 @@ function asApiMessage(
     role: message.role as "user" | "assistant",
     content,
     metadata: structuredClone(message.metadata),
-    providerData: stripProviderScopedData ? undefined : structuredClone(message.providerData),
+    // The legacy JSON format allowed explicit nulls for optional fields and the
+    // SQLite importer intentionally preserves that canonical distinction.
+    // Provider replay does not: null means "no provider data" and must not be
+    // retained inside a derived checkpoint that validates the optional field.
+    providerData: stripProviderScopedData || message.providerData == null
+      ? undefined
+      : structuredClone(message.providerData),
     contextTokens: structuredClone(message.contextTokens),
     contextCheckpoint: structuredClone(message.contextCheckpoint),
   };
@@ -294,11 +300,19 @@ function isRealUserMessage(message: ApiMessage): boolean {
     && !isModelVisibleSystemNotice(message as Conversation["messages"][number]);
 }
 
+function cloneUserMessageForReplay(message: ApiMessage): ApiMessage {
+  const cloned = structuredClone(message);
+  // See asApiMessage(): imported explicit nulls are canonical transcript detail,
+  // not meaningful provider replay data.
+  if (cloned.providerData == null) cloned.providerData = undefined;
+  return cloned;
+}
+
 function truncateUserMessage(message: ApiMessage, tokenBudget: number): ApiMessage | null {
   if (tokenBudget <= 0 || message.role !== "user") return null;
   const charBudget = Math.max(1, tokenBudget * 4);
   if (typeof message.content === "string") {
-    return { ...structuredClone(message), content: message.content.slice(0, charBudget) };
+    return { ...cloneUserMessageForReplay(message), content: message.content.slice(0, charBudget) };
   }
 
   let remainingChars = charBudget;
@@ -314,7 +328,7 @@ function truncateUserMessage(message: ApiMessage, tokenBudget: number): ApiMessa
       remainingChars -= text.length;
     }
   }
-  return content.length > 0 ? { ...structuredClone(message), content } : null;
+  return content.length > 0 ? { ...cloneUserMessageForReplay(message), content } : null;
 }
 
 function retainRecentUserMessages(messages: ApiMessage[], provider: ProviderId, tokenBudget: number): ApiMessage[] {
@@ -325,7 +339,7 @@ function retainRecentUserMessages(messages: ApiMessage[], provider: ProviderId, 
     if (!isRealUserMessage(message)) continue;
     const tokens = Math.max(1, estimateContextTokens([message], provider));
     if (tokens <= remaining) {
-      retained.push(structuredClone(message));
+      retained.push(cloneUserMessageForReplay(message));
       remaining -= tokens;
       continue;
     }
