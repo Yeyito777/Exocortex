@@ -15,12 +15,12 @@ function call(name: string, id = name): ApiToolCall {
 }
 
 describe("tool execution scheduling", () => {
-  test("marks read-only tools as parallel-safe and mutating tools as exclusive", () => {
+  test("marks read-only tools as parallel-safe and potentially mutating tools as exclusive", () => {
     expect(getToolParallelSafety("read")).toBe("safe");
     expect(getToolParallelSafety("glob")).toBe("safe");
     expect(getToolParallelSafety("grep")).toBe("safe");
-    expect(getToolParallelSafety("browse")).toBe("safe");
 
+    expect(getToolParallelSafety("browse")).toBe("exclusive");
     expect(getToolParallelSafety("bash")).toBe("exclusive");
     expect(getToolParallelSafety("write")).toBe("exclusive");
     expect(getToolParallelSafety("edit")).toBe("exclusive");
@@ -46,7 +46,8 @@ describe("tool execution scheduling", () => {
     }))).toEqual([
       { mode: "parallel", names: ["read", "grep"] },
       { mode: "exclusive", names: ["edit"] },
-      { mode: "parallel", names: ["glob", "browse"] },
+      { mode: "parallel", names: ["glob"] },
+      { mode: "exclusive", names: ["browse"] },
       { mode: "exclusive", names: ["bash"] },
       { mode: "parallel", names: ["read"] },
     ]);

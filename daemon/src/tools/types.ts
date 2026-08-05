@@ -65,6 +65,8 @@ export interface ToolExecutionContext {
   conversationId?: string;
   /** Absolute cwd for this execution. Conversation turns always provide their isolated workspace. */
   cwd?: string;
+  /** Whether a URL-reading tool may save direct downloads into cwd. Defaults to true. */
+  allowDownloads?: boolean;
   /** Remaining native exo nesting budget; null/undefined means a root turn. */
   subagentMaxDepth?: number | null;
   /** Model backing the active conversation, when the tool is run from one. */

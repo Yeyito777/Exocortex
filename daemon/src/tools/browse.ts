@@ -6,17 +6,24 @@
  * For this experiment, the inner summarizer itself is asked to include a
  * final markdown Relevant Links section instead of using deterministic link
  * extraction. Caches raw fetches for 15 minutes. Handles HTML, JSON, and
- * plain text content types.
+ * plain text content types. Direct downloads and binary responses are saved
+ * to the conversation workspace instead of being sent to the inner LLM.
  */
 
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
 import { cap, getString, summarizeParams } from "./util";
 import { htmlToMarkdown } from "./html";
 import { complete } from "../llm";
-import { formatToolAbortMessage } from "../abort";
+import { formatToolAbortMessage, isAbortLikeError } from "../abort";
 import { log } from "../log";
 import { getInnerLlmSummaryOptions } from "./inner-llm";
 import { createHash } from "node:crypto";
+import {
+  downloadResponse,
+  normalizedContentType,
+  shouldDownloadResponse,
+  type DownloadedFile,
+} from "./browse-download";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -46,6 +53,13 @@ interface CachedSummary {
 interface FetchedPage {
   markdown: string;
   pageUrl: string;
+}
+
+type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+interface BrowseDependencies {
+  fetch: FetchLike;
+  summarize: typeof summarizeContent;
 }
 
 // ── Cache ──────────────────────────────────────────────────────────
@@ -178,9 +192,15 @@ function responseBodyToMarkdown(rawBody: string, contentType: string, pageUrl: s
   return rawBody;
 }
 
-async function fetchPage(fetchUrl: string, originalUrl: URL, signal?: AbortSignal): Promise<FetchedPage | ToolResult> {
+async function fetchPage(
+  fetchUrl: string,
+  originalUrl: URL,
+  context: ToolExecutionContext | undefined,
+  fetchImpl: FetchLike,
+  signal?: AbortSignal,
+): Promise<FetchedPage | DownloadedFile | ToolResult> {
   log("info", `browse: fetching ${fetchUrl}`);
-  const res = await fetch(fetchUrl, {
+  const res = await fetchImpl(fetchUrl, {
     headers: {
       "User-Agent": BROWSE_USER_AGENT,
       Accept: BROWSE_ACCEPT,
@@ -198,6 +218,17 @@ async function fetchPage(fetchUrl: string, originalUrl: URL, signal?: AbortSigna
     return { output: `Error fetching ${fetchUrl}: HTTP ${res.status} ${res.statusText}`, isError: true };
   }
 
+  if (shouldDownloadResponse(res.headers, finalUrl)) {
+    if (context?.allowDownloads === false) {
+      await res.body?.cancel().catch(() => {});
+      return {
+        output: `The URL points to a downloadable file (${normalizedContentType(res.headers) || "unknown content type"}), but downloads are disabled in this read-only session. Use the browse tool in the main conversation to save it.`,
+        isError: false,
+      };
+    }
+    return downloadResponse(res, finalUrl, context?.cwd ?? process.cwd(), signal);
+  }
+
   const rawBody = await res.text();
   const markdown = responseBodyToMarkdown(rawBody, res.headers.get("content-type") ?? "", finalUrl);
   return {
@@ -206,7 +237,13 @@ async function fetchPage(fetchUrl: string, originalUrl: URL, signal?: AbortSigna
   };
 }
 
-async function getPageContent(fetchUrl: string, originalUrl: URL, signal?: AbortSignal): Promise<FetchedPage | ToolResult> {
+async function getPageContent(
+  fetchUrl: string,
+  originalUrl: URL,
+  context: ToolExecutionContext | undefined,
+  fetchImpl: FetchLike,
+  signal?: AbortSignal,
+): Promise<FetchedPage | DownloadedFile | ToolResult> {
   cleanCache();
   const cached = fetchCache.get(fetchUrl);
   if (cached) {
@@ -214,8 +251,10 @@ async function getPageContent(fetchUrl: string, originalUrl: URL, signal?: Abort
     return { markdown: cached.content, pageUrl: cached.pageUrl };
   }
 
-  const fetched = await fetchPage(fetchUrl, originalUrl, signal);
+  const fetched = await fetchPage(fetchUrl, originalUrl, context, fetchImpl, signal);
   if ("isError" in fetched) return fetched;
+
+  if ("downloadPath" in fetched) return fetched;
 
   setCacheEntry(fetchUrl, fetched.pageUrl, fetched.markdown);
   return fetched;
@@ -284,7 +323,12 @@ async function summarizeContent(
 
 // ── Execution ──────────────────────────────────────────────────────
 
-async function executeBrowse(input: Record<string, unknown>, context?: ToolExecutionContext, signal?: AbortSignal): Promise<ToolResult> {
+async function executeBrowse(
+  input: Record<string, unknown>,
+  context?: ToolExecutionContext,
+  signal?: AbortSignal,
+  dependencies: BrowseDependencies = { fetch: globalThis.fetch, summarize: summarizeContent },
+): Promise<ToolResult> {
   const url = getString(input, "url");
   const prompt = getString(input, "prompt");
 
@@ -301,8 +345,15 @@ async function executeBrowse(input: Record<string, unknown>, context?: ToolExecu
 
   const startTime = Date.now();
   try {
-    const page = await getPageContent(fetchUrl, parsedUrl, signal);
+    const page = await getPageContent(fetchUrl, parsedUrl, context, dependencies.fetch, signal);
     if ("isError" in page) return page;
+    if ("downloadPath" in page) {
+      const typeLabel = page.contentType || "unknown content type";
+      return {
+        output: `Downloaded ${page.pageUrl} to ${page.downloadPath} (${page.bytes.toLocaleString()} bytes, ${typeLabel}).`,
+        isError: false,
+      };
+    }
     if (!page.markdown.trim()) {
       return { output: "The page returned no content.", isError: false };
     }
@@ -312,10 +363,10 @@ async function executeBrowse(input: Record<string, unknown>, context?: ToolExecu
       return { output: cap(blockedSummary), isError: false };
     }
 
-    const summary = await summarizeContent(page.pageUrl, page.markdown, prompt, context, signal);
+    const summary = await dependencies.summarize(page.pageUrl, page.markdown, prompt, context, signal);
     return { output: cap(summary), isError: false };
   } catch (err) {
-    if (err instanceof DOMException && err.name === "AbortError") {
+    if (signal?.aborted || isAbortLikeError(err)) {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       return { output: formatToolAbortMessage(signal, elapsed), isError: false };
     }
@@ -337,9 +388,10 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 
 export const browse: Tool = {
   name: "browse",
-  description: "Read content from a URL. Supports web pages, feeds, APIs, and community sites.",
-  parallelSafety: "safe",
+  description: "Read content from a URL or download a direct file URL. Supports web pages, feeds, APIs, community sites, and CDN files.",
+  parallelSafety: "exclusive",
   defaultTimeoutMs: 120_000,
+  settleOnAbort: true,
   inputSchema: {
     type: "object",
     properties: {
@@ -348,11 +400,15 @@ export const browse: Tool = {
     },
     required: ["url", "prompt"],
   },
-  systemHint: "Browse tool uses an inner AI call to parse a markdown rendered version of the requested website before relaying relevant information to you. Adjust the prompt to your needs.",
+  systemHint: "Browse uses an inner AI call to parse web-readable responses. Direct downloads and binary responses are saved to the conversation workspace without AI interpretation. Adjust the prompt to your needs.",
   display: {
     label: "Browse",
     color: "#50c8c8",  // teal
   },
   summarize,
   execute: executeBrowse,
+};
+
+export const browseInternalsForTest = {
+  executeBrowse,
 };

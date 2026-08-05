@@ -429,6 +429,7 @@ export class BtwSessionManager {
       model,
       conversationId: command.convId,
       cwd: workingDirectory,
+      allowDownloads: false,
     };
     const executor = buildExecutor(toolContext, BTW_READ_ONLY_TOOLS);
     const providerTurnSession = createProviderTurnSession(provider);
