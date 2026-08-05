@@ -24,7 +24,7 @@ function makeConversation(label: string): string {
   return id;
 }
 
-async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function waitUntil(predicate: () => boolean, timeoutMs = process.platform === "win32" ? 5_000 : 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error("condition timed out");
@@ -122,7 +122,7 @@ describe("Chrono scheduler", () => {
       ownerConversationId: owner,
       afterSeconds: 0.02,
       title: "Health probe",
-      command: "printf 'unhealthy\\n'; exit 7",
+      command: process.platform === "win32" ? "[Console]::WriteLine('unhealthy'); exit 7" : "printf 'unhealthy\\n'; exit 7",
       hardWake: { when: "failure", message: "Investigate health." },
     });
     expect(result.schedule?.target.kind).toBe("command");

@@ -179,10 +179,13 @@ function renderBlock(
     case "tool_call": {
       const summary = sanitizeUntrustedText(block.summary);
       const localStyles = callLocalBashStyles(block);
+      const localToolRegistry = block.presentation?.toolStyle
+        ? [block.presentation.toolStyle, ...toolRegistry.filter((tool) => tool.name !== block.presentation!.toolStyle!.name)]
+        : toolRegistry;
       const logical = renderToolCallLogicalLines(
         block.toolName,
         summary,
-        toolRegistry,
+        localToolRegistry,
         localStyles.length > 0 ? [...localStyles, ...externalToolStyles] : externalToolStyles,
         block.input,
       );

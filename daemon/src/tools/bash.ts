@@ -15,7 +15,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { writeFileSync } from "fs";
 import { open, rm } from "fs/promises";
 import { tmpdir } from "os";
-import { join } from "path";
+import { basename, join } from "path";
 import { randomUUID } from "crypto";
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
 import { getString, getNumber, getBoolean, safeSlice, summarizeParams } from "./util";
@@ -342,9 +342,14 @@ async function executeBashImpl(
 
   return new Promise((resolve) => {
     const runnerPath = isolatedRunnerPathForTest ?? join(import.meta.dir, "bash-runner.ts");
+    const isCompiledWindowsExecutable = isWindows
+      && !/^bun(?:\.exe)?$/i.test(basename(process.execPath));
+    const runnerArgs = isCompiledWindowsExecutable && !isolatedRunnerPathForTest
+      ? ["__exocortex_bash_runner"]
+      : [runnerPath];
     let runner: ChildProcessWithoutNullStreams;
     try {
-      runner = spawn(process.execPath, [runnerPath], {
+      runner = spawn(process.execPath, runnerArgs, {
         cwd,
         env: {
           ...process.env,

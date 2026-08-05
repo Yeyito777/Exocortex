@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { basename, dirname, join } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { agentCwdDir, assertSafeConversationWorkspaceId, conversationWorkspaceDir, conversationWorkspacesDir, repoRoot, socketPath, trashedConversationWorkspaceDir } from "./paths";
 
 describe("agentCwdDir", () => {
+  test("uses the source checkout when launched by bun", () => {
+    expect(repoRoot()).toBe(resolve(import.meta.dir, "../.."));
+  });
+
   test("points at the repo-local scratch cwd", () => {
     expect(dirname(agentCwdDir())).toBe(repoRoot());
     expect(basename(agentCwdDir())).toBe(".exocortex-cwd");

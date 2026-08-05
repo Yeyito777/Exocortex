@@ -37,6 +37,44 @@ describe("auth browser opener", () => {
 });
 
 describe("tool policy activity state", () => {
+  test("accepts policy snapshots for a blank conversation draft", () => {
+    const state = createInitialState();
+    state.pendingToolPolicyDraftId = "conv-tools";
+
+    handleEvent({
+      type: "tool_policy",
+      reqId: "draft-tools-request",
+      convId: "conv-tools",
+      snapshot: disabledToolPolicy,
+      changed: true,
+    }, state, daemon);
+
+    expect(state.activeToolPolicy).toEqual(disabledToolPolicy);
+  });
+
+  test("abandons blank-draft tool choices when another conversation is opened", () => {
+    const state = createInitialState();
+    state.pendingToolPolicyDraftId = "draft-tools";
+    state.activeToolPolicy = { ...disabledToolPolicy, convId: "draft-tools" };
+    const cleared: string[] = [];
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "existing-conversation",
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      entries: [],
+      contextTokens: 0,
+      toolOutputsIncluded: false,
+    }, state, { ...daemon, clearDraftToolPolicy: (draftId) => { cleared.push(draftId); } });
+
+    expect(cleared).toEqual(["draft-tools"]);
+    expect(state.pendingToolPolicyDraftId).toBeNull();
+    expect(state.activeToolPolicy).toBeNull();
+  });
+
   test("hydrates the focused policy when a conversation opens", () => {
     const state = createInitialState();
     state.convId = "conv-tools";

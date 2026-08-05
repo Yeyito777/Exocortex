@@ -1227,10 +1227,10 @@ describe("/tools", () => {
   test("parses incremental policy changes and reset", () => {
     const state = createInitialState();
     state.convId = "conversation-1";
-    expect(tryCommand("/tools allow internal:write external:gmail", state)).toEqual({
+    expect(tryCommand("/tools enable internal:write external:gmail", state)).toEqual({
       type: "tool_policy",
       mutation: {
-        action: "allow",
+        action: "enable",
         tools: [
           { kind: "internal", name: "write" },
           { kind: "external", name: "gmail" },
@@ -1241,6 +1241,14 @@ describe("/tools", () => {
       type: "tool_policy",
       mutation: { action: "reset" },
     });
+    expect(tryCommand("/tools enable path/to/tool.ts", state)).toEqual({
+      type: "tool_policy",
+      mutation: {
+        action: "enable",
+        tools: [],
+        modulePaths: ["path/to/tool.ts"],
+      },
+    });
   });
 
   test("offers installed internal and external tools in autocomplete", () => {
@@ -1250,17 +1258,16 @@ describe("/tools", () => {
     ];
     state.externalToolStyles = [{ cmd: "gmail", label: "Gmail", color: "#ffffff" }];
     const args = getCommandArgs(state, "/tools");
-    expect(args["/tools"]?.map((item) => item.name)).toEqual(["allow", "deny", "reset"]);
-    expect(args["/tools allow"]?.map((item) => item.name)).toEqual(["read", "gmail"]);
-    expect(args["/tools allow"]?.map((item) => item.insertText)).toEqual(["internal:read", "external:gmail"]);
+    expect(args["/tools"]?.map((item) => item.name)).toEqual(["enable", "disable", "reset"]);
+    expect(args["/tools enable"]?.map((item) => item.name)).toEqual(["read", "gmail"]);
+    expect(args["/tools enable"]?.map((item) => item.insertText)).toEqual(["internal:read", "external:gmail"]);
   });
 
-  test("requires an open conversation and rejects malformed references", () => {
+  test("works on a blank conversation draft and rejects malformed references", () => {
     const state = createInitialState();
-    expect(tryCommand("/tools", state)).toEqual({ type: "handled" });
-    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "Start or open a conversation before using /tools." });
-    state.convId = "conversation-1";
-    expect(tryCommand("/tools allow gmail", state)).toEqual({ type: "handled" });
+    expect(tryCommand("/tools", state)).toEqual({ type: "tool_policy" });
+    expect(state.messages).toEqual([]);
+    expect(tryCommand("/tools enable internal:", state)).toEqual({ type: "handled" });
     expect(state.messages.at(-1)).toMatchObject({ role: "system", text: expect.stringContaining("Invalid /tools command") });
   });
 });

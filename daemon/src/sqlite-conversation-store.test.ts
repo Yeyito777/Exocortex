@@ -8,7 +8,19 @@ import { SqliteConversationStore } from "./sqlite-conversation-store";
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  // Bun/SQLite may defer finalizing temporary statement wrappers until the test
+  // frame unwinds. Force that finalization before Windows tries to remove WAL.
+  if (process.platform === "win32") Bun.gc(true);
+  for (const root of roots.splice(0)) {
+    try {
+      rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 });
+    } catch (err) {
+      // One large-result bun:sqlite statement remains locked until the test
+      // process exits on Windows even after finalize/close/GC. The assertions
+      // have completed; do not turn that runtime teardown quirk into a failure.
+      if (process.platform !== "win32" || (err as NodeJS.ErrnoException).code !== "EBUSY") throw err;
+    }
+  }
 });
 
 function pathFor(name: string): { root: string; path: string } {
@@ -481,7 +493,9 @@ describe("SQLite maintenance", () => {
     conv.messages.push({ role: "user", content, metadata: null });
     store.save(conv);
 
-    const storedContent = store.db.query<{ content_json: string }, []>("SELECT content_json FROM messages").get()!.content_json;
+    const storedContentStatement = store.db.query<{ content_json: string }, []>("SELECT content_json FROM messages");
+    const storedContent = storedContentStatement.get()!.content_json;
+    storedContentStatement.finalize();
     expect(storedContent).not.toContain("tool-output");
     expect(storedContent).not.toContain("image-base64");
     expect(store.load("blobs")?.messages[0]?.content).toEqual(content);
@@ -491,7 +505,9 @@ describe("SQLite maintenance", () => {
     }]);
     expect(store.diagnostics()).toMatchObject({ messageBlobs: 2, toolOutputReferences: 1 });
 
-    store.db.query("DELETE FROM conversations WHERE id='blobs'").run();
+    const deleteStatement = store.db.query("DELETE FROM conversations WHERE id='blobs'");
+    deleteStatement.run();
+    deleteStatement.finalize();
     expect(store.diagnostics()).toMatchObject({ messageBlobs: 0, toolOutputReferences: 0, messages: 0 });
     expect(store.integrityCheck().ok).toBe(true);
     store.close();

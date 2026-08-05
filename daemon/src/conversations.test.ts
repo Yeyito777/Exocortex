@@ -350,7 +350,8 @@ describe("folders", () => {
     create(childId, "openai", "gpt-5.4", "child", undefined, false, folder.id);
     expect(deleteFolder(folder.id, "recursive")).toBe(true);
 
-    const replacement = createConversationWorkspace(childId);
+    const replacement = conversationWorkspaceDir(childId);
+    mkdirSync(replacement, { recursive: true });
     writeFileSync(join(replacement, "foreign.txt"), "foreign");
     expect(undoDelete()).toBeNull();
     expect(listSidebarState().folders.some(candidate => candidate.id === folder.id)).toBe(false);
@@ -432,7 +433,8 @@ describe("folders", () => {
     writeFileSync(join(conversationWorkspaceDir(id), "original.txt"), "original");
     expect(remove(id)).toBe(true);
 
-    const replacement = createConversationWorkspace(id);
+    const replacement = conversationWorkspaceDir(id);
+    mkdirSync(replacement, { recursive: true });
     writeFileSync(join(replacement, "foreign.txt"), "foreign");
     expect(undoDelete()).toBeNull();
     expect(getSummary(id)).toBeNull();

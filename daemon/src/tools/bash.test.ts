@@ -6,6 +6,17 @@ import { spawn } from "child_process";
 import { bash, executeBashBackgroundable, intentionalBackgroundTaskStopPidsForTest, spillAndPreviewForTest } from "./bash";
 import type { BackgroundTaskCompletion } from "./types";
 
+const isWindows = process.platform === "win32";
+
+function platformCommand(posix: string, windows: string): string {
+  return isWindows ? windows : posix;
+}
+
+const mediumOutputCommand = platformCommand(
+  "yes x | head -c 13000",
+  "[Console]::Write(('x' * 13000))",
+);
+
 function makeLargeOutput(): string {
   const lines: string[] = [];
   for (let i = 0; i < 600; i++) {
@@ -57,7 +68,7 @@ describe("bash spill preview", () => {
 describe("bash inline output budget", () => {
   test("exposes the invoking conversation and current daemon socket", async () => {
     const result = await executeBashBackgroundable(
-      { command: "printf '%s|%s' \"$EXOCORTEX_PARENT_CONV_ID\" \"$EXOCORTEX_SOCKET\"" },
+      { command: platformCommand("printf '%s|%s' \"$EXOCORTEX_PARENT_CONV_ID\" \"$EXOCORTEX_SOCKET\"", "[Console]::Write('{0}|{1}', $env:EXOCORTEX_PARENT_CONV_ID, $env:EXOCORTEX_SOCKET)") },
       undefined,
       undefined,
       { conversationId: "conversation-123" },
@@ -65,12 +76,12 @@ describe("bash inline output budget", () => {
 
     expect(result.isError).toBe(false);
     expect(result.output).toContain("conversation-123|");
-    expect(result.output).toContain("exocortexd.sock");
+    expect(result.output).toContain(isWindows ? "exocortexd" : "exocortexd.sock");
   });
 
   test("passes literal stdin and internal environment overrides to the command", async () => {
     const result = await executeBashBackgroundable({
-      command: "IFS= read -r line; printf '%s|%s' \"$line\" \"$SOFT_WAKE_MARKER\"",
+      command: platformCommand("IFS= read -r line; printf '%s|%s' \"$line\" \"$SOFT_WAKE_MARKER\"", "[Console]::Write(([Console]::In.ReadLine() + '|' + $env:SOFT_WAKE_MARKER))"),
       stdin: "literal $HOME and `echo nope`\n",
       env: { SOFT_WAKE_MARKER: "notification-event" },
     });
@@ -81,7 +92,7 @@ describe("bash inline output budget", () => {
 
   test("spills medium output at the default budget", async () => {
     const result = await executeBashBackgroundable(
-      { command: "yes x | head -c 13000" },
+      { command: mediumOutputCommand },
       undefined,
       60_000,
     );
@@ -95,7 +106,7 @@ describe("bash inline output budget", () => {
 
   test("allows larger inline output when max_output_chars is raised", async () => {
     const result = await executeBashBackgroundable(
-      { command: "yes x | head -c 13000", max_output_chars: 20_000 },
+      { command: mediumOutputCommand, max_output_chars: 20_000 },
       undefined,
       60_000,
     );
@@ -107,13 +118,13 @@ describe("bash inline output budget", () => {
 
   test("can discard oversized automation output without retaining a spill path", async () => {
     const result = await executeBashBackgroundable({
-      command: "yes x | head -c 13000",
+      command: mediumOutputCommand,
       discard_output_file: true,
     });
 
     expect(result.isError).toBe(false);
     expect(result.output).toContain("discarded by automation output policy");
-    expect(result.output).not.toContain("Full output: /tmp/");
+    expect(result.output).not.toContain("Full output:");
   });
 });
 
@@ -314,7 +325,7 @@ describe("bash explicit backgrounding", () => {
   test("background=true returns immediately while output continues into the spill file", async () => {
     const markerPath = join(tmpdir(), `exocortex-bash-background-marker-${process.pid}-${Date.now()}`);
     const promise = executeBashBackgroundable({
-      command: `printf 'start\\n'; sleep 0.3; printf 'done\\n'; touch '${markerPath}'`,
+      command: platformCommand(`printf 'start\\n'; sleep 0.3; printf 'done\\n'; touch '${markerPath}'`, `[Console]::Write('start' + [Environment]::NewLine); Start-Sleep -Milliseconds 300; [Console]::Write('done' + [Environment]::NewLine); [IO.File]::WriteAllText('${markerPath}', '')`),
       background: true,
     }, undefined, 60_000);
 

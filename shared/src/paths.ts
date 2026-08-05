@@ -33,17 +33,19 @@ import { join, basename, resolve, dirname } from "path";
 // so we use the directory containing the executable as the root.
 
 function detectRepoRoot(): string {
-  if (process.platform !== "win32") {
+  if (process.platform !== "win32" || /^bun(?:\.exe)?$/i.test(basename(process.execPath))) {
     return resolve(import.meta.dir, "../..");
   }
-  // Compiled Bun exe on Windows — try multiple approaches
+  // A compiled Bun executable should keep its writable config beside the
+  // installed application. When this module is run from source, process.execPath
+  // is bun.exe instead and import.meta.dir above remains the authoritative root.
   if (process.execPath && dirname(process.execPath) !== "\\") {
     return dirname(process.execPath);
   }
   if (process.argv[0] && dirname(resolve(process.argv[0])) !== "\\") {
     return dirname(resolve(process.argv[0]));
   }
-  // Last resort: use CWD (user should run from the exe's directory)
+  // Last resort for an unusually embedded executable.
   return process.cwd();
 }
 

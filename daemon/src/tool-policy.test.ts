@@ -63,16 +63,16 @@ describe("conversation tool policy", () => {
     expect(resolveConversationToolPolicy(conv).configurableInternalToolNames).toEqual(["read", "write"]);
   });
 
-  test("allow, deny, and reset produce persisted exact policies", () => {
+  test("enable, disable, and reset produce persisted exact policies", async () => {
     const conv = createConversation("mutations", "openai", "gpt-5.6-sol");
     conv.toolPolicy = { internal: ["read", "glob", "grep", "browse"], external: [] };
 
-    const withWrite = applyToolPolicyMutation(conv, { action: "allow", tools: [{ kind: "internal", name: "write" }] });
+    const withWrite = await applyToolPolicyMutation(conv, { action: "enable", tools: [{ kind: "internal", name: "write" }] });
     expect(withWrite?.internal).toContain("write");
     conv.toolPolicy = withWrite;
-    const withoutRead = applyToolPolicyMutation(conv, { action: "deny", tools: [{ kind: "internal", name: "read" }] });
+    const withoutRead = await applyToolPolicyMutation(conv, { action: "disable", tools: [{ kind: "internal", name: "read" }] });
     expect(withoutRead?.internal).not.toContain("read");
-    expect(applyToolPolicyMutation(conv, { action: "reset" })).toBeNull();
+    expect(await applyToolPolicyMutation(conv, { action: "reset" })).toBeNull();
   });
 
   test("snapshot distinguishes enabled and disabled tools and warns about bash", () => {
@@ -88,7 +88,7 @@ describe("conversation tool policy", () => {
     expect(buildToolPolicySnapshot(conv).shellWarning).toBe(true);
   });
 
-  test("external policy mutations preserve Bash as the existing transport", () => {
+  test("external policy mutations preserve Bash as the existing transport", async () => {
     const loaded: LoadedTool = {
       manifest: {
         name: "google",
@@ -103,16 +103,16 @@ describe("conversation tool policy", () => {
     try {
       const conv = createConversation("external-mutation", "openai", "gpt-5.6-sol");
       conv.toolPolicy = { internal: ["read"], external: [] };
-      const enabled = applyToolPolicyMutation(conv, {
-        action: "allow",
+      const enabled = await applyToolPolicyMutation(conv, {
+        action: "enable",
         tools: [{ kind: "external", name: "google" }],
       });
       expect(enabled).toEqual({ internal: ["bash", "read"], external: ["google"] });
       conv.toolPolicy = enabled;
-      expect(() => applyToolPolicyMutation(conv, {
-        action: "deny",
+      await expect(applyToolPolicyMutation(conv, {
+        action: "disable",
         tools: [{ kind: "internal", name: "bash" }],
-      })).toThrow("Cannot disable bash while external tools are enabled");
+      })).rejects.toThrow("Cannot disable bash while external tools are enabled");
     } finally {
       restore();
     }

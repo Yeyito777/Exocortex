@@ -182,6 +182,7 @@ describe("voice recall real TUI flow", () => {
   });
 
   test("Enter-recalling a submitted transcription ignores the Enter release and keeps completion in the prompt", async () => {
+    if (process.platform === "win32") return; // fake recorder is a POSIX shell fixture
     const repoRoot = resolve(import.meta.dir, "../..");
     const tempRoot = mkdtempSync(join(tmpdir(), "exo-voice-recall-e2e-"));
     cleanupFns.push(() => rmSync(tempRoot, { recursive: true, force: true }));

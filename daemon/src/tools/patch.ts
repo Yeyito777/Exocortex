@@ -90,7 +90,10 @@ function throwIfPatchAborted(signal?: AbortSignal): void {
 }
 
 function isAbsolutePatchPath(path: string): boolean {
-  return isWindows ? /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\") : isAbsolute(path);
+  if (!isWindows) return isAbsolute(path);
+  // Bun's Windows path.isAbsolute has historically disagreed about POSIX-rooted
+  // paths. Reject every rooted spelling explicitly so /foo cannot escape cwd.
+  return path.startsWith("/") || path.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(path);
 }
 
 function validatePatchPath(path: string, lineNumber: number): string {

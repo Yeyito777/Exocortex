@@ -5,6 +5,7 @@ import { join } from "path";
 import { createServer } from "net";
 
 const HELPER = join(import.meta.dir, "computer");
+const executableTest = process.platform === "win32" ? test.skip : test;
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -82,7 +83,7 @@ function exampleClient(): Record<string, unknown> {
 }
 
 describe("computer helper", () => {
-  test("provides concise help through the executable", async () => {
+  executableTest("provides concise help through the executable", async () => {
     const child = Bun.spawn([HELPER, "-h"], { stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(child.stdout).text(),
@@ -95,7 +96,7 @@ describe("computer helper", () => {
     expect(stdout).toContain("type APP                    Read exact UTF-8 stdin");
   });
 
-  test("rejects conflicting workspace placement options before IPC", async () => {
+  executableTest("rejects conflicting workspace placement options before IPC", async () => {
     const child = Bun.spawn([HELPER, "create-tag", "--index", "1", "--side", "right"], {
       stdout: "pipe",
       stderr: "pipe",
@@ -110,7 +111,7 @@ describe("computer helper", () => {
     expect(stderr).toContain("--index, --position, and --side are mutually exclusive");
   });
 
-  test("lists windows through dwm IPC", async () => {
+  executableTest("lists windows through dwm IPC", async () => {
     const result = await runWithFakeDwm(["list-apps"], (request) => {
       expect(request.method).toBe("clients/list");
       return { clients: [exampleClient()] };
@@ -122,7 +123,7 @@ describe("computer helper", () => {
     expect(result.stdout).toContain('"Example" id=0x0460000d pid=4242 class=example');
   });
 
-  test("captures state without invoking screenshot programs when disabled", async () => {
+  executableTest("captures state without invoking screenshot programs when disabled", async () => {
     const result = await runWithFakeDwm(["state", "Example", "--no-screenshot"], (request) => {
       if (request.method === "clients/list") return { clients: [exampleClient()] };
       if (request.method === "monitors/list") {
@@ -149,7 +150,7 @@ describe("computer helper", () => {
     expect(result.requests.map((request) => request.method)).toEqual(["clients/list", "monitors/list"]);
   });
 
-  test("workspace creation is background-first by default", async () => {
+  executableTest("workspace creation is background-first by default", async () => {
     const result = await runWithFakeDwm(["create-tag", "--index", "2"], (request) => {
       if (request.method === "tag/create") {
         return { action: "created", numTags: 10, selectedTags: 1 };

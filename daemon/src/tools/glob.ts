@@ -641,9 +641,14 @@ async function executeGlob(input: Record<string, unknown>, context?: ToolExecuti
   };
 
   const runner = join(import.meta.dir, "glob-runner.ts");
+  const isCompiledWindowsExecutable = process.platform === "win32"
+    && !/^bun(?:\.exe)?$/i.test(basename(process.execPath));
+  const runnerCommand = isCompiledWindowsExecutable
+    ? [process.execPath, "__exocortex_glob_runner"]
+    : [process.execPath, runner];
   let proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
   try {
-    proc = Bun.spawn([process.execPath, runner], {
+    proc = Bun.spawn(runnerCommand, {
       cwd,
       stdin: "pipe",
       stdout: "pipe",

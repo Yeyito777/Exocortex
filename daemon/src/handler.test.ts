@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { clearConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
+import { conversationWorkspaceDir } from "@exocortex/shared/paths";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, replaceStreamingDisplayMessages, setGoal, setToolPolicy, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
@@ -133,12 +136,12 @@ describe("handler conversation tool policy", () => {
 
     await handle({} as never, {
       type: "set_tool_policy",
-      reqId: "deny-bash",
+      reqId: "disable-bash",
       convId: id,
-      mutation: { action: "deny", tools: [{ kind: "internal", name: "bash" }] },
+      mutation: { action: "disable", tools: [{ kind: "internal", name: "bash" }] },
     });
     expect(get(id)?.toolPolicy?.internal).not.toContain("bash");
-    expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "deny-bash", changed: true, snapshot: { source: "explicit" } });
+    expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "disable-bash", changed: true, snapshot: { source: "explicit" } });
     expect(broadcasted.at(-1)).toMatchObject({ type: "tool_policy", convId: id, changed: true, snapshot: { source: "explicit" } });
     expect(broadcasted.at(-1)).not.toHaveProperty("reqId");
 
@@ -151,6 +154,43 @@ describe("handler conversation tool policy", () => {
     expect(get(id)?.toolPolicy).toBeNull();
     expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "reset", changed: true, snapshot: { source: "default" } });
     expect(broadcasted.at(-1)).toMatchObject({ type: "tool_policy", convId: id, changed: true, snapshot: { source: "default" } });
+  });
+
+  test("keeps blank-draft choices ephemeral and applies them when the conversation is created", async () => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
+    IDS.push(id);
+    const sent: Array<Record<string, any>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "set_draft_tool_policy",
+      reqId: "draft-disable-read",
+      draftId: id,
+      mutation: { action: "disable", tools: [{ kind: "internal", name: "read" }] },
+    });
+    expect(get(id)).toBeUndefined();
+    expect(sent.at(-1)).toMatchObject({
+      type: "tool_policy",
+      convId: id,
+      snapshot: { internal: expect.arrayContaining([expect.objectContaining({ name: "read", enabled: false })]) },
+    });
+    const draftWorkspace = conversationWorkspaceDir(id);
+    writeFileSync(join(draftWorkspace, "draft-marker.txt"), "preserved");
+
+    await handle({} as never, {
+      type: "new_conversation",
+      reqId: "create-from-draft",
+      convId: id,
+      draftToolPolicyId: id,
+    });
+    expect(get(id)?.toolPolicy?.internal).not.toContain("read");
+    expect(readFileSync(join(draftWorkspace, "draft-marker.txt"), "utf8")).toBe("preserved");
+    expect(sent.at(-1)).toMatchObject({ type: "conversation_created", convId: id });
   });
 });
 

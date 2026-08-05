@@ -19,6 +19,12 @@ changes its process-wide cwd per turn, so concurrent conversations remain
 isolated. `agent.workingDirectory` remains only as a compatibility cwd for
 ownerless daemon operations.
 
+Blank drafts that configure custom internal tools reserve the eventual
+conversation workspace early. Relative module paths and toolset factory context
+use that directory, and successful conversation creation adopts the same
+reserved workspace. Only an in-memory daemon reservation permits adoption;
+arbitrary client fields cannot attach an orphaned workspace.
+
 Deleting a conversation first commits its soft deletion, then stops its
 active/background work and moves its workspace to
 `config/data/.../trash/workspaces/<conversation-id>/`. Undo restores the same
@@ -33,9 +39,9 @@ recoverable trash. The inverse restore gap is repaired lazily when the restored
 conversation is next used. Undo refuses to attach any colliding live workspace
 and preserves the undo entry for a later retry. The legacy JSON backend also
 journals multi-file restores so an interrupted operation is completed or rolled
-back before conversation state is exposed. A workspace created before its
-transcript can commit is preserved under an `.orphaned-...` suffix without
-displacing the original conversation's canonical trash.
+back before conversation state is exposed. Stale live or trashed workspaces from
+an interrupted create are preserved under `.orphaned-...` or `.replaced-...`
+suffixes before a clean workspace is assigned.
 
 A workspace is a cwd and lifecycle boundary, not a security sandbox. Absolute
 paths and symlinks retain the tools' existing safety behavior, and workspace file

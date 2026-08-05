@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { create, getQueuedMessages, remove, setMessageQueuePersistenceFailureForTest } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "./messages";
 import { setIsolatedBashRunnerPathForTest } from "./tools/bash";
@@ -24,6 +26,11 @@ import {
 } from "./external-notification-soft-wakes";
 
 const conversationIds: string[] = [];
+const isWindows = process.platform === "win32";
+
+function platformCommand(posix: string, windows: string): string {
+  return isWindows ? windows : posix;
+}
 
 function makeConversation(label: string): string {
   const id = `${Date.now()}-${label}-${Math.random().toString(36).slice(2, 8)}`;
@@ -70,12 +77,20 @@ describe("external notification command soft wakes", () => {
       convId,
       delivery: "soft",
       softWake: {
-        command: [
-          "payload=$(cat)",
-          "[[ \"$payload\" == *'/ai hello'* ]] || exit 0",
-          "printf 'selected:%s:%s:%s' \"$EXOCORTEX_NOTIFICATION_TOOL\" \"$EXOCORTEX_NOTIFICATION_EVENT_ID\" \"$EXOCORTEX_NOTIFICATION_OCCURRENCE_ID\"",
-          "exit 10",
-        ].join("\n"),
+        command: platformCommand(
+          [
+            "payload=$(cat)",
+            "[[ \"$payload\" == *'/ai hello'* ]] || exit 0",
+            "printf 'selected:%s:%s:%s' \"$EXOCORTEX_NOTIFICATION_TOOL\" \"$EXOCORTEX_NOTIFICATION_EVENT_ID\" \"$EXOCORTEX_NOTIFICATION_OCCURRENCE_ID\"",
+            "exit 10",
+          ].join("\n"),
+          [
+            "$payload = [Console]::In.ReadToEnd()",
+            "if ($payload -notlike '*/ai hello*') { exit 0 }",
+            "[Console]::Write('selected:{0}:{1}:{2}', $env:EXOCORTEX_NOTIFICATION_TOOL, $env:EXOCORTEX_NOTIFICATION_EVENT_ID, $env:EXOCORTEX_NOTIFICATION_OCCURRENCE_ID)",
+            "exit 10",
+          ].join("\n"),
+        ),
         timeoutMs: 2_000,
         hardWake: {
           when: "failure",
@@ -122,7 +137,7 @@ describe("external notification command soft wakes", () => {
       convId,
       delivery: "soft",
       softWake: {
-        command: "payload=$(cat); [[ \"$payload\" == *'/ai '* ]] || exit 0; exit 7",
+        command: platformCommand("payload=$(cat); [[ \"$payload\" == *'/ai '* ]] || exit 0; exit 7", "$payload = [Console]::In.ReadToEnd(); if ($payload -notlike '*/ai *') { exit 0 }; exit 7"),
         timeoutMs: 2_000,
         hardWake: { when: "failure", message: "Handle /ai.", includeOutput: true },
       },
@@ -163,7 +178,7 @@ describe("external notification command soft wakes", () => {
 
   test("aborts an active command and suppresses escalation when its route is disabled", async () => {
     const convId = makeConversation("soft-wake-disabled");
-    const markerPath = `/tmp/exocortex-soft-wake-active-${process.pid}-${Date.now()}`;
+    const markerPath = join(tmpdir(), `exocortex-soft-wake-active-${process.pid}-${Date.now()}`);
     registerExternalNotificationSource({ toolName: "whatsapp", id: "incoming", label: "Incoming" });
     const subscription = subscribeExternalNotification({
       toolName: "whatsapp",
@@ -171,7 +186,7 @@ describe("external notification command soft wakes", () => {
       convId,
       delivery: "soft",
       softWake: {
-        command: `touch '${markerPath}'; sleep 2; exit 9`,
+        command: platformCommand(`touch '${markerPath}'; sleep 2; exit 9`, `[IO.File]::WriteAllText('${markerPath}', ''); Start-Sleep -Seconds 2; exit 9`),
         timeoutMs: 5_000,
         hardWake: { when: "failure", message: "Should be revoked.", includeOutput: true },
       },
@@ -200,7 +215,7 @@ describe("external notification command soft wakes", () => {
       sourceId: "incoming",
       convId,
       delivery: "soft",
-      softWake: { command: "true", timeoutMs: 2_000 },
+      softWake: { command: platformCommand("true", "exit 0"), timeoutMs: 2_000 },
     });
 
     for (let index = 0; index < 64; index++) {
@@ -222,7 +237,7 @@ describe("external notification command soft wakes", () => {
       sourceId: "incoming",
       convId,
       delivery: "soft",
-      softWake: { command: "true", timeoutMs: 2_000 },
+      softWake: { command: platformCommand("true", "exit 0"), timeoutMs: 2_000 },
     });
     setExternalNotificationSoftWakePersistenceFailureForTest(new Error("disk unavailable"));
 
@@ -237,7 +252,7 @@ describe("external notification command soft wakes", () => {
 
   test("serializes each subscription in durable acceptance order", async () => {
     const convId = makeConversation("soft-wake-fifo");
-    const outputPath = `/tmp/exocortex-soft-wake-fifo-${process.pid}-${Date.now()}`;
+    const outputPath = join(tmpdir(), `exocortex-soft-wake-fifo-${process.pid}-${Date.now()}`);
     registerExternalNotificationSource({ toolName: "whatsapp", id: "incoming", label: "Incoming" });
     const subscription = subscribeExternalNotification({
       toolName: "whatsapp",
@@ -245,7 +260,7 @@ describe("external notification command soft wakes", () => {
       convId,
       delivery: "soft",
       softWake: {
-        command: `python3 -c 'import json,sys,time; e=json.load(sys.stdin); open(\"${outputPath}\",\"a\").write(e[\"event\"][\"data\"][\"body\"]+\"\\n\"); time.sleep(.03)'`,
+        command: platformCommand(`python3 -c 'import json,sys,time; e=json.load(sys.stdin); open(\"${outputPath}\",\"a\").write(e[\"event\"][\"data\"][\"body\"]+\"\\n\"); time.sleep(.03)'`, `$event = [Console]::In.ReadToEnd() | ConvertFrom-Json; Add-Content -LiteralPath '${outputPath}' -Value $event.event.data.body; Start-Sleep -Milliseconds 30`),
         timeoutMs: 2_000,
       },
     });
@@ -259,7 +274,7 @@ describe("external notification command soft wakes", () => {
     startExternalNotificationSoftWakeService();
 
     await waitUntil(() => listPendingExternalNotificationSoftWakes().length === 0);
-    expect(readFileSync(outputPath, "utf8")).toBe("0\n1\n2\n");
+    expect(readFileSync(outputPath, "utf8").replace(/\r\n/g, "\n")).toBe("0\n1\n2\n");
     rmSync(outputPath, { force: true });
   });
 
@@ -272,7 +287,7 @@ describe("external notification command soft wakes", () => {
       convId,
       delivery: "soft",
       softWake: {
-        command: "printf selected; exit 17",
+        command: platformCommand("printf selected; exit 17", "[Console]::Write('selected'); exit 17"),
         timeoutMs: 2_000,
         hardWake: { when: "failure", message: "Retry hard wake.", includeOutput: true },
       },
@@ -300,7 +315,7 @@ describe("external notification command soft wakes", () => {
       sourceId: "incoming",
       convId,
       delivery: "soft",
-      softWake: { command: "true", timeoutMs: 2_000 },
+      softWake: { command: platformCommand("true", "exit 0"), timeoutMs: 2_000 },
     });
     enqueueExternalNotificationSoftWake(subscription, { eventId: "runner-retry", text: "message" });
     setIsolatedBashRunnerPathForTest("/definitely/missing/exocortex-bash-runner.ts");

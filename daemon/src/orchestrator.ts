@@ -12,7 +12,8 @@ import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
 import { buildSystemPrompt } from "./system";
 import { getMaxContext, supportsImageInputs } from "./providers/registry";
-import { getToolDefs, buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
+import { getToolDefs, buildExecutor, summarizeTool, toolCallsRequireWatchdogPause, getRegisteredTools, getCustomToolDisplayInfo } from "./tools/registry";
+import { ensureConversationCustomTools } from "./tools/custom-tools";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
@@ -394,6 +395,11 @@ async function orchestrateAssistantTurn(
   if (goalContinuation && conv.goal?.status !== "active") {
     return buildErrorOutcome("No active goal to continue.");
   }
+  try {
+    await ensureConversationCustomTools(conv, getRegisteredTools().map((tool) => tool.name), workingDirectory);
+  } catch (error) {
+    return reportSendError(`Failed to load custom tools: ${error instanceof Error ? error.message : String(error)}`);
+  }
   if (realtimeDelegation) {
     const delegatedMessage = buildRealtimeDelegationMessage(
       realtimeDelegation.originalUserUtterance,
@@ -628,7 +634,7 @@ async function orchestrateAssistantTurn(
     includeExternalToolHints: true,
     externalToolNames: resolvedToolPolicy.externalToolNames,
   });
-  const toolDefs = getToolDefs(allowedToolNames);
+  const toolDefs = getToolDefs(allowedToolNames, convId);
   const contextLimit = getMaxContext(conv.provider, conv.model);
   const startingCompactionCount = conv.activeContext?.compactionCount ?? 0;
   let currentWindowNumber = conv.activeContext?.windowNumber ?? 0;
@@ -1132,7 +1138,7 @@ async function orchestrateAssistantTurn(
   // long-running/background lifecycle.
   const rawExecutor = buildExecutor(toolContext, allowedToolNames);
   const executor: typeof rawExecutor = async (calls, signal?) => {
-    const pauseWatchdog = toolCallsRequireWatchdogPause(calls);
+    const pauseWatchdog = toolCallsRequireWatchdogPause(calls, convId);
     if (pauseWatchdog) convStore.pauseActivity(convId);
     try {
       return await rawExecutor(calls, signal);
@@ -1214,10 +1220,14 @@ async function orchestrateAssistantTurn(
         tools: toolDefs,
         executor,
         summarizer: (name, input) => {
-          const s = summarizeTool(name, input);
+          const s = summarizeTool(name, input, convId);
           return s.detail || s.label;
         },
-        presentationResolver: (name, input) => resolveToolCallPresentation(name, input, workingDirectory),
+        presentationResolver: async (name, input) => {
+          const presentation = await resolveToolCallPresentation(name, input, workingDirectory);
+          const toolStyle = getCustomToolDisplayInfo(name, convId);
+          return presentation || toolStyle ? { ...presentation, ...(toolStyle ? { toolStyle } : {}) } : undefined;
+        },
         effort: conv.effort,
         serviceTier: conv.fastMode ? "fast" : undefined,
         promptCacheKey: convId,

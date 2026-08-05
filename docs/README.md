@@ -116,6 +116,7 @@ Commands flow client → daemon. Events flow daemon → client.
 | `/new`           | Start a new conversation            |
 | `/model <provider> <model>` | Switch provider/model for the current conversation |
 | `/trim <mode> <n>` | Trim old context from the current conversation |
+| `/tools enable/disable ...` | Change built-in tools or attach a [conversation-scoped tool module](custom-internal-tools.md) |
 | `/quit`          | Exit                                |
 
 ## Protocol

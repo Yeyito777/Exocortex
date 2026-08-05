@@ -27,6 +27,7 @@ import { getConversationExternalIntegrations } from "./external-notifications";
 import * as displayPageStore from "./display-page-store";
 import { scheduleDisplayIndex } from "./display-index-backfill";
 import { buildToolPolicySnapshot } from "./tool-policy";
+import { clearConversationCustomTools } from "./tools/custom-tools";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -485,11 +486,11 @@ export function generateId(): string {
 
 // ── Conversation CRUD/configuration ─────────────────────────────────
 
-export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode = false, folderId: string | null = null): Conversation {
+export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode = false, folderId: string | null = null, adoptExistingWorkspace = false): Conversation {
   if (hasConversation(id) || persistence.hasDeletedConversation(id)) {
     throw new Error(`Conversation ${id} already exists or is recoverable from trash`);
   }
-  createConversationWorkspace(id);
+  createConversationWorkspace(id, { adoptExisting: adoptExistingWorkspace });
   const parentId = folderId && folders.has(folderId) ? folderId : null;
   const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
   retainConversation(conv);
@@ -507,11 +508,12 @@ export function createWithInitialUserMessage(
   fastMode: boolean,
   message: { text: string; startedAt: number; images?: ImageAttachment[] },
   folderId: string | null = null,
+  adoptExistingWorkspace = false,
 ): Conversation {
   if (hasConversation(id) || persistence.hasDeletedConversation(id)) {
     throw new Error(`Conversation ${id} already exists or is recoverable from trash`);
   }
-  createConversationWorkspace(id);
+  createConversationWorkspace(id, { adoptExisting: adoptExistingWorkspace });
   const parentId = folderId && folders.has(folderId) ? folderId : null;
   const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
   conv.messages.push(createStoredUserMessage(message.text, model, message.startedAt, message.images, {
@@ -542,7 +544,18 @@ export function setToolPolicy(id: string, policy: ConversationToolPolicy | null)
   conv.toolPolicy = policy ? {
     internal: [...new Set(policy.internal)],
     external: [...new Set(policy.external)],
+    ...(policy.customToolModules?.length ? {
+      customToolModules: policy.customToolModules.map((module) => ({
+        ...module,
+        tools: module.tools.map((tool) => ({ ...tool })),
+      })),
+    } : {}),
   } : null;
+  if (!policy) {
+    void clearConversationCustomTools(id).catch((error) => {
+      log("warn", `conversations: failed to dispose custom tools for ${id}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
   markDirty(id);
   flush(id);
   return true;
@@ -771,6 +784,9 @@ export function removeMany(ids: string[], recordUndo = true): string[] {
     trashWorkspaceAfterConversation(id);
     displayPageStore.removeDisplayProjection(id);
     unreadChanged = removeConversationState(id) || unreadChanged;
+    void clearConversationCustomTools(id).catch((error) => {
+      log("warn", `conversations: failed to dispose custom tools for deleted conversation ${id}: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
   if (unreadChanged) saveUnreadState();
   saveSummaryIndex();
@@ -793,6 +809,9 @@ function deleteConversationWithoutUndo(id: string): boolean {
   trashWorkspaceAfterConversation(id);
   displayPageStore.removeDisplayProjection(id);
   const unreadChanged = removeConversationState(id);
+  void clearConversationCustomTools(id).catch((error) => {
+    log("warn", `conversations: failed to dispose custom tools for deleted conversation ${id}: ${error instanceof Error ? error.message : String(error)}`);
+  });
   if (unreadChanged) saveUnreadState();
   saveSummaryIndex();
   return true;

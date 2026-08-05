@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationWorkspaceDir, conversationWorkspacesDir, trashedConversationWorkspaceDir, trashedConversationWorkspacesDir } from "@exocortex/shared/paths";
 import { createConversationWorkspace, ensureConversationWorkspace, reconcileConversationWorkspaces, restoreConversationWorkspace, trashConversationWorkspace } from "./workspace-service";
@@ -57,14 +57,17 @@ describe("conversation workspace service", () => {
     expect(readFileSync(join(live, "state.txt"), "utf8")).toBe("recovered");
   });
 
-  test("new conversation creation never revives a trashed workspace", () => {
+  test("new conversation creation archives stale workspace trash instead of reviving it", () => {
     const conversationId = id("no-reuse");
     const first = createConversationWorkspace(conversationId);
     writeFileSync(join(first, "old.txt"), "old");
     trashConversationWorkspace(conversationId);
     const replacement = createConversationWorkspace(conversationId);
     expect(existsSync(join(replacement, "old.txt"))).toBe(false);
-    expect(readFileSync(join(trashedConversationWorkspaceDir(conversationId), "old.txt"), "utf8")).toBe("old");
+    const archivedOriginal = readdirSync(trashedConversationWorkspacesDir())
+      .find(entry => entry.startsWith(`${conversationId}.replaced-`));
+    expect(archivedOriginal).toBeDefined();
+    expect(readFileSync(join(trashedConversationWorkspacesDir(), archivedOriginal!, "old.txt"), "utf8")).toBe("old");
 
     writeFileSync(join(replacement, "new.txt"), "new");
     trashConversationWorkspace(conversationId);
@@ -78,7 +81,10 @@ describe("conversation workspace service", () => {
     writeFileSync(join(orphan, "orphan.txt"), "orphan");
     const replacement = createConversationWorkspace(conversationId);
     expect(existsSync(join(replacement, "orphan.txt"))).toBe(false);
-    expect(readFileSync(join(trashedConversationWorkspaceDir(conversationId), "orphan.txt"), "utf8")).toBe("orphan");
+    const archivedOrphan = readdirSync(trashedConversationWorkspacesDir())
+      .find(entry => entry.startsWith(`${conversationId}.replaced-`));
+    expect(archivedOrphan).toBeDefined();
+    expect(readFileSync(join(trashedConversationWorkspacesDir(), archivedOrphan!, "orphan.txt"), "utf8")).toBe("orphan");
   });
 
   test("refuses a restore when canonical trash collides with nonempty live data", () => {
@@ -86,7 +92,8 @@ describe("conversation workspace service", () => {
     const old = createConversationWorkspace(conversationId);
     writeFileSync(join(old, "old.txt"), "old");
     trashConversationWorkspace(conversationId);
-    const foreign = createConversationWorkspace(conversationId);
+    const foreign = conversationWorkspaceDir(conversationId);
+    mkdirSync(foreign, { recursive: true });
     writeFileSync(join(foreign, "foreign.txt"), "foreign");
 
     expect(() => restoreConversationWorkspace(conversationId)).toThrow("Refusing to overwrite");
@@ -109,7 +116,7 @@ describe("conversation workspace service", () => {
     expect(existsSync(conversationWorkspaceDir(liveId))).toBe(true);
   });
 
-  test("reconciliation does not replace canonical trash with a crashed replacement create", () => {
+  test("reconciliation preserves both stale trash and a crashed replacement create", () => {
     const conversationId = id("reconcile-reuse-crash");
     const original = createConversationWorkspace(conversationId);
     writeFileSync(join(original, "original.txt"), "original");
@@ -120,10 +127,10 @@ describe("conversation workspace service", () => {
     const otherLiveIds = readdirSync(conversationWorkspacesDir()).filter(entry => entry !== conversationId);
     reconcileConversationWorkspaces(otherLiveIds);
 
-    expect(readFileSync(join(trashedConversationWorkspaceDir(conversationId), "original.txt"), "utf8")).toBe("original");
-    const orphan = readdirSync(trashedConversationWorkspacesDir())
-      .find(entry => entry.startsWith(`${conversationId}.orphaned-`));
-    expect(orphan).toBeDefined();
-    expect(readFileSync(join(trashedConversationWorkspacesDir(), orphan!, "replacement.txt"), "utf8")).toBe("replacement");
+    expect(readFileSync(join(trashedConversationWorkspaceDir(conversationId), "replacement.txt"), "utf8")).toBe("replacement");
+    const archivedOriginal = readdirSync(trashedConversationWorkspacesDir())
+      .find(entry => entry.startsWith(`${conversationId}.replaced-`));
+    expect(archivedOriginal).toBeDefined();
+    expect(readFileSync(join(trashedConversationWorkspacesDir(), archivedOriginal!, "original.txt"), "utf8")).toBe("original");
   });
 });

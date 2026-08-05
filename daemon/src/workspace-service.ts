@@ -80,17 +80,27 @@ export function ensureConversationWorkspace(conversationId: string): string {
 }
 
 /** Create the workspace for a newly-created conversation without reviving trash. */
-export function createConversationWorkspace(conversationId: string): string {
+export function createConversationWorkspace(
+  conversationId: string,
+  options: { adoptExisting?: boolean } = {},
+): string {
   const live = conversationWorkspaceDir(conversationId);
   ensureDirectory(conversationWorkspacesDir());
+  if (options.adoptExisting && existsSync(live)) {
+    ensureDirectory(live);
+    return live;
+  }
   if (existsSync(live)) {
     // A failed/crashed create or delete can leave an unindexed live workspace.
     // Preserve it as recoverable trash before assigning the ID a clean cwd.
     archiveOrphanedLiveWorkspace(conversationId);
   }
-  // Reusing a deleted conversation ID starts clean. Keep its old canonical
-  // trash in place until the replacement is itself deleted, at which point the
-  // conflict is archived rather than overwritten.
+  // Domain creation reserves IDs retained by transcript trash. Any remaining
+  // canonical workspace trash here is therefore an orphan from a crashed or
+  // abandoned create, not the workspace of an undoable deleted conversation.
+  // Archive it so the new live workspace does not form an ambiguous pair.
+  const trashed = trashedConversationWorkspaceDir(conversationId);
+  if (existsSync(trashed)) archiveConflictingTrash(trashed);
   ensureDirectory(live);
   return live;
 }

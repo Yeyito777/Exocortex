@@ -212,6 +212,8 @@ export interface RenderState {
   fastMode: boolean;
   goal: ConversationGoal | null;
   convId: string | null;
+  /** Reserved identity for tool choices on the current blank conversation draft. */
+  pendingToolPolicyDraftId: string | null;
   /** Folder captured when the current blank draft was started. Sidebar browsing must not retarget it. */
   draftFolderId: string | null;
   inputBuffer: string;
@@ -467,6 +469,8 @@ export function renderDraftFolderInstructions(state: RenderState): void {
 export function resetDraftConversationState(state: RenderState): void {
   state.folderInstructionsDoc = null;
   state.convId = null;
+  state.pendingToolPolicyDraftId = null;
+  state.activeToolPolicy = null;
   // Starting a draft chooses its destination. Navigating the sidebar afterward
   // is only browsing and must not silently move the eventual conversation.
   state.draftFolderId = state.sidebar.currentFolderId;
@@ -618,7 +622,8 @@ export function createInitialState(): RenderState {
 	    fastMode: defaults.fastMode,
     goal: null,
     convId: null,
-    draftFolderId: null,
+	    pendingToolPolicyDraftId: null,
+	    draftFolderId: null,
     inputBuffer: "",
     cursorPos: 0,
     promptCurswant: null,
