@@ -109,43 +109,24 @@ This stops the systemd service and removes the symlinks from `~/.local/bin/`.
 
 ### Windows
 
-#### Quick Setup
+Exocortex is installed from source on Windows: clone the repository and run the
+included installer.
 
-1. Download `exocortex-windows-x64.zip` from the [latest release](https://github.com/Yeyito777/Exocortex/releases/latest).
+#### Prerequisite
 
-2. Extract the zip to a folder of your choice (e.g. `C:\Exocortex`).
-
-3. Open a terminal in that folder and authenticate:
-   ```powershell
-   .\exocortexd.exe login
-   ```
-
-4. Launch by double-clicking `exocortex.bat`, or from a terminal:
-   ```powershell
-   .\exocortex.bat
-   ```
-
-The batch file starts the daemon in the background, opens the TUI, and automatically stops the daemon when you close it.
-
-To uninstall, just delete the folder. No registry entries or services are created.
-
-#### Power Users — Build from Source
-
-If you want to build the daemon and TUI from a specific commit:
-
-**Prerequisites:**
-- **Git** — install from [git-scm.com](https://git-scm.com/download/win) or via `winget`:
+- **Git** — install from [git-scm.com](https://git-scm.com/download/win) or with
+  `winget`:
   ```powershell
   winget install Git.Git
   ```
-- **Bun** (JavaScript runtime) is installed automatically by the Windows build
-  script when it is not already available.
 
-**One-click source install on Windows:**
+Bun is installed automatically from its official installer when it is not
+already available.
 
-Clone the repository, then double-click `scripts\install-windows.cmd`. The
-launcher keeps the window open so you can see whether the installation
-succeeded. To run the same installer from a terminal instead:
+#### Install
+
+Clone the canonical source repository, then double-click
+`scripts\install-windows.cmd`. To run the same installer from a terminal:
 
 ```powershell
 git clone https://github.com/Yeyito777/Exocortex.git
@@ -153,13 +134,33 @@ cd Exocortex
 .\scripts\install-windows.cmd
 ```
 
-The launcher calls `install-windows.ps1`, which builds the source into `dist\`,
+The installer builds the daemon, TUI, and `exo` CLI from source into `dist\`,
 copies the commands to `~\.local\bin`, and adds that directory to your user
 `PATH`. Open a new terminal after the first install. PowerShell options can be
-passed through the launcher, for example
-`scripts\install-windows.cmd -NoPathUpdate`.
+passed through the launcher, for example:
 
-**Cross-build from Linux or WSL:**
+```powershell
+.\scripts\install-windows.cmd -NoPathUpdate
+```
+
+#### Authenticate and launch
+
+Run the one-time provider login:
+
+```powershell
+exocortexd login
+```
+
+Then launch Exocortex:
+
+```powershell
+exocortex.bat
+```
+
+The batch file starts the daemon in the background, opens the TUI, and stops
+the daemon when the TUI closes. No Windows service is installed.
+
+#### Cross-build from Linux or WSL
 
 ```bash
 git clone https://github.com/Yeyito777/Exocortex.git
@@ -168,10 +169,9 @@ bun install
 make windows
 ```
 
-Both methods produce standalone executables in `dist/`:
+Both native and cross-build methods produce standalone executables in `dist/`:
+
 - `exocortexd.exe` — the daemon
 - `exocortex.exe` — the TUI client
 - `exo.exe` — the external debugging/automation CLI
-- `exocortex.bat` — launcher script
-
-Copy the contents of `dist/` wherever you like and follow the same authenticate & launch steps from above.
+- `exocortex.bat` — the launcher script
