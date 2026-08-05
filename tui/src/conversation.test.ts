@@ -18,6 +18,23 @@ describe("plain word wrapping", () => {
   });
 });
 
+describe("system instructions spacing", () => {
+  test("renders one blank row between the instructions box and a following user message", () => {
+    const state = createInitialState();
+    state.messages.push(
+      { role: "system_instructions", text: "Follow these rules.", metadata: null },
+      { role: "user", text: "Hello", metadata: null },
+    );
+
+    const rendered = buildMessageLines(state, 80);
+    const bottomIndex = rendered.lineAnchors.findIndex((anchor) => anchor.segment === "system_instructions_bottom");
+
+    expect(rendered.lineAnchors[bottomIndex + 1]?.segment).toBe("system_instructions_margin_bottom");
+    expect(rendered.lines[bottomIndex + 1]).toBe("");
+    expect(rendered.lineAnchors[bottomIndex + 2]?.segment).toBe("user_content");
+  });
+});
+
 describe("context compaction status", () => {
   test("renders an animated Compacting status without a synthetic assistant block", () => {
     expect(compactionSpinnerText(1_000, 1_000)).toBe("⠋ Compacting...");
@@ -100,9 +117,12 @@ describe("older history loading status", () => {
     const rendered = buildMessageLines(state, 80);
     const loadingIndex = rendered.lineAnchors.findIndex((anchor) => anchor.segment === "history_loading");
     const instructionsBottomIndex = rendered.lineAnchors.findIndex((anchor) => anchor.segment === "system_instructions_bottom");
+    const instructionsMarginIndex = rendered.lineAnchors.findIndex((anchor) => anchor.segment === "system_instructions_margin_bottom");
 
     expect(instructionsBottomIndex).toBeGreaterThanOrEqual(0);
-    expect(loadingIndex).toBe(instructionsBottomIndex + 1);
+    expect(instructionsMarginIndex).toBe(instructionsBottomIndex + 1);
+    expect(rendered.lines[instructionsMarginIndex]).toBe("");
+    expect(loadingIndex).toBe(instructionsMarginIndex + 1);
     expect(stripAnsi(rendered.lines[loadingIndex])).toContain("Loading...");
     expect(rendered.lineAnchors[loadingIndex + 1]?.segment).toBe("user_content");
   });

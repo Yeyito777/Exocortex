@@ -320,7 +320,7 @@ describe("render caching and frame diffing", () => {
 
     const writes = positionedWrites(captureRenderOutput(state));
     const taskHeader = writes.find(write => (
-      write.row === 6
+      write.row === 7
       && write.col === 71
       && stripAnsi(write.text).includes("Tasks")
     ));
@@ -332,25 +332,26 @@ describe("render caching and frame diffing", () => {
     ));
     const overlappingHistoryWrites = writes.filter(write => (
       write.col === 1
-      && write.row >= 6
-      && write.row <= 8
+      && write.row >= 7
+      && write.row <= 9
       && /OVERLAP|history words|filler/.test(stripAnsi(write.text))
     ));
     const belowPanel = writes.find(write => (
       write.col === 1
-      && write.row === 11
+      && write.row === 12
       && stripAnsi(write.text).includes("AFTER")
     ));
     const bufferRow = writes.find(write => (
       write.col === 1
-      && write.row === 9
+      && write.row === 10
       && stripAnsi(write.text).includes("BELOW")
     ));
 
     expect(taskHeader).toBeDefined();
     expect(state.layout.historyWidth).toBe(69);
-    expect(instructionLines).toHaveLength(3);
-    expect(instructionLines.every(line => termWidth(stripAnsi(line)) === 120)).toBe(true);
+    expect(instructionLines).toHaveLength(4);
+    expect(instructionLines.slice(0, -1).every(line => termWidth(stripAnsi(line)) === 120)).toBe(true);
+    expect(instructionLines.at(-1)).toBe("");
     expect(assistantLines).toHaveLength(4);
     expect(overlappingHistoryWrites.length).toBeGreaterThan(0);
     expect(overlappingHistoryWrites.every(write => termWidth(stripCsi(stripAnsi(write.text))) <= state.layout.historyWidth)).toBe(true);
@@ -410,11 +411,12 @@ describe("render caching and frame diffing", () => {
       && state.historyLineAnchors[viewportRow.lineIndex]?.segment.startsWith("system_instructions")
     ));
 
-    expect(instructionRows.map(row => row?.lineIndex)).toEqual([1, 2, 3]);
-    expect(state.layout.taskPanelRect?.top).toBe(6);
-    expect(instructionRows.every(row => (
+    expect(instructionRows.map(row => row?.lineIndex)).toEqual([1, 2, 3, 4]);
+    expect(state.layout.taskPanelRect?.top).toBe(7);
+    expect(instructionRows.slice(0, -1).every(row => (
       row !== null && termWidth(stripAnsi(state.historyLines[row.lineIndex])) === state.cols
     ))).toBe(true);
+    expect(state.historyLines[instructionRows.at(-1)!.lineIndex]).toBe("");
   });
 
   test("preserves assistant indentation on task-panel reflow continuations", () => {
