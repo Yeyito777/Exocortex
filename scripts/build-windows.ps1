@@ -11,7 +11,25 @@ if ($BunCommand) {
 } else {
     $Bun = Join-Path $HOME ".bun\bin\bun.exe"
     if (-not (Test-Path $Bun)) {
-        throw "bun is required. Install it with: powershell -c `"irm bun.sh/install.ps1 | iex`""
+        Write-Host "Bun was not found. Installing Bun from https://bun.sh ..."
+        try {
+            $InstallScript = Invoke-RestMethod -Uri "https://bun.sh/install.ps1"
+            Invoke-Expression $InstallScript
+        } catch {
+            throw "Bun was not found and automatic installation failed: $($_.Exception.Message)"
+        }
+
+        if (-not (Test-Path $Bun)) {
+            throw "The Bun installer completed, but $Bun was not created."
+        }
+
+        $BunBin = Split-Path -Parent $Bun
+        $PathSegments = @($env:Path -split ";" | Where-Object { $_ })
+        if (-not ($PathSegments | Where-Object { $_.TrimEnd("\") -ieq $BunBin.TrimEnd("\") })) {
+            $env:Path = "$BunBin;$env:Path"
+        }
+
+        Write-Host "Bun installed successfully."
     }
 }
 

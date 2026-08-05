@@ -138,10 +138,8 @@ If you want to build the daemon and TUI from a specific commit:
   ```powershell
   winget install Git.Git
   ```
-- **Bun** (JavaScript runtime)
-  ```powershell
-  powershell -c "irm bun.sh/install.ps1 | iex"
-  ```
+- **Bun** (JavaScript runtime) is installed automatically by the Windows build
+  script when it is not already available.
 
 **One-click source install on Windows:**
 
