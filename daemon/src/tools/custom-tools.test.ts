@@ -101,7 +101,7 @@ describe("conversation-scoped custom tools", () => {
       action: "enable",
       tools: [],
       modulePaths: [homeRelativePath],
-    });
+    }, join(path, ".."));
 
     expect(conversation.toolPolicy?.customToolModules?.[0]?.path).toBe(path);
     expect(conversation.toolPolicy?.internal).toContain("fixture_search");
@@ -117,7 +117,7 @@ describe("conversation-scoped custom tools", () => {
       action: "enable",
       tools: [],
       modulePaths: [path],
-    });
+    }, join(path, ".."));
 
     expect(conversation.toolPolicy?.internal).toContain("fixture_search");
     expect(conversation.toolPolicy?.customToolModules).toHaveLength(1);
@@ -155,7 +155,7 @@ describe("conversation-scoped custom tools", () => {
       action: "enable",
       tools: [],
       modulePaths: [path],
-    });
+    }, join(path, ".."));
     const firstDigest = conversation.toolPolicy!.customToolModules![0]!.digest;
 
     await clearConversationCustomTools(conversation.id);
@@ -163,13 +163,14 @@ describe("conversation-scoped custom tools", () => {
     await expect(ensureConversationCustomTools(
       conversation,
       getRegisteredTools().map((tool) => tool.name),
+      join(path, ".."),
     )).rejects.toThrow("changed since it was enabled");
 
     conversation.toolPolicy = await applyToolPolicyMutation(conversation, {
       action: "enable",
       tools: [],
       modulePaths: [path],
-    });
+    }, join(path, ".."));
     expect(conversation.toolPolicy!.customToolModules![0]!.digest).not.toBe(firstDigest);
     const executor = buildExecutor({ conversationId: conversation.id }, ["fixture_search"]);
     const [result] = await executor([{
@@ -203,20 +204,21 @@ describe("conversation-scoped custom tools", () => {
       action: "enable",
       tools: [],
       modulePaths: [modulePath],
-    });
+    }, directory);
 
     await clearConversationCustomTools(conversation.id);
     await writeFile(helperPath, `export const version = "dependency-v2";\n`);
     await expect(ensureConversationCustomTools(
       conversation,
       getRegisteredTools().map((tool) => tool.name),
+      directory,
     )).rejects.toThrow("changed since it was enabled");
 
     conversation.toolPolicy = await applyToolPolicyMutation(conversation, {
       action: "enable",
       tools: [],
       modulePaths: [modulePath],
-    });
+    }, directory);
     const executor = buildExecutor({ conversationId: conversation.id }, ["dependency_fixture"]);
     const [result] = await executor([{
       id: "dependency-call",
@@ -224,6 +226,37 @@ describe("conversation-scoped custom tools", () => {
       input: {},
     }]);
     expect(result.output).toBe("dependency-v2");
+  });
+
+  test("loads large bundled modules that import Bun/Node built-ins", async () => {
+    const padding = "x".repeat(40_000);
+    const path = await temporaryModule(`
+      import { basename } from "node:path";
+      const padding = ${JSON.stringify("x".repeat(40_000))};
+      export default {
+        name: "large_builtin_fixture",
+        description: "Exercise file-backed custom module loading",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        display: { label: "Large Fixture", color: "#abcdef" },
+        summarize() { return { label: "Large Fixture", detail: "" }; },
+        async execute() { return { output: basename(${JSON.stringify("/tmp/value.txt")}) + ":" + padding.length, isError: false }; },
+      };
+    `);
+    expect(padding.length).toBe(40_000);
+    const workingDirectory = join(path, "..");
+    const conversation = createConversation("custom-large-builtin", "openai", "gpt-5.6-sol");
+    conversationIds.push(conversation.id);
+    conversation.toolPolicy = await applyToolPolicyMutation(conversation, {
+      action: "enable",
+      tools: [],
+      modulePaths: [path],
+    }, workingDirectory);
+
+    const [result] = await buildExecutor(
+      { conversationId: conversation.id, cwd: workingDirectory },
+      ["large_builtin_fixture"],
+    )([{ id: "large-call", name: "large_builtin_fixture", input: {} }]);
+    expect(result.output).toBe("value.txt:40000");
   });
 
   test("detaches a module by path and rejects built-in name collisions", async () => {
@@ -234,13 +267,13 @@ describe("conversation-scoped custom tools", () => {
       action: "enable",
       tools: [],
       modulePaths: [path],
-    });
+    }, join(path, ".."));
 
     conversation.toolPolicy = await applyToolPolicyMutation(conversation, {
       action: "disable",
       tools: [],
       modulePaths: [path],
-    });
+    }, join(path, ".."));
     expect(conversation.toolPolicy?.customToolModules).toBeUndefined();
     expect(conversation.toolPolicy?.internal).not.toContain("fixture_search");
     expect(getToolDefs(undefined, conversation.id).map((tool) => tool.name)).not.toContain("fixture_search");
@@ -250,6 +283,6 @@ describe("conversation-scoped custom tools", () => {
       action: "enable",
       tools: [],
       modulePaths: [conflicting],
-    })).rejects.toThrow("conflicts with a built-in tool: read");
+    }, join(conflicting, ".."))).rejects.toThrow("conflicts with a built-in tool: read");
   });
 });

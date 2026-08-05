@@ -128,6 +128,32 @@ Detach the module and all of its tools with:
 `/tools reset` removes every custom module and restores the conversation's
 ordinary default tool policy.
 
+## Creating a scoped conversation with `exo-cli`
+
+`exo send` can attach modules and choose an exact tool policy before the first
+turn:
+
+```text
+printf '%s' 'inspect the world source' | exo send \
+  --custom-tool /absolute/path/to/minecraft-tools.ts \
+  --internal-tool read \
+  --internal-tool minecraft_glob \
+  --internal-tool minecraft_grep \
+  --folder allcraft/logs \
+  --auto-title \
+  --detach --id
+```
+
+`--custom-tool`, `--internal-tool`, and `--external-tool` are repeatable. An
+explicit internal allowlist also defaults the external allowlist to empty;
+external tools must then be selected explicitly. Module setup uses an ephemeral
+draft policy that is consumed atomically when the conversation is created, so a
+first turn can never start with only part of the requested toolset.
+
+Compiled custom modules execute from digest-named files inside the conversation
+workspace rather than `data:` URLs. This keeps large modules and ordinary
+Node/Bun built-in imports loadable while preserving the bundled-closure digest.
+
 ## Trust boundary
 
 Custom modules are executable code, not a sandboxed data format. Only enable

@@ -7,9 +7,10 @@
  */
 
 import { createHash } from "crypto";
-import { realpath, stat } from "fs/promises";
+import { mkdir, realpath, stat, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { dirname, extname, resolve } from "path";
+import { pathToFileURL } from "url";
 import type { Conversation, ConversationCustomToolModule } from "../messages";
 import type { Tool } from "./types";
 
@@ -253,12 +254,17 @@ async function loadModule(
     );
   }
 
-  // Execute the same bundled local source closure that was hashed above. A data
-  // module avoids Bun retaining stale transitive imports after an explicit
-  // re-enable. The per-instance comment gives direct Tool exports separate
-  // module objects; toolset factories should still own conversation state.
-  const instanceCode = `${compiled.code}\n// exocortex custom tool ${conversationId} load ${++importNonce}\n`;
-  const moduleUrl = `data:text/javascript;base64,${Buffer.from(instanceCode).toString("base64")}`;
+  // Execute the exact bundled closure that was hashed above from a real file.
+  // Bare imports such as node:fs cannot be resolved reliably relative to a
+  // large data: URL (and sufficiently large URLs can exceed OS path limits in
+  // Bun's package resolver). The digest-named file remains inside the
+  // conversation workspace, while a query nonce still creates independent
+  // module objects for separate toolset instances.
+  const cacheDirectory = resolve(workingDirectory, ".exocortex-custom-tools");
+  await mkdir(cacheDirectory, { recursive: true });
+  const executablePath = resolve(cacheDirectory, `${compiled.digest.slice("sha256:".length)}.mjs`);
+  await writeFile(executablePath, compiled.code, { encoding: "utf8", mode: 0o600 });
+  const moduleUrl = `${pathToFileURL(executablePath).href}?instance=${encodeURIComponent(conversationId)}-${++importNonce}`;
   const namespace = await import(moduleUrl) as Record<string, unknown>;
   const materialized = await materializeModule(namespace, {
     apiVersion: 1,
