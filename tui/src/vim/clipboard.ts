@@ -2,11 +2,11 @@
  * System clipboard access.
  *
  * Detects available clipboard tools and provides copy/paste.
- * Uses pbcopy/pbpaste, xclip, xsel, or wl-copy/wl-paste depending
- * on what's available. Copy is fire-and-forget (async but not awaited).
+ * Uses PowerShell, pbcopy/pbpaste, xclip, xsel, or wl-copy/wl-paste
+ * depending on the platform. Copy is fire-and-forget (async but not awaited).
  */
 
-type ClipboardBackend = "pbcopy" | "xclip" | "xsel" | "wl" | null;
+type ClipboardBackend = "powershell" | "pbcopy" | "xclip" | "xsel" | "wl" | null;
 
 interface TextClipboardSystem {
   platform: NodeJS.Platform;
@@ -42,6 +42,21 @@ const defaultClipboardSystem: TextClipboardSystem = {
   },
 };
 
+const POWERSHELL_ARGS = ["powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-Command"];
+const POWERSHELL_COPY_SCRIPT = [
+  '$ErrorActionPreference = "Stop"',
+  "Add-Type -AssemblyName System.Windows.Forms",
+  "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)",
+  "$text = [Console]::In.ReadToEnd()",
+  "[System.Windows.Forms.Clipboard]::SetText($text)",
+].join("\n");
+const POWERSHELL_PASTE_SCRIPT = [
+  '$ErrorActionPreference = "Stop"',
+  "Add-Type -AssemblyName System.Windows.Forms",
+  "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+  "[Console]::Out.Write([System.Windows.Forms.Clipboard]::GetText())",
+].join("\n");
+
 let clipboardSystem: TextClipboardSystem = defaultClipboardSystem;
 
 const TEXT_TARGETS = ["UTF8_STRING", "text/plain;charset=utf-8", "text/plain", "STRING", "TEXT"];
@@ -76,6 +91,14 @@ function detectBackend(): ClipboardBackend {
   if (backend !== undefined && backendEnvKey === envKey) return backend;
 
   backendEnvKey = envKey;
+
+  // Windows PowerShell and Windows Forms are part of supported Windows
+  // installations. Use stdin/stdout so clipboard text is never interpolated
+  // into a command and UTF-8 text (including non-BMP characters) is preserved.
+  if (clipboardSystem.platform === "win32") {
+    backend = "powershell";
+    return backend;
+  }
 
   // macOS ships dedicated text pasteboard utilities. This must be checked
   // before the DISPLAY guard below: native macOS terminals do not use X11.
@@ -135,6 +158,7 @@ export function copyToClipboard(text: string): void {
   try {
     let cmd: string[];
     switch (be) {
+      case "powershell": cmd = [...POWERSHELL_ARGS, POWERSHELL_COPY_SCRIPT]; break;
       case "pbcopy": cmd = ["pbcopy"]; break;
       case "xclip":  cmd = ["xclip", "-selection", "clipboard"]; break;
       case "xsel":   cmd = ["xsel", "--clipboard", "--input"]; break;
@@ -157,6 +181,9 @@ export async function pasteFromClipboard(): Promise<string> {
   try {
     let cmd: string[];
     switch (be) {
+      case "powershell":
+        cmd = [...POWERSHELL_ARGS, POWERSHELL_PASTE_SCRIPT];
+        break;
       case "pbcopy":
         cmd = ["pbpaste"];
         break;
