@@ -249,7 +249,7 @@ function wrapDisabledToolGroup(state: RenderState, tools: DisabledToolEntry[], w
   let bodyUsed = 0;
 
   const pushBody = (value: string) => {
-    const marker = tools[0]?.enabled ? "✓" : "⊘";
+    const marker = tools[0]?.enabled ? "+" : "⊘";
     const prefix = rows.length === 0 ? `${theme.muted}${marker} ` : `${theme.muted}  `;
     const line = `${prefix}${value}${theme.muted}`;
     rows.push(line + " ".repeat(Math.max(0, width - visibleLength(line))));

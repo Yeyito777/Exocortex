@@ -405,7 +405,7 @@ describe("focused conversation disabled tools", () => {
     const plain = panel.lines.map(stripAnsi).join("\n");
     expect(plain).toContain("Tool Changes");
     expect(plain).toContain("⊘ Read");
-    expect(plain).toContain("✓ Playground Echo");
+    expect(plain).toContain("+ Playground Echo");
     expect(panel.lines.join("\n")).toContain(hexToAnsi("#12abef"));
   });
 
