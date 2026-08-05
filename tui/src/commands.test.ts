@@ -1263,11 +1263,10 @@ describe("/tools", () => {
     expect(args["/tools enable"]?.map((item) => item.insertText)).toEqual(["internal:read", "external:gmail"]);
   });
 
-  test("requires an open conversation and rejects malformed references", () => {
+  test("works on a blank conversation draft and rejects malformed references", () => {
     const state = createInitialState();
-    expect(tryCommand("/tools", state)).toEqual({ type: "handled" });
-    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "Start or open a conversation before using /tools." });
-    state.convId = "conversation-1";
+    expect(tryCommand("/tools", state)).toEqual({ type: "tool_policy" });
+    expect(state.messages).toEqual([]);
     expect(tryCommand("/tools enable internal:", state)).toEqual({ type: "handled" });
     expect(state.messages.at(-1)).toMatchObject({ role: "system", text: expect.stringContaining("Invalid /tools command") });
   });

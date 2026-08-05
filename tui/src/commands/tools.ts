@@ -96,10 +96,6 @@ export const TOOLS_COMMAND: SlashCommand = {
   },
   handler: (text, state) => {
     clearPrompt(state);
-    if (!state.convId) {
-      pushSystemMessage(state, "Start or open a conversation before using /tools.");
-      return { type: "handled" };
-    }
     const parts = text.trim().split(/\s+/).filter(Boolean);
     if (parts.length === 1) return { type: "tool_policy" };
     const action = parts[1];

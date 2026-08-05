@@ -70,6 +70,11 @@ export interface NewConversationCommand {
   startCall?: boolean;
   /** Optional explicit voice for the initial realtime call. */
   callVoice?: RealtimeVoice;
+  /**
+   * Ephemeral draft whose tool policy should be consumed atomically when this
+   * conversation is created. Must equal convId when present.
+   */
+  draftToolPolicyId?: string;
 }
 
 export interface ParentNotificationTarget {
@@ -674,6 +679,8 @@ export interface QueueMessageCommand {
   fastMode?: boolean;
   folderId?: string | null;
   waitTarget?: QueueWaitTarget;
+  /** Draft tool policy consumed when target=new-conversation creates convId. */
+  draftToolPolicyId?: string;
 }
 
 export interface UnqueueMessageCommand {
@@ -755,6 +762,28 @@ export interface SetToolPolicyCommand {
   reqId?: string;
   convId: string;
   mutation: ToolPolicyMutation;
+}
+
+/** Inspect the tool policy being assembled for a not-yet-created conversation. */
+export interface GetDraftToolPolicyCommand {
+  type: "get_draft_tool_policy";
+  reqId?: string;
+  draftId: string;
+}
+
+/** Mutate a not-yet-created conversation's ephemeral tool policy. */
+export interface SetDraftToolPolicyCommand {
+  type: "set_draft_tool_policy";
+  reqId?: string;
+  draftId: string;
+  mutation: ToolPolicyMutation;
+}
+
+/** Abandon an ephemeral draft policy and dispose its custom tool instances. */
+export interface ClearDraftToolPolicyCommand {
+  type: "clear_draft_tool_policy";
+  reqId?: string;
+  draftId: string;
 }
 
 export interface TranscribeAudioCommand {
@@ -877,6 +906,9 @@ export type Command =
   | GetSystemPromptCommand
   | GetToolPolicyCommand
   | SetToolPolicyCommand
+  | GetDraftToolPolicyCommand
+  | SetDraftToolPolicyCommand
+  | ClearDraftToolPolicyCommand
   | TranscribeAudioCommand
   | LoginCommand
   | AccountCommand

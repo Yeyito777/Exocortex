@@ -385,6 +385,30 @@ describe("focused conversation subscriptions", () => {
 });
 
 describe("focused conversation disabled tools", () => {
+  test("keeps blank-draft disabled and enabled custom choices visible", () => {
+    const state = createInitialState();
+    state.pendingToolPolicyDraftId = "draft-tools";
+    state.activeToolPolicy = {
+      convId: "draft-tools",
+      scoped: false,
+      source: "explicit",
+      internal: [
+        { name: "read", label: "Read", color: "#82aaff", enabled: false },
+        { name: "playground_echo", label: "Playground Echo", color: "#12abef", enabled: true, modulePath: "/tmp/tool.ts" },
+      ],
+      external: [],
+      modules: [{ path: "/tmp/tool.ts", digest: "sha256:test", tools: ["playground_echo"] }],
+      shellWarning: false,
+    };
+
+    const panel = renderTaskPanel(state, 100, 20)!;
+    const plain = panel.lines.map(stripAnsi).join("\n");
+    expect(plain).toContain("Tool Changes");
+    expect(plain).toContain("⊘ Read");
+    expect(plain).toContain("✓ Playground Echo");
+    expect(panel.lines.join("\n")).toContain(hexToAnsi("#12abef"));
+  });
+
   test("stays absent for the normal all-enabled default", () => {
     const state = stateWithDisabledTools();
     state.activeToolPolicy!.source = "default";

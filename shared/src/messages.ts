@@ -490,6 +490,7 @@ export interface ToolPolicyAvailability {
   name: string;
   label: string;
   enabled: boolean;
+  color?: string;
   /** Present for a dynamically loaded conversation-scoped internal tool. */
   modulePath?: string;
 }

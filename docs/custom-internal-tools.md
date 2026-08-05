@@ -10,6 +10,15 @@ conversation without adding them to the daemon's built-in registry:
 Relative paths resolve from the daemon's working directory. The supported entry
 extensions are `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.mjs`, and `.cjs`.
 
+`/tools` also works on a blank chat. In that state, changes belong to the
+not-yet-created conversation draft:
+
+- The Tasks panel immediately shows disabled tools and enabled custom tools.
+- The policy is applied atomically when the first message creates the
+  conversation.
+- Opening a different conversation abandons the draft choices and disposes any
+  custom tool instances loaded for it.
+
 The module is conversation-scoped. Its schemas, system hints, summaries,
 execution behavior, scheduling metadata, deadlines, and display styles use the
 same registry path as built-in tools, but its instances are not advertised to or

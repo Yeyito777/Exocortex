@@ -278,6 +278,7 @@ export function buildToolPolicySnapshot(
       ...modules.flatMap((module) => module.tools.map((tool) => ({
         name: tool.name,
         label: tool.label,
+        color: tool.color,
         enabled: enabledInternal.has(tool.name),
         modulePath: module.path,
       }))),

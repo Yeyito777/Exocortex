@@ -221,7 +221,9 @@ function unsubscribeConversation(convId: string): void {
 }
 
 function isBackgroundConversationScopedEvent(event: Event): boolean {
-  return CONV_SCOPED.has(event.type) && "convId" in event && event.convId !== state.convId;
+  if (!CONV_SCOPED.has(event.type) || !("convId" in event)) return false;
+  if (event.convId === state.convId) return false;
+  return event.type !== "tool_policy" || event.convId !== state.pendingToolPolicyDraftId;
 }
 
 function scheduleStreamFinishedPing(completedConvId: string): void {
@@ -610,12 +612,25 @@ function canSendImages(images?: ImageAttachment[]): boolean {
   return false;
 }
 
+function ensurePendingToolPolicyDraftId(): string {
+  state.pendingToolPolicyDraftId ??= generateClientConversationId();
+  return state.pendingToolPolicyDraftId;
+}
+
+function abandonPendingToolPolicyDraft(): void {
+  const draftId = state.pendingToolPolicyDraftId;
+  if (draftId) daemon.clearDraftToolPolicy(draftId);
+  state.pendingToolPolicyDraftId = null;
+  if (!state.convId) state.activeToolPolicy = null;
+}
+
 function startNewConversation(): void {
   const wasFolderInstructionsDoc = state.folderInstructionsDoc !== null;
   pendingNewConversationConvId = null;
   if (state.convId) {
     unsubscribeConversation(state.convId);
   }
+  abandonPendingToolPolicyDraft();
   resetDraftConversationState(state);
   if (wasFolderInstructionsDoc) {
     clearPrompt(state);
@@ -720,7 +735,14 @@ function handleSubmit(): void {
           resetNewConversationDefaults(state);
           state.pendingSystemInstructions = cmdResult.text;
           state.pendingGenerateTitleOnCreate = false;
-          daemon.createConversation(state.provider, state.model, "", state.effort, state.fastMode, undefined, state.draftFolderId);
+          {
+            const draftId = state.pendingToolPolicyDraftId ?? undefined;
+            daemon.createConversation(
+              state.provider, state.model, "", state.effort, state.fastMode,
+              undefined, state.draftFolderId, undefined, draftId,
+              undefined, undefined, undefined, undefined, draftId,
+            );
+          }
           break;
         case "replay_requested":
           if (startReplayConversation(state, daemon)) {
@@ -744,6 +766,7 @@ function handleSubmit(): void {
           if (state.convId) {
             daemon.startCall(state.convId, cmdResult.voice);
           } else {
+            const draftId = state.pendingToolPolicyDraftId ?? undefined;
             daemon.createConversationForCall(
               state.provider,
               state.model,
@@ -751,6 +774,8 @@ function handleSubmit(): void {
               state.fastMode,
               state.draftFolderId,
               cmdResult.voice,
+              draftId,
+              draftId,
             );
           }
           break;
@@ -795,6 +820,7 @@ function handleSubmit(): void {
             daemon.setGoal(state.convId, cmdResult.action, cmdResult.objective, cmdResult.pausable, cmdResult.completable);
           } else if (cmdResult.action === "set" && cmdResult.objective?.trim()) {
             const objective = cmdResult.objective.trim();
+            const draftId = state.pendingToolPolicyDraftId ?? undefined;
             daemon.createConversation(
               state.provider,
               state.model,
@@ -804,9 +830,12 @@ function handleSubmit(): void {
               undefined,
               state.draftFolderId,
               objective,
-              undefined,
+              draftId,
               cmdResult.pausable,
               cmdResult.completable,
+              undefined,
+              undefined,
+              draftId,
             );
           } else {
             pushSystemMessage(state, "Create or open a conversation before using /goal.", theme.warning);
@@ -831,6 +860,10 @@ function handleSubmit(): void {
           if (state.convId) {
             if (cmdResult.mutation) daemon.setToolPolicy(state.convId, cmdResult.mutation);
             else daemon.getToolPolicy(state.convId);
+          } else {
+            const draftId = ensurePendingToolPolicyDraftId();
+            if (cmdResult.mutation) daemon.setDraftToolPolicy(draftId, cmdResult.mutation);
+            else daemon.getDraftToolPolicy(draftId);
           }
           break;
         case "set_system_instructions":
@@ -877,7 +910,8 @@ function handleSubmit(): void {
 
       const messageText = expandMacros(text);
       const queueingDraftConversation = !state.convId;
-      const convId = state.convId ?? generateClientConversationId();
+      const draftToolPolicyId = queueingDraftConversation ? state.pendingToolPolicyDraftId ?? undefined : undefined;
+      const convId = state.convId ?? draftToolPolicyId ?? generateClientConversationId();
       const folderId = state.draftFolderId;
       const waitTarget = inlineCommands.queue;
       const queued = enqueueGlobalIdleMessage(state, convId, messageText, images, queueingDraftConversation ? {
@@ -905,6 +939,7 @@ function handleSubmit(): void {
         fastMode: queued.fastMode,
         folderId: queued.folderId,
         waitTarget: queued.waitTarget,
+        draftToolPolicyId,
       });
       clearPrompt(state);
       state.pendingImages = [];
@@ -1074,17 +1109,19 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
   state.pendingAI = createPendingAI(startedAt, state.model);
 
   if (!state.convId) {
-    const convId = options.convId ?? generateClientConversationId();
+    const draftToolPolicyId = state.pendingToolPolicyDraftId ?? undefined;
+    const convId = options.convId ?? draftToolPolicyId ?? generateClientConversationId();
     pendingNewConversationConvId = convId;
     state.pendingSend.active = false;
     state.pendingSend.text = "";
     state.pendingSend.images = undefined;
     state.pendingGenerateTitleOnCreate = false;
-    daemon.createConversation(state.provider, state.model, PENDING_TITLE, state.effort, state.fastMode, {
-      text: messageText,
-      startedAt,
-      images,
-    }, options.folderId === undefined ? state.draftFolderId : options.folderId, undefined, convId);
+    daemon.createConversation(
+      state.provider, state.model, PENDING_TITLE, state.effort, state.fastMode,
+      { text: messageText, startedAt, images },
+      options.folderId === undefined ? state.draftFolderId : options.folderId,
+      undefined, convId, undefined, undefined, undefined, undefined, draftToolPolicyId,
+    );
   } else {
     daemon.sendMessage(state.convId, messageText, startedAt, images);
   }

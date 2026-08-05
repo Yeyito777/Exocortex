@@ -20,6 +20,7 @@ import { getToolDisplayInfo } from "./tools/registry";
 import { ensureConversationCustomTools } from "./tools/custom-tools";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
 import { applyToolPolicyMutation, buildToolPolicySnapshot, resolveConversationToolPolicy } from "./tool-policy";
+import { clearDraftToolPolicy, getDraftToolPolicy, setDraftToolPolicy, takeDraftToolPolicy } from "./draft-tool-policy";
 import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME } from "./messages";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode, supportsImageInputs } from "./providers/registry";
 import { transcribeAudioBytes } from "./transcription";
@@ -1097,6 +1098,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "new_conversation": {
         const id = cmd.convId ?? convStore.generateId();
+        if (cmd.draftToolPolicyId && (!cmd.convId || cmd.draftToolPolicyId !== cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: "draftToolPolicyId must match the client-supplied conversation id" });
+          break;
+        }
         if (cmd.convId && (!isSafeClientConversationId(cmd.convId) || convStore.hasConversation(cmd.convId))) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid or duplicate client-supplied conversation id" });
           break;
@@ -1172,6 +1177,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           convStore.createWithInitialUserMessage(id, provider, model, title, effort, fastMode, initialMessage, folderId);
         } else {
           convStore.create(id, provider, model, title, effort, fastMode, folderId);
+        }
+        if (cmd.draftToolPolicyId) {
+          const draftPolicy = takeDraftToolPolicy(cmd.draftToolPolicyId);
+          if (draftPolicy) convStore.setToolPolicy(id, draftPolicy);
         }
         if (cmd.subagent) {
           convStore.setSubagentPolicy(id, {
@@ -2100,6 +2109,15 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
 
+        if (cmd.draftToolPolicyId && (
+          cmd.source !== "global-idle"
+          || cmd.target !== "new-conversation"
+          || cmd.draftToolPolicyId !== cmd.convId
+        )) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "draftToolPolicyId is only valid for its matching new-conversation queue target" });
+          break;
+        }
+
         if (cmd.source === "global-idle" && cmd.target === "new-conversation") {
           if (!isSafeClientConversationId(cmd.convId) || convStore.hasConversation(cmd.convId)) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid or duplicate client-supplied conversation id" });
@@ -2158,6 +2176,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           // Queue persistence happens first. If the daemon dies before creation,
           // the scheduler reconstructs this draft from the captured settings.
           convStore.create(cmd.convId, provider, model, PENDING_TITLE, effort, fastMode, folderId);
+          if (cmd.draftToolPolicyId) {
+            const draftPolicy = takeDraftToolPolicy(cmd.draftToolPolicyId);
+            if (draftPolicy) convStore.setToolPolicy(cmd.convId, draftPolicy);
+          }
           server.sendTo(client, {
             type: "conversation_created",
             reqId: cmd.reqId,
@@ -2515,6 +2537,67 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           snapshot: buildToolPolicySnapshot(conversation),
           changed: false,
         });
+        break;
+      }
+
+      case "get_draft_tool_policy": {
+        if (!isSafeClientConversationId(cmd.draftId) || convStore.hasConversation(cmd.draftId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.draftId, message: "Invalid or already-used draft tool policy id" });
+          break;
+        }
+        server.sendTo(client, {
+          type: "tool_policy",
+          reqId: cmd.reqId,
+          convId: cmd.draftId,
+          snapshot: buildToolPolicySnapshot({
+            id: cmd.draftId,
+            subagentPolicy: null,
+            subagentMaxDepth: null,
+            toolPolicy: getDraftToolPolicy(cmd.draftId),
+          }),
+          changed: false,
+        });
+        break;
+      }
+
+      case "set_draft_tool_policy": {
+        if (!isSafeClientConversationId(cmd.draftId) || convStore.hasConversation(cmd.draftId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.draftId, message: "Invalid or already-used draft tool policy id" });
+          break;
+        }
+        try {
+          const draftConversation = {
+            id: cmd.draftId,
+            subagentPolicy: null,
+            subagentMaxDepth: null,
+            toolPolicy: getDraftToolPolicy(cmd.draftId),
+          };
+          const policy = await applyToolPolicyMutation(draftConversation, cmd.mutation);
+          if (policy) setDraftToolPolicy(cmd.draftId, policy);
+          else await clearDraftToolPolicy(cmd.draftId);
+          server.sendTo(client, {
+            type: "tool_policy",
+            reqId: cmd.reqId,
+            convId: cmd.draftId,
+            snapshot: buildToolPolicySnapshot({ ...draftConversation, toolPolicy: policy }),
+            changed: true,
+          });
+        } catch (error) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.draftId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+        break;
+      }
+
+      case "clear_draft_tool_policy": {
+        // A delayed client abandonment must never dispose tools after this
+        // reserved id has already become a real conversation.
+        if (!convStore.hasConversation(cmd.draftId)) await clearDraftToolPolicy(cmd.draftId);
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId });
         break;
       }
 

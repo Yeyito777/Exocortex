@@ -152,6 +152,40 @@ describe("handler conversation tool policy", () => {
     expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "reset", changed: true, snapshot: { source: "default" } });
     expect(broadcasted.at(-1)).toMatchObject({ type: "tool_policy", convId: id, changed: true, snapshot: { source: "default" } });
   });
+
+  test("keeps blank-draft choices ephemeral and applies them when the conversation is created", async () => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
+    IDS.push(id);
+    const sent: Array<Record<string, any>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "set_draft_tool_policy",
+      reqId: "draft-disable-read",
+      draftId: id,
+      mutation: { action: "disable", tools: [{ kind: "internal", name: "read" }] },
+    });
+    expect(get(id)).toBeUndefined();
+    expect(sent.at(-1)).toMatchObject({
+      type: "tool_policy",
+      convId: id,
+      snapshot: { internal: expect.arrayContaining([expect.objectContaining({ name: "read", enabled: false })]) },
+    });
+
+    await handle({} as never, {
+      type: "new_conversation",
+      reqId: "create-from-draft",
+      convId: id,
+      draftToolPolicyId: id,
+    });
+    expect(get(id)?.toolPolicy?.internal).not.toContain("read");
+    expect(sent.at(-1)).toMatchObject({ type: "conversation_created", convId: id });
+  });
 });
 
 describe("handler daemon-owned queue", () => {
