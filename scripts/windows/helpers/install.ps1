@@ -5,9 +5,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = Split-Path -Parent $PSScriptRoot
+$WindowsDir = Split-Path -Parent $PSScriptRoot
+$RepoRoot = Split-Path -Parent (Split-Path -Parent $WindowsDir)
 
-& (Join-Path $PSScriptRoot "build-windows.ps1")
+& (Join-Path $PSScriptRoot "build.ps1")
 if ($LASTEXITCODE -ne 0) {
     throw "Windows build failed with code $LASTEXITCODE"
 }
