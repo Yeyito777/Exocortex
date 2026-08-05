@@ -270,9 +270,9 @@ function applyEditsToNormalizedContent(
   return { baseContent, newContent };
 }
 
-function resolveEditPath(path: string): string {
+function resolveEditPath(path: string, cwd: string): string {
   if (path.includes("\0")) throw new Error("path must not contain a NUL byte.");
-  return isAbsolute(path) ? path : resolve(process.cwd(), path);
+  return isAbsolute(path) ? path : resolve(cwd, path);
 }
 
 async function withFileMutationQueue<T>(absolutePath: string, run: () => Promise<T>): Promise<T> {
@@ -334,14 +334,14 @@ function formatChangedExcerpt(baseContent: string, newContent: string): string {
 
 async function executeEdit(
   input: Record<string, unknown>,
-  _context?: ToolExecutionContext,
+  context?: ToolExecutionContext,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
   let prepared: PreparedEditInput;
   let absolutePath = "";
   try {
     prepared = prepareEditArguments(input);
-    absolutePath = resolveEditPath(prepared.path);
+    absolutePath = resolveEditPath(prepared.path, context?.cwd ?? process.cwd());
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { output: `Error: ${msg}`, isError: true };

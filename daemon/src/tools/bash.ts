@@ -245,8 +245,8 @@ function killProcessGroup(pid: number): boolean {
 // ── Execution ──────────────────────────────────────────────────────
 
 /** Conforms to Tool.execute — no backgrounding (used if called via the generic path). */
-async function executeBash(input: Record<string, unknown>, _context?: ToolExecutionContext, signal?: AbortSignal): Promise<ToolResult> {
-  return executeBashImpl(input, signal);
+async function executeBash(input: Record<string, unknown>, context?: ToolExecutionContext, signal?: AbortSignal): Promise<ToolResult> {
+  return executeBashImpl(input, signal, undefined, context);
 }
 
 /**
@@ -330,6 +330,7 @@ async function executeBashImpl(
   const timeoutSeconds = getNumber(input, "timeout_seconds") ?? DEFAULT_TIMEOUT_SECONDS;
   if (timeoutSeconds <= 0) return { output: "Error: 'timeout_seconds' must be greater than 0 seconds", isError: true };
   const timeoutMs = timeoutSeconds * 1000;
+  const cwd = context?.cwd ?? process.cwd();
 
   const intentionalStops = markIntentionalBackgroundTaskStops(command, context?.conversationId);
 
@@ -344,13 +345,14 @@ async function executeBashImpl(
     let runner: ChildProcessWithoutNullStreams;
     try {
       runner = spawn(process.execPath, [runnerPath], {
-        cwd: process.cwd(),
+        cwd,
         env: {
           ...process.env,
           ...(context?.conversationId ? { EXOCORTEX_PARENT_CONV_ID: context.conversationId } : {}),
           EXOCORTEX_SOCKET: socketPath(),
           ...(context?.provider ? { EXOCORTEX_PARENT_PROVIDER: context.provider } : {}),
           ...(context?.model ? { EXOCORTEX_PARENT_MODEL: context.model } : {}),
+          EXOCORTEX_WORKSPACE: cwd,
           ...inputEnv,
         },
         stdio: ["pipe", "pipe", "pipe"],
@@ -460,7 +462,7 @@ async function executeBashImpl(
           pid: commandPid,
           backgroundedAt: backgroundedAt ?? Date.now(),
           outputPath: capturePath,
-          cwd: process.cwd(),
+          cwd,
           stop: (suppressCompletionNotification) => {
             const tracked = trackedBackgroundProcesses.get(commandPid!);
             if (tracked && suppressCompletionNotification) tracked.suppressCompletionNotification = true;
@@ -710,6 +712,7 @@ async function executeBashImpl(
       command: rewrittenCommand,
       outputPath: capturePath,
       windows: isWindows,
+      cwd,
       ...(typeof input.stdin === "string" ? { stdin: input.stdin } : {}),
       ...(input.terminate_on_parent_exit === true ? { terminateOnParentExit: true } : {}),
       ...(typeof input.runner_timeout_ms === "number" ? { timeoutMs: input.runner_timeout_ms } : {}),

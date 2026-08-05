@@ -15,10 +15,11 @@ import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } fr
 import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
 import { getConversationActivityCounts, getConversationTasks, stopBackgroundTasksForConversation } from "./conversation-activity";
+import { ConversationWorkspaceRestoreError, assertConversationWorkspaceRestorable, createConversationWorkspace, reconcileConversationWorkspaces, restoreConversationWorkspace, trashConversationWorkspace } from "./workspace-service";
 import * as streaming from "./streaming";
 import * as messageQueue from "./message-queue";
 import { log } from "./log";
-import { notifyConversationRemoved } from "./conversation-lifecycle";
+import { notifyConversationRemoved, notifyConversationRemoving } from "./conversation-lifecycle";
 import { getProvider, normalizeEffort } from "./providers/registry";
 import { isDeepStrictEqual } from "node:util";
 import { contextMessageChars } from "./context-token-attribution";
@@ -485,6 +486,10 @@ export function generateId(): string {
 // ── Conversation CRUD/configuration ─────────────────────────────────
 
 export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode = false, folderId: string | null = null): Conversation {
+  if (hasConversation(id) || persistence.hasDeletedConversation(id)) {
+    throw new Error(`Conversation ${id} already exists or is recoverable from trash`);
+  }
+  createConversationWorkspace(id);
   const parentId = folderId && folders.has(folderId) ? folderId : null;
   const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
   retainConversation(conv);
@@ -503,6 +508,10 @@ export function createWithInitialUserMessage(
   message: { text: string; startedAt: number; images?: ImageAttachment[] },
   folderId: string | null = null,
 ): Conversation {
+  if (hasConversation(id) || persistence.hasDeletedConversation(id)) {
+    throw new Error(`Conversation ${id} already exists or is recoverable from trash`);
+  }
+  createConversationWorkspace(id);
   const parentId = folderId && folders.has(folderId) ? folderId : null;
   const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
   conv.messages.push(createStoredUserMessage(message.text, model, message.startedAt, message.images, {
@@ -559,8 +568,12 @@ export function clone(id: string): Conversation | null {
   const src = get(id);
   if (!src) return null;
 
-  const newId = generateId();
+  let newId = generateId();
+  while (hasConversation(newId) || persistence.hasDeletedConversation(newId)) newId = generateId();
   const now = Date.now();
+  // Cloning copies transcript/configuration state, not potentially huge or
+  // sensitive filesystem contents. Every clone starts with an empty workspace.
+  createConversationWorkspace(newId);
 
   // Compute a sortOrder between the original and the item after it in the same folder.
   const siblings = sidebarEntries(src.folderId ?? null);
@@ -616,6 +629,11 @@ export function get(id: string): Conversation | undefined {
 /** Check indexed existence without parsing and retaining the canonical transcript. */
 export function hasConversation(id: string): boolean {
   return summaries.has(id) || conversations.has(id);
+}
+
+/** Check whether a soft-deleted conversation still reserves this ID for undo. */
+export function hasDeletedConversation(id: string): boolean {
+  return persistence.hasDeletedConversation(id);
 }
 
 export interface SetGoalOptions {
@@ -702,6 +720,22 @@ function removeConversationState(id: string): boolean {
   return wasUnread;
 }
 
+function stopConversationWorkspaceUsers(id: string): void {
+  notifyConversationRemoving(id);
+  streaming.getActiveJob(id)?.abort();
+  stopBackgroundTasksForConversation(id);
+}
+
+function trashWorkspaceAfterConversation(id: string): void {
+  try {
+    trashConversationWorkspace(id);
+  } catch (err) {
+    // The durable conversation deletion already committed. Preserve data in its
+    // live location rather than risking overwrite or destructive cleanup.
+    log("error", `conversations: failed to trash workspace for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 /** Fold targeted overlays through the canonical live object before trashing. */
 function materializeConversationOverlaysForTrash(id: string): void {
   if (!dirty.has(id)
@@ -731,8 +765,10 @@ export function removeMany(ids: string[], recordUndo = true): string[] {
   const moved = persistence.trashConversations(existing, recordUndo);
   if (moved.length === 0) return [];
 
+  for (const id of moved) stopConversationWorkspaceUsers(id);
   let unreadChanged = false;
   for (const id of moved) {
+    trashWorkspaceAfterConversation(id);
     displayPageStore.removeDisplayProjection(id);
     unreadChanged = removeConversationState(id) || unreadChanged;
   }
@@ -753,6 +789,8 @@ function deleteConversationWithoutUndo(id: string): boolean {
   materializeConversationOverlaysForTrash(id);
   const moved = persistence.trashConversations([id], false).length > 0;
   if (!moved) return false;
+  stopConversationWorkspaceUsers(id);
+  trashWorkspaceAfterConversation(id);
   displayPageStore.removeDisplayProjection(id);
   const unreadChanged = removeConversationState(id);
   if (unreadChanged) saveUnreadState();
@@ -782,8 +820,30 @@ function pushOppositeSidebarEntry(direction: SidebarUndoDirection, entry: persis
 }
 
 function restoreConversationsFromTrash(conversationIds: string[]): Conversation[] {
-  const restored = persistence.restoreConversationsFromTrash(conversationIds);
+  for (const id of conversationIds) {
+    if (hasConversation(id)) {
+      throw new ConversationWorkspaceRestoreError(
+        `Refusing to overwrite existing live conversation: ${id}`,
+      );
+    }
+    assertConversationWorkspaceRestorable(id);
+  }
+
+  let restored: Conversation[];
+  try {
+    restored = persistence.restoreConversationsFromTrash(conversationIds);
+  } catch (err) {
+    throw new ConversationWorkspaceRestoreError(`Conversation restore failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
   for (const conv of restored) {
+    try {
+      // Transcript state commits first. A crash before this rename is repaired by
+      // ensureConversationWorkspace on first use, so the deleted data always
+      // remains recoverable rather than being attached to a different transcript.
+      restoreConversationWorkspace(conv.id);
+    } catch (err) {
+      log("error", `conversations: restored ${conv.id}, but its workspace remains recoverable in trash: ${err instanceof Error ? err.message : String(err)}`);
+    }
     retainConversation(conv);
     updateSummaryFromConversation(conv);
     if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(conv.id);
@@ -829,10 +889,10 @@ function applySidebarStackEntry(entry: persistence.TrashStackEntry, direction: S
   }
 
   if (entry.type === "folder_recursive") {
+    const restored = restoreConversationsFromTrash(entry.conversationIds);
     for (const folder of entry.folders) {
       folders.set(folder.id, { ...folder });
     }
-    const restored = restoreConversationsFromTrash(entry.conversationIds);
     saveFolderState();
     saveSummaryIndex();
     pushOppositeSidebarEntry(direction, { type: "folder_recursive_removed", folderId: entry.folderId });
@@ -983,10 +1043,16 @@ function applySidebarStackEntry(entry: persistence.TrashStackEntry, direction: S
 
 /** Restore the most recent undoable sidebar operation, or null if the undo stack is empty. */
 export function undoDelete(): UndoDeleteResult | null {
+  let entry: persistence.TrashStackEntry | null = null;
   try {
-    const entry = persistence.popUndoEntry();
+    entry = persistence.popUndoEntry();
     return entry ? applySidebarStackEntry(entry, "undo") : null;
   } catch (err) {
+    if (entry && err instanceof ConversationWorkspaceRestoreError) {
+      try { persistence.pushUndoEntry(entry); } catch (restoreErr) {
+        log("error", `conversations: failed to preserve blocked undo entry: ${restoreErr}`);
+      }
+    }
     log("error", `conversations: failed to undo sidebar entry: ${err}`);
     return null;
   }
@@ -994,10 +1060,16 @@ export function undoDelete(): UndoDeleteResult | null {
 
 /** Re-apply the most recently undone sidebar operation, or null if redo is empty. */
 export function redoDelete(): UndoDeleteResult | null {
+  let entry: persistence.TrashStackEntry | null = null;
   try {
-    const entry = persistence.popRedoEntry();
+    entry = persistence.popRedoEntry();
     return entry ? applySidebarStackEntry(entry, "redo") : null;
   } catch (err) {
+    if (entry && err instanceof ConversationWorkspaceRestoreError) {
+      try { persistence.pushRedoEntry(entry); } catch (restoreErr) {
+        log("error", `conversations: failed to preserve blocked redo entry: ${restoreErr}`);
+      }
+    }
     log("error", `conversations: failed to redo sidebar entry: ${err}`);
     return null;
   }
@@ -1614,6 +1686,14 @@ export function loadFromDisk(): LoadFromDiskStats {
     summaries.set(summary.id, summary);
   }
 
+  const workspaceRepair = reconcileConversationWorkspaces(summaries.keys());
+  if (workspaceRepair.movedToTrash.length > 0) {
+    log("warn", `conversations: moved ${workspaceRepair.movedToTrash.length} orphaned live workspace(s) to trash after startup reconciliation`);
+  }
+  for (const failure of workspaceRepair.errors) {
+    log("error", `conversations: failed to reconcile workspace ${failure.conversationId}: ${failure.error}`);
+  }
+
   unread.clear();
   let staleUnreadCount = 0;
   for (const id of persistence.loadUnreadConversationIds()) {
@@ -2123,6 +2203,8 @@ export function deleteFolder(folderId: string, mode: "recursive" | "unwrap" = "r
   if (!persistence.trashFolderRecursive({ type: "folder_recursive", folderId, folders: folderSnapshots, conversationIds }, recordUndo)) {
     return false;
   }
+  for (const convId of conversationIds) stopConversationWorkspaceUsers(convId);
+  for (const convId of conversationIds) trashWorkspaceAfterConversation(convId);
   for (const convId of conversationIds) displayPageStore.removeDisplayProjection(convId);
 
   let unreadChanged = false;

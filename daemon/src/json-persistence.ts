@@ -493,6 +493,7 @@ const DATA_DIR = dataDir();
 const TRASH_DIR = trashDir();
 const TRASH_META = join(TRASH_DIR, "trash.json");
 const REDO_META = join(TRASH_DIR, "redo.json");
+const RESTORE_JOURNAL = join(TRASH_DIR, ".conversation-restore-journal");
 const INDEX_FILE = join(DATA_DIR, "conversations-index.json");
 const FOLDERS_FILE = join(DATA_DIR, "folders.json");
 const FOLDER_INSTRUCTIONS_FILE = join(DATA_DIR, "folder-instructions.json");
@@ -519,6 +520,7 @@ function ensureDir(): void {
   if (!existsSync(CONV_DIR)) {
     mkdirSync(CONV_DIR, { recursive: true, mode: 0o700 });
   }
+  recoverPendingConversationRestore();
 }
 
 function ensureTrashDir(): void {
@@ -547,6 +549,65 @@ function sidebarPath(id: string): string {
 function trashPath(id: string): string {
   assertSafeId(id);
   return join(TRASH_DIR, `${id}.json`);
+}
+
+interface ConversationRestoreJournal {
+  version: 1;
+  direction: "live" | "trash";
+  ids: string[];
+}
+
+let recoveringConversationRestore = false;
+
+function parseConversationRestoreJournal(): ConversationRestoreJournal | null {
+  if (!existsSync(RESTORE_JOURNAL)) return null;
+  const raw = JSON.parse(readFileSync(RESTORE_JOURNAL, "utf8")) as Partial<ConversationRestoreJournal>;
+  if (raw.version !== 1 || (raw.direction !== "live" && raw.direction !== "trash") || !Array.isArray(raw.ids)) {
+    throw new Error(`Invalid conversation restore journal: ${RESTORE_JOURNAL}`);
+  }
+  const ids = [...new Set(raw.ids)];
+  if (ids.length !== raw.ids.length || ids.some(id => typeof id !== "string")) {
+    throw new Error(`Invalid conversation IDs in restore journal: ${RESTORE_JOURNAL}`);
+  }
+  for (const id of ids) assertSafeId(id);
+  return { version: 1, direction: raw.direction, ids };
+}
+
+function writeConversationRestoreJournal(journal: ConversationRestoreJournal): void {
+  ensureTrashDir();
+  const tmp = `${RESTORE_JOURNAL}.tmp`;
+  writeFileSync(tmp, JSON.stringify(journal, null, 2), { mode: 0o600 });
+  renameSync(tmp, RESTORE_JOURNAL);
+}
+
+/** Complete or roll back an interrupted multi-file restore before exposing JSON state. */
+export function recoverPendingConversationRestore(): void {
+  if (recoveringConversationRestore) return;
+  const journal = parseConversationRestoreJournal();
+  if (!journal) return;
+  recoveringConversationRestore = true;
+  try {
+    for (const id of journal.ids) {
+      const live = convPath(id);
+      const trashed = trashPath(id);
+      const liveExists = existsSync(live);
+      const trashExists = existsSync(trashed);
+      if (liveExists && trashExists) {
+        throw new Error(`Cannot recover conversation restore with both live and trashed files present: ${id}`);
+      }
+      if (journal.direction === "live") {
+        if (trashExists) renameSync(trashed, live);
+        else if (!liveExists) throw new Error(`Conversation restore source and destination are both missing: ${id}`);
+      } else {
+        if (liveExists) renameSync(live, trashed);
+        else if (!trashExists) throw new Error(`Conversation restore rollback source and destination are both missing: ${id}`);
+      }
+    }
+    unlinkSync(RESTORE_JOURNAL);
+    log("warn", `persistence: recovered interrupted conversation restore (${journal.direction})`);
+  } finally {
+    recoveringConversationRestore = false;
+  }
 }
 
 export interface TrashSidebarItemSnapshot {
@@ -1880,23 +1941,48 @@ export function trashFolderRecursive(entry: Extract<TrashStackEntry, { type: "fo
   }
 }
 
-function restoreConversationFile(id: string): Conversation | null {
-  const src = trashPath(id);
-  if (!existsSync(src)) {
-    log("warn", `persistence: trashed file missing for ${id}`);
-    return null;
-  }
-
-  ensureDir();
-  renameSync(src, convPath(id));
-  log("info", `persistence: restored ${id} from trash`);
-  return load(id);
-}
-
 export function restoreConversationsFromTrash(ids: string[]): Conversation[] {
-  return ids
-    .map(restoreConversationFile)
-    .filter((conv): conv is Conversation => conv !== null);
+  ensureDir();
+  ensureTrashDir();
+  const candidates: string[] = [];
+  for (const id of [...new Set(ids)]) {
+    assertSafeId(id);
+    const src = trashPath(id);
+    if (!existsSync(src)) {
+      log("warn", `persistence: trashed file missing for ${id}`);
+      continue;
+    }
+    if (existsSync(convPath(id))) {
+      throw new Error(`Refusing to overwrite existing live conversation file: ${id}`);
+    }
+    // Validate every source before moving any of them.
+    fromFile(parseConversationFile(src));
+    candidates.push(id);
+  }
+  if (candidates.length === 0) return [];
+
+  writeConversationRestoreJournal({ version: 1, direction: "live", ids: candidates });
+  try {
+    for (const id of candidates) renameSync(trashPath(id), convPath(id));
+    const restored = candidates.map(id => {
+      const conv = load(id);
+      if (!conv) throw new Error(`Restored conversation could not be loaded: ${id}`);
+      return conv;
+    });
+    unlinkSync(RESTORE_JOURNAL);
+    for (const id of candidates) log("info", `persistence: restored ${id} from trash`);
+    return restored;
+  } catch (err) {
+    try {
+      writeConversationRestoreJournal({ version: 1, direction: "trash", ids: candidates });
+      recoverPendingConversationRestore();
+    } catch (rollbackErr) {
+      throw new Error(
+        `Conversation restore failed (${err instanceof Error ? err.message : String(err)}); rollback remains journaled: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
+      );
+    }
+    throw err;
+  }
 }
 
 function parseConversationFile(path: string): ConversationFile {
@@ -1925,6 +2011,11 @@ export function listTrashedConversationIds(): string[] {
     .filter((name) => name.endsWith(".json") && name !== "trash.json" && name !== "redo.json")
     .map((name) => name.slice(0, -5))
     .sort();
+}
+
+/** Whether an ID is still reserved by a recoverable soft-deleted conversation. */
+export function hasDeletedConversation(id: string): boolean {
+  return existsSync(trashPath(id));
 }
 
 /** Load a soft-deleted legacy conversation without moving it back to the live directory. */

@@ -3,27 +3,25 @@
  *
  * Creates the file if it doesn't exist, overwrites if it does.
  * Parent directories are created automatically.
- * Requires absolute paths.
+ * Relative paths resolve from the trusted execution-context cwd.
  */
 
-import { dirname } from "path";
-import type { Tool, ToolResult, ToolSummary } from "./types";
+import { dirname, isAbsolute, resolve } from "path";
+import type { Tool, ToolExecutionContext, ToolResult, ToolSummary } from "./types";
 import { getString, summarizeParams } from "./util";
-import { isWindows } from "@exocortex/shared/paths";
 import { log } from "../log";
 
 // ── Execution ──────────────────────────────────────────────────────
 
-async function executeWrite(input: Record<string, unknown>): Promise<ToolResult> {
-  const filePath = getString(input, "file_path");
+async function executeWrite(input: Record<string, unknown>, context?: ToolExecutionContext): Promise<ToolResult> {
+  const requestedPath = getString(input, "file_path");
   const content = getString(input, "content");
 
-  if (!filePath) return { output: "Error: missing 'file_path' parameter", isError: true };
+  if (!requestedPath) return { output: "Error: missing 'file_path' parameter", isError: true };
   if (content == null) return { output: "Error: missing 'content' parameter", isError: true };
-  const isAbsolute = isWindows ? /^[A-Za-z]:[\\\/]/.test(filePath) : filePath.startsWith("/");
-  if (!isAbsolute) {
-    return { output: `Error: file_path must be absolute, got: ${filePath}`, isError: true };
-  }
+  const filePath = isAbsolute(requestedPath)
+    ? requestedPath
+    : resolve(context?.cwd ?? process.cwd(), requestedPath);
 
   try {
     const file = Bun.file(filePath);
@@ -66,7 +64,7 @@ export const write: Tool = {
   inputSchema: {
     type: "object",
     properties: {
-      file_path: { type: "string", description: "Absolute path to the file to write" },
+      file_path: { type: "string", description: "Path to the file to write (relative paths resolve from the conversation workspace)" },
       content: { type: "string", description: "The content to write to the file" },
     },
     required: ["file_path", "content"],

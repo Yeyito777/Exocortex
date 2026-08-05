@@ -72,6 +72,11 @@ export function isSqliteConversationStore(): boolean {
   return backend === "sqlite";
 }
 
+/** Whether an ID is still reserved by a recoverable soft-deleted conversation. */
+export function hasDeletedConversation(id: string): boolean {
+  return backend === "sqlite" ? store().hasDeleted(id) : jsonPersistence.hasDeletedConversation(id);
+}
+
 export function closeConversationPersistence(): void {
   sqlite?.close();
   sqlite = null;

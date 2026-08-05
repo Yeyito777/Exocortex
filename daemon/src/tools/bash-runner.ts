@@ -20,6 +20,7 @@ interface StartRequest {
   stdin?: string;
   terminateOnParentExit?: boolean;
   timeoutMs?: number;
+  cwd: string;
 }
 
 interface BackgroundRequest {
@@ -183,7 +184,7 @@ function start(request: StartRequest): void {
       request.windows ? "powershell" : "bash",
       request.windows ? ["-NoProfile", "-Command", request.command] : ["-c", request.command],
       {
-        cwd: process.cwd(),
+        cwd: request.cwd,
         env: { ...process.env },
         stdio: ["pipe", "pipe", "pipe"],
         detached: !request.windows,

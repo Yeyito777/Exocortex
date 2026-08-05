@@ -63,6 +63,8 @@ export interface ToolExecutionContext {
   provider?: ProviderId;
   /** Conversation id, if any. Reserved for future tool policies/logging. */
   conversationId?: string;
+  /** Absolute cwd for this execution. Conversation turns always provide their isolated workspace. */
+  cwd?: string;
   /** Remaining native exo nesting budget; null/undefined means a root turn. */
   subagentMaxDepth?: number | null;
   /** Model backing the active conversation, when the tool is run from one. */

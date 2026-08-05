@@ -25,6 +25,8 @@ import {
 import { log } from "./log";
 import { evaluateToolCallSafety, formatSafetyBlock } from "./safety";
 import { executeBashBackgroundable } from "./tools/bash";
+import { ensureConversationWorkspace } from "./workspace-service";
+import { onConversationRemoving } from "./conversation-lifecycle";
 
 const STATE_VERSION = 1;
 const MAX_CONCURRENT_SOFT_WAKES = 4;
@@ -71,6 +73,7 @@ let loaded = false;
 let started = false;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let pumpQueued = false;
+let unregisterConversationRemoving: (() => void) | null = null;
 let persistenceFailureForTest: Error | null = null;
 let nextSequence = 1;
 
@@ -369,7 +372,10 @@ async function executeOccurrence(occurrence: PendingExternalNotificationSoftWake
             EXOCORTEX_NOTIFICATION_SOURCE_ID: occurrence.sourceId,
             EXOCORTEX_NOTIFICATION_EVENT_ID: occurrence.event.eventId,
           },
-        }, controller.signal, undefined, { conversationId: occurrence.convId });
+        }, controller.signal, undefined, {
+          conversationId: occurrence.convId,
+          cwd: ensureConversationWorkspace(occurrence.convId),
+        });
         if (controller.signal.aborted || !started) return;
         if (result.failureKind === "infrastructure") {
           throw new Error(`Bash infrastructure failure: ${result.output}`);
@@ -466,10 +472,22 @@ export function startExternalNotificationSoftWakeService(): number {
   ensureLoaded();
   if (started) return pending.size;
   started = true;
+  unregisterConversationRemoving ??= onConversationRemoving(quiesceExternalNotificationSoftWakesForConversation);
   setExternalNotificationRoutesChangedListener(reconcileRoutes);
   reconcileRoutes();
   schedulePump();
   return pending.size;
+}
+
+/** Abort active commands before their owning conversation workspace is moved. */
+export function quiesceExternalNotificationSoftWakesForConversation(conversationId: string): number {
+  let stopped = 0;
+  for (const [occurrenceId, controller] of active) {
+    if (pending.get(occurrenceId)?.convId !== conversationId) continue;
+    controller.abort("Conversation is being deleted");
+    stopped++;
+  }
+  return stopped;
 }
 
 export function stopExternalNotificationSoftWakeService(): void {
@@ -477,6 +495,8 @@ export function stopExternalNotificationSoftWakeService(): void {
   setExternalNotificationRoutesChangedListener(null);
   clearRetryTimer();
   for (const controller of active.values()) controller.abort("External notification soft-wake service stopped");
+  unregisterConversationRemoving?.();
+  unregisterConversationRemoving = null;
 }
 
 export function resetExternalNotificationSoftWakesForTest(): void {

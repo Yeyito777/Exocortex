@@ -58,6 +58,7 @@ import {
 } from "./conversation-activity";
 import { buildSystemPrompt, reloadUserAddendum, setUserAddendum } from "./system";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
+import { ensureConversationWorkspace } from "./workspace-service";
 import {
   assertDelegatedSubset,
   buildToolPolicySnapshot,
@@ -1082,6 +1083,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const conversation = convStore.get(convId)!;
     const result = ok(pretty({
       conversation_id: convId,
+      workspace: ensureConversationWorkspace(convId),
       title: summary.title,
       provider: summary.provider,
       model: summary.model,
@@ -1374,6 +1376,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     return ok(buildSystemPrompt({
       conversationInstructions: instructions ?? undefined,
       conversationId: convId,
+      workingDirectory: ensureConversationWorkspace(convId),
       subagentMaxDepth: conversation.subagentMaxDepth ?? null,
       ...(scopedPromptOptions ?? {}),
       toolNames: resolvedToolPolicy.internalToolNames,

@@ -485,9 +485,10 @@ export async function resolveHelperToolPresentation(
 export async function resolveToolCallPresentation(
   toolName: string,
   input: Record<string, unknown>,
+  cwd: string = process.cwd(),
 ): Promise<ToolCallPresentation | undefined> {
   if (toolName !== "bash" || process.platform === "win32") return undefined;
   return typeof input.command === "string"
-    ? resolveHelperToolPresentation(input.command, process.cwd())
+    ? resolveHelperToolPresentation(input.command, cwd)
     : undefined;
 }

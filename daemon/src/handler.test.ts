@@ -305,6 +305,44 @@ describe("handler daemon-owned queue", () => {
     removeQueuedMessageById("shared-queue-id");
   });
 
+  test("rejects a queued draft whose id is reserved by conversation trash", async () => {
+    const id = `${Date.now()}-a1b2c3`;
+    IDS.push(id);
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    expect(remove(id)).toBe(true);
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "queue_message",
+      reqId: "reserved-draft-request",
+      queueId: "reserved-draft-queue",
+      convId: id,
+      text: "must not persist",
+      timing: "message-end",
+      source: "global-idle",
+      target: "new-conversation",
+      waitTarget: { type: "global" },
+    });
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "error",
+      reqId: "reserved-draft-request",
+      convId: id,
+      message: "Invalid or duplicate client-supplied conversation id",
+    }));
+    expect(getQueuedMessageById("reserved-draft-queue")).toBeUndefined();
+  });
+
   test("reconstructs a draft if the daemon restarts after queue persistence but before conversation creation", async () => {
     const id = `${Date.now()}-def456`;
     IDS.push(id);
@@ -805,6 +843,34 @@ describe("handler new_conversation defaults", () => {
       convId: "../bad",
       message: "Invalid or duplicate client-supplied conversation id",
     }));
+  });
+
+  test("rejects a client id reserved by a recoverable deleted conversation", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const convId = `${Date.now()}-def456`;
+    IDS.push(convId);
+    create(convId, "openai", "gpt-5.4", "deleted");
+    expect(remove(convId)).toBe(true);
+
+    await handle({} as never, { type: "new_conversation", reqId: "req-deleted-id", convId });
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "error",
+      reqId: "req-deleted-id",
+      convId,
+      message: "Invalid or duplicate client-supplied conversation id",
+    }));
+    expect(sent).not.toContainEqual(expect.objectContaining({ type: "conversation_created", convId }));
   });
 });
 

@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { conversationWorkspaceDir, trashedConversationWorkspaceDir } from "@exocortex/shared/paths";
 import { create, getQueuedMessages, remove } from "./conversations";
 import {
   adoptChronoSchedule,
@@ -130,6 +133,21 @@ describe("Chrono scheduler", () => {
     expect(wake).toContain("unhealthy");
   });
 
+  test("runs an owned command soft-wake in its conversation workspace", async () => {
+    const owner = makeConversation("softwake-cwd");
+    const artifact = join(conversationWorkspaceDir(owner), "chrono-cwd.txt");
+    await startChronoService();
+    createChronoSchedule({
+      ownerConversationId: owner,
+      afterSeconds: 0.02,
+      title: "Record cwd",
+      command: "pwd > chrono-cwd.txt",
+    });
+
+    await waitUntil(() => existsSync(artifact));
+    expect(readFileSync(artifact, "utf8").trim()).toBe(conversationWorkspaceDir(owner));
+  });
+
   test("adopts an ownerless command schedule and assigns failure escalation", () => {
     const owner = makeConversation("adopt");
     const id = "chrono:migrated:test-adopt";
@@ -191,6 +209,24 @@ describe("Chrono scheduler", () => {
     createChronoSchedule({ ownerConversationId: owner, afterSeconds: 3_600, message: "never" });
     expect(listChronoSchedules(owner)).toHaveLength(1);
     remove(owner);
+    expect(listChronoSchedules(owner)).toHaveLength(0);
+  });
+
+  test("conversation deletion quiesces a running command before trashing its workspace", async () => {
+    const owner = makeConversation("delete-running-owner");
+    const liveMarker = join(conversationWorkspaceDir(owner), "chrono-running.txt");
+    await startChronoService();
+    createChronoSchedule({
+      ownerConversationId: owner,
+      afterSeconds: 0.02,
+      title: "Running during delete",
+      command: "printf running > chrono-running.txt; sleep 30",
+    });
+    await waitUntil(() => existsSync(liveMarker));
+
+    expect(remove(owner)).toBe(true);
+    expect(existsSync(conversationWorkspaceDir(owner))).toBe(false);
+    expect(readFileSync(join(trashedConversationWorkspaceDir(owner), "chrono-running.txt"), "utf8")).toBe("running");
     expect(listChronoSchedules(owner)).toHaveLength(0);
   });
 });

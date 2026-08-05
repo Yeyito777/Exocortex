@@ -43,6 +43,7 @@ import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChro
 import { mergeTurnTranscript } from "./turn-transcript-merge";
 import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
+import { ensureConversationWorkspace } from "./workspace-service";
 import { buildHistoryUpdatedEvents } from "./history-pagination";
 import {
   RetryableStreamAbortController,
@@ -345,6 +346,17 @@ async function orchestrateAssistantTurn(
     return buildErrorOutcome(text);
   };
 
+  let workingDirectory: string;
+  try {
+    // Existing conversations are migrated lazily; startup remains summary-only
+    // and does not create one directory per archived conversation.
+    workingDirectory = ensureConversationWorkspace(convId);
+  } catch (err) {
+    const message = `Could not prepare conversation workspace: ${err instanceof Error ? err.message : String(err)}`;
+    if (client) server.sendTo(client, { type: "error", reqId, convId, message });
+    return buildErrorOutcome(message);
+  }
+
   const shutdownModeAtStart = getDaemonShutdownMode();
   if (shutdownModeAtStart) {
     const message = `Daemon is shutting down (${shutdownModeAtStart}); refusing to start another turn.`;
@@ -557,6 +569,7 @@ async function orchestrateAssistantTurn(
   const toolContext: ToolExecutionContext = {
     provider: conv.provider,
     conversationId: convId,
+    cwd: workingDirectory,
     subagentMaxDepth,
     model: conv.model,
     exocortex: ext.exocortex,
@@ -608,6 +621,7 @@ async function orchestrateAssistantTurn(
   const systemPrompt = buildSystemPrompt({
     conversationInstructions: systemInstructionsText || undefined,
     conversationId: convId,
+    workingDirectory,
     subagentMaxDepth,
     ...(scopedPromptOptions ?? {}),
     toolNames: allowedToolNames,
@@ -1203,7 +1217,7 @@ async function orchestrateAssistantTurn(
           const s = summarizeTool(name, input);
           return s.detail || s.label;
         },
-        presentationResolver: resolveToolCallPresentation,
+        presentationResolver: (name, input) => resolveToolCallPresentation(name, input, workingDirectory),
         effort: conv.effort,
         serviceTier: conv.fastMode ? "fast" : undefined,
         promptCacheKey: convId,

@@ -15,6 +15,7 @@ import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clea
 import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateRealtimeDelegation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
 import { buildSystemPrompt } from "./system";
+import { ensureConversationWorkspace } from "./workspace-service";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
@@ -862,7 +863,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     // later idle-wait entries until its dependency is ready and its turn ends.
     const idleEntry = queued.find(entry => entry.source === "global-idle");
     if (idleEntry && !globalIdleDispatchInFlight && !dispatchingQueueIds.has(idleEntry.id)) {
-      if (!convStore.hasConversation(idleEntry.convId) && idleEntry.target === "new-conversation") {
+      if (!convStore.hasConversation(idleEntry.convId)
+          && !convStore.hasDeletedConversation(idleEntry.convId)
+          && idleEntry.target === "new-conversation") {
         const defaults = effectiveConversationDefaults();
         const provider = idleEntry.provider ?? defaults.provider;
         const providerInfo = getProvider(provider);
@@ -1095,8 +1098,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       // ── Conversation lifecycle commands ───────────────────────────
 
       case "new_conversation": {
-        const id = cmd.convId ?? convStore.generateId();
-        if (cmd.convId && (!isSafeClientConversationId(cmd.convId) || convStore.hasConversation(cmd.convId))) {
+        let id = cmd.convId ?? convStore.generateId();
+        while (!cmd.convId && (convStore.hasConversation(id) || convStore.hasDeletedConversation(id))) {
+          id = convStore.generateId();
+        }
+        if (cmd.convId && (!isSafeClientConversationId(cmd.convId)
+            || convStore.hasConversation(cmd.convId)
+            || convStore.hasDeletedConversation(cmd.convId))) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid or duplicate client-supplied conversation id" });
           break;
         }
@@ -2100,7 +2108,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }
 
         if (cmd.source === "global-idle" && cmd.target === "new-conversation") {
-          if (!isSafeClientConversationId(cmd.convId) || convStore.hasConversation(cmd.convId)) {
+          if (!isSafeClientConversationId(cmd.convId)
+              || convStore.hasConversation(cmd.convId)
+              || convStore.hasDeletedConversation(cmd.convId)) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid or duplicate client-supplied conversation id" });
             server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
             break;
@@ -2486,6 +2496,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           systemPrompt: buildSystemPrompt({
             conversationInstructions: instructions ?? undefined,
             conversationId: cmd.convId,
+            workingDirectory: conversation ? ensureConversationWorkspace(conversation.id) : undefined,
             subagentMaxDepth,
             ...(scopedPromptOptions ?? {}),
             ...(resolvedToolPolicy ? {

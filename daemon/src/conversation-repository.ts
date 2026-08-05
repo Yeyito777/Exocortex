@@ -28,6 +28,8 @@ export interface ConversationRepository {
   close(): void;
 
   has(id: string): boolean;
+  /** True when the ID is retained as a soft-deleted conversation. */
+  hasDeleted(id: string): boolean;
   load(id: string): Conversation | null;
   loadAllConversations(): Conversation[];
   listSummaries(): PersistedConversationSummary[];

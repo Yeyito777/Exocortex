@@ -175,9 +175,11 @@ for (const backend of ["json", "sqlite"] as const) {
 
       expect(h.repository.trashConversations([id], false)).toEqual([id]);
       expect(h.repository.has(id)).toBe(false);
+      expect(h.repository.hasDeleted(id)).toBe(true);
       const reopened = h.reopen();
       expect(reopened.restoreConversationsFromTrash([id])[0]?.id).toBe(id);
       expect(reopened.has(id)).toBe(true);
+      expect(reopened.hasDeleted(id)).toBe(false);
       expect(reopened.popUndoEntry()?.type).toBe("conversation_renamed");
     });
 

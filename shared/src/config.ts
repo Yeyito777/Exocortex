@@ -77,7 +77,7 @@ export interface ProvidersConfig {
 }
 
 export interface AgentConfig {
-  /** Default working directory used by the daemon and agent tools. Relative paths resolve from the repo root. */
+  /** Compatibility working directory for daemon/ownerless operations. Conversation tools use isolated workspaces. */
   workingDirectory?: string;
 }
 

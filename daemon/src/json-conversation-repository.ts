@@ -12,6 +12,10 @@ export class JsonConversationRepository implements ConversationRepository {
     return this.getSummary(id) !== null;
   }
 
+  hasDeleted(id: string): boolean {
+    return json.hasDeletedConversation(id);
+  }
+
   load(id: string): Conversation | null {
     return json.load(id);
   }

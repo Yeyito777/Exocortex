@@ -31,6 +31,15 @@ describe("system prompt", () => {
     expect(prompt).toContain("- Exocortex conversation ID: conv-native-123");
   });
 
+  test("reports the conversation's explicit working directory", () => {
+    const prompt = buildSystemPrompt({
+      conversationId: "workspace-prompt",
+      workingDirectory: "/tmp/exocortex/workspaces/workspace-prompt",
+    });
+
+    expect(prompt).toContain("- Working directory: /tmp/exocortex/workspaces/workspace-prompt");
+  });
+
   test("includes compact native-subagent guidance", () => {
     const prompt = buildSystemPrompt({ conversationId: "nested" });
 
@@ -40,7 +49,7 @@ describe("system prompt", () => {
       "Use the native `exo` tool for delegated work. Don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents get research tools and no external tools by default. Use internal_tools/external_tools for exact delegation. When send targets an existing conversation, supplying both lists persistently replaces its policy before the sent or queued turn; use the discovered tools command to change policy without sending. External CLIs retain their established Bash transport, and allow_edits=true remains legacy shorthand for shell and mutation access.",
       "### subscriptions",
       "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
-      "Subagents start in the daemon's working directory, so include the target absolute directory and all necessary task context.",
+      "Subagents start in their own isolated conversation workspace, so include any separate target absolute directory and all necessary task context.",
       "## chrono",
       "Prefer chrono over shell sleep, polling background tasks, or cron. `wait` requires a `max_wait` safety limit and wakes immediately when the task finishes. `sleep` pauses this turn for a duration. `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions.",
     ].join("\n"));

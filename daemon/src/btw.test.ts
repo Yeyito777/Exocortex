@@ -315,7 +315,7 @@ describe("conversation-owned BTW sessions", () => {
 
       expect(manager.close(reconnected, convId, "newer-session")).toBe("closed");
       convStore.remove(convId);
-      convStore.create(convId, "deepseek", "deepseek-v4-pro", "restored", "high", false);
+      expect(convStore.undoDelete()?.type).toBe("conversation");
       manager.start(original, command);
       expect(runCount).toBe(2);
       expect(manager.getSnapshot(convId)).toBeNull();

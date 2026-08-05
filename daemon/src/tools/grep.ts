@@ -278,11 +278,15 @@ function globParts(globPattern: string): string[] {
 
 // ── Execution ──────────────────────────────────────────────────────
 
-async function executeGrep(input: Record<string, unknown>, _context?: ToolExecutionContext, signal?: AbortSignal): Promise<ToolResult> {
+async function executeGrep(input: Record<string, unknown>, context?: ToolExecutionContext, signal?: AbortSignal): Promise<ToolResult> {
   const pattern = getString(input, "pattern");
   if (!pattern) return { output: "Error: missing 'pattern' parameter", isError: true };
 
-  const searchPath = getString(input, "path") ?? process.cwd();
+  const cwd = context?.cwd ?? process.cwd();
+  const requestedPath = getString(input, "path");
+  const searchPath = requestedPath
+    ? resolve(cwd, requestedPath)
+    : cwd;
   const globPattern = getString(input, "glob");
   const fileType = getString(input, "type");
   const mode = getString(input, "output_mode") ?? "files_with_matches";
@@ -341,6 +345,7 @@ async function executeGrep(input: Record<string, unknown>, _context?: ToolExecut
   try {
     const command = sudo ? ["sudo", "-n", "rg", ...args] : ["rg", ...args];
     const proc = Bun.spawn(command, {
+      cwd,
       stdout: "pipe",
       stderr: "pipe",
       env: { ...process.env, TERM: "dumb" },

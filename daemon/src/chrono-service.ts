@@ -10,12 +10,14 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "@exocortex/shared/paths";
+import { agentWorkingDirectory } from "@exocortex/shared/config";
 import * as convStore from "./conversations";
 import { setChronoTaskActive } from "./conversation-activity";
-import { onConversationRemoved } from "./conversation-lifecycle";
+import { onConversationRemoved, onConversationRemoving } from "./conversation-lifecycle";
 import { log } from "./log";
 import { evaluateToolCallSafety, formatSafetyBlock } from "./safety";
 import { executeBashBackgroundable } from "./tools/bash";
+import { ensureConversationWorkspace } from "./workspace-service";
 
 const STATE_VERSION = 1;
 const MAX_TIMER_MS = 2_000_000_000;
@@ -152,6 +154,7 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 let started = false;
 let processingDue = false;
 let unregisterConversationRemoval: (() => void) | null = null;
+let unregisterConversationRemoving: (() => void) | null = null;
 
 function statePath(): string {
   return join(dataDir(), "chrono.json");
@@ -662,6 +665,17 @@ export function cancelChronoSchedulesForConversation(conversationId: string): nu
   return ids.size;
 }
 
+/** Abort active commands before their owner's workspace is moved. Durable schedules remain until deletion commits. */
+export function quiesceChronoCommandsForConversation(conversationId: string): number {
+  let stopped = 0;
+  for (const [occurrenceId, controller] of activeCommandControllers) {
+    if (pending.get(occurrenceId)?.ownerConversationId !== conversationId) continue;
+    controller.abort("Conversation is being deleted");
+    stopped++;
+  }
+  return stopped;
+}
+
 function occurrenceAlreadyDelivered(occurrence: PendingOccurrence): boolean {
   if (occurrence.target.kind !== "conversation") return false;
   return convStore.get(occurrence.target.conversationId)?.messages
@@ -743,7 +757,10 @@ async function executeOccurrence(occurrence: PendingOccurrence): Promise<void> {
               // default cannot terminate long soft-wakes first.
               timeout_seconds: commandTarget.timeoutMs / 1_000 + 60,
               max_output_chars: 12_000,
-            }, controller.signal, undefined, occurrence.ownerConversationId ? { conversationId: occurrence.ownerConversationId } : undefined);
+            }, controller.signal, undefined, occurrence.ownerConversationId ? {
+              conversationId: occurrence.ownerConversationId,
+              cwd: ensureConversationWorkspace(occurrence.ownerConversationId),
+            } : { cwd: agentWorkingDirectory() });
           } finally {
             clearTimeout(timeout);
             activeCommandControllers.delete(occurrence.id);
@@ -848,6 +865,7 @@ export async function startChronoService(): Promise<number> {
   if (started) return schedules.size;
   load();
   started = true;
+  unregisterConversationRemoving ??= onConversationRemoving(quiesceChronoCommandsForConversation);
   unregisterConversationRemoval ??= onConversationRemoved(cancelChronoSchedulesForConversation);
   let pruned = false;
   for (const schedule of [...schedules.values()]) {
@@ -883,6 +901,8 @@ export function stopChronoService(): void {
   activeCommandControllers.clear();
   unregisterConversationRemoval?.();
   unregisterConversationRemoval = null;
+  unregisterConversationRemoving?.();
+  unregisterConversationRemoving = null;
   persist();
   log("info", "chrono: stopped");
 }

@@ -630,13 +630,21 @@ export async function executeGlobInProcess(input: Record<string, unknown>, signa
  * memory spike cannot block the orchestration event loop. The registry deadline
  * aborts this wrapper, which kills the runner's whole process group.
  */
-async function executeGlob(input: Record<string, unknown>, _context?: ToolExecutionContext, signal?: AbortSignal): Promise<ToolResult> {
+async function executeGlob(input: Record<string, unknown>, context?: ToolExecutionContext, signal?: AbortSignal): Promise<ToolResult> {
   if (signal?.aborted) throw createAbortError();
+
+  const cwd = context?.cwd ?? process.cwd();
+  const requestedPath = getString(input, "path");
+  const effectiveInput = {
+    ...input,
+    path: requestedPath ? resolve(cwd, requestedPath) : cwd,
+  };
 
   const runner = join(import.meta.dir, "glob-runner.ts");
   let proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
   try {
     proc = Bun.spawn([process.execPath, runner], {
+      cwd,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -674,7 +682,7 @@ async function executeGlob(input: Record<string, unknown>, _context?: ToolExecut
   }
 
   try {
-    const serialized = JSON.stringify(input);
+    const serialized = JSON.stringify(effectiveInput);
     const stdin = proc.stdin;
     stdin.write(serialized);
     stdin.end();

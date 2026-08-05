@@ -5,11 +5,12 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
+import { conversationWorkspaceDir, conversationsDir, dataDir, trashedConversationWorkspaceDir, trashDir } from "@exocortex/shared/paths";
 import { HistoryUnwindRefreshRequiredError, appendRealtimeCallStatus, appendRealtimeTranscript, bumpToTop, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, promoteRealtimeTranscript, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
 import { setActiveJob, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
 import { isSqliteConversationStore, load as loadPersisted } from "./persistence";
+import { createConversationWorkspace } from "./workspace-service";
 
 const legacyFileTest = isSqliteConversationStore() ? test.skip : test;
 const IDS: string[] = [];
@@ -342,6 +343,25 @@ describe("folders", () => {
     expect(getSummary(nestedChildId)).toMatchObject({ folderId: nested.id });
   });
 
+  test("a workspace collision blocks recursive-folder undo before exposing ghost folders", () => {
+    const childId = mkId("folder-workspace-collision-child");
+    const folder = createFolder(`Workspace Collision Folder ${Date.now()} ${Math.random()}`)!;
+    FOLDER_IDS.push(folder.id);
+    create(childId, "openai", "gpt-5.4", "child", undefined, false, folder.id);
+    expect(deleteFolder(folder.id, "recursive")).toBe(true);
+
+    const replacement = createConversationWorkspace(childId);
+    writeFileSync(join(replacement, "foreign.txt"), "foreign");
+    expect(undoDelete()).toBeNull();
+    expect(listSidebarState().folders.some(candidate => candidate.id === folder.id)).toBe(false);
+    expect(getSummary(childId)).toBeNull();
+
+    rmSync(replacement, { recursive: true, force: true });
+    expect(undoDelete()).toEqual({ type: "sidebar_state" });
+    expect(listSidebarState().folders.some(candidate => candidate.id === folder.id)).toBe(true);
+    expect(getSummary(childId)).toMatchObject({ folderId: folder.id });
+  });
+
   test("folder delete undo survives a conversation-store reload", () => {
     const childId = mkId("folder-restart-recursive-child");
     const nestedChildId = mkId("folder-restart-recursive-nested-child");
@@ -390,6 +410,61 @@ describe("folders", () => {
     expect(undoDelete()?.type).toBe("conversations");
     expect(getSummary(ids[0])).toMatchObject({ id: ids[0] });
     expect(getSummary(ids[1])).toMatchObject({ id: ids[1] });
+  });
+
+  test("creates, trashes, and restores a conversation workspace with its contents", () => {
+    const id = mkId("workspace-lifecycle");
+    create(id, "openai", "gpt-5.4", "workspace lifecycle");
+    const live = conversationWorkspaceDir(id);
+    writeFileSync(join(live, "artifact.txt"), "preserved");
+
+    expect(remove(id)).toBe(true);
+    expect(existsSync(live)).toBe(false);
+    expect(readFileSync(join(trashedConversationWorkspaceDir(id), "artifact.txt"), "utf8")).toBe("preserved");
+
+    expect(undoDelete()?.type).toBe("conversation");
+    expect(readFileSync(join(live, "artifact.txt"), "utf8")).toBe("preserved");
+  });
+
+  test("blocks undo rather than attaching a colliding replacement workspace", () => {
+    const id = mkId("workspace-restore-collision");
+    create(id, "openai", "gpt-5.4", "original");
+    writeFileSync(join(conversationWorkspaceDir(id), "original.txt"), "original");
+    expect(remove(id)).toBe(true);
+
+    const replacement = createConversationWorkspace(id);
+    writeFileSync(join(replacement, "foreign.txt"), "foreign");
+    expect(undoDelete()).toBeNull();
+    expect(getSummary(id)).toBeNull();
+    expect(readFileSync(join(replacement, "foreign.txt"), "utf8")).toBe("foreign");
+
+    rmSync(replacement, { recursive: true, force: true });
+    expect(undoDelete()?.type).toBe("conversation");
+    expect(readFileSync(join(conversationWorkspaceDir(id), "original.txt"), "utf8")).toBe("original");
+  });
+
+  test("reserves a deleted conversation ID until its trash entry is restored", () => {
+    const id = mkId("workspace-deleted-id-reserved");
+    create(id, "openai", "gpt-5.4", "original");
+    expect(remove(id)).toBe(true);
+
+    expect(() => create(id, "openai", "gpt-5.4", "replacement"))
+      .toThrow("already exists or is recoverable from trash");
+    expect(getSummary(id)).toBeNull();
+
+    expect(undoDelete()?.type).toBe("conversation");
+    expect(getSummary(id)).toMatchObject({ id, title: "original" });
+  });
+
+  test("gives a clone a separate empty workspace", () => {
+    const id = mkId("workspace-clone-source");
+    create(id, "openai", "gpt-5.4", "workspace clone");
+    writeFileSync(join(conversationWorkspaceDir(id), "source-only.txt"), "source");
+
+    const cloned = clone(id)!;
+    IDS.push(cloned.id);
+    expect(existsSync(conversationWorkspaceDir(cloned.id))).toBe(true);
+    expect(existsSync(join(conversationWorkspaceDir(cloned.id), "source-only.txt"))).toBe(false);
   });
 
   legacyFileTest("keeps live state when the conversation file cannot be moved to trash", () => {

@@ -12,7 +12,7 @@ import { createProviderTurnSession } from "./api";
 import { hasConfiguredCredentials } from "./auth";
 import { buildConversationApiContext } from "./context-compaction";
 import * as convStore from "./conversations";
-import { onConversationRemoved } from "./conversation-lifecycle";
+import { onConversationRemoved, onConversationRemoving } from "./conversation-lifecycle";
 import { log } from "./log";
 import type { ApiMessage, Conversation, ConversationBtw, ProviderId } from "./messages";
 import * as persistence from "./persistence";
@@ -21,6 +21,7 @@ import { buildCodexWindowId } from "./providers/openai/identity";
 import { buildSystemPrompt } from "./system";
 import { buildExecutor, getToolDefs, summarizeTool } from "./tools/registry";
 import type { ToolExecutionContext } from "./tools/types";
+import { ensureConversationWorkspace } from "./workspace-service";
 
 export const BTW_READ_ONLY_TOOLS = ["read", "grep", "glob", "browse"] as const;
 
@@ -84,6 +85,7 @@ export class BtwSessionManager {
   private readonly inFlightProviders = new Map<ProviderId, number>();
   private readonly dependencies: BtwSessionDependencies;
   private readonly removeConversationListener: () => void;
+  private readonly removingConversationListener: () => void;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
@@ -126,6 +128,10 @@ export class BtwSessionManager {
     if (recovered) this.persistNow();
 
     this.removeConversationListener = onConversationRemoved((convId) => this.removeConversation(convId));
+    this.removingConversationListener = onConversationRemoving((convId) => {
+      const session = this.sessions.get(convId);
+      if (session?.running) session.abort.abort("conversation-being-removed");
+    });
   }
 
   hasRunningProvider(provider: ProviderId): boolean {
@@ -176,6 +182,7 @@ export class BtwSessionManager {
   /** Test/service cleanup; durable panels intentionally remain available afterward. */
   dispose(): void {
     this.removeConversationListener();
+    this.removingConversationListener();
     for (const session of this.sessions.values()) {
       if (session.running) session.abort.abort("btw-manager-disposed");
       this.clearRequesters(session);
@@ -290,6 +297,20 @@ export class BtwSessionManager {
       return;
     }
 
+    let workingDirectory: string;
+    try {
+      workingDirectory = ensureConversationWorkspace(command.convId);
+    } catch (err) {
+      this.replaceWithError(
+        client,
+        command,
+        conv,
+        query,
+        `Could not prepare conversation workspace: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+
     // Freeze every source setting and all replay data before starting any async
     // work. The live conversation may continue streaming and mutating afterward.
     const provider = conv.provider;
@@ -397,6 +418,7 @@ export class BtwSessionManager {
     const system = buildSystemPrompt({
       conversationInstructions: instructions || undefined,
       conversationId: command.convId,
+      workingDirectory,
       toolNames: BTW_READ_ONLY_TOOLS,
       includeExternalToolHints: false,
       wrapperNote: BTW_WRAPPER_NOTE,
@@ -406,6 +428,7 @@ export class BtwSessionManager {
       provider,
       model,
       conversationId: command.convId,
+      cwd: workingDirectory,
     };
     const executor = buildExecutor(toolContext, BTW_READ_ONLY_TOOLS);
     const providerTurnSession = createProviderTurnSession(provider);

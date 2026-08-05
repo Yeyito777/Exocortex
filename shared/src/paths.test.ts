@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { basename, dirname } from "path";
-import { agentCwdDir, repoRoot, socketPath } from "./paths";
+import { basename, dirname, join } from "path";
+import { agentCwdDir, assertSafeConversationWorkspaceId, conversationWorkspaceDir, conversationWorkspacesDir, repoRoot, socketPath, trashedConversationWorkspaceDir } from "./paths";
 
 describe("agentCwdDir", () => {
   test("points at the repo-local scratch cwd", () => {
@@ -12,5 +12,18 @@ describe("agentCwdDir", () => {
 describe("socketPath", () => {
   test("fits the Unix-domain socket path limit in deep worktrees", () => {
     expect(Buffer.byteLength(socketPath())).toBeLessThan(108);
+  });
+});
+
+describe("conversation workspace paths", () => {
+  test("derive live and trash paths beneath the instance data directory", () => {
+    expect(conversationWorkspaceDir("123-abc123")).toBe(join(conversationWorkspacesDir(), "123-abc123"));
+    expect(trashedConversationWorkspaceDir("123-abc123")).toContain(join("trash", "workspaces", "123-abc123"));
+  });
+
+  test("reject unsafe directory identities", () => {
+    for (const id of ["", ".", "..", "../escape", "a/b", "a\\b", "a..b", "bad id", "bad:id", "bad\0id"]) {
+      expect(() => assertSafeConversationWorkspaceId(id)).toThrow("Invalid conversation ID");
+    }
   });
 });

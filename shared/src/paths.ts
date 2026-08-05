@@ -11,7 +11,7 @@
  *
  *   config root/        system.md (tracked), config.json (local/generated)
  *   secrets/            env, credentials.json (never tracked)
- *   data/               conversations/, trash/, trash/external-tools/ (bulk data, never tracked)
+ *   data/               conversations, workspaces/, trash/, trash/workspaces/ (bulk data, never tracked)
  *   runtime/            PID, socket, logs, usage.json (ephemeral)
  *   chrono/             durable automation scripts (persistent, not tracked)
  *   storage/            fix-auth.md, token-stats/ (persistent user-local, not tracked)
@@ -207,9 +207,44 @@ export function conversationsDir(): string {
   return join(dataDir(), "conversations");
 }
 
+/** Root for persistent per-conversation working directories. */
+export function conversationWorkspacesDir(): string {
+  return join(dataDir(), "workspaces");
+}
+
+/** Reject conversation IDs before they are used as directory names. */
+export function assertSafeConversationWorkspaceId(id: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(id) || id.includes("..")) {
+    throw new Error(`Invalid conversation ID for workspace path: ${id}`);
+  }
+}
+
+/** Persistent default working directory for one conversation. */
+export function conversationWorkspaceDir(id: string): string {
+  assertSafeConversationWorkspaceId(id);
+  const root = resolve(conversationWorkspacesDir());
+  const path = resolve(root, id);
+  if (dirname(path) !== root) throw new Error(`Conversation workspace path escapes its root: ${id}`);
+  return path;
+}
+
 /** Trash directory for soft-deleted conversations and other recoverable data. Isolated per worktree. */
 export function trashDir(): string {
   return join(dataDir(), "trash");
+}
+
+/** Trash root for recoverable per-conversation working directories. */
+export function trashedConversationWorkspacesDir(): string {
+  return join(trashDir(), "workspaces");
+}
+
+/** Recoverable trashed working directory for one conversation. */
+export function trashedConversationWorkspaceDir(id: string): string {
+  assertSafeConversationWorkspaceId(id);
+  const root = resolve(trashedConversationWorkspacesDir());
+  const path = resolve(root, id);
+  if (dirname(path) !== root) throw new Error(`Trashed conversation workspace path escapes its root: ${id}`);
+  return path;
 }
 
 /** Trash directory for soft-deleted external tools. Isolated per worktree. */

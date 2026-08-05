@@ -6,7 +6,8 @@
  * Supports offset/limit for partial reads.
  */
 
-import type { Tool, ToolResult, ToolSummary } from "./types";
+import { isAbsolute, resolve } from "node:path";
+import type { Tool, ToolExecutionContext, ToolResult, ToolSummary } from "./types";
 import { cap, getString, getNumber, safeSlice, summarizeParams } from "./util";
 import { log } from "../log";
 import { isValidImagePayload } from "../image-validation";
@@ -262,9 +263,12 @@ async function readTextFile(
 
 // ── Execution entry point ──────────────────────────────────────────
 
-async function executeRead(input: Record<string, unknown>): Promise<ToolResult> {
-  const filePath = getString(input, "file_path");
-  if (!filePath) return { output: "Error: missing 'file_path' parameter", isError: true };
+async function executeRead(input: Record<string, unknown>, context?: ToolExecutionContext): Promise<ToolResult> {
+  const requestedPath = getString(input, "file_path");
+  if (!requestedPath) return { output: "Error: missing 'file_path' parameter", isError: true };
+  const filePath = isAbsolute(requestedPath)
+    ? requestedPath
+    : resolve(context?.cwd ?? process.cwd(), requestedPath);
 
   if (isImageFile(filePath)) {
     return readImageFile(filePath);
@@ -292,7 +296,7 @@ export const read: Tool = {
   inputSchema: {
     type: "object",
     properties: {
-      file_path: { type: "string", description: "Absolute path to the file to read" },
+      file_path: { type: "string", description: "Path to the file to read (relative paths resolve from the conversation workspace)" },
       offset: { type: "number", description: "Line number to start reading from (1-based). Defaults to 1." },
       limit: { type: "number", description: "Maximum number of lines to read. Defaults to 2000." },
     },

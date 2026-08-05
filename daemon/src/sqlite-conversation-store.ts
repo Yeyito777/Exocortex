@@ -758,6 +758,11 @@ export class SqliteConversationStore implements ConversationRepository {
     return this.row(id) !== null;
   }
 
+  hasDeleted(id: string): boolean {
+    const row = this.row(id, true);
+    return row !== null && row.deleted_at !== null;
+  }
+
   private summaryFromRow(row: ConversationRow): PersistedConversationSummary {
     return {
       id: row.id,

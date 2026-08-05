@@ -61,8 +61,7 @@ export function setUserAddendum(text: string, expectedText?: string): void {
   }
 }
 
-function buildEnvironmentHeader(conversationId?: string, identity = "You are Exo, the user's assistant."): string {
-  const cwd = process.cwd();
+function buildEnvironmentHeader(conversationId?: string, identity = "You are Exo, the user's assistant.", workingDirectory = process.cwd()): string {
   const date = new Date().toLocaleDateString("en-US", {
     weekday: "long",
     year: "numeric",
@@ -74,7 +73,7 @@ function buildEnvironmentHeader(conversationId?: string, identity = "You are Exo
     identity,
     "",
     "Environment:",
-    `- Working directory: ${cwd}`,
+    `- Working directory: ${workingDirectory}`,
     `- Date: ${date}`,
     `- Platform: ${process.platform} ${process.arch}`,
     ...(conversationId ? [`- Exocortex conversation ID: ${conversationId}`] : []),
@@ -84,6 +83,8 @@ function buildEnvironmentHeader(conversationId?: string, identity = "You are Exo
 export interface BuildSystemPromptOptions {
   conversationInstructions?: string;
   conversationId?: string;
+  /** Effective cwd for this model/tool session. */
+  workingDirectory?: string;
   /** Remaining native exo nesting budget for this conversation turn. */
   subagentMaxDepth?: number | null;
   /** Restrict tool-specific prompt hints to this explicit session allowlist. */
@@ -102,7 +103,7 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
   includeToolHints: boolean;
   includeExternalHints: boolean;
 }): string[] {
-  const parts = [buildEnvironmentHeader(options.conversationId, options.identity)];
+  const parts = [buildEnvironmentHeader(options.conversationId, options.identity, options.workingDirectory)];
 
   if (options.includeToolHints) {
     const toolHints = buildToolSystemHints(options.toolNames);

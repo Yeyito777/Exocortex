@@ -7,53 +7,53 @@ This is the ordered list of remaining architecture work for Exocortex.
 Give every conversation a persistent, isolated default working directory under
 the instance's gitignored data directory.
 
-- [ ] Add `conversationWorkspacesDir()` and `conversationWorkspaceDir(id)` path
+- [x] Add `conversationWorkspacesDir()` and `conversationWorkspaceDir(id)` path
   helpers.
-- [ ] Store main-instance workspaces at:
+- [x] Store main-instance workspaces at:
   `config/data/workspaces/<conversation-id>/`.
-- [ ] Store linked-worktree instance workspaces under that instance's existing
+- [x] Store linked-worktree instance workspaces under that instance's existing
   namespaced `dataDir()`, for example:
   `config/data/instances/<instance>/workspaces/<conversation-id>/`.
-- [ ] Keep the entire workspace root covered by the existing `config/data/`
+- [x] Keep the entire workspace root covered by the existing `config/data/`
   gitignore rule.
-- [ ] Validate conversation IDs before using them as directory names and refuse
+- [x] Validate conversation IDs before using them as directory names and refuse
   paths that escape the workspace root.
-- [ ] Create the directory when a new conversation is created.
-- [ ] Lazily create workspaces for existing conversations on first use.
-- [ ] Use restrictive directory permissions where the platform supports them.
+- [x] Create the directory when a new conversation is created.
+- [x] Lazily create workspaces for existing conversations on first use.
+- [x] Use restrictive directory permissions where the platform supports them.
 - [ ] Add a `WorkspaceService` that owns path resolution, creation, inspection,
   trash, restore, and cleanup.
 
 ### Tool and agent execution
 
-- [ ] Add `cwd` to the conversation/tool execution context.
-- [ ] Resolve the cwd from the active conversation ID at the start of every turn.
-- [ ] Pass the explicit cwd through every filesystem and process tool, including:
+- [x] Add `cwd` to the conversation/tool execution context.
+- [x] Resolve the cwd from the active conversation ID at the start of every turn.
+- [x] Pass the explicit cwd through every filesystem and process tool, including:
   - bash and its isolated/background runners
   - read, write, edit, patch, glob, and grep
   - external CLI tools launched through bash
-- [ ] Stop filesystem tools from implicitly using the daemon-wide
+- [x] Stop filesystem tools from implicitly using the daemon-wide
   `process.cwd()`.
-- [ ] Do not call `process.chdir()` per conversation; it is process-global and is
+- [x] Do not call `process.chdir()` per conversation; it is process-global and is
   unsafe when conversations execute concurrently.
-- [ ] Make each native subagent use its own child conversation workspace rather
+- [x] Make each native subagent use its own child conversation workspace rather
   than inheriting the parent's workspace.
-- [ ] Make conversation-owned Chrono commands use their owner's workspace.
+- [x] Make conversation-owned Chrono commands use their owner's workspace.
 - [ ] Define a separate service workspace for ownerless daemon/Chrono operations.
-- [ ] Include the effective conversation workspace path in the model's environment
+- [x] Include the effective conversation workspace path in the model's environment
   instructions and relevant status/debug output.
-- [ ] Deprecate the daemon-wide `agent.workingDirectory` as the default for
+- [x] Deprecate the daemon-wide `agent.workingDirectory` as the default for
   conversation turns, retaining a clearly defined compatibility role only if
   needed for ownerless operations.
 
 ### Workspace lifecycle
 
-- [ ] Stop active tools and background processes before moving or deleting a
+- [x] Stop active tools and background processes before moving or deleting a
   workspace.
-- [ ] Move a deleted conversation's workspace to trash rather than deleting it
+- [x] Move a deleted conversation's workspace to trash rather than deleting it
   immediately.
-- [ ] Restore the workspace when conversation deletion is undone.
-- [ ] Decide whether cloning a conversation creates an empty workspace, copies the
+- [x] Restore the workspace when conversation deletion is undone.
+- [x] Decide whether cloning a conversation creates an empty workspace, copies the
   workspace, or offers an explicit choice; avoid silently copying very large
   directories.
 - [ ] Decide whether conversation export/import includes the workspace and provide
@@ -62,9 +62,9 @@ the instance's gitignored data directory.
 - [ ] Detect and safely prune orphaned workspace directories.
 - [ ] Add tests for creation, lazy migration, relative paths, subagent isolation,
   background processes, trash/restore, unsafe IDs, and concurrent conversations.
-- [ ] Treat the workspace as a cwd and lifecycle boundary, not as a security
+- [x] Treat the workspace as a cwd and lifecycle boundary, not as a security
   sandbox; absolute paths and symlinks require their existing safety policy.
-- [ ] Keep workspace file contents out of SQLite. Store only lifecycle metadata if
+- [x] Keep workspace file contents out of SQLite. Store only lifecycle metadata if
   the repository needs it; derive the normal path from instance and conversation
   identity.
 

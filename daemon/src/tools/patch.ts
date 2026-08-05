@@ -489,11 +489,11 @@ function formatUncertainMutation(affected: AffectedPaths): string {
 
 async function executePatch(
   input: Record<string, unknown>,
-  _context?: ToolExecutionContext,
+  context?: ToolExecutionContext,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
   const patchInput = getString(input, "input");
-  const cwdInput = getString(input, "cwd") ?? process.cwd();
+  const cwdInput = getString(input, "cwd") ?? context?.cwd ?? process.cwd();
 
   if (!patchInput) return { output: "Error: missing 'input' parameter", isError: true };
   if (!cwdInput) return { output: "Error: missing 'cwd' parameter", isError: true };
@@ -557,7 +557,7 @@ export const patch: Tool = {
     type: "object",
     properties: {
       input: { type: "string", description: "The entire contents of the patch, including *** Begin Patch and *** End Patch" },
-      cwd: { type: "string", description: "Absolute working directory used to resolve relative patch paths (defaults to the agent working directory)" },
+      cwd: { type: "string", description: "Absolute working directory used to resolve relative patch paths (defaults to the conversation workspace)" },
     },
     required: ["input"],
   },
