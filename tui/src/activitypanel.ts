@@ -11,8 +11,9 @@
 
 import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary, ToolPolicyKind } from "./messages";
 import type { RenderState } from "./state";
+import { wrapAnsiLine } from "./ansiwrap";
 import { shouldDisplayConversationTask } from "./taskvisibility";
-import { padRightToWidth, termWidth, truncateToWidth, visibleLength } from "./textwidth";
+import { padRightToWidth, termWidth, visibleLength } from "./textwidth";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
 
 const MAX_PANEL_WIDTH = 50;
@@ -201,38 +202,110 @@ function disabledToolDisplay(
   };
 }
 
-/** One compact, independently colored comma-list for one tool kind. */
-function renderDisabledToolGroup(state: RenderState, tools: DisabledToolEntry[], width: number): string {
-  let line = `${theme.muted}⊘ `;
-  let used = 2;
+interface DisabledToolGroupLayout {
+  kind: ToolPolicyKind;
+  tools: DisabledToolEntry[];
+  lines: string[];
+  /** Wrapped rows for prefixes of one through tools.length items. */
+  prefixLines: string[][];
+}
+
+/** Wrap one independently colored comma-list without abbreviating tool names. */
+function wrapDisabledToolGroup(state: RenderState, tools: DisabledToolEntry[], width: number): string[] {
+  const bodyWidth = Math.max(1, width - 2);
+  const rows: string[] = [];
+  let body = "";
+  let bodyUsed = 0;
+
+  const pushBody = (value: string) => {
+    const prefix = rows.length === 0 ? `${theme.muted}⊘ ` : `${theme.muted}  `;
+    const line = `${prefix}${value}${theme.muted}`;
+    rows.push(line + " ".repeat(Math.max(0, width - visibleLength(line))));
+  };
+
+  const flush = () => {
+    if (!body) return;
+    pushBody(body);
+    body = "";
+    bodyUsed = 0;
+  };
 
   for (let index = 0; index < tools.length; index++) {
     const { label, color } = disabledToolDisplay(state, tools[index]);
-    const separator = index === 0 ? "" : ", ";
-    const hasMore = index < tools.length - 1;
-    const overflowSuffix = ", …";
-    const candidateWidth = termWidth(separator) + termWidth(label);
-    const reserve = hasMore ? termWidth(overflowSuffix) : 0;
+    const comma = index < tools.length - 1 ? "," : "";
+    const token = `${color}${label}${theme.muted}${comma}`;
+    const tokenWidth = termWidth(label) + termWidth(comma);
+    const separator = body ? " " : "";
 
-    if (used + candidateWidth + reserve <= width) {
-      line += `${theme.muted}${separator}${color}${label}`;
-      used += candidateWidth;
+    if (bodyUsed + termWidth(separator) + tokenWidth <= bodyWidth) {
+      body += `${separator}${token}`;
+      bodyUsed += termWidth(separator) + tokenWidth;
       continue;
     }
 
-    if (index > 0) {
-      line += `${theme.muted}${overflowSuffix}`;
-      used += termWidth(overflowSuffix);
-    } else {
-      const clipped = truncateToWidth(label, Math.max(1, width - used));
-      line += `${color}${clipped}`;
-      used += termWidth(clipped);
+    flush();
+    if (tokenWidth <= bodyWidth) {
+      body = token;
+      bodyUsed = tokenWidth;
+      continue;
     }
-    break;
+
+    // Manifest labels can themselves exceed the card width. The generic ANSI
+    // wrapper preserves the item's active display color across hard wraps.
+    const wrapped = wrapAnsiLine(token, bodyWidth).lines;
+    for (let wrappedIndex = 0; wrappedIndex < wrapped.length - 1; wrappedIndex++) {
+      pushBody(wrapped[wrappedIndex]);
+    }
+    body = wrapped.at(-1) ?? "";
+    bodyUsed = visibleLength(body);
+    if (bodyUsed >= bodyWidth) flush();
   }
 
-  line += theme.muted;
-  return line + " ".repeat(Math.max(0, width - visibleLength(line)));
+  flush();
+  return rows;
+}
+
+function layoutDisabledToolGroups(
+  state: RenderState,
+  tools: DisabledToolEntry[],
+  width: number,
+): DisabledToolGroupLayout[] {
+  return (["internal", "external"] as const).flatMap((kind) => {
+    const groupTools = tools.filter(tool => tool.kind === kind);
+    if (groupTools.length === 0) return [];
+    const prefixLines = groupTools.map((_, index) => wrapDisabledToolGroup(state, groupTools.slice(0, index + 1), width));
+    return [{ kind, tools: groupTools, lines: prefixLines.at(-1) ?? [], prefixLines }];
+  });
+}
+
+/** Fit complete tool names into a vertical row budget, preserving group order. */
+function fitDisabledToolGroups(
+  groups: DisabledToolGroupLayout[],
+  rowSlots: number,
+): DisabledToolGroupLayout[] {
+  const visible: DisabledToolGroupLayout[] = [];
+  let remaining = Math.max(0, rowSlots);
+
+  for (const group of groups) {
+    let visibleToolCount = 0;
+    for (let count = group.tools.length; count >= 1; count--) {
+      if (group.prefixLines[count - 1].length <= remaining) {
+        visibleToolCount = count;
+        break;
+      }
+    }
+    if (visibleToolCount === 0) break;
+    const lines = group.prefixLines[visibleToolCount - 1];
+    visible.push({
+      kind: group.kind,
+      tools: group.tools.slice(0, visibleToolCount),
+      lines,
+      prefixLines: group.prefixLines.slice(0, visibleToolCount),
+    });
+    remaining -= lines.length;
+    if (visibleToolCount < group.tools.length) break;
+  }
+  return visible;
 }
 
 function padLeftToWidth(text: string, width: number): string {
@@ -247,12 +320,12 @@ export function formatIntegrationDeliveryStatus(
   return `${integration.delivery} ${integration.status}`;
 }
 
-type PanelSectionTitle = "Tasks" | "Subscriptions" | "Disabled tools";
+type PanelSectionTitle = "Tasks" | "Subscriptions" | "Disabled Tools";
 
 interface VisiblePanelContent {
   tasks: TaskPanelEntry[];
   integrations: ExternalIntegrationSummary[];
-  disabledToolGroups: DisabledToolEntry[][];
+  disabledToolGroups: DisabledToolGroupLayout[];
   hiddenCount: number;
   headerTitle: PanelSectionTitle;
   showSubscriptionsDivider: boolean;
@@ -331,26 +404,24 @@ function fitTasksAndSubscriptions(
 function fitPanelContent(
   tasks: TaskPanelEntry[],
   integrations: ExternalIntegrationSummary[],
-  disabledTools: DisabledToolEntry[],
+  disabledToolGroups: DisabledToolGroupLayout[],
   maxContentRows: number,
 ): VisiblePanelContent {
-  if (disabledTools.length === 0) return fitTasksAndSubscriptions(tasks, integrations, maxContentRows);
+  if (disabledToolGroups.length === 0) return fitTasksAndSubscriptions(tasks, integrations, maxContentRows);
 
-  const totalEntries = tasks.length + integrations.length + disabledTools.length;
-  const disabledToolGroups = [
-    disabledTools.filter(tool => tool.kind === "internal"),
-    disabledTools.filter(tool => tool.kind === "external"),
-  ].filter(group => group.length > 0);
+  const disabledToolCount = disabledToolGroups.reduce((count, group) => count + group.tools.length, 0);
+  const totalEntries = tasks.length + integrations.length + disabledToolCount;
   const headerTitle: PanelSectionTitle = tasks.length > 0
     ? "Tasks"
     : integrations.length > 0
       ? "Subscriptions"
-      : "Disabled tools";
+      : "Disabled Tools";
   const showSubscriptionsDivider = tasks.length > 0 && integrations.length > 0;
   const showDisabledToolsDivider = tasks.length > 0 || integrations.length > 0;
   const dividerRows = Number(showSubscriptionsDivider) + Number(showDisabledToolsDivider);
 
-  const totalRows = tasks.length + integrations.length + disabledToolGroups.length + dividerRows;
+  const disabledToolRows = disabledToolGroups.reduce((count, group) => count + group.lines.length, 0);
+  const totalRows = tasks.length + integrations.length + disabledToolRows + dividerRows;
   if (totalRows <= maxContentRows) {
     return {
       tasks,
@@ -364,29 +435,27 @@ function fitPanelContent(
   }
 
   // Reserve the final content row for overflow. If the card is too short even
-  // for both earlier dividers and one disabled tool, promote Disabled tools to
+  // for both earlier dividers and one disabled tool, promote Disabled Tools to
   // the header rather than rendering section labels with no useful anomaly.
   const entrySlots = maxContentRows - dividerRows - 1;
   if (entrySlots < 1) {
-    const visibleDisabledGroupCount = Math.max(0, maxContentRows - 1);
-    const visibleDisabledGroups = disabledToolGroups.slice(0, visibleDisabledGroupCount);
-    const visibleDisabledCount = visibleDisabledGroups.reduce((count, group) => count + group.length, 0);
+    const visibleDisabledGroups = fitDisabledToolGroups(disabledToolGroups, maxContentRows - 1);
+    const visibleDisabledCount = visibleDisabledGroups.reduce((count, group) => count + group.tools.length, 0);
     return {
       tasks: [],
       integrations: [],
       disabledToolGroups: visibleDisabledGroups,
       hiddenCount: totalEntries - visibleDisabledCount,
-      headerTitle: "Disabled tools",
+      headerTitle: "Disabled Tools",
       showSubscriptionsDivider: false,
       showDisabledToolsDivider: false,
     };
   }
 
-  let remaining = entrySlots;
-  const visibleDisabledGroupCount = Math.min(disabledToolGroups.length, remaining);
-  const visibleDisabledGroups = disabledToolGroups.slice(0, visibleDisabledGroupCount);
-  const visibleDisabledCount = visibleDisabledGroups.reduce((count, group) => count + group.length, 0);
-  remaining -= visibleDisabledGroupCount;
+  const visibleDisabledGroups = fitDisabledToolGroups(disabledToolGroups, entrySlots);
+  const visibleDisabledCount = visibleDisabledGroups.reduce((count, group) => count + group.tools.length, 0);
+  const visibleDisabledRows = visibleDisabledGroups.reduce((count, group) => count + group.lines.length, 0);
+  let remaining = visibleDisabledCount === disabledToolCount ? entrySlots - visibleDisabledRows : 0;
   const visibleIntegrationCount = Math.min(integrations.length, remaining);
   remaining -= visibleIntegrationCount;
   const visibleTaskCount = Math.min(tasks.length, remaining);
@@ -425,7 +494,8 @@ export function renderTaskPanel(
   const panelWidth = Math.min(MAX_PANEL_WIDTH, chatWidth);
   const innerWidth = panelWidth - 2;
   const maxContentRows = panelHeight - 2;
-  const visible = fitPanelContent(tasks, integrations, disabledTools, maxContentRows);
+  const disabledToolGroups = layoutDisabledToolGroups(state, disabledTools, innerWidth - 2);
+  const visible = fitPanelContent(tasks, integrations, disabledToolGroups, maxContentRows);
 
   const panelBg = hexToAnsiBg(PANEL_BG_HEX);
   const outline = `${theme.dim}${theme.text}`;
@@ -508,7 +578,7 @@ export function renderTaskPanel(
   }
 
   if (visible.showDisabledToolsDivider) {
-    const sectionTitle = "Disabled tools";
+    const sectionTitle = "Disabled Tools";
     const sectionCount = String(disabledTools.length);
     const sectionLeft = `─ ${sectionTitle} `;
     const sectionRight = ` ${sectionCount} ─`;
@@ -520,10 +590,11 @@ export function renderTaskPanel(
   }
 
   for (const group of visible.disabledToolGroups) {
-    lines.push(withPanelBg(
-      `${outline}│${theme.reset} ${renderDisabledToolGroup(state, group, innerWidth - 2)}`
-      + `${theme.reset} ${outline}│`,
-    ));
+    for (const wrappedLine of group.lines) {
+      lines.push(withPanelBg(
+        `${outline}│${theme.reset} ${wrappedLine}${theme.reset} ${outline}│`,
+      ));
+    }
   }
 
   if (visible.hiddenCount > 0) {

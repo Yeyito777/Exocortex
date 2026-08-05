@@ -395,7 +395,7 @@ describe("focused conversation disabled tools", () => {
     expect(renderTaskPanel(state, 100, 20)).toBeNull();
   });
 
-  test("uses a Disabled tools header when it is the only exceptional activity", () => {
+  test("uses a Disabled Tools header when it is the only exceptional activity", () => {
     const state = stateWithDisabledTools();
     const panel = renderTaskPanel(state, 100, 20)!;
     const plain = panel.lines.map(stripAnsi);
@@ -408,7 +408,7 @@ describe("focused conversation disabled tools", () => {
       { kind: "external", name: "google", label: "Google" },
     ]);
     expect(hasFocusedConversationDisabledTools(state)).toBe(true);
-    expect(plain[0]).toContain("Disabled tools");
+    expect(plain[0]).toContain("Disabled Tools");
     expect(plain[0].trimEnd()).toEndWith("5 ─╮");
     expect(plain[1]).toContain("⊘ Bash, Read, Write");
     expect(plain[2]).toContain("⊘ Gmail, Google");
@@ -421,7 +421,7 @@ describe("focused conversation disabled tools", () => {
     expect(panel.lines.every(line => visibleLength(line) === panel.width)).toBe(true);
   });
 
-  test("keeps each kind on one row and indicates horizontal list overflow", () => {
+  test("wraps each kind onto continuation rows without horizontal ellipses", () => {
     const state = stateWithDisabledTools();
     state.activeToolPolicy!.internal.push(
       { name: "edit", label: "Edit", enabled: false },
@@ -434,9 +434,12 @@ describe("focused conversation disabled tools", () => {
 
     const panel = renderTaskPanel(state, 30, 20)!;
     const plain = panel.lines.map(stripAnsi);
-    expect(panel.lines).toHaveLength(4);
-    expect(plain[1]).toContain("⊘ Bash, Read, Write, …");
-    expect(plain[2]).toContain("⊘ Gmail, Google, …");
+    expect(panel.lines).toHaveLength(6);
+    expect(plain[1]).toContain("⊘ Bash, Read, Write, Edit,");
+    expect(plain[2]).toContain("  Patch, Exocortex");
+    expect(plain[3]).toContain("⊘ Gmail, Google,");
+    expect(plain[4]).toContain("  Very Long External Tool");
+    expect(plain.join("\n")).not.toContain("…");
     expect(panel.lines.every(line => visibleLength(line) === panel.width)).toBe(true);
   });
 
@@ -448,7 +451,7 @@ describe("focused conversation disabled tools", () => {
     const panel = renderTaskPanel(state, 100, 20, 43_000)!;
     const plain = panel.lines.map(stripAnsi);
     const subscriptionsRow = plain.findIndex(line => line.includes("Subscriptions"));
-    const disabledToolsRow = plain.findIndex(line => line.includes("Disabled tools"));
+    const disabledToolsRow = plain.findIndex(line => line.includes("Disabled Tools"));
 
     expect(plain[0]).toContain("Tasks");
     expect(subscriptionsRow).toBeGreaterThan(0);
@@ -470,7 +473,7 @@ describe("focused conversation disabled tools", () => {
     const plain = panel.lines.map(stripAnsi).join("\n");
     expect(panel.lines).toHaveLength(6);
     expect(plain).toContain("Subscriptions");
-    expect(plain).toContain("Disabled tools");
+    expect(plain).toContain("Disabled Tools");
     expect(plain).toContain("⊘ Bash, Read, Write");
     expect(plain).toContain("… 8 more");
     expect(plain).not.toContain("Map daemon events");
