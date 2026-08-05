@@ -214,13 +214,14 @@ not already available.
 
 #### Install
 
-Clone the repository, then double-click `scripts\install-windows.cmd`. To run
+Clone the repository, then double-click
+`scripts\windows\exocortex-install.cmd`. To run
 the same installer from a terminal:
 
 ```powershell
 git clone https://github.com/Yeyito777/Exocortex.git
 cd Exocortex
-.\scripts\install-windows.cmd
+.\scripts\windows\exocortex-install.cmd
 ```
 
 The installer builds the daemon, TUI, and external `exo` CLI into `dist\`,
@@ -231,7 +232,7 @@ new terminal after the first install.
 To install elsewhere or leave `PATH` unchanged:
 
 ```powershell
-.\scripts\install-windows.cmd -InstallDir C:\Exocortex -NoPathUpdate
+.\scripts\windows\exocortex-install.cmd -InstallDir C:\Exocortex -NoPathUpdate
 ```
 
 #### Authenticate and launch
@@ -255,7 +256,7 @@ the daemon when the TUI closes. No Windows service is installed.
 ```powershell
 cd Exocortex
 git pull --ff-only
-.\scripts\install-windows.cmd
+.\scripts\windows\exocortex-install.cmd
 ```
 
 #### Cross-build from Linux or WSL

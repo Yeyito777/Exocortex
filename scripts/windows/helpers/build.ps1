@@ -2,7 +2,8 @@
 param()
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = Split-Path -Parent $PSScriptRoot
+$WindowsDir = Split-Path -Parent $PSScriptRoot
+$RepoRoot = Split-Path -Parent (Split-Path -Parent $WindowsDir)
 $DistDir = Join-Path $RepoRoot "dist"
 
 $BunCommand = Get-Command bun.exe -ErrorAction SilentlyContinue
@@ -65,7 +66,7 @@ try {
     Write-Host "Building exo.exe..."
     Invoke-Bun build --compile --target=bun-windows-x64 external-tools/exo-cli/src/main.ts --outfile (Join-Path $DistDir "exo.exe")
 
-    Copy-Item (Join-Path $RepoRoot "scripts\exocortex.bat") (Join-Path $DistDir "exocortex.bat") -Force
+    Copy-Item (Join-Path $WindowsDir "exocortex.bat") (Join-Path $DistDir "exocortex.bat") -Force
 
     Write-Host ""
     Write-Host "Windows build complete:"
