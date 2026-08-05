@@ -21,6 +21,7 @@ import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
+import { quarantineActiveContext } from "./active-context-quarantine";
 import { goalContinuationUserMessage } from "./goals";
 import { createProviderTurnSession, streamMessage } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
@@ -520,7 +521,19 @@ async function orchestrateAssistantTurn(
   // The visible transcript remains append-only. Provider replay may start from
   // a compact checkpoint and append only the transcript tail written since it.
   if (conv.activeContext && !isValidActiveContextCached(conv.activeContext, conv.messages)) {
-    log("warn", `orchestrator: discarded invalid active context for ${convId}; replaying the complete transcript`);
+    let quarantinePath: string;
+    try {
+      quarantinePath = quarantineActiveContext(
+        convId,
+        conv.activeContext,
+        "Active context failed integrity validation before provider replay",
+      );
+    } catch (error) {
+      throw new Error(
+        `Active context failed validation and could not be safely quarantined: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    log("warn", `orchestrator: quarantined invalid active context for ${convId} at ${quarantinePath}; replaying the complete transcript`);
     conv.activeContext = null;
     conv.lastContextTokens = null;
     convStore.markDirty(convId);
