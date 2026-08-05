@@ -8,6 +8,7 @@
 
 import { createHash } from "crypto";
 import { realpath, stat } from "fs/promises";
+import { homedir } from "os";
 import { dirname, extname, resolve } from "path";
 import type { Conversation, ConversationCustomToolModule } from "../messages";
 import type { Tool } from "./types";
@@ -204,8 +205,14 @@ async function compileModule(path: string): Promise<CompiledModule> {
 }
 
 export async function canonicalizeCustomToolModulePath(path: string, mustExist = true): Promise<string> {
-  const absolute = resolve(process.cwd(), path.trim());
-  if (!path.trim()) throw new Error("Custom tool module path cannot be empty");
+  const requested = path.trim();
+  if (!requested) throw new Error("Custom tool module path cannot be empty");
+  const expanded = requested === "~"
+    ? homedir()
+    : requested.startsWith("~/") || (process.platform === "win32" && requested.startsWith("~\\"))
+      ? resolve(homedir(), requested.slice(2))
+      : requested;
+  const absolute = resolve(process.cwd(), expanded);
   if (!SUPPORTED_EXTENSIONS.has(extname(absolute).toLowerCase())) {
     throw new Error(`Unsupported custom tool module extension for ${absolute}; expected TypeScript or JavaScript`);
   }

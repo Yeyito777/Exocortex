@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "fs/promises";
-import { join } from "path";
-import { tmpdir } from "os";
+import { join, relative } from "path";
+import { homedir, tmpdir } from "os";
 import { createConversation } from "../messages";
 import { applyToolPolicyMutation, buildToolPolicySnapshot } from "../tool-policy";
 import {
@@ -60,6 +60,22 @@ afterEach(async () => {
 });
 
 describe("conversation-scoped custom tools", () => {
+  test("expands a leading ~/ in module paths", async () => {
+    const path = await temporaryModule(toolsetSource("home-path"));
+    const homeRelativePath = `~/${relative(homedir(), path)}`;
+    const conversation = createConversation("custom-home-path", "openai", "gpt-5.6-sol");
+    conversationIds.push(conversation.id);
+
+    conversation.toolPolicy = await applyToolPolicyMutation(conversation, {
+      action: "enable",
+      tools: [],
+      modulePaths: [homeRelativePath],
+    });
+
+    expect(conversation.toolPolicy?.customToolModules?.[0]?.path).toBe(path);
+    expect(conversation.toolPolicy?.internal).toContain("fixture_search");
+  });
+
   test("enables a TypeScript toolset for exactly one conversation", async () => {
     const path = await temporaryModule(toolsetSource("v1"));
     const conversation = createConversation("custom-one", "openai", "gpt-5.6-sol");

@@ -5,10 +5,12 @@ conversation without adding them to the daemon's built-in registry:
 
 ```text
 /tools enable /absolute/path/to/toolset.ts
+/tools enable ~/path/from/your/home/to/toolset.ts
 ```
 
-Relative paths resolve from the daemon's working directory. The supported entry
-extensions are `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.mjs`, and `.cjs`.
+Paths beginning with `~/` resolve from the current user's home directory.
+Other relative paths resolve from the daemon's working directory. The supported
+entry extensions are `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.mjs`, and `.cjs`.
 
 `/tools` also works on a blank chat. In that state, changes belong to the
 not-yet-created conversation draft:
