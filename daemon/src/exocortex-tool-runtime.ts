@@ -67,6 +67,8 @@ import {
   validateToolSelection,
 } from "./tool-policy";
 import { getLastUsage } from "./usage";
+import { clearConversationCustomTools, ensureConversationCustomTools } from "./tools/custom-tools";
+import { getRegisteredTools } from "./tools/registry";
 import {
   listExternalNotificationSources,
   listExternalNotificationSubscriptions,
@@ -796,6 +798,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       let childInternalTools = validateToolSelection(
         "internal",
         requestedInternalTools ?? getDefaultSubagentInternalToolNames(maxDepth, requestedAllowEdits === true),
+        parent,
       );
       let childExternalTools = validateToolSelection("external", requestedExternalTools ?? []);
       if (maxDepth <= 0 && childInternalTools.includes("exo")) {
@@ -816,10 +819,16 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         }
         assertDelegatedSubset("external", childExternalTools, parentTools.externalToolNames);
       }
-      ({ internal: childInternalTools, external: childExternalTools } = normalizeToolPolicySelection(
+      const childCustomModules = (parent?.toolPolicy?.customToolModules ?? []).filter((module) => (
+        module.tools.some((tool) => childInternalTools.includes(tool.name))
+      ));
+      const childToolPolicy = normalizeToolPolicySelection(
         childInternalTools,
         childExternalTools,
-      ));
+        childCustomModules,
+      );
+      childInternalTools = childToolPolicy.internal;
+      childExternalTools = childToolPolicy.external;
       const folder = convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME);
       if (!folder) throw new Error(`Failed to create ${SUBAGENTS_FOLDER_NAME} folder`);
       convId = convStore.generateId();
@@ -829,7 +838,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         allowEdits: requestedAllowEdits === true,
         parentSystemInstructions: parentConvId ? convStore.getEffectiveSystemInstructions(parentConvId) ?? "" : "",
       });
-      convStore.setToolPolicy(convId, { internal: childInternalTools, external: childExternalTools });
+      convStore.setToolPolicy(convId, childToolPolicy);
       taskTitle = requestedTitle!;
       created = true;
       broadcastConversationUpdated(server, convId);
@@ -841,7 +850,11 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       ensureScopedDelegationTarget(parentConvId, convId);
       taskTitle = target.title || "Subagent task";
       if (existingToolPolicyRequested) {
-        requestedExistingToolPolicy = normalizeToolPolicySelection(requestedInternalTools!, requestedExternalTools!);
+        requestedExistingToolPolicy = normalizeToolPolicySelection(
+          requestedInternalTools!,
+          requestedExternalTools!,
+          target.toolPolicy?.customToolModules,
+        );
         if (maxDepth <= 0 && requestedExistingToolPolicy.internal.includes("exo")) {
           throw new Error("Cannot enable internal tool exo for a conversation when this send has max_depth=0");
         }
@@ -1364,10 +1377,11 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     return ok(pretty({ source_conversation_id: convId, conversation_id: cloned.id, title: cloned.title }));
   };
 
-  const executeSystemPromptCommand = (args: Record<string, unknown>, parentConversationId: string | undefined): ToolResult => {
+  const executeSystemPromptCommand = async (args: Record<string, unknown>, parentConversationId: string | undefined): Promise<ToolResult> => {
     const convId = conversationIdInput(args, parentConversationId);
     const conversation = convStore.get(convId);
     if (!conversation) throw new Error(`Conversation ${convId} not found`);
+    await ensureConversationCustomTools(conversation, getRegisteredTools().map((tool) => tool.name));
     const instructions = convStore.getEffectiveSystemInstructions(convId);
     const scopedPromptOptions = scopedSubagentPromptOptions(conversation, conversation.subagentMaxDepth ?? 0);
     const resolvedToolPolicy = resolveConversationToolPolicy(conversation, conversation.subagentMaxDepth ?? null);
@@ -1382,12 +1396,12 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }));
   };
 
-  const executeToolsCommand = (
+  const executeToolsCommand = async (
     args: Record<string, unknown>,
     parentConversationId: string | undefined,
     _signal?: AbortSignal,
     callerMaxDepth?: number | null,
-  ): ToolResult => {
+  ): Promise<ToolResult> => {
     const operation = stringInput(args, "operation", true)!.toLowerCase();
     if (operation !== "get" && operation !== "set" && operation !== "reset") {
       throw new Error("operation must be get, set, or reset");
@@ -1426,7 +1440,11 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       if (!internal || !external) {
         throw new Error("internal_tools and external_tools are both required for operation=set; use empty arrays to select none");
       }
-      nextPolicy = normalizeToolPolicySelection(internal, external);
+      nextPolicy = normalizeToolPolicySelection(
+        internal,
+        external,
+        conversation.toolPolicy?.customToolModules,
+      );
       if ((conversation.subagentMaxDepth ?? null) !== null
         && (conversation.subagentMaxDepth ?? 0) <= 0
         && nextPolicy.internal.includes("exo")) {
@@ -1443,6 +1461,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const previousPolicy = conversation.toolPolicy;
     const changed = JSON.stringify(previousPolicy) !== JSON.stringify(nextPolicy);
     if (changed) {
+      if (nextPolicy === null) await clearConversationCustomTools(convId);
       if (!convStore.setToolPolicy(convId, nextPolicy)) throw new Error(`Conversation ${convId} not found`);
       broadcastConversationUpdated(server, convId);
       broadcastConversationToolPolicyUpdated(server, convId);

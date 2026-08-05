@@ -35,6 +35,23 @@ describe("adaptive user message rendering", () => {
 });
 
 describe("tool-call presentation", () => {
+  test("uses invocation-local styles for conversation-scoped internal tools", () => {
+    const block: Block = {
+      type: "tool_call",
+      toolCallId: "custom-1",
+      toolName: "minecraft_grep",
+      input: { query: "copper" },
+      summary: "copper",
+      presentation: {
+        toolStyle: { name: "minecraft_grep", label: "Minecraft Grep", color: "#12abef" },
+      },
+    };
+
+    const rendered = renderBlockCached(block, 80, [], [], false);
+
+    expect(stripAnsi(rendered.lines[0] ?? "")).toBe("  Minecraft Grep copper");
+  });
+
   test("uses snapshotted Bash styles before the global external-tool registry", () => {
     const block: Block = {
       type: "tool_call",

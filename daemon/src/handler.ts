@@ -17,6 +17,7 @@ import { complete } from "./llm";
 import { buildSystemPrompt } from "./system";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { getToolDisplayInfo } from "./tools/registry";
+import { ensureConversationCustomTools } from "./tools/custom-tools";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
 import { applyToolPolicyMutation, buildToolPolicySnapshot, resolveConversationToolPolicy } from "./tool-policy";
 import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME } from "./messages";
@@ -2477,6 +2478,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const scopedPromptOptions = conversation
           ? scopedSubagentPromptOptions(conversation, subagentMaxDepth)
           : null;
+        if (conversation) {
+          await ensureConversationCustomTools(conversation, getToolDisplayInfo().map((tool) => tool.name));
+        }
         const resolvedToolPolicy = conversation
           ? resolveConversationToolPolicy(conversation, subagentMaxDepth)
           : null;
@@ -2525,7 +2529,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         try {
-          const policy = applyToolPolicyMutation(conversation, cmd.mutation);
+          const policy = await applyToolPolicyMutation(conversation, cmd.mutation);
           convStore.setToolPolicy(cmd.convId, policy);
           const updated = convStore.get(cmd.convId)!;
           server.sendTo(client, {

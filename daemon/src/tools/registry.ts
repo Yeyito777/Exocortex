@@ -24,6 +24,7 @@ import { formatToolAbortMessage, isToolTimeoutReason, toolTimeoutReason } from "
 import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
 import { AbortableSemaphore } from "./semaphore";
 import { log } from "../log";
+import { getConversationCustomTool, getConversationCustomTools } from "./custom-tools";
 
 // ── Registry ───────────────────────────────────────────────────────
 
@@ -46,7 +47,7 @@ const TOOLS: Tool[] = [
 // with each manifest's label/color. A generic external wrapper would erase
 // that per-tool presentation and add an unnecessary execution layer.
 
-const toolMap = new Map<string, Tool>(TOOLS.map(t => [t.name, t]));
+const builtinToolMap = new Map<string, Tool>(TOOLS.map(t => [t.name, t]));
 
 const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
 const configuredFilesystemScanConcurrency = Number(process.env.TOOL_FILESYSTEM_SCAN_CONCURRENCY);
@@ -61,25 +62,32 @@ function isToolAvailable(tool: Tool): boolean {
   return tool.isAvailable?.() ?? true;
 }
 
-function getAvailableTools(): Tool[] {
-  return TOOLS.filter(isToolAvailable);
+function getAvailableTools(conversationId?: string): Tool[] {
+  return [
+    ...TOOLS.filter(isToolAvailable),
+    ...getConversationCustomTools(conversationId).filter(isToolAvailable),
+  ];
 }
 
-function getSelectedAvailableTools(allowedNames?: readonly string[]): Tool[] {
-  const available = getAvailableTools();
+function getSelectedAvailableTools(allowedNames?: readonly string[], conversationId?: string): Tool[] {
+  const available = getAvailableTools(conversationId);
   if (!allowedNames) return available;
   const allowed = new Set(allowedNames);
   return available.filter(tool => allowed.has(tool.name));
 }
 
-export function getRegisteredTools(): Tool[] {
-  return [...getAvailableTools()];
+function getTool(name: string, conversationId?: string): Tool | undefined {
+  return builtinToolMap.get(name) ?? getConversationCustomTool(conversationId, name);
+}
+
+export function getRegisteredTools(conversationId?: string): Tool[] {
+  return [...getAvailableTools(conversationId)];
 }
 
 // ── API tool definitions (sent to model providers) ─────────────────
 
-export function getToolDefs(allowedNames?: readonly string[]): { name: string; description: string; input_schema: Record<string, unknown> }[] {
-  return getSelectedAvailableTools(allowedNames).map(t => ({
+export function getToolDefs(allowedNames?: readonly string[], conversationId?: string): { name: string; description: string; input_schema: Record<string, unknown> }[] {
+  return getSelectedAvailableTools(allowedNames, conversationId).map(t => ({
     name: t.name,
     description: t.description,
     input_schema: t.inputSchema,
@@ -96,10 +104,16 @@ export function getToolDisplayInfo(): ToolDisplayInfo[] {
   }));
 }
 
+/** Invocation-local display metadata for a conversation-scoped custom tool. */
+export function getCustomToolDisplayInfo(name: string, conversationId?: string): ToolDisplayInfo | undefined {
+  const tool = getConversationCustomTool(conversationId, name);
+  return tool ? { name: tool.name, label: tool.display.label, color: tool.display.color } : undefined;
+}
+
 // ── System prompt hints ────────────────────────────────────────────
 
-export function buildToolSystemHints(allowedNames?: readonly string[]): string {
-  return getSelectedAvailableTools(allowedNames)
+export function buildToolSystemHints(allowedNames?: readonly string[], conversationId?: string): string {
+  return getSelectedAvailableTools(allowedNames, conversationId)
     .filter(t => t.systemHint)
     .map(t => `## ${t.name}\n${t.systemHint!}`)
     .join("\n");
@@ -107,8 +121,8 @@ export function buildToolSystemHints(allowedNames?: readonly string[]): string {
 
 // ── Summarize a tool call ──────────────────────────────────────────
 
-export function summarizeTool(name: string, input: Record<string, unknown>): ToolSummary {
-  const tool = toolMap.get(name);
+export function summarizeTool(name: string, input: Record<string, unknown>, conversationId?: string): ToolSummary {
+  const tool = getTool(name, conversationId);
   if (!tool) return { label: name, detail: "" };
   return tool.summarize(input);
 }
@@ -199,12 +213,12 @@ export interface ToolExecutionBatch {
   calls: ApiToolCall[];
 }
 
-export function getToolParallelSafety(toolName: string): ToolParallelSafety {
-  return toolMap.get(toolName)?.parallelSafety ?? "exclusive";
+export function getToolParallelSafety(toolName: string, conversationId?: string): ToolParallelSafety {
+  return getTool(toolName, conversationId)?.parallelSafety ?? "exclusive";
 }
 
-export function getToolDefaultTimeoutMs(toolName: string): number | null {
-  const configured = toolMap.get(toolName)?.defaultTimeoutMs;
+export function getToolDefaultTimeoutMs(toolName: string, conversationId?: string): number | null {
+  const configured = getTool(toolName, conversationId)?.defaultTimeoutMs;
   if (configured === null) return null;
   if (typeof configured === "number" && Number.isFinite(configured) && configured > 0) {
     return configured;
@@ -212,32 +226,32 @@ export function getToolDefaultTimeoutMs(toolName: string): number | null {
   return DEFAULT_TOOL_TIMEOUT_MS;
 }
 
-export function getToolResourceClass(toolName: string): ToolResourceClass | undefined {
-  return toolMap.get(toolName)?.resourceClass;
+export function getToolResourceClass(toolName: string, conversationId?: string): ToolResourceClass | undefined {
+  return getTool(toolName, conversationId)?.resourceClass;
 }
 
-export function toolCallsRequireWatchdogPause(calls: ApiToolCall[]): boolean {
-  return calls.some(call => toolMap.get(call.name)?.watchdogExempt === true);
+export function toolCallsRequireWatchdogPause(calls: ApiToolCall[], conversationId?: string): boolean {
+  return calls.some(call => getTool(call.name, conversationId)?.watchdogExempt === true);
 }
 
-function callSupportsParallel(call: ApiToolCall): boolean {
-  return getToolParallelSafety(call.name) === "safe";
+function callSupportsParallel(call: ApiToolCall, conversationId?: string): boolean {
+  return getToolParallelSafety(call.name, conversationId) === "safe";
 }
 
-export function planToolExecutionBatches(calls: ApiToolCall[]): ToolExecutionBatch[] {
+export function planToolExecutionBatches(calls: ApiToolCall[], conversationId?: string): ToolExecutionBatch[] {
   const batches: ToolExecutionBatch[] = [];
   let i = 0;
 
   while (i < calls.length) {
     const call = calls[i];
-    if (!callSupportsParallel(call)) {
+    if (!callSupportsParallel(call, conversationId)) {
       batches.push({ mode: "exclusive", calls: [call] });
       i++;
       continue;
     }
 
     const start = i;
-    while (i < calls.length && callSupportsParallel(calls[i])) i++;
+    while (i < calls.length && callSupportsParallel(calls[i], conversationId)) i++;
     batches.push({ mode: "parallel", calls: calls.slice(start, i) });
   }
 
@@ -273,7 +287,7 @@ async function executeSingleTool(
     };
   }
 
-  const tool = toolMap.get(call.name);
+  const tool = getTool(call.name, toolContext?.conversationId);
   if (!tool) {
     return { toolCallId: call.id, toolName: call.name, output: `Unknown tool: ${call.name}`, isError: true };
   }
@@ -281,7 +295,7 @@ async function executeSingleTool(
     return { toolCallId: call.id, toolName: call.name, output: `Tool unavailable: ${call.name}`, isError: true };
   }
 
-  const timeoutMs = getToolDefaultTimeoutMs(call.name);
+  const timeoutMs = getToolDefaultTimeoutMs(call.name, toolContext?.conversationId);
   const deadline = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let onParentAbort: (() => void) | undefined;
@@ -331,7 +345,7 @@ async function executeScheduledTools(
 ): Promise<ToolExecResult[]> {
   const results: ToolExecResult[] = [];
 
-  for (const batch of planToolExecutionBatches(calls)) {
+  for (const batch of planToolExecutionBatches(calls, toolContext?.conversationId)) {
     const batchResults = batch.mode === "parallel"
       ? await Promise.all(batch.calls.map(call => executeSingleTool(call, toolContext, signal, allowedTools)))
       : [await executeSingleTool(batch.calls[0], toolContext, signal, allowedTools)];

@@ -105,7 +105,7 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
   const parts = [buildEnvironmentHeader(options.conversationId, options.identity)];
 
   if (options.includeToolHints) {
-    const toolHints = buildToolSystemHints(options.toolNames);
+    const toolHints = buildToolSystemHints(options.toolNames, options.conversationId);
     parts.push(toolHints ? `# Internal tools\n${toolHints}` : "# Internal tools");
   }
 

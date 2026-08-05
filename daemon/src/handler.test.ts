@@ -133,12 +133,12 @@ describe("handler conversation tool policy", () => {
 
     await handle({} as never, {
       type: "set_tool_policy",
-      reqId: "deny-bash",
+      reqId: "disable-bash",
       convId: id,
-      mutation: { action: "deny", tools: [{ kind: "internal", name: "bash" }] },
+      mutation: { action: "disable", tools: [{ kind: "internal", name: "bash" }] },
     });
     expect(get(id)?.toolPolicy?.internal).not.toContain("bash");
-    expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "deny-bash", changed: true, snapshot: { source: "explicit" } });
+    expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "disable-bash", changed: true, snapshot: { source: "explicit" } });
     expect(broadcasted.at(-1)).toMatchObject({ type: "tool_policy", convId: id, changed: true, snapshot: { source: "explicit" } });
     expect(broadcasted.at(-1)).not.toHaveProperty("reqId");
 
