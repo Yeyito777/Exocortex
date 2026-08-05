@@ -154,6 +154,7 @@ interface MessageBlobRow {
 
 interface LoadedMessageSnapshot {
   ref: StoredMessage;
+  role: StoredMessage["role"];
   contentRef: unknown;
   contentString: string | null;
   metadataJson: string | null;
@@ -204,6 +205,7 @@ function messageFingerprint(message: StoredMessage): string {
 function messageSnapshot(message: StoredMessage): LoadedMessageSnapshot {
   return {
     ref: message,
+    role: message.role,
     contentRef: message.content,
     contentString: typeof message.content === "string" ? message.content : null,
     metadataJson: optionalJson(message.metadata),
@@ -216,14 +218,24 @@ function messageSnapshot(message: StoredMessage): LoadedMessageSnapshot {
   };
 }
 
-function messageShallowChanged(snapshot: LoadedMessageSnapshot, message: StoredMessage): boolean {
-  if (snapshot.ref !== message) return true;
+function messageChangedExceptContextAttribution(snapshot: LoadedMessageSnapshot, message: StoredMessage): boolean {
+  if (snapshot.ref !== message || snapshot.role !== message.role) return true;
   if (snapshot.contentRef !== message.content) return true;
   if (typeof message.content === "string" && snapshot.contentString !== message.content) return true;
   if (snapshot.providerDataRef !== message.providerData || snapshot.hasProviderData !== Object.hasOwn(message, "providerData")) return true;
   if (snapshot.metadataJson !== optionalJson(message.metadata)) return true;
-  if (snapshot.hasContextTokens !== Object.hasOwn(message, "contextTokens") || snapshot.contextTokensJson !== optionalJson(message.contextTokens)) return true;
-  return snapshot.hasCheckpoint !== Object.hasOwn(message, "contextCheckpoint") || snapshot.checkpointJson !== optionalJson(message.contextCheckpoint);
+  return snapshot.hasCheckpoint !== Object.hasOwn(message, "contextCheckpoint")
+    || snapshot.checkpointJson !== optionalJson(message.contextCheckpoint);
+}
+
+function messageContextAttributionChanged(snapshot: LoadedMessageSnapshot, message: StoredMessage): boolean {
+  return snapshot.hasContextTokens !== Object.hasOwn(message, "contextTokens")
+    || snapshot.contextTokensJson !== optionalJson(message.contextTokens);
+}
+
+function messageShallowChanged(snapshot: LoadedMessageSnapshot, message: StoredMessage): boolean {
+  return messageChangedExceptContextAttribution(snapshot, message)
+    || messageContextAttributionChanged(snapshot, message);
 }
 
 function storedMessageFromRow(row: MessageRow, blobs: MessageBlobRow[] = []): StoredMessage {
@@ -277,6 +289,19 @@ function projectedEditableHistoryStart(conv: Conversation): number | null | unde
   if (active) {
     const count = activeContextCompactionHistoryCount(active, conv.messages);
     return count == null ? null : count;
+  }
+  return conv.messages.some((message) => message.metadata?.kind === "context_compaction_finished")
+    ? null
+    : undefined;
+}
+
+/** The domain has already validated this active context before committing an unwind. */
+function validatedUnwindEditableHistoryStart(conv: Conversation): number | null | undefined {
+  const active = conv.activeContext;
+  if (active) {
+    // Modern contexts persist this immutable boundary. Legacy contexts still
+    // require the cheap divider scan in activeContextCompactionHistoryCount().
+    return active.compactionHistoryCount ?? activeContextCompactionHistoryCount(active, conv.messages);
   }
   return conv.messages.some((message) => message.metadata?.kind === "context_compaction_finished")
     ? null
@@ -1044,7 +1069,11 @@ export class SqliteConversationStore implements ConversationRepository {
     return state.messages.length === conv.messages.length ? null : common;
   }
 
-  private rebuildDisplay(conv: Conversation, changedAt: number): void {
+  private rebuildDisplay(
+    conv: Conversation,
+    changedAt: number,
+    options: { validatedUnwind?: boolean } = {},
+  ): void {
     // Rebuild only from the last affected real user turn. Starting at a user
     // boundary keeps assistant/tool-result grouping deterministic.
     let startSequence = 0;
@@ -1087,7 +1116,9 @@ export class SqliteConversationStore implements ConversationRepository {
         includeToolOutputs: false,
         includeUnwindFingerprints: false,
         replayHistoryPrefixCount: replayOffset,
-        editableUserHistoryStart: projectedEditableHistoryStart(conv),
+        editableUserHistoryStart: options.validatedUnwind
+          ? validatedUnwindEditableHistoryStart(conv)
+          : projectedEditableHistoryStart(conv),
       },
     );
     const realUsers = suffix.filter(isRealUserMessage);
@@ -1195,7 +1226,27 @@ export class SqliteConversationStore implements ConversationRepository {
     const existing = this.row(base.id);
     const loaded = this.loadedState.get(base);
     if (!existing) throw new Error(`Cannot persist unwind for missing conversation ${base.id}`);
-    if (loaded && loaded.generation !== existing.storage_generation) throw new Error(`Stale conversation generation for ${base.id}`);
+    if (!loaded) throw new Error(`Cannot persist unwind for unloaded conversation ${base.id}`);
+    if (loaded.generation !== existing.storage_generation) throw new Error(`Stale conversation generation for ${base.id}`);
+    const cutSequence = result.messages.length;
+    if (cutSequence > existing.stored_message_count || cutSequence > base.messages.length) {
+      throw new Error(`Invalid unwind boundary for ${base.id}: ${cutSequence}/${existing.stored_message_count}`);
+    }
+    // A targeted unwind may only remove a suffix. Prefix replacement belongs to
+    // the ordinary generation-checked save path and must not be smuggled into this
+    // optimized delete-only transaction.
+    const contextAttributionUpdates: number[] = [];
+    for (let sequence = 0; sequence < cutSequence; sequence++) {
+      const snapshot = loaded.messages[sequence];
+      if (result.messages[sequence] !== base.messages[sequence]
+          || !snapshot
+          || messageChangedExceptContextAttribution(snapshot, result.messages[sequence])) {
+        throw new Error(`Unwind changed retained message ${sequence} for ${base.id}`);
+      }
+      if (messageContextAttributionChanged(snapshot, result.messages[sequence])) {
+        contextAttributionUpdates.push(sequence);
+      }
+    }
     const generation = existing.storage_generation + 1;
     const receipt: PersistedUnwindReceipt = {
       operationId: options.operationId,
@@ -1203,20 +1254,43 @@ export class SqliteConversationStore implements ConversationRepository {
       historyTotalEntries: options.historyTotalEntries,
     };
     this.db.transaction(() => {
+      const removedBytes = this.db.query<{ bytes: number }, [string, number]>(`
+        SELECT COALESCE(SUM(content_bytes), 0) AS bytes FROM messages
+        WHERE conversation_id=? AND sequence>=?
+      `).get(base.id, cutSequence)!.bytes;
+      if (!Number.isSafeInteger(removedBytes) || removedBytes < 0 || removedBytes > existing.content_bytes) {
+        throw new Error(`Invalid removed content byte count for ${base.id}: ${removedBytes}/${existing.content_bytes}`);
+      }
       this.upsertConversationRow(result, generation);
       this.faultInjection?.("unwind.after-conversation");
-      this.db.query("DELETE FROM messages WHERE conversation_id=?").run(base.id);
-      let contentBytes = 0;
-      for (let sequence = 0; sequence < result.messages.length; sequence++) {
-        contentBytes += this.insertMessage(base.id, sequence, result.messages[sequence]);
+      // Messages are gap-free and every dependent payload table cascades from
+      // this key. Preserve the immutable prefix and delete only the doomed tail.
+      this.db.query("DELETE FROM messages WHERE conversation_id=? AND sequence>=?").run(base.id, cutSequence);
+      for (const sequence of contextAttributionUpdates) {
+        const message = result.messages[sequence];
+        // Match saveContextAttribution(): this field-level update deliberately
+        // avoids reserializing large tool/image content merely to refresh the
+        // force-save fingerprint.
+        this.db.query(`
+          UPDATE messages SET context_tokens_json=?, has_context_tokens=?
+          WHERE conversation_id=? AND sequence=?
+        `).run(
+          optionalJson(message.contextTokens),
+          Object.hasOwn(message, "contextTokens") ? 1 : 0,
+          base.id,
+          sequence,
+        );
       }
       this.faultInjection?.("unwind.after-messages");
-      this.rebuildDisplay(result, 0);
+      this.rebuildDisplay(result, cutSequence, { validatedUnwind: true });
       // The domain-calculated count excludes non-visible/system/tool-receipt
       // messages. Preserve exactly the same unwind summary semantics as JSON.
       this.db.query("UPDATE conversations SET content_bytes=?, message_count=? WHERE id=?")
-        .run(contentBytes, options.messageCount, base.id);
-      this.saveActiveContext(result);
+        .run(existing.content_bytes - removedBytes, options.messageCount, base.id);
+      // An unwind beyond a lagging compact replay cursor leaves that immutable
+      // checkpoint byte-for-byte unchanged; avoid rewriting its potentially large
+      // payload. A rewind inside represented tail history installs a new object.
+      if (result.activeContext !== base.activeContext) this.saveActiveContext(result);
       this.db.query(`
         INSERT INTO unwind_receipts(conversation_id, operation_id, user_message_index, history_total_entries, superseded_queue_ids_json)
         VALUES (?, ?, ?, ?, ?)
@@ -1231,8 +1305,26 @@ export class SqliteConversationStore implements ConversationRepository {
       }
       this.faultInjection?.("unwind.before-commit");
     })();
-    this.loadedState.set(base, { generation, messages: result.messages.map(messageSnapshot), activeContextRef: result.activeContext, lastUnwindReceipt: receipt });
+    this.loadedState.set(base, {
+      generation,
+      messages: loaded.messages.slice(0, cutSequence),
+      activeContextRef: result.activeContext,
+      lastUnwindReceipt: receipt,
+    });
+    const savedSnapshots = this.loadedState.get(base)!.messages;
+    for (const sequence of contextAttributionUpdates) {
+      savedSnapshots[sequence] = messageSnapshot(result.messages[sequence]);
+    }
     this.loadedById.set(base.id, new WeakRef(base));
+  }
+
+  displayEntryCountBeforeUser(id: string, userMessageIndex: number): number | null {
+    const row = this.db.query<{ entry_index: number }, [string, number]>(`
+      SELECT entry_index FROM display_entries
+      WHERE conversation_id=? AND pinned=0 AND user_index=?
+      LIMIT 1
+    `).get(id, userMessageIndex);
+    return row?.entry_index ?? null;
   }
 
   loadUnwindQueueTombstones(): Set<string> {

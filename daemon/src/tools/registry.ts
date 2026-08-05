@@ -19,7 +19,6 @@ import { browse } from "./browse";
 import { goal } from "./goal";
 import { exo } from "./exo";
 import { chrono } from "./chrono";
-import { computerUseTools } from "./computer-use";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage, isToolTimeoutReason, toolTimeoutReason } from "../abort";
 import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
@@ -40,7 +39,6 @@ const TOOLS: Tool[] = [
   goal,
   exo,
   chrono,
-  ...computerUseTools,
 ];
 
 // External manifests intentionally do not become native entries in TOOLS.

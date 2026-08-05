@@ -59,6 +59,7 @@ import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-pro
 import { log } from "./log";
 import { CallMediaController } from "./call-media";
 import { formatMicGainDb, loadMicGainDb, saveMicGainDb } from "./mic-gain";
+import { msUntilNextFolderNotification, STREAM_COMPLETION_SETTLE_MS } from "./sidebar/notifications";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -236,7 +237,7 @@ function scheduleStreamFinishedPing(completedConvId: string): void {
       activeConvId: state.convId,
       isCompletedConvStreaming: isConversationStreaming(completedConvId),
     });
-  }, 200);
+  }, STREAM_COMPLETION_SETTLE_MS);
 }
 
 function clearReconnectTimer(): void {
@@ -331,6 +332,8 @@ function resetStreamTick(): void {
     const delay = msUntilTaskPanelEntryUpdate(task);
     if (delay !== null) tickDelays.push(delay);
   }
+  const folderNotificationDelay = msUntilNextFolderNotification(state.sidebar);
+  if (folderNotificationDelay !== null) tickDelays.push(folderNotificationDelay);
   if (tickDelays.length > 0) {
     streamTickTimer = setTimeout(scheduleRender, Math.min(...tickDelays));
   }

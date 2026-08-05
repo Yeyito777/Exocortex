@@ -1,10 +1,19 @@
 import { existsSync } from "fs";
 import { chmod, mkdir, mkdtemp, rmdir, stat, unlink, writeFile } from "fs/promises";
-import { tmpdir } from "os";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { createConnection, type Socket } from "net";
-import { runtimeDir } from "@exocortex/shared/paths";
-import type { ToolResult } from "../tools/types";
+
+export interface ComputerResult {
+  output: string;
+  isError: boolean;
+  image?: {
+    mediaType: string;
+    base64: string;
+  };
+}
+
+type ToolResult = ComputerResult;
 
 const DWM_IPC_TIMEOUT_MS = 2_000;
 const MAX_INLINE_SCREENSHOT_BASE64 = 5 * 1024 * 1024;
@@ -394,8 +403,11 @@ async function runMagick(args: string[], signal?: AbortSignal): Promise<{ exitCo
 
 async function x11HelperPath(): Promise<string> {
   const source = join(import.meta.dir, "x11-send.c");
-  const out = join(runtimeDir(), "computer-use-x11-send");
-  await mkdir(runtimeDir(), { recursive: true });
+  const cacheRoot = process.env.XDG_CACHE_HOME?.trim()
+    || (process.env.HOME ? join(homedir(), ".cache") : join(tmpdir(), `exocortex-${process.getuid?.() ?? "user"}`));
+  const cacheDir = join(cacheRoot, "exocortex", "computer");
+  const out = join(cacheDir, "x11-send");
+  await mkdir(cacheDir, { recursive: true });
 
   const [srcStat, outStat] = await Promise.all([
     stat(source),

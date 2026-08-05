@@ -22,6 +22,8 @@ export interface SidebarState {
   prompt: SidebarPromptState | null;
   search: SidebarSearchState | null;
   conversationActionMenu: ConversationActionMenuState | null;
+  /** Per-conversation deadline before an idle unread completion is shown. */
+  folderNotificationBufferUntil: Record<string, number>;
 }
 
 export function createSidebarState(): SidebarState {
@@ -43,5 +45,6 @@ export function createSidebarState(): SidebarState {
     prompt: null,
     search: null,
     conversationActionMenu: null,
+    folderNotificationBufferUntil: {},
   };
 }
