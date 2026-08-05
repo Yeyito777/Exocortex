@@ -4,7 +4,7 @@ setlocal
 rem Double-clickable launcher for the native Windows source installer.
 rem Set EXOCORTEX_INSTALL_NO_PAUSE=1 when invoking this from CI or automation.
 
-pushd "%~dp0.." >nul
+pushd "%~dp0..\.." >nul
 if errorlevel 1 (
     echo Exocortex installation failed: could not enter the repository directory.
     set "INSTALL_EXIT=1"
@@ -13,7 +13,7 @@ if errorlevel 1 (
 
 echo Installing Exocortex from %CD%
 echo.
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-windows.ps1" %*
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0helpers\install.ps1" %*
 set "INSTALL_EXIT=%ERRORLEVEL%"
 popd
 
