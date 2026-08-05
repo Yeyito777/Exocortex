@@ -1174,6 +1174,8 @@ export interface ConversationLoadedEvent {
   goal?: ConversationGoal | null;
   /** Durable one-shot answer retained by this conversation until closed. */
   btw?: ConversationBtw | null;
+  /** Resolved availability used by the focused-conversation activity panel. */
+  toolPolicySnapshot?: ToolPolicySnapshot;
 }
 
 export interface ConversationHistoryLoadedEvent {

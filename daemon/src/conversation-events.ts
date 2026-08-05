@@ -28,6 +28,20 @@ export function broadcastConversationUpdated(server: DaemonServer, convId: strin
   return true;
 }
 
+/** Refresh focused clients after a persistent tool-policy mutation. */
+export function broadcastConversationToolPolicyUpdated(server: DaemonServer, convId: string): boolean {
+  const snapshot = convStore.getToolPolicySnapshot(convId);
+  if (!snapshot) {
+    log("warn", `conversation-events: skipped tool_policy for missing conversation ${convId}`);
+    return false;
+  }
+  // This is intentionally a passive broadcast without reqId. Interactive
+  // `/tools` responses carry a reqId and render their own textual confirmation;
+  // passive updates only keep the task manager's disabled-tools section current.
+  server.broadcast({ type: "tool_policy", convId, snapshot, changed: true });
+  return true;
+}
+
 /** Rebuild the canonical history shown by every subscriber of a conversation. */
 export function broadcastConversationHistoryUpdated(server: DaemonServer, convId: string): boolean {
   const snapshot = convStore.getRenderSnapshot(convId, false);

@@ -20,6 +20,29 @@ describe("conversation tool policy", () => {
     expect(resolved.configurableInternalToolNames).toContain("exo");
   });
 
+  test("normal conversations also default to every installed external tool", () => {
+    const loaded: LoadedTool = {
+      manifest: {
+        name: "google",
+        bin: "./bin/google",
+        systemHint: "Google hint",
+        display: { label: "Google", color: "#ffffff" },
+      },
+      binDir: "/tmp/google/bin",
+      toolDir: "/tmp/google",
+    };
+    const restore = setLoadedExternalToolsForTest([loaded]);
+    try {
+      const conv = createConversation("root-external", "openai", "gpt-5.6-sol");
+      expect(resolveConversationToolPolicy(conv).externalToolNames).toEqual(["google"]);
+      expect(buildToolPolicySnapshot(conv).external).toEqual([
+        { name: "google", label: "Google", enabled: true },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
   test("legacy scoped defaults remain research-only unless edits were delegated", () => {
     const conv = createConversation("child", "openai", "gpt-5.6-sol");
     conv.subagentMaxDepth = 0;

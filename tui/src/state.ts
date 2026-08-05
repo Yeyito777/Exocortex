@@ -7,7 +7,7 @@
 
 import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
 import { configuredConversationDefaults, effectiveConversationDefaults, productConversationDefaults, type ConversationDefaults } from "@exocortex/shared/config";
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage, ConversationBtw } from "./messages";
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage, ConversationBtw, ToolPolicySnapshot } from "./messages";
 import { DEFAULT_MODEL_BY_PROVIDER, defaultEffortForModelId, supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage, Block } from "./messages";
 import { loadPreferredProvider } from "./preferences";
@@ -283,6 +283,8 @@ export interface RenderState {
   providerRegistry: ProviderInfo[];
   /** External tool styles for bash sub-command matching (from daemon). */
   externalToolStyles: ExternalToolStyle[];
+  /** Resolved persistent availability for the currently loaded conversation. */
+  activeToolPolicy: ToolPolicySnapshot | null;
   /** Whether tool result output is visible. Toggled with Ctrl+O. */
   showToolOutput: boolean;
   /** Whether user-identifying auth/account labels should be censored in the UI. */
@@ -658,6 +660,7 @@ export function createInitialState(): RenderState {
     toolRegistry: [],
     providerRegistry: [],
 	    externalToolStyles: [],
+	    activeToolPolicy: null,
 	    showToolOutput: false,
 	    hideSensitiveInfo,
 	    toolOutputsLoaded: false,

@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  focusedConversationDisabledTools,
   focusedConversationIntegrations,
   focusedConversationTasks,
   formatIntegrationDeliveryStatus,
   formatTaskCountdown,
   formatTaskElapsed,
+  hasFocusedConversationDisabledTools,
   hasFocusedConversationIntegrations,
   hasFocusedConversationTasks,
   layoutTaskPanel,
@@ -83,6 +85,26 @@ function stateWithIntegrations() {
       createdAt: 2_000,
     }),
   ];
+  return state;
+}
+
+function stateWithDisabledTools() {
+  const state = stateWithTasks();
+  state.sidebar.conversations[0].tasks = [];
+  state.activeToolPolicy = {
+    convId: "parent",
+    scoped: false,
+    source: "explicit",
+    internal: [
+      { name: "read", label: "Read", enabled: true },
+      { name: "write", label: "Write", enabled: false },
+    ],
+    external: [
+      { name: "gmail", label: "Gmail", enabled: false },
+      { name: "google", label: "Google", enabled: true },
+    ],
+    shellWarning: false,
+  };
   return state;
 }
 
@@ -346,6 +368,83 @@ describe("focused conversation subscriptions", () => {
     const panel = renderTaskPanel(state, 100, 20)!;
     expect(stripAnsi(panel.lines[1])).toContain("custom-feed Design alerts");
     expect(panel.lines[1]).toContain(theme.tool);
+  });
+});
+
+describe("focused conversation disabled tools", () => {
+  test("stays absent for the normal all-enabled default", () => {
+    const state = stateWithDisabledTools();
+    state.activeToolPolicy!.source = "default";
+    for (const tool of [...state.activeToolPolicy!.internal, ...state.activeToolPolicy!.external]) tool.enabled = true;
+
+    expect(focusedConversationDisabledTools(state)).toEqual([]);
+    expect(hasFocusedConversationDisabledTools(state)).toBe(false);
+    expect(renderTaskPanel(state, 100, 20)).toBeNull();
+  });
+
+  test("uses a Disabled tools header when it is the only exceptional activity", () => {
+    const state = stateWithDisabledTools();
+    const panel = renderTaskPanel(state, 100, 20)!;
+    const plain = panel.lines.map(stripAnsi);
+
+    expect(focusedConversationDisabledTools(state)).toEqual([
+      { kind: "internal", name: "write" },
+      { kind: "external", name: "gmail" },
+    ]);
+    expect(hasFocusedConversationDisabledTools(state)).toBe(true);
+    expect(plain[0]).toContain("Disabled tools");
+    expect(plain[0].trimEnd()).toEndWith("2 ─╮");
+    expect(plain[1]).toContain("⊘ write");
+    expect(plain[2]).toContain("⊘ gmail");
+    expect(panel.lines).toHaveLength(4);
+    expect(panel.lines.every(line => visibleLength(line) === panel.width)).toBe(true);
+  });
+
+  test("renders the exceptional section below Tasks and Subscriptions", () => {
+    const state = stateWithTasks();
+    state.externalToolStyles = [{ cmd: "discord", label: "Discord", color: "#5865f2" }];
+    state.sidebar.conversations[0].integrations = [integration()];
+    state.activeToolPolicy = stateWithDisabledTools().activeToolPolicy;
+
+    const panel = renderTaskPanel(state, 100, 20, 43_000)!;
+    const plain = panel.lines.map(stripAnsi);
+    const subscriptionsRow = plain.findIndex(line => line.includes("Subscriptions"));
+    const disabledToolsRow = plain.findIndex(line => line.includes("Disabled tools"));
+
+    expect(plain[0]).toContain("Tasks");
+    expect(subscriptionsRow).toBeGreaterThan(0);
+    expect(disabledToolsRow).toBeGreaterThan(subscriptionsRow);
+    expect(plain[disabledToolsRow].trimEnd()).toEndWith("2 ─┤");
+    expect(plain.slice(disabledToolsRow + 1).join("\n")).toContain("⊘ write");
+    expect(plain.slice(disabledToolsRow + 1).join("\n")).toContain("⊘ gmail");
+  });
+
+  test("prioritizes disabled names over ordinary rows when height is constrained", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].tasks!.push(
+      { id: "child-2", kind: "subagent", title: "Second child", startedAt: 2_000 },
+      { id: "bash:99", kind: "background", title: "typecheck", startedAt: 3_000 },
+    );
+    state.sidebar.conversations[0].integrations = [integration(), integration({ id: "integration:two" })];
+    state.activeToolPolicy = stateWithDisabledTools().activeToolPolicy;
+
+    const panel = renderTaskPanel(state, 100, 6, 43_000)!;
+    const plain = panel.lines.map(stripAnsi).join("\n");
+    expect(panel.lines).toHaveLength(6);
+    expect(plain).toContain("Subscriptions");
+    expect(plain).toContain("Disabled tools");
+    expect(plain).toContain("⊘ write");
+    expect(plain).toContain("… 7 more");
+    expect(plain).not.toContain("Map daemon events");
+  });
+
+  test("ignores stale policy snapshots from another focused conversation", () => {
+    const state = stateWithDisabledTools();
+    state.activeToolPolicy!.convId = "other";
+    expect(focusedConversationDisabledTools(state)).toEqual([]);
+    state.activeToolPolicy!.convId = "parent";
+    state.folderInstructionsDoc = { folderId: "folder", text: "", savedText: "", loading: false };
+    expect(focusedConversationDisabledTools(state)).toEqual([]);
   });
 });
 

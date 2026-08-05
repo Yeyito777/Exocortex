@@ -154,7 +154,9 @@ export function applyToolPolicyMutation(
   );
 }
 
-export function buildToolPolicySnapshot(conversation: Conversation): ToolPolicySnapshot {
+export function buildToolPolicySnapshot(
+  conversation: Pick<Conversation, "id" | "subagentPolicy" | "subagentMaxDepth" | "toolPolicy">,
+): ToolPolicySnapshot {
   const resolved = resolveConversationToolPolicy(conversation);
   const enabledInternal = new Set(resolved.configurableInternalToolNames);
   const enabledExternal = new Set(resolved.externalToolNames);

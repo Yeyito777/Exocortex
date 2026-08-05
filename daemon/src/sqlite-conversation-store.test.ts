@@ -415,6 +415,12 @@ describe("SQLite maintenance", () => {
     conv.toolPolicy = { internal: ["read", "write"], external: ["google"] };
     store.save(conv);
     expect(store.load(conv.id)?.toolPolicy).toEqual(conv.toolPolicy);
+    expect(store.loadToolPolicyState(conv.id)).toEqual({
+      id: conv.id,
+      subagentMaxDepth: null,
+      subagentPolicy: null,
+      toolPolicy: conv.toolPolicy,
+    });
     expect(store.db.query<{ tool_policy_json: string | null }, [string]>("SELECT tool_policy_json FROM conversations WHERE id=?").get(conv.id)?.tool_policy_json).toBe(JSON.stringify(conv.toolPolicy));
     store.close();
   });

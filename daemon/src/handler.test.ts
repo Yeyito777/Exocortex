@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { clearConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
-import { consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, replaceStreamingDisplayMessages, setGoal, updateGoalStatus } from "./conversations";
+import { consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, replaceStreamingDisplayMessages, setGoal, setToolPolicy, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
 import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
@@ -120,9 +120,10 @@ describe("handler conversation tool policy", () => {
     const id = mkId("tool-policy");
     create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
     const sent: Array<Record<string, any>> = [];
+    const broadcasted: Array<Record<string, any>> = [];
     const server = {
       sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
-      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      broadcast: mock((event: Record<string, unknown>) => { broadcasted.push(event); }), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
       subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
     };
     const handle = createHandler(server as never);
@@ -138,6 +139,8 @@ describe("handler conversation tool policy", () => {
     });
     expect(get(id)?.toolPolicy?.internal).not.toContain("bash");
     expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "deny-bash", changed: true, snapshot: { source: "explicit" } });
+    expect(broadcasted.at(-1)).toMatchObject({ type: "tool_policy", convId: id, changed: true, snapshot: { source: "explicit" } });
+    expect(broadcasted.at(-1)).not.toHaveProperty("reqId");
 
     await handle({} as never, {
       type: "set_tool_policy",
@@ -147,6 +150,7 @@ describe("handler conversation tool policy", () => {
     });
     expect(get(id)?.toolPolicy).toBeNull();
     expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "reset", changed: true, snapshot: { source: "default" } });
+    expect(broadcasted.at(-1)).toMatchObject({ type: "tool_policy", convId: id, changed: true, snapshot: { source: "default" } });
   });
 });
 
@@ -1676,6 +1680,7 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     const convId = mkId("paged-history");
     create(convId, "openai", "gpt-5.4");
     const conv = get(convId)!;
+    setToolPolicy(convId, { internal: ["read"], external: [] });
     for (let turn = 1; turn <= 7; turn++) {
       conv.messages.push({ role: "user", content: `u${turn}`, metadata: null });
       conv.messages.push({ role: "assistant", content: `a${turn}`, metadata: null });
@@ -1702,6 +1707,14 @@ describe("handler load_conversation late-join streaming snapshots", () => {
       historyStartUserIndex: 2,
       historyTotalEntries: 14,
       hasOlderHistory: true,
+      toolPolicySnapshot: {
+        convId,
+        source: "explicit",
+        internal: expect.arrayContaining([
+          expect.objectContaining({ name: "read", enabled: true }),
+          expect.objectContaining({ name: "write", enabled: false }),
+        ]),
+      },
     });
     expect((sent[0].entries as Array<{ type: string; text?: string }>)
       .filter((entry) => entry.type === "user").map((entry) => entry.text))

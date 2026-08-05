@@ -13,6 +13,11 @@ import type {
   TrashStackEntry,
 } from "./json-persistence";
 
+export type ConversationToolPolicyState = Pick<
+  Conversation,
+  "id" | "subagentMaxDepth" | "subagentPolicy" | "toolPolicy"
+>;
+
 /**
  * Backend-independent durable conversation contract.
  *
@@ -28,6 +33,8 @@ export interface ConversationRepository {
   listSummaries(): PersistedConversationSummary[];
   loadConversationIndex(): LoadConversationIndexResult;
   getSummary(id: string): PersistedConversationSummary | null;
+  /** Capability projection; normalized stores must not materialize message rows. */
+  loadToolPolicyState(id: string): ConversationToolPolicyState | null;
   save(conv: Conversation, options?: { forceMessages?: boolean }): void;
 
   loadFolders(): PersistedFolderSummary[];

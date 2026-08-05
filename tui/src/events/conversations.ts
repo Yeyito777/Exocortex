@@ -247,6 +247,7 @@ export function handleConversationLoaded(
   state.fastMode = event.fastMode ?? state.fastMode;
   state.goal = event.goal ?? null;
   state.btw = projectConversationBtw(event.convId, event.btw);
+  state.activeToolPolicy = event.toolPolicySnapshot ?? null;
   state.scrollOffset = 0;
   state.contextTokens = event.contextTokens;
   state.historyStartIndex = event.historyStartIndex ?? 0;

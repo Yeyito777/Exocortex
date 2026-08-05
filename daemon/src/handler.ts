@@ -33,6 +33,7 @@ import { getTokenStatsSnapshot } from "./token-stats";
 import {
   broadcastConversationHistoryUpdated,
   broadcastConversationInstructionsUpdated,
+  broadcastConversationToolPolicyUpdated,
   broadcastConversationUpdated,
   broadcastFolderInstructionsUpdated,
 } from "./conversation-events";
@@ -516,6 +517,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           queuedMessages: queued.length > 0 ? queued : undefined,
           goal: summary?.goal ?? null,
           btw,
+          toolPolicySnapshot: convStore.getToolPolicySnapshot(page.convId) ?? undefined,
         }, metrics !== undefined);
         if (metrics) {
           metrics.snapshot = snapshotDiagnostics ?? {};
@@ -566,6 +568,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       queuedMessages: queued.length > 0 ? queued : undefined,
       goal: summary?.goal ?? null,
       btw,
+      toolPolicySnapshot: convStore.getToolPolicySnapshot(data.convId) ?? undefined,
     }, metrics !== undefined);
     if (metrics) {
       metrics.snapshot = snapshotDiagnostics ?? {};
@@ -2532,6 +2535,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             snapshot: buildToolPolicySnapshot(updated),
             changed: true,
           });
+          broadcastConversationToolPolicyUpdated(server, cmd.convId);
         } catch (error) {
           server.sendTo(client, {
             type: "error",

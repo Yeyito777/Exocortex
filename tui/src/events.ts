@@ -502,7 +502,10 @@ export function handleEvent(
       break;
 
     case "tool_policy":
-      pushSystemMessage(state, formatToolPolicySnapshot(event.snapshot, event.changed));
+      state.activeToolPolicy = event.snapshot;
+      // Passive daemon broadcasts have no reqId and only refresh the task
+      // manager. Interactive `/tools` requests retain their textual response.
+      if (event.reqId) pushSystemMessage(state, formatToolPolicySnapshot(event.snapshot, event.changed));
       break;
 
     case "system_instructions_updated":

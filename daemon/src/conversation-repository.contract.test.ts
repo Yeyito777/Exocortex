@@ -81,10 +81,19 @@ for (const backend of ["json", "sqlite"] as const) {
       const id = `contract-${backend}-roundtrip-${Date.now()}`;
       const h = harness(backend, id);
       const conv = fixture(id);
+      conv.subagentMaxDepth = 0;
+      conv.subagentPolicy = { parentConversationId: "parent", allowEdits: false, parentSystemInstructions: "Parent" };
+      conv.toolPolicy = { internal: ["read"], external: [] };
       h.repository.save(conv);
 
       expect(h.repository.has(id)).toBe(true);
       expect(h.repository.getSummary(id)?.messageCount).toBe(2);
+      expect(h.repository.loadToolPolicyState(id)).toEqual({
+        id,
+        subagentMaxDepth: 0,
+        subagentPolicy: conv.subagentPolicy,
+        toolPolicy: conv.toolPolicy,
+      });
       expect(h.repository.load(id)?.messages).toEqual(conv.messages);
 
       conv.title = "Changed title";

@@ -13,6 +13,15 @@ const daemon: DaemonActions = {
   loadToolOutputs() {},
 };
 
+const disabledToolPolicy = {
+  convId: "conv-tools",
+  scoped: false,
+  source: "explicit" as const,
+  internal: [{ name: "write", label: "Write", enabled: false }],
+  external: [{ name: "gmail", label: "Gmail", enabled: true }],
+  shellWarning: false,
+};
+
 describe("auth browser opener", () => {
   test("uses macOS open on Darwin", () => {
     expect(browserOpenCommand("https://example.com/auth", "darwin")).toEqual(["open", "https://example.com/auth"]);
@@ -24,6 +33,60 @@ describe("auth browser opener", () => {
 
   test("uses cmd start on Windows", () => {
     expect(browserOpenCommand("https://example.com/auth", "win32")).toEqual(["cmd", "/c", "start", "", "https://example.com/auth"]);
+  });
+});
+
+describe("tool policy activity state", () => {
+  test("hydrates the focused policy when a conversation opens", () => {
+    const state = createInitialState();
+    state.convId = "conv-tools";
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-tools",
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      entries: [],
+      contextTokens: 0,
+      toolOutputsIncluded: false,
+      toolPolicySnapshot: disabledToolPolicy,
+    }, state, daemon);
+
+    expect(state.activeToolPolicy).toEqual(disabledToolPolicy);
+  });
+
+  test("applies passive refreshes without adding chat noise", () => {
+    const state = createInitialState();
+    state.convId = "conv-tools";
+
+    handleEvent({
+      type: "tool_policy",
+      convId: "conv-tools",
+      snapshot: disabledToolPolicy,
+      changed: true,
+    }, state, daemon);
+
+    expect(state.activeToolPolicy).toEqual(disabledToolPolicy);
+    expect(state.messages).toEqual([]);
+  });
+
+  test("keeps interactive tool-policy output visible", () => {
+    const state = createInitialState();
+    state.convId = "conv-tools";
+
+    handleEvent({
+      type: "tool_policy",
+      reqId: "tools-request",
+      convId: "conv-tools",
+      snapshot: disabledToolPolicy,
+      changed: false,
+    }, state, daemon);
+
+    expect(state.activeToolPolicy).toEqual(disabledToolPolicy);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({ role: "system", text: expect.stringContaining("write") });
   });
 });
 

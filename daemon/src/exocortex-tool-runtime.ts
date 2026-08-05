@@ -38,6 +38,7 @@ import {
 import { hasConfiguredCredentials } from "./auth";
 import {
   broadcastConversationInstructionsUpdated,
+  broadcastConversationToolPolicyUpdated,
   broadcastConversationUpdated,
   broadcastFolderInstructionsUpdated,
 } from "./conversation-events";
@@ -766,6 +767,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       if (!existingToolPolicyChanged) return;
       if (!convStore.setToolPolicy(convId, requestedExistingToolPolicy)) throw new Error(`Conversation ${convId} not found`);
       broadcastConversationUpdated(server, convId);
+      broadcastConversationToolPolicyUpdated(server, convId);
     };
 
     const queuedExistingSendResult = (): ToolResult => {
@@ -1443,6 +1445,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     if (changed) {
       if (!convStore.setToolPolicy(convId, nextPolicy)) throw new Error(`Conversation ${convId} not found`);
       broadcastConversationUpdated(server, convId);
+      broadcastConversationToolPolicyUpdated(server, convId);
     }
     return ok(pretty({
       conversation_id: convId,

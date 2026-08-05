@@ -2,13 +2,14 @@
  * Focused-conversation activity panel.
  *
  * Renders the current goal, active subagents, detached background commands,
- * displayable Chrono work, and durable external notification subscriptions as a
- * compact top-right panel. The daemon supplies conversation summaries; this
- * module adds the focused conversation's durable goal and owns all visual
- * formatting and horizontal space reservation for the panel.
+ * displayable Chrono work, durable external notification subscriptions, and
+ * non-default disabled tools as a compact top-right panel. The daemon supplies
+ * conversation summaries and the focused conversation's resolved tool policy;
+ * this module adds the durable goal and owns all visual formatting and
+ * horizontal space reservation for the panel.
  */
 
-import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
+import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary, ToolPolicyKind } from "./messages";
 import type { RenderState } from "./state";
 import { shouldDisplayConversationTask } from "./taskvisibility";
 import { padRightToWidth, termWidth } from "./textwidth";
@@ -33,6 +34,11 @@ const CHRONO_FALLBACK_HEX = "#4ec9b0";
 export interface TaskPanelEntry extends Omit<ConversationTaskSummary, "kind"> {
   kind: ConversationTaskSummary["kind"] | "goal";
   goalStatus?: ConversationGoalStatus;
+}
+
+export interface DisabledToolEntry {
+  kind: ToolPolicyKind;
+  name: string;
 }
 
 export interface TaskPanelRender {
@@ -75,6 +81,23 @@ export function focusedConversationIntegrations(state: RenderState): ExternalInt
 
 export function hasFocusedConversationIntegrations(state: RenderState): boolean {
   return focusedConversationIntegrations(state).length > 0;
+}
+
+/** Disabled tools are exceptional state; an all-enabled default yields no rows. */
+export function focusedConversationDisabledTools(state: RenderState): DisabledToolEntry[] {
+  if (!state.convId || state.folderInstructionsDoc || state.activeToolPolicy?.convId !== state.convId) return [];
+  return [
+    ...state.activeToolPolicy.internal
+      .filter(tool => !tool.enabled)
+      .map(tool => ({ kind: "internal" as const, name: tool.name })),
+    ...state.activeToolPolicy.external
+      .filter(tool => !tool.enabled)
+      .map(tool => ({ kind: "external" as const, name: tool.name })),
+  ];
+}
+
+export function hasFocusedConversationDisabledTools(state: RenderState): boolean {
+  return focusedConversationDisabledTools(state).length > 0;
 }
 
 /** Compact elapsed time with a stable width suitable for the task card. */
@@ -167,23 +190,26 @@ export function formatIntegrationDeliveryStatus(
   return `${integration.delivery} ${integration.status}`;
 }
 
+type PanelSectionTitle = "Tasks" | "Subscriptions" | "Disabled tools";
+
 interface VisiblePanelContent {
   tasks: TaskPanelEntry[];
   integrations: ExternalIntegrationSummary[];
+  disabledTools: DisabledToolEntry[];
   hiddenCount: number;
+  headerTitle: PanelSectionTitle;
   showSubscriptionsDivider: boolean;
+  showDisabledToolsDivider: boolean;
 }
 
-/**
- * Fit activity entries into the card. The internal Subscriptions divider is
- * only needed when task and subscription rows share the panel.
- */
-function fitPanelContent(
+/** Preserve the established two-section fitting exactly when tools are normal. */
+function fitTasksAndSubscriptions(
   tasks: TaskPanelEntry[],
   integrations: ExternalIntegrationSummary[],
   maxContentRows: number,
 ): VisiblePanelContent {
   const totalEntries = tasks.length + integrations.length;
+  const headerTitle = tasks.length > 0 ? "Tasks" : "Subscriptions";
 
   if (tasks.length === 0 || integrations.length === 0) {
     const entriesFit = totalEntries <= maxContentRows;
@@ -191,28 +217,38 @@ function fitPanelContent(
     return {
       tasks: tasks.slice(0, visibleCount),
       integrations: integrations.slice(0, visibleCount),
+      disabledTools: [],
       hiddenCount: totalEntries - visibleCount,
+      headerTitle,
       showSubscriptionsDivider: false,
+      showDisabledToolsDivider: false,
     };
   }
 
-  // A combined card needs one internal divider in addition to its entries.
   if (totalEntries + 1 <= maxContentRows) {
     return {
       tasks,
       integrations,
+      disabledTools: [],
       hiddenCount: 0,
+      headerTitle,
       showSubscriptionsDivider: true,
+      showDisabledToolsDivider: false,
     };
   }
 
-  // At the absolute three-line panel minimum, the section divider and its
-  // count are more informative than an unclassified overflow row.
   if (maxContentRows < 2) {
-    return { tasks: [], integrations: [], hiddenCount: 0, showSubscriptionsDivider: true };
+    return {
+      tasks: [],
+      integrations: [],
+      disabledTools: [],
+      hiddenCount: 0,
+      headerTitle,
+      showSubscriptionsDivider: true,
+      showDisabledToolsDivider: false,
+    };
   }
 
-  // Reserve one row each for the Subscriptions divider and overflow notice.
   // Subscriptions are durable inbound connections, so allocate every available
   // entry slot to them before using any remaining slots for tasks.
   const entrySlots = Math.max(0, maxContentRows - 2);
@@ -222,8 +258,81 @@ function fitPanelContent(
   return {
     tasks: tasks.slice(0, visibleTaskCount),
     integrations: integrations.slice(0, visibleIntegrationCount),
+    disabledTools: [],
     hiddenCount: totalEntries - visibleTaskCount - visibleIntegrationCount,
+    headerTitle,
     showSubscriptionsDivider: true,
+    showDisabledToolsDivider: false,
+  };
+}
+
+/**
+ * Fit all three sections while keeping disabled tools visible under pressure.
+ * They are the exceptional state this section exists to surface, followed by
+ * durable subscriptions and finally transient task rows.
+ */
+function fitPanelContent(
+  tasks: TaskPanelEntry[],
+  integrations: ExternalIntegrationSummary[],
+  disabledTools: DisabledToolEntry[],
+  maxContentRows: number,
+): VisiblePanelContent {
+  if (disabledTools.length === 0) return fitTasksAndSubscriptions(tasks, integrations, maxContentRows);
+
+  const totalEntries = tasks.length + integrations.length + disabledTools.length;
+  const headerTitle: PanelSectionTitle = tasks.length > 0
+    ? "Tasks"
+    : integrations.length > 0
+      ? "Subscriptions"
+      : "Disabled tools";
+  const showSubscriptionsDivider = tasks.length > 0 && integrations.length > 0;
+  const showDisabledToolsDivider = tasks.length > 0 || integrations.length > 0;
+  const dividerRows = Number(showSubscriptionsDivider) + Number(showDisabledToolsDivider);
+
+  if (totalEntries + dividerRows <= maxContentRows) {
+    return {
+      tasks,
+      integrations,
+      disabledTools,
+      hiddenCount: 0,
+      headerTitle,
+      showSubscriptionsDivider,
+      showDisabledToolsDivider,
+    };
+  }
+
+  // Reserve the final content row for overflow. If the card is too short even
+  // for both earlier dividers and one disabled tool, promote Disabled tools to
+  // the header rather than rendering section labels with no useful anomaly.
+  const entrySlots = maxContentRows - dividerRows - 1;
+  if (entrySlots < 1) {
+    const visibleDisabledCount = Math.max(0, maxContentRows - 1);
+    return {
+      tasks: [],
+      integrations: [],
+      disabledTools: disabledTools.slice(0, visibleDisabledCount),
+      hiddenCount: totalEntries - visibleDisabledCount,
+      headerTitle: "Disabled tools",
+      showSubscriptionsDivider: false,
+      showDisabledToolsDivider: false,
+    };
+  }
+
+  let remaining = entrySlots;
+  const visibleDisabledCount = Math.min(disabledTools.length, remaining);
+  remaining -= visibleDisabledCount;
+  const visibleIntegrationCount = Math.min(integrations.length, remaining);
+  remaining -= visibleIntegrationCount;
+  const visibleTaskCount = Math.min(tasks.length, remaining);
+
+  return {
+    tasks: tasks.slice(0, visibleTaskCount),
+    integrations: integrations.slice(0, visibleIntegrationCount),
+    disabledTools: disabledTools.slice(0, visibleDisabledCount),
+    hiddenCount: totalEntries - visibleTaskCount - visibleIntegrationCount - visibleDisabledCount,
+    headerTitle,
+    showSubscriptionsDivider,
+    showDisabledToolsDivider,
   };
 }
 
@@ -242,14 +351,15 @@ export function renderTaskPanel(
 ): TaskPanelRender | null {
   const tasks = focusedConversationTasks(state);
   const integrations = focusedConversationIntegrations(state);
-  const totalEntries = tasks.length + integrations.length;
+  const disabledTools = focusedConversationDisabledTools(state);
+  const totalEntries = tasks.length + integrations.length + disabledTools.length;
   const panelHeight = Math.min(maxHeight, MAX_TASK_PANEL_HEIGHT);
   if (totalEntries === 0 || chatWidth < MIN_PANEL_WIDTH || panelHeight < 3) return null;
 
   const panelWidth = Math.min(MAX_PANEL_WIDTH, chatWidth);
   const innerWidth = panelWidth - 2;
   const maxContentRows = panelHeight - 2;
-  const visible = fitPanelContent(tasks, integrations, maxContentRows);
+  const visible = fitPanelContent(tasks, integrations, disabledTools, maxContentRows);
 
   const panelBg = hexToAnsiBg(PANEL_BG_HEX);
   const outline = `${theme.dim}${theme.text}`;
@@ -264,7 +374,7 @@ export function renderTaskPanel(
     return `${panelBg}${persistentBg}${theme.reset}`;
   };
 
-  const headerTitle = tasks.length > 0 ? "Tasks" : "Subscriptions";
+  const headerTitle = visible.headerTitle;
   const entryCount = String(totalEntries);
   const headerLeft = `─ ${headerTitle} `;
   const headerRight = ` ${entryCount} ─`;
@@ -328,6 +438,28 @@ export function renderTaskPanel(
       `${outline}│${theme.reset} ${color}${toolLabel}`
       + `${theme.text} ${padRightToWidth(title, titleWidth)}`
       + `${theme.muted}${padLeftToWidth(deliveryStatus, INTEGRATION_STATE_WIDTH)}${theme.reset} ${outline}│`,
+    ));
+  }
+
+  if (visible.showDisabledToolsDivider) {
+    const sectionTitle = "Disabled tools";
+    const sectionCount = String(disabledTools.length);
+    const sectionLeft = `─ ${sectionTitle} `;
+    const sectionRight = ` ${sectionCount} ─`;
+    const sectionFill = "─".repeat(Math.max(0, innerWidth - termWidth(sectionLeft) - termWidth(sectionRight)));
+    lines.push(withPanelBg(
+      `${outline}├─ ${theme.reset}${theme.muted}${sectionTitle}${outline} ${sectionFill}`
+      + `${theme.reset}${theme.muted} ${sectionCount}${outline} ─┤`,
+    ));
+  }
+
+  // Tool names, rather than transport labels such as "$", are the actionable
+  // identifiers accepted by `/tools` and `exo commands tools`.
+  for (const tool of visible.disabledTools) {
+    const name = cleanPanelText(tool.name) || "unknown";
+    lines.push(withPanelBg(
+      `${outline}│${theme.reset} ${theme.muted}⊘ ${padRightToWidth(name, innerWidth - 4)}`
+      + `${theme.reset} ${outline}│`,
     ));
   }
 

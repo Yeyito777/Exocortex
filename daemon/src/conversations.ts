@@ -8,7 +8,7 @@
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, ConversationToolPolicy } from "./messages";
 import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
-import type { ImageAttachment } from "@exocortex/shared/messages";
+import type { ImageAttachment, ToolPolicySnapshot } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
 import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
@@ -25,6 +25,7 @@ import { contextMessageChars } from "./context-token-attribution";
 import { getConversationExternalIntegrations } from "./external-notifications";
 import * as displayPageStore from "./display-page-store";
 import { scheduleDisplayIndex } from "./display-index-backfill";
+import { buildToolPolicySnapshot } from "./tool-policy";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -2151,6 +2152,16 @@ export function getSummary(id: string): ConversationSummary | null {
     tasks: getConversationTasks(id),
     integrations: getConversationExternalIntegrations(id),
   };
+}
+
+/**
+ * Resolve the focused conversation's tool policy without forcing SQLite to load
+ * its transcript. This projection is sent on conversation open and refreshed
+ * whenever a policy mutation is broadcast.
+ */
+export function getToolPolicySnapshot(id: string): ToolPolicySnapshot | null {
+  const policyState = conversations.get(id) ?? persistence.loadToolPolicyState(id);
+  return policyState ? buildToolPolicySnapshot(policyState) : null;
 }
 
 /** Read durable/indexed metadata without loading or rescanning a full transcript. */
