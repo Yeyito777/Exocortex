@@ -108,10 +108,11 @@ describe("external-tool daemon supervision scope", () => {
 
 describe("managed daemon state", () => {
   test("derives service log and pid file paths under config/", () => {
-    expect(getDaemonStatePaths("/tmp/tools/discord")).toEqual({
-      configDir: "/tmp/tools/discord/config",
-      logPath: "/tmp/tools/discord/config/service.log",
-      pidPath: "/tmp/tools/discord/config/service.pid",
+    const toolDir = join(tmpdir(), "tools", "discord");
+    expect(getDaemonStatePaths(toolDir)).toEqual({
+      configDir: join(toolDir, "config"),
+      logPath: join(toolDir, "config", "service.log"),
+      pidPath: join(toolDir, "config", "service.pid"),
     });
   });
 

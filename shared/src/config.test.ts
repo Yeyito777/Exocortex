@@ -21,7 +21,7 @@ describe("agentWorkingDirectory", () => {
 
   test("keeps absolute paths absolute", () => {
     expect(agentWorkingDirectory({ agent: { workingDirectory: "/tmp/exocortex-agent" } }))
-      .toBe("/tmp/exocortex-agent");
+      .toBe(resolve("/tmp/exocortex-agent"));
   });
 });
 

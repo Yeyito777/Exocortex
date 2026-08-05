@@ -68,7 +68,7 @@ describe("glob tool enhancements", () => {
   });
 
   test("a bare star is shallow and does not traverse unrelated descendants", async () => {
-    if (process.getuid?.() === 0) return;
+    if (process.platform === "win32" || process.getuid?.() === 0) return;
     const root = await makeTempDir();
     await writeFixture(root, "visible.txt");
     await writeFixture(root, "blocked/secret.txt");
@@ -175,7 +175,7 @@ describe("glob tool enhancements", () => {
   });
 
   test("skips unreadable descendant directories instead of failing the whole scan", async () => {
-    if (process.getuid?.() === 0) return;
+    if (process.platform === "win32" || process.getuid?.() === 0) return;
     const root = await makeTempDir();
     await writeFixture(root, "visible.txt");
     await writeFixture(root, "blocked/secret.txt");
@@ -199,7 +199,7 @@ describe("glob tool enhancements", () => {
   });
 
   test("explicit excludes prune directories before traversal", async () => {
-    if (process.getuid?.() === 0) return;
+    if (process.platform === "win32" || process.getuid?.() === 0) return;
     const root = await makeTempDir();
     await writeFixture(root, "visible.txt");
     await writeFixture(root, "blocked/secret.txt");

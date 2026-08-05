@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { dataDir, conversationsDir, trashDir } from "@exocortex/shared/paths";
+import { dataDir, conversationsDir, trashDir, isWindows } from "@exocortex/shared/paths";
 import type {
   Conversation,
   ConversationBtw,
@@ -341,10 +341,19 @@ export class SqliteConversationStore implements ConversationRepository {
     this.faultInjection = options.faultInjection;
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     this.db = new Database(this.path, { create: !options.readonly, readonly: options.readonly ?? false });
-    try { chmodSync(this.path, 0o600); } catch { /* best effort, especially on Windows */ }
-    this.configure();
-    this.migrate(options.targetSchemaVersion ?? SCHEMA_VERSION);
-    if (options.autoImportLegacy) this.importLegacyIfNeeded();
+    try {
+      try { chmodSync(this.path, 0o600); } catch { /* best effort, especially on Windows */ }
+      this.configure();
+      this.migrate(options.targetSchemaVersion ?? SCHEMA_VERSION);
+      if (options.autoImportLegacy) this.importLegacyIfNeeded();
+    } catch (err) {
+      // A constructor that throws must not leave the database locked. This is
+      // observable immediately on Windows and matters to restore/repair flows.
+      try { this.db.close(); } catch { /* preserve the initialization error */ }
+      this.closed = true;
+      if (isWindows) Bun.gc(true);
+      throw err;
+    }
   }
 
   private assertOpen(): void {
@@ -642,6 +651,9 @@ export class SqliteConversationStore implements ConversationRepository {
     try { this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { /* best effort */ }
     this.db.close();
     this.closed = true;
+    // sqlite3_close_v2 defers the underlying close while prepared transaction
+    // helpers are awaiting collection. Windows keeps the file locked until then.
+    if (isWindows) Bun.gc(true);
   }
 
   checkpoint(mode: "PASSIVE" | "FULL" | "RESTART" | "TRUNCATE" = "PASSIVE"): void {

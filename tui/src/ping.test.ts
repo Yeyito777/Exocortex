@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 import { readExocortexConfig, writeExocortexConfig } from "@exocortex/shared/config";
 import { tryCommand } from "./commands";
 import { createInitialState } from "./state";
@@ -98,7 +98,7 @@ describe("/ping", () => {
 
     expect(result).toEqual({ type: "handled" });
     expect(readExocortexConfig().ping).toEqual({ mode: "notif", sound: null });
-    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Sound file not found: /definitely/missing.wav");
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe(`Sound file not found: ${resolve("/definitely/missing.wav")}`);
   });
 
   test("can clear the configured ping", () => {
@@ -119,8 +119,8 @@ describe("/ping", () => {
 
 describe("ping config helpers", () => {
   test("normalizes quoted and home-relative sound paths", () => {
-    expect(normalizeSoundPath('"/tmp/done.wav"')).toBe("/tmp/done.wav");
-    expect(normalizeSoundPath("~/done.wav")).toContain("/done.wav");
+    expect(normalizeSoundPath('"/tmp/done.wav"')).toBe(resolve("/tmp/done.wav"));
+    expect(normalizeSoundPath("~/done.wav")).toBe(join(process.env.HOME ?? process.env.USERPROFILE ?? "", "done.wav"));
   });
 
   test("loads the legacy top-level sound key as sound mode", () => {

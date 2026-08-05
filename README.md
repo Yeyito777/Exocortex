@@ -20,28 +20,29 @@ Please install https://github.com/Yeyito777/Exocortex.git
 
 ## Installation
 
+Exocortex is installed from its canonical source repository on every platform.
+Keep the clone after installation: the Linux commands are symlinked into it, and
+macOS runs directly from it.
+
 ### Arch Linux
 
 #### Prerequisites
 
-- **Git**
-  ```bash
-  sudo pacman -S git
-  ```
+Install Git, Make, and the optional native-call audio dependencies:
 
-- **Bun** (JavaScript runtime)
-  ```bash
-  curl -fsSL https://bun.sh/install | bash
-  ```
-  Then restart your shell or run `source ~/.bashrc` so `bun` is on your `PATH`.
+```bash
+sudo pacman -S --needed git make nodejs libpulse
+```
 
-- **systemd** — comes with Arch by default.
+Install Bun:
 
-- **Native TUI call audio** — Node.js plus PulseAudio-compatible client tools
-  (PipeWire's PulseAudio server works):
-  ```bash
-  sudo pacman -S nodejs libpulse
-  ```
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+Open a new shell, or source the shell profile printed by Bun's installer, before
+continuing. Arch already includes the systemd user-service support used by
+Exocortex.
 
 #### Install
 
@@ -51,49 +52,49 @@ cd Exocortex
 make install
 ```
 
-This will:
-1. Install dependencies (`bun install`)
-2. Symlink `exocortexd` and `exocortex` into `~/.local/bin/`
-3. Install and start a systemd user service for the daemon
+`make install`:
 
-The daemon exposes current-instance conversation and subagent orchestration through its native `exo` tool. Every `send` or `queue` call requires an explicit bounded `max_depth`; nested turns can only pass a smaller budget, and daemon-wide/per-parent concurrency ceilings prevent runaway recursive delegation. Lower-frequency operations such as folder management, rename/delete/status, and one-shot LLM calls live in an on-demand command registry (`action=commands`, with bare `commands` or `command=ls` for discovery) so they do not bloat every model request. The separate `exo` CLI remains an external debugging/automation client—especially for targeting other daemon instances—and is not installed by this repository's `make install` target.
+1. Installs the locked Bun dependencies.
+2. Symlinks `exocortexd` and `exocortex` into `~/.local/bin`.
+3. Installs, enables, and starts `exocortex-daemon.service` as a systemd user
+   service.
 
-> **Note:** Make sure `~/.local/bin` is in your `PATH`.
-> Add this to your `~/.bashrc` or `~/.zshrc` if it isn't:
-> ```bash
-> export PATH="$HOME/.local/bin:$PATH"
-> ```
+Make sure `~/.local/bin` is on `PATH`:
 
-#### Authenticate
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
 
-Run the one-time login to connect a model provider account:
+Add that line to `~/.bashrc` or `~/.zshrc` if necessary.
+
+#### Authenticate and launch
 
 ```bash
 exocortexd login
+exocortex
 ```
 
 Browser OAuth is the default. On a remote or headless machine, use OpenAI's
-code login flow instead; open the displayed URL on any device and enter the
-one-time code:
+code flow:
 
 ```bash
 exocortexd login openai code
 ```
 
-The same choices are available in the TUI as `/login openai browser` and
-`/login openai code`. Use `/login openai add code` to add another account
-from a headless machine.
-
-#### Launch
-
-```bash
-exocortex
-```
-
-The daemon runs in the background via systemd. You can check its status with:
+Check or restart the daemon with:
 
 ```bash
 exocortexd status
+exocortexd restart
+```
+
+#### Update
+
+```bash
+cd Exocortex
+git pull --ff-only
+bun install --frozen-lockfile
+exocortexd restart
 ```
 
 #### Uninstall
@@ -103,58 +104,183 @@ cd Exocortex
 make uninstall
 ```
 
-This stops the systemd service and removes the symlinks from `~/.local/bin/`.
+This stops and removes the systemd user service and removes the two command
+symlinks. It does not delete the source clone or user data.
+
+---
+
+### macOS
+
+The current macOS path runs the daemon and TUI directly from the source clone.
+The Linux `make install` target is intentionally not used because it installs a
+systemd service.
+
+#### Prerequisites
+
+Install Apple's command-line tools, which provide Git:
+
+```bash
+xcode-select --install
+```
+
+Install Bun:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+Open a new shell, or source the shell profile printed by Bun's installer. Voice
+input and native TUI call audio additionally require Node.js and FFmpeg; with
+Homebrew:
+
+```bash
+brew install node ffmpeg
+```
+
+Text and image clipboard integration uses macOS's built-in `pbcopy`, `pbpaste`,
+and `osascript` commands.
+
+#### Install
+
+```bash
+git clone https://github.com/Yeyito777/Exocortex.git
+cd Exocortex
+bun install --frozen-lockfile
+```
+
+#### Authenticate
+
+From the source clone:
+
+```bash
+cd daemon
+bun run src/main.ts login
+```
+
+For code-based OpenAI login on a headless Mac or remote shell:
+
+```bash
+bun run src/main.ts login openai code
+```
+
+#### Launch
+
+Keep the daemon running in one terminal:
+
+```bash
+cd Exocortex/daemon
+bun run src/main.ts
+```
+
+Launch the TUI from a second terminal:
+
+```bash
+cd Exocortex/tui
+bun run src/main.ts
+```
+
+Press `Ctrl+C` in the daemon terminal to stop it.
+
+#### Update
+
+Stop the foreground daemon, then update the source and dependencies:
+
+```bash
+cd Exocortex
+git pull --ff-only
+bun install --frozen-lockfile
+```
+
+Start the daemon and TUI again using the commands above.
 
 ---
 
 ### Windows
 
-#### Quick Setup
+The Windows installer builds Exocortex from the canonical source repository. It
+does not download prebuilt Exocortex release artifacts.
 
-1. Download `exocortex-windows-x64.zip` from the [latest release](https://github.com/Yeyito777/Exocortex/releases/latest).
+#### Prerequisites
 
-2. Extract the zip to a folder of your choice (e.g. `C:\Exocortex`).
+Install Git from [git-scm.com](https://git-scm.com/download/win), or with
+`winget`:
 
-3. Open a terminal in that folder and authenticate:
-   ```powershell
-   .\exocortexd.exe login
-   ```
+```powershell
+winget install Git.Git
+```
 
-4. Launch by double-clicking `exocortex.bat`, or from a terminal:
-   ```powershell
-   .\exocortex.bat
-   ```
+The Exocortex installer installs Bun from Bun's official installer when Bun is
+not already available.
 
-The batch file starts the daemon in the background, opens the TUI, and automatically stops the daemon when you close it.
+#### Install
 
-To uninstall, just delete the folder. No registry entries or services are created.
+Clone the repository, then double-click `scripts\install-windows.cmd`. To run
+the same installer from a terminal:
 
-#### Power Users — Build from Source
+```powershell
+git clone https://github.com/Yeyito777/Exocortex.git
+cd Exocortex
+.\scripts\install-windows.cmd
+```
 
-If you want to build the daemon and TUI from a specific commit:
+The installer builds the daemon, TUI, and external `exo` CLI into `dist\`,
+copies `exocortexd.exe`, `exocortex.exe`, `exo.exe`, and `exocortex.bat` to
+`%USERPROFILE%\.local\bin`, and adds that directory to the user `PATH`. Open a
+new terminal after the first install.
 
-**Prerequisites:**
-- **Git** — install from [git-scm.com](https://git-scm.com/download/win) or via `winget`:
-  ```powershell
-  winget install Git.Git
-  ```
-- **Bun** (JavaScript runtime)
-  ```powershell
-  powershell -c "irm bun.sh/install.ps1 | iex"
-  ```
+To install elsewhere or leave `PATH` unchanged:
 
-**Build** (from a Linux machine or WSL):
+```powershell
+.\scripts\install-windows.cmd -InstallDir C:\Exocortex -NoPathUpdate
+```
+
+#### Authenticate and launch
+
+```powershell
+exocortexd login
+exocortex.bat
+```
+
+For code-based OpenAI login:
+
+```powershell
+exocortexd login openai code
+```
+
+`exocortex.bat` starts the daemon in the background, opens the TUI, and stops
+the daemon when the TUI closes. No Windows service is installed.
+
+#### Update
+
+```powershell
+cd Exocortex
+git pull --ff-only
+.\scripts\install-windows.cmd
+```
+
+#### Cross-build from Linux or WSL
 
 ```bash
 git clone https://github.com/Yeyito777/Exocortex.git
 cd Exocortex
-bun install
+bun install --frozen-lockfile
 make windows
 ```
 
-This cross-compiles standalone executables into `dist/`:
+Both native and cross-build methods produce standalone Windows executables in
+`dist/`:
+
 - `exocortexd.exe` — the daemon
 - `exocortex.exe` — the TUI client
-- `exocortex.bat` — launcher script
+- `exo.exe` — the external debugging and automation CLI
+- `exocortex.bat` — the launcher
 
-Copy the contents of `dist/` wherever you like and follow the same authenticate & launch steps from above.
+---
+
+## `exo` tool and CLI
+
+The daemon provides a native `exo` tool for current-instance conversation and
+subagent orchestration. The separate `exo` executable is an external debugging
+and automation client, especially useful for targeting other daemon instances.
+The Windows installer includes `exo.exe`; the Arch `make install` target and the
+manual macOS steps do not install the separate CLI.

@@ -205,6 +205,7 @@ export type RenderLineSegment =
   | "streaming_tail"
   | "system_instructions_bottom"
   | "system_instructions_content"
+  | "system_instructions_margin_bottom"
   | "system_instructions_top"
   | "system_message"
   | "transcript_label"
@@ -450,6 +451,7 @@ export function buildMessageLines(
       const contentEnd = lines.length;
 
       pushLine(`${theme.accent}${bottomLine}${theme.reset}`, msg, "system_instructions_bottom");
+      pushLine("", msg, "system_instructions_margin_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else {
       pushBlock(msg, "system_message", renderSystemMessage(msg.text, availableWidth, msg.color));

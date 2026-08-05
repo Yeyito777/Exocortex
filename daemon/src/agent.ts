@@ -282,7 +282,6 @@ export async function runAgentLoop(
           log("warn", `agent: presentation resolution exceeded ${PRESENTATION_RESOLVER_TIMEOUT_MS}ms — continuing without it`);
           resolveTimeout(result.toolCalls.map(() => undefined));
         }, PRESENTATION_RESOLVER_TIMEOUT_MS);
-        presentationTimer.unref?.();
       });
       const resolvedPresentations = await Promise.race([resolverBatch, resolverTimeout]);
       if (presentationTimer) clearTimeout(presentationTimer);
