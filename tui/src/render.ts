@@ -384,6 +384,7 @@ const SYSTEM_INSTRUCTIONS_SEGMENTS = new Set([
   "system_instructions_top",
   "system_instructions_content",
   "system_instructions_bottom",
+  "system_instructions_margin_bottom",
 ]);
 
 interface ViewportHistoryRow {
@@ -436,7 +437,7 @@ function continuationIndent(line: string, segment: BuildMessageLinesResult["line
   return stripAnsi(line).match(/^ +(?=\S)/)?.[0] ?? "";
 }
 
-/** Number of viewport rows occupied by a system-instructions box at the top. */
+/** Number of viewport rows occupied by system instructions and their bottom margin at the top. */
 function visibleSystemInstructionsHeight(
   lineAnchors: BuildMessageLinesResult["lineAnchors"],
   viewStart: number,
