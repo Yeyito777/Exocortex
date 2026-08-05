@@ -11,6 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { DaemonClient } from "./client";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
+import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent } from "./mouse";
 import { clearPrompt } from "./promptstate";
@@ -20,8 +21,8 @@ import { applyInlineCommands, type InlineCommandApplication } from "./inlineeffo
 import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
-import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, modelSupportsImages, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
+import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, query_clipboard_paste_events, enable_clipboard_paste_events, disable_clipboard_paste_events, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
+import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, focusPrompt, modelSupportsImages, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
@@ -96,6 +97,8 @@ let eventLoopLagTimer: ReturnType<typeof setInterval> | null = null;
 let reconnecting = false;
 let reconnectNavigationTarget: string | null = null;
 let terminalSetUp = false;
+let terminalClipboardClient: TerminalClipboardClient | null = null;
+let terminalControlBuffer: TerminalControlBuffer | null = null;
 let voiceInput: VoiceInputController | null = null;
 let callMedia: CallMediaController | null = null;
 let pendingVoiceQueuePrompt = false;
@@ -610,6 +613,21 @@ function canSendImages(images?: ImageAttachment[]): boolean {
   if (modelSupportsImages(state)) return true;
   pushSystemMessage(state, `✗ Image inputs are not supported by ${state.provider}/${state.model}. Remove the attachment or switch to a vision-capable model.`, theme.error);
   return false;
+}
+
+function attachTerminalClipboardImage(image: ImageAttachment): void {
+  if (!modelSupportsImages(state)) {
+    log("warn", `tui: terminal clipboard image paste failed: image inputs are not supported by ${state.provider}/${state.model}`);
+    pushSystemMessage(state, `✗ Image inputs are not supported by ${state.provider}/${state.model}. Switch to a vision-capable model to paste images.`, theme.error);
+    scheduleRender();
+    return;
+  }
+
+  const inputBefore = state.inputBuffer;
+  state.pendingImages.push(image);
+  focusPrompt(state);
+  maybeScheduleOpenAIPrewarm(inputBefore);
+  renderAfterLocalUiMutation();
 }
 
 function ensurePendingToolPolicyDraftId(): string {
@@ -1649,7 +1667,7 @@ function handleDaemonConnectionLost(): void {
 
 function setupTerminal(): void {
   const cursorColorSeq = theme.cursorColor ? set_cursor_color(theme.cursorColor) : '';
-  process.stdout.write(enter_alt + hide_cursor + enable_bracketed_paste + enable_kitty_kbd + enable_mouse + cursorColorSeq);
+  process.stdout.write(enter_alt + hide_cursor + enable_bracketed_paste + query_clipboard_paste_events + enable_clipboard_paste_events + enable_kitty_kbd + enable_mouse + cursorColorSeq);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
   terminalSetUp = true;
@@ -1680,7 +1698,7 @@ function restoreTerminal(): void {
   if (!terminalSetUp) return;
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
   const cursorResetSeq = theme.cursorColor ? reset_cursor_color : '';
-  process.stdout.write(disable_mouse + disable_kitty_kbd + disable_bracketed_paste + show_cursor + cursorResetSeq + leave_alt);
+  process.stdout.write(disable_mouse + disable_kitty_kbd + disable_clipboard_paste_events + disable_bracketed_paste + show_cursor + cursorResetSeq + leave_alt);
   terminalSetUp = false;
 }
 
@@ -1719,6 +1737,50 @@ async function main(): Promise<void> {
   startupProfileMark("ping_sent");
 
   setupTerminal();
+
+  // Buffer stdin across terminal-control and bracketed-paste chunk boundaries.
+  // OSC 5522 responses can be split at any byte boundary by SSH, while large
+  // text pastes must remain one event so embedded newlines never submit early.
+  const pasteBuffer = new PasteBuffer(processInput);
+  let shouldStripStartupLaunchEcho = true;
+  const startupInputSanitizeUntil = Date.now() + STARTUP_INPUT_SANITIZE_MS;
+  terminalClipboardClient = new TerminalClipboardClient({
+    write: sequence => process.stdout.write(sequence),
+    onImage: attachTerminalClipboardImage,
+    onText: text => handleKey({ type: "paste", text }),
+    onError: message => log("warn", `tui: terminal clipboard protocol failed: ${message}`),
+  });
+  terminalControlBuffer = new TerminalControlBuffer(
+    data => {
+      if (shouldStripStartupLaunchEcho) {
+        shouldStripStartupLaunchEcho = false;
+        if (Date.now() <= startupInputSanitizeUntil) {
+          data = stripStartupLaunchEcho(data);
+          if (data.length === 0) return;
+        }
+      }
+      const ready = pasteBuffer.feed(Buffer.from(data));
+      if (ready !== null) processInput(ready);
+    },
+    sequence => terminalClipboardClient?.handleControlSequence(sequence),
+  );
+
+  function processInput(str: string): void {
+    if (!running) return;
+    const events = parseInput(str);
+    for (const ev of events) {
+      if (ev.type === "mouse") {
+        handleMouse(ev);
+      } else {
+        handleKey(ev);
+      }
+      if (!running) break;
+    }
+    if (!running) cleanup();
+  }
+
+  process.stdin.on("data", (data: Buffer) => terminalControlBuffer?.feed(data));
+
   startEventLoopLagMonitor();
   startupProfileMark("terminal_setup_done");
 
@@ -1738,37 +1800,6 @@ async function main(): Promise<void> {
   const initialRenderStartedAt = performance.now();
   render(state);
   startupProfileMark("initial_render_done", { renderMs: Math.round((performance.now() - initialRenderStartedAt) * 1000) / 1000 });
-
-  // Buffer stdin across bracketed-paste chunk boundaries so large pastes
-  // aren't split into individual keystrokes (which turns newlines into submits).
-  const pasteBuffer = new PasteBuffer(processInput);
-  let shouldStripStartupLaunchEcho = true;
-  const startupInputSanitizeUntil = Date.now() + STARTUP_INPUT_SANITIZE_MS;
-
-  function processInput(str: string): void {
-    const events = parseInput(str);
-    for (const ev of events) {
-      if (ev.type === "mouse") {
-        handleMouse(ev);
-      } else {
-        handleKey(ev);
-      }
-      if (!running) break;
-    }
-    if (!running) cleanup();
-  }
-
-  process.stdin.on("data", (data: Buffer) => {
-    if (shouldStripStartupLaunchEcho) {
-      shouldStripStartupLaunchEcho = false;
-      if (Date.now() <= startupInputSanitizeUntil) {
-        data = Buffer.from(stripStartupLaunchEcho(data.toString("utf8")), "utf8");
-        if (data.length === 0) return;
-      }
-    }
-    const ready = pasteBuffer.feed(data);
-    if (ready !== null) processInput(ready);
-  });
 }
 
 function cleanup(): void {
@@ -1784,6 +1815,10 @@ function cleanup(): void {
   }
   voiceInput?.cleanup();
   callMedia?.stop();
+  terminalControlBuffer?.dispose();
+  terminalControlBuffer = null;
+  terminalClipboardClient?.dispose();
+  terminalClipboardClient = null;
   daemon?.disconnect();
   restoreTerminal();
   process.exit(0);

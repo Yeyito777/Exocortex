@@ -14,6 +14,11 @@ export const enter_alt = `${ESC}?1049h`;
 export const leave_alt = `${ESC}?1049l`;
 export const enable_bracketed_paste = `${ESC}?2004h`;
 export const disable_bracketed_paste = `${ESC}?2004l`;
+// Kitty OSC 5522 companion mode: terminal paste actions report available MIME
+// types so applications can request images and other non-text clipboard data.
+export const query_clipboard_paste_events = `${ESC}?5522$p`;
+export const enable_clipboard_paste_events = `${ESC}?5522h`;
+export const disable_clipboard_paste_events = `${ESC}?5522l`;
 export const enable_kitty_kbd = `${ESC}>27u`;  // push kitty kbd: disambiguate + event types + all keys + associated text
 export const disable_kitty_kbd = `${ESC}<u`;    // pop keyboard mode
 export const enable_mouse = `${ESC}?1003h${ESC}?1006h`;   // all motion + SGR extended encoding
