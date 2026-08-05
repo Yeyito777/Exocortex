@@ -143,17 +143,23 @@ If you want to build the daemon and TUI from a specific commit:
   powershell -c "irm bun.sh/install.ps1 | iex"
   ```
 
-**Build and install natively on Windows:**
+**One-click source install on Windows:**
+
+Clone the repository, then double-click `scripts\install-windows.cmd`. The
+launcher keeps the window open so you can see whether the installation
+succeeded. To run the same installer from a terminal instead:
 
 ```powershell
 git clone https://github.com/Yeyito777/Exocortex.git
 cd Exocortex
-powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+.\scripts\install-windows.cmd
 ```
 
-The installer builds the source into `dist\`, copies the commands to
-`~\.local\bin`, and adds that directory to your user `PATH`. Open a new
-terminal after the first install.
+The launcher calls `install-windows.ps1`, which builds the source into `dist\`,
+copies the commands to `~\.local\bin`, and adds that directory to your user
+`PATH`. Open a new terminal after the first install. PowerShell options can be
+passed through the launcher, for example
+`scripts\install-windows.cmd -NoPathUpdate`.
 
 **Cross-build from Linux or WSL:**
 
