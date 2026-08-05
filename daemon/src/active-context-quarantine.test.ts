@@ -52,7 +52,12 @@ describe("active-context quarantine", () => {
       reason: "integrity validation failed",
       activeContext: active,
     });
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    // Windows exposes inherited ACLs rather than meaningful POSIX mode bits;
+    // Node reports 0o666 even after chmodSync. The file remains protected by
+    // the user's profile/temp-directory DACL.
+    if (process.platform !== "win32") {
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    }
   });
 
   test("refuses unsafe IDs before writing anything", () => {
