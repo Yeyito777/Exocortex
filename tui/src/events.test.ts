@@ -36,6 +36,34 @@ describe("auth browser opener", () => {
   });
 });
 
+describe("auth device code instructions", () => {
+  test("starts by directing users to enable Codex device authorization", () => {
+    const state = createInitialState();
+
+    handleEvent({
+      type: "auth_status",
+      deviceCode: {
+        verificationUrl: "https://auth.openai.com/codex/device",
+        userCode: "CODE-1234",
+        expiresInSeconds: 900,
+      },
+    }, state, daemon);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      role: "system",
+      text: [
+        "OpenAI code authorization:",
+        "1. Go to chatgpt.com > Settings > Security and login > Enable device authorization for Codex.",
+        "2. Open https://auth.openai.com/codex/device in any browser and sign in.",
+        "3. Enter this one-time code: CODE-1234",
+        "The code expires in 15 minutes.",
+        "Continue only if you started this login in Exocortex.",
+      ].join("\n"),
+    });
+  });
+});
+
 describe("tool policy activity state", () => {
   test("accepts policy snapshots for a blank conversation draft", () => {
     const state = createInitialState();

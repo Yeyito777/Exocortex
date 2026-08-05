@@ -35,8 +35,9 @@ export async function handleLogin(providerArg?: string, loginArg?: string): Prom
     onDeviceCode: ({ verificationUrl, userCode, expiresInSeconds }) => {
       console.log([
         "  OpenAI code authorization:",
-        `  1. Open ${verificationUrl} in any browser and sign in.`,
-        `  2. Enter this one-time code: ${userCode}`,
+        "  1. Go to chatgpt.com > Settings > Security and login > Enable device authorization for Codex.",
+        `  2. Open ${verificationUrl} in any browser and sign in.`,
+        `  3. Enter this one-time code: ${userCode}`,
         `  The code expires in ${Math.round(expiresInSeconds / 60)} minutes.`,
         "  Continue only if you started this login in Exocortex.",
       ].join("\n"));

@@ -492,8 +492,9 @@ export function handleEvent(
         const minutes = Math.round(event.deviceCode.expiresInSeconds / 60);
         pushSystemMessage(state, [
           "OpenAI code authorization:",
-          `1. Open ${event.deviceCode.verificationUrl} in any browser and sign in.`,
-          `2. Enter this one-time code: ${event.deviceCode.userCode}`,
+          "1. Go to chatgpt.com > Settings > Security and login > Enable device authorization for Codex.",
+          `2. Open ${event.deviceCode.verificationUrl} in any browser and sign in.`,
+          `3. Enter this one-time code: ${event.deviceCode.userCode}`,
           `The code expires in ${minutes} minutes.`,
           "Continue only if you started this login in Exocortex.",
         ].join("\n"), theme.muted);

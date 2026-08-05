@@ -105,8 +105,9 @@ async function pollForAuthorization(pending: PendingDeviceAuthorization): Promis
 function formatDeviceCodePrompt(prompt: DeviceCodeAuthPrompt): string {
   return [
     "OpenAI code authorization:",
-    `1. Open ${prompt.verificationUrl} in any browser and sign in.`,
-    `2. Enter this one-time code: ${prompt.userCode}`,
+    "1. Go to chatgpt.com > Settings > Security and login > Enable device authorization for Codex.",
+    `2. Open ${prompt.verificationUrl} in any browser and sign in.`,
+    `3. Enter this one-time code: ${prompt.userCode}`,
     "The code expires in 15 minutes. Continue only if you started this login in Exocortex.",
   ].join("\n");
 }
