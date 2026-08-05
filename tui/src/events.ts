@@ -71,7 +71,10 @@ export function handleEvent(
   daemon: DaemonActions,
 ): void {
   // Early exit for conversation-scoped events targeting a different conversation.
-  if (CONV_SCOPED.has(event.type) && "convId" in event && event.convId !== state.convId) return;
+  if (CONV_SCOPED.has(event.type) && "convId" in event && event.convId !== state.convId) {
+    const targetsDraftPolicy = event.type === "tool_policy" && event.convId === state.pendingToolPolicyDraftId;
+    if (!targetsDraftPolicy) return;
+  }
 
   observeStreamSeq(event, state);
 

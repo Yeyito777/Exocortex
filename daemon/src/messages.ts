@@ -144,9 +144,26 @@ export interface SubagentPolicy {
 }
 
 /** Exact per-conversation selection. Omission uses the root/scoped defaults. */
+export interface ConversationCustomToolModule {
+  /** Canonical absolute module path. */
+  path: string;
+  /** SHA-256 of the module's bundled local source closure when it was enabled. */
+  digest: string;
+  /** Optional stable toolset identifier exported by the module. */
+  id?: string;
+  /** Persisted display metadata supports policy inspection before lazy reload. */
+  tools: Array<{
+    name: string;
+    label: string;
+    color: string;
+  }>;
+}
+
 export interface ConversationToolPolicy {
   internal: string[];
   external: string[];
+  /** Trusted internal-tool modules attached only to this conversation. */
+  customToolModules?: ConversationCustomToolModule[];
 }
 
 export interface Conversation {
@@ -177,7 +194,7 @@ export interface Conversation {
   subagentMaxDepth?: number | null;
   /** Restricted worker capabilities and inherited parent constraints. */
   subagentPolicy?: SubagentPolicy | null;
-  /** User/delegator-selected internal and external tool allowlists. */
+  /** User/delegator-selected internal and external tool selections. */
   toolPolicy?: ConversationToolPolicy | null;
 }
 

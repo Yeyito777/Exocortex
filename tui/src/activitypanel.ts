@@ -41,6 +41,8 @@ export interface DisabledToolEntry {
   kind: ToolPolicyKind;
   name: string;
   label: string;
+  color?: string;
+  enabled?: boolean;
 }
 
 export interface TaskPanelRender {
@@ -87,14 +89,43 @@ export function hasFocusedConversationIntegrations(state: RenderState): boolean 
 
 /** Disabled tools are exceptional state; an all-enabled default yields no rows. */
 export function focusedConversationDisabledTools(state: RenderState): DisabledToolEntry[] {
-  if (!state.convId || state.folderInstructionsDoc || state.activeToolPolicy?.convId !== state.convId) return [];
+  const policyId = state.convId ?? state.pendingToolPolicyDraftId;
+  if (!policyId || state.folderInstructionsDoc || state.activeToolPolicy?.convId !== policyId) return [];
   return [
     ...state.activeToolPolicy.internal
       .filter(tool => !tool.enabled)
-      .map(tool => ({ kind: "internal" as const, name: tool.name, label: tool.label })),
+      .map(tool => ({
+        kind: "internal" as const,
+        name: tool.name,
+        label: tool.label,
+        ...(tool.color ? { color: tool.color } : {}),
+      })),
     ...state.activeToolPolicy.external
       .filter(tool => !tool.enabled)
-      .map(tool => ({ kind: "external" as const, name: tool.name, label: tool.label })),
+      .map(tool => ({
+        kind: "external" as const,
+        name: tool.name,
+        label: tool.label,
+        ...(tool.color ? { color: tool.color } : {}),
+      })),
+  ];
+}
+
+/** Non-default choices worth keeping visible, including enabled custom tools. */
+export function focusedConversationToolOverrides(state: RenderState): DisabledToolEntry[] {
+  const policyId = state.convId ?? state.pendingToolPolicyDraftId;
+  if (!policyId || state.folderInstructionsDoc || state.activeToolPolicy?.convId !== policyId) return [];
+  return [
+    ...focusedConversationDisabledTools(state),
+    ...state.activeToolPolicy.internal
+      .filter(tool => tool.enabled && Boolean(tool.modulePath))
+      .map(tool => ({
+        kind: "internal" as const,
+        name: tool.name,
+        label: tool.label,
+        color: tool.color,
+        enabled: true,
+      })),
   ];
 }
 
@@ -191,14 +222,14 @@ function disabledToolDisplay(
     const rawLabel = tool.name === "bash" ? "Bash" : style?.label ?? tool.label ?? tool.name;
     return {
       label: cleanPanelText(rawLabel) || tool.name,
-      color: style ? hexToAnsi(style.color) : theme.tool,
+      color: style ? hexToAnsi(style.color) : tool.color ? hexToAnsi(tool.color) : theme.tool,
     };
   }
 
   const style = state.externalToolStyles.find(candidate => candidate.cmd === tool.name);
   return {
     label: cleanPanelText(style?.label ?? tool.label ?? tool.name) || tool.name,
-    color: style ? hexToAnsi(style.color) : theme.tool,
+    color: style ? hexToAnsi(style.color) : tool.color ? hexToAnsi(tool.color) : theme.tool,
   };
 }
 
@@ -218,7 +249,8 @@ function wrapDisabledToolGroup(state: RenderState, tools: DisabledToolEntry[], w
   let bodyUsed = 0;
 
   const pushBody = (value: string) => {
-    const prefix = rows.length === 0 ? `${theme.muted}⊘ ` : `${theme.muted}  `;
+    const marker = tools[0]?.enabled ? "+" : "⊘";
+    const prefix = rows.length === 0 ? `${theme.muted}${marker} ` : `${theme.muted}  `;
     const line = `${prefix}${value}${theme.muted}`;
     rows.push(line + " ".repeat(Math.max(0, width - visibleLength(line))));
   };
@@ -270,12 +302,14 @@ function layoutDisabledToolGroups(
   tools: DisabledToolEntry[],
   width: number,
 ): DisabledToolGroupLayout[] {
-  return (["internal", "external"] as const).flatMap((kind) => {
-    const groupTools = tools.filter(tool => tool.kind === kind);
-    if (groupTools.length === 0) return [];
-    const prefixLines = groupTools.map((_, index) => wrapDisabledToolGroup(state, groupTools.slice(0, index + 1), width));
-    return [{ kind, tools: groupTools, lines: prefixLines.at(-1) ?? [], prefixLines }];
-  });
+  return ([false, true] as const).flatMap((enabled) => (
+    (["internal", "external"] as const).flatMap((kind) => {
+      const groupTools = tools.filter(tool => tool.kind === kind && Boolean(tool.enabled) === enabled);
+      if (groupTools.length === 0) return [];
+      const prefixLines = groupTools.map((_, index) => wrapDisabledToolGroup(state, groupTools.slice(0, index + 1), width));
+      return [{ kind, tools: groupTools, lines: prefixLines.at(-1) ?? [], prefixLines }];
+    })
+  ));
 }
 
 /** Fit complete tool names into a vertical row budget, preserving group order. */
@@ -320,7 +354,7 @@ export function formatIntegrationDeliveryStatus(
   return `${integration.delivery} ${integration.status}`;
 }
 
-type PanelSectionTitle = "Tasks" | "Subscriptions" | "Disabled Tools";
+type PanelSectionTitle = "Tasks" | "Subscriptions" | "Disabled Tools" | "Tool Changes";
 
 interface VisiblePanelContent {
   tasks: TaskPanelEntry[];
@@ -410,12 +444,15 @@ function fitPanelContent(
   if (disabledToolGroups.length === 0) return fitTasksAndSubscriptions(tasks, integrations, maxContentRows);
 
   const disabledToolCount = disabledToolGroups.reduce((count, group) => count + group.tools.length, 0);
+  const toolSectionTitle: PanelSectionTitle = disabledToolGroups.some(group => group.tools.some(tool => tool.enabled))
+    ? "Tool Changes"
+    : "Disabled Tools";
   const totalEntries = tasks.length + integrations.length + disabledToolCount;
   const headerTitle: PanelSectionTitle = tasks.length > 0
     ? "Tasks"
     : integrations.length > 0
       ? "Subscriptions"
-      : "Disabled Tools";
+      : toolSectionTitle;
   const showSubscriptionsDivider = tasks.length > 0 && integrations.length > 0;
   const showDisabledToolsDivider = tasks.length > 0 || integrations.length > 0;
   const dividerRows = Number(showSubscriptionsDivider) + Number(showDisabledToolsDivider);
@@ -446,7 +483,7 @@ function fitPanelContent(
       integrations: [],
       disabledToolGroups: visibleDisabledGroups,
       hiddenCount: totalEntries - visibleDisabledCount,
-      headerTitle: "Disabled Tools",
+      headerTitle: toolSectionTitle,
       showSubscriptionsDivider: false,
       showDisabledToolsDivider: false,
     };
@@ -486,7 +523,7 @@ export function renderTaskPanel(
 ): TaskPanelRender | null {
   const tasks = focusedConversationTasks(state);
   const integrations = focusedConversationIntegrations(state);
-  const disabledTools = focusedConversationDisabledTools(state);
+  const disabledTools = focusedConversationToolOverrides(state);
   const totalEntries = tasks.length + integrations.length + disabledTools.length;
   const panelHeight = Math.min(maxHeight, MAX_TASK_PANEL_HEIGHT);
   if (totalEntries === 0 || chatWidth < MIN_PANEL_WIDTH || panelHeight < 3) return null;
@@ -578,7 +615,7 @@ export function renderTaskPanel(
   }
 
   if (visible.showDisabledToolsDivider) {
-    const sectionTitle = "Disabled Tools";
+    const sectionTitle = disabledTools.some(tool => tool.enabled) ? "Tool Changes" : "Disabled Tools";
     const sectionCount = String(disabledTools.length);
     const sectionLeft = `─ ${sectionTitle} `;
     const sectionRight = ` ${sectionCount} ─`;

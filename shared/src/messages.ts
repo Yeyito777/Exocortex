@@ -128,6 +128,8 @@ export interface TextBlock {
 export interface ToolCallPresentation {
   /** Bash command styles discovered beside explicitly invoked local executables. */
   bashStyles?: ExternalToolStyle[];
+  /** Invocation-local style for a conversation-scoped internal tool. */
+  toolStyle?: ToolDisplayInfo;
 }
 
 export interface ToolCallBlock {
@@ -476,13 +478,27 @@ export interface ToolPolicyRef {
 }
 
 export type ToolPolicyMutation =
-  | { action: "allow" | "deny"; tools: ToolPolicyRef[] }
+  | {
+      action: "enable" | "disable";
+      tools: ToolPolicyRef[];
+      /** TypeScript/JavaScript tool modules to attach or detach from this conversation. */
+      modulePaths?: string[];
+    }
   | { action: "reset" };
 
 export interface ToolPolicyAvailability {
   name: string;
   label: string;
   enabled: boolean;
+  color?: string;
+  /** Present for a dynamically loaded conversation-scoped internal tool. */
+  modulePath?: string;
+}
+
+export interface ToolPolicyModuleAvailability {
+  path: string;
+  digest: string;
+  tools: string[];
 }
 
 /** Daemon-resolved policy shown by `/tools`; installed and enabled are distinct. */
@@ -492,6 +508,8 @@ export interface ToolPolicySnapshot {
   source: "default" | "explicit";
   internal: ToolPolicyAvailability[];
   external: ToolPolicyAvailability[];
+  /** Dynamically loaded internal-tool modules attached to this conversation. */
+  modules?: ToolPolicyModuleAvailability[];
   /** Bash or command-capable scheduling makes denials non-sandbox boundaries. */
   shellWarning: boolean;
 }

@@ -179,8 +179,15 @@ export class DaemonClient {
     goalCompletable?: boolean,
     titleContext?: string,
     startCall?: boolean,
+    draftToolPolicyId?: string,
   ): void {
-    this.send({ type: "new_conversation", ...(convId ? { convId } : {}), provider, model, title, titleContext, effort, fastMode, initialMessage, folderId, goalObjective, goalPausable, goalCompletable, startCall });
+    this.send({
+      type: "new_conversation",
+      ...(convId ? { convId } : {}),
+      ...(draftToolPolicyId ? { draftToolPolicyId } : {}),
+      provider, model, title, titleContext, effort, fastMode, initialMessage, folderId,
+      goalObjective, goalPausable, goalCompletable, startCall,
+    });
   }
 
   createConversationForCall(
@@ -190,9 +197,12 @@ export class DaemonClient {
     fastMode: boolean,
     folderId?: string | null,
     voice?: RealtimeVoice,
+    convId?: string,
+    draftToolPolicyId?: string,
   ): void {
     this.send({
       type: "new_conversation",
+      ...(convId ? { convId } : {}),
       provider,
       model,
       effort,
@@ -200,6 +210,7 @@ export class DaemonClient {
       folderId,
       startCall: true,
       ...(voice ? { callVoice: voice } : {}),
+      ...(draftToolPolicyId ? { draftToolPolicyId } : {}),
     });
   }
 
@@ -381,6 +392,7 @@ export class DaemonClient {
       fastMode?: boolean;
       folderId?: string | null;
       waitTarget?: QueueWaitTarget;
+      draftToolPolicyId?: string;
     } = {},
   ): void {
     this.send({ type: "queue_message", convId, text, timing, ...(images?.length ? { images } : {}), ...options });
@@ -502,6 +514,18 @@ export class DaemonClient {
 
   setToolPolicy(convId: string, mutation: ToolPolicyMutation): void {
     this.send({ type: "set_tool_policy", convId, mutation });
+  }
+
+  getDraftToolPolicy(draftId: string): void {
+    this.send({ type: "get_draft_tool_policy", draftId });
+  }
+
+  setDraftToolPolicy(draftId: string, mutation: ToolPolicyMutation): void {
+    this.send({ type: "set_draft_tool_policy", draftId, mutation });
+  }
+
+  clearDraftToolPolicy(draftId: string): void {
+    this.send({ type: "clear_draft_tool_policy", draftId });
   }
 
   llmComplete(

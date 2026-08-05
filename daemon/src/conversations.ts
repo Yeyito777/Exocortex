@@ -26,6 +26,7 @@ import { getConversationExternalIntegrations } from "./external-notifications";
 import * as displayPageStore from "./display-page-store";
 import { scheduleDisplayIndex } from "./display-index-backfill";
 import { buildToolPolicySnapshot } from "./tool-policy";
+import { clearConversationCustomTools } from "./tools/custom-tools";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -533,7 +534,18 @@ export function setToolPolicy(id: string, policy: ConversationToolPolicy | null)
   conv.toolPolicy = policy ? {
     internal: [...new Set(policy.internal)],
     external: [...new Set(policy.external)],
+    ...(policy.customToolModules?.length ? {
+      customToolModules: policy.customToolModules.map((module) => ({
+        ...module,
+        tools: module.tools.map((tool) => ({ ...tool })),
+      })),
+    } : {}),
   } : null;
+  if (!policy) {
+    void clearConversationCustomTools(id).catch((error) => {
+      log("warn", `conversations: failed to dispose custom tools for ${id}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
   markDirty(id);
   flush(id);
   return true;
@@ -735,6 +747,9 @@ export function removeMany(ids: string[], recordUndo = true): string[] {
   for (const id of moved) {
     displayPageStore.removeDisplayProjection(id);
     unreadChanged = removeConversationState(id) || unreadChanged;
+    void clearConversationCustomTools(id).catch((error) => {
+      log("warn", `conversations: failed to dispose custom tools for deleted conversation ${id}: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
   if (unreadChanged) saveUnreadState();
   saveSummaryIndex();
@@ -755,6 +770,9 @@ function deleteConversationWithoutUndo(id: string): boolean {
   if (!moved) return false;
   displayPageStore.removeDisplayProjection(id);
   const unreadChanged = removeConversationState(id);
+  void clearConversationCustomTools(id).catch((error) => {
+    log("warn", `conversations: failed to dispose custom tools for deleted conversation ${id}: ${error instanceof Error ? error.message : String(error)}`);
+  });
   if (unreadChanged) saveUnreadState();
   saveSummaryIndex();
   return true;
