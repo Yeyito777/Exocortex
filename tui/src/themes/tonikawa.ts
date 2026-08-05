@@ -11,6 +11,7 @@ const ESC = "\x1b[";
 
 export const tonikawa: Theme = {
   name: "tonikawa",
+  previewColors: ["#e47fac", "#b99ad8", "#131116"],
 
   // Reset
   reset:    `${ESC}0m`,

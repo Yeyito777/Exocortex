@@ -3,7 +3,7 @@ import { createPendingAI } from "./messages";
 import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
 import { createInitialState, type RenderState } from "./state";
 import { invalidateFrame } from "./frame";
-import { theme } from "./theme";
+import { hexToAnsi, theme } from "./theme";
 import { termWidth } from "./textwidth";
 import { hide_cursor, show_cursor } from "./terminal";
 import { SIDEBAR_WIDTH } from "./sidebar";
@@ -844,6 +844,32 @@ describe("render caching and frame diffing", () => {
     for (const row of autocompleteRows) {
       expect(termWidth(row.plain)).toBe(12);
       expect(termWidth(row.plain)).toBeLessThan(state.cols - 2);
+    }
+  });
+
+  test("autocomplete descriptions render color swatches as full blocks", () => {
+    const state = createInitialState();
+    state.cols = 120;
+    state.rows = 30;
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "insert";
+    state.inputBuffer = "/theme ";
+    state.cursorPos = state.inputBuffer.length;
+    const colors = ["#1d9bf0", "#48cae4", "#00050f"];
+    state.autocomplete = {
+      type: "command",
+      selection: -1,
+      prefix: state.inputBuffer,
+      tokenStart: 0,
+      matches: [{ name: "whale", desc: "███", colorSwatches: colors }],
+    };
+
+    const output = captureRenderOutput(state);
+
+    expect(stripCsi(stripAnsi(output))).toContain("whale ███");
+    for (const color of colors) {
+      expect(output).toContain(`${hexToAnsi(color)}█`);
     }
   });
 

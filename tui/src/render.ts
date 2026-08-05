@@ -22,7 +22,7 @@ import { buildMessageLines, type BuildMessageLinesResult } from "./conversation"
 import { wrappedLineOffsets } from "./promptline";
 import { computeBottomLayout, PROMPT_PREFIX_WIDTH } from "./chatlayout";
 import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar, applyLineBg } from "./terminal";
-import { theme } from "./theme";
+import { hexToAnsi, theme } from "./theme";
 import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./historycursor";
 import { renderLineWithCursor, renderLineWithSearch, renderLineWithSelection } from "./cursorrender";
 import { getPromptHighlightRanges, highlightPromptInput } from "./prompthighlight";
@@ -966,6 +966,19 @@ function autocompleteDisplayText(text: string): string {
   return text.replace(/[\r\n\t]+/g, " ").replace(/[\x00-\x1F\x7F]/g, "");
 }
 
+function renderAutocompleteDescription(
+  match: NonNullable<RenderState["autocomplete"]>["matches"][number],
+  text: string,
+  width: number,
+): string {
+  if (!match.colorSwatches || match.colorSwatches.length === 0) {
+    return theme.dim + padRightToWidth(text, width);
+  }
+  const colors = match.colorSwatches.slice(0, Math.max(0, width));
+  const swatches = colors.map((color) => `${hexToAnsi(color)}█`).join("");
+  return swatches + theme.dim + " ".repeat(Math.max(0, width - colors.length));
+}
+
 /**
  * Render the autocomplete popup overlay above the input area.
  * Floats over the message area when the autocomplete state is active.
@@ -1012,7 +1025,7 @@ function renderAutocompletePopup(
     const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;
     const marker = markerWidth > 0 ? padRightToWidth(isSelected ? "▸ " : "  ", markerWidth) : "";
     const name = padRightToWidth(visibleNames[vi], nameWidth);
-    const desc = padRightToWidth(visibleDescs[vi], descWidth);
+    const desc = renderAutocompleteDescription(visibleMatches[vi], visibleDescs[vi], descWidth);
     const upIndicator = vi === 0 && winStart > 0;
     const downIndicator = vi === winSize - 1 && winStart + winSize < total;
     const indicator = indicatorWidth > 0
@@ -1022,7 +1035,7 @@ function renderAutocompletePopup(
       ctx,
       row,
       chatCol,
-      bg + theme.accent + marker + theme.text + name + theme.dim + desc + indicator + theme.reset,
+      bg + theme.accent + marker + theme.text + name + desc + indicator + theme.reset,
     );
   }
 }

@@ -6,6 +6,8 @@ import type { RealtimeVoice } from "@exocortex/shared/realtime";
 export interface CompletionItem {
   name: string;
   desc: string;
+  /** Optional hex colors rendered as full-block swatches in place of desc text. */
+  colorSwatches?: readonly string[];
   /** Optional replacement text. Defaults to name. */
   insertText?: string;
   /** Extra strings that should match this item during prefix filtering. */

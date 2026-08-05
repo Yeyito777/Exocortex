@@ -19,6 +19,8 @@ import { adaptAnsiTruecolor, detectTerminalColorLevel, hexToAnsiColor } from "./
 
 export interface Theme {
   name: string;
+  /** Accent, secondary accent, and app background used by the theme preview. */
+  previewColors: readonly [string, string, string];
 
   // Reset
   reset: string;
@@ -104,8 +106,8 @@ function adaptThemeForTerminal(base: Theme): Theme {
   const adapted = { ...base };
   for (const key of Object.keys(adapted) as Array<keyof Theme>) {
     const value = adapted[key];
-    if (key === "name" || key === "cursorColor" || typeof value !== "string") continue;
-    (adapted as Record<keyof Theme, string | undefined>)[key] = adaptAnsiTruecolor(value, terminalColorLevel);
+    if (key === "name" || key === "cursorColor" || key === "previewColors" || typeof value !== "string") continue;
+    (adapted as unknown as Record<string, string>)[key] = adaptAnsiTruecolor(value, terminalColorLevel);
   }
   return adapted;
 }

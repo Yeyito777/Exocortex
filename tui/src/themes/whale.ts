@@ -11,6 +11,7 @@ const ESC = "\x1b[";
 
 export const whale: Theme = {
   name: "whale",
+  previewColors: ["#1d9bf0", "#48cae4", "#00050f"],
 
   // Reset
   reset:    `${ESC}0m`,

@@ -6,7 +6,7 @@ import { formatToolPolicySnapshot } from "./commands/tools";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId, type ProviderInfo, type TokenStatsSnapshot, type TokenUsageTotals } from "./messages";
-import { theme } from "./theme";
+import { theme, themes } from "./theme";
 
 const providers: ProviderInfo[] = [
   {
@@ -1216,6 +1216,19 @@ describe("/instructions", () => {
       role: "system",
       text: "No system instructions set for this conversation.",
     });
+  });
+});
+
+describe("/theme", () => {
+  test("uses accent, subaccent, and app background swatches for each autocomplete description", () => {
+    const args = getCommandArgs(createInitialState(), "/theme")["/theme"];
+
+    expect(args.map((item) => item.name)).toEqual(Object.keys(themes));
+    for (const item of args) {
+      expect(item.desc).toBe("███");
+      expect(item.colorSwatches).toEqual(themes[item.name].previewColors);
+      expect(item.colorSwatches).toHaveLength(3);
+    }
   });
 });
 

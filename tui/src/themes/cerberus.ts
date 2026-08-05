@@ -11,6 +11,7 @@ const ESC = "\x1b[";
 
 export const cerberus: Theme = {
   name: "cerberus",
+  previewColors: ["#d32f2f", "#ff6b6b", "#141414"],
 
   // Reset
   reset:    `${ESC}0m`,
