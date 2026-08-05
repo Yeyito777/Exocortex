@@ -568,7 +568,10 @@ function validApiContentBlock(value: unknown, role: ApiMessage["role"]): value i
 }
 
 function validAssistantProviderData(value: unknown): boolean {
-  if (value === undefined) return true;
+  // SQLite preserves explicit nulls imported from the legacy JSON transcript.
+  // Treat that legacy representation exactly like an absent optional field so
+  // an otherwise valid native checkpoint is not discarded after compaction.
+  if (value == null) return true;
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const openai = (value as Record<string, unknown>).openai;
   if (!openai || typeof openai !== "object" || Array.isArray(openai)) return false;

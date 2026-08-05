@@ -137,6 +137,26 @@ describe("automatic context compaction state", () => {
     expect(conv.messages[0]?.content).toBe("Please inspect it.");
   });
 
+  test("normalizes legacy explicit-null provider data before provider replay", () => {
+    const conv = createConversation("legacy-null-provider-data", "openai", "gpt-5.6-sol");
+    conv.messages = [{
+      role: "user",
+      content: "migrated prompt",
+      metadata: null,
+      providerData: null as never,
+    }];
+
+    const replay = buildConversationApiContext(conv, "account-a");
+
+    expect(replay.messages).toHaveLength(1);
+    expect(replay.messages[0].providerData).toBeUndefined();
+
+    const represented = history();
+    const active = activeContext(represented);
+    active.messages.unshift({ role: "user", content: "migrated prompt", providerData: null as never });
+    expect(isValidActiveContext(active, represented)).toBe(true);
+  });
+
   test("does not duplicate speaker attribution already visible in a realtime delegation", () => {
     const conv = createConversation("speaker-delegation", "openai", "gpt-5.6-sol");
     const delegated = "[realtime delegation]\nSpeaker: Owner <owner-id> [owner]\nTask: Inspect it.";

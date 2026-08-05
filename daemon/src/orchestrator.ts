@@ -727,7 +727,7 @@ async function orchestrateAssistantTurn(
       ? latestCompactionAccountScope
       : previous?.accountScope ?? accountScope;
     const transcriptHistoryCount = liveConv.messages.filter(isReplayHistoryMessage).length;
-    liveConv.activeContext = {
+    const candidate: ActiveContext = {
       version: 1,
       kind: latestCompactionKind ?? previous!.kind,
       provider: liveConv.provider,
@@ -743,6 +743,14 @@ async function orchestrateAssistantTurn(
       compactedAt: latestCompactedAt ?? previous!.compactedAt,
       compactionCount: startingCompactionCount + compactionsThisTurn,
     };
+    // A compaction result is derived, disposable state, but installing an
+    // invalid result makes the next turn discard its only bounded replay and
+    // fall back to an arbitrarily large canonical transcript. Enforce the
+    // integrity invariant before the replacement becomes durable.
+    if (!isValidActiveContextCached(candidate, liveConv.messages)) {
+      throw new Error("Refusing to install an invalid context-compaction checkpoint");
+    }
+    liveConv.activeContext = candidate;
   }
 
   function completedDisplayMessages(): StoredMessage[] {
