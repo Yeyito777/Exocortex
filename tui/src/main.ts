@@ -61,10 +61,14 @@ import { log } from "./log";
 import { CallMediaController } from "./call-media";
 import { formatMicGainDb, loadMicGainDb, saveMicGainDb } from "./mic-gain";
 import { msUntilNextFolderNotification, STREAM_COMPLETION_SETTLE_MS } from "./sidebar/notifications";
+import { applyTuiStartingState, availableStartingConversationId, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
 
 // ── State ───────────────────────────────────────────────────────────
 
+const savedStartingState = loadTuiStartingState();
 const state = createInitialState();
+if (savedStartingState) applyTuiStartingState(state, savedStartingState);
+let pendingStartingState = savedStartingState;
 const RECONNECT_DELAY_MS = 1000;
 const STARTUP_PROFILE = process.env.EXOCORTEX_PROFILE_STARTUP === "1" || process.argv.includes("--profile-startup");
 const STARTUP_INPUT_SANITIZE_MS = 1000;
@@ -450,6 +454,12 @@ function onDaemonEvent(event: Event): void {
     startupProfileConversationCount = event.conversations.length;
     startupProfileConversationsLoaded = true;
     startupProfileMark("conversations_list_handled", { conversationCount: state.sidebar.conversations.length });
+    if (pendingStartingState) {
+      const startingState = pendingStartingState;
+      pendingStartingState = null;
+      const convId = availableStartingConversationId(startingState, event.conversations);
+      if (convId && state.convId === convId) daemon.loadConversation(convId);
+    }
   }
 
   // The daemon auto-generates titles after the first user message is appended.
@@ -1804,6 +1814,7 @@ async function main(): Promise<void> {
 
 function cleanup(): void {
   running = false;
+  persistStartingStateOnce();
   clearRenderTimer();
   clearStreamTick();
   clearStreamFinishedPingTimer();
@@ -1824,9 +1835,29 @@ function cleanup(): void {
   process.exit(0);
 }
 
-process.on("exit", () => restoreTerminal());
+let startingStatePersisted = false;
+
+function persistStartingStateOnce(): void {
+  if (startingStatePersisted) return;
+  try {
+    saveTuiStartingState(captureTuiStartingState(state));
+    startingStatePersisted = true;
+  } catch (error) {
+    try {
+      log("error", `tui: failed to save starting state: ${(error as Error).message}`);
+    } catch {
+      // Saving state must never prevent terminal restoration during shutdown.
+    }
+  }
+}
+
+process.on("exit", () => {
+  persistStartingStateOnce();
+  restoreTerminal();
+});
 process.on("SIGINT", cleanup);
 process.on("SIGTERM", cleanup);
+process.on("SIGHUP", cleanup);
 
 main().catch((err) => {
   restoreTerminal();
