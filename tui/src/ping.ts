@@ -4,7 +4,6 @@ import { homedir } from "os";
 import { resolve } from "path";
 import { readExocortexConfig, updateExocortexConfig, type ExocortexConfig, type PingMode } from "@exocortex/shared/config";
 import { log } from "./log";
-import { SUBAGENTS_FOLDER_NAME, type ConversationSummary, type FolderSummary } from "./messages";
 import type { StreamingStopReason } from "./protocol";
 
 type SpawnedProcess = { exited?: Promise<number>; unref?: () => void; kill?: () => void };
@@ -191,6 +190,8 @@ export interface StreamFinishedPingContext {
   completedConvId?: string | null;
   activeConvId?: string | null;
   isCompletedConvStreaming?: boolean;
+  /** Daemon-owned policy from the completed conversation summary. */
+  notificationsMuted?: boolean;
   windowId?: string | null;
   activeWindowReader?: ActiveWindowReader;
 }
@@ -206,7 +207,7 @@ export function isTerminalWindowFocused(
 }
 
 export function shouldSuppressStreamFinishedPing(context: StreamFinishedPingContext): boolean {
-  if (context.isCompletedConvStreaming) return true;
+  if (context.isCompletedConvStreaming || context.notificationsMuted) return true;
 
   return !!context.completedConvId
     && !!context.activeConvId
@@ -220,29 +221,6 @@ export interface BackgroundStreamCompletionUpdate {
   isStreaming: boolean;
   activeConvIdBeforeUpdate?: string | null;
   streamStopReason?: StreamingStopReason;
-}
-
-type PingConversationLocation = Pick<ConversationSummary, "id" | "folderId">;
-type PingFolderLocation = Pick<FolderSummary, "id" | "name" | "parentId">;
-
-/** True for conversations directly or transitively inside top-level subagents/. */
-export function isConversationInSubagentsFolder(
-  convId: string,
-  conversations: readonly PingConversationLocation[],
-  folders: readonly PingFolderLocation[],
-): boolean {
-  let folderId = conversations.find(conversation => conversation.id === convId)?.folderId ?? null;
-  const visited = new Set<string>();
-  while (folderId && !visited.has(folderId)) {
-    visited.add(folderId);
-    const folder = folders.find(candidate => candidate.id === folderId);
-    if (!folder) return false;
-    if ((folder.parentId ?? null) === null) {
-      return folder.name.trim().toLocaleLowerCase() === SUBAGENTS_FOLDER_NAME;
-    }
-    folderId = folder.parentId;
-  }
-  return false;
 }
 
 export function shouldPingForBackgroundStreamCompletion(update: BackgroundStreamCompletionUpdate): boolean {

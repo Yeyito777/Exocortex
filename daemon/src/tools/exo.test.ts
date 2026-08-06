@@ -9,6 +9,7 @@ import {
   createFolder,
   createWithInitialUserMessage,
   deleteFolder,
+  ensureTopLevelFolder,
   findTopLevelFolderByName,
   get,
   getEffectiveSystemInstructions,
@@ -17,6 +18,7 @@ import {
   getSummary,
   getSystemInstructions,
   listSidebarState,
+  markUnread,
   remove,
   setActiveJob,
   setSubagentPolicy,
@@ -113,6 +115,25 @@ describe("native exo tool contract", () => {
       "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
       "Subagents start in their own isolated conversation workspace, so include any separate target absolute directory and all necessary task context.",
     ].join("\n"));
+  });
+
+  test("jobs trusts daemon attention state for subagents while retaining running streams", async () => {
+    const folder = ensureTopLevelFolder("subagents")!;
+    const childId = id("muted-job");
+    create(childId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "muted job", undefined, false, folder.id);
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn: async () => successfulOutcome(),
+      hasCredentials: () => true,
+    });
+
+    markUnread(childId);
+    expect(JSON.parse((await runtime.execute({ action: "jobs" }, undefined)).output).jobs).toEqual([]);
+
+    setActiveJob(childId, new AbortController(), Date.now());
+    expect(JSON.parse((await runtime.execute({ action: "jobs" }, undefined)).output).jobs).toEqual([
+      expect.objectContaining({ id: childId, status: "running" }),
+    ]);
   });
 
   test("preserves long task text in summaries so the TUI can wrap it", () => {

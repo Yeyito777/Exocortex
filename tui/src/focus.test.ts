@@ -754,7 +754,7 @@ describe("sidebar top shortcuts", () => {
 });
 
 describe("conversation activity shortcuts", () => {
-  test("t opens the most recently completed conversation outside the subagents tree", () => {
+  test("t opens the most recently completed canonical unread conversation regardless of folder name", () => {
     const state = createInitialState();
     state.chatFocus = "history";
     state.vim.mode = "normal";
@@ -773,23 +773,23 @@ describe("conversation activity shortcuts", () => {
 
     const result = handleFocusedKey({ type: "char", char: "t" }, state);
 
-    expect(result).toEqual({ type: "load_conversation", convId: "latest-completed" });
+    expect(result).toEqual({ type: "load_conversation", convId: "nested-agent" });
     expect(state.sidebar.open).toBe(false);
     expect(state.panelFocus).toBe("chat");
     expect(state.chatFocus).toBe("history");
-    expect(state.sidebar.currentFolderId).toBe("work");
-    expect(state.sidebar.selectedId).toBe("latest-completed");
+    expect(state.sidebar.currentFolderId).toBe("nested-agents");
+    expect(state.sidebar.selectedId).toBe("nested-agent");
 
     // Loading clears unread in the daemon; cycling by the active id also makes
     // the next press deterministic before that sidebar update arrives.
-    state.convId = "latest-completed";
+    state.convId = "nested-agent";
     expect(handleFocusedKey({ type: "char", char: "t" }, state)).toEqual({
       type: "load_conversation",
-      convId: "older-completed",
+      convId: "direct-agent",
     });
   });
 
-  test("Shift+T cycles through streaming conversations by recency and wraps, excluding subagents", () => {
+  test("Shift+T cycles through all canonical streaming conversations by recency and wraps", () => {
     const state = createInitialState();
     state.vim.mode = "normal";
     state.sidebar.folders = [
@@ -805,23 +805,23 @@ describe("conversation activity shortcuts", () => {
 
     const result = handleFocusedKey({ type: "char", char: "T" }, state);
 
-    expect(result).toEqual({ type: "load_conversation", convId: "latest-stream" });
+    expect(result).toEqual({ type: "load_conversation", convId: "agent-stream" });
     expect(state.sidebar.open).toBe(false);
     expect(state.panelFocus).toBe("chat");
     expect(state.chatFocus).toBe("prompt");
-    expect(state.sidebar.currentFolderId).toBe("work");
-    expect(state.sidebar.selectedId).toBe("latest-stream");
+    expect(state.sidebar.currentFolderId).toBe("subagents");
+    expect(state.sidebar.selectedId).toBe("agent-stream");
+
+    state.convId = "agent-stream";
+    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({
+      type: "load_conversation",
+      convId: "latest-stream",
+    });
 
     state.convId = "latest-stream";
     expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({
       type: "load_conversation",
       convId: "older-stream",
-    });
-
-    state.convId = "older-stream";
-    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({
-      type: "load_conversation",
-      convId: "latest-stream",
     });
     expect(state.sidebar.open).toBe(false);
     expect(state.panelFocus).toBe("chat");

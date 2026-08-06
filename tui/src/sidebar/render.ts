@@ -1,5 +1,5 @@
 import { getMarkFromTitle } from "../marks";
-import { currentFolder, subagentsFolderIds } from "./folders";
+import { currentFolder } from "./folders";
 import { sameSidebarItem as sameItem, sidebarItemKey as itemKey } from "./items";
 import { SIDEBAR_WIDTH } from "./layout";
 import {
@@ -160,7 +160,6 @@ export function renderSidebar(
   const convs = sidebar.conversations;
   const displayRows = buildDisplayRows(sidebar);
   const folderAggregates = sidebar.folders.length > 0 ? buildFolderAggregates(sidebar, globalIdleConvIds, now) : null;
-  const subagentFolderIds = sidebar.folders.length > 0 ? subagentsFolderIds(sidebar.folders) : new Set<string>();
   // Compute visual selection once per render. Calling selectedVisualItems() per
   // row rebuilds displayRows each time; with an active /? filter this made `v`
   // feel very laggy on large conversation lists.
@@ -256,21 +255,20 @@ export function renderSidebar(
       rawTitle = folder ? `📁 ${folder.name}/ ${aggregate?.count ?? 0}` : "📁 folder/";
       const streamingCount = aggregate?.streamingCount ?? 0;
       const hasGlobalIdle = aggregate?.globalIdle ?? false;
-      const hasUnread = (aggregate?.unread ?? false) && !(folder && subagentFolderIds.has(folder.id));
+      const hasUnread = aggregate?.unread ?? false;
       streamIcon = streamingCount > 0 ? folderStreamingIndicator(streamingCount) : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = streamingCount > 0 ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
       chronoTaskIcon = chronoTaskIndicator(aggregate?.chronoTaskCount ?? 0);
-      notificationCount = folder && !subagentFolderIds.has(folder.id) ? aggregate?.unreadCount ?? 0 : 0;
+      notificationCount = aggregate?.unreadCount ?? 0;
       itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "conversation") {
       const conv = convs[dr.convIdx ?? -1];
       if (!conv) continue;
       isCurrent = conv.id === currentConvId;
       const hasGlobalIdle = globalIdleConvIds.has(conv.id);
-      const hasUnread = isSettledUnreadConversation(sidebar, conv, now)
-        && !(conv.folderId && subagentFolderIds.has(conv.folderId));
+      const hasUnread = isSettledUnreadConversation(sidebar, conv, now);
       streamIcon = conv.streaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = conv.streaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(conv.subagentCount ?? 0);

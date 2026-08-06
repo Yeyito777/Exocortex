@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, ConversationToolPolicy } from "./messages";
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, SUBAGENTS_FOLDER_NAME, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment, ToolPolicySnapshot } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
@@ -138,7 +138,9 @@ function retainConversation(conv: Conversation): void {
 }
 
 function saveUnreadState(): void {
-  persistence.saveUnreadConversationIds([...unread].filter((id) => summaries.has(id) || conversations.has(id)));
+  persistence.saveUnreadConversationIds([...unread].filter((id) =>
+    (summaries.has(id) || conversations.has(id)) && !areConversationNotificationsMuted(id)
+  ));
 }
 
 // ── Summary/index persistence helpers ──────────────────────────────
@@ -243,6 +245,7 @@ function saveFolderState(): void {
   // Folder ancestry determines the instructions pinned into render snapshots.
   renderSnapshotCache.clear();
   persistence.saveFolders(sortSidebarEntries([...folders.values()]));
+  pruneMutedUnreadState();
 }
 
 function saveFolderInstructionsState(): void {
@@ -302,6 +305,7 @@ function persistConversationSidebarStates(ids: Iterable<string>): void {
     persisted = true;
   }
   if (persisted) saveSummaryIndex("defer");
+  pruneMutedUnreadState();
 }
 
 /** Update one item's order in memory. The caller batches the small durable writes. */
@@ -329,6 +333,37 @@ function isDescendantFolder(folderId: string, candidateParentId: string | null):
     current = folders.get(current)?.parentId ?? null;
   }
   return false;
+}
+
+/** True only for the reserved top-level subagents/ folder and its descendants. */
+function isInSubagentsFolderTree(folderId: string | null | undefined): boolean {
+  let currentId = folderId ?? null;
+  const seen = new Set<string>();
+  while (currentId && !seen.has(currentId)) {
+    seen.add(currentId);
+    const folder = folders.get(currentId);
+    if (!folder) return false;
+    if ((folder.parentId ?? null) === null) {
+      return folder.name.trim().toLocaleLowerCase() === SUBAGENTS_FOLDER_NAME;
+    }
+    currentId = folder.parentId;
+  }
+  return false;
+}
+
+function areConversationNotificationsMuted(id: string): boolean {
+  return isInSubagentsFolderTree(summaries.get(id)?.folderId ?? conversations.get(id)?.folderId);
+}
+
+/** Keep the durable unread set aligned when folder topology changes. */
+function pruneMutedUnreadState(): void {
+  let changed = false;
+  for (const id of unread) {
+    if (!areConversationNotificationsMuted(id)) continue;
+    unread.delete(id);
+    changed = true;
+  }
+  if (changed) saveUnreadState();
 }
 
 function descendantFolderIdsIncluding(folderId: string): Set<string> {
@@ -1716,7 +1751,7 @@ export function loadFromDisk(): LoadFromDiskStats {
   unread.clear();
   let staleUnreadCount = 0;
   for (const id of persistence.loadUnreadConversationIds()) {
-    if (summaries.has(id)) unread.add(id);
+    if (summaries.has(id) && !areConversationNotificationsMuted(id)) unread.add(id);
     else staleUnreadCount++;
   }
   if (staleUnreadCount > 0) saveUnreadState();
@@ -1859,11 +1894,13 @@ export function onChunk(id: string): boolean {
 export function listSummaries(): ConversationSummary[] {
   const result: ConversationSummary[] = [];
   for (const summary of summaries.values()) {
+    const notificationsMuted = areConversationNotificationsMuted(summary.id);
     result.push({
       ...summary,
       streaming: streaming.isStreaming(summary.id),
       ...(streaming.isStreaming(summary.id) && !streaming.isRestartRecoverableJob(summary.id) ? { restartRecoverable: false } : {}),
-      unread: unread.has(summary.id),
+      unread: !notificationsMuted && unread.has(summary.id),
+      ...(notificationsMuted ? { notificationsMuted: true } : {}),
       ...getConversationActivityCounts(summary.id),
       tasks: getConversationTasks(summary.id),
       integrations: getConversationExternalIntegrations(summary.id),
@@ -2244,11 +2281,13 @@ export function getSummary(id: string): ConversationSummary | null {
   const loaded = conversations.get(id);
   const summary = loaded ? summarizeConversation(loaded) : summaries.get(id);
   if (!summary) return null;
+  const notificationsMuted = areConversationNotificationsMuted(id);
   return {
     ...summary,
     streaming: streaming.isStreaming(id),
     ...(streaming.isStreaming(id) && !streaming.isRestartRecoverableJob(id) ? { restartRecoverable: false } : {}),
-    unread: unread.has(id),
+    unread: !notificationsMuted && unread.has(id),
+    ...(notificationsMuted ? { notificationsMuted: true } : {}),
     ...getConversationActivityCounts(id),
     tasks: getConversationTasks(id),
     integrations: getConversationExternalIntegrations(id),
@@ -2614,6 +2653,7 @@ export function getToolOutputs(id: string): ToolOutputInfo[] | null {
 
 export function markUnread(convId: string): void {
   if (!summaries.has(convId) && !conversations.has(convId)) return;
+  if (areConversationNotificationsMuted(convId)) return;
   if (unread.has(convId)) return;
   unread.add(convId);
   saveUnreadState();
@@ -2795,5 +2835,5 @@ export function clearUnread(convId: string): boolean {
 }
 
 export function isUnread(convId: string): boolean {
-  return unread.has(convId);
+  return !areConversationNotificationsMuted(convId) && unread.has(convId);
 }

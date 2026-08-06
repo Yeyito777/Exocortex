@@ -6,7 +6,6 @@ import {
   getActiveSidebarSearchQuery,
   getVisibleConversationIndicesForQuery,
 } from "../sidebarsearch";
-import { subagentsFolderIds } from "./folders";
 import { isSettledUnreadConversation } from "./notifications";
 
 export function focusSidebarItem(sidebar: SidebarState, item: SidebarSelectableItem | null): void {
@@ -66,12 +65,8 @@ function activityConversations(
   sidebar: SidebarState,
   status: "completed" | "streaming",
 ): ConversationSummary[] {
-  const subagentFolderIdSet = subagentsFolderIds(sidebar.folders);
   return sidebar.conversations
-    .filter((conv) => {
-      if (conv.folderId && subagentFolderIdSet.has(conv.folderId)) return false;
-      return status === "streaming" ? conv.streaming : isSettledUnreadConversation(sidebar, conv);
-    })
+    .filter((conv) => status === "streaming" ? conv.streaming : isSettledUnreadConversation(sidebar, conv))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
@@ -87,12 +82,12 @@ function focusNextActivityConversation(
   return focusConversationById(sidebar, next.id);
 }
 
-/** Focus the next completed non-subagent conversation in recency order. */
+/** Focus the next completed conversation in recency order. */
 export function focusNextCompletedConversation(sidebar: SidebarState, currentConvId: string | null): boolean {
   return focusNextActivityConversation(sidebar, "completed", currentConvId);
 }
 
-/** Focus the next streaming non-subagent conversation in recency order, wrapping at the end. */
+/** Focus the next streaming conversation in recency order, wrapping at the end. */
 export function focusNextStreamingConversation(sidebar: SidebarState, currentConvId: string | null): boolean {
   return focusNextActivityConversation(sidebar, "streaming", currentConvId);
 }

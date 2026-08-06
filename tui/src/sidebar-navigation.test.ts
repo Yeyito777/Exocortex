@@ -92,7 +92,7 @@ describe("sidebar streaming navigation", () => {
     expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "client" });
   });
 
-  test("skips completed subagents whose unread indicators are hidden", () => {
+  test("trusts canonical unread state without interpreting reserved folder names", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [
       folder("subagents", 1, { name: " SubAgents " }),
@@ -109,12 +109,7 @@ describe("sidebar streaming navigation", () => {
     sidebar.selectedIndex = 0;
 
     expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
-    expect(sidebar.selectedItem).toEqual({ type: "conversation", id: "ordinary-complete" });
-
-    sidebar.currentFolderId = "subagents";
-    sidebar.selectedItem = { type: "up" };
-    expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
-    expect(sidebar.selectedItem).toEqual({ type: "up" });
+    expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "subagents" });
   });
 
   test("still jumps to subagents while they are actively streaming", () => {

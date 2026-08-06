@@ -52,7 +52,7 @@ import { createVoiceInputController, type SubmittedVoiceTranscription, type Voic
 import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
 import { startReplayConversation } from "./replay";
 import { startManualCompaction } from "./compact";
-import { isConversationInSubagentsFolder, runStreamFinishedPing, shouldPingForBackgroundStreamCompletion, shouldPingForStreamStopped } from "./ping";
+import { runStreamFinishedPing, shouldPingForBackgroundStreamCompletion, shouldPingForStreamStopped } from "./ping";
 import { stripStartupLaunchEcho } from "./startupinput";
 import { focusedConversationTasks, msUntilTaskPanelEntryUpdate } from "./activitypanel";
 import { beginOlderHistoryLoad, INITIAL_BUFFER_ADDITIONAL_TURNS, OLDER_HISTORY_PAGE_TURNS, shouldLoadOlderHistory } from "./historypagination";
@@ -234,17 +234,15 @@ function isBackgroundConversationScopedEvent(event: Event): boolean {
 }
 
 function scheduleStreamFinishedPing(completedConvId: string): void {
-  if (isConversationInSubagentsFolder(completedConvId, state.sidebar.conversations, state.sidebar.folders)) return;
   clearStreamFinishedPingTimer();
   streamFinishedPingTimer = setTimeout(() => {
     streamFinishedPingTimer = null;
-    // Re-check after the debounce in case sidebar folder state arrived or the
-    // conversation moved while completion events were being reconciled.
-    if (isConversationInSubagentsFolder(completedConvId, state.sidebar.conversations, state.sidebar.folders)) return;
+    const completed = state.sidebar.conversations.find(conversation => conversation.id === completedConvId);
     runStreamFinishedPing({
       completedConvId,
       activeConvId: state.convId,
       isCompletedConvStreaming: isConversationStreaming(completedConvId),
+      notificationsMuted: completed?.notificationsMuted === true,
     });
   }, STREAM_COMPLETION_SETTLE_MS);
 }

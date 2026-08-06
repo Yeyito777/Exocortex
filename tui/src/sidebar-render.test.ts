@@ -286,7 +286,7 @@ describe("sidebar rendering", () => {
     expect(folderRow).toContain(`${theme.notificationBg}${theme.notificationFg} 1 ${theme.reset}`);
   });
 
-  test("does not render finished indicators or unread-count badges anywhere under top-level subagents", () => {
+  test("renders canonical unread state without interpreting reserved folder names", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [
       { id: "subagents", name: " SubAgents ", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -300,19 +300,19 @@ describe("sidebar rendering", () => {
 
     let rows = renderSidebar(sidebar, 8, true, null);
     const subagentsRow = rows.find(row => row.includes("SubAgents"));
-    expect(subagentsRow).not.toContain(`${theme.success}◉ `);
-    expect(subagentsRow).not.toContain(theme.notificationBg);
+    expect(subagentsRow).toContain(`${theme.success}◉ `);
+    expect(subagentsRow).toContain(`${theme.notificationBg}${theme.notificationFg} 2 ${theme.reset}`);
     expect(rows.find(row => row.includes("ordinary"))).toContain(`${theme.success}◉ `);
 
     sidebar.currentFolderId = "subagents";
     rows = renderSidebar(sidebar, 8, true, null);
     const batchRow = rows.find(row => row.includes("Batch"));
-    expect(batchRow).not.toContain(`${theme.success}◉ `);
-    expect(batchRow).not.toContain(theme.notificationBg);
-    expect(rows.find(row => row.includes("direct-agent"))).not.toContain(`${theme.success}◉ `);
+    expect(batchRow).toContain(`${theme.success}◉ `);
+    expect(batchRow).toContain(`${theme.notificationBg}${theme.notificationFg} 1 ${theme.reset}`);
+    expect(rows.find(row => row.includes("direct-agent"))).toContain(`${theme.success}◉ `);
 
     sidebar.currentFolderId = "batch";
     rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("nested-agent"))).not.toContain(`${theme.success}◉ `);
+    expect(rows.find(row => row.includes("nested-agent"))).toContain(`${theme.success}◉ `);
   });
 });

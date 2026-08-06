@@ -1,5 +1,4 @@
 import { sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
-import { subagentsFolderIds } from "./folders";
 import { buildDisplayRows, type DisplayRow } from "./rows";
 import { focusConversationAt, focusSidebarItem } from "./selection";
 import type { SidebarState } from "./state";
@@ -37,7 +36,6 @@ export function moveSelection(sidebar: SidebarState, delta: number): void {
 
 function foldersWithStreamingIndicator(
   sidebar: SidebarState,
-  subagentFolderIds: ReadonlySet<string>,
 ): Set<string> {
   const ids = new Set<string>();
   if (sidebar.folders.length === 0) return ids;
@@ -46,8 +44,7 @@ function foldersWithStreamingIndicator(
   for (const folder of sidebar.folders) parentById.set(folder.id, folder.parentId ?? null);
 
   for (const conv of sidebar.conversations) {
-    const hasVisibleUnread = isSettledUnreadConversation(sidebar, conv)
-      && !(conv.folderId && subagentFolderIds.has(conv.folderId));
+    const hasVisibleUnread = isSettledUnreadConversation(sidebar, conv);
     if (!conv.streaming && !hasVisibleUnread) continue;
     let folderId = conv.folderId ?? null;
     const seen = new Set<string>();
@@ -65,14 +62,11 @@ function hasStreamingIndicator(
   sidebar: SidebarState,
   row: DisplayRow,
   streamingFolderIds: Set<string>,
-  subagentFolderIds: ReadonlySet<string>,
 ): boolean {
   const item = row.item ?? null;
   if (item?.type === "conversation") {
     const conv = row.convIdx === undefined ? sidebar.conversations.find(c => c.id === item.id) : sidebar.conversations[row.convIdx];
-    return Boolean(conv?.streaming || (conv
-      && isSettledUnreadConversation(sidebar, conv)
-      && !(conv.folderId && subagentFolderIds.has(conv.folderId))));
+    return Boolean(conv?.streaming || (conv && isSettledUnreadConversation(sidebar, conv)));
   }
   if (item?.type === "folder") {
     return streamingFolderIds.has(item.id);
@@ -85,9 +79,8 @@ export function moveToStreaming(sidebar: SidebarState, delta: 1 | -1): void {
   const entries = buildDisplayRows(sidebar)
     .map((row, rowIndex) => ({ row, rowIndex }))
     .filter(({ row }) => row.type === "entry" && row.item);
-  const subagentFolderIdSet = subagentsFolderIds(sidebar.folders);
-  const streamingFolderIds = foldersWithStreamingIndicator(sidebar, subagentFolderIdSet);
-  const targets = entries.filter(({ row }) => hasStreamingIndicator(sidebar, row, streamingFolderIds, subagentFolderIdSet));
+  const streamingFolderIds = foldersWithStreamingIndicator(sidebar);
+  const targets = entries.filter(({ row }) => hasStreamingIndicator(sidebar, row, streamingFolderIds));
   if (targets.length === 0) return;
 
   const selectedKey = itemKey(sidebar.selectedItem);

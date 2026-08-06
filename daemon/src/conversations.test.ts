@@ -1792,6 +1792,53 @@ describe("unread persistence", () => {
     loadFromDisk();
     expect(getSummary(id)).toMatchObject({ unread: false });
   });
+
+  test("never marks conversations in the reserved top-level subagents tree unread", () => {
+    const subagents = ensureTopLevelFolder(" SubAgents ")!;
+    const nested = createFolder(`Nested agents ${Date.now()} ${Math.random()}`, subagents.id)!;
+    const ordinary = createFolder(`Ordinary ${Date.now()} ${Math.random()}`)!;
+    const misleading = createFolder("subagents", ordinary.id)!;
+    FOLDER_IDS.push(subagents.id, nested.id, ordinary.id, misleading.id);
+
+    const directId = mkId("unread-subagent-direct");
+    const nestedId = mkId("unread-subagent-nested");
+    const ordinaryId = mkId("unread-nested-name");
+    create(directId, "openai", "gpt-5.4", "direct", undefined, false, subagents.id);
+    create(nestedId, "openai", "gpt-5.4", "nested", undefined, false, nested.id);
+    create(ordinaryId, "openai", "gpt-5.4", "ordinary", undefined, false, misleading.id);
+
+    markUnread(directId);
+    markUnread(nestedId);
+    markUnread(ordinaryId);
+
+    expect(isUnread(directId)).toBe(false);
+    expect(isUnread(nestedId)).toBe(false);
+    expect(getSummary(directId)).toMatchObject({ unread: false, notificationsMuted: true });
+    expect(getSummary(nestedId)).toMatchObject({ unread: false, notificationsMuted: true });
+    expect(getSummary(ordinaryId)).toMatchObject({ unread: true });
+    expect(getSummary(ordinaryId)?.notificationsMuted).toBeUndefined();
+
+    setActiveJob(nestedId, new AbortController(), Date.now());
+    expect(getSummary(nestedId)).toMatchObject({ streaming: true, unread: false, notificationsMuted: true });
+    clearActiveJob(nestedId);
+  });
+
+  test("clears durable unread state when a conversation tree moves under subagents", () => {
+    const subagents = ensureTopLevelFolder("subagents")!;
+    const batch = createFolder(`Unread batch ${Date.now()} ${Math.random()}`)!;
+    FOLDER_IDS.push(subagents.id, batch.id);
+    const id = mkId("unread-moved-subagent");
+    create(id, "openai", "gpt-5.4", "move me", undefined, false, batch.id);
+    markUnread(id);
+    expect(isUnread(id)).toBe(true);
+
+    expect(moveSidebarItems([{ type: "folder", id: batch.id }], subagents.id)).toBe(true);
+    expect(getSummary(id)).toMatchObject({ unread: false, notificationsMuted: true });
+
+    loadFromDisk();
+    expect(isUnread(id)).toBe(false);
+    expect(getSummary(id)).toMatchObject({ unread: false, notificationsMuted: true });
+  });
 });
 
 describe("listRunningConversationIds", () => {

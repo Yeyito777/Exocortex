@@ -390,6 +390,12 @@ export interface ConversationSummary {
   /** False for maintenance jobs that must be aborted, but not replayed, across daemon restarts. */
   restartRecoverable?: boolean;
   unread: boolean;
+  /**
+   * Daemon-owned attention policy. Muted conversations still report live
+   * streaming state, but clients should not emit completion notifications.
+   * Omitted means notifications are allowed.
+   */
+  notificationsMuted?: boolean;
   sortOrder: number;
   /** Folder containing this conversation. Null means the sidebar root. */
   folderId?: string | null;
