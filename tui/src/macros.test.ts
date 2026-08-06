@@ -86,7 +86,10 @@ describe("macro expansion", () => {
     expect(expanded).toContain("unpausable and uncompletable");
     expect(expanded).not.toContain("not allowed to pause it");
     expect(expanded).toContain("autoresearch/<topic>");
-    expect(expanded).toContain("you must create a benchmark first");
+    expect(expanded).toContain("gitignored directory");
+    expect(expanded).toContain("Never force-add or commit this directory");
+    expect(expanded).toContain("commit only the accepted production source");
+    expect(expanded).toContain("you must create the benchmark first");
     expect(expanded).toContain("Make sure to not use subagents.");
     expect(expanded).toContain("ask him 5 questions before you actually start");
     expect(expanded).toContain("set yourself the goal AFTER the user has answered the five questions");
@@ -100,8 +103,9 @@ describe("macro expansion", () => {
 
     expect(expanded).toContain("You're going to stop autoresearching.");
     expect(expanded).toContain("wrap up your last experiment");
-    expect(expanded).toContain("create an html report of the autoresearch");
+    expect(expanded).toContain("create an HTML report of the autoresearch");
     expect(expanded).toContain("Save it to a file in ~/Workspace/playground/");
+    expect(expanded).toContain("remove the local autoresearch directory");
   });
 });
 

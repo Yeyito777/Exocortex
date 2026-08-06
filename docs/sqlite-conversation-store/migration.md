@@ -55,8 +55,9 @@ Once SQLite is canonical:
 
 ## Inspection, backup, and restore
 
-The administration surface uses the current worktree's detected instance by
-default. Pass `--database /explicit/path/exocortex.sqlite3` to target another store:
+The administration surface uses the instance resolved from the current checkout and
+configuration by default. Pass `--database /explicit/path/exocortex.sqlite3` to target
+another store:
 
 ```bash
 bun scripts/dev/sqlite-store-admin.ts diagnostics
@@ -120,5 +121,6 @@ This intentionally loses SQLite-only changes made after cutover.
 No automatic cleanup removes JSON, sidecars, display pages, or a database. The
 SQLite runtime does not read or update `conversations-index.json`, display-page
 files, `.sidebar`, or `.unwind` after canonical cutover, but those rollback inputs
-remain on disk. Archive cleanup is a separate future operation and remains deferred
-until the user accepts this worktree and an agreed bake-in release has passed.
+remain on disk. Archive cleanup is a separate operator-approved operation that should
+only happen after the rollback retention window has passed and a verified current
+backup or export exists.

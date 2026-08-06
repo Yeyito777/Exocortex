@@ -2,7 +2,8 @@
 
 Date: 2026-08-01
 
-Worktree: `sqlite-conversation-store`
+Status: accepted and merged into `main`. This report records the isolated
+`sqlite-conversation-store` worktree validation performed before merge.
 
 All copied transcripts, databases, exports, screenshots, and per-conversation reports
 remain under gitignored worktree data or `/tmp`. No real transcript content is in
@@ -103,8 +104,8 @@ Initial SQLite-targeted realtime gate: **6 passed, 0 failed**.
 
 The remaining-only architecture roadmap was updated to remove the completed
 repository/SQLite/migration program and add JSON retirement plus realtime service and
-runtime-validation follow-up work. The post-merge aggregate is in
-[`main-sync-results.md`](./main-sync-results.md).
+runtime-validation follow-up work. The relevant synchronization results are included
+in this report.
 
 ## Legacy trash and history migration completion — 2026-08-03
 
@@ -250,9 +251,6 @@ Gitignored evidence:
 - `sqlite-fixture/rollback-daemon-report.json`
 
 ## Performance
-
-See `autoresearch/exocortex-performance/CONVERSATION_STORE.md` and
-`results/conversation-store-full.json`.
 
 All approved gates pass; the executable verifier reports **13 passed, 0 failed**:
 

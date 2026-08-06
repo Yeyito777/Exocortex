@@ -2,10 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { repoRoot } from "@exocortex/shared/paths";
 import { resolveHelperToolPresentation } from "./helper-tool-manifest";
-
-const posixExecutableTest = process.platform === "win32" ? test.skip : test;
 
 async function withProject(run: (root: string) => void | Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "exocortex-helper-tool-"));
@@ -27,13 +24,6 @@ function addHelperTool(root: string, dir: string, name: string, label: string, c
 }
 
 describe("helper tool manifests", () => {
-  posixExecutableTest("recognizes the bundled computer helper by absolute path", async () => {
-    const executable = join(repoRoot(), "helper-tools", "computer", "computer");
-    expect(await resolveHelperToolPresentation(`${executable} list-apps`, tmpdir())).toEqual({
-      bashStyles: [{ cmd: executable, label: "Computer", color: "#ff79c6" }],
-    });
-  });
-
   test("resolves a manifest beside a direct-path helper tool", () => withProject(async (root) => {
     addHelperTool(root, "scripts", "deploy", "Deploy", "#7aa2f7");
 

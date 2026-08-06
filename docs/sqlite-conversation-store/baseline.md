@@ -45,7 +45,11 @@ were passing before implementation.
 
 ## Acceptance thresholds
 
-See the approved defaults in `TODO.md`: bounded low-scale regression, p95 ordinary
-interactive writes below 50 ms, at least 2x 10,000-conversation startup/listing
-improvement, and at least 5x large-history append improvement with append cost
-independent of historical bytes.
+The approved thresholds were:
+
+- low-scale median latency must not regress by more than the larger of 15% or 2 ms;
+- low-scale p95 latency must not regress by more than the larger of 25% or 5 ms;
+- ordinary interactive writes must remain below 50 ms p95;
+- 10,000-conversation startup/listing must improve by at least 2x; and
+- appends to 10/50/100 MiB histories must improve by at least 5x, with append cost
+  independent of historical bytes.

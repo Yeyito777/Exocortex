@@ -30,11 +30,12 @@ external-tools/*
 !external-tools/TOOL_STANDARD.md
 !external-tools/PORT_PROMPT.md
 
+# Raw autoresearch ledgers are local; promote durable source and documentation separately
+autoresearch/
+
 # Helper tools are user-local; keep their standard tracked
 helper-tools/*
 !helper-tools/HELPER_TOOLS_STANDARD.md
-!helper-tools/computer/
-!helper-tools/computer/**
 
 # Environment and secrets
 .env
