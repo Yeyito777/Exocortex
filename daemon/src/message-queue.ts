@@ -89,6 +89,9 @@ export function loadQueuedMessagesFromDisk(deliveredQueueIds: ReadonlySet<string
   const unwindTombstones = persistence.loadUnwindQueueTombstones();
   const seen = new Set<string>();
   messages = loaded.filter((entry) => {
+    // Realtime calls do not survive daemon restart, so their display-only
+    // handoff shadows cannot have a live owner after queue recovery.
+    if (entry.source === "realtime") return false;
     if (seen.has(entry.id) || deliveredQueueIds.has(entry.id) || unwindTombstones.has(entry.id)) return false;
     seen.add(entry.id);
     return true;
@@ -165,6 +168,29 @@ export function pushQueuedMessage(
   return mutateAndCommit(() => {
     messages.push(entry);
     return cloneEntry(entry);
+  });
+}
+
+/** Publish a display-only next-turn shadow owned and drained by the realtime call manager. */
+export function pushRealtimeQueuedMessage(
+  convId: string,
+  text: string,
+  id: string,
+  createdAt = Date.now(),
+): QueuedMessage {
+  const existing = messages.find(entry => entry.id === id);
+  if (existing) return { ...existing };
+  const entry: QueuedMessage = {
+    id,
+    convId,
+    text,
+    timing: "next-turn",
+    source: "realtime",
+    createdAt,
+  };
+  return mutateAndCommit(() => {
+    messages.push(entry);
+    return { ...entry };
   });
 }
 

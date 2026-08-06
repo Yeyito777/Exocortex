@@ -1306,6 +1306,7 @@ export function render(state: RenderState): boolean {
       state.convId,
       new Set(state.queuedMessages.filter(isGlobalIdleQueuedMessage).map(message => message.convId)),
       state.pendingAI ? state.convId : null,
+      new Set(state.activeCallIdsByConversation.keys()),
     );
   }
 

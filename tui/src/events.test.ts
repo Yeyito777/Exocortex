@@ -298,6 +298,26 @@ describe("GPT-Live transcript events", () => {
     expect(state.messages).toHaveLength(0);
   });
 
+  test("tracks active calls globally for sidebar indicators and handles multiple adapters", () => {
+    const state = createInitialState();
+    state.convId = "current";
+    const callActivity = (convId: string, callId: string, active: boolean) => handleEvent({
+      type: "call_activity",
+      convId,
+      callId,
+      active,
+    }, state, daemon);
+
+    callActivity("other", "call-1", true);
+    callActivity("other", "call-2", true);
+    expect(state.activeCallIdsByConversation.get("other")).toEqual(new Set(["call-1", "call-2"]));
+
+    callActivity("other", "call-1", false);
+    expect(state.activeCallIdsByConversation.get("other")).toEqual(new Set(["call-2"]));
+    callActivity("other", "call-2", false);
+    expect(state.activeCallIdsByConversation.has("other")).toBe(false);
+  });
+
   test("projects captured user speech until canonical history owns it", () => {
     const state = createInitialState();
     state.convId = "conv-call";

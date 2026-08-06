@@ -25,6 +25,7 @@ interface ActiveAdapter {
   buffer: string;
   stderr: string;
   stopping: boolean;
+  muted: boolean;
 }
 
 export interface CallMediaControllerOptions {
@@ -102,6 +103,15 @@ export class CallMediaController {
     if (active) this.send(active, { type: "mic_gain", gainDb: this.micGainDb });
   }
 
+  /** Toggle local capture for the active TUI call in this conversation. */
+  toggleMuted(convId: string): boolean | null {
+    const active = this.active;
+    if (!active || active.convId !== convId || active.stopping) return null;
+    active.muted = !active.muted;
+    this.send(active, { type: "mic_muted", muted: active.muted });
+    return active.muted;
+  }
+
   private start(convId: string, callId: string): void {
     const current = this.active;
     if (current?.convId === convId && current.callId === callId) return;
@@ -123,6 +133,7 @@ export class CallMediaController {
       buffer: "",
       stderr: "",
       stopping: false,
+      muted: false,
     };
     this.active = active;
     this.send(active, { type: "mic_gain", gainDb: this.micGainDb });

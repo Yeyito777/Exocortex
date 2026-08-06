@@ -60,6 +60,11 @@ describe("TUI call media controller", () => {
 
     controller.setMicGainDb(3.5);
     expect(sent.map(line => JSON.parse(line))).toContainEqual({ type: "mic_gain", gainDb: 3.5 });
+    expect(controller.toggleMuted("another-conversation")).toBeNull();
+    expect(controller.toggleMuted("conv-1")).toBe(true);
+    expect(controller.toggleMuted("conv-1")).toBe(false);
+    expect(sent.map(line => JSON.parse(line))).toContainEqual({ type: "mic_muted", muted: true });
+    expect(sent.map(line => JSON.parse(line))).toContainEqual({ type: "mic_muted", muted: false });
 
     controller.handleEvent({
       type: "call_sdp_answer",

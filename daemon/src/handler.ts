@@ -241,7 +241,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
     });
   };
-  const buildOrchestrationCallbacks = (convId: string) => ({
+  const buildOrchestrationCallbacks = (convId: string, onAssistantTextChunk?: (chunk: string) => void) => ({
     onHeaders: (h: Headers) => {
       const provider = convStore.getIndexedSummary(convId)?.provider ?? getDefaultProvider().id;
       if (provider === "openai") broadcastToolsAvailable();
@@ -255,6 +255,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     onBackgroundTaskComplete: (completion: BackgroundTaskCompletion) => {
       enqueueBackgroundTaskCompletion(convId, completion);
     },
+    ...(onAssistantTextChunk ? { onAssistantTextChunk } : {}),
     exocortex: exocortexRuntime,
   });
 
@@ -1034,7 +1035,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   };
 
   callManager = options.callManager ?? new RealtimeCallManager(server, {
-    delegate: async (convId, delegation, signal) => {
+    queueDelegation: (convId, queueId, text) => {
+      convStore.pushRealtimeQueuedMessage(convId, text, queueId);
+    },
+    dequeueDelegation: (queueId) => {
+      convStore.removeQueuedMessageById(queueId);
+    },
+    delegate: async (convId, delegation, signal, onTextDelta) => {
       const conv = convStore.get(convId);
       if (!conv) throw new Error("Owning conversation no longer exists.");
       if (convStore.isStreaming(convId)) throw new Error("The owning conversation is already running another turn.");
@@ -1046,7 +1053,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           convId,
           delegation,
           Date.now(),
-          buildOrchestrationCallbacks(convId),
+          buildOrchestrationCallbacks(convId, onTextDelta),
           { subagentMaxDepth: conv.subagentMaxDepth ?? null },
           signal,
         );

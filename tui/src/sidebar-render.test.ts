@@ -116,6 +116,25 @@ describe("sidebar rendering", () => {
     expect(folderRow).toContain(`${theme.warning}◉ `);
   });
 
+  test("renders a distinct active-call indicator on conversations and containing folders", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
+    sidebar.conversations = [
+      conversation("calling", 0, { title: "Calling", folderId: "folder" }),
+      conversation("plain", 1, { title: "Plain", folderId: "folder" }),
+    ];
+    const activeCalls = new Set(["calling"]);
+
+    let rows = renderSidebar(sidebar, 8, true, null, new Set(), null, activeCalls);
+    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.tool}☎ `);
+
+    sidebar.currentFolderId = "folder";
+    rows = renderSidebar(sidebar, 8, true, null, new Set(), null, activeCalls);
+    expect(rows.find(row => row.includes("Calling"))).toContain(`${theme.tool}☎ `);
+    expect(rows.find(row => row.includes("Plain"))).not.toContain("☎");
+    expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
+  });
+
   test("counts streaming conversations recursively on folder indicators", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [

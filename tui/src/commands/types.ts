@@ -25,6 +25,7 @@ type CommandAction =
   | { type: "btw_close_requested" }
   | { type: "call_requested"; voice?: RealtimeVoice }
   | { type: "hangup_requested" }
+  | { type: "mute_requested" }
   | { type: "mic_gain_changed"; gainDb: number }
   | { type: "model_changed"; provider: ProviderId; model: ModelId }
   | { type: "trim_requested"; mode: TrimMode; count: number }

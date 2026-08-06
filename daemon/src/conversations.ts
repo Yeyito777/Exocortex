@@ -47,7 +47,7 @@ export {
 } from "./streaming";
 export {
   getQueuedMessages, getQueuedMessageById, listQueuedMessages, listInternalQueuedMessages,
-  pushQueuedMessage, pushGlobalIdleQueuedMessage, drainQueuedMessages,
+  pushQueuedMessage, pushRealtimeQueuedMessage, pushGlobalIdleQueuedMessage, drainQueuedMessages,
   clearQueuedMessages, clearAllQueuedMessages, removeQueuedMessage, removeQueuedMessageById,
   removeQueuedMessagesById, updateQueuedMessage, moveQueuedMessage,
   persistQueuedMessagesSnapshot,

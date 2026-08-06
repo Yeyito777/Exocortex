@@ -16,6 +16,7 @@ import { LOGIN_COMMAND } from "./commands/login";
 import { LOGOUT_COMMAND } from "./commands/logout";
 import { MODEL_COMMAND } from "./commands/model";
 import { MIC_COMMAND } from "./commands/mic";
+import { MUTE_COMMAND } from "./commands/mute";
 import { NEW_COMMAND } from "./commands/new";
 import { PING_COMMAND } from "./commands/ping";
 import { QUEUE_COMMAND } from "./commands/queue";
@@ -46,6 +47,7 @@ const commands: SlashCommand[] = [
   CALL_COMMAND,
   HANGUP_COMMAND,
   MIC_COMMAND,
+  MUTE_COMMAND,
   COMPACT_COMMAND,
   RENAME_COMMAND,
   MODEL_COMMAND,

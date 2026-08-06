@@ -292,6 +292,28 @@ describe("call transcript rendering", () => {
 });
 
 describe("queued message rendering", () => {
+  test("renders a queued realtime delegation through the next-turn queue surface", () => {
+    const state = {
+      messages: [],
+      pendingAI: null,
+      toolRegistry: [],
+      externalToolStyles: [],
+      showToolOutput: false,
+      convId: "conv-1",
+      queuedMessages: [{
+        id: "realtime:call:item",
+        convId: "conv-1",
+        text: "[realtime delegation]\n<realtime_delegation>\n  <input>Inspect the repository</input>\n</realtime_delegation>",
+        timing: "next-turn",
+        source: "realtime",
+      }],
+    } as any;
+
+    const rendered = buildMessageLines(state, 100).lines.map(stripAnsi);
+    expect(rendered).toContainEqual(expect.stringContaining("Inspect the repository"));
+    expect(rendered).toContainEqual(expect.stringContaining("queued: next turn"));
+  });
+
   test("groups queue display by timing priority while preserving FIFO within each bucket", () => {
     const state = {
       messages: [],
