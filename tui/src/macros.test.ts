@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "fs";
 import { externalToolsDir, externalToolsTrashDir } from "@exocortex/shared/paths";
-import { getMacroArgs, expandMacros } from "./macros";
+import { getMacroArgs, expandMacros, MACRO_LIST } from "./macros";
 
 const TEST_TOOL_DIR = `${externalToolsDir()}/tool-macros-test-cli`;
 
@@ -10,8 +10,9 @@ afterEach(() => {
 });
 
 describe("macro expansion", () => {
-  test("/xenv expands to the xenv test loop prompt", () => {
-    expect(expandMacros("/xenv")).toBe("You're going to test this in a xenv and go into a loop: build → test in xenv → fix anything that's wrong → ... until it's complete");
+  test("/xenv is not registered or expanded", () => {
+    expect(MACRO_LIST.map(macro => macro.name)).not.toContain("/xenv");
+    expect(expandMacros("/xenv")).toBe("/xenv");
   });
 
   test("/todo expands to the sequential TODO workflow prompt", () => {

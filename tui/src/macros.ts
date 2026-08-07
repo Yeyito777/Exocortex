@@ -184,7 +184,6 @@ const MACROS: MacroDef[] = [
       { name: "stop", desc: "Stop autoresearching", expansion: AUTORESEARCH_STOP_PROMPT },
     ],
   },
-  { name: "/xenv", desc: "Test in xenv until complete", expansion: "You're going to test this in a xenv and go into a loop: build → test in xenv → fix anything that's wrong → ... until it's complete" },
   {
     name: "/publish", desc: "Publish this", expansion: "Start git tracking this, first checking for secrets/private artifacts/history that should not be published. Make a gitignore, MIT license it if appropriate, make upstream repo with gh tool, make it public, give brief description, and commit and push",
     args: [
