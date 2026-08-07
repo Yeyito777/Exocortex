@@ -830,7 +830,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       );
       childInternalTools = childToolPolicy.internal;
       childExternalTools = childToolPolicy.external;
-      const folder = convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME);
+      const folder = convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME, { mutedOnCreate: true });
       if (!folder) throw new Error(`Failed to create ${SUBAGENTS_FOLDER_NAME} folder`);
       convId = convStore.generateId();
       convStore.create(convId, selection.provider, selection.model, requestedTitle, selection.effort, selection.fastMode, folder.id);

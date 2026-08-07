@@ -520,6 +520,13 @@ export interface PinConversationCommand {
   pinned: boolean;
 }
 
+export interface MuteConversationCommand {
+  type: "mute_conversation";
+  reqId?: string;
+  convId: string;
+  muted: boolean;
+}
+
 export interface MoveConversationCommand {
   type: "move_conversation";
   reqId?: string;
@@ -567,6 +574,13 @@ export interface PinFolderCommand {
   reqId?: string;
   folderId: string;
   pinned: boolean;
+}
+
+export interface MuteFolderCommand {
+  type: "mute_folder";
+  reqId?: string;
+  folderId: string;
+  muted: boolean;
 }
 
 export interface PinSidebarItemsCommand {
@@ -881,6 +895,7 @@ export type Command =
   | DeleteConversationsCommand
   | MarkConversationCommand
   | PinConversationCommand
+  | MuteConversationCommand
   | MoveConversationCommand
   | RenameConversationCommand
   | GenerateTitleCommand
@@ -888,6 +903,7 @@ export type Command =
   | CreateFolderCommand
   | RenameFolderCommand
   | PinFolderCommand
+  | MuteFolderCommand
   | PinSidebarItemsCommand
   | MoveSidebarItemCommand
   | MoveSidebarItemsCommand

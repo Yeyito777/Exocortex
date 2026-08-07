@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationWorkspaceDir, conversationsDir, dataDir, trashedConversationWorkspaceDir, trashDir } from "@exocortex/shared/paths";
-import { HistoryUnwindRefreshRequiredError, appendRealtimeCallStatus, appendRealtimeTranscript, bumpToTop, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, promoteRealtimeTranscript, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
+import { HistoryUnwindRefreshRequiredError, appendRealtimeCallStatus, appendRealtimeTranscript, bumpToTop, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, mute, muteFolder, onChunk, pin, pinFolder, pinSidebarItems, promoteRealtimeTranscript, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
 import { setActiveJob, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
 import { isSqliteConversationStore, load as loadPersisted } from "./persistence";
@@ -270,6 +270,17 @@ describe("folders", () => {
     expect(moveConversationToFolder(id, folder.id)).toBe(true);
     expect(getSummary(id)?.folderId).toBe(folder.id);
     expect(listSidebarState().conversations.find(summary => summary.id === id)?.folderId).toBe(folder.id);
+  });
+
+  test("only applies mutedOnCreate when the daemon creates a top-level folder", () => {
+    const created = ensureTopLevelFolder(`subagents-${Date.now()}`, { mutedOnCreate: true })!;
+    FOLDER_IDS.push(created.id);
+    expect(created.muted).toBe(true);
+
+    const existing = ensureTopLevelFolder(`existing-${Date.now()}`)!;
+    FOLDER_IDS.push(existing.id);
+    expect(existing.muted).toBe(false);
+    expect(ensureTopLevelFolder(existing.name, { mutedOnCreate: true })?.muted).toBe(false);
   });
 
   test("moving conversations out can insert them immediately before their source folder", () => {
@@ -1793,19 +1804,21 @@ describe("unread persistence", () => {
     expect(getSummary(id)).toMatchObject({ unread: false });
   });
 
-  test("never marks conversations in the reserved top-level subagents tree unread", () => {
-    const subagents = ensureTopLevelFolder(" SubAgents ")!;
-    const nested = createFolder(`Nested agents ${Date.now()} ${Math.random()}`, subagents.id)!;
+  test("suppresses unread state for explicitly muted conversations and inherited folder trees", () => {
+    const mutedParent = createFolder(`Muted ${Date.now()} ${Math.random()}`)!;
+    const nested = createFolder(`Nested agents ${Date.now()} ${Math.random()}`, mutedParent.id)!;
     const ordinary = createFolder(`Ordinary ${Date.now()} ${Math.random()}`)!;
     const misleading = createFolder("subagents", ordinary.id)!;
-    FOLDER_IDS.push(subagents.id, nested.id, ordinary.id, misleading.id);
+    FOLDER_IDS.push(mutedParent.id, nested.id, ordinary.id, misleading.id);
+    expect(muteFolder(mutedParent.id, true)).toBe(true);
 
-    const directId = mkId("unread-subagent-direct");
-    const nestedId = mkId("unread-subagent-nested");
+    const directId = mkId("unread-direct-muted");
+    const nestedId = mkId("unread-folder-muted");
     const ordinaryId = mkId("unread-nested-name");
-    create(directId, "openai", "gpt-5.4", "direct", undefined, false, subagents.id);
+    create(directId, "openai", "gpt-5.4", "direct");
     create(nestedId, "openai", "gpt-5.4", "nested", undefined, false, nested.id);
     create(ordinaryId, "openai", "gpt-5.4", "ordinary", undefined, false, misleading.id);
+    expect(mute(directId, true)).toBe(true);
 
     markUnread(directId);
     markUnread(nestedId);
@@ -1821,23 +1834,34 @@ describe("unread persistence", () => {
     setActiveJob(nestedId, new AbortController(), Date.now());
     expect(getSummary(nestedId)).toMatchObject({ streaming: true, unread: false, notificationsMuted: true });
     clearActiveJob(nestedId);
+
+    loadFromDisk();
+    expect(getSummary(directId)).toMatchObject({ muted: true, unread: false, notificationsMuted: true });
+    expect(listSidebarState().folders.find(folder => folder.id === mutedParent.id)?.muted).toBe(true);
   });
 
-  test("clears durable unread state when a conversation tree moves under subagents", () => {
-    const subagents = ensureTopLevelFolder("subagents")!;
+  test("clears durable unread state when a conversation tree moves under a muted folder", () => {
+    const mutedParent = createFolder(`Muted destination ${Date.now()} ${Math.random()}`)!;
     const batch = createFolder(`Unread batch ${Date.now()} ${Math.random()}`)!;
-    FOLDER_IDS.push(subagents.id, batch.id);
-    const id = mkId("unread-moved-subagent");
+    FOLDER_IDS.push(mutedParent.id, batch.id);
+    expect(muteFolder(mutedParent.id, true)).toBe(true);
+    const id = mkId("unread-moved-muted");
     create(id, "openai", "gpt-5.4", "move me", undefined, false, batch.id);
     markUnread(id);
     expect(isUnread(id)).toBe(true);
 
-    expect(moveSidebarItems([{ type: "folder", id: batch.id }], subagents.id)).toBe(true);
+    expect(moveSidebarItems([{ type: "folder", id: batch.id }], mutedParent.id)).toBe(true);
     expect(getSummary(id)).toMatchObject({ unread: false, notificationsMuted: true });
 
     loadFromDisk();
     expect(isUnread(id)).toBe(false);
     expect(getSummary(id)).toMatchObject({ unread: false, notificationsMuted: true });
+
+    expect(muteFolder(mutedParent.id, false)).toBe(true);
+    expect(getSummary(id)?.notificationsMuted).toBeUndefined();
+    expect(isUnread(id)).toBe(false);
+    markUnread(id);
+    expect(isUnread(id)).toBe(true);
   });
 });
 

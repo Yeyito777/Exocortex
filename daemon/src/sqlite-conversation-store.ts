@@ -47,7 +47,7 @@ import * as legacy from "./json-persistence";
 import { log } from "./log";
 import type { ConversationRepository, ConversationToolPolicyState } from "./conversation-repository";
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const DEFAULT_FILE = "exocortex.sqlite3";
 const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
 
@@ -117,6 +117,7 @@ interface ConversationRow {
   last_context_tokens: number | null;
   marked: number;
   pinned: number;
+  muted: number;
   sort_order: number;
   folder_id: string | null;
   title: string;
@@ -270,6 +271,7 @@ function normalizeFolder(folder: PersistedFolderSummary): PersistedFolderSummary
     createdAt: folder.createdAt,
     updatedAt: folder.updatedAt,
     pinned: folder.pinned === true,
+    muted: folder.muted === true,
     sortOrder: folder.sortOrder,
   };
 }
@@ -644,6 +646,15 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(7, "per-conversation tool policy", Date.now());
       })();
     }
+    if (current < 8 && targetVersion >= 8) {
+      this.db.transaction(() => {
+        this.db.exec(`
+          ALTER TABLE conversations ADD COLUMN muted INTEGER NOT NULL DEFAULT 0 CHECK (muted IN (0,1));
+          ALTER TABLE folders ADD COLUMN muted INTEGER NOT NULL DEFAULT 0 CHECK (muted IN (0,1));
+        `);
+        this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(8, "conversation and folder muting", Date.now());
+      })();
+    }
   }
 
   close(): void {
@@ -789,6 +800,7 @@ export class SqliteConversationStore implements ConversationRepository {
       goal: parseOptional(row.goal_json),
       marked: row.marked === 1,
       pinned: row.pinned === 1,
+      muted: row.muted === 1,
       sortOrder: row.sort_order,
       folderId: row.folder_id,
     };
@@ -800,14 +812,14 @@ export class SqliteConversationStore implements ConversationRepository {
     // metadata rather than the complete canonical row shape.
     const rows = this.db.query(`
       SELECT id, provider, model, effort, fast_mode, created_at, updated_at,
-             message_count, title, goal_json, marked, pinned, sort_order, folder_id
+             message_count, title, goal_json, marked, pinned, muted, sort_order, folder_id
       FROM conversations
       WHERE deleted_at IS NULL
       ORDER BY pinned DESC, sort_order, id
-    `).values() as Array<[string, Conversation["provider"], string, Conversation["effort"], number, number, number, number, string, string | null, number, number, number, string | null]>;
+    `).values() as Array<[string, Conversation["provider"], string, Conversation["effort"], number, number, number, number, string, string | null, number, number, number, number, string | null]>;
     return rows.map(([
       id, provider, model, effort, fastMode, createdAt, updatedAt,
-      messageCount, title, goalJson, marked, pinned, sortOrder, folderId,
+      messageCount, title, goalJson, marked, pinned, muted, sortOrder, folderId,
     ]) => ({
       id,
       provider,
@@ -821,6 +833,7 @@ export class SqliteConversationStore implements ConversationRepository {
       goal: parseOptional(goalJson),
       marked: marked === 1,
       pinned: pinned === 1,
+      muted: muted === 1,
       sortOrder,
       folderId,
     }));
@@ -910,6 +923,7 @@ export class SqliteConversationStore implements ConversationRepository {
         lastContextTokens: persistedActive && !activeContext ? null : row.last_context_tokens,
         marked: row.marked === 1,
         pinned: row.pinned === 1,
+        muted: row.muted === 1,
         sortOrder: row.sort_order,
         folderId: row.folder_id,
         title: row.title,
@@ -1016,15 +1030,15 @@ export class SqliteConversationStore implements ConversationRepository {
     this.db.query(`
       INSERT INTO conversations(
         id, provider, model, effort, fast_mode, created_at, updated_at,
-        last_context_tokens, marked, pinned, sort_order, folder_id, title,
+        last_context_tokens, marked, pinned, muted, sort_order, folder_id, title,
         goal_json, subagent_max_depth, subagent_policy_json, tool_policy_json, storage_generation,
         message_count, stored_message_count, display_entry_count, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
       ON CONFLICT(id) DO UPDATE SET
         provider=excluded.provider, model=excluded.model, effort=excluded.effort,
         fast_mode=excluded.fast_mode, created_at=excluded.created_at,
         updated_at=excluded.updated_at, last_context_tokens=excluded.last_context_tokens,
-        marked=excluded.marked, pinned=excluded.pinned, sort_order=excluded.sort_order,
+        marked=excluded.marked, pinned=excluded.pinned, muted=excluded.muted, sort_order=excluded.sort_order,
         folder_id=excluded.folder_id, title=excluded.title, goal_json=excluded.goal_json,
         subagent_max_depth=excluded.subagent_max_depth,
         subagent_policy_json=excluded.subagent_policy_json,
@@ -1042,6 +1056,7 @@ export class SqliteConversationStore implements ConversationRepository {
       conv.lastContextTokens,
       conv.marked ? 1 : 0,
       conv.pinned ? 1 : 0,
+      conv.muted ? 1 : 0,
       conv.sortOrder,
       conv.folderId ?? null,
       conv.title,
@@ -1401,7 +1416,7 @@ export class SqliteConversationStore implements ConversationRepository {
 
   loadFolders(): PersistedFolderSummary[] {
     return this.db.query<{
-      id: string; name: string; parent_id: string | null; created_at: number; updated_at: number; pinned: number; sort_order: number;
+      id: string; name: string; parent_id: string | null; created_at: number; updated_at: number; pinned: number; muted: number; sort_order: number;
     }, []>("SELECT * FROM folders ORDER BY pinned DESC, sort_order, id").all().map((row) => ({
       id: row.id,
       name: row.name,
@@ -1409,6 +1424,7 @@ export class SqliteConversationStore implements ConversationRepository {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       pinned: row.pinned === 1,
+      muted: row.muted === 1,
       sortOrder: row.sort_order,
     }));
   }
@@ -1419,11 +1435,11 @@ export class SqliteConversationStore implements ConversationRepository {
       const ids = new Set(normalized.map((folder) => folder.id));
       for (const folder of normalized) {
         this.db.query(`
-          INSERT INTO folders(id, name, parent_id, created_at, updated_at, pinned, sort_order)
-          VALUES (?, ?, NULL, ?, ?, ?, ?)
+          INSERT INTO folders(id, name, parent_id, created_at, updated_at, pinned, muted, sort_order)
+          VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET name=excluded.name, created_at=excluded.created_at,
-            updated_at=excluded.updated_at, pinned=excluded.pinned, sort_order=excluded.sort_order
-        `).run(folder.id, folder.name, folder.createdAt, folder.updatedAt, folder.pinned ? 1 : 0, folder.sortOrder);
+            updated_at=excluded.updated_at, pinned=excluded.pinned, muted=excluded.muted, sort_order=excluded.sort_order
+        `).run(folder.id, folder.name, folder.createdAt, folder.updatedAt, folder.pinned ? 1 : 0, folder.muted ? 1 : 0, folder.sortOrder);
       }
       for (const folder of normalized) {
         this.db.query("UPDATE folders SET parent_id=? WHERE id=?").run(folder.parentId && ids.has(folder.parentId) ? folder.parentId : null, folder.id);
@@ -1694,7 +1710,7 @@ export class SqliteConversationStore implements ConversationRepository {
     if (!conv) return null;
     const generation = this.row(id, includeDeleted)!.storage_generation;
     return {
-      version: 19,
+      version: 20,
       id: conv.id,
       provider: conv.provider,
       model: conv.model,
@@ -1707,6 +1723,7 @@ export class SqliteConversationStore implements ConversationRepository {
       lastContextTokens: conv.lastContextTokens,
       marked: conv.marked,
       pinned: conv.pinned,
+      muted: conv.muted === true,
       sortOrder: conv.sortOrder,
       folderId: conv.folderId ?? null,
       title: conv.title,

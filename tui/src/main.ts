@@ -1515,6 +1515,9 @@ function handleKey(key: KeyEvent): void {
     case "mark_conversation":
       daemon.markConversation(result.convId, result.marked);
       break;
+    case "mute_conversation":
+      daemon.muteConversation(result.convId, result.muted);
+      break;
     case "rename_conversation":
       daemon.renameConversation(result.convId, result.title);
       break;
@@ -1523,6 +1526,9 @@ function handleKey(key: KeyEvent): void {
       break;
     case "pin_folder":
       daemon.pinFolder(result.folderId, result.pinned);
+      break;
+    case "mute_folder":
+      daemon.muteFolder(result.folderId, result.muted);
       break;
     case "pin_sidebar_items":
       daemon.pinSidebarItems(result.pins);

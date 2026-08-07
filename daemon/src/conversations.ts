@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, ConversationToolPolicy } from "./messages";
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, SUBAGENTS_FOLDER_NAME, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment, ToolPolicySnapshot } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
@@ -335,24 +335,26 @@ function isDescendantFolder(folderId: string, candidateParentId: string | null):
   return false;
 }
 
-/** True only for the reserved top-level subagents/ folder and its descendants. */
-function isInSubagentsFolderTree(folderId: string | null | undefined): boolean {
+/** Folder muting is inherited through all ancestors. */
+function areFolderNotificationsMuted(folderId: string | null | undefined): boolean {
   let currentId = folderId ?? null;
   const seen = new Set<string>();
   while (currentId && !seen.has(currentId)) {
     seen.add(currentId);
     const folder = folders.get(currentId);
     if (!folder) return false;
-    if ((folder.parentId ?? null) === null) {
-      return folder.name.trim().toLocaleLowerCase() === SUBAGENTS_FOLDER_NAME;
-    }
+    if (folder.muted === true) return true;
     currentId = folder.parentId;
   }
   return false;
 }
 
 function areConversationNotificationsMuted(id: string): boolean {
-  return isInSubagentsFolderTree(summaries.get(id)?.folderId ?? conversations.get(id)?.folderId);
+  const loaded = conversations.get(id);
+  const summary = summaries.get(id);
+  const directlyMuted = loaded ? loaded.muted === true : summary?.muted === true;
+  const folderId = loaded ? loaded.folderId : summary?.folderId;
+  return directlyMuted || areFolderNotificationsMuted(folderId);
 }
 
 /** Keep the durable unread set aligned when folder topology changes. */
@@ -650,6 +652,7 @@ export function clone(id: string): Conversation | null {
     lastContextTokens: src.lastContextTokens,
     marked: src.marked,
     pinned: src.pinned,
+    muted: src.muted === true,
     sortOrder: newOrder,
     folderId: src.folderId ?? null,
     title: (src.title || "clone") + " 📋",
@@ -1967,6 +1970,18 @@ export function pin(id: string, pinned: boolean): boolean {
   return true;
 }
 
+/** Explicitly mute or unmute a conversation. Folder muting still takes precedence. */
+export function mute(id: string, muted: boolean): boolean {
+  const conv = get(id);
+  if (!conv) return false;
+  if (conv.muted === muted) return true;
+  conv.muted = muted;
+  markDirty(id);
+  flush(id);
+  if (muted) clearUnread(id);
+  return true;
+}
+
 /** Move a conversation up or down within its folder section (pinned or unpinned). */
 export function move(id: string, direction: "up" | "down"): boolean {
   return moveSidebarItem({ type: "conversation", id }, direction);
@@ -1982,8 +1997,8 @@ export function findTopLevelFolderByName(name: string): FolderSummary | null {
   return folder ? { ...folder } : null;
 }
 
-export function ensureTopLevelFolder(name: string): FolderSummary | null {
-  return findTopLevelFolderByName(name) ?? createFolder(name, null, [], false);
+export function ensureTopLevelFolder(name: string, options: { mutedOnCreate?: boolean } = {}): FolderSummary | null {
+  return findTopLevelFolderByName(name) ?? createFolder(name, null, [], false, options.mutedOnCreate === true);
 }
 
 export function moveConversationToFolder(id: string, folderId: string | null): boolean {
@@ -1994,7 +2009,13 @@ export function moveConversationToFolder(id: string, folderId: string | null): b
   return moveSidebarItems([{ type: "conversation", id }], parentId, undefined, { placement: "bottom" });
 }
 
-export function createFolder(name: string, parentId: string | null = null, items: SidebarItemRef[] = [], recordUndo = true): FolderSummary | null {
+export function createFolder(
+  name: string,
+  parentId: string | null = null,
+  items: SidebarItemRef[] = [],
+  recordUndo = true,
+  muted = false,
+): FolderSummary | null {
   const cleanName = name.trim();
   if (!cleanName) return null;
   const safeParent = parentId && folders.has(parentId) ? parentId : null;
@@ -2015,6 +2036,7 @@ export function createFolder(name: string, parentId: string | null = null, items
     createdAt: now,
     updatedAt: now,
     pinned,
+    muted,
     sortOrder: selectedOrders.length > 0
       ? Math.min(...selectedOrders)
       : pinned ? nextPinnedOrderInFolder(safeParent) : nextUnpinnedOrderInFolder(safeParent),
@@ -2048,6 +2070,17 @@ export function pinFolder(folderId: string, pinned: boolean): boolean {
   folder.sortOrder = pinned
     ? nextPinnedOrderInFolder(folder.parentId ?? null, folder.id)
     : nextUnpinnedOrderInFolder(folder.parentId ?? null, folder.id);
+  folder.updatedAt = Date.now();
+  saveFolderState();
+  return true;
+}
+
+/** Explicitly mute or unmute a folder and its complete descendant tree. */
+export function muteFolder(folderId: string, muted: boolean): boolean {
+  const folder = folders.get(folderId);
+  if (!folder) return false;
+  if (folder.muted === muted) return true;
+  folder.muted = muted;
   folder.updatedAt = Date.now();
   saveFolderState();
   return true;

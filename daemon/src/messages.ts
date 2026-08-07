@@ -180,6 +180,8 @@ export interface Conversation {
   lastContextTokens: number | null;
   marked: boolean;
   pinned: boolean;
+  /** Whether this conversation is explicitly muted. */
+  muted?: boolean;
   sortOrder: number;
   /** Folder containing this conversation. Null means the sidebar root. */
   folderId?: string | null;
@@ -910,6 +912,7 @@ export function summarizeConversation(conv: Conversation): PersistedConversation
     goal: conv.goal?.status === "complete" ? null : conv.goal ?? null,
     marked: conv.marked,
     pinned: conv.pinned,
+    muted: conv.muted === true,
     sortOrder: conv.sortOrder,
     folderId: conv.folderId ?? null,
   };
@@ -938,6 +941,7 @@ export function createConversation(
     lastContextTokens: null,
     marked: false,
     pinned: false,
+    muted: false,
     sortOrder: sortOrder ?? -now,
     folderId,
     title: title ?? "",

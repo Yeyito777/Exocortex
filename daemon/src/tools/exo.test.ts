@@ -117,8 +117,8 @@ describe("native exo tool contract", () => {
     ].join("\n"));
   });
 
-  test("jobs trusts daemon attention state for subagents while retaining running streams", async () => {
-    const folder = ensureTopLevelFolder("subagents")!;
+  test("jobs trusts daemon mute state while retaining running streams", async () => {
+    const folder = ensureTopLevelFolder("subagents", { mutedOnCreate: true })!;
     const childId = id("muted-job");
     create(childId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "muted job", undefined, false, folder.id);
     const runtime = createExocortexToolRuntime({
@@ -392,6 +392,7 @@ describe("native exo daemon runtime", () => {
       notify_parent: parentId,
     });
     expect(getSummary(childId)?.folderId).toBe(findTopLevelFolderByName("subagents")?.id);
+    expect(findTopLevelFolderByName("subagents")?.muted).toBe(true);
     expect(getSummary(childId)?.title).toBe("Inspect project files");
     expect(conversationWorkspaceDir(childId)).not.toBe(conversationWorkspaceDir(parentId));
     const child = get(childId);

@@ -315,4 +315,48 @@ describe("sidebar rendering", () => {
     rows = renderSidebar(sidebar, 8, true, null);
     expect(rows.find(row => row.includes("nested-agent"))).toContain(`${theme.success}◉ `);
   });
+
+  test("renders a right-aligned mute bell instead of completion notifications", () => {
+    const sidebar = createSidebarState();
+    sidebar.conversations = [conversation("muted", 0, {
+      title: "Muted conversation",
+      muted: true,
+      notificationsMuted: true,
+      unread: true,
+    })];
+
+    const row = renderSidebar(sidebar, 8, true, null).find(candidate => candidate.includes("Muted conversation"));
+
+    expect(row).toContain("🔕");
+    expect(row).not.toContain(`${theme.success}◉ `);
+    expect(row).not.toContain(theme.notificationBg);
+    expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
+  });
+
+  test("muted folders keep live streaming indicators while replacing unread badges", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [{
+      id: "muted-folder",
+      name: "Muted folder",
+      parentId: null,
+      createdAt: 0,
+      updatedAt: 0,
+      pinned: false,
+      muted: true,
+      sortOrder: 0,
+    }];
+    sidebar.conversations = [conversation("streaming", 0, {
+      folderId: "muted-folder",
+      streaming: true,
+      unread: true,
+      notificationsMuted: true,
+    })];
+
+    const row = renderSidebar(sidebar, 8, true, null).find(candidate => candidate.includes("Muted folder"));
+
+    expect(row).toContain(`${theme.accent}◉ `);
+    expect(row).toContain("🔕");
+    expect(row).not.toContain(theme.notificationBg);
+    expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
+  });
 });

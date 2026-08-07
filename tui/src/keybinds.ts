@@ -191,7 +191,6 @@ const NAV_BINDS: Record<string, Action> = {
   "char:x":     "unwrap_folder",
   "char:u":     "undo_delete",
   "char:H":     "sidebar_visible_top",
-  "char:M":     "sidebar_visible_middle",
   "char:L":     "sidebar_visible_bottom",
   "char:{":     "nav_prev_streaming",
   "char:}":     "nav_next_streaming",

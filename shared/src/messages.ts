@@ -386,6 +386,8 @@ export interface ConversationSummary {
   goal?: ConversationGoal | null;
   marked: boolean;
   pinned: boolean;
+  /** Whether this conversation is explicitly muted. */
+  muted?: boolean;
   streaming: boolean;
   /** False for maintenance jobs that must be aborted, but not replayed, across daemon restarts. */
   restartRecoverable?: boolean;
@@ -417,6 +419,8 @@ export interface FolderSummary {
   createdAt: number;
   updatedAt: number;
   pinned: boolean;
+  /** Whether this folder explicitly mutes itself and all of its descendants. */
+  muted?: boolean;
   sortOrder: number;
   /** Effective parent→child AGENTS.md context for draft chats in this folder. */
   effectiveInstructions?: string;

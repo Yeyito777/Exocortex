@@ -1,5 +1,5 @@
 import { getMarkFromTitle } from "../marks";
-import { currentFolder } from "./folders";
+import { currentFolder, isConversationMuted, isFolderMuted } from "./folders";
 import { sameSidebarItem as sameItem, sidebarItemKey as itemKey } from "./items";
 import { SIDEBAR_WIDTH } from "./layout";
 import {
@@ -242,6 +242,7 @@ export function renderSidebar(
     let isCurrent = false;
     let itemFg = theme.muted;
     let notificationCount = 0;
+    let notificationsMuted = false;
 
     if (item?.type === "up") {
       rawTitle = "..";
@@ -252,23 +253,25 @@ export function renderSidebar(
     } else if (item?.type === "folder") {
       const folder = sidebar.folders[dr.folderIdx ?? -1];
       const aggregate = folder ? folderAggregates?.get(folder.id) : null;
+      notificationsMuted = folder ? isFolderMuted(sidebar, folder.id) : false;
       rawTitle = folder ? `📁 ${folder.name}/ ${aggregate?.count ?? 0}` : "📁 folder/";
       const streamingCount = aggregate?.streamingCount ?? 0;
       const hasGlobalIdle = aggregate?.globalIdle ?? false;
-      const hasUnread = aggregate?.unread ?? false;
+      const hasUnread = !notificationsMuted && (aggregate?.unread ?? false);
       streamIcon = streamingCount > 0 ? folderStreamingIndicator(streamingCount) : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = streamingCount > 0 ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
       chronoTaskIcon = chronoTaskIndicator(aggregate?.chronoTaskCount ?? 0);
-      notificationCount = aggregate?.unreadCount ?? 0;
+      notificationCount = notificationsMuted ? 0 : aggregate?.unreadCount ?? 0;
       itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "conversation") {
       const conv = convs[dr.convIdx ?? -1];
       if (!conv) continue;
+      notificationsMuted = isConversationMuted(sidebar, conv);
       isCurrent = conv.id === currentConvId;
       const hasGlobalIdle = globalIdleConvIds.has(conv.id);
-      const hasUnread = isSettledUnreadConversation(sidebar, conv, now);
+      const hasUnread = !notificationsMuted && isSettledUnreadConversation(sidebar, conv, now);
       streamIcon = conv.streaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = conv.streaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(conv.subagentCount ?? 0);
@@ -284,10 +287,12 @@ export function renderSidebar(
     const iconsWidth = termWidth(chronoTaskIcon) + termWidth(subagentIcon) + termWidth(backgroundTaskIcon)
       + termWidth(starIcon) + termWidth(emojiIcon);
     const prefixWidth = termWidth(prefix) + termWidth(streamIcon) + iconsWidth;
-    const notificationBadge = renderNotificationBadge(notificationCount);
+    const muteIcon = notificationsMuted ? " 🔕" : "";
+    const notificationBadge = notificationsMuted ? null : renderNotificationBadge(notificationCount);
     const badgeGap = notificationBadge ? 1 : 0;
     const badgeWidth = notificationBadge?.width ?? 0;
-    const maxTitle = Math.max(0, innerWidth - prefixWidth - badgeGap - badgeWidth);
+    const suffixWidth = termWidth(muteIcon) + badgeGap + badgeWidth;
+    const maxTitle = Math.max(0, innerWidth - prefixWidth - suffixWidth);
     const title = truncateSidebarTitle(rawTitle, maxTitle);
     const bg = isSelected ? theme.sidebarSelBg : isVisual ? theme.sidebarSelBg : theme.sidebarBg;
     const fg = isPendingDelete ? theme.error : itemFg;
@@ -306,6 +311,7 @@ export function renderSidebar(
     rows.push(
       theme.reset + bg + fg +
       prefixText + streamIconColored + chronoTaskIconColored + subagentIconColored + backgroundTaskIconColored + starIconColored + emojiIconColored + titleText +
+      muteIcon +
       (notificationBadge ? ` ${notificationBadge.text}` : "") +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
     );

@@ -75,9 +75,11 @@ export type KeyResult =
   | { type: "undo_delete" }
   | { type: "redo_delete" }
   | { type: "mark_conversation"; convId: string; marked: boolean }
+  | { type: "mute_conversation"; convId: string; muted: boolean }
   | { type: "rename_conversation"; convId: string; title: string }
   | { type: "pin_conversation"; convId: string; pinned: boolean }
   | { type: "pin_folder"; folderId: string; pinned: boolean }
+  | { type: "mute_folder"; folderId: string; muted: boolean }
   | { type: "pin_sidebar_items"; pins: { item: SidebarItemRef; pinned: boolean }[] }
   | { type: "move_conversation"; convId: string; direction: "up" | "down" }
   | { type: "move_sidebar_item"; item: SidebarItemRef; direction: "up" | "down" }
@@ -479,10 +481,10 @@ export function handleFocusedKey(
     return { type: "handled" };
   }
 
-  // ── Sidebar folder shortcuts that would otherwise be eaten by vim find/replace ──
+  // ── Sidebar shortcuts that would otherwise be eaten by Vim commands ──
   if (state.panelFocus === "sidebar" && state.sidebar.open && state.vim.mode === "normal"
       && !vimHasPendingInput(state)
-      && key.type === "char" && key.char && ["v", "V", "f", "F", "<", "r", "x"].includes(key.char)) {
+      && key.type === "char" && key.char && ["v", "V", "f", "F", "<", "r", "x", "M"].includes(key.char)) {
     return mapSidebarResult(handleSidebarKey(key, state.sidebar));
   }
 

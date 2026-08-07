@@ -325,6 +325,10 @@ export class DaemonClient {
     this.send({ type: "pin_conversation", convId, pinned });
   }
 
+  muteConversation(convId: string, muted: boolean): void {
+    this.send({ type: "mute_conversation", convId, muted });
+  }
+
   moveConversation(convId: string, direction: "up" | "down"): void {
     this.send({ type: "move_conversation", convId, direction });
   }
@@ -347,6 +351,10 @@ export class DaemonClient {
 
   pinFolder(folderId: string, pinned: boolean): void {
     this.send({ type: "pin_folder", folderId, pinned });
+  }
+
+  muteFolder(folderId: string, muted: boolean): void {
+    this.send({ type: "mute_folder", folderId, muted });
   }
 
   pinSidebarItems(pins: { item: SidebarItemRef; pinned: boolean }[]): void {
