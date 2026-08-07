@@ -41,6 +41,7 @@ describe("SQLite resumable legacy import", () => {
       createdAt: 1,
       updatedAt: 2,
       pinned: true,
+      muted: false,
       sortOrder: 3,
     };
     legacy.saveFolders([folder]);
@@ -149,7 +150,7 @@ describe("SQLite resumable legacy import", () => {
 
     store = new SqliteConversationStore({ path: databasePath, autoImportLegacy: true });
     const diagnostics = store.diagnostics();
-    expect(diagnostics).toMatchObject({ schemaVersion: 7, importStatus: "complete" });
+    expect(diagnostics).toMatchObject({ schemaVersion: 8, importStatus: "complete" });
     expect(diagnostics.liveConversations).toBeGreaterThanOrEqual(3);
     expect([goodId, overlayId, repairedId].every((id) => store.has(id))).toBe(true);
     expect(store.integrityCheck().ok).toBe(true);

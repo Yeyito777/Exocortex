@@ -168,7 +168,7 @@ for (const backend of ["json", "sqlite"] as const) {
     test("persists folders, unread, queue, and BTW receipts", () => {
       const id = `contract-${backend}-aux-${Date.now()}`;
       const h = harness(backend, id);
-      const folder = { id: `${id}-folder`, name: "Folder", parentId: null, createdAt: 1, updatedAt: 2, pinned: false, sortOrder: 3 };
+      const folder = { id: `${id}-folder`, name: "Folder", parentId: null, createdAt: 1, updatedAt: 2, pinned: false, muted: false, sortOrder: 3 };
       h.repository.saveFolders([folder]);
       h.repository.saveFolderInstructions(new Map([[folder.id, "Inherited"]]));
       const conv = fixture(id);

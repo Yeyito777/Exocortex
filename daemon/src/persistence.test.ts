@@ -116,6 +116,7 @@ describe("V1 migration", () => {
     expect(conv!.lastContextTokens).toBeNull();     // V2→V3
     expect(conv!.marked).toBe(false);               // V3→V4
     expect(conv!.pinned).toBe(false);               // V4→V5
+    expect(conv!.muted ?? false).toBe(false);       // V19→V20
     expect(conv!.sortOrder).toBe(-1_200_001);       // V5→V6
     expect(conv!.title).toBe("Testing defaults");   // V7→V8 via legacyPreview
     expect(conv!.effort).toBe(DEFAULT_EFFORT);      // V8→V9
@@ -539,6 +540,31 @@ describe("error handling", () => {
 });
 
 describe("save / load round-trip", () => {
+  test("persists explicit conversation muting in v20", () => {
+    const id = mkId("muted-roundtrip");
+    const conv: Conversation = {
+      id,
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "medium",
+      fastMode: false,
+      messages: [],
+      createdAt: 13_000_000,
+      updatedAt: 13_000_001,
+      lastContextTokens: null,
+      marked: false,
+      pinned: false,
+      muted: true,
+      sortOrder: -13_000_001,
+      title: "Muted",
+    };
+
+    save(conv);
+
+    expect(load(id)?.muted).toBe(true);
+    expect(JSON.parse(readFileSync(join(CONV_DIR, `${id}.json`), "utf8"))).toMatchObject({ version: 20, muted: true });
+  });
+
   test("persists a valid compact replay separately from the visible transcript", () => {
     const id = mkId("active-context-roundtrip");
     const conv: Conversation = {

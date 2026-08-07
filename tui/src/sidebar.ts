@@ -21,6 +21,7 @@ import {
   unwrapSelectedFolder,
 } from "./sidebar/folderactions";
 import { sameSidebarItem as sameItem } from "./sidebar/items";
+import { reconcileNotificationMutes } from "./sidebar/folders";
 import { moveSelection, moveToMarked, moveToStreaming } from "./sidebar/navigation";
 import {
   focusConversationAt,
@@ -184,6 +185,24 @@ export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarK
         return openRenameSelectedFolderPrompt(sidebar);
       case "x":
         return unwrapSelectedFolder(sidebar);
+      case "M": {
+        const item = getSelectedSidebarItem(sidebar);
+        if (item?.type === "conversation") {
+          const conversation = sidebar.conversations.find(candidate => candidate.id === item.id);
+          if (!conversation) return { type: "handled" };
+          conversation.muted = conversation.muted !== true;
+          reconcileNotificationMutes(sidebar);
+          return { type: "mute_conversation", convId: conversation.id, muted: conversation.muted };
+        }
+        if (item?.type === "folder") {
+          const folder = sidebar.folders.find(candidate => candidate.id === item.id);
+          if (!folder) return { type: "handled" };
+          folder.muted = folder.muted !== true;
+          reconcileNotificationMutes(sidebar);
+          return { type: "mute_folder", folderId: folder.id, muted: folder.muted };
+        }
+        return { type: "handled" };
+      }
     }
   }
   const action = resolveAction(key, "navigation");

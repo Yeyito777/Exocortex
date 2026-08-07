@@ -420,6 +420,26 @@ describe("SQLite transaction fault boundaries", () => {
 });
 
 describe("SQLite maintenance", () => {
+  test("round-trips conversation and folder mute state", () => {
+    const { path } = pathFor("muting");
+    const store = new SqliteConversationStore({ path });
+    const conv = createConversation("muting", "openai", "gpt-5.6-sol");
+    conv.muted = true;
+    store.save(conv);
+    store.saveFolders([
+      { id: "muted-folder", name: "Muted", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, muted: true, sortOrder: 0 },
+      { id: "child-folder", name: "Child", parentId: "muted-folder", createdAt: 2, updatedAt: 2, pinned: false, muted: false, sortOrder: 1 },
+    ]);
+
+    expect(store.getSummary(conv.id)?.muted).toBe(true);
+    expect(store.load(conv.id)?.muted).toBe(true);
+    expect(store.loadFolders()).toEqual([
+      expect.objectContaining({ id: "muted-folder", muted: true }),
+      expect.objectContaining({ id: "child-folder", muted: false }),
+    ]);
+    store.close();
+  });
+
   test("round-trips exact conversation tool policy", () => {
     const { path } = pathFor("tool-policy");
     const store = new SqliteConversationStore({ path });
@@ -463,8 +483,8 @@ describe("SQLite maintenance", () => {
     const manifest = store.exportAll(exportRoot);
     expect(manifest.conversations).toHaveLength(2);
     expect(manifest.conversations.find((entry) => entry.id === "maintenance-deleted")?.deleted).toBe(true);
-    expect(JSON.parse(readFileSync(join(exportRoot, "conversations", "maintenance.json"), "utf8"))).toMatchObject({ version: 19, id: "maintenance" });
-    expect(JSON.parse(readFileSync(join(exportRoot, "trash", "maintenance-deleted.json"), "utf8"))).toMatchObject({ version: 19, id: "maintenance-deleted" });
+    expect(JSON.parse(readFileSync(join(exportRoot, "conversations", "maintenance.json"), "utf8"))).toMatchObject({ version: 20, id: "maintenance" });
+    expect(JSON.parse(readFileSync(join(exportRoot, "trash", "maintenance-deleted.json"), "utf8"))).toMatchObject({ version: 20, id: "maintenance-deleted" });
     expect(JSON.parse(readFileSync(join(exportRoot, "trash", "trash.json"), "utf8"))).toEqual([
       { type: "conversation", id: "maintenance-deleted" },
     ]);
@@ -472,7 +492,7 @@ describe("SQLite maintenance", () => {
       { type: "conversation_removed", id: "maintenance" },
     ]);
     expect(store.diagnostics()).toMatchObject({
-      schemaVersion: 7,
+      schemaVersion: 8,
       liveConversations: 1,
       deletedConversations: 1,
       messages: 4,
@@ -606,8 +626,8 @@ describe("SQLite maintenance", () => {
     store.close();
   });
 
-  test("migrates every schema checkpoint through v7 transactionally", () => {
-    for (let version = 1; version <= 6; version++) {
+  test("migrates every schema checkpoint through v8 transactionally", () => {
+    for (let version = 1; version <= 7; version++) {
       const { path } = pathFor(`schema-v${version}`);
       let store = new SqliteConversationStore({ path, targetSchemaVersion: version });
       expect(store.db.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(version);
@@ -615,7 +635,7 @@ describe("SQLite maintenance", () => {
       store.close();
 
       store = new SqliteConversationStore({ path });
-      expect(store.diagnostics().schemaVersion).toBe(7);
+      expect(store.diagnostics().schemaVersion).toBe(8);
       expect(store.integrityCheck().ok).toBe(true);
       store.close();
     }

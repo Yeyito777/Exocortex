@@ -55,6 +55,34 @@ export function folderDescendantConversations(state: SidebarFolderViewState, fol
   return state.conversations.filter(c => c.folderId && ids.has(c.folderId));
 }
 
+/** Whether a folder is muted directly or by one of its ancestors. */
+export function isFolderMuted(state: SidebarFolderViewState, folderId: string | null | undefined): boolean {
+  let currentId = folderId ?? null;
+  const seen = new Set<string>();
+  while (currentId && !seen.has(currentId)) {
+    seen.add(currentId);
+    const folder = state.folders.find(candidate => candidate.id === currentId);
+    if (!folder) return false;
+    if (folder.muted === true) return true;
+    currentId = folder.parentId ?? null;
+  }
+  return false;
+}
+
+/** Effective notification mute state for a conversation. */
+export function isConversationMuted(state: SidebarFolderViewState, conversation: ConversationSummary): boolean {
+  return conversation.muted === true || isFolderMuted(state, conversation.folderId);
+}
+
+/** Keep optimistic sidebar attention state aligned after a local mute toggle. */
+export function reconcileNotificationMutes(state: SidebarFolderViewState): void {
+  for (const conversation of state.conversations) {
+    const muted = isConversationMuted(state, conversation);
+    conversation.notificationsMuted = muted;
+    if (muted) conversation.unread = false;
+  }
+}
+
 export function normalizeMoveDestinationInput(input: string): string {
   const trimmed = input.trim();
   return trimmed.length > 1 ? trimmed.replace(/\/$/, "") : trimmed;

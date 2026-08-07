@@ -1183,7 +1183,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             ? DEFAULT_CALL_TITLE
             : (initialMessage || goalObjective || titleContext ? PENDING_TITLE : undefined)
         );
-        const subagentFolder = cmd.subagent ? convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME) : null;
+        const subagentFolder = cmd.subagent
+          ? convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME, { mutedOnCreate: true })
+          : null;
         if (cmd.subagent && !subagentFolder) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Failed to create ${SUBAGENTS_FOLDER_NAME} folder` });
           break;
@@ -1973,6 +1975,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         break;
       }
 
+      case "mute_conversation": {
+        if (convStore.mute(cmd.convId, cmd.muted)) {
+          broadcastConversationUpdated(server, cmd.convId);
+        }
+        break;
+      }
+
       case "move_conversation": {
         const ok = convStore.move(cmd.convId, cmd.direction);
         if (ok) {
@@ -2046,6 +2055,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "pin_folder": {
         if (convStore.pinFolder(cmd.folderId, cmd.pinned)) {
+          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+        }
+        break;
+      }
+
+      case "mute_folder": {
+        if (convStore.muteFolder(cmd.folderId, cmd.muted)) {
           server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
         }
         break;

@@ -1715,14 +1715,20 @@ describe("sidebar visible jumps", () => {
     expect(state.sidebar.scrollOffset).toBe(2);
   });
 
-  test("Shift+M jumps to the middle visible conversation", () => {
+  test("Shift+M toggles mute on the selected conversation", () => {
     const state = setupSidebarJumpState();
     state.sidebar.scrollOffset = 1;
     state.sidebar.selectedIndex = 0;
     state.sidebar.selectedId = "conv-1";
+    state.sidebar.selectedItem = { type: "conversation", id: "conv-1" };
 
-    expect(handleFocusedKey({ type: "char", char: "M" }, state)).toEqual({ type: "handled" });
-    expect(state.sidebar.selectedId).toBe("conv-4");
+    expect(handleFocusedKey({ type: "char", char: "M" }, state)).toEqual({
+      type: "mute_conversation",
+      convId: "conv-1",
+      muted: true,
+    });
+    expect(state.sidebar.selectedId).toBe("conv-1");
+    expect(state.sidebar.conversations[0]?.notificationsMuted).toBe(true);
     expect(state.sidebar.scrollOffset).toBe(1);
   });
 

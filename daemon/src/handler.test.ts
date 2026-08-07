@@ -945,6 +945,7 @@ describe("handler subagent folder placement", () => {
 
     const subagentsFolder = findTopLevelFolderByName("subagents");
     expect(subagentsFolder).toBeTruthy();
+    expect(subagentsFolder?.muted).toBe(true);
     expect(convId ? getSummary(convId)?.folderId : null).toBe(subagentsFolder?.id);
     expect(created).toMatchObject({ effort: "medium" });
     expect(convId ? get(convId)?.subagentPolicy : null).toEqual({

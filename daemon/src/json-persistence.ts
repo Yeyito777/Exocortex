@@ -20,7 +20,7 @@ import type { QueuedMessageInfo } from "./protocol";
 
 // ── Schema version ──────────────────────────────────────────────────
 
-const CURRENT_VERSION = 19;
+const CURRENT_VERSION = 20;
 
 interface ConversationFileV1 {
   version: 1;
@@ -240,7 +240,12 @@ interface ConversationFileV19 extends Omit<ConversationFileV18, "version"> {
   toolPolicy: Conversation["toolPolicy"];
 }
 
-type ConversationFile = ConversationFileV19;
+interface ConversationFileV20 extends Omit<ConversationFileV19, "version"> {
+  version: 20;
+  muted: boolean;
+}
+
+type ConversationFile = ConversationFileV20;
 
 function normalizeProviderId(provider: unknown): ProviderId {
   return typeof provider === "string" && (DEFAULT_PROVIDER_ORDER as readonly string[]).includes(provider)
@@ -454,6 +459,11 @@ function migrateV18toV19(data: ConversationFileV18): ConversationFileV19 {
   return { ...data, version: 19, toolPolicy: null };
 }
 
+/** v19 → v20: Persist explicit conversation muting. */
+function migrateV19toV20(data: ConversationFileV19): ConversationFileV20 {
+  return { ...data, version: 20, muted: false };
+}
+
 function migrate(raw: Record<string, unknown>): ConversationFile {
   // Progressive migration — each function validates and upgrades one version.
   // `any` is intentional at this deserialization boundary: the data is parsed
@@ -478,6 +488,7 @@ function migrate(raw: Record<string, unknown>): ConversationFile {
   if (data.version < 17) data = migrateV16toV17(data);
   if (data.version < 18) data = migrateV17toV18(data);
   if (data.version < 19) data = migrateV18toV19(data);
+  if (data.version < 20) data = migrateV19toV20(data);
 
   if (data.version !== CURRENT_VERSION) {
     log("warn", `persistence: unknown schema version ${data.version}, attempting to load as v${CURRENT_VERSION}`);
@@ -643,6 +654,7 @@ function normalizeFolderSummary(folder: Partial<PersistedFolderSummary>): Persis
     createdAt: Number(folder.createdAt) || Date.now(),
     updatedAt: Number(folder.updatedAt) || Date.now(),
     pinned: folder.pinned === true,
+    muted: folder.muted === true,
     sortOrder: Number(folder.sortOrder) || 0,
   };
 }
@@ -894,6 +906,7 @@ function toFile(
     lastContextTokens: conv.lastContextTokens,
     marked: conv.marked,
     pinned: conv.pinned,
+    muted: conv.muted === true,
     sortOrder: conv.sortOrder,
     folderId: conv.folderId ?? null,
     title: conv.title,
@@ -930,6 +943,7 @@ function fromFile(file: ConversationFile, validateActiveContext = true): Convers
     lastContextTokens: validateActiveContext && file.activeContext && !activeContext ? null : file.lastContextTokens,
     marked: file.marked,
     pinned: file.pinned,
+    ...(file.muted ? { muted: true } : {}),
     sortOrder: file.sortOrder,
     title: file.title,
   };
