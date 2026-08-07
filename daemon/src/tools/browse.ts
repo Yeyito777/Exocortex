@@ -24,6 +24,10 @@ import {
   shouldDownloadResponse,
   type DownloadedFile,
 } from "./browse-download";
+import {
+  fetchPageWithVimbrowser,
+  type VimbrowserPageFetcher,
+} from "./browse-vimbrowser";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -60,6 +64,7 @@ type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<
 interface BrowseDependencies {
   fetch: FetchLike;
   summarize: typeof summarizeContent;
+  vimbrowserFetch?: VimbrowserPageFetcher;
 }
 
 // ── Cache ──────────────────────────────────────────────────────────
@@ -197,6 +202,7 @@ async function fetchPage(
   originalUrl: URL,
   context: ToolExecutionContext | undefined,
   fetchImpl: FetchLike,
+  vimbrowserFetch?: VimbrowserPageFetcher,
   signal?: AbortSignal,
 ): Promise<FetchedPage | DownloadedFile | ToolResult> {
   log("info", `browse: fetching ${fetchUrl}`);
@@ -213,6 +219,28 @@ async function fetchPage(
   const finalUrl = res.url || fetchUrl;
   const crossHostRedirect = res.url ? ensureSameHostRedirect(originalUrl, res.url) : null;
   if (crossHostRedirect) return crossHostRedirect;
+
+  if (res.status === 403 && vimbrowserFetch) {
+    await res.body?.cancel().catch(() => {});
+    log("info", `browse: direct fetch returned HTTP 403; trying vimbrowser for ${finalUrl}`);
+    try {
+      const browserPage = await vimbrowserFetch(finalUrl, signal);
+      if (browserPage) {
+        const browserRedirect = ensureSameHostRedirect(originalUrl, browserPage.pageUrl);
+        if (browserRedirect) return browserRedirect;
+        log("info", `browse: vimbrowser fallback loaded ${browserPage.pageUrl} (${browserPage.html.length} chars)`);
+        return {
+          markdown: responseBodyToMarkdown(browserPage.html, "text/html", browserPage.pageUrl),
+          pageUrl: browserPage.pageUrl,
+        };
+      }
+      log("debug", "browse: vimbrowser fallback is unavailable");
+    } catch (error) {
+      if (signal?.aborted || isAbortLikeError(error)) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      log("warn", `browse: vimbrowser fallback failed (${message})`);
+    }
+  }
 
   if (!res.ok) {
     return { output: `Error fetching ${fetchUrl}: HTTP ${res.status} ${res.statusText}`, isError: true };
@@ -242,6 +270,7 @@ async function getPageContent(
   originalUrl: URL,
   context: ToolExecutionContext | undefined,
   fetchImpl: FetchLike,
+  vimbrowserFetch?: VimbrowserPageFetcher,
   signal?: AbortSignal,
 ): Promise<FetchedPage | DownloadedFile | ToolResult> {
   cleanCache();
@@ -251,7 +280,7 @@ async function getPageContent(
     return { markdown: cached.content, pageUrl: cached.pageUrl };
   }
 
-  const fetched = await fetchPage(fetchUrl, originalUrl, context, fetchImpl, signal);
+  const fetched = await fetchPage(fetchUrl, originalUrl, context, fetchImpl, vimbrowserFetch, signal);
   if ("isError" in fetched) return fetched;
 
   if ("downloadPath" in fetched) return fetched;
@@ -327,7 +356,11 @@ async function executeBrowse(
   input: Record<string, unknown>,
   context?: ToolExecutionContext,
   signal?: AbortSignal,
-  dependencies: BrowseDependencies = { fetch: globalThis.fetch, summarize: summarizeContent },
+  dependencies: BrowseDependencies = {
+    fetch: globalThis.fetch,
+    summarize: summarizeContent,
+    vimbrowserFetch: fetchPageWithVimbrowser,
+  },
 ): Promise<ToolResult> {
   const url = getString(input, "url");
   const prompt = getString(input, "prompt");
@@ -345,7 +378,14 @@ async function executeBrowse(
 
   const startTime = Date.now();
   try {
-    const page = await getPageContent(fetchUrl, parsedUrl, context, dependencies.fetch, signal);
+    const page = await getPageContent(
+      fetchUrl,
+      parsedUrl,
+      context,
+      dependencies.fetch,
+      dependencies.vimbrowserFetch,
+      signal,
+    );
     if ("isError" in page) return page;
     if ("downloadPath" in page) {
       const typeLabel = page.contentType || "unknown content type";
@@ -400,7 +440,7 @@ export const browse: Tool = {
     },
     required: ["url", "prompt"],
   },
-  systemHint: "Browse uses an inner AI call to parse web-readable responses. Direct downloads and binary responses are saved to the conversation workspace without AI interpretation. Adjust the prompt to your needs.",
+  systemHint: "Browse uses an inner AI call to parse web-readable responses. Direct downloads and binary responses are saved to the conversation workspace without AI interpretation. On HTTP 403, browse may retry in a dedicated inactive tab of the running vimbrowser profile, using its browser fingerprint, cookies, and site storage; the tab is reset afterward. Adjust the prompt to your needs.",
   display: {
     label: "Browse",
     color: "#50c8c8",  // teal

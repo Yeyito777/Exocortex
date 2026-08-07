@@ -213,3 +213,92 @@ describe("browse direct downloads", () => {
     expect(readdirSync(cwd)).toEqual([]);
   });
 });
+
+describe("browse vimbrowser fallback", () => {
+  test("uses rendered browser HTML after a direct HTTP 403", async () => {
+    let fallbackUrl = "";
+    let summarizedMarkdown = "";
+    const result = await browseInternalsForTest.executeBrowse(
+      { url: "https://blocked.example.test/page", prompt: "find the answer" },
+      undefined,
+      undefined,
+      {
+        fetch: async () => new Response("blocked", { status: 403, statusText: "Forbidden" }),
+        vimbrowserFetch: async url => {
+          fallbackUrl = url;
+          return {
+            html: "<main><h1>Rendered answer</h1><p>It worked.</p></main>",
+            pageUrl: url,
+          };
+        },
+        summarize: async (_url, markdown) => {
+          summarizedMarkdown = markdown;
+          return "browser-backed summary";
+        },
+      },
+    );
+
+    expect(fallbackUrl).toBe("https://blocked.example.test/page");
+    expect(summarizedMarkdown).toContain("Rendered answer");
+    expect(result).toEqual({ output: "browser-backed summary", isError: false });
+  });
+
+  test("preserves the original 403 when vimbrowser is unavailable", async () => {
+    const result = await browseInternalsForTest.executeBrowse(
+      { url: "https://unavailable.example.test/page", prompt: "read it" },
+      undefined,
+      undefined,
+      {
+        fetch: async () => new Response("blocked", { status: 403, statusText: "Forbidden" }),
+        vimbrowserFetch: async () => null,
+        summarize: async () => "unexpected summary",
+      },
+    );
+
+    expect(result).toEqual({
+      output: "Error fetching https://unavailable.example.test/page: HTTP 403 Forbidden",
+      isError: true,
+    });
+  });
+
+  test("does not use vimbrowser for non-403 HTTP errors", async () => {
+    let fallbackCalls = 0;
+    const result = await browseInternalsForTest.executeBrowse(
+      { url: "https://missing.example.test/page", prompt: "read it" },
+      undefined,
+      undefined,
+      {
+        fetch: async () => new Response("missing", { status: 404, statusText: "Not Found" }),
+        vimbrowserFetch: async () => {
+          fallbackCalls++;
+          return null;
+        },
+        summarize: async () => "unexpected summary",
+      },
+    );
+
+    expect(fallbackCalls).toBe(0);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("HTTP 404 Not Found");
+  });
+
+  test("retains cross-host redirect protection for browser-loaded pages", async () => {
+    const result = await browseInternalsForTest.executeBrowse(
+      { url: "https://redirected.example.test/page", prompt: "read it" },
+      undefined,
+      undefined,
+      {
+        fetch: async () => new Response("blocked", { status: 403, statusText: "Forbidden" }),
+        vimbrowserFetch: async () => ({
+          html: "<main>Signed-in destination</main>",
+          pageUrl: "https://login.example.test/session",
+        }),
+        summarize: async () => "unexpected summary",
+      },
+    );
+
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("URL redirected to a different host");
+    expect(result.output).toContain("https://login.example.test/session");
+  });
+});
