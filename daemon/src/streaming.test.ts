@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, clearHistoryUnwindPending, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, initStreamingState, isHistoryUnwindPending, isRestartRecoverableJob, nextStreamSeq, requestHistoryUnwind, setActiveJob, setContextCompactionStartedAt } from "./streaming";
+import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, clearHistoryUnwindPending, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, getStreamingCommittedMessageCount, initStreamingState, isHistoryUnwindPending, isRestartRecoverableJob, nextStreamSeq, requestHistoryUnwind, setActiveJob, setContextCompactionStartedAt, setStreamingCommittedMessageCount } from "./streaming";
 import { clearQueuedMessages, drainQueuedMessages, pushQueuedMessage } from "./message-queue";
 
 const IDS: string[] = [];
@@ -49,6 +49,23 @@ describe("restart recovery policy", () => {
 
     clearActiveJob(modelTurnId);
     expect(isRestartRecoverableJob(modelTurnId)).toBe(false);
+  });
+});
+
+describe("pending-only stream boundary", () => {
+  test("tracks and clears the exact canonical message boundary independently of partial blocks", () => {
+    const id = mkId("durable-boundary");
+    setActiveJob(id, new AbortController(), 1);
+    initStreamingState(id);
+    setStreamingCommittedMessageCount(id, 42);
+    appendToStreamingBlock(id, "text", "pending only");
+
+    expect(getStreamingCommittedMessageCount(id)).toBe(42);
+    expect(getCurrentStreamingBlocks(id)).toEqual([{ type: "text", text: "pending only" }]);
+
+    clearActiveJob(id);
+    expect(getStreamingCommittedMessageCount(id)).toBeUndefined();
+    expect(getCurrentStreamingBlocks(id)).toBeUndefined();
   });
 });
 

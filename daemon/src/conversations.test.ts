@@ -6,8 +6,8 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationWorkspaceDir, conversationsDir, dataDir, trashedConversationWorkspaceDir, trashDir } from "@exocortex/shared/paths";
-import { HistoryUnwindRefreshRequiredError, appendRealtimeCallStatus, appendRealtimeTranscript, bumpToTop, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getQueuedMessageById, getRenderSnapshot, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, promoteRealtimeTranscript, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
-import { setActiveJob, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, setStreamingCommittedBlockCount, clearActiveJob, isHistoryUnwindPending } from "./streaming";
+import { HistoryUnwindRefreshRequiredError, appendMessages, appendRealtimeCallStatus, appendRealtimeTranscript, bumpToTop, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getPendingStreamSnapshot, getQueuedMessageById, getRenderSnapshot, getStoredDisplayPage, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, onChunk, pin, pinFolder, pinSidebarItems, promoteRealtimeTranscript, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
+import { setActiveJob, replaceCurrentStreamingBlocks, setStreamingCommittedBlockCount, setStreamingCommittedMessageCount, clearActiveJob, initStreamingState, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
 import { isSqliteConversationStore, load as loadPersisted } from "./persistence";
 import { createConversationWorkspace } from "./workspace-service";
@@ -1752,21 +1752,22 @@ describe("getSummary", () => {
     create(id, "openai", "gpt-5.5");
     expect(setSystemInstructions(id, "Be terse.")).toBe(true);
 
-    const conv = get(id)!;
-    conv.messages.push({ role: "user", content: "hello", metadata: null });
-    conv.messages.push({ role: "user", content: "[Context: getting full]", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.5", tokens: 0, system: true, kind: "context_warning" } });
-    conv.messages.push({ role: "assistant", content: "hi", metadata: null });
-    conv.messages.push({
-      role: "system",
-      content: CONTEXT_COMPACTION_FINISHED_TEXT,
-      metadata: {
-        startedAt: 2,
-        endedAt: 2,
-        model: "gpt-5.5",
-        tokens: 0,
-        kind: CONTEXT_COMPACTION_FINISHED_KIND,
+    appendMessages(id, [
+      { role: "user", content: "hello", metadata: null },
+      { role: "user", content: "[Context: getting full]", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.5", tokens: 0, system: true, kind: "context_warning" } },
+      { role: "assistant", content: "hi", metadata: null },
+      {
+        role: "system",
+        content: CONTEXT_COMPACTION_FINISHED_TEXT,
+        metadata: {
+          startedAt: 2,
+          endedAt: 2,
+          model: "gpt-5.5",
+          tokens: 0,
+          kind: CONTEXT_COMPACTION_FINISHED_KIND,
+        },
       },
-    });
+    ]);
 
     const summary = getSummary(id)!;
     expect(summary.messageCount).toBe(2);
@@ -1855,6 +1856,64 @@ describe("listRunningConversationIds", () => {
 });
 
 describe("getDisplayData", () => {
+  test("serves a bounded durable page plus pending-only overlay while a large conversation streams", () => {
+    const id = mkId("streaming-bounded-page");
+    create(id, "openai", "gpt-5.6-sol", "large active conversation");
+    const oldToolOutput = `never-serialize-old-output:${"x".repeat(2 * 1024 * 1024)}`;
+    const messages = [
+      { role: "user" as const, content: "old tool turn", metadata: null },
+      {
+        role: "assistant" as const,
+        content: [{ type: "tool_use" as const, id: "old-call", name: "bash", input: { command: "generate" } }],
+        metadata: null,
+      },
+      {
+        role: "user" as const,
+        content: [{ type: "tool_result" as const, tool_use_id: "old-call", content: oldToolOutput }],
+        metadata: null,
+      },
+      { role: "assistant" as const, content: "old tool complete", metadata: null },
+    ];
+    for (let turn = 1; turn <= 12; turn++) {
+      messages.push(
+        { role: "user" as const, content: `recent user ${turn}`, metadata: null },
+        { role: "assistant" as const, content: `recent answer ${turn}`, metadata: null },
+      );
+    }
+    messages.push({ role: "user" as const, content: "currently streaming", metadata: null });
+    appendMessages(id, messages);
+
+    setActiveJob(id, new AbortController(), 5_000);
+    initStreamingState(id);
+    setStreamingCommittedMessageCount(id, get(id)!.messages.length);
+    replaceCurrentStreamingBlocks(id, [{ type: "text", text: "small pending tail" }]);
+
+    // The first read may construct a legacy JSON projection. Every subsequent
+    // read must be an index hit; SQLite is already transactional on append.
+    expect(getStoredDisplayPage(id, 3)).not.toBeNull();
+    const diagnostics: Record<string, unknown> = {};
+    const page = getStoredDisplayPage(id, 3, undefined, diagnostics)!;
+    const pending = getPendingStreamSnapshot(id)!;
+    const serializedPage = JSON.stringify(page);
+
+    expect(diagnostics).toMatchObject({
+      displayPageHit: true,
+      displayPageWriteMs: 0,
+      streaming: true,
+      buildMs: 0,
+    });
+    expect(page.hasOlder).toBe(true);
+    expect(page.entries.filter(entry => entry.type === "user").map(entry => entry.text))
+      .toEqual(["recent user 11", "recent user 12", "currently streaming"]);
+    expect(serializedPage).not.toContain("never-serialize-old-output");
+    expect(serializedPage.length).toBeLessThan(50_000);
+    expect(pending).toMatchObject({
+      blocks: [{ type: "text", text: "small pending tail" }],
+      blockOffset: 0,
+      committedMessageCount: get(id)!.messages.length,
+    });
+  });
+
   test("reuses a quiet render snapshot until conversation history changes", () => {
     const id = mkId("display-snapshot-cache");
     create(id, "openai", "gpt-5.4", "cached snapshot");
@@ -1885,16 +1944,15 @@ describe("getDisplayData", () => {
         metadata: null,
       },
     ];
-    conv.messages.push(
+    appendMessages(id, [
       { role: "user", content: "initial", metadata: null },
       ...structuredClone(completedRound),
-    );
+    ]);
     // The persisted copy is annotated independently after the next round starts.
     // A null/undefined difference is sufficient to model the bookkeeping drift;
     // it must not make identical transcript content appear twice.
     conv.messages[1].contextTokens = null;
     setActiveJob(id, new AbortController(), 100);
-    replaceStreamingDisplayMessages(id, completedRound);
     setStreamingCommittedBlockCount(id, 3);
 
     const snapshot = getRenderSnapshot(id, false)!;
@@ -1916,7 +1974,6 @@ describe("getDisplayData", () => {
   test("keeps interleaved external transcripts canonical while exposing only the unfinished live tail", () => {
     const id = mkId("display-interleaved-transcript");
     create(id, "openai", "gpt-5.6-sol");
-    const conv = get(id)!;
     const firstRound = {
       role: "assistant" as const,
       content: [{ type: "tool_use" as const, id: "call-glob", name: "glob", input: { pattern: "docs/**" } }],
@@ -1943,15 +2000,14 @@ describe("getDisplayData", () => {
         kind: "realtime_transcript",
       },
     };
-    conv.messages.push(
+    appendMessages(id, [
       { role: "user", content: "initial", metadata: null },
       structuredClone(firstRound),
       structuredClone(firstResult),
       interjection,
       structuredClone(secondRound),
-    );
+    ]);
     setActiveJob(id, new AbortController(), 1_000);
-    replaceStreamingDisplayMessages(id, [firstRound, firstResult, secondRound]);
     replaceCurrentStreamingBlocks(id, [{ type: "text", text: "Still reading" }]);
     setStreamingCommittedBlockCount(id, 3);
 
@@ -1973,7 +2029,6 @@ describe("getDisplayData", () => {
   test("late-join snapshots retain a durable compaction boundary without duplicating its assistant prefix", () => {
     const id = mkId("display-compaction-boundary");
     create(id, "openai", "gpt-5.6-sol");
-    const conv = get(id)!;
     const completedAt = 2_000;
     const activeSuffix = [
       { role: "assistant" as const, content: "Before compaction", metadata: null },
@@ -1989,12 +2044,11 @@ describe("getDisplayData", () => {
         },
       },
     ];
-    conv.messages.push(
+    appendMessages(id, [
       { role: "user", content: "initial", metadata: null },
       ...structuredClone(activeSuffix),
-    );
+    ]);
     setActiveJob(id, new AbortController(), 1_000);
-    replaceStreamingDisplayMessages(id, activeSuffix);
 
     const snapshot = getRenderSnapshot(id)!;
 
@@ -2019,11 +2073,10 @@ describe("getDisplayData", () => {
     const id = mkId("display-transient");
     create(id, "openai", "gpt-5.5");
 
-    const conv = get(id)!;
-    conv.messages.push({ role: "user", content: "initial", metadata: null });
+    appendMessages(id, [{ role: "user", content: "initial", metadata: null }]);
 
     setActiveJob(id, new AbortController(), Date.now());
-    replaceStreamingDisplayMessages(id, [
+    appendMessages(id, [
       { role: "assistant", content: "First tool round done", metadata: null },
       { role: "user", content: "queued next turn", metadata: null },
     ]);
@@ -2044,13 +2097,12 @@ describe("getDisplayData", () => {
   test("fingerprints a canonical streaming suffix with its persisted prefix", () => {
     const id = mkId("display-transient-fingerprint");
     const conv = create(id, "openai", "gpt-5.5");
-    conv.messages.push(
+    appendMessages(id, [
       { role: "user", content: "initial", metadata: null },
       { role: "assistant", content: "first answer", metadata: null },
       { role: "user", content: "queued next turn", metadata: null },
-    );
+    ]);
     setActiveJob(id, new AbortController(), Date.now());
-    replaceStreamingDisplayMessages(id, structuredClone(conv.messages.slice(1)));
 
     const target = getDisplayData(id)!.entries.find(
       (entry) => entry.type === "user" && entry.text === "queued next turn",

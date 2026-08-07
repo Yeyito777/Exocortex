@@ -9,7 +9,7 @@
  * Conversation data and persistence live in conversations.ts.
  */
 
-import type { Block, StoredMessage } from "./messages";
+import type { Block } from "./messages";
 import type { ActiveToolBackgrounder } from "./tools/types";
 
 // ── State ───────────────────────────────────────────────────────────
@@ -20,10 +20,12 @@ const restartRecoverableJobs = new Set<string>();
 const chunkCounters = new Map<string, number>();
 /** Current in-flight assistant blocks for late-joining clients. */
 const streamingBlocks = new Map<string, Block[]>();
-/** Completed display messages from the active stream that are not yet persisted. */
-const streamingDisplayMessages = new Map<string, StoredMessage[]>();
 /** Canonical block count in structurally completed rounds of the active turn. */
 const streamingCommittedBlockCounts = new Map<string, number>();
+/** Exact canonical message count observed by the active partial accumulator. */
+const streamingCommittedMessageCounts = new Map<string, number>();
+/** Whether the current provider response still has a non-canonical partial tail. */
+const streamingPendingAssistantOpen = new Set<string>();
 /** Original startedAt timestamp per streaming job (for late-joining clients). */
 const streamingStartedAt = new Map<string, number>();
 /** Accumulated output token count per streaming job (for late-joining clients). */
@@ -73,6 +75,7 @@ export function setActiveJob(convId: string, ac: AbortController, startedAt: num
   if (restartRecoverable) restartRecoverableJobs.add(convId);
   else restartRecoverableJobs.delete(convId);
   streamingStartedAt.set(convId, startedAt);
+  streamingPendingAssistantOpen.add(convId);
   streamSequences.set(convId, 0);
   lastActivityAt.set(convId, startedAt);
 }
@@ -114,8 +117,9 @@ export function clearActiveJob(convId: string): void {
   streamingTokens.delete(convId);
   contextCompactionStartedAt.delete(convId);
   streamSequences.delete(convId);
-  streamingDisplayMessages.delete(convId);
   streamingCommittedBlockCounts.delete(convId);
+  streamingCommittedMessageCounts.delete(convId);
+  streamingPendingAssistantOpen.delete(convId);
   lastActivityAt.delete(convId);
   pausedStreams.delete(convId);
   activeToolBackgrounders.delete(convId);
@@ -248,23 +252,13 @@ export function resetChunkCounter(convId: string): void {
 /** Initialize all transient streaming state for a new stream or retry. */
 export function initStreamingState(convId: string): void {
   streamingBlocks.set(convId, []);
-  streamingDisplayMessages.set(convId, []);
   streamingCommittedBlockCounts.set(convId, 0);
+  streamingPendingAssistantOpen.add(convId);
 }
 
 /** Get the current in-flight assistant blocks for a late-joining client. */
 export function getCurrentStreamingBlocks(convId: string): Block[] | undefined {
   return streamingBlocks.get(convId);
-}
-
-/** Replace the completed, not-yet-persisted display messages for a stream. */
-export function replaceStreamingDisplayMessages(convId: string, messages: StoredMessage[]): void {
-  streamingDisplayMessages.set(convId, [...messages]);
-}
-
-/** Get the completed, not-yet-persisted display messages for a stream. */
-export function getStreamingDisplayMessages(convId: string): StoredMessage[] {
-  return [...(streamingDisplayMessages.get(convId) ?? [])];
 }
 
 /** Record how much of the eventual message_complete block stream is committed. */
@@ -274,6 +268,25 @@ export function setStreamingCommittedBlockCount(convId: string, count: number): 
 
 export function getStreamingCommittedBlockCount(convId: string): number {
   return streamingCommittedBlockCounts.get(convId) ?? 0;
+}
+
+/** Advance the non-overlapping durable boundary after a canonical append. */
+export function setStreamingCommittedMessageCount(convId: string, count: number): void {
+  if (!activeJobs.has(convId)) return;
+  streamingCommittedMessageCounts.set(convId, Math.max(0, Math.floor(count)));
+}
+
+export function getStreamingCommittedMessageCount(convId: string): number | undefined {
+  return streamingCommittedMessageCounts.get(convId);
+}
+
+/** Close the pending overlay once the final assistant response is canonical. */
+export function markStreamingAssistantCommitted(convId: string): void {
+  streamingPendingAssistantOpen.delete(convId);
+}
+
+export function hasPendingStreamingAssistant(convId: string): boolean {
+  return activeJobs.has(convId) && streamingPendingAssistantOpen.has(convId);
 }
 
 /** Push a new block to the current in-flight assistant accumulator. */

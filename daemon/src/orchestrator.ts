@@ -41,11 +41,10 @@ import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./provid
 import { buildCodexWindowId } from "./providers/openai/identity";
 import { resolveToolCallPresentation } from "./helper-tool-manifest";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
-import { mergeTurnTranscript } from "./turn-transcript-merge";
 import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
 import { ensureConversationWorkspace } from "./workspace-service";
-import { buildHistoryUpdatedEvents } from "./history-pagination";
+import { BUFFERED_HISTORY_TURNS, buildHistoryUpdatedEvents, buildStoredHistoryUpdatedEvent } from "./history-pagination";
 import {
   RetryableStreamAbortController,
   StaleStreamRetriesExhaustedError,
@@ -127,7 +126,7 @@ export interface OrchestrationCallbacks {
 
 // ── Message history/replay helpers ─────────────────────────────────
 
-/** Convert API messages to stored-message shape for transient display state. */
+/** Convert structurally complete API messages into canonical stored rows. */
 function toStoredMessages(messages: import("./messages").ApiMessage[]): StoredMessage[] {
   return messages.map((m) => ({
     role: m.role,
@@ -338,10 +337,13 @@ async function orchestrateAssistantTurn(
     }
 
     const text = `✗ ${message}`;
-    conv.messages.push({ role: "system", content: text, metadata: null });
-    conv.updatedAt = Date.now();
+    const updatedAt = Date.now();
     convStore.bumpToTop(convId);
-    convStore.flush(convId);
+    if (!convStore.appendMessages(
+      convId,
+      [{ role: "system", content: text, metadata: null }],
+      { updatedAt },
+    )) return buildErrorOutcome(text);
     broadcastConversationUpdated(server, convId);
     server.sendToSubscribers(convId, { type: "system_message", convId, text, color: "error" });
     return buildErrorOutcome(text);
@@ -365,7 +367,7 @@ async function orchestrateAssistantTurn(
     return buildErrorOutcome(message);
   }
 
-  if (!hasConfiguredCredentials(conv.provider)) {
+  if (!ext.streamMessageFn && !hasConfiguredCredentials(conv.provider)) {
     const message = `Not authenticated for provider ${conv.provider}. Run: bun run src/main.ts login ${conv.provider}`;
     if (client) server.sendTo(client, {
       type: "error",
@@ -423,13 +425,30 @@ async function orchestrateAssistantTurn(
 
   // ── Start stream and broadcast initial state ──────────────────────
 
+  let acceptedUserMessage: StoredMessage | null = null;
   if (userMessage) {
     const contextCheckpoint = createStoredUserContextCheckpoint(conv);
-    conv.messages.push(createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images, {
+    acceptedUserMessage = createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images, {
       subagentNotificationId: options.subagentNotificationId,
       queueEntryId: options.queueEntryId,
       contextCheckpoint,
-    }));
+    });
+  }
+
+  conv.updatedAt = Date.now();
+  convStore.bumpToTop(convId);
+  if (acceptedUserMessage) {
+    if (!convStore.appendMessages(convId, [acceptedUserMessage], { updatedAt: conv.updatedAt })) {
+      throw new Error(`Conversation ${convId} disappeared before its user turn could be committed`);
+    }
+  } else {
+    // Replay/manual compaction has no new user message, but its sidebar/metadata
+    // mutation still needs an explicit commit before provider work starts.
+    convStore.markDirty(convId);
+    convStore.flush(convId);
+  }
+
+  if (userMessage) {
 
     // Notify subscribers about the user message.
     // When client is set, it already added the message locally — skip it.
@@ -454,39 +473,13 @@ async function orchestrateAssistantTurn(
       });
     }
   }
-  const turnTranscriptAnchor = conv.messages.at(-1);
-  const initialTurnTranscriptStartIndex = conv.messages.length;
-  const persistedTurnMessages = new WeakSet<StoredMessage>();
-  let hadConcurrentTurnMessages = false;
+  let persistedTurnMessageCount = 0;
+  // Direct reference for the rare abort-metadata update. This is not a transcript
+  // mirror: completed content remains exclusively in canonical conversation state.
+  let lastCanonicalTurnAssistant: StoredMessage | null = null;
 
-  function currentTurnTranscriptStartIndex(): number {
-    if (turnTranscriptAnchor) {
-      const anchorIndex = liveConv.messages.indexOf(turnTranscriptAnchor);
-      if (anchorIndex >= 0) return anchorIndex + 1;
-    }
-    return Math.min(initialTurnTranscriptStartIndex, liveConv.messages.length);
-  }
-
-  function installCompletedTurnMessages(completed: StoredMessage[]): void {
-    const turnTranscriptStartIndex = currentTurnTranscriptStartIndex();
-    const currentTail = liveConv.messages.slice(turnTranscriptStartIndex);
-    if (currentTail.some(message => !persistedTurnMessages.has(message))) {
-      hadConcurrentTurnMessages = true;
-    }
-    const merged = mergeTurnTranscript(currentTail, persistedTurnMessages, completed);
-    liveConv.messages.splice(
-      turnTranscriptStartIndex,
-      liveConv.messages.length - turnTranscriptStartIndex,
-      ...merged,
-    );
-  }
-
-  conv.updatedAt = Date.now();
-  convStore.bumpToTop(convId);
-  // Persist the user turn before any potentially long pre-turn compaction.
-  // A daemon crash before the first streamed block must not lose visible chat.
-  convStore.markDirty(convId);
-  convStore.flush(convId);
+  // The user turn was committed above before any potentially long pre-turn
+  // compaction. A daemon crash before the first streamed block cannot lose it.
   // The transcript now durably records this queue identity. Removing the queue
   // only after that flush closes the message-loss window on daemon crashes.
   if (options.queueEntryId) convStore.removeQueuedMessageById(options.queueEntryId);
@@ -502,6 +495,7 @@ async function orchestrateAssistantTurn(
   // can coordinate with it normally.
   convStore.setActiveJob(convId, ac, startedAt, !manualCompaction);
   convStore.initStreamingState(convId);
+  convStore.setStreamingCommittedMessageCount(convId, conv.messages.length);
 
   // The app watchdog interrupts only the current provider invocation. Give each
   // retry a fresh child signal while preserving `ac.signal` as the terminal turn
@@ -617,7 +611,7 @@ async function orchestrateAssistantTurn(
   // One provider turn session spans pre-turn compaction and every subsequent
   // model/tool round. OpenAI can therefore append compaction_trigger as an
   // incremental item, then safely falls back to full replay of the checkpoint.
-  const providerTurnSession = createProviderTurnSession(conv.provider);
+  const providerTurnSession = ext.streamMessageFn ? null : createProviderTurnSession(conv.provider);
   const codexTurnId = `${convId}:${startedAt}`;
   // Expose a child turn's remaining delegation budget to prevent predictable
   // rejected send/queue attempts when its max depth is zero.
@@ -697,7 +691,6 @@ async function orchestrateAssistantTurn(
           // before starting the potentially long plaintext summary so a crash
           // cannot make that transition invisible in the canonical transcript.
           persistCompletedTurnPrefix();
-          syncCompletedStreamingDisplayMessages();
           server.sendToSubscribers(convId, {
             type: "system_message",
             convId,
@@ -741,7 +734,6 @@ async function orchestrateAssistantTurn(
       // the matching live divider.
       syncActiveContext(result.messages);
       persistCompletedTurnPrefix();
-      syncCompletedStreamingDisplayMessages();
       compactionStatusActive = false;
       setContextCompactionStatus(false, completedAt);
       log("info", `orchestrator: ${trigger} context compaction complete for ${convId} (kind=${result.kind}, messages=${messages.length}->${result.messages.length})`);
@@ -795,23 +787,29 @@ async function orchestrateAssistantTurn(
     return toStoredMessages(agentState.completedMessages);
   }
 
-  function syncStreamingDisplayMessages(messages: StoredMessage[]): void {
-    convStore.replaceStreamingDisplayMessages(convId, interleaveTranscriptMarkers(messages, transcriptMarkers));
-  }
-
-  function syncCompletedStreamingDisplayMessages(): void {
-    syncStreamingDisplayMessages(completedDisplayMessages());
+  function appendCompletedTurnSnapshot(completed: StoredMessage[]): void {
+    if (completed.length < persistedTurnMessageCount) {
+      throw new Error(
+        `Completed turn prefix regressed for ${convId}: ${completed.length}/${persistedTurnMessageCount}`,
+      );
+    }
+    const appended = completed.slice(persistedTurnMessageCount);
+    if (appended.length === 0) return;
+    const updatedAt = Date.now();
+    if (!convStore.appendMessages(convId, appended, { updatedAt })) {
+      throw new Error(`Conversation ${convId} disappeared while committing a completed provider round`);
+    }
+    for (const message of appended) {
+      if (message.role === "assistant") lastCanonicalTurnAssistant = message;
+    }
+    persistedTurnMessageCount = completed.length;
   }
 
   function persistCompletedTurnPrefix(additionalMessages: StoredMessage[] = []): void {
-    const completed = [
+    appendCompletedTurnSnapshot([
       ...interleaveTranscriptMarkers(completedDisplayMessages(), transcriptMarkers),
       ...additionalMessages,
-    ];
-    installCompletedTurnMessages(completed);
-    liveConv.updatedAt = Date.now();
-    convStore.markDirty(convId);
-    convStore.flush(convId);
+    ]);
   }
 
   function setContextCompactionStatus(active: boolean, completedAt?: number): void {
@@ -833,11 +831,11 @@ async function orchestrateAssistantTurn(
     errorMessage: string,
     delaySec: number,
     metadata?: StreamRetryMetadata,
-    persistImmediately = false,
+    _persistImmediately = false,
   ): void {
     convStore.touchActivity(convId);
     // Provider retry → clear partial state so the retry starts clean.
-    // Completed rounds stay visible via streamingDisplayMessages.
+    // Completed rounds remain visible through canonical display entries.
     partialContent.length = 0;
     convStore.initStreamingState(convId);
     convStore.setStreamingCommittedBlockCount(convId, agentState.completedBlocks.length);
@@ -846,8 +844,10 @@ async function orchestrateAssistantTurn(
       afterIndex: agentState.completedMessages.length,
       message: { role: "system", content: sysText, metadata: null },
     });
-    if (persistImmediately) persistCompletedTurnPrefix();
-    syncCompletedStreamingDisplayMessages();
+    // Retry markers are canonical lifecycle events. Commit the completed raw
+    // prefix plus this marker immediately instead of retaining a second display
+    // history that overlaps the durable transcript.
+    persistCompletedTurnPrefix();
     server.sendToSubscribers(convId, {
       type: "stream_retry",
       convId,
@@ -863,15 +863,14 @@ async function orchestrateAssistantTurn(
 
   function sendStreamingSnapshot(): void {
     if (!server.hasSubscribers(convId) || !convStore.isStreaming(convId)) return;
-    const snapshot = convStore.getRenderSnapshot(convId, false);
-    const pendingAI = snapshot?.pendingAI;
-    if (!snapshot || !pendingAI) return;
+    const pendingAI = convStore.getPendingStreamSnapshot(convId);
+    if (!pendingAI) return;
 
     server.sendToSubscribers(convId, {
       type: "streaming_started",
       convId,
-      provider: snapshot.provider,
-      model: snapshot.model,
+      provider: liveConv.provider,
+      model: liveConv.model,
       streamSeq: convStore.nextStreamSeq(convId),
       snapshotKind: "heartbeat",
       startedAt: pendingAI.metadata?.startedAt ?? startedAt,
@@ -1051,7 +1050,6 @@ async function orchestrateAssistantTurn(
       // Without this, partialContent accumulates across rounds and abort would double-persist.
       partialContent.length = 0;
       convStore.clearCurrentStreamingBlocks(convId);
-      syncCompletedStreamingDisplayMessages();
       convStore.setStreamingCommittedBlockCount(convId, agentState.completedBlocks.length);
       // Persist the structurally complete tool-call/result prefix before any
       // potentially long mid-turn compaction or next provider request.
@@ -1118,7 +1116,6 @@ async function orchestrateAssistantTurn(
           queueId: qm.id,
         });
       }
-      syncStreamingDisplayMessages([...toStoredMessages(agentState.completedMessages), ...injectedStored]);
       return apiMsgs;
     },
     onRecoveryStateUpdate() {
@@ -1285,8 +1282,8 @@ async function orchestrateAssistantTurn(
       // Interleave status markers at the correct positions so system messages
       // appear between the rounds where they actually occurred.
       const interleavedMessages = interleaveTranscriptMarkers(storedMessages, transcriptMarkers);
-      installCompletedTurnMessages(interleavedMessages);
       syncActiveContext(result.contextMessages);
+      appendCompletedTurnSnapshot(interleavedMessages);
       conv.updatedAt = Date.now();
       // Do not bump on completion. The conversation was already brought to the
       // top when the user/queued message started; bumping again here can race with
@@ -1344,8 +1341,12 @@ async function orchestrateAssistantTurn(
       log("info", `orchestrator: stream interrupted for ${convId}`);
     }
 
-    // Persist completed rounds from the agent (full tool-use exchanges),
-    // interleaving retry markers at the correct positions.
+    const endedAt = Date.now();
+    const historyUnwindPendingAtAbort = convStore.isHistoryUnwindPending(convId, ac);
+
+    // Persist any completed round not already committed by onRoundComplete,
+    // interleaving retry markers at the correct positions. A targeted unwind owns
+    // the replacement transaction and must never race a newly durable suffix.
     const completedStored: StoredMessage[] = agentState.completedMessages.map(m => ({
       role: m.role,
       content: m.content,
@@ -1354,22 +1355,26 @@ async function orchestrateAssistantTurn(
       contextTokens: m.contextTokens ?? null,
       ...(m.contextCheckpoint ? { contextCheckpoint: m.contextCheckpoint } : {}),
     }));
-    if (completedStored.length > 0) {
-      // Stamp metadata on the last completed assistant — mirrors the success path.
-      // Without this, when a tool round completed before abort took effect,
-      // onRoundComplete cleared partialContent and metadata would be lost.
-      const lastAssistant = [...completedStored].reverse().find(m => m.role === "assistant");
-      if (lastAssistant) {
-        lastAssistant.metadata = {
+    const interleavedCompleted = interleaveTranscriptMarkers(completedStored, transcriptMarkers);
+    if (!historyUnwindPendingAtAbort) appendCompletedTurnSnapshot(interleavedCompleted);
+
+    // Completed tool rounds were appended before the next provider invocation.
+    // Stamp the actual canonical object (not the fresh recovery clone above) so
+    // abort metadata is retained even when the append delta is empty.
+    let completedAssistantMetadataChanged = false;
+    if (!historyUnwindPendingAtAbort) {
+      const hasCompletedAssistant = interleavedCompleted.some(message => message.role === "assistant");
+      const canonicalAssistant = lastCanonicalTurnAssistant as StoredMessage | null;
+      if (hasCompletedAssistant && canonicalAssistant?.role === "assistant") {
+        canonicalAssistant.metadata = {
           startedAt,
-          endedAt: Date.now(),
+          endedAt,
           model: conv.model,
           tokens: agentState.tokens,
         };
+        completedAssistantMetadataChanged = true;
       }
     }
-    const interleavedCompleted = interleaveTranscriptMarkers(completedStored, transcriptMarkers);
-    installCompletedTurnMessages(interleavedCompleted);
 
     // Persist the in-flight partial response (current round's streamed content),
     // dropping empty thinking placeholders while keeping non-empty reasoning text.
@@ -1392,20 +1397,6 @@ async function orchestrateAssistantTurn(
       });
     abortPersistedBlocks = [...agentState.completedBlocks, ...partialBlocks];
 
-    if (hasContent) {
-      conv.messages.push({
-        role: "assistant",
-        content: safeContent,
-        metadata: {
-          startedAt,
-          endedAt: Date.now(),
-          model: conv.model,
-          tokens: agentState.tokens,
-        },
-        providerData: undefined,
-      });
-    }
-
     const canAdvanceExistingContext = conv.activeContext != null
       && isActiveContextCompatible(conv.activeContext, conv.provider, conv.model, accountScope);
     if (canAdvanceExistingContext || compactionsThisTurn > 0) {
@@ -1416,33 +1407,46 @@ async function orchestrateAssistantTurn(
       syncActiveContext(recoveredContext);
     }
 
-    // Persist and broadcast system message
-    let outcomeError: string;
-    if (isWatchdog) {
-      const sysText = staleRetriesExhausted
+    const outcomeError = isWatchdog
+      ? staleRetriesExhausted
         ? `✗ ${err.message}`
-        : "✗ Timed out (stale stream)";
-      outcomeError = sysText;
-      conv.messages.push({ role: "system", content: sysText, metadata: null });
-      server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text: sysText, color: "error" });
-    } else if (isDaemonRestart) {
-      const sysText = "✗ Daemon restarted";
-      outcomeError = sysText;
-      conv.messages.push({ role: "system", content: sysText, metadata: null });
-      server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text: sysText, color: "error" });
-    } else if (isAbort) {
-      const sysText = "✗ Interrupted";
-      outcomeError = sysText;
-      conv.messages.push({ role: "system", content: sysText, metadata: null });
-      server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text: sysText, color: "error" });
-    } else {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      const sysText = `✗ ${errMsg}`;
-      outcomeError = sysText;
-      conv.messages.push({ role: "system", content: sysText, metadata: null });
-      server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text: sysText, color: "error" });
+        : "✗ Timed out (stale stream)"
+      : isDaemonRestart
+        ? "✗ Daemon restarted"
+        : isAbort
+          ? "✗ Interrupted"
+          : `✗ ${err instanceof Error ? err.message : String(err)}`;
+
+    if (!historyUnwindPendingAtAbort) {
+      const salvageTail: StoredMessage[] = [];
+      if (hasContent) {
+        salvageTail.push({
+          role: "assistant",
+          content: safeContent,
+          metadata: {
+            startedAt,
+            endedAt,
+            model: conv.model,
+            tokens: agentState.tokens,
+          },
+          providerData: undefined,
+        });
+      }
+      salvageTail.push({ role: "system", content: outcomeError, metadata: null });
+      if (!convStore.appendMessages(convId, salvageTail, { updatedAt: endedAt })) {
+        throw new Error(`Conversation ${convId} disappeared while committing interrupted stream recovery`);
+      }
+      // Persist the in-place metadata stamp through the explicit rewrite path.
+      if (completedAssistantMetadataChanged) convStore.markDirty(convId, "messages");
+      server.sendToSubscribers(convId, {
+        type: "system_message",
+        convId,
+        streamSeq: convStore.nextStreamSeq(convId),
+        text: outcomeError,
+        color: "error",
+      });
     }
-    const endedAt = Date.now();
+
     outcome = {
       ok: false,
       blocks: abortPersistedBlocks ?? [...agentState.completedBlocks],
@@ -1492,16 +1496,30 @@ async function orchestrateAssistantTurn(
       // Broadcast updated summary (streaming=false, possibly unread=true)
       broadcastConversationUpdated(server, convId, streamStopReason);
 
-      // When the active stream built up any transient display-only history
-      // (completed rounds for late joiners, retries, or next-turn injections),
-      // the TUI may be showing an approximate live view. Now that conv.messages
-      // has the canonical interleaved structure, send history_updated so every
-      // client rebuilds from the persisted ordering.
-      if (agentState.completedMessages.length > 0 || transcriptMarkers.length > 0 || hadNextTurnInjections || hadConcurrentTurnMessages) {
-        const displayData = convStore.getRenderSnapshot(convId, false);
-        if (displayData) {
-          const events = buildHistoryUpdatedEvents(displayData);
-          server.sendHistoryUpdatedToSubscribers(convId, events.legacy, events.paginated);
+      // Reconcile clients after multi-round/marker/queued-turn event streams from
+      // the canonical committed ordering. Paginated clients receive the bounded
+      // durable projection; only compatibility clients require a full rebuild.
+      if (agentState.completedMessages.length > 0 || transcriptMarkers.length > 0 || hadNextTurnInjections) {
+        const storedPage = convStore.getStoredDisplayPage(convId, BUFFERED_HISTORY_TURNS);
+        if (storedPage) {
+          const paginated = buildStoredHistoryUpdatedEvent(storedPage);
+          if (server.hasLegacyHistorySubscribers(convId)) {
+            const displayData = convStore.getRenderSnapshot(convId, false);
+            if (displayData) {
+              const legacy = buildHistoryUpdatedEvents(displayData).legacy;
+              server.sendHistoryUpdatedToSubscribers(convId, legacy, paginated);
+            }
+          } else {
+            server.sendHistoryUpdatedToSubscribers(convId, paginated, paginated);
+          }
+        } else {
+          // Direct in-memory maintenance mutations can deliberately invalidate a
+          // projection. Preserve the legacy safety fallback for those rare paths.
+          const displayData = convStore.getRenderSnapshot(convId, false);
+          if (displayData) {
+            const events = buildHistoryUpdatedEvents(displayData);
+            server.sendHistoryUpdatedToSubscribers(convId, events.legacy, events.paginated);
+          }
         }
       }
     } else {

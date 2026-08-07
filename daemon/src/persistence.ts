@@ -229,6 +229,22 @@ export function save(conv: Conversation, options: SaveConversationOptions = {}):
   }
 }
 
+/** Commit only the canonical tail beginning at an exact durable boundary. */
+export function appendMessages(conv: Conversation, expectedStoredMessageCount: number): void {
+  if (backend === "sqlite") {
+    store().appendMessages(conv, expectedStoredMessageCount);
+    return;
+  }
+  const durableCount = jsonPersistence.load(conv.id)?.messages.length ?? 0;
+  if (durableCount !== expectedStoredMessageCount
+      || conv.messages.length < expectedStoredMessageCount) {
+    throw new Error(
+      `Stale conversation append boundary for ${conv.id}: expected=${expectedStoredMessageCount}, durable=${durableCount}, current=${conv.messages.length}`,
+    );
+  }
+  jsonPersistence.save(conv);
+}
+
 export function trashConversations(ids: string[], recordUndo = true): string[] {
   return backend === "sqlite" ? store().trashConversations(ids, recordUndo) : jsonPersistence.trashConversations(ids, recordUndo);
 }

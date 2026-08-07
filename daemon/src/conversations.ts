@@ -38,8 +38,9 @@ export {
   touchActivity, pauseActivity, resumeActivity,
   setActiveToolBackgrounder, clearActiveToolBackgrounder, backgroundActiveTool,
   resetChunkCounter,
-  initStreamingState, getCurrentStreamingBlocks, replaceCurrentStreamingBlocks, replaceStreamingDisplayMessages, getStreamingDisplayMessages,
+  initStreamingState, getCurrentStreamingBlocks, replaceCurrentStreamingBlocks,
   setStreamingCommittedBlockCount, getStreamingCommittedBlockCount,
+  setStreamingCommittedMessageCount, getStreamingCommittedMessageCount,
   pushStreamingBlock, appendToStreamingBlock, clearCurrentStreamingBlocks,
   requestGoalContinuationAfterStream, consumeGoalContinuationAfterStream, clearGoalContinuationAfterStream,
 } from "./streaming";
@@ -158,6 +159,10 @@ let summaryIndexSaveTimer: ReturnType<typeof setTimeout> | null = null;
 type SummaryIndexFlushMode = "immediate" | "defer";
 
 function saveSummaryIndexNow(): void {
+  // Normalized conversation rows are themselves the summary index. Avoid walking
+  // every sidebar item after each append merely to call SQLite's intentional
+  // no-op compatibility shim.
+  if (persistence.isSqliteConversationStore()) return;
   const entries: persistence.ConversationIndexEntry[] = [];
   for (const summary of summaries.values()) {
     const loaded = conversations.get(summary.id);
@@ -193,6 +198,11 @@ function scheduleSummaryIndexSave(): void {
 }
 
 function saveSummaryIndex(mode: SummaryIndexFlushMode = "immediate"): void {
+  if (persistence.isSqliteConversationStore()) {
+    summaryIndexDirty = false;
+    clearSummaryIndexSaveTimer();
+    return;
+  }
   if (mode === "defer") {
     scheduleSummaryIndexSave();
     return;
@@ -204,6 +214,15 @@ function saveSummaryIndex(mode: SummaryIndexFlushMode = "immediate"): void {
 
 function updateSummaryFromConversation(conv: Conversation): void {
   summaries.set(conv.id, summarizeConversation(conv));
+}
+
+/** Refresh sidebar metadata by counting only the newly committed delta. */
+function updateSummaryAfterAppend(conv: Conversation, appended: readonly StoredMessage[]): void {
+  const previous = summaries.get(conv.id);
+  const messageCount = previous
+    ? previous.messageCount + countConversationMessages(appended)
+    : countConversationMessages(conv.messages);
+  summaries.set(conv.id, summarizeConversation(conv, messageCount));
 }
 
 // ── Sidebar/folder ordering helpers ───────────────────────────────
@@ -1825,6 +1844,7 @@ export function flush(id: string, options: { summaryIndex?: SummaryIndexFlushMod
     forceMessages: messageContentDirty.has(id),
     contextAttributionOnly: contextAttributionDirty.has(id),
   });
+  streaming.setStreamingCommittedMessageCount(id, conv.messages.length);
   if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
   dirty.delete(id);
   messageContentDirty.delete(id);
@@ -1833,6 +1853,61 @@ export function flush(id: string, options: { summaryIndex?: SummaryIndexFlushMod
   updateSummaryFromConversation(conv);
   saveSummaryIndex(options.summaryIndex ?? "immediate");
   pruneConversationCache(id);
+}
+
+/**
+ * Append a structurally complete canonical tail without rediscovering a changed
+ * suffix. Ordinary user/provider rounds use this hot path; explicit rewrites
+ * continue to use markDirty/flush.
+ */
+export function appendMessages(
+  id: string,
+  messages: readonly StoredMessage[],
+  options: { updatedAt?: number; summaryIndex?: SummaryIndexFlushMode } = {},
+): boolean {
+  const conv = get(id);
+  if (!conv) return false;
+  if (messages.length === 0) return true;
+
+  // Existing-message mutations cannot be folded into a tail append. Commit them
+  // through their explicit update path before establishing the append boundary.
+  if (messageContentDirty.has(id) || contextAttributionDirty.has(id)) flush(id, options);
+
+  const expectedStoredMessageCount = conv.messages.length;
+  const previousUpdatedAt = conv.updatedAt;
+  conv.messages.push(...messages);
+  conv.updatedAt = Math.max(previousUpdatedAt, options.updatedAt ?? Date.now());
+  renderSnapshotCache.delete(id);
+  try {
+    persistence.appendMessages(conv, expectedStoredMessageCount);
+  } catch (error) {
+    conv.messages.length = expectedStoredMessageCount;
+    conv.updatedAt = previousUpdatedAt;
+    throw error;
+  }
+
+  // The pending accumulator is now based on this exact canonical boundary.
+  // Centralizing the advance here also covers append callers outside the main
+  // orchestrator (queued turns, retry markers, tests, and future producers).
+  streaming.setStreamingCommittedMessageCount(id, conv.messages.length);
+  if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
+  const streamStartedAt = streaming.getStreamingStartedAt(id);
+  if (streamStartedAt !== undefined && messages.some(
+    message => message.role === "assistant" && message.metadata?.startedAt === streamStartedAt,
+  )) {
+    streaming.markStreamingAssistantCommitted(id);
+  }
+
+  // appendMessages upserts current metadata as part of the same transaction, so
+  // a preceding bump/goal/sidebar mutation is no longer dirty after this commit.
+  dirty.delete(id);
+  messageContentDirty.delete(id);
+  contextAttributionDirty.delete(id);
+  setCachedFileSize(id, cachedFileSize(id));
+  updateSummaryAfterAppend(conv, messages);
+  saveSummaryIndex(options.summaryIndex ?? "immediate");
+  pruneConversationCache(id);
+  return true;
 }
 
 /** Flush all dirty conversations. */
@@ -1845,6 +1920,7 @@ export function flushAll(): void {
       forceMessages: messageContentDirty.has(id),
       contextAttributionOnly: contextAttributionDirty.has(id),
     });
+    streaming.setStreamingCommittedMessageCount(id, conv.messages.length);
     if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
     setCachedFileSize(id, cachedFileSize(id));
     updateSummaryFromConversation(conv);
@@ -2325,6 +2401,11 @@ export interface ConversationRenderSnapshot extends ConversationDisplayData {
   };
 }
 
+export type PendingStreamSnapshot = NonNullable<ConversationRenderSnapshot["pendingAI"]> & {
+  /** Canonical message count against which this pending accumulator was built. */
+  committedMessageCount: number;
+};
+
 /** Optional phase timings for diagnosing slow conversation opens/history loads. */
 export interface RenderSnapshotDiagnostics {
   conversationCacheHit: boolean;
@@ -2379,7 +2460,7 @@ export function getStoredDisplayPage(
       diagnostics.displayPageHit = true;
       diagnostics.displayPageReadMs = performance.now() - readStartedAt;
       diagnostics.displayPageWriteMs = 0;
-      diagnostics.streaming = false;
+      diagnostics.streaming = streaming.isStreaming(id);
       diagnostics.loadMs = 0;
       diagnostics.buildMs = 0;
       diagnostics.totalMs = performance.now() - totalStartedAt;
@@ -2459,7 +2540,7 @@ export function getStoredDisplayPage(
     diagnostics.displayPageHit = displayPageHit;
     diagnostics.displayPageReadMs = readMs;
     diagnostics.displayPageWriteMs = projectionWriteMs;
-    diagnostics.streaming = false;
+    diagnostics.streaming = streaming.isStreaming(id);
     diagnostics.loadMs = sourceLoadMs;
     diagnostics.buildMs = projectionBuildMs;
     diagnostics.totalMs = performance.now() - totalStartedAt;
@@ -2511,46 +2592,30 @@ function buildSnapshotDisplayData(
   );
 }
 
-function isCurrentAssistantAlreadyCommitted(conv: Conversation, startedAt: number | undefined): boolean {
-  return typeof startedAt === "number"
-    && conv.messages.some((msg) => msg.role === "assistant" && msg.metadata?.startedAt === startedAt);
-}
-
-function sameStreamingTranscriptMessage(persisted: StoredMessage, transient: StoredMessage): boolean {
-  const { contextTokens: _persistedContextTokens, ...persistedTranscript } = persisted;
-  const { contextTokens: _transientContextTokens, ...transientTranscript } = transient;
-  return isDeepStrictEqual(persistedTranscript, transientTranscript);
-}
-
 /**
- * Completed provider rounds are canonical as soon as they finish. The transient
- * stream mirror is retained for recovery, but external events (voice transcripts,
- * notices, queue injections) can be interleaved between those canonical rounds,
- * so suffix subtraction is fundamentally incorrect. Match the mirror as an
- * ordered subsequence instead and retain only genuinely unpersisted extras.
+ * Snapshot only the non-canonical provider accumulator for late join/open.
+ * Completed history is always read from the durable display index. This path
+ * intentionally performs no canonical-history scan or display projection.
  */
-function unpersistedStreamingMessages(messages: StoredMessage[], transientMessages: StoredMessage[]): StoredMessage[] {
-  const extras: StoredMessage[] = [];
-  let persistedCursor = 0;
-  for (const transient of transientMessages) {
-    let matchedIndex = -1;
-    for (let index = persistedCursor; index < messages.length; index++) {
-      if (sameStreamingTranscriptMessage(messages[index]!, transient)) {
-        matchedIndex = index;
-        break;
-      }
-    }
-    if (matchedIndex >= 0) persistedCursor = matchedIndex + 1;
-    else extras.push(transient);
+export function getPendingStreamSnapshot(id: string): PendingStreamSnapshot | null {
+  if (!streaming.hasPendingStreamingAssistant(id)) return null;
+  const conv = get(id);
+  if (!conv) return null;
+  const startedAt = streaming.getStreamingStartedAt(id);
+  const committedMessageCount = streaming.getStreamingCommittedMessageCount(id) ?? conv.messages.length;
+  if (committedMessageCount !== conv.messages.length) {
+    log("warn", `streaming: pending boundary drift for ${id} (pending=${committedMessageCount}, canonical=${conv.messages.length})`);
   }
-  return extras;
-}
-
-function messagesWithUnpersistedStreamingExtras(conv: Conversation): StoredMessage[] {
-  const transientMessages = streaming.getStreamingDisplayMessages(conv.id);
-  if (transientMessages.length === 0) return conv.messages;
-  const extras = unpersistedStreamingMessages(conv.messages, transientMessages);
-  return extras.length > 0 ? [...conv.messages, ...extras] : conv.messages;
+  return {
+    blocks: [...(streaming.getCurrentStreamingBlocks(id) ?? [])],
+    blockOffset: streaming.getStreamingCommittedBlockCount(id),
+    metadata: createMessageMetadata(
+      startedAt ?? Date.now(),
+      conv.model,
+      { tokens: streaming.getStreamingTokens(id) },
+    ),
+    committedMessageCount: conv.messages.length,
+  };
 }
 
 export function getRenderSnapshot(
@@ -2603,28 +2668,15 @@ export function getRenderSnapshot(
     return finishDiagnostics(fullPersisted, false, buildStartedAt);
   }
 
-  const startedAt = streaming.getStreamingStartedAt(id);
-  if (isCurrentAssistantAlreadyCommitted(conv, startedAt)) {
-    return finishDiagnostics(fullPersisted, false, buildStartedAt);
-  }
-
-  const displayMessages = messagesWithUnpersistedStreamingExtras(conv);
-  const canonical = displayMessages === conv.messages
-    ? fullPersisted
-    : buildSnapshotDisplayData(conv, displayMessages, includeToolOutputs);
-  const currentBlocks = streaming.getCurrentStreamingBlocks(id) ?? [];
-  const completedBlockCount = streaming.getStreamingCommittedBlockCount(id);
+  const pending = getPendingStreamSnapshot(id);
+  if (!pending) return finishDiagnostics(fullPersisted, false, buildStartedAt);
 
   const snapshot: ConversationRenderSnapshot = {
-    ...canonical,
+    ...fullPersisted,
     pendingAI: {
-      blocks: [...currentBlocks],
-      blockOffset: completedBlockCount,
-      metadata: createMessageMetadata(
-        startedAt ?? Date.now(),
-        conv.model,
-        { tokens: streaming.getStreamingTokens(id) },
-      ),
+      blocks: pending.blocks,
+      blockOffset: pending.blockOffset,
+      metadata: pending.metadata,
     },
   };
   return finishDiagnostics(snapshot, false, buildStartedAt);
@@ -2633,7 +2685,7 @@ export function getRenderSnapshot(
 export function getDisplayData(id: string, includeToolOutputs = true): ConversationDisplayData | null {
   const conv = get(id);
   if (!conv) return null;
-  return buildSnapshotDisplayData(conv, messagesWithUnpersistedStreamingExtras(conv), includeToolOutputs);
+  return buildSnapshotDisplayData(conv, conv.messages, includeToolOutputs);
 }
 
 export function getToolOutputs(id: string): ToolOutputInfo[] | null {
@@ -2646,7 +2698,7 @@ export function getToolOutputs(id: string): ToolOutputInfo[] | null {
   }
   const conv = get(id);
   if (!conv) return null;
-  return collectToolOutputs(messagesWithUnpersistedStreamingExtras(conv));
+  return collectToolOutputs(conv.messages);
 }
 
 // ── Unread state ─────────────────────────────────────────────────────
@@ -2667,10 +2719,11 @@ export function markUnread(convId: string): void {
 export function appendExternalInboxNotification(convId: string, text: string, startedAt = Date.now()): boolean {
   const conv = get(convId);
   if (!conv) return false;
-  conv.messages.push(createModelVisibleSystemNotice(text, conv.model, "external_notification", startedAt));
-  conv.updatedAt = Math.max(conv.updatedAt, startedAt);
-  markDirty(convId);
-  flush(convId);
+  if (!appendMessages(
+    convId,
+    [createModelVisibleSystemNotice(text, conv.model, "external_notification", startedAt)],
+    { updatedAt: Math.max(conv.updatedAt, startedAt) },
+  )) return false;
   markUnread(convId);
   return true;
 }
@@ -2699,14 +2752,14 @@ export function appendRealtimeTranscript(
   const normalized = text.trim();
   if (!conv || !normalized) return false;
 
+  let message: StoredMessage;
   if (role === "user") {
-    const message = createStoredUserMessage(normalized, conv.model, startedAt, undefined, {
+    message = createStoredUserMessage(normalized, conv.model, startedAt, undefined, {
       contextCheckpoint: createStoredUserContextCheckpoint(conv),
     });
     Object.assign(message.metadata!, realtimeSourceMetadata(details), { kind: REALTIME_TRANSCRIPT_KIND });
-    conv.messages.push(message);
   } else {
-    conv.messages.push({
+    message = {
       role: "assistant",
       content: normalized,
       metadata: {
@@ -2717,13 +2770,10 @@ export function appendRealtimeTranscript(
         ...realtimeSourceMetadata(details),
         kind: REALTIME_TRANSCRIPT_KIND,
       },
-    });
+    };
   }
 
-  conv.updatedAt = Math.max(conv.updatedAt, startedAt);
-  markDirty(convId);
-  flush(convId);
-  return true;
+  return appendMessages(convId, [message], { updatedAt: Math.max(conv.updatedAt, startedAt) });
 }
 
 function visibleMessageText(content: StoredMessage["content"]): string {
@@ -2813,7 +2863,7 @@ export function appendRealtimeCallStatus(
   const conv = get(convId);
   const normalized = text.trim();
   if (!conv || !normalized) return false;
-  conv.messages.push({
+  return appendMessages(convId, [{
     role: "system",
     content: normalized,
     metadata: {
@@ -2821,11 +2871,7 @@ export function appendRealtimeCallStatus(
       ...realtimeSourceMetadata(details),
       kind: REALTIME_CALL_STATUS_KIND,
     },
-  });
-  conv.updatedAt = Math.max(conv.updatedAt, startedAt);
-  markDirty(convId);
-  flush(convId);
-  return true;
+  }], { updatedAt: Math.max(conv.updatedAt, startedAt) });
 }
 
 export function clearUnread(convId: string): boolean {

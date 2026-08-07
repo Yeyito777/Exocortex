@@ -38,6 +38,15 @@ export interface ConversationRepository {
   /** Capability projection; normalized stores must not materialize message rows. */
   loadToolPolicyState(id: string): ConversationToolPolicyState | null;
   save(conv: Conversation, options?: { forceMessages?: boolean }): void;
+  /**
+   * Commit a canonical tail that is already present in `conv.messages`.
+   *
+   * `expectedStoredMessageCount` is both the first appended sequence and the
+   * optimistic concurrency boundary. Normalized stores must reject any other
+   * durable count instead of rediscovering a changed suffix by scanning history.
+   * Whole-conversation save remains the explicit rewrite API.
+   */
+  appendMessages(conv: Conversation, expectedStoredMessageCount: number): void;
 
   loadFolders(): PersistedFolderSummary[];
   saveFolders(folders: PersistedFolderSummary[]): void;

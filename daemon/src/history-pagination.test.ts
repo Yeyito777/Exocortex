@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { DisplayEntry } from "./display";
-import { buildHistoryUpdatedEvents, pageDisplayHistory } from "./history-pagination";
+import { buildHistoryUpdatedEvents, buildStoredHistoryUpdatedEvent, pageDisplayHistory } from "./history-pagination";
 
 function user(text: string): DisplayEntry {
   return { type: "user", text };
@@ -58,6 +58,47 @@ describe("pageDisplayHistory", () => {
 });
 
 describe("buildHistoryUpdatedEvents", () => {
+  test("builds a canonical refresh directly from a stored page", () => {
+    const event = buildStoredHistoryUpdatedEvent({
+      convId: "conv-page",
+      provider: "openai",
+      model: "gpt-5.4",
+      effort: "medium",
+      fastMode: false,
+      contextTokens: 42,
+      toolOutputsIncluded: false,
+      pinnedEntries: [{ type: "system_instructions", text: "rules" }],
+      entries: [user("u20"), ai("a20")],
+      startIndex: 38,
+      startUserIndex: 19,
+      endIndex: 40,
+      totalEntries: 40,
+      hasOlder: true,
+      source: {
+        baseMtimeMs: 1,
+        baseCtimeMs: 1,
+        baseSize: 100,
+        unwindSize: 0,
+        unwindMtimeMs: 0,
+        unwindHash: "none",
+      },
+      storedMessageCount: 40,
+    });
+
+    expect(event).toMatchObject({
+      type: "history_updated",
+      convId: "conv-page",
+      entries: [{ type: "system_instructions", text: "rules" }, user("u20"), ai("a20")],
+      historyStartIndex: 38,
+      historyStartUserIndex: 19,
+      historyTotalEntries: 40,
+      hasOlderHistory: true,
+      contextTokens: 42,
+      toolOutputsIncluded: false,
+      pendingAI: null,
+    });
+  });
+
   test("keeps legacy subscribers full while bounding pagination-aware subscribers", () => {
     const entries: DisplayEntry[] = [];
     for (let turn = 1; turn <= 20; turn++) entries.push(user(`u${turn}`), ai(`a${turn}`));

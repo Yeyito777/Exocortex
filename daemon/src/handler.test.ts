@@ -3,9 +3,9 @@ import { clearConversationDefaults, saveConversationDefaults } from "@exocortex/
 import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, replaceStreamingDisplayMessages, setGoal, setToolPolicy, updateGoalStatus } from "./conversations";
+import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, setGoal, setToolPolicy, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
-import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
+import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setStreamingCommittedMessageCount } from "./streaming";
 import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
 import { getDaemonShutdownMode, resetDaemonShutdownModeForTest } from "./daemon-lifecycle";
 import { invalidateCredentialsCache } from "./auth";
@@ -1859,17 +1859,15 @@ describe("handler load_conversation late-join streaming snapshots", () => {
   test("does not send streaming_started after the final assistant reply is already committed", async () => {
     const convId = mkId("finished-window");
     create(convId, "openai", "gpt-5.4");
-    const conv = get(convId)!;
-    conv.messages.push({ role: "user", content: "hi", metadata: null });
-    conv.messages.push({
-      role: "assistant",
-      content: [{ type: "text", text: "full final reply" }],
-      metadata: { startedAt: 1, endedAt: 2, model: "gpt-5.4", tokens: 7 },
-    });
-
+    appendMessages(convId, [{ role: "user", content: "hi", metadata: null }]);
     setActiveJob(convId, new AbortController(), 1);
     initStreamingState(convId);
     replaceCurrentStreamingBlocks(convId, [{ type: "text", text: "partial tail" }]);
+    appendMessages(convId, [{
+      role: "assistant",
+      content: [{ type: "text", text: "full final reply" }],
+      metadata: { startedAt: 1, endedAt: 2, model: "gpt-5.4", tokens: 7 },
+    }]);
 
     const sent: Array<Record<string, unknown>> = [];
     const server = {
@@ -2041,15 +2039,89 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     });
   });
 
-  test("late-join snapshots keep completed active-turn rounds canonical before the next tail starts", async () => {
-    const convId = mkId("round-boundary");
+  test("pages durable history while streaming and catches up with only the latest pending tail", async () => {
+    const convId = mkId("paged-live-window");
     create(convId, "openai", "gpt-5.4");
-    const conv = get(convId)!;
-    conv.messages.push({ role: "user", content: "hi", metadata: null });
+    const history = [];
+    for (let turn = 1; turn <= 8; turn++) {
+      history.push(
+        { role: "user" as const, content: `u${turn}`, metadata: null },
+        { role: "assistant" as const, content: `a${turn}`, metadata: null },
+      );
+    }
+    history.push({ role: "user" as const, content: "live prompt", metadata: null });
+    appendMessages(convId, history);
 
     setActiveJob(convId, new AbortController(), 100);
     initStreamingState(convId);
-    replaceStreamingDisplayMessages(convId, [
+    setStreamingCommittedMessageCount(convId, get(convId)!.messages.length);
+    replaceCurrentStreamingBlocks(convId, [{ type: "text", text: "initial partial" }]);
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => {
+        sent.push(event);
+        if (event.type === "conversation_loaded") {
+          // Simulate a provider chunk arriving between the durable page read and
+          // subscription. The follow-up event must contain only this pending tail.
+          replaceCurrentStreamingBlocks(convId, [{ type: "text", text: "newer partial" }]);
+        }
+      }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const client = { capabilities: new Set<string>() };
+
+    await handle(client as never, { type: "load_conversation", convId, turns: 2 });
+
+    expect(sent.map(event => event.type)).toEqual(["conversation_loaded", "streaming_started"]);
+    expect((sent[0].entries as Array<{ type: string; text?: string }>)
+      .filter(entry => entry.type === "user").map(entry => entry.text))
+      .toEqual(["u8", "live prompt"]);
+    expect(sent[0]).toMatchObject({
+      historyStartIndex: 14,
+      historyTotalEntries: 17,
+      hasOlderHistory: true,
+      pendingAI: { blocks: [{ type: "text", text: "initial partial" }] },
+    });
+    expect(sent[1]).toMatchObject({
+      type: "streaming_started",
+      snapshotKind: "catchup",
+      blocks: [{ type: "text", text: "newer partial" }],
+    });
+    expect(sent[1]).not.toHaveProperty("entries");
+
+    const beforeEntryIndex = sent[0].historyStartIndex as number;
+    sent.length = 0;
+    await handle(client as never, {
+      type: "load_conversation_history",
+      convId,
+      beforeEntryIndex,
+      turns: 2,
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: "conversation_history_loaded",
+      historyStartIndex: 10,
+      historyEndIndex: 14,
+      historyTotalEntries: 17,
+      hasOlderHistory: true,
+    });
+    expect((sent[0].entries as Array<{ type: string; text?: string }>)
+      .filter(entry => entry.type === "user").map(entry => entry.text))
+      .toEqual(["u6", "u7"]);
+  });
+
+  test("late-join snapshots keep completed active-turn rounds canonical before the next tail starts", async () => {
+    const convId = mkId("round-boundary");
+    create(convId, "openai", "gpt-5.4");
+    appendMessages(convId, [
+      { role: "user", content: "hi", metadata: null },
       {
         role: "assistant",
         content: [{ type: "tool_use", id: "call-1", name: "bash", input: { command: "pwd" } }],
@@ -2066,6 +2138,8 @@ describe("handler load_conversation late-join streaming snapshots", () => {
         metadata: null,
       },
     ]);
+    setActiveJob(convId, new AbortController(), 100);
+    initStreamingState(convId);
 
     const sent: Array<Record<string, unknown>> = [];
     const server = {
@@ -2111,12 +2185,8 @@ describe("handler load_conversation late-join streaming snapshots", () => {
   test("late-join snapshots keep text streamed after a tool-round boundary", async () => {
     const convId = mkId("post-round-text");
     create(convId, "openai", "gpt-5.4");
-    const conv = get(convId)!;
-    conv.messages.push({ role: "user", content: "make a game", metadata: null });
-
-    setActiveJob(convId, new AbortController(), 100);
-    initStreamingState(convId);
-    replaceStreamingDisplayMessages(convId, [
+    appendMessages(convId, [
+      { role: "user", content: "make a game", metadata: null },
       {
         role: "assistant",
         content: [{ type: "tool_use", id: "call-1", name: "bash", input: { command: "cc --version" } }],
@@ -2128,8 +2198,10 @@ describe("handler load_conversation late-join streaming snapshots", () => {
         metadata: null,
       },
     ]);
-    // Mirrors orchestrator.onRoundComplete(): completed tool round is now in
-    // streamingDisplayMessages and the next API round starts with fresh text.
+    setActiveJob(convId, new AbortController(), 100);
+    initStreamingState(convId);
+    // Mirrors orchestrator.onRoundComplete(): the completed tool round is
+    // canonical and the next API round starts with fresh pending text.
     clearCurrentStreamingBlocks(convId);
     appendToStreamingBlock(convId, "text", "Planning an ncurses game after the compiler check.");
 
@@ -2172,18 +2244,19 @@ describe("handler load_conversation late-join streaming snapshots", () => {
   test("includes the live replay snapshot even when persisted history already ends in assistant/system messages", async () => {
     const convId = mkId("replay-window");
     create(convId, "openai", "gpt-5.4");
-    const conv = get(convId)!;
-    conv.messages.push({ role: "user", content: "hi", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.4", tokens: 0 } });
-    conv.messages.push({
-      role: "assistant",
-      content: [{ type: "text", text: "partial old reply" }],
-      metadata: { startedAt: 2, endedAt: 3, model: "gpt-5.4", tokens: 12 },
-    });
-    conv.messages.push({ role: "system", content: "✗ Interrupted", metadata: null });
+    appendMessages(convId, [
+      { role: "user", content: "hi", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.4", tokens: 0 } },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "partial old reply" }],
+        metadata: { startedAt: 2, endedAt: 3, model: "gpt-5.4", tokens: 12 },
+      },
+      { role: "system", content: "✗ Interrupted", metadata: null },
+    ]);
 
     setActiveJob(convId, new AbortController(), 100);
     initStreamingState(convId);
-    replaceStreamingDisplayMessages(convId, [{
+    appendMessages(convId, [{
       role: "assistant",
       content: [{ type: "tool_use", id: "call-1", name: "bash", input: { command: "pwd" } }],
       metadata: null,
@@ -2238,18 +2311,19 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     const otherConvId = mkId("other-conv");
     create(convId, "openai", "gpt-5.4");
     create(otherConvId, "openai", "gpt-5.4");
-    const conv = get(convId)!;
-    conv.messages.push({ role: "user", content: "hi", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.4", tokens: 0 } });
-    conv.messages.push({
-      role: "assistant",
-      content: [{ type: "text", text: "partial old reply" }],
-      metadata: { startedAt: 2, endedAt: 3, model: "gpt-5.4", tokens: 12 },
-    });
-    conv.messages.push({ role: "system", content: "✗ Interrupted", metadata: null });
+    appendMessages(convId, [
+      { role: "user", content: "hi", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.4", tokens: 0 } },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "partial old reply" }],
+        metadata: { startedAt: 2, endedAt: 3, model: "gpt-5.4", tokens: 12 },
+      },
+      { role: "system", content: "✗ Interrupted", metadata: null },
+    ]);
 
     setActiveJob(convId, new AbortController(), 100);
     initStreamingState(convId);
-    replaceStreamingDisplayMessages(convId, [{
+    appendMessages(convId, [{
       role: "assistant",
       content: [{ type: "tool_use", id: "call-1", name: "bash", input: { command: "pwd" } }],
       metadata: null,

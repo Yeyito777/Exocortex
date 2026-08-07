@@ -4,9 +4,9 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
-import { create, get, remove } from "./conversations";
+import { appendMessages, create, remove } from "./conversations";
 import type { StoredMessage } from "./messages";
-import { clearActiveJob, initStreamingState, replaceStreamingDisplayMessages, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
+import { clearActiveJob, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
 import { DaemonClient } from "../../tui/src/client";
 import { createInitialState } from "../../tui/src/state";
 import { handleEvent } from "../../tui/src/events";
@@ -43,14 +43,10 @@ describe("late-join streaming integration", () => {
 
     const convId = mkConvId("round-boundary");
     create(convId, "openai", "gpt-5.4");
-    const conv = get(convId)!;
-    conv.messages.push({ role: "user", content: "hi", metadata: null });
 
-    // Simulate the exact problematic window: the active turn already produced a
-    // completed tool round and explanatory text, persisted it for crash recovery,
-    // and is compacting before a new tail starts. The same completed messages
-    // remain in transient state so late joiners can reconstruct the active reply.
-    // Rendering both copies made the tool round appear twice until completion.
+    // Simulate the round boundary: the active turn already committed a completed
+    // tool round and explanatory text before a new pending tail starts. Late
+    // joiners read that round from the canonical display page exactly once.
     setActiveJob(convId, new AbortController(), 100);
     initStreamingState(convId);
     const completedRound: StoredMessage[] = [
@@ -70,8 +66,10 @@ describe("late-join streaming integration", () => {
         metadata: null,
       },
     ];
-    conv.messages.push(...structuredClone(completedRound));
-    replaceStreamingDisplayMessages(convId, completedRound);
+    appendMessages(convId, [
+      { role: "user", content: "hi", metadata: null },
+      ...structuredClone(completedRound),
+    ]);
     replaceCurrentStreamingBlocks(convId, []);
 
     const state = createInitialState();

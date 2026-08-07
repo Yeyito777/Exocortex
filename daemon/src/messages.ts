@@ -881,7 +881,7 @@ export function buildHistoryTurnMap(messages: StoredMessage[]): number[] {
 }
 
 /** Count user-visible turns for summaries/UI, excluding non-turn status entries. */
-export function countConversationMessages(messages: StoredMessage[]): number {
+export function countConversationMessages(messages: readonly StoredMessage[]): number {
   return messages.filter((msg) =>
     msg.role !== "system_instructions"
     && !isModelVisibleSystemNotice(msg)
@@ -896,7 +896,10 @@ export type PersistedConversationSummary = Omit<
 >;
 export type PersistedFolderSummary = Omit<FolderSummary, "effectiveInstructions">;
 
-export function summarizeConversation(conv: Conversation): PersistedConversationSummary {
+export function summarizeConversation(
+  conv: Conversation,
+  messageCount = countConversationMessages(conv.messages),
+): PersistedConversationSummary {
   return {
     id: conv.id,
     provider: conv.provider,
@@ -905,7 +908,7 @@ export function summarizeConversation(conv: Conversation): PersistedConversation
     fastMode: conv.fastMode ?? false,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
-    messageCount: countConversationMessages(conv.messages),
+    messageCount,
     title: conv.title,
     goal: conv.goal?.status === "complete" ? null : conv.goal ?? null,
     marked: conv.marked,

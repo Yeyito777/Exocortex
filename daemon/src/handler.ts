@@ -493,7 +493,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     metrics?: ConversationLoadMetrics,
   ) => {
     const paginated = target.capabilities?.has("history-pagination") || turns !== undefined;
-    if (paginated && !convStore.isStreaming(convId)) {
+    if (paginated) {
       const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
       const page = convStore.getStoredDisplayPage(convId, turns ?? INITIAL_HISTORY_TURNS, undefined, snapshotDiagnostics);
       if (page) {
@@ -502,6 +502,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const responseEntries = [...page.pinnedEntries, ...page.entries];
         const sendStartedAt = metrics ? performance.now() : 0;
         const btw = btwManager.getSnapshot(page.convId);
+        const pending = convStore.getPendingStreamSnapshot(page.convId);
         const responseBytes = server.sendTo(target, {
           type: "conversation_loaded",
           reqId,
@@ -515,6 +516,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           historyStartUserIndex: page.startUserIndex,
           historyTotalEntries: page.totalEntries,
           hasOlderHistory: page.hasOlder,
+          ...(pending ? {
+            pendingAI: {
+              blocks: pending.blocks,
+              blockOffset: pending.blockOffset,
+              metadata: pending.metadata,
+            },
+          } : {}),
           contextTokens: page.contextTokens,
           toolOutputsIncluded: false,
           queuedMessages: queued.length > 0 ? queued : undefined,
@@ -594,7 +602,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     requestSource?: "initial-backfill" | "viewport",
     metrics?: ConversationLoadMetrics,
   ): boolean => {
-    if (!convStore.isStreaming(convId)) {
+    {
       const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
       const page = convStore.getStoredDisplayPage(convId, turns, beforeEntryIndex, snapshotDiagnostics);
       if (page) {
@@ -2431,22 +2439,22 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         // After subscribing, send a fresh streaming snapshot for late-join catch-up.
         // This covers any chunks emitted between the initial load snapshot and the
         // moment the new subscriber was attached.
-        if (convStore.isStreaming(cmd.convId)) {
-          const catchupData = getRenderSnapshot(cmd.convId);
-          const pendingAI = catchupData?.pendingAI;
-          if (catchupData && pendingAI) {
+        if (convStore.isStreaming(loadedConvId)) {
+          const pendingAI = convStore.getPendingStreamSnapshot(loadedConvId);
+          const loadedSummary = convStore.getSummary(loadedConvId);
+          if (pendingAI && loadedSummary) {
             server.sendTo(client, {
               type: "streaming_started",
-              convId: catchupData.convId,
-              provider: catchupData.provider,
-              model: catchupData.model,
-              streamSeq: convStore.getStreamSeq(cmd.convId),
+              convId: loadedConvId,
+              provider: loadedSummary.provider,
+              model: loadedSummary.model,
+              streamSeq: convStore.getStreamSeq(loadedConvId),
               snapshotKind: "catchup",
               startedAt: pendingAI.metadata?.startedAt ?? Date.now(),
               blocks: pendingAI.blocks,
               blockOffset: pendingAI.blockOffset,
               tokens: pendingAI.metadata?.tokens ?? 0,
-              compactionStartedAt: convStore.getContextCompactionStartedAt(cmd.convId) ?? null,
+              compactionStartedAt: convStore.getContextCompactionStartedAt(loadedConvId) ?? null,
             });
           }
         }

@@ -1011,8 +1011,13 @@ export class SqliteConversationStore implements ConversationRepository {
     return contentBytes;
   }
 
-  private upsertConversationRow(conv: Conversation, generation: number): void {
-    const summary = summarizeConversation(conv);
+  private upsertConversationRow(
+    conv: Conversation,
+    generation: number,
+    counts?: { messageCount: number; storedMessageCount: number },
+  ): void {
+    const messageCount = counts?.messageCount ?? summarizeConversation(conv).messageCount;
+    const storedMessageCount = counts?.storedMessageCount ?? conv.messages.length;
     this.db.query(`
       INSERT INTO conversations(
         id, provider, model, effort, fast_mode, created_at, updated_at,
@@ -1050,8 +1055,8 @@ export class SqliteConversationStore implements ConversationRepository {
       optionalJson(conv.subagentPolicy),
       optionalJson(conv.toolPolicy),
       generation,
-      summary.messageCount,
-      conv.messages.length,
+      messageCount,
+      storedMessageCount,
     );
   }
 
@@ -1105,20 +1110,22 @@ export class SqliteConversationStore implements ConversationRepository {
     changedAt: number,
     options: { validatedUnwind?: boolean } = {},
   ): void {
-    // Rebuild only from the last affected real user turn. Starting at a user
-    // boundary keeps assistant/tool-result grouping deterministic.
-    let startSequence = 0;
-    for (let i = Math.min(changedAt, conv.messages.length - 1); i >= 0; i--) {
-      if (isRealUserMessage(conv.messages[i])) {
-        startSequence = i;
-        break;
-      }
-    }
-    if (startSequence > 0 && conv.messages.slice(0, startSequence).some((message) => message.role === "system_instructions" && changedAt <= startSequence)) {
-      startSequence = 0;
-    }
-    const userOffset = conv.messages.slice(0, startSequence).filter(isRealUserMessage).length;
-    const replayOffset = conv.messages.slice(0, startSequence).filter(isReplayHistoryMessage).length;
+    // Rebuild only from the last affected real user turn. Resolve that boundary
+    // and its absolute counters from indexed normalized rows rather than scanning
+    // the complete in-memory prefix on every append.
+    const startSequence = this.db.query<{ sequence: number }, [string, number]>(`
+      SELECT sequence FROM messages
+      WHERE conversation_id=? AND is_real_user=1 AND sequence<=?
+      ORDER BY sequence DESC LIMIT 1
+    `).get(conv.id, Math.min(changedAt, Math.max(0, conv.messages.length - 1)))?.sequence ?? 0;
+    const userOffset = this.db.query<{ count: number }, [string, number]>(`
+      SELECT COUNT(*) AS count FROM messages
+      WHERE conversation_id=? AND is_real_user=1 AND sequence<?
+    `).get(conv.id, startSequence)!.count;
+    const replayOffset = this.db.query<{ count: number }, [string, number]>(`
+      SELECT COUNT(*) AS count FROM messages
+      WHERE conversation_id=? AND is_replay_history=1 AND sequence<?
+    `).get(conv.id, startSequence)!.count;
     let entryStart = 0;
     if (startSequence > 0) {
       const found = this.db.query<{ entry_index: number }, [string, number]>(`
@@ -1220,6 +1227,59 @@ export class SqliteConversationStore implements ConversationRepository {
       messages: conv.messages.map(messageSnapshot),
       activeContextRef: conv.activeContext,
       lastUnwindReceipt: previousReceipt,
+    });
+    this.loadedById.set(conv.id, new WeakRef(conv));
+  }
+
+  appendMessages(conv: Conversation, expectedStoredMessageCount: number): void {
+    assertSafeId(conv.id);
+    if (!Number.isSafeInteger(expectedStoredMessageCount) || expectedStoredMessageCount < 0
+        || conv.messages.length < expectedStoredMessageCount) {
+      throw new Error(`Invalid conversation append boundary for ${conv.id}: ${expectedStoredMessageCount}/${conv.messages.length}`);
+    }
+    const existing = this.row(conv.id);
+    if (!existing) throw new Error(`Conversation not found: ${conv.id}`);
+    const loaded = this.loadedState.get(conv);
+    if (loaded && existing.storage_generation !== loaded.generation) {
+      throw new Error(`Stale conversation generation for ${conv.id}: loaded=${loaded.generation}, current=${existing.storage_generation}`);
+    }
+    if (existing.stored_message_count !== expectedStoredMessageCount
+        || (loaded && loaded.messages.length !== expectedStoredMessageCount)) {
+      throw new Error(
+        `Stale conversation append boundary for ${conv.id}: expected=${expectedStoredMessageCount}, durable=${existing.stored_message_count}, loaded=${loaded?.messages.length ?? "unknown"}`,
+      );
+    }
+
+    const appended = conv.messages.slice(expectedStoredMessageCount);
+    const generation = existing.storage_generation + 1;
+    const counts = {
+      messageCount: existing.message_count + countConversationMessages(appended),
+      storedMessageCount: conv.messages.length,
+    };
+    let insertedBytes = 0;
+    this.db.transaction(() => {
+      this.upsertConversationRow(conv, generation, counts);
+      this.faultInjection?.("append.after-conversation");
+      for (let sequence = expectedStoredMessageCount; sequence < conv.messages.length; sequence++) {
+        insertedBytes += this.insertMessage(conv.id, sequence, conv.messages[sequence]!);
+      }
+      this.faultInjection?.("append.after-messages");
+      if (appended.length > 0) this.rebuildDisplay(conv, expectedStoredMessageCount);
+      this.db.query("UPDATE conversations SET content_bytes=? WHERE id=?")
+        .run(existing.content_bytes + insertedBytes, conv.id);
+      if (!loaded || loaded.activeContextRef !== conv.activeContext) this.saveActiveContext(conv);
+      this.faultInjection?.("append.before-commit");
+    })();
+
+    const messageSnapshots = loaded
+      ? loaded.messages
+      : conv.messages.slice(0, expectedStoredMessageCount).map(messageSnapshot);
+    messageSnapshots.push(...appended.map(messageSnapshot));
+    this.loadedState.set(conv, {
+      generation,
+      messages: messageSnapshots,
+      activeContextRef: conv.activeContext,
+      lastUnwindReceipt: loaded?.lastUnwindReceipt ?? null,
     });
     this.loadedById.set(conv.id, new WeakRef(conv));
   }

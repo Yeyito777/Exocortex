@@ -163,6 +163,15 @@ export class DaemonServer {
     }
   }
 
+  /** Whether compatibility requires materializing a complete history refresh. */
+  hasLegacyHistorySubscribers(convId: string): boolean {
+    for (const client of this.clients.values()) {
+      if (client.subscriptions.has(convId)
+          && !client.capabilities.has("history-pagination")) return true;
+    }
+    return false;
+  }
+
   hasLegacyUnwindSubscribers(convId: string): boolean {
     for (const client of this.clients.values()) {
       if (client.subscriptions.has(convId)

@@ -134,6 +134,37 @@ for (const backend of ["json", "sqlite"] as const) {
       expect(h.repository.loadToolOutputs(id)).toEqual([{ toolCallId: "call-1", output: "large result" }]);
     });
 
+    test("appends a canonical tail exactly once at an optimistic durable boundary", () => {
+      const id = `contract-${backend}-append-${Date.now()}`;
+      const h = harness(backend, id);
+      const conv = fixture(id);
+      h.repository.save(conv);
+      const boundary = conv.messages.length;
+      conv.messages.push(
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "append-call", name: "bash", input: { command: "printf appended" } }],
+          metadata: null,
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "append-call", content: "APPEND_SECRET", is_error: false }],
+          metadata: null,
+        },
+        { role: "assistant", content: "appended answer", metadata: null },
+      );
+
+      h.repository.appendMessages(conv, boundary);
+
+      const reopened = h.reopen();
+      expect(reopened.load(id)?.messages.map((message) => message.content)).toEqual(conv.messages.map((message) => message.content));
+      expect(reopened.loadToolOutputs(id)).toEqual([{ toolCallId: "append-call", output: "APPEND_SECRET" }]);
+      const page = reopened.loadDisplayPage(id, 1)!;
+      expect(JSON.stringify(page.entries)).toContain("appended answer");
+      expect(JSON.stringify(page.entries)).not.toContain("APPEND_SECRET");
+      expect(() => reopened.appendMessages(reopened.load(id)!, boundary)).toThrow("Stale conversation append boundary");
+    });
+
     test("persists folders, unread, queue, and BTW receipts", () => {
       const id = `contract-${backend}-aux-${Date.now()}`;
       const h = harness(backend, id);

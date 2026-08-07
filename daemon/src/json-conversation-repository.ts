@@ -51,6 +51,21 @@ export class JsonConversationRepository implements ConversationRepository {
     json.save(conv);
   }
 
+  appendMessages(conv: Conversation, expectedStoredMessageCount: number): void {
+    const durable = json.load(conv.id);
+    const durableCount = durable?.messages.length ?? 0;
+    if (durableCount !== expectedStoredMessageCount
+        || conv.messages.length < expectedStoredMessageCount) {
+      throw new Error(
+        `Stale conversation append boundary for ${conv.id}: expected=${expectedStoredMessageCount}, durable=${durableCount}, current=${conv.messages.length}`,
+      );
+    }
+    // The compatibility backend is intentionally monolithic. It preserves the
+    // append contract and safety boundary while SQLite supplies the bounded hot
+    // path used in production.
+    json.save(conv);
+  }
+
   loadFolders() { return json.loadFolders(); }
   saveFolders(folders: Parameters<typeof json.saveFolders>[0]) { json.saveFolders(folders); }
   loadFolderInstructions() { return json.loadFolderInstructions(); }

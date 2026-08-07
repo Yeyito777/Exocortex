@@ -1,5 +1,5 @@
 import type { DisplayEntry } from "./display";
-import type { ConversationRenderSnapshot } from "./conversations";
+import type { ConversationRenderSnapshot, StoredDisplayHistoryPage } from "./conversations";
 import type { HistoryUpdatedEvent } from "./protocol";
 import type { ImageAttachment } from "./messages";
 
@@ -104,5 +104,25 @@ export function buildHistoryUpdatedEvents(
       historyTotalEntries: page.totalEntries,
       hasOlderHistory: page.hasOlder,
     },
+  };
+}
+
+/** Build the paginated canonical refresh directly from the durable projection. */
+export function buildStoredHistoryUpdatedEvent(
+  page: StoredDisplayHistoryPage,
+  options: { resetHistoryWindow?: boolean } = {},
+): HistoryUpdatedEvent {
+  return {
+    type: "history_updated",
+    convId: page.convId,
+    entries: [...page.pinnedEntries, ...page.entries],
+    historyStartIndex: page.startIndex,
+    historyStartUserIndex: page.startUserIndex,
+    historyTotalEntries: page.totalEntries,
+    hasOlderHistory: page.hasOlder,
+    contextTokens: page.contextTokens,
+    toolOutputsIncluded: false,
+    pendingAI: null,
+    ...(options.resetHistoryWindow ? { resetHistoryWindow: true } : {}),
   };
 }
