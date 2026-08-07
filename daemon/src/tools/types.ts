@@ -73,6 +73,11 @@ export interface ToolExecutionContext {
   model?: string;
   /** Provider-assigned tool call id for the currently executing tool. */
   toolCallId?: string;
+  /**
+   * Internal agent-loop capability: this invocation is the only tool call in
+   * its provider round, so its result may be completed by a later replay.
+   */
+  canDeferToolResult?: boolean;
   /** Native current-daemon management and subagent capability. */
   exocortex?: ExocortexToolRuntime;
   /** Report the lifecycle of a detached tool process owned by this conversation. */
@@ -106,7 +111,19 @@ export interface ToolResult {
   /** Internal execution classification used by durable automation retry loops. */
   failureKind?: "infrastructure";
   image?: ImageData;
+  /** Internal control result. No tool_result is emitted until the deferred operation resumes. */
+  deferred?: DeferredToolResult;
 }
+
+export interface DeferredChronoSleepResult {
+  kind: "chrono_sleep";
+  sleepId: string;
+  startedAt: number;
+  dueAt: number;
+  durationMs: number;
+}
+
+export type DeferredToolResult = DeferredChronoSleepResult;
 
 export interface ActiveToolBackgrounder {
   toolName: string;

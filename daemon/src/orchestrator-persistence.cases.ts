@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { clearHistoryUnwindPending, create, getActiveJob, getQueuedMessages, pushQueuedMessage, remove, requestHistoryUnwind } from "./conversations";
+import { clearHistoryUnwindPending, create, getActiveJob, getQueuedMessages, isUnread, pushQueuedMessage, remove, requestHistoryUnwind } from "./conversations";
 import { load as loadPersisted } from "./persistence";
 import { orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
+import { chronoInternalsForTest, listDeferredChronoSleeps } from "./chrono-service";
 
 const IDS: string[] = [];
 
@@ -39,6 +40,7 @@ function callbacks(streamMessageFn: typeof streamMessage): OrchestrationCallback
 }
 
 afterEach(() => {
+  chronoInternalsForTest.reset();
   for (const convId of IDS.splice(0)) {
     clearHistoryUnwindPending(convId);
     remove(convId);
@@ -251,6 +253,74 @@ describe("DB-first orchestrator persistence", () => {
     expect(outcome.ok).toBe(true);
     expect(observed.secondRequestContents?.at(-1)).toBe("queued interjection");
     expect(observed.queueAfterCommit).toBe(0);
+    expect(loadPersisted(convId)!.messages.map(message => message.role)).toEqual([
+      "user", "assistant", "user", "user", "assistant",
+    ]);
+  });
+
+  test("stops a long Chrono sleep turn without marking it unread, then resumes it before a user message", async () => {
+    const convId = id("deferred-chrono-sleep");
+    create(convId, "openai", "gpt-5.6-sol");
+    const events: Array<Record<string, unknown>> = [];
+    const sleepStream = (async () => ({
+      text: "",
+      thinking: "",
+      stopReason: "tool_use" as const,
+      blocks: [],
+      toolCalls: [{ id: "long-sleep-call", name: "chrono", input: { action: "sleep", duration: "10m" } }],
+      inputTokens: 10,
+      outputTokens: 2,
+    })) as typeof streamMessage;
+
+    const sleeping = await orchestrateSendMessage(
+      server(events) as never,
+      null,
+      undefined,
+      convId,
+      "sleep for ten minutes",
+      28_000,
+      callbacks(sleepStream),
+    );
+
+    expect(sleeping).toMatchObject({ ok: true, suspended: true });
+    expect(getActiveJob(convId)).toBeUndefined();
+    expect(isUnread(convId)).toBe(false);
+    expect(listDeferredChronoSleeps(convId)).toHaveLength(1);
+    expect(loadPersisted(convId)!.messages.map(message => message.role)).toEqual(["user", "assistant"]);
+    expect(events).toContainEqual(expect.objectContaining({ type: "streaming_stopped", convId }));
+
+    let resumedInput: import("./messages").ApiMessage[] | null = null;
+    const resumeStream = (async (_provider, messages) => {
+      resumedInput = structuredClone(messages);
+      return {
+        text: "resumed after interruption",
+        thinking: "",
+        stopReason: "stop" as const,
+        blocks: [{ type: "text" as const, text: "resumed after interruption" }],
+        toolCalls: [],
+        inputTokens: 20,
+        outputTokens: 4,
+      };
+    }) as typeof streamMessage;
+    const resumed = await orchestrateSendMessage(
+      server(events) as never,
+      null,
+      undefined,
+      convId,
+      "wake up early",
+      Date.now(),
+      callbacks(resumeStream),
+    );
+
+    expect(resumed.ok).toBe(true);
+    expect(listDeferredChronoSleeps(convId)).toHaveLength(0);
+    expect(resumedInput!.map(message => message.role)).toEqual(["user", "assistant", "user", "user"]);
+    const toolResultMessage = resumedInput![2]!;
+    expect(toolResultMessage.content).toContainEqual(expect.objectContaining({
+      type: "tool_result",
+      tool_use_id: "long-sleep-call",
+      content: expect.stringContaining("ended early because the user sent a message"),
+    }));
     expect(loadPersisted(convId)!.messages.map(message => message.role)).toEqual([
       "user", "assistant", "user", "user", "assistant",
     ]);

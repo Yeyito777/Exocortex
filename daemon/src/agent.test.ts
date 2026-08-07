@@ -191,6 +191,59 @@ describe("automatic agent compaction", () => {
   });
 });
 
+describe("deferred tool results", () => {
+  test("ends the provider loop with an outstanding Chrono tool call", async () => {
+    const recovery = state();
+    const emittedResults: string[] = [];
+    let streamCalls = 0;
+    const fakeStream = (async () => {
+      streamCalls += 1;
+      return {
+        text: "",
+        thinking: "",
+        stopReason: "tool_use",
+        blocks: [],
+        toolCalls: [{ id: "sleep-call", name: "chrono", input: { action: "sleep", duration: "10m" } }],
+        outputTokens: 4,
+      } satisfies StreamResult;
+    }) as typeof streamMessage;
+
+    const result = await runAgentLoop(
+      [{ role: "user", content: "wait ten minutes" }],
+      "openai",
+      "gpt-5.6-sol",
+      callbacks({ onToolResult: (block) => emittedResults.push(block.output) }),
+      {
+        state: recovery,
+        streamMessageFn: fakeStream,
+        executor: async () => [{
+          toolCallId: "sleep-call",
+          toolName: "chrono",
+          output: "",
+          isError: false,
+          deferred: {
+            kind: "chrono_sleep",
+            sleepId: "chrono:sleep:sleep-call",
+            startedAt: 1_000,
+            dueAt: 601_000,
+            durationMs: 600_000,
+          },
+        }],
+      },
+    );
+
+    expect(streamCalls).toBe(1);
+    expect(result.suspended).toMatchObject({ kind: "chrono_sleep", sleepId: "chrono:sleep:sleep-call" });
+    expect(result.newMessages).toHaveLength(1);
+    expect(result.newMessages[0]).toMatchObject({
+      role: "assistant",
+      content: [expect.objectContaining({ type: "tool_use", id: "sleep-call", name: "chrono" })],
+    });
+    expect(recovery.completedMessages).toHaveLength(1);
+    expect(emittedResults).toEqual([]);
+  });
+});
+
 describe("queued-message handoff", () => {
   test("does not drain a next-turn message after the active turn is interrupted", async () => {
     const controller = new AbortController();

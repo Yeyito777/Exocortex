@@ -912,6 +912,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       }
       setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt });
       void deps.runTurn(convId, text, maxDepth, startedAt).then(outcome => {
+        if (outcome.suspended) return;
         setTrackedSubagent(parentConvId, convId!, false);
         if (notify && parentConvId) {
           if (deps.completeParentNotification) deps.completeParentNotification(convId!, outcome);

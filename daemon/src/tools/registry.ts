@@ -190,6 +190,7 @@ async function execTool(
       output: result.output,
       isError: result.isError,
       image: result.image,
+      deferred: result.deferred,
     };
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
@@ -263,10 +264,11 @@ async function executeSingleTool(
   toolContext?: ToolExecutionContext,
   signal?: AbortSignal,
   allowedTools?: ReadonlySet<string>,
+  canDeferToolResult = false,
 ): Promise<ToolExecResult> {
   const callToolContext: ToolExecutionContext = toolContext
-    ? { ...toolContext, toolCallId: call.id }
-    : { toolCallId: call.id };
+    ? { ...toolContext, toolCallId: call.id, canDeferToolResult }
+    : { toolCallId: call.id, canDeferToolResult };
 
   if (allowedTools && !allowedTools.has(call.name)) {
     return {
@@ -344,11 +346,12 @@ async function executeScheduledTools(
   allowedTools?: ReadonlySet<string>,
 ): Promise<ToolExecResult[]> {
   const results: ToolExecResult[] = [];
+  const canDeferToolResult = calls.length === 1;
 
   for (const batch of planToolExecutionBatches(calls, toolContext?.conversationId)) {
     const batchResults = batch.mode === "parallel"
-      ? await Promise.all(batch.calls.map(call => executeSingleTool(call, toolContext, signal, allowedTools)))
-      : [await executeSingleTool(batch.calls[0], toolContext, signal, allowedTools)];
+      ? await Promise.all(batch.calls.map(call => executeSingleTool(call, toolContext, signal, allowedTools, canDeferToolResult)))
+      : [await executeSingleTool(batch.calls[0], toolContext, signal, allowedTools, canDeferToolResult)];
     results.push(...batchResults);
   }
 

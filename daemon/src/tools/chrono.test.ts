@@ -2,10 +2,21 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { chrono } from "./chrono";
 import { chronoInternalsForTest, installMigratedSchedule } from "../chrono-service";
 import { resetConversationActivityForTest, setBackgroundTaskActive } from "../conversation-activity";
+import { create, remove } from "../conversations";
+
+const conversationIds: string[] = [];
+
+function makeConversation(label: string): string {
+  const id = `${Date.now()}-${label}-${Math.random().toString(36).slice(2, 8)}`;
+  conversationIds.push(id);
+  create(id, "openai", "gpt-5.6-sol", label);
+  return id;
+}
 
 afterEach(() => {
   chronoInternalsForTest.reset();
   resetConversationActivityForTest();
+  for (const id of conversationIds.splice(0)) remove(id);
 });
 
 describe("Chrono tool", () => {
@@ -63,6 +74,35 @@ describe("Chrono tool", () => {
     controller.abort();
     await expect(result).rejects.toThrow();
     expect(activity).toHaveBeenLastCalledWith("chrono:sleep:call-2", false);
+  });
+
+  test("sleep longer than five minutes defers its tool result instead of waiting", async () => {
+    const conversationId = makeConversation("long-sleep");
+    const result = await chrono.execute(
+      { action: "sleep", duration: "5m1ms" },
+      { conversationId, toolCallId: "call-long", canDeferToolResult: true },
+    );
+
+    expect(result).toMatchObject({
+      output: "",
+      isError: false,
+      deferred: {
+        kind: "chrono_sleep",
+        sleepId: "chrono:sleep:call-long",
+        durationMs: 300_001,
+      },
+    });
+  });
+
+  test("a long sleep in a multi-tool round asks the model to retry it alone", async () => {
+    const conversationId = makeConversation("long-sleep-batch");
+    const result = await chrono.execute(
+      { action: "sleep", duration: "10m" },
+      { conversationId, toolCallId: "call-batch", canDeferToolResult: false },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("must be the only tool call");
   });
 
   test("creates and lists a durable hard wake", async () => {

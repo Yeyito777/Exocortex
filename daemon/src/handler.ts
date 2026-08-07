@@ -110,7 +110,24 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   let callManager: RealtimeCallController;
   const delegatedCallByConversation = new Map<string, string>();
   const pendingBackgroundNotifications = new Map<string, { convId: string; completion: BackgroundTaskCompletion }>();
-  configureChronoService((convId) => broadcastConversationUpdated(server, convId));
+  configureChronoService(
+    (convId) => broadcastConversationUpdated(server, convId),
+    async (sleep) => {
+      // The scheduler has already attached the missing tool_result. Reconcile
+      // clients before replaying so the resumed provider and TUI share history.
+      broadcastConversationHistoryUpdated(server, sleep.conversationId);
+      broadcastConversationUpdated(server, sleep.conversationId);
+      const outcome = await orchestrateReplayConversation(
+        server,
+        null,
+        undefined,
+        sleep.conversationId,
+        Date.now(),
+        buildOrchestrationCallbacks(sleep.conversationId),
+      );
+      if (!outcome.suspended) notificationRuntime.complete(sleep.conversationId, outcome);
+    },
+  );
   setExternalNotificationsChangedListener((convIds) => {
     for (const convId of convIds) broadcastConversationUpdated(server, convId);
   });
@@ -1722,6 +1739,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           );
           maybeStartAutoTitleGeneration(cmd.convId);
           void turn.then((outcome) => {
+            if (outcome.suspended) return;
             finishTrackedSubagent();
             if (cmd.notifyParent) notificationRuntime.complete(cmd.convId, outcome);
           }).catch((err) => {

@@ -22,6 +22,7 @@ import { ensureConversationWorkspace } from "./workspace-service";
 const STATE_VERSION = 1;
 const MAX_TIMER_MS = 2_000_000_000;
 const MAX_COMMAND_OUTPUT_IN_WAKE = 8_000;
+export const LONG_CHRONO_SLEEP_THRESHOLD_MS = 5 * 60 * 1_000;
 const WEEKDAY_INDEX: Record<string, number> = {
   sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
 };
@@ -107,6 +108,28 @@ interface ChronoStateFile {
   updatedAt: number;
   schedules: ChronoSchedule[];
   pending: PendingOccurrence[];
+  /** Deferred tool results for sleep calls that intentionally ended their provider turn. */
+  sleeps?: DeferredChronoSleep[];
+}
+
+export interface DeferredChronoSleep {
+  id: string;
+  conversationId: string;
+  toolCallId: string;
+  startedAt: number;
+  dueAt: number;
+  durationMs: number;
+  state: "sleeping" | "resuming";
+  resumedAt?: number;
+  resumeReason?: "elapsed" | "user_message";
+  retryAt?: number;
+}
+
+export interface DeferChronoSleepInput {
+  conversationId: string;
+  toolCallId: string;
+  startedAt: number;
+  durationMs: number;
 }
 
 export interface RepeatInput {
@@ -143,13 +166,17 @@ export interface AdoptScheduleInput {
 }
 
 type ConversationChanged = (conversationId: string) => void;
+type DeferredSleepReady = (sleep: DeferredChronoSleep) => Promise<void> | void;
 
 const schedules = new Map<string, ChronoSchedule>();
 const pending = new Map<string, PendingOccurrence>();
+const deferredSleeps = new Map<string, DeferredChronoSleep>();
 const processing = new Set<string>();
+const processingSleeps = new Set<string>();
 const activeCommandControllers = new Map<string, AbortController>();
 const cancelledOccurrences = new Set<string>();
 let changedListener: ConversationChanged | null = null;
+let deferredSleepReadyListener: DeferredSleepReady | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let started = false;
 let processingDue = false;
@@ -170,6 +197,7 @@ function snapshotState(): ChronoStateFile {
     updatedAt: Date.now(),
     schedules: [...schedules.values()],
     pending: [...pending.values()],
+    sleeps: [...deferredSleeps.values()],
   };
 }
 
@@ -212,9 +240,22 @@ function validPending(value: unknown): value is PendingOccurrence {
     && validTarget(value.target);
 }
 
+function validDeferredSleep(value: unknown): value is DeferredChronoSleep {
+  if (!isRecord(value)) return false;
+  return typeof value.id === "string"
+    && typeof value.conversationId === "string"
+    && typeof value.toolCallId === "string"
+    && Number.isFinite(value.startedAt)
+    && Number.isFinite(value.dueAt)
+    && Number.isFinite(value.durationMs)
+    && (value.state === "sleeping" || value.state === "resuming")
+    && (value.resumeReason === undefined || value.resumeReason === "elapsed" || value.resumeReason === "user_message");
+}
+
 function load(): void {
   schedules.clear();
   pending.clear();
+  deferredSleeps.clear();
   const path = statePath();
   if (!existsSync(path)) return;
   try {
@@ -228,6 +269,9 @@ function load(): void {
     }
     for (const occurrence of parsed.pending ?? []) {
       if (validPending(occurrence)) pending.set(occurrence.id, occurrence);
+    }
+    for (const sleep of parsed.sleeps ?? []) {
+      if (validDeferredSleep(sleep)) deferredSleeps.set(sleep.id, sleep);
     }
   } catch (err) {
     log("error", `chrono: failed to load state: ${err instanceof Error ? err.message : String(err)}`);
@@ -258,6 +302,21 @@ function publishAllSchedules(): void {
   for (const schedule of schedules.values()) publishSchedule(schedule, true);
 }
 
+function publishDeferredSleep(sleep: DeferredChronoSleep, active: boolean): void {
+  if (setChronoTaskActive(sleep.conversationId, sleep.id, active, active ? {
+    title: `Sleeping until ${new Date(sleep.dueAt).toISOString()}`,
+    startedAt: sleep.startedAt,
+    dueAt: sleep.dueAt,
+    chronoMode: "sleep",
+  } : undefined)) notifyConversation(sleep.conversationId);
+}
+
+function publishAllDeferredSleeps(): void {
+  for (const sleep of deferredSleeps.values()) {
+    if (sleep.state === "sleeping") publishDeferredSleep(sleep, true);
+  }
+}
+
 function clearTimer(): void {
   if (timer) clearTimeout(timer);
   timer = null;
@@ -271,6 +330,10 @@ function armTimer(): void {
     if (!processing.has(occurrence.id)) earliest = Math.min(earliest, occurrence.retryAt ?? 0);
   }
   for (const schedule of schedules.values()) earliest = Math.min(earliest, schedule.nextAt);
+  for (const sleep of deferredSleeps.values()) {
+    if (processingSleeps.has(sleep.id)) continue;
+    earliest = Math.min(earliest, sleep.state === "sleeping" ? sleep.dueAt : sleep.retryAt ?? 0);
+  }
   if (!Number.isFinite(earliest)) return;
   const delay = Math.min(MAX_TIMER_MS, Math.max(0, earliest - Date.now()));
   timer = setTimeout(() => { void processPendingAndDue(); }, delay);
@@ -497,6 +560,160 @@ function defaultTitle(input: CreateScheduleInput): string {
   return content.length > 80 ? `${content.slice(0, 79)}…` : content;
 }
 
+function conversationHasSleepToolCall(sleep: DeferredChronoSleep): boolean {
+  return convStore.get(sleep.conversationId)?.messages.some((message) =>
+    message.role === "assistant"
+    && Array.isArray(message.content)
+    && message.content.some((block) => block.type === "tool_use"
+      && block.id === sleep.toolCallId
+      && block.name === "chrono")
+  ) ?? false;
+}
+
+function conversationHasSleepToolResult(sleep: DeferredChronoSleep): boolean {
+  return convStore.get(sleep.conversationId)?.messages.some((message) =>
+    message.role === "user"
+    && Array.isArray(message.content)
+    && message.content.some((block) => block.type === "tool_result" && block.tool_use_id === sleep.toolCallId)
+  ) ?? false;
+}
+
+function formatElapsedDuration(durationMs: number): string {
+  const clamped = Math.max(0, Math.round(durationMs));
+  if (clamped < 1_000) return `${clamped}ms`;
+  const totalSeconds = clamped / 1_000;
+  if (totalSeconds < 60) return `${Number(totalSeconds.toFixed(totalSeconds < 10 ? 2 : 1))}s`;
+  const totalWholeSeconds = Math.floor(totalSeconds);
+  const days = Math.floor(totalWholeSeconds / 86_400);
+  const hours = Math.floor((totalWholeSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalWholeSeconds % 3_600) / 60);
+  const seconds = totalWholeSeconds % 60;
+  return [
+    days ? `${days}d` : "",
+    hours ? `${hours}h` : "",
+    minutes ? `${minutes}m` : "",
+    seconds ? `${seconds}s` : "",
+  ].filter(Boolean).join(" ");
+}
+
+function deferredSleepOutput(sleep: DeferredChronoSleep): string {
+  const resumedAt = sleep.resumedAt ?? Date.now();
+  const elapsed = formatElapsedDuration(resumedAt - sleep.startedAt);
+  const requested = formatElapsedDuration(sleep.durationMs);
+  const reason = sleep.resumeReason === "user_message"
+    ? " The sleep ended early because the user sent a message."
+    : "";
+  return `Sleep finished after ${elapsed} (requested ${requested}).${reason}`;
+}
+
+function removeDeferredSleep(sleep: DeferredChronoSleep): void {
+  if (!deferredSleeps.delete(sleep.id)) return;
+  publishDeferredSleep(sleep, false);
+  persist();
+  armTimer();
+}
+
+/**
+ * Persist a long sleep before returning control to the agent loop. The matching
+ * assistant tool_use is committed immediately afterward; resume paths verify it
+ * exists before ever appending a tool_result, which safely prunes an orphan if
+ * the daemon dies in that narrow interval.
+ */
+export function deferChronoSleep(input: DeferChronoSleepInput): { sleep?: DeferredChronoSleep; error?: string } {
+  if (!convStore.hasConversation(input.conversationId)) {
+    return { error: `Conversation ${input.conversationId} not found.` };
+  }
+  if (!input.toolCallId.trim()) return { error: "Chrono sleep requires a tool call id." };
+  if (!Number.isSafeInteger(input.durationMs) || input.durationMs <= LONG_CHRONO_SLEEP_THRESHOLD_MS) {
+    return { error: "Only Chrono sleeps longer than five minutes can be deferred." };
+  }
+  const existing = [...deferredSleeps.values()].find((sleep) =>
+    sleep.conversationId === input.conversationId && sleep.state === "sleeping"
+  );
+  if (existing) return { error: `Conversation already has a deferred Chrono sleep: ${existing.id}` };
+  const sleep: DeferredChronoSleep = {
+    id: `chrono:sleep:${input.toolCallId}`,
+    conversationId: input.conversationId,
+    toolCallId: input.toolCallId,
+    startedAt: input.startedAt,
+    dueAt: input.startedAt + input.durationMs,
+    durationMs: input.durationMs,
+    state: "sleeping",
+  };
+  deferredSleeps.set(sleep.id, sleep);
+  persist();
+  publishDeferredSleep(sleep, true);
+  armTimer();
+  return { sleep: structuredClone(sleep) };
+}
+
+export function listDeferredChronoSleeps(conversationId?: string): DeferredChronoSleep[] {
+  return [...deferredSleeps.values()]
+    .filter((sleep) => !conversationId || sleep.conversationId === conversationId)
+    .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id))
+    .map((sleep) => structuredClone(sleep));
+}
+
+function prepareDeferredSleepResume(
+  sleep: DeferredChronoSleep,
+  reason: "elapsed" | "user_message",
+  resumedAt: number,
+): DeferredChronoSleep | null {
+  if (!convStore.hasConversation(sleep.conversationId) || !conversationHasSleepToolCall(sleep)) {
+    log("warn", `chrono: dropping orphaned deferred sleep ${sleep.id}; its tool call is not in conversation history`);
+    removeDeferredSleep(sleep);
+    return null;
+  }
+  const resuming: DeferredChronoSleep = {
+    ...sleep,
+    state: "resuming",
+    resumedAt,
+    resumeReason: reason,
+  };
+  if (reason === "user_message") resuming.retryAt = resumedAt + 30_000;
+  else delete resuming.retryAt;
+  deferredSleeps.set(resuming.id, resuming);
+  // Persist wake intent before the tool result. A crash in between retries this
+  // exact idempotent attachment and replay on startup.
+  persist();
+  if (!conversationHasSleepToolResult(resuming)) {
+    const appended = convStore.appendMessages(resuming.conversationId, [{
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: resuming.toolCallId,
+        content: deferredSleepOutput(resuming),
+        is_error: false,
+      }],
+      metadata: null,
+    }], { updatedAt: resumedAt });
+    if (!appended) throw new Error(`Could not attach deferred Chrono sleep result to ${resuming.conversationId}`);
+  }
+  publishDeferredSleep(resuming, false);
+  armTimer();
+  return structuredClone(resuming);
+}
+
+/** Attach an early result synchronously so an incoming user turn can replay valid history. */
+export function interruptDeferredChronoSleep(
+  conversationId: string,
+  resumedAt = Date.now(),
+): DeferredChronoSleep | null {
+  for (const sleep of [...deferredSleeps.values()]
+    .filter((candidate) => candidate.conversationId === conversationId && candidate.state === "sleeping")
+    .sort((a, b) => a.startedAt - b.startedAt)) {
+    const prepared = prepareDeferredSleepResume(sleep, "user_message", resumedAt);
+    if (prepared) return prepared;
+  }
+  return null;
+}
+
+/** The caller invokes this after it has started the replay that consumed an early wake. */
+export function completeDeferredChronoSleepResume(sleepId: string): void {
+  const sleep = deferredSleeps.get(sleepId);
+  if (sleep) removeDeferredSleep(sleep);
+}
+
 export function createChronoSchedule(input: CreateScheduleInput, now = Date.now()): { schedule?: ChronoSchedule; error?: string } {
   const when = parseAt(input.at, input.afterSeconds, now);
   if (when.error || when.value === undefined) return { error: when.error };
@@ -662,7 +879,13 @@ export function cancelChronoSchedulesForConversation(conversationId: string): nu
       || (occurrence.target.kind === "conversation" && occurrence.target.conversationId === conversationId)) ids.add(occurrence.scheduleId);
   }
   for (const id of ids) cancelChronoSchedule(id);
-  return ids.size;
+  let deferredCount = 0;
+  for (const sleep of [...deferredSleeps.values()]) {
+    if (sleep.conversationId !== conversationId) continue;
+    removeDeferredSleep(sleep);
+    deferredCount++;
+  }
+  return ids.size + deferredCount;
 }
 
 /** Abort active commands before their owner's workspace is moved. Durable schedules remain until deletion commits. */
@@ -802,6 +1025,41 @@ async function executeOccurrence(occurrence: PendingOccurrence): Promise<void> {
   }
 }
 
+async function executeDeferredSleep(sleep: DeferredChronoSleep): Promise<void> {
+  if (processingSleeps.has(sleep.id)) return;
+  processingSleeps.add(sleep.id);
+  try {
+    const current = deferredSleeps.get(sleep.id);
+    if (!current) return;
+    const prepared = current.state === "sleeping"
+      ? prepareDeferredSleepResume(current, "elapsed", Math.max(Date.now(), current.dueAt))
+      : prepareDeferredSleepResume(
+          current,
+          current.resumeReason ?? "elapsed",
+          current.resumedAt ?? Math.max(Date.now(), current.dueAt),
+        );
+    if (!prepared) return;
+    if (!deferredSleepReadyListener) {
+      throw new Error("Deferred Chrono sleep replay runtime is not configured");
+    }
+    await deferredSleepReadyListener(prepared);
+    const latest = deferredSleeps.get(prepared.id);
+    if (latest) removeDeferredSleep(latest);
+  } catch (err) {
+    log("error", `chrono: deferred sleep ${sleep.id} failed to resume: ${err instanceof Error ? err.message : String(err)}`);
+    const latest = deferredSleeps.get(sleep.id);
+    if (latest) {
+      latest.state = "resuming";
+      latest.retryAt = Date.now() + 5_000;
+      deferredSleeps.set(latest.id, latest);
+      persist();
+    }
+  } finally {
+    processingSleeps.delete(sleep.id);
+    armTimer();
+  }
+}
+
 async function processPendingAndDue(): Promise<void> {
   if (!started || processingDue) return;
   processingDue = true;
@@ -851,14 +1109,22 @@ async function processPendingAndDue(): Promise<void> {
     for (const occurrence of pending.values()) {
       if ((occurrence.retryAt ?? 0) <= now) void executeOccurrence(occurrence);
     }
+    for (const sleep of deferredSleeps.values()) {
+      const readyAt = sleep.state === "sleeping" ? sleep.dueAt : sleep.retryAt ?? 0;
+      if (readyAt <= now) void executeDeferredSleep(sleep);
+    }
   } finally {
     processingDue = false;
     armTimer();
   }
 }
 
-export function configureChronoService(listener: ConversationChanged | null): void {
+export function configureChronoService(
+  listener: ConversationChanged | null,
+  sleepReadyListener: DeferredSleepReady | null = null,
+): void {
   changedListener = listener;
+  deferredSleepReadyListener = sleepReadyListener;
 }
 
 export async function startChronoService(): Promise<number> {
@@ -877,6 +1143,12 @@ export async function startChronoService(): Promise<number> {
       pruned = true;
     }
   }
+  for (const sleep of [...deferredSleeps.values()]) {
+    if (!convStore.hasConversation(sleep.conversationId)) {
+      deferredSleeps.delete(sleep.id);
+      pruned = true;
+    }
+  }
   if (pruned) persist();
   try {
     const { migrateLegacyCronJobs } = await import("./chrono-migration");
@@ -886,11 +1158,14 @@ export async function startChronoService(): Promise<number> {
     log("error", `chrono: legacy cron migration failed: ${err instanceof Error ? err.message : String(err)}`);
   }
   publishAllSchedules();
+  publishAllDeferredSleeps();
   armTimer();
-  if (pending.size > 0 || [...schedules.values()].some(schedule => schedule.nextAt <= Date.now())) {
+  if (pending.size > 0
+      || [...schedules.values()].some(schedule => schedule.nextAt <= Date.now())
+      || [...deferredSleeps.values()].some(sleep => sleep.state === "resuming" || sleep.dueAt <= Date.now())) {
     void processPendingAndDue();
   }
-  log("info", `chrono: started with ${schedules.size} schedule(s), ${pending.size} pending occurrence(s)`);
+  log("info", `chrono: started with ${schedules.size} schedule(s), ${pending.size} pending occurrence(s), ${deferredSleeps.size} deferred sleep(s)`);
   return schedules.size;
 }
 
@@ -917,9 +1192,12 @@ export const chronoInternalsForTest = {
     stopChronoService();
     schedules.clear();
     pending.clear();
+    deferredSleeps.clear();
     processing.clear();
+    processingSleeps.clear();
     cancelledOccurrences.clear();
     changedListener = null;
+    deferredSleepReadyListener = null;
     rmSync(statePath(), { force: true });
   },
   statePath,

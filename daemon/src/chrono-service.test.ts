@@ -2,13 +2,18 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationWorkspaceDir, trashedConversationWorkspaceDir } from "@exocortex/shared/paths";
-import { create, getQueuedMessages, remove } from "./conversations";
+import { appendMessages, create, get, getQueuedMessages, remove } from "./conversations";
 import {
   adoptChronoSchedule,
   chronoInternalsForTest,
   cancelChronoSchedule,
+  completeDeferredChronoSleepResume,
+  configureChronoService,
   createChronoSchedule,
+  deferChronoSleep,
   installMigratedSchedule,
+  interruptDeferredChronoSleep,
+  listDeferredChronoSleeps,
   listChronoSchedules,
   startChronoService,
 } from "./chrono-service";
@@ -113,6 +118,70 @@ describe("Chrono scheduler", () => {
     stopChronoService();
     await startChronoService();
     expect(listChronoSchedules(owner).map(schedule => schedule.id)).toEqual([id]);
+  });
+
+  test("attaches a deferred sleep result and requests replay when the deadline arrives", async () => {
+    const owner = makeConversation("deferred-sleep-deadline");
+    const toolCallId = "sleep-deadline-call";
+    expect(appendMessages(owner, [{
+      role: "assistant",
+      content: [{ type: "tool_use", id: toolCallId, name: "chrono", input: { action: "sleep", duration: "10m" } }],
+      metadata: null,
+    }])).toBe(true);
+    let resumed = false;
+    configureChronoService(null, (sleep) => {
+      expect(sleep.resumeReason).toBe("elapsed");
+      resumed = true;
+    });
+    await startChronoService();
+    const durationMs = 10 * 60_000;
+    const deferred = deferChronoSleep({
+      conversationId: owner,
+      toolCallId,
+      startedAt: Date.now() - durationMs + 20,
+      durationMs,
+    });
+    expect(deferred.error).toBeUndefined();
+
+    await waitUntil(() => resumed && listDeferredChronoSleeps(owner).length === 0);
+    const resultMessage = get(owner)!.messages.at(-1)!;
+    expect(resultMessage.role).toBe("user");
+    expect(resultMessage.content).toContainEqual(expect.objectContaining({
+      type: "tool_result",
+      tool_use_id: toolCallId,
+      is_error: false,
+    }));
+    const output = (resultMessage.content as Array<{ content?: string }>)[0]?.content;
+    expect(output).toContain("Sleep finished after 10m");
+    expect(output).toContain("requested 10m");
+  });
+
+  test("an incoming user turn ends a deferred sleep early with elapsed time", async () => {
+    const owner = makeConversation("deferred-sleep-user");
+    const toolCallId = "sleep-user-call";
+    expect(appendMessages(owner, [{
+      role: "assistant",
+      content: [{ type: "tool_use", id: toolCallId, name: "chrono", input: { action: "sleep", duration: "10m" } }],
+      metadata: null,
+    }])).toBe(true);
+    const durationMs = 10 * 60_000;
+    const deferred = deferChronoSleep({
+      conversationId: owner,
+      toolCallId,
+      startedAt: Date.now() - 125_000,
+      durationMs,
+    }).sleep!;
+
+    const interrupted = interruptDeferredChronoSleep(owner);
+    expect(interrupted).toMatchObject({ id: deferred.id, state: "resuming", resumeReason: "user_message" });
+    const result = get(owner)!.messages.at(-1)!;
+    const output = (result.content as Array<{ content?: string }>)[0]?.content ?? "";
+    expect(output).toContain("Sleep finished after 2m 5s");
+    expect(output).toContain("ended early because the user sent a message");
+    expect(listDeferredChronoSleeps(owner)).toHaveLength(1);
+
+    completeDeferredChronoSleepResume(deferred.id);
+    expect(listDeferredChronoSleeps(owner)).toHaveLength(0);
   });
 
   test("a failing command soft-wake escalates to a model hard-wake", async () => {

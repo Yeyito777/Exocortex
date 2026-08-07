@@ -50,6 +50,11 @@ import {
   StaleStreamRetriesExhaustedError,
   runWithStaleStreamRetries,
 } from "./watchdog-retry";
+import {
+  completeDeferredChronoSleepResume,
+  interruptDeferredChronoSleep,
+  type DeferredChronoSleep,
+} from "./chrono-service";
 
 // ── Transcript marker helpers ──────────────────────────────────────
 
@@ -165,6 +170,8 @@ export interface AssistantTurnOutcome {
   watchdog?: boolean;
   /** The abort intentionally handed this stream to restart recovery. */
   daemonRestart?: boolean;
+  /** The turn ended at a deferred Chrono sleep and will continue by replay later. */
+  suspended?: boolean;
 }
 
 interface AssistantTurnOptions {
@@ -318,6 +325,7 @@ async function orchestrateAssistantTurn(
     ? { text: goalContinuationUserMessage(conv.goal) }
     : requestedUserMessage;
   const replaying = !userMessage;
+  let interruptedSleep: DeferredChronoSleep | null = null;
 
   // ── Preflight/error helpers ───────────────────────────────────────
 
@@ -402,6 +410,13 @@ async function orchestrateAssistantTurn(
   } catch (error) {
     return reportSendError(`Failed to load custom tools: ${error instanceof Error ? error.message : String(error)}`);
   }
+  if (userMessage) {
+    try {
+      interruptedSleep = interruptDeferredChronoSleep(convId, startedAt);
+    } catch (error) {
+      return reportSendError(`Could not resume the pending Chrono sleep: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   if (realtimeDelegation) {
     const delegatedMessage = buildRealtimeDelegationMessage(
       realtimeDelegation.originalUserUtterance,
@@ -448,7 +463,15 @@ async function orchestrateAssistantTurn(
     convStore.flush(convId);
   }
 
-  if (userMessage) {
+  if (interruptedSleep) {
+    // Rebuild only after both the deferred tool result and incoming user message
+    // are canonical. Rebuilding earlier would erase the sender's optimistic user
+    // bubble, while a later incremental user_message would duplicate it.
+    broadcastConversationHistoryUpdated(server, convId);
+    broadcastConversationUpdated(server, convId);
+  }
+
+  if (userMessage && !interruptedSleep) {
 
     // Notify subscribers about the user message.
     // When client is set, it already added the message locally — skip it.
@@ -1254,6 +1277,7 @@ async function orchestrateAssistantTurn(
         tokens: result.tokens,
         durationMs: endedAt - startedAt,
         endedAt,
+        ...(result.suspended ? { suspended: true } : {}),
       };
 
       // ── Success path: persist assistant turn ────────────────────────
@@ -1300,13 +1324,13 @@ async function orchestrateAssistantTurn(
 
       log("info", `orchestrator: message complete for ${convId} (${result.tokens} tokens, ${result.blocks.length} blocks, ${endedAt - startedAt}ms)`);
 
-      if (goalContinuation && conv.goal?.status === "active") {
+      if (!result.suspended && goalContinuation && conv.goal?.status === "active") {
         conv.goal.turns += 1;
         conv.goal.updatedAt = endedAt;
       }
 
       // Mark unread if no client is viewing this conversation
-      if (!server.hasSubscribers(convId)) {
+      if (!result.suspended && !server.hasSubscribers(convId)) {
         convStore.markUnread(convId);
       }
 
@@ -1462,7 +1486,10 @@ async function orchestrateAssistantTurn(
     externalAbortSignal?.removeEventListener("abort", abortFromExternalOwner);
     if (providerTurnSession) {
       try {
-        if (outcome?.ok) await providerTurnSession.close();
+        // Ordinary successful turns may park OpenAI's websocket briefly for
+        // reuse. A long Chrono sleep is explicitly not an idle live turn: tear
+        // down the physical transport now and establish a fresh one on replay.
+        if (outcome?.ok && !outcome.suspended) await providerTurnSession.close();
         else if (providerTurnSession.destroy) await providerTurnSession.destroy();
         else await providerTurnSession.close();
       } catch (err) {
@@ -1477,7 +1504,8 @@ async function orchestrateAssistantTurn(
     convStore.clearActiveJob(convId);
     convStore.clearCurrentStreamingBlocks(convId);
     convStore.resetChunkCounter(convId);
-    if (outcome && !manualCompaction) settlePendingSubagentNotifications(convId, outcome);
+    if (outcome && !manualCompaction && !outcome.suspended) settlePendingSubagentNotifications(convId, outcome);
+    if (interruptedSleep) completeDeferredChronoSleepResume(interruptedSleep.id);
     // unwindTo persists a small truncation overlay after this finalizer stops.
     // Saving the interrupted suffix here would be both obsolete and a full-file
     // rewrite on the unwind critical path.
@@ -1573,7 +1601,7 @@ async function orchestrateAssistantTurn(
     } else {
       const resumeRequestedAfterStream = convStore.consumeGoalContinuationAfterStream(convId);
       const shouldContinueActiveGoal = conv.goal?.status === "active"
-        && (resumeRequestedAfterStream || (outcome?.ok && !outcome.aborted));
+        && (resumeRequestedAfterStream || (outcome?.ok && !outcome.aborted && !outcome.suspended));
       if (shouldContinueActiveGoal) {
         queueMicrotask(() => {
           const latest = convStore.get(convId);

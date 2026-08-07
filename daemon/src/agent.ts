@@ -13,6 +13,7 @@ import { streamMessage, type ApiToolCall, type ProviderTurnSession } from "./api
 import { log } from "./log";
 import { recordToolCallDiagnostics } from "./diagnostics";
 import { type ProviderId, type ModelId, type EffortLevel, type Block, type ToolCallBlock, type ToolResultBlock, type ToolCallPresentation, type ApiMessage, type ApiContentBlock, type TokenTrackingContext } from "./messages";
+import type { DeferredToolResult } from "./tools/types";
 import type { ContentBlock as ProviderContentBlock, ServiceTier, StreamOptions, StreamRetryMetadata } from "./providers/types";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
 import { getMaxContext } from "./providers/registry";
@@ -70,6 +71,8 @@ export interface ToolExecResult {
   output: string;
   isError: boolean;
   image?: { mediaType: string; base64: string };
+  /** Complete this tool call in a later replay instead of keeping this turn alive. */
+  deferred?: DeferredToolResult;
 }
 
 /**
@@ -95,6 +98,8 @@ export interface AgentResult {
   /** Output tokens from the final provider round (not accumulated tool rounds). */
   lastOutputTokens: number;
   durationMs: number;
+  /** The provider turn intentionally ended with one outstanding tool call. */
+  suspended?: DeferredToolResult;
 }
 
 /**
@@ -390,6 +395,35 @@ export async function runAgentLoop(
         results: execResults,
         batchDurationMs: Date.now() - toolExecStartedAt,
       });
+    }
+
+    const deferredResults = execResults.filter((item) => item.deferred);
+    if (deferredResults.length > 0) {
+      if (deferredResults.length !== 1 || execResults.length !== 1) {
+        throw new Error("A deferred tool result must be the only tool call in its provider round");
+      }
+      const deferred = deferredResults[0].deferred!;
+      // Preserve the structurally complete assistant tool-use message as the
+      // replay boundary. The matching user tool_result is appended by Chrono
+      // when the sleep ends or an incoming user message interrupts it.
+      if (state) {
+        state.completedMessages = [...newMessages];
+        state.completedBlocks = [...allBlocks];
+        state.contextMessages = [...messages];
+        state.contextCompacted = contextCompacted;
+        state.tokens = totalOutputTokens;
+      }
+      log("info", `agent: suspending turn for deferred ${deferred.kind} result (${deferredResults[0].toolCallId})`);
+      return {
+        blocks: allBlocks,
+        newMessages,
+        contextMessages: messages,
+        contextCompacted,
+        tokens: totalOutputTokens,
+        lastOutputTokens,
+        durationMs: Date.now() - startTime,
+        suspended: deferred,
+      };
     }
 
     // ── Emit tool result blocks + build API tool_result message ───
