@@ -19,9 +19,9 @@ import {
   resetNewConversationDefaults,
   resetHistoryPagination,
   resetToolOutputState,
-  projectConversationBtw,
   setLoadedConversationToolOutputState,
 } from "../state";
+import { projectConversationBtw } from "../btw/state";
 import {
   applyPreservedToolResultOutputs,
   captureAssistantDisplaySnapshot,

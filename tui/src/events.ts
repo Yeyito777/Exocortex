@@ -7,7 +7,7 @@
  */
 
 import type { RenderState } from "./state";
-import { clearPendingAI, clearStreamingTailMessages, projectConversationBtw, pushSystemMessage, renderFolderInstructionsDocument, setCurrentConversationToolOutputAvailability, setFolderInstructionsDocumentText } from "./state";
+import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, renderFolderInstructionsDocument, setCurrentConversationToolOutputAvailability, setFolderInstructionsDocumentText } from "./state";
 import { theme } from "./theme";
 import { censorKnownAuthEmails } from "./privacy";
 import type { Event } from "./protocol";
@@ -56,6 +56,7 @@ import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
 import type { DaemonActions } from "./events/types";
 import { handleCallTranscript, reconcileCallTranscriptDrafts } from "./events/call";
 import { formatToolPolicySnapshot } from "./commands/tools";
+import { handleBtwEvent } from "./btw/events";
 
 export type { DaemonActions } from "./events/types";
 
@@ -78,66 +79,9 @@ export function handleEvent(
 
   observeStreamSeq(event, state);
 
+  if (handleBtwEvent(event, state)) return;
+
   switch (event.type) {
-    case "btw_mutation_settled":
-      // Consumed by DaemonClient to settle ambiguous socket writes.
-      break;
-
-    case "btw_started":
-      state.btw = {
-        sessionId: event.sessionId,
-        sourceConvId: event.convId,
-        query: event.query,
-        provider: event.provider,
-        model: event.model,
-        startedAt: event.startedAt,
-        endedAt: null,
-        phase: "running",
-        text: "",
-        status: "Thinking…",
-        scrollOffset: 0,
-        maxScroll: 0,
-        viewportRows: 1,
-      };
-      break;
-
-    case "btw_snapshot":
-      state.btw = projectConversationBtw(event.convId, event.btw);
-      break;
-
-    case "btw_text_chunk":
-      if (state.btw?.sessionId !== event.sessionId) break;
-      state.btw.text += event.text;
-      break;
-
-    case "btw_content":
-      if (state.btw?.sessionId !== event.sessionId) break;
-      state.btw.text = event.text;
-      break;
-
-    case "btw_status":
-      if (state.btw?.sessionId !== event.sessionId) break;
-      state.btw.status = event.status;
-      break;
-
-    case "btw_finished":
-      if (state.btw?.sessionId !== event.sessionId) break;
-      state.btw.phase = "complete";
-      state.btw.status = "Complete";
-      state.btw.endedAt = event.endedAt;
-      break;
-
-    case "btw_error":
-      if (state.btw?.sessionId !== event.sessionId) break;
-      state.btw.phase = "error";
-      state.btw.status = event.message;
-      state.btw.endedAt = event.endedAt;
-      break;
-
-    case "btw_closed":
-      if (state.btw?.sessionId === event.sessionId) state.btw = null;
-      break;
-
     case "conversation_created":
       handleConversationCreated(event, state, daemon);
       break;

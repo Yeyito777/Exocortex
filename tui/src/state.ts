@@ -7,7 +7,7 @@
 
 import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
 import { configuredConversationDefaults, effectiveConversationDefaults, productConversationDefaults, type ConversationDefaults } from "@exocortex/shared/config";
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage, ConversationBtw, ToolPolicySnapshot } from "./messages";
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage, ToolPolicySnapshot } from "./messages";
 import { DEFAULT_MODEL_BY_PROVIDER, defaultEffortForModelId, supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage, Block } from "./messages";
 import { loadPreferredProvider } from "./preferences";
@@ -29,6 +29,7 @@ import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
 import type { ConversationGoal, ProviderAuthInfo, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
+import type { BtwPanelState } from "./btw/state";
 
 // ── Queue types ────────────────────────────────────────────────────
 
@@ -67,29 +68,6 @@ export interface QueuePromptState {
   text: string;            // the message text being queued
   selection: QueueTiming;  // which option is highlighted
   images?: ImageAttachment[];
-}
-
-// ── Conversation-owned BTW panel ───────────────────────────────────
-
-export interface BtwPanelState extends Omit<ConversationBtw, "phase"> {
-  sourceConvId: string;
-  phase: "starting" | "running" | "complete" | "error";
-  /** Visual lines above the bottom of the answer viewport. */
-  scrollOffset: number;
-  /** Renderer-populated bounds used by foreground scrolling keys. */
-  maxScroll: number;
-  viewportRows: number;
-}
-
-export function projectConversationBtw(convId: string, btw: ConversationBtw | null | undefined): BtwPanelState | null {
-  if (!btw) return null;
-  return {
-    ...btw,
-    sourceConvId: convId,
-    scrollOffset: 0,
-    maxScroll: 0,
-    viewportRows: 1,
-  };
 }
 
 export interface AuthQueuedMessage {

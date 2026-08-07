@@ -34,7 +34,7 @@ import { padRightToWidth, termWidth } from "./textwidth";
 import { getVoicePromptRanges } from "./voice";
 import { layoutTaskPanel, renderTaskPanel } from "./activitypanel";
 import { trimAnsiLeadingSpaces, wrapAnsiLine } from "./ansiwrap";
-import { getBtwPanelPreferredHeight, MAX_BTW_PANEL_HEIGHT, renderBtwPanel } from "./btwpanel";
+import { getBtwPanelPreferredHeight, MAX_BTW_PANEL_HEIGHT, renderBtwPanel } from "./btw/panel";
 import { wordWrap } from "./textwrap";
 import {
   compareUserMessageFlowCursors,

@@ -1,9 +1,9 @@
-/** Compact foreground panel for an ephemeral `/btw` answer. */
+/** Compact foreground panel for a conversation-owned `/btw` answer. */
 
-import { markdownWordWrap } from "./markdown";
+import { markdownWordWrap } from "../markdown";
+import { padRightToWidth, padVisibleRightToWidth, termWidth, truncateToWidth } from "../textwidth";
+import { theme } from "../theme";
 import type { BtwPanelState } from "./state";
-import { padRightToWidth, padVisibleRightToWidth, termWidth, truncateToWidth } from "./textwidth";
-import { theme } from "./theme";
 
 const ESC = "\x1b[";
 const moveTo = (row: number, col: number) => `${ESC}${row};${col}H`;
@@ -31,10 +31,7 @@ export function getBtwPanelPreferredHeight(btw: BtwPanelState, width: number): n
   return Math.min(MAX_BTW_PANEL_HEIGHT, Math.max(4, answerRows + 2));
 }
 
-/**
- * Render a compact-to-expanded card at an explicit screen position. The caller
- * anchors it directly above the prompt; constrained layouts use one row.
- */
+/** Render a compact-to-expanded card at the caller-provided screen position. */
 export function renderBtwPanel(
   btw: BtwPanelState,
   width: number,

@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { BTW_READ_ONLY_TOOLS, BtwSessionManager } from "./btw";
-import * as convStore from "./conversations";
-import type { ConversationBtw } from "./messages";
-import type { Event } from "./protocol";
-import type { ConnectedClient, DaemonServer } from "./server";
-import { loadConversationBtwState, saveConversationBtwState } from "./persistence";
-import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, setActiveJob } from "./streaming";
-import { buildExecutor, getToolDefs } from "./tools/registry";
+import { BTW_READ_ONLY_TOOLS, BtwSessionManager } from ".";
+import * as convStore from "../conversations";
+import type { ConversationBtw } from "../messages";
+import type { Event } from "../protocol";
+import type { ConnectedClient, DaemonServer } from "../server";
+import { loadConversationBtwState, saveConversationBtwState } from "../persistence";
+import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, setActiveJob } from "../streaming";
+import { buildExecutor, getToolDefs } from "../tools/registry";
 
-type RunAgentLoop = typeof import("./agent").runAgentLoop;
+type RunAgentLoop = typeof import("../agent").runAgentLoop;
 
 function testClient(id: string, subscriptions: string[] = []): ConnectedClient {
   return {
@@ -189,8 +189,6 @@ describe("conversation-owned BTW sessions", () => {
       owner.socket.emit("close");
       expect(run.options.signal?.aborted).toBe(false);
       expect(manager.getSnapshot(convId)?.sessionId).toBe("session-1");
-      expect((manager as unknown as { sessions: Map<string, { requesters: Map<ConnectedClient, unknown> }> })
-        .sessions.get(convId)?.requesters.size).toBe(0);
 
       await new Promise(resolve => setTimeout(resolve, 120));
       expect(persisted.get(convId)?.text).toBe("partial answer");

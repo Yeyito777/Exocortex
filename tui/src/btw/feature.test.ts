@@ -1,13 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { getBtwPanelPreferredHeight, renderBtwPanel } from "./btwpanel";
-import { tryCommand } from "./commands";
-import { handleEvent } from "./events";
-import { handleFocusedKey } from "./focus";
-import { stripAnsi } from "./historycursor";
-import type { ConversationSummary } from "./messages";
-import { createInitialState, type BtwPanelState } from "./state";
-import { termWidth } from "./textwidth";
-import { theme } from "./theme";
+import { getBtwPanelPreferredHeight, renderBtwPanel } from "./panel";
+import { tryCommand } from "../commands";
+import { handleEvent } from "../events";
+import { handleFocusedKey } from "../focus";
+import { stripAnsi } from "../historycursor";
+import type { ConversationSummary } from "../messages";
+import { createInitialState } from "../state";
+import type { BtwPanelState } from "./state";
+import { termWidth } from "../textwidth";
+import { theme } from "../theme";
+import { closeBtwSession, startBtwSession } from "./controller";
 
 function panelState(overrides: Partial<BtwPanelState> = {}): BtwPanelState {
   return {
@@ -76,6 +78,32 @@ describe("/btw command", () => {
     expect(tryCommand("/btw close", state)).toEqual({ type: "handled" });
     state.btw = panelState();
     expect(tryCommand("/btw close", state)).toEqual({ type: "btw_close_requested" });
+  });
+});
+
+describe("BTW session controller", () => {
+  test("owns optimistic start and close state around daemon mutations", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    const calls: unknown[] = [];
+    const daemon = {
+      startBtw: (...args: unknown[]) => calls.push(["start", ...args]),
+      closeBtw: (...args: unknown[]) => calls.push(["close", ...args]),
+    };
+
+    startBtwSession(state, daemon, "explain this", () => "stable-session", () => 123);
+    expect(state.btw).toMatchObject({
+      sessionId: "stable-session",
+      sourceConvId: "conv-1",
+      query: "explain this",
+      phase: "starting",
+      startedAt: 123,
+    });
+    expect(calls).toEqual([["start", "conv-1", "stable-session", "explain this", 123]]);
+
+    closeBtwSession(state, daemon);
+    expect(state.btw).toBeNull();
+    expect(calls.at(-1)).toEqual(["close", "conv-1", "stable-session"]);
   });
 });
 

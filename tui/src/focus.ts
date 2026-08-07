@@ -54,6 +54,7 @@ import { graphemeBoundaryAtOrAfter } from "./graphemes";
 import { sanitizePromptTextForInsertion } from "./prompttext";
 import { log } from "./log";
 import { copyToClipboard } from "./vim/clipboard";
+import { handleBtwKey } from "./btw/keys";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -217,52 +218,8 @@ export function handleFocusedKey(
     return { type: "handled" };
   }
 
-  const promptFocused = isPromptFocused(state);
-
-  // Ctrl-Q closes BTW from either prompt mode. Other focused panels retain its
-  // normal conversation-abort behavior.
-  if (state.btw && promptFocused && key.type === "ctrl-q") return { type: "btw_close" };
-
-  // Ctrl scrolling targets BTW even while the prompt is in insert mode. Other
-  // focused panels retain their own scrolling bindings.
-  const btw = state.btw;
-  const btwUiAvailable = btw !== null
-    && !state.sidebar.prompt
-    && !state.sidebar.search?.barOpen
-    && !state.search?.barOpen;
-  if (btwUiAvailable && promptFocused) {
-    const page = Math.max(1, btw.viewportRows - 1);
-    const halfPage = Math.max(1, Math.floor(btw.viewportRows / 2));
-    let delta = 0;
-    if (key.type === "ctrl-y") delta = 1;
-    else if (key.type === "ctrl-e") delta = -1;
-    else if (key.type === "ctrl-u") delta = halfPage;
-    else if (key.type === "ctrl-d") delta = -halfPage;
-    else if (key.type === "ctrl-b") delta = page;
-    else if (key.type === "ctrl-f") delta = -page;
-    if (delta !== 0) {
-      btw.scrollOffset = Math.max(0, Math.min(btw.maxScroll, btw.scrollOffset + delta));
-      return { type: "handled" };
-    }
-  }
-
-  // Only standalone normal-mode prompt keys are borrowed by BTW. Sidebar,
-  // history, visual mode, and pending Vim sequences keep their own bindings.
-  if (btwUiAvailable
-      && promptFocused
-      && state.vim.mode === "normal"
-      && !vimHasPendingInput(state)) {
-    if (key.type === "char" && key.char === "q") return { type: "btw_close" };
-    let delta = 0;
-    if (key.type === "char" && key.char === "k") delta = 1;
-    else if (key.type === "char" && key.char === "j") delta = -1;
-    else if (key.type === "up") delta = 1;
-    else if (key.type === "down") delta = -1;
-    if (delta !== 0) {
-      btw.scrollOffset = Math.max(0, Math.min(btw.maxScroll, btw.scrollOffset + delta));
-      return { type: "handled" };
-    }
-  }
+  const btwResult = handleBtwKey(key, state);
+  if (btwResult) return btwResult;
 
   // ── Sidebar folder prompt — intercept all keys while open ─────
   if (state.panelFocus === "sidebar" && state.sidebar.prompt) {

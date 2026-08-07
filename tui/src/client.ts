@@ -13,6 +13,7 @@ import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import { log } from "./log";
+import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
 
 export type EventHandler = (event: Event) => void;
 export type LlmCompleteCallback = (text: string) => void;
@@ -27,8 +28,6 @@ export interface ConnectResult {
 
 type ReplayableQueueCommand = Extract<Command, { type: "queue_message" | "unqueue_message" }>;
 type ReplayableUnwindCommand = Extract<Command, { type: "unwind_conversation" }>;
-type ReplayableBtwCommand = Extract<Command, { type: "btw_query" | "btw_close" }>;
-
 function replayableQueueCommandKey(command: Command): string | null {
   if (command.type === "queue_message" && command.queueId) return `enqueue:${command.queueId}`;
   if (command.type === "unqueue_message" && command.queueId) return `unqueue:${command.queueId}`;
@@ -55,12 +54,7 @@ export class DaemonClient {
   private unresolvedQueueCommands = new Map<string, { command: ReplayableQueueCommand; sequence: number }>();
   /** Ambiguous socket writes are retried with the same durable operation UUID. */
   private unresolvedUnwindCommands = new Map<string, { command: ReplayableUnwindCommand; sequence: number }>();
-  /**
-   * A BTW mutation is unresolved until the daemon reports its durable state.
-   * Only the newest mutation for a conversation matters: a later start replaces
-   * the prior panel, while a later close supersedes an unacknowledged start.
-   */
-  private unresolvedBtwCommands = new Map<string, { command: ReplayableBtwCommand; sequence: number }>();
+  private readonly btwMutationReplay = new BtwMutationReplay();
   /** Original issuance order shared by connected-unresolved and offline commands. */
   private commandSequences = new WeakMap<Command, number>();
   private nextCommandSequence = 0;
@@ -153,9 +147,7 @@ export class DaemonClient {
     if (command.type === "unwind_conversation" && command.reqId) {
       this.unresolvedUnwindCommands.set(command.reqId, { command, sequence });
     }
-    if (command.type === "btw_query" || command.type === "btw_close") {
-      this.unresolvedBtwCommands.set(command.convId, { command, sequence });
-    }
+    if (isBtwMutation(command)) this.btwMutationReplay.record(command, sequence);
     if (!this.socket || !this._connected) {
       this.pendingCommands.push(command);
       return;
@@ -583,14 +575,13 @@ export class DaemonClient {
     const ordinary = pending
       .filter(command => replayableQueueCommandKey(command) === null
         && (command.type !== "unwind_conversation" || !command.reqId)
-        && command.type !== "btw_query"
-        && command.type !== "btw_close")
+        && !isBtwMutation(command))
       .map(command => ({ command, sequence: this.commandSequences.get(command) ?? ++this.nextCommandSequence }));
     const replayed = [
       ...ordinary,
       ...this.unresolvedQueueCommands.values(),
       ...this.unresolvedUnwindCommands.values(),
-      ...this.unresolvedBtwCommands.values(),
+      ...this.btwMutationReplay.values(),
     ]
       .sort((a, b) => a.sequence - b.sequence)
       .map(entry => entry.command);
@@ -623,32 +614,6 @@ export class DaemonClient {
         || event.type === "error")
         || !event.reqId) return;
     this.unresolvedUnwindCommands.delete(event.reqId);
-  }
-
-  private settleBtwCommand(event: Event): void {
-    if (!("convId" in event) || typeof event.convId !== "string") return;
-    const pending = this.unresolvedBtwCommands.get(event.convId);
-    if (!pending) return;
-
-    const { command } = pending;
-    if (event.type === "btw_mutation_settled"
-        && event.mutation === (command.type === "btw_query" ? "start" : "close")
-        && (!command.sessionId || event.sessionId === command.sessionId)) {
-      this.unresolvedBtwCommands.delete(event.convId);
-      return;
-    }
-
-    // Terminal/session events are compatible acknowledgements for accepted starts
-    // and closes. Snapshots alone are deliberately not: persistence failures send
-    // an authoritative rollback snapshot while the mutation must remain replayable.
-    if (command.type === "btw_query") {
-      if ("sessionId" in event && event.sessionId === command.sessionId) {
-        this.unresolvedBtwCommands.delete(event.convId);
-      }
-    } else if (event.type === "btw_closed"
-        && (!command.sessionId || event.sessionId === command.sessionId)) {
-      this.unresolvedBtwCommands.delete(event.convId);
-    }
   }
 
   private onData(data: Buffer | string): void {
@@ -700,7 +665,7 @@ export class DaemonClient {
         }
         this.settleQueueCommands(event);
         this.settleUnwindCommand(event);
-        this.settleBtwCommand(event);
+        this.btwMutationReplay.settle(event);
         let handledByCallback = false;
 
         // Intercept request-scoped responses so they do not also surface as

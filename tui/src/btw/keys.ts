@@ -1,0 +1,56 @@
+import type { KeyEvent } from "../input";
+import type { RenderState } from "../state";
+
+export type BtwKeyResult = { type: "handled" } | { type: "btw_close" };
+
+function vimHasPendingInput(state: RenderState): boolean {
+  return !!(
+    state.vim.pendingOperator
+    || state.vim.pendingOperatorKey
+    || state.vim.pendingTextObjectModifier
+    || state.vim.pendingKeys
+    || state.vim.count !== null
+    || state.vim.pendingFind
+    || state.vim.pendingReplace
+  );
+}
+
+function scrollBtw(state: RenderState, delta: number): BtwKeyResult {
+  const btw = state.btw!;
+  btw.scrollOffset = Math.max(0, Math.min(btw.maxScroll, btw.scrollOffset + delta));
+  return { type: "handled" };
+}
+
+/** Handle only the foreground panel's borrowed prompt keys. */
+export function handleBtwKey(key: KeyEvent, state: RenderState): BtwKeyResult | null {
+  const promptFocused = state.panelFocus === "chat" && state.chatFocus === "prompt";
+
+  // Ctrl-Q closes BTW from either prompt mode. Other focused panels retain its
+  // normal conversation-abort behavior.
+  if (state.btw && promptFocused && key.type === "ctrl-q") return { type: "btw_close" };
+
+  const btw = state.btw;
+  const btwUiAvailable = btw !== null
+    && !state.sidebar.prompt
+    && !state.sidebar.search?.barOpen
+    && !state.search?.barOpen;
+  if (!btwUiAvailable || !promptFocused) return null;
+
+  // Ctrl scrolling targets BTW even while the prompt is in insert mode.
+  const page = Math.max(1, btw.viewportRows - 1);
+  const halfPage = Math.max(1, Math.floor(btw.viewportRows / 2));
+  if (key.type === "ctrl-y") return scrollBtw(state, 1);
+  if (key.type === "ctrl-e") return scrollBtw(state, -1);
+  if (key.type === "ctrl-u") return scrollBtw(state, halfPage);
+  if (key.type === "ctrl-d") return scrollBtw(state, -halfPage);
+  if (key.type === "ctrl-b") return scrollBtw(state, page);
+  if (key.type === "ctrl-f") return scrollBtw(state, -page);
+
+  // Only standalone normal-mode prompt keys are borrowed by BTW. Visual mode and
+  // pending Vim sequences keep their prompt bindings.
+  if (state.vim.mode !== "normal" || vimHasPendingInput(state)) return null;
+  if (key.type === "char" && key.char === "q") return { type: "btw_close" };
+  if ((key.type === "char" && key.char === "k") || key.type === "up") return scrollBtw(state, 1);
+  if ((key.type === "char" && key.char === "j") || key.type === "down") return scrollBtw(state, -1);
+  return null;
+}

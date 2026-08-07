@@ -1,6 +1,6 @@
 import { clearPrompt } from "../promptstate";
 import { pushSystemMessage } from "../state";
-import type { SlashCommand } from "./types";
+import type { SlashCommand } from "../commands/types";
 
 export const BTW_COMMAND: SlashCommand = {
   name: "/btw",

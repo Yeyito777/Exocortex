@@ -238,7 +238,7 @@ describe("DaemonClient commands", () => {
 
     client.startBtw("conv-1", "btw-1", "first", 100);
     client.closeBtw("conv-1", "btw-1");
-    expect(internal.unresolvedBtwCommands.size).toBe(1);
+    expect(internal.btwMutationReplay.size).toBe(1);
 
     writes.length = 0;
     const replayed = internal.flushPendingCommands();
@@ -250,14 +250,14 @@ describe("DaemonClient commands", () => {
       convId: "conv-1",
       btw: null,
     })}\n`));
-    expect(internal.unresolvedBtwCommands.size).toBe(1);
+    expect(internal.btwMutationReplay.size).toBe(1);
     internal.onData(Buffer.from(`${JSON.stringify({
       type: "btw_mutation_settled",
       convId: "conv-1",
       sessionId: "btw-1",
       mutation: "close",
     })}\n`));
-    expect(internal.unresolvedBtwCommands.size).toBe(0);
+    expect(internal.btwMutationReplay.size).toBe(0);
   });
 
   test("settles a replayable BTW start only from its matching durable session", () => {
@@ -268,7 +268,7 @@ describe("DaemonClient commands", () => {
 
     client.startBtw("conv-1", "btw-new", "answer once", 100);
     internal.onData(Buffer.from(`${JSON.stringify({ type: "btw_closed", convId: "conv-1", sessionId: "btw-old" })}\n`));
-    expect(internal.unresolvedBtwCommands.size).toBe(1);
+    expect(internal.btwMutationReplay.size).toBe(1);
 
     internal.onData(Buffer.from(`${JSON.stringify({
       type: "btw_snapshot",
@@ -285,14 +285,14 @@ describe("DaemonClient commands", () => {
         status: "Thinking…",
       },
     })}\n`));
-    expect(internal.unresolvedBtwCommands.size).toBe(1);
+    expect(internal.btwMutationReplay.size).toBe(1);
     internal.onData(Buffer.from(`${JSON.stringify({
       type: "btw_mutation_settled",
       convId: "conv-1",
       sessionId: "btw-new",
       mutation: "start",
     })}\n`));
-    expect(internal.unresolvedBtwCommands.size).toBe(0);
+    expect(internal.btwMutationReplay.size).toBe(0);
   });
 
   test("does not let an enqueue settlement prematurely settle an unqueue for the same id", () => {

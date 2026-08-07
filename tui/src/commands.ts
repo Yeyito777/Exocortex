@@ -1,6 +1,6 @@
 import type { RenderState } from "./state";
 import { ACCOUNT_COMMAND } from "./commands/account";
-import { BTW_COMMAND } from "./commands/btw";
+import { BTW_COMMAND } from "./btw/command";
 import { CALL_COMMAND } from "./commands/call";
 import { COMPACT_COMMAND } from "./commands/compact";
 import { CONVO_COMMAND } from "./commands/convo";

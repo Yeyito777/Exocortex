@@ -62,6 +62,7 @@ import { CallMediaController } from "./call-media";
 import { formatMicGainDb, loadMicGainDb, saveMicGainDb } from "./mic-gain";
 import { msUntilNextFolderNotification, STREAM_COMPLETION_SETTLE_MS } from "./sidebar/notifications";
 import { applyTuiStartingState, availableStartingConversationId, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
+import { closeBtwSession, startBtwSession } from "./btw/controller";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -664,36 +665,6 @@ function startNewConversation(): void {
   }
 }
 
-function startBtwSession(query: string): void {
-  if (!state.convId) return;
-  const sessionId = randomUUID();
-  const startedAt = Date.now();
-  state.btw = {
-    sessionId,
-    sourceConvId: state.convId,
-    query,
-    provider: state.provider,
-    model: state.model,
-    startedAt,
-    endedAt: null,
-    phase: "starting",
-    text: "",
-    status: "Starting…",
-    scrollOffset: 0,
-    maxScroll: 0,
-    viewportRows: 1,
-  };
-  daemon.startBtw(state.convId, sessionId, query, startedAt);
-}
-
-function closeBtwSession(): void {
-  const session = state.btw;
-  if (!session) return;
-  // Remove immediately; the daemon-side close aborts a running provider/tool call.
-  state.btw = null;
-  daemon.closeBtw(session.sourceConvId, session.sessionId);
-}
-
 function syncInlineCommandChanges(result: InlineCommandApplication, convId = state.convId): void {
   if (!convId) return;
   for (const effort of result.efforts) {
@@ -783,10 +754,10 @@ function handleSubmit(): void {
           }
           break;
         case "btw_requested":
-          startBtwSession(cmdResult.query);
+          startBtwSession(state, daemon, cmdResult.query);
           break;
         case "btw_close_requested":
-          closeBtwSession();
+          closeBtwSession(state, daemon);
           break;
         case "call_requested":
           if (state.convId) {
@@ -1422,7 +1393,7 @@ function handleKey(key: KeyEvent): void {
       cancelEditMessage(state);
       break;
     case "btw_close":
-      closeBtwSession();
+      closeBtwSession(state, daemon);
       break;
     case "open_target":
       openTargetDetached(result.target);
