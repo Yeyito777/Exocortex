@@ -76,6 +76,28 @@ function folder(id: string, sortOrder: number, overrides: Partial<FolderSummary>
   };
 }
 
+test("authoritative sidebar reorder deltas update only the moved rows and preserve selection", () => {
+  const state = createInitialState();
+  const first = conversation("first", 1);
+  const second = conversation("second", 2);
+  state.sidebar.conversations = [first, second];
+  state.sidebar.selectedItem = { type: "conversation", id: "second" };
+  state.sidebar.selectedId = "second";
+  state.sidebar.selectedIndex = 1;
+
+  handleEvent({
+    type: "sidebar_items_reordered",
+    updates: [
+      { item: { type: "conversation", id: "first" }, sortOrder: 2 },
+      { item: { type: "conversation", id: "second" }, sortOrder: 1 },
+    ],
+  }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+  expect(state.sidebar.conversations).toEqual([second, first]);
+  expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "second" });
+  expect(state.sidebar.selectedIndex).toBe(0);
+});
+
 function renderHistoryForTest(state: ReturnType<typeof createInitialState>, cols = 120): void {
   const rendered = buildMessageLines(state, cols);
   state.historyLines = rendered.lines;

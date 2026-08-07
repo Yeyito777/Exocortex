@@ -4,6 +4,7 @@ import { syncChosenProvider } from "../providerselection";
 import { clearAllQueuedMessagesForConversation } from "../queue";
 import {
   focusConversationById,
+  applySidebarItemOrderUpdates,
   rememberEnteredConversation,
   syncSelectedIndex,
   updateConversation,
@@ -173,6 +174,10 @@ export function handleConversationDeleted(event: Extract<Event, { type: "convers
 
 export function handleConversationMoved(event: Extract<Event, { type: "conversation_moved" }>, state: RenderState): void {
   updateConversationList(state.sidebar, event.conversations, event.folders ?? state.sidebar.folders);
+}
+
+export function handleSidebarItemsReordered(event: Extract<Event, { type: "sidebar_items_reordered" }>, state: RenderState): void {
+  applySidebarItemOrderUpdates(state.sidebar, event.updates);
 }
 
 export function handleConversationLoaded(

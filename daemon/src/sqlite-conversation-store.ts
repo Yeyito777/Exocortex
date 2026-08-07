@@ -1589,29 +1589,48 @@ export class SqliteConversationStore implements ConversationRepository {
     entries.forEach((entry, position) => this.db.query("INSERT INTO sidebar_history(stack, position, entry_json) VALUES (?, ?, ?)").run(stack, position, JSON.stringify(entry)));
   }
 
+  /** Append without deserializing and rewriting the complete stack. */
+  private appendStackEntry(stack: "undo" | "redo", entry: TrashStackEntry): void {
+    this.db.query(`
+      INSERT INTO sidebar_history(stack, position, entry_json)
+      SELECT ?, COALESCE(MAX(position) + 1, 0), ?
+      FROM sidebar_history WHERE stack=?
+    `).run(stack, JSON.stringify(entry), stack);
+  }
+
+  /** Pop only the last durable row; positions do not need global renumbering. */
+  private popStackEntry(stack: "undo" | "redo"): TrashStackEntry | null {
+    const row = this.db.query<{ position: number; entry_json: string }, [string]>(`
+      SELECT position, entry_json FROM sidebar_history
+      WHERE stack=? ORDER BY position DESC LIMIT 1
+    `).get(stack);
+    if (!row) return null;
+    const entry = JSON.parse(row.entry_json) as TrashStackEntry;
+    this.db.query("DELETE FROM sidebar_history WHERE stack=? AND position=?").run(stack, row.position);
+    return entry;
+  }
+
   pushTrashEntry(entry: TrashStackEntry): void {
     this.db.transaction(() => {
-      const undo = this.readStack("undo");
-      undo.push(entry);
-      this.writeStack("undo", undo);
-      this.writeStack("redo", []);
+      this.appendStackEntry("undo", entry);
+      this.db.query("DELETE FROM sidebar_history WHERE stack='redo'").run();
     })();
   }
 
   pushUndoEntry(entry: TrashStackEntry): void {
-    this.db.transaction(() => { const entries = this.readStack("undo"); entries.push(entry); this.writeStack("undo", entries); })();
+    this.db.transaction(() => { this.appendStackEntry("undo", entry); })();
   }
 
   pushRedoEntry(entry: TrashStackEntry): void {
-    this.db.transaction(() => { const entries = this.readStack("redo"); entries.push(entry); this.writeStack("redo", entries); })();
+    this.db.transaction(() => { this.appendStackEntry("redo", entry); })();
   }
 
   popUndoEntry(): TrashStackEntry | null {
-    return this.db.transaction(() => { const entries = this.readStack("undo"); const entry = entries.pop() ?? null; this.writeStack("undo", entries); return entry; })();
+    return this.db.transaction(() => this.popStackEntry("undo"))();
   }
 
   popRedoEntry(): TrashStackEntry | null {
-    return this.db.transaction(() => { const entries = this.readStack("redo"); const entry = entries.pop() ?? null; this.writeStack("redo", entries); return entry; })();
+    return this.db.transaction(() => this.popStackEntry("redo"))();
   }
 
   trashConversations(ids: string[], recordUndo = true): string[] {
@@ -1627,10 +1646,8 @@ export class SqliteConversationStore implements ConversationRepository {
       }
       this.faultInjection?.("delete.after-conversations");
       if (recordUndo) {
-        const undo = this.readStack("undo");
-        undo.push(unique.length === 1 ? { type: "conversation", id: unique[0] } : { type: "conversations", ids: unique });
-        this.writeStack("undo", undo);
-        this.writeStack("redo", []);
+        this.appendStackEntry("undo", unique.length === 1 ? { type: "conversation", id: unique[0] } : { type: "conversations", ids: unique });
+        this.db.query("DELETE FROM sidebar_history WHERE stack='redo'").run();
       }
       this.faultInjection?.("delete.before-commit");
     })();
@@ -1649,10 +1666,8 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query("DELETE FROM unread_conversations WHERE conversation_id=?").run(id);
       }
       if (recordUndo) {
-        const undo = this.readStack("undo");
-        undo.push(entry);
-        this.writeStack("undo", undo);
-        this.writeStack("redo", []);
+        this.appendStackEntry("undo", entry);
+        this.db.query("DELETE FROM sidebar_history WHERE stack='redo'").run();
       }
     })();
     return true;

@@ -70,7 +70,7 @@ export {
 export { createSidebarState } from "./sidebar/state";
 export type { SidebarState } from "./sidebar/state";
 export type { SidebarKeyResult } from "./sidebar/types";
-export { syncSelectedIndex, updateConversation, updateConversationList } from "./sidebar/updates";
+export { applySidebarItemOrderUpdates, syncSelectedIndex, updateConversation, updateConversationList } from "./sidebar/updates";
 
 /** Run an action against a specific conversation selected by an action menu. */
 export function handleSidebarConversationAction(

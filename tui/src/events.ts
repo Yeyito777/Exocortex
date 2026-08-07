@@ -17,6 +17,7 @@ import {
   handleConversationDeleted,
   handleConversationLoaded,
   handleConversationMoved,
+  handleSidebarItemsReordered,
   handleConversationRestored,
   handleConversationsList,
   handleConversationUpdated,
@@ -218,6 +219,10 @@ export function handleEvent(
 
     case "conversation_moved":
       handleConversationMoved(event, state);
+      break;
+
+    case "sidebar_items_reordered":
+      handleSidebarItemsReordered(event, state);
       break;
 
     case "conversation_loaded":

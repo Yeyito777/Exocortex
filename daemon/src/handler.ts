@@ -28,7 +28,7 @@ import { transcribeAudioBytes } from "./transcription";
 import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen";
 import * as convStore from "./conversations";
 import { DaemonServer, type ConnectedClient } from "./server";
-import type { Command } from "./protocol";
+import type { Command, Event, SidebarItemOrderUpdate } from "./protocol";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials, invalidateCredentialsCache } from "./auth";
 import { addAccount as addOpenAIAccount, listAccounts as listOpenAIAccounts, removeAccount as removeOpenAIAccount, switchAccount as switchOpenAIAccount } from "./providers/openai/auth";
 import { getProviderAdapter } from "./providers/catalog";
@@ -102,6 +102,19 @@ export interface HandlerOptions extends HandlerLifecycle {
 export function createHandler(server: DaemonServer, options: HandlerOptions = {}): DaemonCommandHandler {
   const lifecycle = options;
   // ── Local helper functions ────────────────────────────────────────
+
+  const broadcastSidebarItemOrderUpdates = (updates: SidebarItemOrderUpdate[]): void => {
+    const event: Extract<Event, { type: "sidebar_items_reordered" }> = { type: "sidebar_items_reordered", updates };
+    const capabilitySender = (server as DaemonServer & {
+      broadcastSidebarItemsReordered?: DaemonServer["broadcastSidebarItemsReordered"];
+    }).broadcastSidebarItemsReordered;
+    if (capabilitySender) {
+      capabilitySender.call(server, event, () => ({ type: "conversation_moved", ...convStore.listSidebarState() }));
+    } else {
+      // Minimal test doubles and older embedded servers retain the canonical full snapshot.
+      server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+    }
+  };
 
   let openAIAccountMutationInFlight = false;
   let openAIUsageResetInFlight = false;
@@ -1289,7 +1302,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "client_capabilities": {
         for (const capability of cmd.capabilities) {
-          if (capability === "targeted-unwind") client.capabilities.add(capability);
+          if (capability === "targeted-unwind" || capability === "sidebar-reorder-delta") client.capabilities.add(capability);
         }
         break;
       }
@@ -2001,10 +2014,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "move_conversation": {
-        const ok = convStore.move(cmd.convId, cmd.direction);
-        if (ok) {
-          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
-        }
+        const updates = convStore.moveSidebarItemWithUpdates({ type: "conversation", id: cmd.convId }, cmd.direction);
+        if (updates) broadcastSidebarItemOrderUpdates(updates);
         break;
       }
 
@@ -2093,9 +2104,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "move_sidebar_item": {
-        if (convStore.moveSidebarItem(cmd.item, cmd.direction)) {
-          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
-        }
+        const updates = convStore.moveSidebarItemWithUpdates(cmd.item, cmd.direction);
+        if (updates) broadcastSidebarItemOrderUpdates(updates);
         break;
       }
 
