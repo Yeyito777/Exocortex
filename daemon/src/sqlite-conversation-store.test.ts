@@ -59,6 +59,27 @@ function logicalState(store: SqliteConversationStore, id: string) {
 }
 
 describe("SQLite transaction fault boundaries", () => {
+  test("appends and pops sidebar history without rewriting older rows", () => {
+    const { path } = pathFor("targeted-sidebar-history");
+    const store = new SqliteConversationStore({ path });
+    store.pushUndoEntry({ type: "conversation_renamed", convId: "one", title: "before one" });
+    store.pushUndoEntry({ type: "conversation_renamed", convId: "two", title: "before two" });
+    store.pushRedoEntry({ type: "conversation_marked", convId: "redo", marked: false });
+    store.db.exec(`
+      CREATE TRIGGER reject_old_sidebar_history_delete
+      BEFORE DELETE ON sidebar_history
+      WHEN old.stack='undo' AND old.position < 2
+      BEGIN SELECT RAISE(FAIL, 'rewrote old undo history'); END;
+    `);
+
+    expect(() => store.pushTrashEntry({ type: "conversation_marked", convId: "three", marked: false })).not.toThrow();
+    expect(store.db.query<{ position: number }, []>("SELECT position FROM sidebar_history WHERE stack='undo' ORDER BY position").all())
+      .toEqual([{ position: 0 }, { position: 1 }, { position: 2 }]);
+    expect(store.db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM sidebar_history WHERE stack='redo'").get()?.count).toBe(0);
+    expect(store.popUndoEntry()).toEqual({ type: "conversation_marked", convId: "three", marked: false });
+    store.close();
+  });
+
   test("recovers WAL after an abrupt process exit inside a transaction", () => {
     const { root, path } = pathFor("abrupt-wal");
     let store = new SqliteConversationStore({ path });

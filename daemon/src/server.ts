@@ -139,6 +139,25 @@ export class DaemonServer {
     for (const client of this.clients.values()) this.sendTo(client, event);
   }
 
+  /**
+   * Send the compact reorder delta to capable clients. Materialize the legacy
+   * full sidebar snapshot at most once, and only when an older client needs it.
+   */
+  broadcastSidebarItemsReordered(
+    event: Extract<Event, { type: "sidebar_items_reordered" }>,
+    legacyEvent: () => Extract<Event, { type: "conversation_moved" }>,
+  ): void {
+    let legacy: Extract<Event, { type: "conversation_moved" }> | undefined;
+    for (const client of this.clients.values()) {
+      if (client.capabilities.has("sidebar-reorder-delta")) {
+        this.sendTo(client, event);
+      } else {
+        legacy ??= legacyEvent();
+        this.sendTo(client, legacy);
+      }
+    }
+  }
+
   sendToSubscribers(convId: string, event: Event): void {
     for (const client of this.clients.values()) {
       if (client.subscriptions.has(convId)) this.sendTo(client, event);

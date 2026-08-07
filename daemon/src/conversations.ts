@@ -9,7 +9,7 @@
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, ConversationToolPolicy } from "./messages";
 import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment, ToolPolicySnapshot } from "@exocortex/shared/messages";
-import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, TrimMode, ToolOutputInfo } from "./protocol";
+import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, SidebarItemOrderUpdate, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
 import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
@@ -2207,21 +2207,21 @@ export function pinSidebarItems(pins: { item: SidebarItemRef; pinned: boolean }[
   return conversationChanged || folderChanged;
 }
 
-export function moveSidebarItem(item: SidebarItemRef, direction: "up" | "down"): boolean {
+export function moveSidebarItemWithUpdates(item: SidebarItemRef, direction: "up" | "down"): SidebarItemOrderUpdate[] | null {
   const parentId = getItemParent(item);
   const pinned = getItemPinned(item);
-  if (parentId === undefined || pinned === undefined) return false;
+  if (parentId === undefined || pinned === undefined) return null;
 
   const siblings = sidebarEntries(parentId);
   const idx = siblings.findIndex(entry => entry.type === item.type && entry.id === item.id);
-  if (idx === -1) return false;
+  if (idx === -1) return null;
   const targetIdx = direction === "up" ? idx - 1 : idx + 1;
-  if (targetIdx < 0 || targetIdx >= siblings.length) return false;
+  if (targetIdx < 0 || targetIdx >= siblings.length) return null;
   const target = siblings[targetIdx];
-  if (target.pinned !== pinned) return false;
+  if (target.pinned !== pinned) return null;
 
   const currentOrder = getItemSortOrder(item);
-  if (currentOrder === undefined) return false;
+  if (currentOrder === undefined) return null;
   const targetRef: SidebarItemRef = { type: target.type, id: target.id };
   const targetOrder = target.sortOrder;
   const snapshots = sidebarItemSnapshots([item, targetRef]);
@@ -2235,7 +2235,11 @@ export function moveSidebarItem(item: SidebarItemRef, direction: "up" | "down"):
   const changedItems = [item, targetRef];
   persistConversationSidebarStates(changedItems.filter(candidate => candidate.type === "conversation").map(candidate => candidate.id));
   if (changedItems.some(candidate => candidate.type === "folder")) saveFolderState();
-  return true;
+  return changedItems.map(changed => ({ item: changed, sortOrder: getItemSortOrder(changed)! }));
+}
+
+export function moveSidebarItem(item: SidebarItemRef, direction: "up" | "down"): boolean {
+  return moveSidebarItemWithUpdates(item, direction) !== null;
 }
 
 export function listFolderConversationIds(folderId: string): string[] {

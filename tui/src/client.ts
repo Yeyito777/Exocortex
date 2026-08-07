@@ -93,7 +93,7 @@ export class DaemonClient {
         this.socket = socket;
         this._connected = true;
         resolved = true;
-        this.writeCommand({ type: "client_capabilities", capabilities: ["targeted-unwind"] });
+        this.writeCommand({ type: "client_capabilities", capabilities: ["targeted-unwind", "sidebar-reorder-delta"] });
         // Report the queue state atomically with the flush. Input can enqueue a
         // command while the socket attempt is still in flight, so a pre-connect
         // queue snapshot would already be stale here.

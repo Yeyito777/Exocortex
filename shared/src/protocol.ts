@@ -268,7 +268,7 @@ export interface PrewarmConversationCommand {
   convId: string;
 }
 
-export type ClientCapability = "targeted-unwind";
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta";
 
 /** Connection-scoped feature negotiation for backwards-compatible events. */
 export interface ClientCapabilitiesCommand {
@@ -1306,6 +1306,18 @@ export interface ConversationMovedEvent {
   folders?: FolderSummary[];
 }
 
+/** One authoritative order mutation produced by a single sidebar move. */
+export interface SidebarItemOrderUpdate {
+  item: SidebarItemRef;
+  sortOrder: number;
+}
+
+/** Compact replacement for a full conversation_moved snapshot on capable clients. */
+export interface SidebarItemsReorderedEvent {
+  type: "sidebar_items_reordered";
+  updates: SidebarItemOrderUpdate[];
+}
+
 export interface UserMessageEvent {
   type: "user_message";
   convId: string;
@@ -1658,6 +1670,7 @@ export type Event =
   | ConversationMarkedEvent
   | ConversationPinnedEvent
   | ConversationMovedEvent
+  | SidebarItemsReorderedEvent
   | QueueUpdatedEvent
   | QueueNoticeEvent
   | UserMessageEvent

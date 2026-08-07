@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationWorkspaceDir, conversationsDir, dataDir, trashedConversationWorkspaceDir, trashDir } from "@exocortex/shared/paths";
-import { HistoryUnwindRefreshRequiredError, appendMessages, appendRealtimeCallStatus, appendRealtimeTranscript, bumpToTop, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getPendingStreamSnapshot, getQueuedMessageById, getRenderSnapshot, getStoredDisplayPage, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItems, mute, muteFolder, onChunk, pin, pinFolder, pinSidebarItems, promoteRealtimeTranscript, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
+import { HistoryUnwindRefreshRequiredError, appendMessages, appendRealtimeCallStatus, appendRealtimeTranscript, bumpToTop, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getPendingStreamSnapshot, getQueuedMessageById, getRenderSnapshot, getStoredDisplayPage, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItemWithUpdates, moveSidebarItems, mute, muteFolder, onChunk, pin, pinFolder, pinSidebarItems, promoteRealtimeTranscript, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
 import { setActiveJob, replaceCurrentStreamingBlocks, setStreamingCommittedBlockCount, setStreamingCommittedMessageCount, clearActiveJob, initStreamingState, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
 import { isSqliteConversationStore, load as loadPersisted } from "./persistence";
@@ -792,6 +792,18 @@ describe("sidebar ordering", () => {
       .filter(summary => ids.includes(summary.id) && (summary.folderId ?? null) === null)
       .map(summary => summary.id);
   }
+
+  test("manual moves return the exact authoritative order delta", () => {
+    const ids = ["delta-one", "delta-two", "delta-three"].map(mkId);
+    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
+    const before = new Map(ids.map(id => [id, getSummary(id)!.sortOrder]));
+
+    expect(moveSidebarItemWithUpdates({ type: "conversation", id: ids[1] }, "down")).toEqual([
+      { item: { type: "conversation", id: ids[1] }, sortOrder: before.get(ids[2])! },
+      { item: { type: "conversation", id: ids[2] }, sortOrder: before.get(ids[1])! },
+    ]);
+    expect(rootConversationOrder(ids)).toEqual([ids[0], ids[2], ids[1]]);
+  });
 
   test("manual moves use the latest unflushed bump-to-top order", () => {
     const ids = ["bump-one", "bump-two", "bump-three", "bump-four"].map(mkId);

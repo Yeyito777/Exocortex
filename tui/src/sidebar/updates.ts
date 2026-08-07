@@ -1,4 +1,5 @@
 import type { ConversationSummary, FolderSummary } from "../messages";
+import type { SidebarItemOrderUpdate } from "../protocol";
 import { isMovableSidebarItem, sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { compareSidebarOrder } from "./order";
 import { focusTargetAfterRemovingSidebarItems } from "./removal";
@@ -17,6 +18,21 @@ function sidebarSort<T extends { pinned: boolean; sortOrder: number }>(items: T[
 function sortSidebarCollections(sidebar: SidebarState): void {
   sidebarSort(sidebar.conversations);
   sidebarSort(sidebar.folders);
+}
+
+/** Apply an authoritative two-item order delta without replacing every summary. */
+export function applySidebarItemOrderUpdates(sidebar: SidebarState, updates: SidebarItemOrderUpdate[]): void {
+  let changed = false;
+  for (const update of updates) {
+    const target = update.item.type === "conversation"
+      ? sidebar.conversations.find(conversation => conversation.id === update.item.id)
+      : sidebar.folders.find(folder => folder.id === update.item.id);
+    if (!target || target.sortOrder === update.sortOrder) continue;
+    target.sortOrder = update.sortOrder;
+    changed = true;
+  }
+  if (!changed) return;
+  syncSelectedIndex(sidebar);
 }
 
 function activeLowerQuery(sidebar: SidebarState): string | null {
