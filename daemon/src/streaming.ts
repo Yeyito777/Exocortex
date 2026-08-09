@@ -15,6 +15,8 @@ import type { ActiveToolBackgrounder } from "./tools/types";
 // ── State ───────────────────────────────────────────────────────────
 
 const activeJobs = new Map<string, AbortController>();
+/** Conversations synchronously handing one completed turn to a daemon-owned continuation. */
+const streamHandoffs = new Set<string>();
 /** Whether an active job represents a model turn that should replay after restart. */
 const restartRecoverableJobs = new Set<string>();
 const chunkCounters = new Map<string, number>();
@@ -65,12 +67,32 @@ export const STALE_STREAM_TIMEOUT = 15 * 60 * 1000; // 15 minutes
 
 // ── Active jobs (abort controllers for in-flight streams) ───────────
 
-/** Streaming state is derived from activeJobs — no boolean on Conversation. */
+/**
+ * User-visible conversation activity spans both provider work and daemon-owned
+ * handoffs to queued/goal-continuation turns. Keeping the handoff in this
+ * canonical runtime state prevents clients from observing a false idle state.
+ */
 export function isStreaming(convId: string): boolean {
-  return activeJobs.has(convId);
+  return activeJobs.has(convId) || streamHandoffs.has(convId);
+}
+
+/** True only while a completed turn is being handed to its immediate successor. */
+export function isStreamHandoffActive(convId: string): boolean {
+  return streamHandoffs.has(convId);
+}
+
+export function beginStreamHandoff(convId: string): void {
+  streamHandoffs.add(convId);
+}
+
+export function clearStreamHandoff(convId: string): void {
+  streamHandoffs.delete(convId);
 }
 
 export function setActiveJob(convId: string, ac: AbortController, startedAt: number, restartRecoverable = true): void {
+  // Replacing the handoff marker and installing the next active job happen in
+  // one synchronous operation, so summaries remain continuously streaming.
+  streamHandoffs.delete(convId);
   activeJobs.set(convId, ac);
   if (restartRecoverable) restartRecoverableJobs.add(convId);
   else restartRecoverableJobs.delete(convId);

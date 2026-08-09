@@ -200,6 +200,8 @@ interface AssistantTurnOptions {
   };
   /** Optional owner lifecycle that can cancel this turn without daemon IPC. */
   externalAbortSignal?: AbortSignal;
+  /** This turn is the daemon-owned successor in an already-active stream chain. */
+  streamChainHandoff?: boolean;
 }
 
 export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId">;
@@ -385,7 +387,9 @@ async function orchestrateAssistantTurn(
     });
     return buildErrorOutcome(message);
   }
-  if (convStore.isStreaming(convId)) {
+  const acceptingStreamChainHandoff = options.streamChainHandoff === true
+    && convStore.isStreamHandoffActive(convId);
+  if (convStore.isStreaming(convId) && !acceptingStreamChainHandoff) {
     const message = "Already streaming";
     if (client) server.sendTo(client, { type: "error", reqId, convId, message });
     return buildErrorOutcome(message);
@@ -1497,6 +1501,23 @@ async function orchestrateAssistantTurn(
       }
     }
     stopStreamingSnapshotHeartbeat();
+    // Decide whether the conversation remains active before clearing this turn's
+    // job. The daemon owns both queues and goal continuations, so clients no
+    // longer need to guess whether a streaming=false update is only transient.
+    const shutdownMode = getDaemonShutdownMode();
+    const allQueued = shutdownMode ? [] : convStore.getQueuedMessages(convId);
+    let shouldContinueActiveGoal = false;
+    if (shutdownMode) {
+      convStore.clearGoalContinuationAfterStream(convId);
+      log("info", `orchestrator: preserved queued messages for ${convId} during daemon ${shutdownMode}`);
+    } else if (allQueued.length === 0) {
+      const resumeRequestedAfterStream = convStore.consumeGoalContinuationAfterStream(convId);
+      shouldContinueActiveGoal = conv.goal?.status === "active"
+        && (resumeRequestedAfterStream || (outcome?.ok === true && !outcome.aborted && !outcome.suspended));
+    }
+    const streamChainContinues = allQueued.length > 0 || shouldContinueActiveGoal;
+    if (streamChainContinues) convStore.beginStreamHandoff(convId);
+
     const stoppedStreamSeq = convStore.nextStreamSeq(convId);
     const streamStopReason: StreamingStopReason | undefined = ac.signal.aborted && ac.signal.reason === "daemon-restart"
       ? "daemon-restart"
@@ -1518,10 +1539,11 @@ async function orchestrateAssistantTurn(
         type: "streaming_stopped",
         convId,
         streamSeq: stoppedStreamSeq,
-        ...(streamStopReason ? { reason: streamStopReason } : {}),
+        ...(streamChainContinues ? { reason: "handoff" as const } : streamStopReason ? { reason: streamStopReason } : {}),
         persistedBlocks: abortPersistedBlocks,
       });
-      // Broadcast updated summary (streaming=false, possibly unread=true)
+      // During a handoff getSummary remains streaming=true. The final turn in
+      // the chain is the only one that publishes streaming=false/unread=true.
       broadcastConversationUpdated(server, convId, streamStopReason);
 
       // Reconcile clients after multi-round/marker/queued-turn event streams from
@@ -1568,52 +1590,48 @@ async function orchestrateAssistantTurn(
 
     ext.onComplete();
 
+    const settleFailedStreamHandoff = () => {
+      // A successor can fail preflight before setActiveJob atomically replaces
+      // the handoff marker. In that case publish the real terminal state now.
+      if (!convStore.isStreamHandoffActive(convId)) return;
+      convStore.clearStreamHandoff(convId);
+      broadcastConversationUpdated(server, convId);
+    };
+
     // Start the first remaining queued message as a new turn. "next-turn"
     // messages that arrived too late join message-end messages here. The entry
-    // remains durable until orchestrateSendMessage persists its user message.
-    const shutdownMode = getDaemonShutdownMode();
-    if (shutdownMode) {
-      convStore.clearGoalContinuationAfterStream(convId);
-      log("info", `orchestrator: preserved queued messages for ${convId} during daemon ${shutdownMode}`);
-    }
-    const allQueued = shutdownMode ? [] : convStore.getQueuedMessages(convId);
+    // remains durable until the successor persists its user message.
     if (allQueued.length > 0) {
       const first = allQueued[0];
       log("info", `orchestrator: draining queued message: "${first.text.slice(0, 50)}"`);
-      // Kick off a new send cycle — null client so user_message broadcasts to everyone.
-      // Await to keep the chain in a single promise so errors propagate and
-      // the conversation stays consistent (no orphaned background streams).
-      await orchestrateSendMessage(
-        server,
-        null,
-        undefined,
-        convId,
-        first.text,
-        Date.now(),
-        ext,
-        first.images,
-        {
+      try {
+        // Await to keep queued turns in one promise. The private handoff option
+        // is intentionally unavailable to ordinary callers.
+        await orchestrateAssistantTurn(server, null, undefined, convId, Date.now(), ext, {
+          userMessage: { text: first.text, images: first.images },
           subagentMaxDepth: first.subagentMaxDepth ?? null,
           subagentNotificationId: first.subagentNotificationId,
           queueEntryId: first.id,
-        },
-      );
-    } else {
-      const resumeRequestedAfterStream = convStore.consumeGoalContinuationAfterStream(convId);
-      const shouldContinueActiveGoal = conv.goal?.status === "active"
-        && (resumeRequestedAfterStream || (outcome?.ok && !outcome.aborted && !outcome.suspended));
-      if (shouldContinueActiveGoal) {
-        queueMicrotask(() => {
-          const latest = convStore.get(convId);
-          if (!latest?.goal || latest.goal.status !== "active") return;
-          if (convStore.isStreaming(convId)) return;
-          if (convStore.getQueuedMessages(convId).length > 0) return;
-          log("info", `orchestrator: continuing active goal for ${convId}: "${latest.goal.objective.slice(0, 80)}"`);
-          void orchestrateGoalContinuation(server, convId, ext).catch((err) => {
-            log("error", `orchestrator: goal continuation failed for ${convId}: ${err instanceof Error ? err.message : String(err)}`);
-          });
+          streamChainHandoff: true,
         });
+      } finally {
+        settleFailedStreamHandoff();
       }
+    } else if (shouldContinueActiveGoal) {
+      queueMicrotask(() => {
+        const latest = convStore.get(convId);
+        if (!latest?.goal || latest.goal.status !== "active" || convStore.getQueuedMessages(convId).length > 0) {
+          settleFailedStreamHandoff();
+          return;
+        }
+        log("info", `orchestrator: continuing active goal for ${convId}: "${latest.goal.objective.slice(0, 80)}"`);
+        void orchestrateAssistantTurn(server, null, undefined, convId, Date.now(), ext, {
+          goalContinuation: true,
+          streamChainHandoff: true,
+        }).catch((err) => {
+          log("error", `orchestrator: goal continuation failed for ${convId}: ${err instanceof Error ? err.message : String(err)}`);
+        }).finally(settleFailedStreamHandoff);
+      });
     }
   }
 

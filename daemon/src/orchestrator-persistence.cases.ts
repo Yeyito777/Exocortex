@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { clearHistoryUnwindPending, create, getActiveJob, getQueuedMessages, isUnread, pushQueuedMessage, remove, requestHistoryUnwind } from "./conversations";
+import { clearHistoryUnwindPending, create, getActiveJob, getQueuedMessages, isUnread, pushQueuedMessage, remove, requestHistoryUnwind, setGoal, updateGoalStatus } from "./conversations";
 import { load as loadPersisted } from "./persistence";
 import { orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
@@ -256,6 +256,112 @@ describe("DB-first orchestrator persistence", () => {
     expect(loadPersisted(convId)!.messages.map(message => message.role)).toEqual([
       "user", "assistant", "user", "user", "assistant",
     ]);
+  });
+
+  test("keeps summaries streaming across a daemon-owned queued-turn handoff", async () => {
+    const convId = id("queued-chain-summary");
+    create(convId, "openai", "gpt-5.6-sol");
+    const events: Array<Record<string, unknown>> = [];
+    let streamCall = 0;
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
+      streamCall += 1;
+      const text = streamCall === 1 ? "first answer" : "queued answer";
+      if (streamCall === 1) {
+        pushQueuedMessage(convId, "queued follow-up", "message-end", undefined, undefined, undefined, "queued-chain-id");
+      }
+      streamCallbacks.onText(text);
+      return {
+        text,
+        thinking: "",
+        stopReason: "stop" as const,
+        blocks: [{ type: "text" as const, text }],
+        toolCalls: [],
+        inputTokens: 10,
+        outputTokens: 2,
+      };
+    }) as typeof streamMessage;
+
+    await orchestrateSendMessage(
+      server(events) as never,
+      null,
+      undefined,
+      convId,
+      "initial prompt",
+      28_000,
+      callbacks(fakeStream),
+    );
+
+    expect(streamCall).toBe(2);
+    const stopped = events.filter(event => event.type === "streaming_stopped");
+    expect(stopped.map(event => event.reason)).toEqual(["handoff", undefined]);
+    const summaryStreaming = events
+      .filter(event => event.type === "conversation_updated")
+      .map(event => (event.summary as { streaming: boolean }).streaming);
+    expect(summaryStreaming.at(-1)).toBe(false);
+    expect(summaryStreaming.slice(0, -1).every(Boolean)).toBe(true);
+  });
+
+  test("keeps summaries streaming across an automatic goal continuation", async () => {
+    const convId = id("goal-chain-summary");
+    create(convId, "openai", "gpt-5.6-sol");
+    setGoal(convId, "finish the chain");
+    const events: Array<Record<string, unknown>> = [];
+    let streamCall = 0;
+    let completeCalls = 0;
+    let resolveChain!: () => void;
+    const chainFinished = new Promise<void>(resolve => { resolveChain = resolve; });
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
+      streamCall += 1;
+      const text = streamCall === 1 ? "working" : "pausing";
+      if (streamCall === 2) updateGoalStatus(convId, "paused");
+      streamCallbacks.onText(text);
+      return {
+        text,
+        thinking: "",
+        stopReason: "stop" as const,
+        blocks: [{ type: "text" as const, text }],
+        toolCalls: [],
+        inputTokens: 10,
+        outputTokens: 2,
+      };
+    }) as typeof streamMessage;
+
+    await orchestrateSendMessage(
+      server(events) as never,
+      null,
+      undefined,
+      convId,
+      "start the goal",
+      29_000,
+      {
+        onHeaders() {},
+        onComplete() {
+          completeCalls += 1;
+          if (completeCalls === 2) resolveChain();
+        },
+        streamMessageFn: fakeStream,
+      },
+    );
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        chainFinished,
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("goal continuation did not settle")), 1_000);
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+
+    expect(streamCall).toBe(2);
+    const stopped = events.filter(event => event.type === "streaming_stopped");
+    expect(stopped.map(event => event.reason)).toEqual(["handoff", undefined]);
+    const summaryStreaming = events
+      .filter(event => event.type === "conversation_updated")
+      .map(event => (event.summary as { streaming: boolean }).streaming);
+    expect(summaryStreaming.at(-1)).toBe(false);
+    expect(summaryStreaming.slice(0, -1).every(Boolean)).toBe(true);
   });
 
   test("stops a long Chrono sleep turn without marking it unread, then resumes it before a user message", async () => {

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 
 describe("DB-first orchestrator persistence", () => {
-  test("passes isolated success, retry, tool-round, queue, deferred-sleep, abort, and unwind cases", () => {
+  test("passes isolated persistence and daemon-owned turn-chain cases", () => {
     // handler.test.ts deliberately replaces the orchestrator module for command
     // routing coverage. Run the real-orchestrator cases in a child Bun process so
     // that process-wide module mock cannot turn these persistence checks into
@@ -19,7 +19,7 @@ describe("DB-first orchestrator persistence", () => {
     });
     const output = `${child.stdout.toString()}${child.stderr.toString()}`;
     expect(child.exitCode, output).toBe(0);
-    expect(output).toContain("7 pass");
+    expect(output).toContain("9 pass");
     expect(output).toContain("0 fail");
   });
 });

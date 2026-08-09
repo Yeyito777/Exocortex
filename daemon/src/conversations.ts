@@ -31,7 +31,8 @@ import { clearConversationCustomTools } from "./tools/custom-tools";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
-  isStreaming, setActiveJob, getActiveJob, isRestartRecoverableJob, clearActiveJob, getStreamingStartedAt,
+  isStreaming, isStreamHandoffActive, beginStreamHandoff, clearStreamHandoff,
+  setActiveJob, getActiveJob, isRestartRecoverableJob, clearActiveJob, getStreamingStartedAt,
   setStreamingTokens, getStreamingTokens, nextStreamSeq, getStreamSeq,
   setContextCompactionStartedAt, getContextCompactionStartedAt,
   requestHistoryUnwind, isHistoryUnwindPending, clearHistoryUnwindPending,
@@ -777,6 +778,7 @@ function removeConversationState(id: string): boolean {
   contextAttributionDirty.delete(id);
   const wasUnread = unread.delete(id);
   streaming.clearActiveJob(id);
+  streaming.clearStreamHandoff(id);
   streaming.resetChunkCounter(id);
   messageQueue.clearQueuedMessages(id);
   if (persistence.hasConversationUnwindReceipt(id)) {

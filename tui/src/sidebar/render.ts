@@ -18,7 +18,6 @@ import { theme } from "../theme";
 import { shouldDisplayConversationTask } from "../taskvisibility";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import type { ConversationTaskSummary } from "../messages";
-import { isSettledUnreadConversation } from "./notifications";
 
 interface FolderAggregate {
   count: number;
@@ -44,7 +43,6 @@ function countChronoTasks(tasks: readonly ConversationTaskSummary[] | undefined)
 function buildFolderAggregates(
   sidebar: SidebarState,
   globalIdleConvIds: ReadonlySet<string>,
-  now: number,
 ): Map<string, FolderAggregate> {
   const aggregates = new Map<string, FolderAggregate>();
   const parentById = new Map<string, string | null>();
@@ -64,7 +62,7 @@ function buildFolderAggregates(
 
   for (const conv of sidebar.conversations) {
     const hasGlobalIdle = globalIdleConvIds.has(conv.id);
-    const hasSettledUnread = isSettledUnreadConversation(sidebar, conv, now);
+    const hasUnread = conv.unread && !conv.streaming;
     const chronoTaskCount = countChronoTasks(conv.tasks);
     let folderId = conv.folderId ?? null;
     const seen = new Set<string>();
@@ -74,8 +72,8 @@ function buildFolderAggregates(
       aggregate.count++;
       if (conv.streaming) aggregate.streamingCount++;
       aggregate.globalIdle ||= hasGlobalIdle;
-      aggregate.unread ||= hasSettledUnread;
-      if (hasSettledUnread) aggregate.unreadCount++;
+      aggregate.unread ||= hasUnread;
+      if (hasUnread) aggregate.unreadCount++;
       aggregate.subagentCount += conv.subagentCount ?? 0;
       aggregate.backgroundTaskCount += conv.backgroundTaskCount ?? 0;
       aggregate.chronoTaskCount += chronoTaskCount;
@@ -135,7 +133,6 @@ export function renderSidebar(
   focused: boolean,
   currentConvId: string | null,
   globalIdleConvIds: ReadonlySet<string> = new Set(),
-  now = Date.now(),
 ): string[] {
   const rows: string[] = [];
   const innerWidth = SIDEBAR_WIDTH - 1; // -1 for right border │
@@ -159,7 +156,7 @@ export function renderSidebar(
   // Build display rows: section labels + delimiter + sidebar entries
   const convs = sidebar.conversations;
   const displayRows = buildDisplayRows(sidebar);
-  const folderAggregates = sidebar.folders.length > 0 ? buildFolderAggregates(sidebar, globalIdleConvIds, now) : null;
+  const folderAggregates = sidebar.folders.length > 0 ? buildFolderAggregates(sidebar, globalIdleConvIds) : null;
   // Compute visual selection once per render. Calling selectedVisualItems() per
   // row rebuilds displayRows each time; with an active /? filter this made `v`
   // feel very laggy on large conversation lists.
@@ -271,7 +268,7 @@ export function renderSidebar(
       notificationsMuted = isConversationMuted(sidebar, conv);
       isCurrent = conv.id === currentConvId;
       const hasGlobalIdle = globalIdleConvIds.has(conv.id);
-      const hasUnread = !notificationsMuted && isSettledUnreadConversation(sidebar, conv, now);
+      const hasUnread = !notificationsMuted && conv.unread && !conv.streaming;
       streamIcon = conv.streaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = conv.streaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(conv.subagentCount ?? 0);

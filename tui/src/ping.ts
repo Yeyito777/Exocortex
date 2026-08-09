@@ -215,23 +215,20 @@ export function shouldSuppressStreamFinishedPing(context: StreamFinishedPingCont
     && isTerminalWindowFocused(context.windowId ?? undefined, context.activeWindowReader ?? readActiveWindowId);
 }
 
-export interface BackgroundStreamCompletionUpdate {
+export interface StreamCompletionUpdate {
   updatedConvId: string;
   wasStreaming: boolean;
   isStreaming: boolean;
-  activeConvIdBeforeUpdate?: string | null;
   streamStopReason?: StreamingStopReason;
 }
 
-export function shouldPingForBackgroundStreamCompletion(update: BackgroundStreamCompletionUpdate): boolean {
+/** A canonical summary transition means the whole daemon-owned turn chain settled. */
+export function shouldPingForStreamCompletion(update: StreamCompletionUpdate): boolean {
   return update.streamStopReason !== "daemon-restart"
+    && update.streamStopReason !== "handoff"
+    && update.streamStopReason !== "unwind"
     && update.wasStreaming
-    && !update.isStreaming
-    && update.updatedConvId !== update.activeConvIdBeforeUpdate;
-}
-
-export function shouldPingForStreamStopped(reason?: StreamingStopReason): boolean {
-  return reason !== "daemon-restart" && reason !== "unwind";
+    && !update.isStreaming;
 }
 
 export function runStreamFinishedPing(context: StreamFinishedPingContext = {}): void {

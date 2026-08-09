@@ -52,7 +52,7 @@ import { createVoiceInputController, type SubmittedVoiceTranscription, type Voic
 import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
 import { startReplayConversation } from "./replay";
 import { startManualCompaction } from "./compact";
-import { runStreamFinishedPing, shouldPingForBackgroundStreamCompletion, shouldPingForStreamStopped } from "./ping";
+import { runStreamFinishedPing, shouldPingForStreamCompletion } from "./ping";
 import { stripStartupLaunchEcho } from "./startupinput";
 import { focusedConversationTasks, msUntilTaskPanelEntryUpdate } from "./activitypanel";
 import { beginOlderHistoryLoad, INITIAL_BUFFER_ADDITIONAL_TURNS, OLDER_HISTORY_PAGE_TURNS, shouldLoadOlderHistory } from "./historypagination";
@@ -60,7 +60,6 @@ import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-pro
 import { log } from "./log";
 import { CallMediaController } from "./call-media";
 import { formatMicGainDb, loadMicGainDb, saveMicGainDb } from "./mic-gain";
-import { msUntilNextFolderNotification, STREAM_COMPLETION_SETTLE_MS } from "./sidebar/notifications";
 import { applyTuiStartingState, availableStartingConversationId, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 
@@ -92,7 +91,6 @@ let daemon: DaemonClient;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let renderDueAt = 0;
 let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
-let streamFinishedPingTimer: ReturnType<typeof setTimeout> | null = null;
 let prewarmTimer: ReturnType<typeof setTimeout> | null = null;
 let deferredHistoryRenderTimer: ReturnType<typeof setTimeout> | null = null;
 let lastPrewarmKey: string | null = null;
@@ -213,17 +211,6 @@ function scheduleDeferredHistoryRenderWork(): void {
   }, 0);
 }
 
-function clearStreamFinishedPingTimer(): void {
-  if (!streamFinishedPingTimer) return;
-  clearTimeout(streamFinishedPingTimer);
-  streamFinishedPingTimer = null;
-}
-
-function isConversationStreaming(convId: string): boolean {
-  if (convId === state.convId) return isStreaming(state);
-  return state.sidebar.conversations.some((conversation) => conversation.id === convId && conversation.streaming);
-}
-
 function unsubscribeConversation(convId: string): void {
   daemon.unsubscribe(convId);
 }
@@ -232,20 +219,6 @@ function isBackgroundConversationScopedEvent(event: Event): boolean {
   if (!CONV_SCOPED.has(event.type) || !("convId" in event)) return false;
   if (event.convId === state.convId) return false;
   return event.type !== "tool_policy" || event.convId !== state.pendingToolPolicyDraftId;
-}
-
-function scheduleStreamFinishedPing(completedConvId: string): void {
-  clearStreamFinishedPingTimer();
-  streamFinishedPingTimer = setTimeout(() => {
-    streamFinishedPingTimer = null;
-    const completed = state.sidebar.conversations.find(conversation => conversation.id === completedConvId);
-    runStreamFinishedPing({
-      completedConvId,
-      activeConvId: state.convId,
-      isCompletedConvStreaming: isConversationStreaming(completedConvId),
-      notificationsMuted: completed?.notificationsMuted === true,
-    });
-  }, STREAM_COMPLETION_SETTLE_MS);
 }
 
 function clearReconnectTimer(): void {
@@ -340,8 +313,6 @@ function resetStreamTick(): void {
     const delay = msUntilTaskPanelEntryUpdate(task);
     if (delay !== null) tickDelays.push(delay);
   }
-  const folderNotificationDelay = msUntilNextFolderNotification(state.sidebar);
-  if (folderNotificationDelay !== null) tickDelays.push(folderNotificationDelay);
   if (tickDelays.length > 0) {
     streamTickTimer = setTimeout(scheduleRender, Math.min(...tickDelays));
   }
@@ -472,26 +443,29 @@ function onDaemonEvent(event: Event): void {
   if (event.type === "streaming_stopped") {
     if (event.convId === state.convId) clearStreamTick();
     if (event.convId === pendingLocalInterruptConvId) pendingLocalInterruptConvId = null;
-    if (shouldPingForStreamStopped(event.reason)) scheduleStreamFinishedPing(event.convId);
     // Queue shadows are NOT cleared here — the daemon drains one queued
     // message at a time and re-queues the rest. Each consumed message
     // triggers a user_message event, whose handler in events.ts removes
     // the corresponding shadow individually.
   }
 
-  // When the user navigates away from a streaming conversation, this TUI
-  // unsubscribes from that conversation and will not receive its scoped
-  // streaming_stopped event. The sidebar still receives conversation_updated;
-  // use its streaming true→false transition as the completion signal for
-  // background conversations.
-  if (event.type === "conversation_updated" && shouldPingForBackgroundStreamCompletion({
+  // A streaming true→false summary is the daemon's authoritative signal that
+  // the entire turn chain settled. Queued and goal-continuation handoffs remain
+  // streaming=true, so the notification can run immediately without a debounce.
+  if (event.type === "conversation_updated" && shouldPingForStreamCompletion({
     updatedConvId: event.summary.id,
     wasStreaming: wasUpdatedConversationStreaming,
     isStreaming: event.summary.streaming,
-    activeConvIdBeforeUpdate: activeConvIdBeforeEvent,
     streamStopReason: event.streamStopReason,
   })) {
-    scheduleStreamFinishedPing(event.summary.id);
+    // Paint green before focus detection or sound setup can do synchronous I/O.
+    renderImmediately();
+    runStreamFinishedPing({
+      completedConvId: event.summary.id,
+      activeConvId: activeConvIdBeforeEvent,
+      isCompletedConvStreaming: event.summary.streaming,
+      notificationsMuted: event.summary.notificationsMuted === true,
+    });
   }
 
   if (maybeFlushPendingAuthQueue()) {
@@ -1638,7 +1612,6 @@ function handleDaemonConnectionLost(): void {
   clearPendingAI(state);
   clearStreamingTailMessages(state);
   clearStreamTick();
-  clearStreamFinishedPingTimer();
   clearPrewarmTimer();
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
@@ -1792,7 +1765,6 @@ function cleanup(): void {
   persistStartingStateOnce();
   clearRenderTimer();
   clearStreamTick();
-  clearStreamFinishedPingTimer();
   clearPrewarmTimer();
   clearReconnectTimer();
   if (eventLoopLagTimer) {

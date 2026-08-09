@@ -1047,7 +1047,7 @@ export interface StreamingStartedEvent {
   compactionStartedAt?: number | null;
 }
 
-export type StreamingStopReason = "daemon-restart" | "unwind";
+export type StreamingStopReason = "daemon-restart" | "handoff" | "unwind";
 
 export interface StreamingStoppedEvent {
   type: "streaming_stopped";

@@ -2,7 +2,6 @@ import { sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { buildDisplayRows, type DisplayRow } from "./rows";
 import { focusConversationAt, focusSidebarItem } from "./selection";
 import type { SidebarState } from "./state";
-import { isSettledUnreadConversation } from "./notifications";
 
 export function moveSelection(sidebar: SidebarState, delta: number): void {
   const displayRows = buildDisplayRows(sidebar);
@@ -44,7 +43,7 @@ function foldersWithStreamingIndicator(
   for (const folder of sidebar.folders) parentById.set(folder.id, folder.parentId ?? null);
 
   for (const conv of sidebar.conversations) {
-    const hasVisibleUnread = isSettledUnreadConversation(sidebar, conv);
+    const hasVisibleUnread = conv.unread && !conv.streaming;
     if (!conv.streaming && !hasVisibleUnread) continue;
     let folderId = conv.folderId ?? null;
     const seen = new Set<string>();
@@ -66,7 +65,7 @@ function hasStreamingIndicator(
   const item = row.item ?? null;
   if (item?.type === "conversation") {
     const conv = row.convIdx === undefined ? sidebar.conversations.find(c => c.id === item.id) : sidebar.conversations[row.convIdx];
-    return Boolean(conv?.streaming || (conv && isSettledUnreadConversation(sidebar, conv)));
+    return Boolean(conv?.streaming || (conv?.unread && !conv.streaming));
   }
   if (item?.type === "folder") {
     return streamingFolderIds.has(item.id);

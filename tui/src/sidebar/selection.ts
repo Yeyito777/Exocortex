@@ -6,7 +6,6 @@ import {
   getActiveSidebarSearchQuery,
   getVisibleConversationIndicesForQuery,
 } from "../sidebarsearch";
-import { isSettledUnreadConversation } from "./notifications";
 
 export function focusSidebarItem(sidebar: SidebarState, item: SidebarSelectableItem | null): void {
   sidebar.selectedItem = item;
@@ -66,7 +65,7 @@ function activityConversations(
   status: "completed" | "streaming",
 ): ConversationSummary[] {
   return sidebar.conversations
-    .filter((conv) => status === "streaming" ? conv.streaming : isSettledUnreadConversation(sidebar, conv))
+    .filter((conv) => status === "streaming" ? conv.streaming : conv.unread && !conv.streaming)
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 

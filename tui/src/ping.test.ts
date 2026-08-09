@@ -13,8 +13,7 @@ import {
   playSoundFile,
   runStreamFinishedPing,
   sendStreamFinishedNotification,
-  shouldPingForBackgroundStreamCompletion,
-  shouldPingForStreamStopped,
+  shouldPingForStreamCompletion,
   shouldSuppressStreamFinishedPing,
   streamFinishedSoundCommand,
 } from "./ping";
@@ -205,47 +204,52 @@ describe("ping config helpers", () => {
     expect(true).toBe(true);
   });
 
-  test("background completion ping predicate fires only for streaming true-to-false updates outside the active conversation", () => {
-    expect(shouldPingForBackgroundStreamCompletion({
+  test("completion ping predicate fires only for authoritative streaming true-to-false updates", () => {
+    expect(shouldPingForStreamCompletion({
       updatedConvId: "conv-a",
       wasStreaming: true,
       isStreaming: false,
-      activeConvIdBeforeUpdate: "conv-b",
     })).toBe(true);
 
-    expect(shouldPingForBackgroundStreamCompletion({
+    // Focus suppression is evaluated by runStreamFinishedPing, not by whether
+    // the terminal update came from the active or a background conversation.
+    expect(shouldPingForStreamCompletion({
       updatedConvId: "conv-a",
       wasStreaming: true,
       isStreaming: false,
-      activeConvIdBeforeUpdate: "conv-a",
-    })).toBe(false);
+    })).toBe(true);
 
-    expect(shouldPingForBackgroundStreamCompletion({
+    expect(shouldPingForStreamCompletion({
       updatedConvId: "conv-a",
       wasStreaming: false,
       isStreaming: false,
-      activeConvIdBeforeUpdate: "conv-b",
     })).toBe(false);
 
-    expect(shouldPingForBackgroundStreamCompletion({
+    expect(shouldPingForStreamCompletion({
       updatedConvId: "conv-a",
       wasStreaming: true,
       isStreaming: true,
-      activeConvIdBeforeUpdate: "conv-b",
     })).toBe(false);
   });
 
   test("non-completion stopped streams do not trigger /ping", () => {
-    expect(shouldPingForStreamStopped()).toBe(true);
-    expect(shouldPingForStreamStopped("daemon-restart")).toBe(false);
-    expect(shouldPingForStreamStopped("unwind")).toBe(false);
-
-    expect(shouldPingForBackgroundStreamCompletion({
+    expect(shouldPingForStreamCompletion({
       updatedConvId: "conv-a",
       wasStreaming: true,
       isStreaming: false,
-      activeConvIdBeforeUpdate: "conv-b",
       streamStopReason: "daemon-restart",
+    })).toBe(false);
+    expect(shouldPingForStreamCompletion({
+      updatedConvId: "conv-a",
+      wasStreaming: true,
+      isStreaming: false,
+      streamStopReason: "handoff",
+    })).toBe(false);
+    expect(shouldPingForStreamCompletion({
+      updatedConvId: "conv-a",
+      wasStreaming: true,
+      isStreaming: false,
+      streamStopReason: "unwind",
     })).toBe(false);
   });
 

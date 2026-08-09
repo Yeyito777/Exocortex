@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, clearHistoryUnwindPending, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, getStreamingCommittedMessageCount, initStreamingState, isHistoryUnwindPending, isRestartRecoverableJob, nextStreamSeq, requestHistoryUnwind, setActiveJob, setContextCompactionStartedAt, setStreamingCommittedMessageCount } from "./streaming";
+import { appendToStreamingBlock, beginStreamHandoff, clearActiveJob, clearCurrentStreamingBlocks, clearHistoryUnwindPending, clearStreamHandoff, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, getStreamingCommittedMessageCount, initStreamingState, isHistoryUnwindPending, isRestartRecoverableJob, isStreaming, isStreamHandoffActive, nextStreamSeq, requestHistoryUnwind, setActiveJob, setContextCompactionStartedAt, setStreamingCommittedMessageCount } from "./streaming";
 import { clearQueuedMessages, drainQueuedMessages, pushQueuedMessage } from "./message-queue";
 
 const IDS: string[] = [];
@@ -13,9 +13,29 @@ function mkId(suffix: string): string {
 beforeEach(() => {
   for (const id of IDS.splice(0)) {
     clearActiveJob(id);
+    clearStreamHandoff(id);
     clearHistoryUnwindPending(id);
     clearQueuedMessages(id);
   }
+});
+
+describe("daemon-owned stream handoff", () => {
+  test("keeps canonical activity true between adjacent jobs", () => {
+    const id = mkId("handoff");
+    setActiveJob(id, new AbortController(), 1);
+    beginStreamHandoff(id);
+    clearActiveJob(id);
+
+    expect(isStreamHandoffActive(id)).toBe(true);
+    expect(isStreaming(id)).toBe(true);
+
+    setActiveJob(id, new AbortController(), 2);
+    expect(isStreamHandoffActive(id)).toBe(false);
+    expect(isStreaming(id)).toBe(true);
+
+    clearActiveJob(id);
+    expect(isStreaming(id)).toBe(false);
+  });
 });
 
 describe("stream event sequence", () => {

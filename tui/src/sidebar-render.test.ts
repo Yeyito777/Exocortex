@@ -4,7 +4,6 @@ import type { ConversationSummary } from "./messages";
 import { SIDEBAR_WIDTH } from "./sidebar/layout";
 import { theme } from "./theme";
 import { visibleLength } from "./textwidth";
-import { reconcileFolderNotificationBuffer } from "./sidebar/notifications";
 
 function conversation(id: string, sortOrder: number, overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
@@ -255,34 +254,22 @@ describe("sidebar rendering", () => {
     expect(folderRow).not.toContain(`${theme.notificationBg}${theme.notificationFg} 2 ${theme.reset}`);
   });
 
-  test("buffers a finished folder notification and cancels it when a queued turn starts", () => {
+  test("keeps queued turn chains blue and shows their final unread state immediately", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
     ];
-    const completed = conversation("queued-chain", 0, { folderId: "work", unread: true });
-    sidebar.conversations = [completed];
-    reconcileFolderNotificationBuffer(sidebar, completed, true, 1_000);
-
-    let folderRow = renderSidebar(sidebar, 8, true, null, new Set(), 1_100).find(row => row.includes("Work"));
-    expect(folderRow).not.toContain(theme.notificationBg);
-    expect(folderRow).not.toContain(`${theme.success}◉ `);
-
-    const queuedTurn = { ...completed, streaming: true };
+    const queuedTurn = conversation("queued-chain", 0, { folderId: "work", unread: true, streaming: true });
     sidebar.conversations = [queuedTurn];
-    reconcileFolderNotificationBuffer(sidebar, queuedTurn, false, 1_150);
 
-    folderRow = renderSidebar(sidebar, 8, true, null, new Set(), 1_500).find(row => row.includes("Work"));
+    let folderRow = renderSidebar(sidebar, 8, true, null).find(row => row.includes("Work"));
     expect(folderRow).toContain(`${theme.accent}◉ `);
     expect(folderRow).not.toContain(theme.notificationBg);
 
     const finalCompletion = { ...queuedTurn, streaming: false };
     sidebar.conversations = [finalCompletion];
-    reconcileFolderNotificationBuffer(sidebar, finalCompletion, true, 2_000);
 
-    folderRow = renderSidebar(sidebar, 8, true, null, new Set(), 2_100).find(row => row.includes("Work"));
-    expect(folderRow).not.toContain(theme.notificationBg);
-    folderRow = renderSidebar(sidebar, 8, true, null, new Set(), 2_200).find(row => row.includes("Work"));
+    folderRow = renderSidebar(sidebar, 8, true, null).find(row => row.includes("Work"));
     expect(folderRow).toContain(`${theme.notificationBg}${theme.notificationFg} 1 ${theme.reset}`);
   });
 
