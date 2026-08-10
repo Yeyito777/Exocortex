@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { configuredConversationDefaults, defaultExocortexConfig, readExocortexConfig, saveConversationDefaults, writeExocortexConfig } from "@exocortex/shared/config";
 import { cycleAutocomplete, updateAutocomplete } from "./autocomplete";
-import { getCommandArgs, tryCommand } from "./commands";
+import { getCommandArgs, tryCommand, type CommandResult } from "./commands";
 import { formatToolPolicySnapshot } from "./commands/tools";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
@@ -466,6 +466,124 @@ describe("/replay", () => {
     expect(result).toEqual({ type: "handled" });
     expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Usage: /replay");
   });
+
+  test("chains with /queue and can be scheduled while the conversation is streaming", () => {
+    const state = createInitialState();
+    state.convId = "conv-replay";
+    state.inputBuffer = "/replay /queue";
+    state.cursorPos = state.inputBuffer.length;
+    state.messages.push({ role: "user", text: "hello", metadata: null });
+    state.pendingAI = { role: "assistant", blocks: [], metadata: null };
+
+    const result = tryCommand("/replay /queue", state);
+
+    expect(result).toEqual({
+      type: "replay_requested",
+      queue: { type: "global" },
+      queuedCommand: { name: "/replay", text: "/replay" },
+      efforts: [],
+      fastModes: [],
+    });
+    expect(state.inputBuffer).toBe("");
+  });
+
+  test("chains with a targeted /queue in either order", () => {
+    const state = createInitialState();
+    state.convId = "conv-replay";
+    state.messages.push({ role: "user", text: "hello", metadata: null });
+    state.sidebar.conversations = [
+      {
+        id: "dependency",
+        provider: "openai",
+        model: "gpt-5.4",
+        effort: "medium",
+        fastMode: false,
+        createdAt: 1,
+        updatedAt: 2,
+        messageCount: 1,
+        title: "Build the Thing",
+        marked: false,
+        pinned: false,
+        streaming: true,
+        unread: false,
+        sortOrder: 1,
+      },
+    ];
+
+    const expected: CommandResult = {
+      type: "replay_requested",
+      queue: { type: "conversation", convId: "dependency", label: "Build the Thing" },
+      queuedCommand: { name: "/replay", text: "/replay" },
+      efforts: [],
+      fastModes: [],
+    };
+    expect(tryCommand("/replay /queue Build the Thing", state)).toEqual(expected);
+    expect(tryCommand("/queue Build the Thing /replay", state)).toEqual(expected);
+  });
+
+  test("autocompletes a /queue target after /replay", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [
+      {
+        id: "dependency",
+        provider: "openai",
+        model: "gpt-5.4",
+        effort: "medium",
+        fastMode: false,
+        createdAt: 1,
+        updatedAt: 2,
+        messageCount: 1,
+        title: "Build the Thing",
+        marked: false,
+        pinned: false,
+        streaming: true,
+        unread: false,
+        sortOrder: 1,
+      },
+    ];
+    state.inputBuffer = "/replay /queue Bui";
+    state.cursorPos = state.inputBuffer.length;
+
+    updateAutocomplete(state);
+    cycleAutocomplete(state, 1);
+
+    expect(state.inputBuffer).toBe("/replay /queue Build the Thing");
+  });
+
+  test("applies other inline modifiers only after a queued replay validates", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "openai";
+    state.model = "gpt-5.4";
+    state.effort = "low";
+    state.convId = "conv-replay";
+    state.messages.push({ role: "user", text: "hello", metadata: null });
+
+    const result = tryCommand("/replay /effort high /queue", state);
+
+    expect(result).toEqual({
+      type: "replay_requested",
+      queue: { type: "global" },
+      queuedCommand: { name: "/replay", text: "/replay" },
+      efforts: ["high"],
+      fastModes: [],
+    });
+    expect(String(state.effort)).toBe("high");
+  });
+
+  test("does not partially apply modifiers from an invalid replay chain", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "openai";
+    state.model = "gpt-5.4";
+    state.effort = "low";
+
+    const result = tryCommand("/replay /effort high /queue", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(state.effort).toBe("low");
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("No active conversation to replay.");
+  });
 });
 
 describe("/compact", () => {
@@ -502,6 +620,23 @@ describe("/compact", () => {
 
     expect(result).toEqual({ type: "handled" });
     expect((state.streamingTailMessages.at(-1) as { text?: string } | undefined)?.text).toBe("Cannot compact the conversation while it is streaming.");
+  });
+
+  test("uses the same command composition path to queue compaction while streaming", () => {
+    const state = createInitialState();
+    state.convId = "conv-compact";
+    state.messages.push({ role: "user", text: "hello", metadata: null });
+    state.pendingAI = { role: "assistant", blocks: [], metadata: null };
+
+    const result = tryCommand("/compact /queue", state);
+
+    expect(result).toEqual({
+      type: "compact_requested",
+      queue: { type: "global" },
+      queuedCommand: { name: "/compact", text: "/compact" },
+      efforts: [],
+      fastModes: [],
+    });
   });
 
   test("requires existing conversation history", () => {

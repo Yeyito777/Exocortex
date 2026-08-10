@@ -17,8 +17,10 @@ import type { KeyEvent } from "./input";
 import { randomUUID } from "node:crypto";
 import type { ImageAttachment } from "./messages";
 import type { RenderState, QueueTiming, QueueWaitTarget, QueuedMessage } from "./state";
+import type { QueuedCommandInvocation } from "./protocol";
 import { expandMacros } from "./macros";
 import { isStreaming } from "./state";
+import { clearPrompt } from "./promptstate";
 
 export const GLOBAL_IDLE_QUEUE_LABEL = "queued: global idle";
 
@@ -30,7 +32,7 @@ export function isNewConversationQueuedMessage(message: QueuedMessage): boolean 
   return isGlobalIdleQueuedMessage(message) && message.target === "new-conversation";
 }
 
-export type GlobalIdleQueueOptions = Pick<QueuedMessage, "id" | "target" | "provider" | "model" | "effort" | "fastMode" | "folderId" | "waitTarget">;
+export type GlobalIdleQueueOptions = Pick<QueuedMessage, "id" | "command" | "target" | "provider" | "model" | "effort" | "fastMode" | "folderId" | "waitTarget">;
 
 export function queueWaitTargetOf(message: QueuedMessage): QueueWaitTarget {
   return message.waitTarget ?? { type: "global" };
@@ -77,6 +79,7 @@ export function enqueueGlobalIdleMessage(
     optimistic: true,
     convId,
     text,
+    ...(options.command ? { command: { ...options.command } } : {}),
     timing: "message-end",
     source: "global-idle",
     createdAt: Date.now(),
@@ -91,6 +94,50 @@ export function enqueueGlobalIdleMessage(
   };
   state.queuedMessages.push(queued);
   return queued;
+}
+
+export interface QueuedCommandActions {
+  queueMessage(
+    convId: string,
+    text: string,
+    timing: "message-end",
+    images: undefined,
+    options: {
+      queueId: string;
+      command: QueuedCommandInvocation;
+      source: "global-idle";
+      target: "conversation";
+      waitTarget: QueueWaitTarget;
+    },
+  ): void;
+}
+
+/** Durably queue any registered command invocation until its idle dependency is ready. */
+export function enqueueQueuedCommand(
+  state: RenderState,
+  daemon: QueuedCommandActions,
+  invocation: QueuedCommandInvocation & { text: string },
+  waitTarget: QueueWaitTarget,
+): boolean {
+  if (!state.convId) return false;
+
+  const convId = state.convId;
+  const command = { name: invocation.name };
+  const queued = enqueueGlobalIdleMessage(state, convId, invocation.text, undefined, {
+    command,
+    target: "conversation",
+    waitTarget,
+  });
+  daemon.queueMessage(convId, queued.text, "message-end", undefined, {
+    queueId: queued.id!,
+    command,
+    source: "global-idle",
+    target: "conversation",
+    waitTarget,
+  });
+  clearPrompt(state);
+  state.scrollOffset = 0;
+  return true;
 }
 
 export function removeQueuedMessageByReference(state: RenderState, message: QueuedMessage): boolean {

@@ -7,7 +7,7 @@
 import { connect, type Socket } from "net";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
-import type { Command, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueueTiming, QueueWaitTarget, ToolPolicyMutation, TrimMode, SidebarItemRef } from "./protocol";
+import type { Command, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, ToolPolicyMutation, TrimMode, SidebarItemRef } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
@@ -385,6 +385,7 @@ export class DaemonClient {
     images?: ImageAttachment[],
     options: {
       queueId?: string;
+      command?: QueuedCommandInvocation;
       source?: "daemon" | "global-idle";
       target?: "conversation" | "new-conversation";
       provider?: ProviderId;

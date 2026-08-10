@@ -27,7 +27,7 @@ import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
 import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
-import type { ConversationGoal, ProviderAuthInfo, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget } from "./protocol";
+import type { ConversationGoal, ProviderAuthInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { BtwPanelState } from "./btw/state";
 
@@ -44,6 +44,8 @@ export interface QueuedMessage {
   optimistic?: boolean;
   convId: string;
   text: string;
+  /** A queued command to execute instead of sending text as a user message. */
+  command?: QueuedCommandInvocation;
   timing: QueueTiming;
   images?: ImageAttachment[];
   /**

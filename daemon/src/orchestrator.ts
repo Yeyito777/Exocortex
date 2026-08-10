@@ -267,8 +267,10 @@ export async function orchestrateCompactConversation(
   convId: string,
   startedAt: number,
   ext: OrchestrationCallbacks,
+  policy: SubagentTurnPolicy = {},
 ): Promise<AssistantTurnOutcome> {
   return await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext, {
+    ...policy,
     manualCompaction: true,
   });
 }

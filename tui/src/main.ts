@@ -31,6 +31,7 @@ import {
   clearAllQueuedMessagesForConversation,
   confirmQueueMessage,
   cancelQueuePrompt,
+  enqueueQueuedCommand,
   enqueueGlobalIdleMessage,
   openQueuePrompt,
   removeNewConversationQueuedMessage,
@@ -702,6 +703,17 @@ function handleSubmit(): void {
   if (text && !hasImages) {
     const cmdResult = tryCommand(text, state);
     if (cmdResult) {
+      if (cmdResult.queue && cmdResult.queuedCommand) {
+        syncInlineCommandChanges({
+          text: "",
+          efforts: cmdResult.efforts ?? [],
+          fastModes: cmdResult.fastModes ?? [],
+          queue: cmdResult.queue,
+        });
+        enqueueQueuedCommand(state, daemon, cmdResult.queuedCommand, cmdResult.queue);
+        scheduleRender();
+        return;
+      }
       switch (cmdResult.type) {
         case "quit":
           running = false;

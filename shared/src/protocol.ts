@@ -660,12 +660,20 @@ export type QueueWaitTarget =
   | { type: "conversation"; convId: string; label: string }
   | { type: "folder"; folderId: string; label: string };
 
+/** A slash command that the daemon can execute when a durable queue entry becomes ready. */
+export interface QueuedCommandInvocation {
+  /** Registered slash-command name, including its leading slash. Arguments remain in the entry text. */
+  name: string;
+}
+
 /** Canonical daemon-owned queue entry shared by every connected client. */
 export interface QueuedMessageInfo {
   /** Stable client- or daemon-generated identity used for optimistic reconciliation. */
   id: string;
   convId: string;
   text: string;
+  /** A queued command to execute instead of delivering text as a user message. */
+  command?: QueuedCommandInvocation;
   timing: QueueTiming;
   images?: ImageAttachment[];
   /** Ordinary stream queues are delivered next-turn/message-end; global-idle entries wait on waitTarget. */
@@ -688,6 +696,8 @@ export interface QueueMessageCommand {
   queueId?: string;
   convId: string;
   text: string;
+  /** Execute a supported command when this queue entry becomes ready. */
+  command?: QueuedCommandInvocation;
   timing: QueueTiming;
   images?: ImageAttachment[];
   source?: "daemon" | "global-idle";

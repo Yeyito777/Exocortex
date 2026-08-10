@@ -4,11 +4,13 @@ import {
   clearAllQueuedMessagesForConversation,
   confirmQueueMessage,
   enqueueGlobalIdleMessage,
+  enqueueQueuedCommand,
   isGlobalIdleQueuedMessage,
   openQueuePrompt,
   queueTimingLabel,
   removeLocalQueueEntry,
   cancelQueuePrompt,
+  type QueuedCommandActions,
 } from "./queue";
 import { createInitialState } from "./state";
 
@@ -142,6 +144,52 @@ describe("queue prompt image handling", () => {
 });
 
 describe("global idle /queue optimistic display", () => {
+  test("queues registered commands without knowing their individual names", () => {
+    const state = createInitialState();
+    state.convId = "conv-command";
+    state.inputBuffer = "/compact /queue Build";
+    state.cursorPos = state.inputBuffer.length;
+    const calls: unknown[][] = [];
+    const daemon: QueuedCommandActions = {
+      queueMessage(...args) {
+        calls.push(args);
+      },
+    };
+    const waitTarget = { type: "conversation", convId: "dependency", label: "Build" } as const;
+
+    const ok = enqueueQueuedCommand(
+      state,
+      daemon,
+      { name: "/compact", text: "/compact" },
+      waitTarget,
+    );
+
+    expect(ok).toBe(true);
+    expect(state.queuedMessages).toEqual([expect.objectContaining({
+      id: expect.any(String),
+      convId: "conv-command",
+      text: "/compact",
+      command: { name: "/compact" },
+      source: "global-idle",
+      target: "conversation",
+      waitTarget,
+    })]);
+    expect(calls).toEqual([[
+      "conv-command",
+      "/compact",
+      "message-end",
+      undefined,
+      {
+        queueId: state.queuedMessages[0].id,
+        command: { name: "/compact" },
+        source: "global-idle",
+        target: "conversation",
+        waitTarget,
+      },
+    ]]);
+    expect(state.inputBuffer).toBe("");
+  });
+
   test("creates a stable optimistic global-idle shadow", () => {
     const state = createInitialState();
 

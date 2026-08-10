@@ -42,6 +42,11 @@ type InlineAction =
   | { type: "effort"; effort: EffortLevel }
   | { type: "fast"; enabled: boolean };
 
+interface ParsedInlineCommands {
+  result: InlineCommandApplication;
+  actions: InlineAction[];
+}
+
 interface WordPosition {
   word: string;
   start: number;
@@ -99,7 +104,7 @@ function removeSpanPreservingBoundary(text: string, start: number, end: number):
  * remain ordinary text unless they are submitted through the normal command
  * path at the start of a prompt.
  */
-export function applyInlineCommands(text: string, state: RenderState): InlineCommandApplication {
+function parseInlineCommands(text: string, state: RenderState): ParsedInlineCommands {
   const supportedLevels = new Set(supportedEfforts(state).map(candidate => candidate.effort));
   const supportsFast = providerSupportsFastMode(state);
   const words = wordsIn(text);
@@ -144,9 +149,29 @@ export function applyInlineCommands(text: string, state: RenderState): InlineCom
     }
   }
 
-  if (actions.length === 0 && !queue) return { text, efforts, fastModes };
+  if (actions.length === 0 && !queue) {
+    return { result: { text, efforts, fastModes }, actions };
+  }
 
-  for (const action of actions) {
+  let stripped = text;
+  for (let i = spans.length - 1; i >= 0; i--) {
+    stripped = removeSpanPreservingBoundary(stripped, spans[i].start, spans[i].end);
+  }
+
+  return {
+    result: { text: stripped, efforts, fastModes, ...(queue ? { queue } : {}) },
+    actions,
+  };
+}
+
+/** Parse inline commands without changing conversation settings or adding notices. */
+export function previewInlineCommands(text: string, state: RenderState): InlineCommandApplication {
+  return parseInlineCommands(text, state).result;
+}
+
+export function applyInlineCommands(text: string, state: RenderState): InlineCommandApplication {
+  const parsed = parseInlineCommands(text, state);
+  for (const action of parsed.actions) {
     if (action.type === "effort") {
       state.effort = action.effort;
       pushSystemMessage(state, `Effort set to ${action.effort}`);
@@ -155,13 +180,7 @@ export function applyInlineCommands(text: string, state: RenderState): InlineCom
       pushSystemMessage(state, `Fast mode ${action.enabled ? "enabled" : "disabled"}.`);
     }
   }
-
-  let stripped = text;
-  for (let i = spans.length - 1; i >= 0; i--) {
-    stripped = removeSpanPreservingBoundary(stripped, spans[i].start, spans[i].end);
-  }
-
-  return { text: stripped, efforts, fastModes, ...(queue ? { queue } : {}) };
+  return parsed.result;
 }
 
 export function applyInlineEffortCommands(text: string, state: RenderState): InlineCommandApplication {

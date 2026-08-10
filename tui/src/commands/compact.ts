@@ -5,8 +5,9 @@ import type { SlashCommand } from "./types";
 
 export const COMPACT_COMMAND: SlashCommand = {
   name: "/compact",
-  description: "Compact the current conversation context",
-  handler: (text, state) => {
+  description: "Compact now, or combine with /queue [target] to defer",
+  queueable: { name: "/compact" },
+  handler: (text, state, context) => {
     const parts = text.trim().split(/\s+/).filter(Boolean);
     if (parts.length !== 1) {
       pushSystemMessage(state, "Usage: /compact");
@@ -18,7 +19,7 @@ export const COMPACT_COMMAND: SlashCommand = {
       clearPrompt(state);
       return { type: "handled" };
     }
-    if (isStreaming(state)) {
+    if (isStreaming(state) && !context?.queue) {
       pushSystemMessage(state, "Cannot compact the conversation while it is streaming.");
       clearPrompt(state);
       return { type: "handled" };

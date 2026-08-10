@@ -802,7 +802,61 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       && (conversation.streaming || hasStreamQueue(conversation.id))) ? "waiting" : "ready";
   };
 
-  const dispatchQueuedMessage = async (entry: import("./message-queue").QueuedMessage): Promise<void> => {
+  type DurableQueueEntry = import("./message-queue").QueuedMessage;
+  interface QueuedCommandDefinition {
+    validate(text: string): string | null;
+    execute(entry: DurableQueueEntry): Promise<AssistantTurnOutcome>;
+  }
+
+  const noArgumentQueuedCommand = (name: string) => (text: string): string | null => (
+    text.trim() === name ? null : `Usage: ${name}`
+  );
+
+  const queuedCommandDefinitions = new Map<string, QueuedCommandDefinition>([
+    ["/replay", {
+      validate: noArgumentQueuedCommand("/replay"),
+      execute: async (entry) => {
+        const pending = listPendingSubagentNotifications({ childConvId: entry.convId, state: "running" })[0];
+        const outcome = pending && !hasSubagentTaskStarted(pending)
+          ? await orchestrateSendMessage(
+              server,
+              null,
+              undefined,
+              entry.convId,
+              pending.task,
+              pending.childStartedAt,
+              buildOrchestrationCallbacks(entry.convId),
+              undefined,
+              { subagentMaxDepth: pending.subagentMaxDepth, queueEntryId: entry.id },
+            )
+          : await orchestrateReplayConversation(
+              server,
+              null,
+              undefined,
+              entry.convId,
+              Date.now(),
+              buildOrchestrationCallbacks(entry.convId),
+              { subagentMaxDepth: entry.subagentMaxDepth ?? null, queueEntryId: entry.id },
+            );
+        notificationRuntime.complete(entry.convId, outcome);
+        return outcome;
+      },
+    }],
+    ["/compact", {
+      validate: noArgumentQueuedCommand("/compact"),
+      execute: async (entry) => await orchestrateCompactConversation(
+        server,
+        null,
+        undefined,
+        entry.convId,
+        Date.now(),
+        buildOrchestrationCallbacks(entry.convId),
+        { queueEntryId: entry.id },
+      ),
+    }],
+  ]);
+
+  const dispatchQueuedMessage = async (entry: DurableQueueEntry): Promise<void> => {
     if (dispatchingQueueIds.has(entry.id) || dispatchingConversationIds.has(entry.convId)) return;
     if (convStore.isQueuedMessageDeliverySuspended(entry.convId)) return;
     if ((queueRetryAfter.get(entry.id) ?? 0) > Date.now()) return;
@@ -810,22 +864,40 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     dispatchingConversationIds.add(entry.convId);
     if (entry.source === "global-idle") globalIdleDispatchInFlight = true;
     try {
-      const outcome = await orchestrateSendMessage(
-        server,
-        null,
-        undefined,
-        entry.convId,
-        entry.text,
-        Date.now(),
-        buildOrchestrationCallbacks(entry.convId),
-        entry.images,
-        {
-          subagentMaxDepth: entry.subagentMaxDepth ?? null,
-          subagentNotificationId: entry.subagentNotificationId,
-          queueEntryId: entry.id,
-        },
-      );
-      // Preflight failures happen before orchestrateSendMessage accepts/removes
+      const queuedCommand = entry.command && entry.source === "global-idle"
+        && entry.target !== "new-conversation" && !entry.images?.length
+        ? queuedCommandDefinitions.get(entry.command.name)
+        : undefined;
+      if (entry.command && !queuedCommand) {
+        convStore.removeQueuedMessageById(entry.id);
+        server.broadcast({
+          type: "queue_notice",
+          queueId: entry.id,
+          convId: entry.convId,
+          message: `Queued command is invalid or no longer supported: ${entry.command.name}`,
+          level: "error",
+        });
+        return;
+      }
+
+      const outcome = queuedCommand
+        ? await queuedCommand.execute(entry)
+        : await orchestrateSendMessage(
+          server,
+          null,
+          undefined,
+          entry.convId,
+          entry.text,
+          Date.now(),
+          buildOrchestrationCallbacks(entry.convId),
+          entry.images,
+          {
+            subagentMaxDepth: entry.subagentMaxDepth ?? null,
+            subagentNotificationId: entry.subagentNotificationId,
+            queueEntryId: entry.id,
+          },
+        );
+      // Preflight failures happen before orchestration accepts/removes
       // the queue entry. Drop it with an explicit shared notice rather than
       // retrying forever and blocking FIFO progress.
       if (!outcome.ok && convStore.getQueuedMessageById(entry.id)) {
@@ -847,13 +919,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             type: "queue_notice",
             queueId: entry.id,
             convId: entry.convId,
-            message: `Queued send failed: ${error}`,
+            message: `Queued ${entry.command?.name ?? "send"} failed: ${error}`,
             level: "error",
           });
         }
       }
     } catch (err) {
-      log("error", `handler: queued send failed for ${entry.id}: ${err instanceof Error ? err.message : String(err)}`);
+      log("error", `handler: queued turn failed for ${entry.id}: ${err instanceof Error ? err.message : String(err)}`);
       if (convStore.getQueuedMessageById(entry.id)) queueRetryAfter.set(entry.id, Date.now() + 5_000);
     } finally {
       dispatchingQueueIds.delete(entry.id);
@@ -2144,6 +2216,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "queue_message": {
         const queueId = cmd.queueId?.trim();
+        let queuedCommand: { name: string } | undefined;
         let queuedDraftSettings: {
           provider: import("./messages").ProviderId;
           model: import("./messages").ModelId;
@@ -2168,6 +2241,41 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           // that replay as well as queue-file crash recovery.
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
           server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), settledQueueIds: [queueId] });
+          break;
+        }
+
+        let queuedCommandError: string | null = null;
+        if (cmd.command !== undefined) {
+          const rawCommand = cmd.command as unknown;
+          const name = rawCommand && typeof rawCommand === "object"
+            ? (rawCommand as Record<string, unknown>).name
+            : undefined;
+          if (typeof name !== "string" || !name.startsWith("/") || name.length > 100 || /[\r\n]/.test(name)) {
+            queuedCommandError = "Invalid queued command";
+          } else {
+            const definition = queuedCommandDefinitions.get(name);
+            if (!definition) queuedCommandError = `Unsupported queued command: ${name}`;
+            else if (cmd.source !== "global-idle" || cmd.target === "new-conversation" || (cmd.images?.length ?? 0) > 0) {
+              queuedCommandError = `Queued ${name} must target an existing conversation through the global-idle queue without attachments`;
+            } else {
+              queuedCommandError = definition.validate(cmd.text);
+              if (!queuedCommandError) queuedCommand = { name };
+            }
+          }
+        }
+
+        if (queuedCommandError) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: queuedCommandError,
+          });
+          server.sendTo(client, {
+            type: "queue_updated",
+            messages: convStore.listQueuedMessages(),
+            ...(queueId ? { settledQueueIds: [queueId] } : {}),
+          });
           break;
         }
 
@@ -2225,6 +2333,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         if (cmd.source === "global-idle") {
           convStore.pushGlobalIdleQueuedMessage(cmd.convId, cmd.text, cmd.images, {
             id: queueId,
+            command: queuedCommand,
             target: cmd.target ?? "conversation",
             provider: queuedDraftSettings?.provider ?? cmd.provider,
             model: queuedDraftSettings?.model ?? cmd.model,
@@ -2268,7 +2377,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           startTitleGeneration(server, cmd.convId, { extraContext: cmd.text });
         }
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-        log("info", `handler: queued ${cmd.timing} message for ${cmd.convId}: "${cmd.text.slice(0, 50)}"`);
+        log("info", `handler: queued ${queuedCommand?.name ?? `${cmd.timing} message`} for ${cmd.convId}: "${cmd.text.slice(0, 50)}"`);
         break;
       }
 
@@ -2285,7 +2394,18 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "update_queued_message": {
-        const ok = convStore.updateQueuedMessage(cmd.queueId, cmd.text, cmd.timing, cmd.images);
+        const existing = convStore.getQueuedMessageById(cmd.queueId);
+        if (existing?.command) {
+          const definition = queuedCommandDefinitions.get(existing.command.name);
+          const validationError = cmd.images?.length
+            ? `Queued ${existing.command.name} cannot have attachments`
+            : definition?.validate(cmd.text) ?? `Unsupported queued command: ${existing.command.name}`;
+          if (validationError) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: validationError });
+            break;
+          }
+        }
+        const ok = !!existing && convStore.updateQueuedMessage(cmd.queueId, cmd.text, cmd.timing, cmd.images);
         if (ok) server.sendTo(client, { type: "ack", reqId: cmd.reqId });
         else server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Queued message ${cmd.queueId} not found` });
         break;

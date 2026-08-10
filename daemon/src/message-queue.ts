@@ -21,6 +21,7 @@ export interface QueuedMessage extends QueuedMessageInfo {
 
 export interface GlobalIdleQueueOptions {
   id?: string;
+  command?: QueuedMessageInfo["command"];
   target?: "conversation" | "new-conversation";
   provider?: QueuedMessageInfo["provider"];
   model?: QueuedMessageInfo["model"];
@@ -44,12 +45,20 @@ function publicEntry(entry: QueuedMessage): QueuedMessageInfo {
     subagentMaxDepth: _subagentMaxDepth,
     subagentNotificationId: _subagentNotificationId,
     ...info
-  } = entry;
+  } = cloneEntry(entry);
   return info;
 }
 
+function cloneEntry(entry: QueuedMessage): QueuedMessage {
+  return {
+    ...entry,
+    ...(entry.command ? { command: { ...entry.command } } : {}),
+    ...(entry.images ? { images: entry.images.map(image => ({ ...image })) } : {}),
+  };
+}
+
 function cloneMessages(): QueuedMessage[] {
-  return messages.map(entry => ({ ...entry, ...(entry.images ? { images: entry.images.map(image => ({ ...image })) } : {}) }));
+  return messages.map(cloneEntry);
 }
 
 function mutateAndCommit<T>(mutation: () => T): T {
@@ -98,7 +107,7 @@ export function listQueuedMessages(): QueuedMessageInfo[] {
 
 /** Internal snapshot including delegation/notification metadata. */
 export function listInternalQueuedMessages(): QueuedMessage[] {
-  return messages.map(entry => ({ ...entry }));
+  return messages.map(cloneEntry);
 }
 
 /** Stream-relative entries for one conversation, in FIFO order. */
@@ -106,7 +115,7 @@ export function getQueuedMessages(convId: string): QueuedMessage[] {
   if (deliverySuspended.has(convId)) return [];
   return messages
     .filter(entry => entry.convId === convId && entry.source === "daemon")
-    .map(entry => ({ ...entry }));
+    .map(cloneEntry);
 }
 
 export function suspendQueuedMessageDelivery(convId: string): void {
@@ -123,7 +132,7 @@ export function isQueuedMessageDeliverySuspended(convId: string): boolean {
 
 export function getQueuedMessageById(id: string): QueuedMessage | undefined {
   const entry = messages.find(candidate => candidate.id === id);
-  return entry ? { ...entry } : undefined;
+  return entry ? cloneEntry(entry) : undefined;
 }
 
 /** Push an ordinary stream-relative queue entry. Returns its durable identity. */
@@ -138,7 +147,7 @@ export function pushQueuedMessage(
   createdAt = Date.now(),
 ): QueuedMessage {
   const existing = messages.find(entry => entry.id === id);
-  if (existing) return { ...existing };
+  if (existing) return cloneEntry(existing);
   const entry: QueuedMessage = {
     id,
     convId,
@@ -152,7 +161,7 @@ export function pushQueuedMessage(
   };
   return mutateAndCommit(() => {
     messages.push(entry);
-    return { ...entry };
+    return cloneEntry(entry);
   });
 }
 
@@ -165,11 +174,12 @@ export function pushGlobalIdleQueuedMessage(
 ): QueuedMessage {
   const id = options.id ?? randomUUID();
   const existing = messages.find(entry => entry.id === id);
-  if (existing) return { ...existing };
+  if (existing) return cloneEntry(existing);
   const entry: QueuedMessage = {
     id,
     convId,
     text,
+    ...(options.command ? { command: { ...options.command } } : {}),
     timing: "message-end",
     images,
     source: "global-idle",
@@ -184,7 +194,7 @@ export function pushGlobalIdleQueuedMessage(
   };
   return mutateAndCommit(() => {
     messages.push(entry);
-    return { ...entry };
+    return cloneEntry(entry);
   });
 }
 
@@ -261,7 +271,7 @@ export function drainQueuedMessages(convId: string, timing?: QueueTiming): Queue
   if (drained.length === 0) return [];
   const ids = new Set(drained.map(entry => entry.id));
   mutateAndCommit(() => { messages = messages.filter(entry => !ids.has(entry.id)); });
-  return drained.map(entry => ({ ...entry }));
+  return drained.map(cloneEntry);
 }
 
 /** Clear every queued entry targeting a conversation (including `/queue`). */

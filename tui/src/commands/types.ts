@@ -1,5 +1,5 @@
 import type { RenderState } from "../state";
-import type { GoalAction, OpenAILoginMethod, ToolPolicyMutation, TrimMode } from "../protocol";
+import type { GoalAction, OpenAILoginMethod, QueuedCommandInvocation, QueueWaitTarget, ToolPolicyMutation, TrimMode } from "../protocol";
 import type { ProviderId, ModelId, EffortLevel } from "../messages";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
 
@@ -14,7 +14,7 @@ export interface CompletionItem {
   aliases?: string[];
 }
 
-export type CommandResult =
+type CommandAction =
   | { type: "handled" }
   | { type: "quit" }
   | { type: "new_conversation" }
@@ -42,11 +42,23 @@ export type CommandResult =
   | { type: "tool_policy"; mutation?: ToolPolicyMutation }
   | { type: "set_system_instructions"; text: string };
 
+/** Modifiers composed around a successfully parsed primary slash command. */
+export interface CommandComposition {
+  queue?: QueueWaitTarget;
+  queuedCommand?: QueuedCommandInvocation & { text: string };
+  efforts?: EffortLevel[];
+  fastModes?: boolean[];
+}
+
+export type CommandResult = CommandAction & CommandComposition;
+
 export interface SlashCommand {
   name: string;
   description: string;
+  /** Daemon command identity used when `/queue [target]` wraps this command. */
+  queueable?: QueuedCommandInvocation;
   args?: CompletionItem[];
   /** Optional dynamic/nested argument completions keyed by command prefix. */
   getArgs?: (state: RenderState) => Record<string, CompletionItem[]>;
-  handler: (text: string, state: RenderState) => CommandResult;
+  handler: (text: string, state: RenderState, context?: { queue?: QueueWaitTarget }) => CommandResult;
 }

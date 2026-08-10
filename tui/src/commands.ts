@@ -30,6 +30,7 @@ import { TRIM_COMMAND } from "./commands/trim";
 import { USAGE_COMMAND } from "./commands/usage";
 import { TOOLS_COMMAND } from "./commands/tools";
 import type { CommandResult, CompletionItem, SlashCommand } from "./commands/types";
+import { applyInlineCommands, previewInlineCommands } from "./inlineeffort";
 
 const HELP_COMMAND = createHelpCommand(() => commands);
 
@@ -79,6 +80,30 @@ function isStandaloneNoArgCommand(text: string, commandName: string): boolean {
 
 export function tryCommand(text: string, state: RenderState): CommandResult | null {
   if (!text.startsWith("/")) return null;
+
+  // `/queue` is an inline delivery modifier for messages, but it can also wrap
+  // explicitly compatible slash commands. Preview first so invalid command chains
+  // cannot partially apply inline effort/fast changes.
+  const preview = previewInlineCommands(text, state);
+  if (preview.queue) {
+    const primaryText = preview.text.trim();
+    const primaryName = primaryText.split(/\s+/, 1)[0];
+    const primary = commands.find(command => command.queueable && command.name === primaryName);
+    const queueable = primary?.queueable;
+    if (primary && queueable) {
+      const result = primary.handler(primaryText, state, { queue: preview.queue });
+      if (result.type === "handled") return result;
+
+      const applied = applyInlineCommands(text, state);
+      return {
+        ...result,
+        queue: applied.queue,
+        queuedCommand: { ...queueable, text: primaryText },
+        efforts: applied.efforts,
+        fastModes: applied.fastModes,
+      };
+    }
+  }
 
   const name = text.split(/\s+/)[0];
   const cmd = commands.find((command) => command.name === name);

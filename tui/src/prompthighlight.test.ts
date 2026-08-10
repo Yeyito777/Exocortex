@@ -155,4 +155,14 @@ describe("prompt highlighting", () => {
 
     expect(line).toBe(`${theme.command}/queue 📁 Work Projects${theme.reset} do it`);
   });
+
+  test("highlights /replay and its chained multi-word /queue target", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [conversation("conv-build", "Build the Thing")];
+
+    const input = "/replay /queue Build the Thing";
+    const [line] = highlightPromptInput(state, [input], input, 120, 0);
+
+    expect(line).toBe(`${theme.command}/replay${theme.reset} ${theme.command}/queue Build the Thing${theme.reset}`);
+  });
 });

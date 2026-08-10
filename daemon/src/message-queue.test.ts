@@ -112,6 +112,27 @@ describe("durable daemon message queue", () => {
     }]);
   });
 
+  test("persists generic queued command metadata across an in-process daemon reload", () => {
+    pushGlobalIdleQueuedMessage("conv-a", "/replay", undefined, {
+      id: "replay-a",
+      command: { name: "/replay" },
+      target: "conversation",
+      createdAt: 31,
+    });
+
+    loadQueuedMessagesFromDisk();
+    expect(getQueuedMessageById("replay-a")).toEqual(expect.objectContaining({
+      text: "/replay",
+      command: { name: "/replay" },
+      source: "global-idle",
+      target: "conversation",
+    }));
+
+    const publicSnapshot = listQueuedMessages();
+    publicSnapshot[0].command!.name = "/mutated-by-client";
+    expect(getQueuedMessageById("replay-a")?.command?.name).toBe("/replay");
+  });
+
   test("drops a crash-window queue copy whose id is already durable in history", () => {
     pushQueuedMessage("conv-a", "accepted", "message-end", undefined, undefined, undefined, "accepted-id");
     pushQueuedMessage("conv-a", "pending", "message-end", undefined, undefined, undefined, "pending-id");

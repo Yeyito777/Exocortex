@@ -5,8 +5,9 @@ import type { SlashCommand } from "./types";
 
 export const REPLAY_COMMAND: SlashCommand = {
   name: "/replay",
-  description: "Replay the current history so the AI can continue",
-  handler: (text, state) => {
+  description: "Replay now, or combine with /queue [target] to defer",
+  queueable: { name: "/replay" },
+  handler: (text, state, context) => {
     const parts = text.trim().split(/\s+/).filter(Boolean);
     if (parts.length !== 1) {
       pushSystemMessage(state, "Usage: /replay");
@@ -18,7 +19,7 @@ export const REPLAY_COMMAND: SlashCommand = {
       clearPrompt(state);
       return { type: "handled" };
     }
-    if (isStreaming(state)) {
+    if (isStreaming(state) && !context?.queue) {
       pushSystemMessage(state, "Cannot replay the conversation while it is streaming.");
       clearPrompt(state);
       return { type: "handled" };

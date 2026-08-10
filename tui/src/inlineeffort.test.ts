@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { tryCommand } from "./commands";
-import { applyInlineCommands } from "./inlineeffort";
+import { applyInlineCommands, previewInlineCommands } from "./inlineeffort";
 import { createInitialState } from "./state";
 import type { ProviderInfo } from "./messages";
 
@@ -144,6 +144,21 @@ describe("inline /fast command", () => {
 });
 
 describe("inline /queue command", () => {
+  test("can preview a command chain without applying its setting changes", () => {
+    const state = stateWithEfforts();
+
+    const result = previewInlineCommands("/replay /effort high /queue", state);
+
+    expect(result).toEqual({
+      text: "/replay",
+      efforts: ["high"],
+      fastModes: [],
+      queue: { type: "global" },
+    });
+    expect(state.effort).toBe("low");
+    expect(state.messages).toEqual([]);
+  });
+
   test("marks the message for the global idle queue and removes the command token", () => {
     const state = stateWithEfforts();
 

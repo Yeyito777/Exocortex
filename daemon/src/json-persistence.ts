@@ -1331,6 +1331,12 @@ function normalizeQueuedMessage(raw: unknown): PersistedQueuedMessage | null {
     source: entry.source,
     createdAt: Number.isFinite(entry.createdAt) ? Number(entry.createdAt) : Date.now(),
   };
+  if (entry.command && typeof entry.command === "object") {
+    const command = entry.command as Record<string, unknown>;
+    if (typeof command.name === "string" && command.name.startsWith("/") && command.name.length <= 100 && !/[\r\n]/.test(command.name)) {
+      normalized.command = { name: command.name };
+    }
+  }
   if (Array.isArray(entry.images)) normalized.images = entry.images as PersistedQueuedMessage["images"];
   if (entry.target === "conversation" || entry.target === "new-conversation") normalized.target = entry.target;
   if (typeof entry.provider === "string") normalized.provider = entry.provider as ProviderId;

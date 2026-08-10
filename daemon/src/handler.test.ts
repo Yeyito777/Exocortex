@@ -250,6 +250,165 @@ describe("handler daemon-owned queue", () => {
     removeQueuedMessageById("targeted-idle");
   });
 
+  test("dispatches a chained queued replay without adding a user-message send", async () => {
+    const id = mkId("queue-replay");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const replayCallsBefore = orchestrateReplayConversation.mock.calls.length;
+    const sendCallsBefore = orchestrateSendMessage.mock.calls.length;
+
+    await handle({} as never, {
+      type: "queue_message",
+      queueId: "queued-replay",
+      convId: id,
+      text: "/replay",
+      command: { name: "/replay" },
+      timing: "message-end",
+      source: "global-idle",
+      target: "conversation",
+    });
+    await new Promise(resolve => setTimeout(resolve, 180));
+
+    expect(orchestrateReplayConversation.mock.calls.length).toBe(replayCallsBefore + 1);
+    expect(orchestrateSendMessage.mock.calls.length).toBe(sendCallsBefore);
+    const lastCall = orchestrateReplayConversation.mock.calls.at(-1) as unknown as unknown[];
+    expect(lastCall[3]).toBe(id);
+    expect(lastCall[6]).toEqual(expect.objectContaining({ queueEntryId: "queued-replay" }));
+    removeQueuedMessageById("queued-replay");
+  });
+
+  test("dispatches another registered command through the same durable command queue", async () => {
+    const id = mkId("queue-compact");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const compactCallsBefore = orchestrateCompactConversation.mock.calls.length;
+
+    await handle({} as never, {
+      type: "queue_message",
+      queueId: "queued-compact",
+      convId: id,
+      text: "/compact",
+      command: { name: "/compact" },
+      timing: "message-end",
+      source: "global-idle",
+      target: "conversation",
+    });
+    await new Promise(resolve => setTimeout(resolve, 180));
+
+    expect(orchestrateCompactConversation.mock.calls.length).toBe(compactCallsBefore + 1);
+    const lastCall = orchestrateCompactConversation.mock.calls.at(-1) as unknown as unknown[];
+    expect(lastCall[3]).toBe(id);
+    expect(lastCall[6]).toEqual({ queueEntryId: "queued-compact" });
+    removeQueuedMessageById("queued-compact");
+  });
+
+  test("rejects queued commands outside the global-idle command queue", async () => {
+    const id = mkId("queue-replay-invalid");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "queue_message",
+      reqId: "invalid-replay",
+      queueId: "invalid-replay-id",
+      convId: id,
+      text: "/replay",
+      command: { name: "/replay" },
+      timing: "message-end",
+    });
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "error",
+      reqId: "invalid-replay",
+      message: expect.stringContaining("Queued /replay"),
+    }));
+    expect(getQueuedMessageById("invalid-replay-id")).toBeUndefined();
+  });
+
+  test("rejects unregistered queued commands before persisting them", async () => {
+    const id = mkId("queue-command-unknown");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "queue_message",
+      reqId: "unknown-command",
+      queueId: "unknown-command-id",
+      convId: id,
+      text: "/future-command",
+      command: { name: "/future-command" },
+      timing: "message-end",
+      source: "global-idle",
+      target: "conversation",
+    });
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "error",
+      reqId: "unknown-command",
+      message: "Unsupported queued command: /future-command",
+    }));
+    expect(getQueuedMessageById("unknown-command-id")).toBeUndefined();
+  });
+
+  test("preserves a queued command's registered invocation when edited", async () => {
+    const id = mkId("queue-command-edit");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    setActiveJob(id, new AbortController(), Date.now());
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "queue_message",
+      queueId: "editable-command-id",
+      convId: id,
+      text: "/compact",
+      command: { name: "/compact" },
+      timing: "message-end",
+      source: "global-idle",
+      target: "conversation",
+    });
+    await handle({} as never, {
+      type: "update_queued_message",
+      reqId: "invalid-command-edit",
+      queueId: "editable-command-id",
+      text: "/compact now",
+      timing: "message-end",
+    });
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "error",
+      reqId: "invalid-command-edit",
+      message: "Usage: /compact",
+    }));
+    expect(getQueuedMessageById("editable-command-id")?.text).toBe("/compact");
+    removeQueuedMessageById("editable-command-id");
+  });
+
   test("keeps the global-idle FIFO blocked until the accepted head turn finishes", async () => {
     const firstId = mkId("queue-global-first");
     const secondId = mkId("queue-global-second");
