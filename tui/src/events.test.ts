@@ -105,6 +105,7 @@ describe("tool policy activity state", () => {
         "Enabled:",
         "  Internal: read",
         "  External: gmail",
+        "",
         "Disabled:",
         "  Internal: (none)",
         "  External: (none)",

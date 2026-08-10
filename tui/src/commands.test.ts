@@ -1339,10 +1339,12 @@ describe("/tools", () => {
       "Enabled:",
       "  Internal: read",
       "  External: exo",
+      "",
       "Disabled:",
       "  Internal: exo",
       "  External: gmail",
     ].join("\n"));
     expect(output).not.toContain("Warning: bash");
+    expect(output).not.toContain("Use /tools");
   });
 });

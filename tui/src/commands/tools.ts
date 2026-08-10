@@ -92,6 +92,7 @@ export function formatToolPolicySnapshot(snapshot: ToolPolicySnapshot, changed: 
     "Enabled:",
     `  Internal: ${list(snapshot.internal, true)}`,
     `  External: ${list(snapshot.external, true)}`,
+    "",
     "Disabled:",
     `  Internal: ${list(snapshot.internal, false)}`,
     `  External: ${list(snapshot.external, false)}`,
@@ -104,8 +105,6 @@ export function formatToolPolicySnapshot(snapshot: ToolPolicySnapshot, changed: 
           "Warning: custom tool modules are trusted code executed inside the daemon, not a sandbox.",
         ]
       : []),
-    "",
-    "Use /tools enable, /tools disable, or /tools reset to change the next turn.",
   ].join("\n");
 }
 
