@@ -65,6 +65,24 @@ describe("DaemonClient request-scoped events", () => {
 });
 
 describe("DaemonClient commands", () => {
+  test("correlates interactive tool-policy requests so their responses stay visible", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.getToolPolicy("conv-1");
+    client.setToolPolicy("conv-1", { action: "reset" });
+    client.getDraftToolPolicy("draft-1");
+    client.setDraftToolPolicy("draft-1", { action: "reset" });
+
+    expect(internal.pendingCommands).toEqual([
+      expect.objectContaining({ type: "get_tool_policy", convId: "conv-1", reqId: expect.stringMatching(/^tools_/) }),
+      expect.objectContaining({ type: "set_tool_policy", convId: "conv-1", reqId: expect.stringMatching(/^tools_/) }),
+      expect.objectContaining({ type: "get_draft_tool_policy", draftId: "draft-1", reqId: expect.stringMatching(/^tools_/) }),
+      expect.objectContaining({ type: "set_draft_tool_policy", draftId: "draft-1", reqId: expect.stringMatching(/^tools_/) }),
+    ]);
+    expect(new Set(internal.pendingCommands.map((command: { reqId?: string }) => command.reqId)).size).toBe(4);
+  });
+
   test("binds abort commands to the stream visible at keypress time", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;

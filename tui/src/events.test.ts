@@ -79,6 +79,32 @@ describe("tool policy activity state", () => {
     expect(state.activeToolPolicy).toEqual(disabledToolPolicy);
   });
 
+  test("prints the all-enabled default policy for a blank conversation draft", () => {
+    const state = createInitialState();
+    state.pendingToolPolicyDraftId = "draft-tools";
+
+    handleEvent({
+      type: "tool_policy",
+      reqId: "tools-draft-request",
+      convId: "draft-tools",
+      snapshot: {
+        convId: "draft-tools",
+        scoped: false,
+        source: "default",
+        internal: [{ name: "read", label: "Read", enabled: true }],
+        external: [{ name: "gmail", label: "Gmail", enabled: true }],
+        shellWarning: false,
+      },
+      changed: false,
+    }, state, daemon);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      role: "system",
+      text: expect.stringContaining("Enabled: read, gmail\nDisabled: (none)"),
+    });
+  });
+
   test("abandons blank-draft tool choices when another conversation is opened", () => {
     const state = createInitialState();
     state.pendingToolPolicyDraftId = "draft-tools";

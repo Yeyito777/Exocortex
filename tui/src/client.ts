@@ -509,19 +509,19 @@ export class DaemonClient {
   }
 
   getToolPolicy(convId: string): void {
-    this.send({ type: "get_tool_policy", convId });
+    this.send({ type: "get_tool_policy", reqId: this.requestId("tools"), convId });
   }
 
   setToolPolicy(convId: string, mutation: ToolPolicyMutation): void {
-    this.send({ type: "set_tool_policy", convId, mutation });
+    this.send({ type: "set_tool_policy", reqId: this.requestId("tools"), convId, mutation });
   }
 
   getDraftToolPolicy(draftId: string): void {
-    this.send({ type: "get_draft_tool_policy", draftId });
+    this.send({ type: "get_draft_tool_policy", reqId: this.requestId("tools"), draftId });
   }
 
   setDraftToolPolicy(draftId: string, mutation: ToolPolicyMutation): void {
-    this.send({ type: "set_draft_tool_policy", draftId, mutation });
+    this.send({ type: "set_draft_tool_policy", reqId: this.requestId("tools"), draftId, mutation });
   }
 
   clearDraftToolPolicy(draftId: string): void {
@@ -551,6 +551,10 @@ export class DaemonClient {
   }
 
   // ── Internal ────────────────────────────────────────────────────
+
+  private requestId(prefix: string): string {
+    return `${prefix}_${++this.nextReqId}_${Date.now()}`;
+  }
 
   private socketMissingError(): Error {
     return new Error(
