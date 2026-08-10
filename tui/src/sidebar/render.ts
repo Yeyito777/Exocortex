@@ -15,7 +15,7 @@ import {
   getSidebarSearchBarViewport,
 } from "../sidebarsearch";
 import { theme } from "../theme";
-import { shouldDisplayConversationTask } from "../taskvisibility";
+import { hasInProgressModelWork, shouldDisplayConversationTask } from "../taskvisibility";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import type { ConversationTaskSummary } from "../messages";
 
@@ -30,18 +30,10 @@ interface FolderAggregate {
   chronoTaskCount: number;
 }
 
-function countChronoTasks(
-  tasks: readonly ConversationTaskSummary[] | undefined,
-  conversationStreaming: boolean,
-): number {
+function countChronoTasks(tasks: readonly ConversationTaskSummary[] | undefined): number {
   let count = 0;
   for (const task of tasks ?? []) {
-    if (task.kind !== "chrono" || !shouldDisplayConversationTask(task)) continue;
-    // Short sleeps keep their provider turn active, so the blue streaming dot is
-    // already authoritative. A long sleep is daemon-deferred: streaming becomes
-    // false while the durable sleep task remains, and the clock becomes its sole
-    // sidebar activity marker without duplicating the configured time threshold.
-    if (task.chronoMode === "sleep" && conversationStreaming) continue;
+    if (task.kind !== "chrono" || task.chronoMode === "sleep" || !shouldDisplayConversationTask(task)) continue;
     count++;
   }
   return count;
@@ -69,15 +61,16 @@ function buildFolderAggregates(
 
   for (const conv of sidebar.conversations) {
     const hasGlobalIdle = globalIdleConvIds.has(conv.id);
-    const hasUnread = conv.unread && !conv.streaming;
-    const chronoTaskCount = countChronoTasks(conv.tasks, conv.streaming);
+    const hasModelWork = hasInProgressModelWork(conv);
+    const hasUnread = conv.unread && !hasModelWork;
+    const chronoTaskCount = countChronoTasks(conv.tasks);
     let folderId = conv.folderId ?? null;
     const seen = new Set<string>();
     while (folderId && aggregates.has(folderId) && !seen.has(folderId)) {
       seen.add(folderId);
       const aggregate = aggregates.get(folderId)!;
       aggregate.count++;
-      if (conv.streaming) aggregate.streamingCount++;
+      if (hasModelWork) aggregate.streamingCount++;
       aggregate.globalIdle ||= hasGlobalIdle;
       aggregate.unread ||= hasUnread;
       if (hasUnread) aggregate.unreadCount++;
@@ -275,12 +268,13 @@ export function renderSidebar(
       notificationsMuted = isConversationMuted(sidebar, conv);
       isCurrent = conv.id === currentConvId;
       const hasGlobalIdle = globalIdleConvIds.has(conv.id);
-      const hasUnread = !notificationsMuted && conv.unread && !conv.streaming;
-      streamIcon = conv.streaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
-      streamIconColor = conv.streaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
+      const hasModelWork = hasInProgressModelWork(conv);
+      const hasUnread = !notificationsMuted && conv.unread && !hasModelWork;
+      streamIcon = hasModelWork ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
+      streamIconColor = hasModelWork ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(conv.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(conv.backgroundTaskCount ?? 0);
-      chronoTaskIcon = chronoTaskIndicator(countChronoTasks(conv.tasks, conv.streaming));
+      chronoTaskIcon = chronoTaskIndicator(countChronoTasks(conv.tasks));
       starIcon = conv.marked ? "★ " : "";
       const mark = getMarkFromTitle(conv.title);
       emojiIcon = mark ? mark.emoji + " " : "";

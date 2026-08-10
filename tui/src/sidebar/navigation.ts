@@ -1,3 +1,4 @@
+import { hasInProgressModelWork } from "../taskvisibility";
 import { sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { buildDisplayRows, type DisplayRow } from "./rows";
 import { focusConversationAt, focusSidebarItem } from "./selection";
@@ -43,8 +44,9 @@ function foldersWithStreamingIndicator(
   for (const folder of sidebar.folders) parentById.set(folder.id, folder.parentId ?? null);
 
   for (const conv of sidebar.conversations) {
-    const hasVisibleUnread = conv.unread && !conv.streaming;
-    if (!conv.streaming && !hasVisibleUnread) continue;
+    const hasModelWork = hasInProgressModelWork(conv);
+    const hasVisibleUnread = conv.unread && !hasModelWork;
+    if (!hasModelWork && !hasVisibleUnread) continue;
     let folderId = conv.folderId ?? null;
     const seen = new Set<string>();
     while (folderId && parentById.has(folderId) && !seen.has(folderId)) {
@@ -65,7 +67,9 @@ function hasStreamingIndicator(
   const item = row.item ?? null;
   if (item?.type === "conversation") {
     const conv = row.convIdx === undefined ? sidebar.conversations.find(c => c.id === item.id) : sidebar.conversations[row.convIdx];
-    return Boolean(conv?.streaming || (conv?.unread && !conv.streaming));
+    if (!conv) return false;
+    const hasModelWork = hasInProgressModelWork(conv);
+    return hasModelWork || (conv.unread && !hasModelWork);
   }
   if (item?.type === "folder") {
     return streamingFolderIds.has(item.id);

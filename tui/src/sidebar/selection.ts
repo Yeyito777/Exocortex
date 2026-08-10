@@ -1,4 +1,5 @@
 import type { ConversationSummary, SidebarItemRef } from "../messages";
+import { hasInProgressModelWork } from "../taskvisibility";
 import { isMovableSidebarItem, sidebarItemKey as itemKey, sameSidebarItem as sameItem, type SidebarSelectableItem } from "./items";
 import { buildDisplayRows, type DisplayRow } from "./rows";
 import type { SidebarState } from "./state";
@@ -65,7 +66,10 @@ function activityConversations(
   status: "completed" | "streaming",
 ): ConversationSummary[] {
   return sidebar.conversations
-    .filter((conv) => status === "streaming" ? conv.streaming : conv.unread && !conv.streaming)
+    .filter((conv) => {
+      const hasModelWork = hasInProgressModelWork(conv);
+      return status === "streaming" ? hasModelWork : conv.unread && !hasModelWork;
+    })
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 

@@ -53,6 +53,26 @@ describe("sidebar streaming navigation", () => {
     expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "project" });
   });
 
+  test("jumps to a folder with a descendant deferred Chrono sleep", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [folder("project", 2)];
+    sidebar.conversations = [
+      conversation("root", 1),
+      conversation("sleeping", 1, {
+        folderId: "project",
+        tasks: [{ id: "chrono:sleep:long", kind: "chrono", title: "Sleeping", startedAt: 1, chronoMode: "sleep" }],
+      }),
+    ];
+    sidebar.selectedItem = { type: "conversation", id: "root" };
+    sidebar.selectedId = "root";
+    sidebar.selectedIndex = 0;
+
+    expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
+
+    expect(sidebar.currentFolderId).toBeNull();
+    expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "project" });
+  });
+
   test("uses visible sidebar order and wraps across folder streaming indicators", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [folder("project", 1)];

@@ -818,9 +818,14 @@ describe("conversation activity shortcuts", () => {
     state.sidebar.conversations = [
       conversation("older-completed", 1, { unread: true, updatedAt: 100 }),
       conversation("streaming", 2, { streaming: true, unread: true, updatedAt: 400 }),
-      conversation("direct-agent", 3, { folderId: "subagents", unread: true, updatedAt: 600 }),
-      conversation("nested-agent", 4, { folderId: "nested-agents", unread: true, updatedAt: 700 }),
-      conversation("latest-completed", 5, { folderId: "work", unread: true, updatedAt: 300 }),
+      conversation("sleeping", 3, {
+        unread: true,
+        updatedAt: 800,
+        tasks: [{ id: "chrono:sleep:long", kind: "chrono", title: "Sleeping", startedAt: 200, chronoMode: "sleep" }],
+      }),
+      conversation("direct-agent", 4, { folderId: "subagents", unread: true, updatedAt: 600 }),
+      conversation("nested-agent", 5, { folderId: "nested-agents", unread: true, updatedAt: 700 }),
+      conversation("latest-completed", 6, { folderId: "work", unread: true, updatedAt: 300 }),
     ];
 
     const result = handleFocusedKey({ type: "char", char: "t" }, state);
@@ -841,7 +846,7 @@ describe("conversation activity shortcuts", () => {
     });
   });
 
-  test("Shift+T cycles through all canonical streaming conversations by recency and wraps", () => {
+  test("Shift+T cycles through streaming and deferred-sleep conversations by recency", () => {
     const state = createInitialState();
     state.vim.mode = "normal";
     state.sidebar.folders = [
@@ -852,7 +857,12 @@ describe("conversation activity shortcuts", () => {
       conversation("older-stream", 1, { streaming: true, updatedAt: 100 }),
       conversation("completed", 2, { unread: true, updatedAt: 500 }),
       conversation("agent-stream", 3, { folderId: "subagents", streaming: true, updatedAt: 700 }),
-      conversation("latest-stream", 4, { folderId: "work", streaming: true, updatedAt: 300 }),
+      conversation("sleeping", 4, {
+        folderId: "work",
+        updatedAt: 600,
+        tasks: [{ id: "chrono:sleep:long", kind: "chrono", title: "Sleeping", startedAt: 200, chronoMode: "sleep" }],
+      }),
+      conversation("latest-stream", 5, { folderId: "work", streaming: true, updatedAt: 300 }),
     ];
 
     const result = handleFocusedKey({ type: "char", char: "T" }, state);
@@ -865,6 +875,12 @@ describe("conversation activity shortcuts", () => {
     expect(state.sidebar.selectedId).toBe("agent-stream");
 
     state.convId = "agent-stream";
+    expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({
+      type: "load_conversation",
+      convId: "sleeping",
+    });
+
+    state.convId = "sleeping";
     expect(handleFocusedKey({ type: "char", char: "T" }, state)).toEqual({
       type: "load_conversation",
       convId: "latest-stream",
