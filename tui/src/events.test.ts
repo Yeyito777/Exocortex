@@ -101,7 +101,14 @@ describe("tool policy activity state", () => {
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]).toMatchObject({
       role: "system",
-      text: expect.stringContaining("Enabled: read, gmail\nDisabled: (none)"),
+      text: expect.stringContaining([
+        "Enabled:",
+        "  Internal: read",
+        "  External: gmail",
+        "Disabled:",
+        "  Internal: (none)",
+        "  External: (none)",
+      ].join("\n")),
     });
   });
 

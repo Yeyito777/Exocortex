@@ -79,22 +79,22 @@ function parseTargets(values: string[], state: CommandState): {
 }
 
 export function formatToolPolicySnapshot(snapshot: ToolPolicySnapshot, changed: boolean): string {
-  const availability = new Map<string, boolean>();
-  for (const entry of [...snapshot.internal, ...snapshot.external]) {
-    availability.set(entry.name, (availability.get(entry.name) ?? false) || entry.enabled);
-  }
-  const list = (enabled: boolean) => {
-    const names = [...availability]
-      .filter(([, isEnabled]) => isEnabled === enabled)
-      .map(([name]) => name);
+  const list = (entries: ToolPolicySnapshot["internal"], enabled: boolean) => {
+    const names = entries
+      .filter((entry) => entry.enabled === enabled)
+      .map((entry) => entry.name);
     return names.length > 0 ? names.join(", ") : "(none)";
   };
   return [
     changed ? "Tool policy updated." : "Tool policy",
     `Mode: ${snapshot.source}${snapshot.scoped ? " · scoped subagent" : ""}`,
     "",
-    `Enabled: ${list(true)}`,
-    `Disabled: ${list(false)}`,
+    "Enabled:",
+    `  Internal: ${list(snapshot.internal, true)}`,
+    `  External: ${list(snapshot.external, true)}`,
+    "Disabled:",
+    `  Internal: ${list(snapshot.internal, false)}`,
+    `  External: ${list(snapshot.external, false)}`,
     ...((snapshot.modules?.length ?? 0) > 0
       ? [
           "",
@@ -104,7 +104,6 @@ export function formatToolPolicySnapshot(snapshot: ToolPolicySnapshot, changed: 
           "Warning: custom tool modules are trusted code executed inside the daemon, not a sandbox.",
         ]
       : []),
-    ...(snapshot.shellWarning ? ["", "Warning: bash or command-capable scheduling is enabled. Filesystem and external-command restrictions are not a hard sandbox while unrestricted process execution is available."] : []),
     "",
     "Use /tools enable, /tools disable, or /tools reset to change the next turn.",
   ].join("\n");

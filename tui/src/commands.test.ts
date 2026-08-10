@@ -1319,8 +1319,8 @@ describe("/tools", () => {
     expect(usageMessage.text.includes("external:<name>")).toBe(false);
   });
 
-  test("formats internal and external policy entries as a unified tool list", () => {
-    expect(formatToolPolicySnapshot({
+  test("formats enabled and disabled internal and external tools separately without a shell warning", () => {
+    const output = formatToolPolicySnapshot({
       convId: "conversation-1",
       scoped: false,
       source: "explicit",
@@ -1332,7 +1332,17 @@ describe("/tools", () => {
         { name: "gmail", label: "Gmail", enabled: false },
         { name: "exo", label: "Exocortex CLI", enabled: true },
       ],
-      shellWarning: false,
-    }, false)).toContain("Enabled: read, exo\nDisabled: gmail");
+      shellWarning: true,
+    }, false);
+
+    expect(output).toContain([
+      "Enabled:",
+      "  Internal: read",
+      "  External: exo",
+      "Disabled:",
+      "  Internal: exo",
+      "  External: gmail",
+    ].join("\n"));
+    expect(output).not.toContain("Warning: bash");
   });
 });
