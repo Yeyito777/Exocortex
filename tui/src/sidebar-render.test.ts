@@ -152,23 +152,36 @@ describe("sidebar rendering", () => {
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
   });
 
-  test("omits Chrono waits and sleeps from conversation and folder indicators", () => {
+  test("shows deferred Chrono sleeps while omitting live sleeps and waits", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
-    sidebar.conversations = [conversation("waiting", 0, {
-      title: "Waiting",
-      folderId: "folder",
-      tasks: [
-        { id: "chrono-wait", kind: "chrono", title: "Wait for build", startedAt: 0, chronoMode: "wait" },
-        { id: "chrono-sleep", kind: "chrono", title: "Sleep briefly", startedAt: 0, chronoMode: "sleep" },
-      ],
-    })];
+    sidebar.conversations = [
+      conversation("deferred-sleep", 0, {
+        title: "Deferred sleep",
+        folderId: "folder",
+        tasks: [{ id: "chrono-long-sleep", kind: "chrono", title: "Sleep for ten minutes", startedAt: 0, chronoMode: "sleep" }],
+      }),
+      conversation("live-sleep", 1, {
+        title: "Live sleep",
+        folderId: "folder",
+        streaming: true,
+        tasks: [{ id: "chrono-short-sleep", kind: "chrono", title: "Sleep briefly", startedAt: 0, chronoMode: "sleep" }],
+      }),
+      conversation("waiting", 2, {
+        title: "Waiting",
+        folderId: "folder",
+        tasks: [{ id: "chrono-wait", kind: "chrono", title: "Wait for build", startedAt: 0, chronoMode: "wait" }],
+      }),
+    ];
 
     let rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Work"))).not.toContain("◷");
+    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.success}◷ `);
 
     sidebar.currentFolderId = "folder";
     rows = renderSidebar(sidebar, 8, true, null);
+    expect(rows.find(row => row.includes("Deferred sleep"))).toContain(`${theme.success}◷ `);
+    expect(rows.find(row => row.includes("Live sleep"))).toContain(`${theme.accent}◉ `);
+    expect(rows.find(row => row.includes("Live sleep"))).not.toContain("◷");
     expect(rows.find(row => row.includes("Waiting"))).not.toContain("◷");
   });
 
