@@ -2727,17 +2727,17 @@ export function getDisplayData(id: string, includeToolOutputs = true): Conversat
   return buildSnapshotDisplayData(conv, conv.messages, includeToolOutputs);
 }
 
-export function getToolOutputs(id: string): ToolOutputInfo[] | null {
+export function getToolOutputs(id: string, toolCallIds?: readonly string[]): ToolOutputInfo[] | null {
   if (persistence.isSqliteConversationStore() && !streaming.isStreaming(id)) {
     const loaded = conversations.get(id);
     const summary = summaries.get(id);
     if (!loaded || !summary || countConversationMessages(loaded.messages) === summary.messageCount) {
-      return persistence.loadToolOutputs(id);
+      return persistence.loadToolOutputs(id, toolCallIds);
     }
   }
   const conv = get(id);
   if (!conv) return null;
-  return collectToolOutputs(conv.messages);
+  return collectToolOutputs(conv.messages, toolCallIds ? new Set(toolCallIds) : undefined);
 }
 
 // ── Unread state ─────────────────────────────────────────────────────

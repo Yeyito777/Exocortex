@@ -554,6 +554,31 @@ describe("SQLite maintenance", () => {
     store.close();
   });
 
+  test("loads only selected tool-result payloads", () => {
+    const { path } = pathFor("selected-tool-outputs");
+    const store = new SqliteConversationStore({ path });
+    const conv = createConversation("selected-tool-outputs", "openai", "gpt-5.6-sol", 0, "Selected outputs");
+    conv.messages.push({
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "tool-1", content: "first output", is_error: false },
+        { type: "tool_result", tool_use_id: "tool-2", content: "second output", is_error: false },
+      ],
+      metadata: null,
+    });
+    store.save(conv);
+
+    expect(store.loadToolOutputs(conv.id, ["tool-2", "missing", "tool-2"])).toEqual([
+      { toolCallId: "tool-2", output: "second output" },
+    ]);
+    expect(store.loadToolOutputs(conv.id, [])).toEqual([]);
+    expect(store.loadToolOutputs(conv.id)).toEqual([
+      { toolCallId: "tool-1", output: "first output" },
+      { toolCallId: "tool-2", output: "second output" },
+    ]);
+    store.close();
+  });
+
   test("round-trips realtime provenance and rewrites promoted transcript content", () => {
     const { path } = pathFor("realtime-provenance");
     let store = new SqliteConversationStore({ path });

@@ -302,8 +302,8 @@ export function loadDisplayPage(id: string, turns: number, beforeEntryIndex?: nu
   return backend === "sqlite" ? store().loadDisplayPage(id, turns, beforeEntryIndex) : null;
 }
 
-export function loadToolOutputs(id: string): ToolOutputInfo[] | null {
-  return backend === "sqlite" ? store().loadToolOutputs(id) : null;
+export function loadToolOutputs(id: string, toolCallIds?: readonly string[]): ToolOutputInfo[] | null {
+  return backend === "sqlite" ? store().loadToolOutputs(id, toolCallIds) : null;
 }
 
 export function searchConversationTitles(query: string, limit = 50): PersistedConversationSummary[] {

@@ -1689,15 +1689,35 @@ export class SqliteConversationStore implements ConversationRepository {
     return restored;
   }
 
-  loadToolOutputs(id: string): ToolOutputInfo[] | null {
+  loadToolOutputs(id: string, toolCallIds?: readonly string[]): ToolOutputInfo[] | null {
     if (!this.has(id)) return null;
-    return this.db.query<{ tool_call_id: string; content_json: string; payload_json: string | null }, [string]>(`
-      SELECT t.tool_call_id, m.content_json, b.payload_json FROM tool_outputs t
-      JOIN messages m ON m.conversation_id=t.conversation_id AND m.sequence=t.message_sequence
-      LEFT JOIN message_blobs b ON b.conversation_id=t.conversation_id
-        AND b.message_sequence=t.message_sequence AND b.kind='tool_result' AND b.ordinal=t.ordinal
-      WHERE t.conversation_id=? ORDER BY t.message_sequence, t.ordinal
-    `).all(id).map((row) => {
+    const requestedIds = toolCallIds ? [...new Set(toolCallIds)] : null;
+    if (requestedIds?.length === 0) return [];
+
+    type ToolOutputRow = { tool_call_id: string; content_json: string; payload_json: string | null };
+    const selectRows = (ids?: readonly string[]): ToolOutputRow[] => {
+      const idFilter = ids ? ` AND t.tool_call_id IN (${sqlPlaceholders(ids.length)})` : "";
+      return this.db.query<ToolOutputRow, string[]>(`
+        SELECT t.tool_call_id, m.content_json, b.payload_json FROM tool_outputs t
+        JOIN messages m ON m.conversation_id=t.conversation_id AND m.sequence=t.message_sequence
+        LEFT JOIN message_blobs b ON b.conversation_id=t.conversation_id
+          AND b.message_sequence=t.message_sequence AND b.kind='tool_result' AND b.ordinal=t.ordinal
+        WHERE t.conversation_id=?${idFilter} ORDER BY t.message_sequence, t.ordinal
+      `).all(id, ...(ids ?? []));
+    };
+
+    // Stay below conservative SQLite variable limits while still avoiding any
+    // payload parsing for the thousands of off-screen results in a long chat.
+    const rows: ToolOutputRow[] = [];
+    if (requestedIds) {
+      for (let offset = 0; offset < requestedIds.length; offset += 400) {
+        rows.push(...selectRows(requestedIds.slice(offset, offset + 400)));
+      }
+    } else {
+      rows.push(...selectRows());
+    }
+
+    return rows.map((row) => {
       let raw: unknown;
       if (row.payload_json != null) {
         raw = (JSON.parse(row.payload_json) as { value: unknown }).value;

@@ -17,6 +17,25 @@ afterEach(async () => {
 });
 
 describe("DaemonClient request-scoped events", () => {
+  test("parses a fragmented event followed by another event in the same socket chunk", () => {
+    const events: unknown[] = [];
+    const client = new DaemonClient((event) => events.push(event));
+    const internal = client as any;
+    const first = JSON.stringify({ type: "error", message: "fragmented" });
+    const split = Math.floor(first.length / 2);
+
+    internal.onData(Buffer.from(first.slice(0, split)));
+    expect(events).toEqual([]);
+
+    internal.onData(Buffer.from(
+      first.slice(split) + "\n" + JSON.stringify({ type: "error", message: "packed" }) + "\n",
+    ));
+    expect(events).toEqual([
+      { type: "error", message: "fragmented" },
+      { type: "error", message: "packed" },
+    ]);
+  });
+
   test("does not forward transcription callback errors to the global handler", () => {
     const events: unknown[] = [];
     const errors: string[] = [];
@@ -65,6 +84,20 @@ describe("DaemonClient request-scoped events", () => {
 });
 
 describe("DaemonClient commands", () => {
+  test("requests only the materialized tool-result ids", () => {
+    const client = new DaemonClient(() => {}, undefined, false);
+    const internal = client as any;
+
+    client.loadToolOutputs("conv-1", ["visible-1", "visible-2"]);
+
+    expect(internal.pendingCommands).toEqual([{
+      type: "load_tool_outputs",
+      reqId: expect.stringContaining("tool_outputs_"),
+      convId: "conv-1",
+      toolCallIds: ["visible-1", "visible-2"],
+    }]);
+  });
+
   test("binds abort commands to the stream visible at keypress time", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;

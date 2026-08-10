@@ -55,6 +55,7 @@ import { sanitizePromptTextForInsertion } from "./prompttext";
 import { log } from "./log";
 import { copyToClipboard } from "./vim/clipboard";
 import { handleBtwKey } from "./btw/keys";
+import { collectDisplayedToolResultIds } from "./events/tool-outputs";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -69,7 +70,7 @@ export type KeyResult =
   | { type: "restart_daemon" }
   | { type: "load_conversation"; convId: string }
   | { type: "open_folder_instructions"; folderId: string }
-  | { type: "load_tool_outputs"; convId: string }
+  | { type: "load_tool_outputs"; convId: string; toolCallIds: string[] }
   | { type: "delete_conversation"; convId: string }
   | { type: "delete_conversations"; convIds: string[] }
   | { type: "delete_folder"; folderId: string; mode: "recursive" | "unwrap" }
@@ -363,7 +364,11 @@ export function handleFocusedKey(
       if (!state.convId || state.toolOutputsLoading) return { type: "handled" };
       state.toolOutputsLoading = true;
       state.showToolOutputAfterLoad = true;
-      return { type: "load_tool_outputs", convId: state.convId };
+      return {
+        type: "load_tool_outputs",
+        convId: state.convId,
+        toolCallIds: collectDisplayedToolResultIds(state),
+      };
     case "paste_image": {
       if (!modelSupportsImages(state)) {
         log("warn", `tui: clipboard image paste failed: image inputs are not supported by ${state.provider}/${state.model}`);

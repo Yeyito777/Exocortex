@@ -51,7 +51,7 @@ import {
   handleToolResult,
   handleUserMessage,
 } from "./events/streaming";
-import { handleToolOutputsLoaded } from "./events/tool-outputs";
+import { collectDisplayedToolResultIds, handleToolOutputsLoaded } from "./events/tool-outputs";
 import { handleToolsAvailable } from "./events/provider";
 import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
 import type { DaemonActions } from "./events/types";
@@ -260,7 +260,7 @@ export function handleEvent(
       break;
 
     case "conversation_history_loaded":
-      handleConversationHistoryLoaded(event, state);
+      handleConversationHistoryLoaded(event, state, daemon);
       break;
 
     case "stream_retry":
@@ -415,12 +415,13 @@ export function handleEvent(
       });
       if (state.showToolOutput && !state.toolOutputsLoaded && state.convId) {
         state.toolOutputsLoading = true;
-        daemon.loadToolOutputs(state.convId);
+        daemon.loadToolOutputs(state.convId, collectDisplayedToolResultIds(state));
       }
       break;
     }
 
     case "tool_outputs_loaded":
+      if (event.convId !== state.convId) break;
       handleToolOutputsLoaded(state, event.outputs);
       break;
 

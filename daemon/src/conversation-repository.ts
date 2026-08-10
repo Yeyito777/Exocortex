@@ -78,7 +78,7 @@ export interface ConversationRepository {
   /** Indexed non-pinned display entry count immediately before a user turn. */
   displayEntryCountBeforeUser(id: string, userMessageIndex: number): number | null;
   loadDisplayPage(id: string, turns: number, beforeEntryIndex?: number): StoredDisplayHistoryPage | null;
-  loadToolOutputs(id: string): ToolOutputInfo[] | null;
+  loadToolOutputs(id: string, toolCallIds?: readonly string[]): ToolOutputInfo[] | null;
 }
 
 export interface ConversationTransactionResult<T> {

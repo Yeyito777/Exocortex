@@ -319,6 +319,11 @@ export interface LoadToolOutputsCommand {
   type: "load_tool_outputs";
   reqId?: string;
   convId: string;
+  /**
+   * Limit the response to tool results currently materialized by the client.
+   * Omission preserves compatibility with clients that expect the full transcript.
+   */
+  toolCallIds?: string[];
 }
 
 export interface SetModelCommand {

@@ -625,10 +625,22 @@ describe("tool output toggle scroll preservation", () => {
     state.convId = "conv-1";
     state.toolOutputsLoaded = false;
     state.toolOutputsLoading = false;
+    state.messages.push({
+      role: "assistant",
+      blocks: [
+        { type: "tool_result", toolCallId: "visible-1", toolName: "bash", output: "", isError: false },
+        { type: "tool_result", toolCallId: "visible-2", toolName: "read", output: "", isError: false },
+      ],
+      metadata: null,
+    });
 
     const result = handleFocusedKey({ type: "ctrl-o" }, state);
 
-    expect(result).toEqual({ type: "load_tool_outputs", convId: "conv-1" });
+    expect(result).toEqual({
+      type: "load_tool_outputs",
+      convId: "conv-1",
+      toolCallIds: ["visible-1", "visible-2"],
+    });
     expect(state.showToolOutput).toBe(false);
     expect(state.toolOutputsLoading).toBe(true);
     expect(state.showToolOutputAfterLoad).toBe(true);
@@ -661,6 +673,24 @@ describe("tool output toggle scroll preservation", () => {
     expect(topVisibleLine(state)).toBe("  after 28");
     if (assistant.blocks[2].type !== "tool_result") throw new Error("expected tool result");
     expect(assistant.blocks[2].output).toContain("line 20");
+  });
+
+  test("ignores a late tool-output response from a conversation that is no longer open", () => {
+    const state = createInitialState();
+    state.convId = "conv-2";
+    state.toolOutputsLoading = true;
+    state.showToolOutputAfterLoad = true;
+
+    handleEvent({
+      type: "tool_outputs_loaded",
+      convId: "conv-1",
+      outputs: [{ toolCallId: "old-call", output: "old output" }],
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.toolOutputsLoaded).toBe(false);
+    expect(state.toolOutputsLoading).toBe(true);
+    expect(state.showToolOutputAfterLoad).toBe(true);
+    expect(state.showToolOutput).toBe(false);
   });
 });
 

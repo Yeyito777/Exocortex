@@ -2000,6 +2000,45 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     });
   });
 
+  test("loads only the tool-result bodies selected by the client", async () => {
+    const convId = mkId("selected-tool-results");
+    create(convId, "openai", "gpt-5.4");
+    const conv = get(convId)!;
+    conv.messages.push({
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "call-1", content: "off-screen body", is_error: false },
+        { type: "tool_result", tool_use_id: "call-2", content: "visible body", is_error: false },
+      ],
+      metadata: null,
+    });
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "load_tool_outputs",
+      convId,
+      toolCallIds: ["call-2"],
+    });
+
+    expect(sent).toEqual([{
+      type: "tool_outputs_loaded",
+      reqId: undefined,
+      convId,
+      outputs: [{ toolCallId: "call-2", output: "visible body" }],
+    }]);
+  });
+
   test("includes the live assistant snapshot in conversation_loaded and still sends streaming_started for catch-up", async () => {
     const convId = mkId("live-window");
     create(convId, "openai", "gpt-5.4");

@@ -55,12 +55,16 @@ function stringifyToolResultContent(raw: string | ContentPart[]): string {
       : String(raw ?? "");
 }
 
-export function collectToolOutputs(messages: StoredMessage[]): ToolOutputInfo[] {
+export function collectToolOutputs(
+  messages: StoredMessage[],
+  toolCallIds?: ReadonlySet<string>,
+): ToolOutputInfo[] {
   const outputs: ToolOutputInfo[] = [];
   for (const msg of messages) {
     if (!Array.isArray(msg.content)) continue;
     for (const part of msg.content) {
       if (part.type !== "tool_result") continue;
+      if (toolCallIds && !toolCallIds.has(part.tool_use_id)) continue;
       outputs.push({
         toolCallId: part.tool_use_id,
         output: stringifyToolResultContent(part.content as string | ContentPart[]),

@@ -99,8 +99,10 @@ export class JsonConversationRepository implements ConversationRepository {
     return page;
   }
 
-  loadToolOutputs(id: string) {
+  loadToolOutputs(id: string, toolCallIds?: readonly string[]) {
     const conv = json.load(id);
-    return conv ? collectToolOutputs(conv.messages) : null;
+    return conv
+      ? collectToolOutputs(conv.messages, toolCallIds ? new Set(toolCallIds) : undefined)
+      : null;
   }
 }

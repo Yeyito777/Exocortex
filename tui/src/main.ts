@@ -407,6 +407,18 @@ function onDaemonEvent(event: Event): void {
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
   reattachVisiblePendingVoiceSubmissions();
+  if (PERFORMANCE_PROFILING_ENABLED && event.type === "tool_outputs_loaded") {
+    const applyMs = performance.now() - eventStartedAt;
+    log(applyMs >= 100 ? "warn" : "info", `perf: tool_outputs tui_applied ${JSON.stringify({
+      reqId: event.reqId ?? null,
+      convId: event.convId,
+      outputs: event.outputs.length,
+      applyMs,
+      accepted: event.convId === state.convId,
+      expanded: state.showToolOutput,
+      historyLines: state.historyLines.length,
+    })}`);
+  }
   if (PERFORMANCE_PROFILING_ENABLED && event.type === "conversation_history_loaded") {
     const applyMs = performance.now() - eventStartedAt;
     log(applyMs >= 100 ? "warn" : "info", `perf: conversation_history tui_applied ${JSON.stringify({
@@ -1410,7 +1422,7 @@ function handleKey(key: KeyEvent): void {
       daemon.loadFolderInstructions(result.folderId);
       break;
     case "load_tool_outputs":
-      daemon.loadToolOutputs(result.convId);
+      daemon.loadToolOutputs(result.convId, result.toolCallIds);
       break;
     case "new_conversation":
       startNewConversation();

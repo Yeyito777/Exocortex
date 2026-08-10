@@ -44,6 +44,7 @@ import {
 } from "./streaming-snapshot";
 import type { DaemonActions } from "./types";
 import { clearCallTranscriptDrafts, reconcileCallTranscriptDrafts } from "./call";
+import { collectDisplayEntryToolResultIds } from "./tool-outputs";
 
 export function handleConversationCreated(
   event: Extract<Event, { type: "conversation_created" }>,
@@ -353,6 +354,7 @@ export function handleConversationLoaded(
 export function handleConversationHistoryLoaded(
   event: Extract<Event, { type: "conversation_history_loaded" }>,
   state: RenderState,
+  daemon: DaemonActions,
 ): void {
   if (event.convId !== state.convId) return;
   if (!event.reqId || event.reqId !== state.historyLoadingRequestId) return;
@@ -400,4 +402,15 @@ export function handleConversationHistoryLoaded(
     && !(state.panelFocus === "chat" && state.chatFocus === "history");
   if (canFastPathInitialBackfill) prependOlderMessages();
   else preserveViewportAcrossHistoryMutation(state, prependOlderMessages);
+
+  const newToolCallIds = collectDisplayEntryToolResultIds(event.entries);
+  if (newToolCallIds.length > 0) {
+    // The compact page deliberately omitted these bodies. A later Ctrl+O must
+    // not mistake an earlier page's completed fetch for full window coverage.
+    state.toolOutputsLoaded = false;
+    if (state.showToolOutput || state.showToolOutputAfterLoad) {
+      state.toolOutputsLoading = true;
+      daemon.loadToolOutputs(event.convId, newToolCallIds);
+    }
+  }
 }

@@ -2428,12 +2428,39 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "load_tool_outputs": {
-        const outputs = convStore.getToolOutputs(cmd.convId);
+        if (cmd.toolCallIds !== undefined && (
+          !Array.isArray(cmd.toolCallIds)
+          || cmd.toolCallIds.length > 50_000
+          || cmd.toolCallIds.some((id) => typeof id !== "string" || id.length === 0 || id.length > 1_024)
+        )) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid tool output selection" });
+          break;
+        }
+        const loadStartedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
+        const outputs = convStore.getToolOutputs(cmd.convId, cmd.toolCallIds);
+        const loadMs = PERFORMANCE_PROFILING_ENABLED ? performance.now() - loadStartedAt : 0;
         if (!outputs) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           break;
         }
-        server.sendTo(client, { type: "tool_outputs_loaded", reqId: cmd.reqId, convId: cmd.convId, outputs });
+        const sendStartedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
+        const responseBytes = server.sendTo(
+          client,
+          { type: "tool_outputs_loaded", reqId: cmd.reqId, convId: cmd.convId, outputs },
+          PERFORMANCE_PROFILING_ENABLED,
+        );
+        if (PERFORMANCE_PROFILING_ENABLED) {
+          const sendMs = performance.now() - sendStartedAt;
+          log(loadMs + sendMs >= 100 ? "warn" : "info", `perf: tool_outputs daemon_response ${JSON.stringify({
+            reqId: cmd.reqId ?? null,
+            convId: cmd.convId,
+            requested: cmd.toolCallIds?.length ?? null,
+            returned: outputs.length,
+            loadMs,
+            sendMs,
+            responseBytes,
+          })}`);
+        }
         break;
       }
 

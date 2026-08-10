@@ -132,6 +132,8 @@ for (const backend of ["json", "sqlite"] as const) {
       const older = h.repository.loadDisplayPage(id, 1, newest.startIndex)!;
       expect(older.entries.length).toBeGreaterThan(0);
       expect(h.repository.loadToolOutputs(id)).toEqual([{ toolCallId: "call-1", output: "large result" }]);
+      expect(h.repository.loadToolOutputs(id, ["call-1"])).toEqual([{ toolCallId: "call-1", output: "large result" }]);
+      expect(h.repository.loadToolOutputs(id, ["missing"])).toEqual([]);
     });
 
     test("appends a canonical tail exactly once at an optimistic durable boundary", () => {

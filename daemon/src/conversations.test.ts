@@ -2176,5 +2176,7 @@ describe("getDisplayData", () => {
       isError: false,
     });
     expect(getToolOutputs(id)).toEqual([{ toolCallId: "call-1", output: "tool output" }]);
+    expect(getToolOutputs(id, ["call-1"])).toEqual([{ toolCallId: "call-1", output: "tool output" }]);
+    expect(getToolOutputs(id, ["missing"])).toEqual([]);
   });
 });

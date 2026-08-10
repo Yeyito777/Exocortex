@@ -62,6 +62,7 @@ export class DaemonClient {
   private transcriptionCallbacks = new Map<string, { onSuccess: TranscriptionCallback; onError?: TranscriptionErrorCallback }>();
   private pendingConversationLoads = new Map<string, { convId: string; startedAt: number }>();
   private pendingConversationHistoryLoads = new Map<string, { convId: string; requestSource: "initial-backfill" | "viewport"; startedAt: number }>();
+  private pendingToolOutputLoads = new Map<string, { convId: string; requested: number | null; startedAt: number }>();
   private nextReqId = 0;
 
   constructor(
@@ -484,8 +485,17 @@ export class DaemonClient {
     return reqId;
   }
 
-  loadToolOutputs(convId: string): void {
-    this.send({ type: "load_tool_outputs", convId });
+  loadToolOutputs(convId: string, toolCallIds?: string[]): string {
+    const reqId = `tool_outputs_${++this.nextReqId}_${Date.now()}`;
+    if (this.performanceProfilingEnabled) {
+      this.pendingToolOutputLoads.set(reqId, {
+        convId,
+        requested: toolCallIds?.length ?? null,
+        startedAt: performance.now(),
+      });
+    }
+    this.send({ type: "load_tool_outputs", reqId, convId, toolCallIds });
+    return reqId;
   }
 
   login(provider?: ProviderId, apiKey?: string, action?: "add" | "remove", target?: string, method?: OpenAILoginMethod): void {
@@ -617,12 +627,17 @@ export class DaemonClient {
   }
 
   private onData(data: Buffer | string): void {
+    // The existing prefix was completely scanned on the preceding callback.
+    // Resume at its old end instead of rescanning a growing multi-megabyte JSON
+    // event on every socket chunk (quadratic work for large payloads).
+    let newlineSearchFrom = this.buffer.length;
     this.buffer += typeof data === "string" ? data : data.toString("utf-8");
 
     let idx: number;
-    while ((idx = this.buffer.indexOf("\n")) !== -1) {
+    while ((idx = this.buffer.indexOf("\n", newlineSearchFrom)) !== -1) {
       const line = this.buffer.slice(0, idx).trim();
       this.buffer = this.buffer.slice(idx + 1);
+      newlineSearchFrom = 0;
       if (!line) continue;
       try {
         const parseStartedAt = this.performanceProfilingEnabled ? performance.now() : 0;
@@ -660,6 +675,23 @@ export class DaemonClient {
               parseMs,
               entries: event.type === "conversation_history_loaded" ? event.entries.length : null,
               historyTotalEntries: event.type === "conversation_history_loaded" ? event.historyTotalEntries : null,
+            })}`);
+          }
+        }
+        if (this.performanceProfilingEnabled && (event.type === "tool_outputs_loaded" || event.type === "error") && event.reqId) {
+          const pendingLoad = this.pendingToolOutputLoads.get(event.reqId);
+          if (pendingLoad) {
+            this.pendingToolOutputLoads.delete(event.reqId);
+            const elapsedMs = performance.now() - pendingLoad.startedAt;
+            log(elapsedMs >= 100 ? "warn" : "info", `perf: tool_outputs tui_received ${JSON.stringify({
+              reqId: event.reqId,
+              convId: pendingLoad.convId,
+              requested: pendingLoad.requested,
+              returned: event.type === "tool_outputs_loaded" ? event.outputs.length : null,
+              elapsedMs,
+              responseType: event.type,
+              wireBytes: Buffer.byteLength(line),
+              parseMs,
             })}`);
           }
         }

@@ -720,6 +720,49 @@ describe("paged conversation history events", () => {
     expect(state.historyLoadingRequestId).toBe("history-new");
   });
 
+  test("loads only newly prepended tool outputs while output is expanded", () => {
+    const requests: Array<{ convId: string; toolCallIds?: string[] }> = [];
+    const localDaemon: DaemonActions = {
+      ...daemon,
+      loadToolOutputs(convId, toolCallIds) { requests.push({ convId, toolCallIds }); },
+    };
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.showToolOutput = true;
+    state.toolOutputsLoaded = true;
+    state.messages = [{
+      role: "assistant",
+      blocks: [{ type: "tool_result", toolCallId: "newer-call", toolName: "bash", output: "already loaded", isError: false }],
+      metadata: null,
+    }];
+    state.historyStartIndex = 1;
+    state.historyStartUserIndex = 1;
+    state.historyTotalEntries = 2;
+    state.historyHasOlder = true;
+    state.historyLoadingOlder = true;
+    state.historyLoadingRequestId = "history-tools";
+
+    handleEvent({
+      type: "conversation_history_loaded",
+      reqId: "history-tools",
+      convId: "conv-1",
+      entries: [{
+        type: "ai",
+        blocks: [{ type: "tool_result", toolCallId: "older-call", toolName: "", output: "", isError: false }],
+        metadata: null,
+      }],
+      historyStartIndex: 0,
+      historyStartUserIndex: 0,
+      historyEndIndex: 1,
+      historyTotalEntries: 2,
+      hasOlderHistory: false,
+    }, state, localDaemon);
+
+    expect(requests).toEqual([{ convId: "conv-1", toolCallIds: ["older-call"] }]);
+    expect(state.toolOutputsLoaded).toBe(false);
+    expect(state.toolOutputsLoading).toBe(true);
+  });
+
   test("keeps already-loaded older entries across a non-destructive canonical update", () => {
     const state = createInitialState();
     state.convId = "conv-1";
