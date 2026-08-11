@@ -17,7 +17,7 @@ export interface GoalSetOptions {
 
 type IncompleteGoalStatus = Exclude<ConversationGoalStatus, "complete">;
 
-export const GOAL_TOOL_SYSTEM_HINT = "Only set a goal when the user explicitly asks you to. If a goal is already active, use this tool only to pause, resume, or complete it when appropriate.";
+export const GOAL_TOOL_SYSTEM_HINT = "Only set a goal when the user explicitly asks you to. When setting one, capture the user's general direction rather than a specific next step. If a goal is already active, use this tool only to pause, resume, or complete it when appropriate.";
 
 export function formatGoalSummary(goal: ConversationGoal | null | undefined): string {
   if (!goal) return "No goal set. Usage: /goal <objective>";
