@@ -143,16 +143,15 @@ describe("sidebar rendering", () => {
     expect(row).toContain(`${theme.accent}◉ `);
     expect(row).toContain(`${theme.accent}◆2 `);
     expect(row).toContain(`${theme.warning}$2 `);
-    expect(row).toContain(`${theme.success}◷ `);
-    expect(row).not.toContain(`${theme.success}◷2 `);
+    expect(row).toContain(`${theme.success}◷2 `);
     expect(row).not.toContain(`${theme.tool}◆ `);
-    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("◷ "));
-    expect(row!.indexOf("◷ ")).toBeLessThan(row!.indexOf("◆2 "));
+    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("◷2 "));
+    expect(row!.indexOf("◷2 ")).toBeLessThan(row!.indexOf("◆2 "));
     expect(row!.indexOf("◆2 ")).toBeLessThan(row!.indexOf("$2 "));
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
   });
 
-  test("shows an iconless wake-time status below deferred Chrono sleeps", () => {
+  test("shows a wake-time status and counts deferred Chrono sleeps", () => {
     const sidebar = createSidebarState();
     const wakeAt = Date.now() + 2 * 60 * 60_000 + 34 * 60_000 + 30_000;
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
@@ -178,19 +177,19 @@ describe("sidebar rendering", () => {
     let rows = renderSidebar(sidebar, 8, true, null);
     expect(rows.find(row => row.includes("Work"))).toContain(`${theme.accent}◉ `);
     expect(rows.find(row => row.includes("Work"))).not.toContain("◉1 ");
-    expect(rows.find(row => row.includes("Work"))).not.toContain("◷");
+    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.success}◷2 `);
 
     sidebar.currentFolderId = "folder";
     rows = renderSidebar(sidebar, 8, true, null);
     expect(rows.find(row => row.includes("Deferred sleep"))).not.toContain("◉");
-    expect(rows.find(row => row.includes("Deferred sleep"))).not.toContain("◷");
+    expect(rows.find(row => row.includes("Deferred sleep"))).toContain(`${theme.success}◷ `);
     const sleepStatus = rows.find(row => row.includes("wakes in"));
     expect(sleepStatus).toContain(`${theme.success}  ↳${theme.muted} wakes in 2h 35m`);
     expect(sleepStatus).not.toContain("Sleeping");
     expect(sleepStatus).not.toContain("◉");
     expect(sleepStatus).not.toContain("◷");
     expect(rows.find(row => row.includes("Live sleep"))).toContain(`${theme.accent}◉ `);
-    expect(rows.find(row => row.includes("Live sleep"))).not.toContain("◷");
+    expect(rows.find(row => row.includes("Live sleep"))).toContain(`${theme.success}◷ `);
     expect(rows.find(row => row.includes("Waiting"))).not.toContain("◉");
     expect(rows.find(row => row.includes("Waiting"))).not.toContain("◷");
     expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);

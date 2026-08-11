@@ -43,7 +43,7 @@ function deferredSleepStatus(task: ConversationTaskSummary): { primary: string; 
 function countChronoTasks(tasks: readonly ConversationTaskSummary[] | undefined): number {
   let count = 0;
   for (const task of tasks ?? []) {
-    if (task.kind !== "chrono" || task.chronoMode === "sleep" || !shouldDisplayConversationTask(task)) continue;
+    if (task.kind !== "chrono" || !shouldDisplayConversationTask(task)) continue;
     count++;
   }
   return count;
