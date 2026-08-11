@@ -16,6 +16,7 @@ import {
 } from "../sidebarsearch";
 import { theme } from "../theme";
 import { deferredChronoSleepTask, hasInProgressModelWork, shouldDisplayConversationTask } from "../taskvisibility";
+import { formatHoursMinutesUntil } from "../time";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import type { ConversationTaskSummary } from "../messages";
 
@@ -30,19 +31,12 @@ interface FolderAggregate {
   chronoTaskCount: number;
 }
 
-function formatWakeTime(dueAt: number): string {
-  return new Intl.DateTimeFormat("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(dueAt));
-}
-
 function deferredSleepStatus(task: ConversationTaskSummary): { primary: string; secondary: string } {
   return {
-    primary: "  Sleeping",
+    primary: "  ↳",
     secondary: task.dueAt !== undefined && Number.isFinite(task.dueAt)
-      ? ` · wakes ${formatWakeTime(task.dueAt)}`
-      : "",
+      ? ` wakes in ${formatHoursMinutesUntil(task.dueAt)}`
+      : " wakes",
   };
 }
 

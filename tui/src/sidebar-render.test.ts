@@ -154,7 +154,7 @@ describe("sidebar rendering", () => {
 
   test("shows an iconless wake-time status below deferred Chrono sleeps", () => {
     const sidebar = createSidebarState();
-    const wakeAt = new Date(2030, 0, 2, 15, 42).getTime();
+    const wakeAt = Date.now() + 2 * 60 * 60_000 + 34 * 60_000 + 30_000;
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
     sidebar.conversations = [
       conversation("deferred-sleep", 0, {
@@ -184,8 +184,9 @@ describe("sidebar rendering", () => {
     rows = renderSidebar(sidebar, 8, true, null);
     expect(rows.find(row => row.includes("Deferred sleep"))).not.toContain("◉");
     expect(rows.find(row => row.includes("Deferred sleep"))).not.toContain("◷");
-    const sleepStatus = rows.find(row => row.includes("Sleeping"));
-    expect(sleepStatus).toContain(`${theme.success}  Sleeping${theme.muted} · wakes 3:42 PM`);
+    const sleepStatus = rows.find(row => row.includes("wakes in"));
+    expect(sleepStatus).toContain(`${theme.success}  ↳${theme.muted} wakes in 2h 35m`);
+    expect(sleepStatus).not.toContain("Sleeping");
     expect(sleepStatus).not.toContain("◉");
     expect(sleepStatus).not.toContain("◷");
     expect(rows.find(row => row.includes("Live sleep"))).toContain(`${theme.accent}◉ `);
