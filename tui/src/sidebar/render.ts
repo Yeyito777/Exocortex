@@ -72,7 +72,8 @@ function buildFolderAggregates(
 
   for (const conv of sidebar.conversations) {
     const hasGlobalIdle = globalIdleConvIds.has(conv.id);
-    const hasModelWork = hasInProgressModelWork(conv) || conv.id === optimisticStreamingConvId;
+    const hasOptimisticStreaming = conv.id === optimisticStreamingConvId;
+    const hasModelWork = hasInProgressModelWork(conv) || hasOptimisticStreaming;
     const hasUnread = conv.unread && !hasModelWork;
     const chronoTaskCount = countChronoTasks(conv.tasks);
     let folderId = conv.folderId ?? null;
@@ -81,7 +82,7 @@ function buildFolderAggregates(
       seen.add(folderId);
       const aggregate = aggregates.get(folderId)!;
       aggregate.count++;
-      if (conv.streaming) aggregate.streamingCount++;
+      if (conv.streaming || hasOptimisticStreaming) aggregate.streamingCount++;
       aggregate.globalIdle ||= hasGlobalIdle;
       aggregate.unread ||= hasUnread;
       if (hasUnread) aggregate.unreadCount++;
@@ -310,10 +311,12 @@ export function renderSidebar(
       // Direct sends create pendingAI before IPC. Reflect that local accepted
       // input immediately instead of leaving the sidebar idle while a cold
       // canonical transcript is loaded and durably appended by the daemon.
-      const hasModelWork = hasInProgressModelWork(conv) || conv.id === optimisticStreamingConvId;
+      const hasOptimisticStreaming = conv.id === optimisticStreamingConvId;
+      const hasModelWork = hasInProgressModelWork(conv) || hasOptimisticStreaming;
       const hasUnread = !notificationsMuted && conv.unread && !hasModelWork;
-      streamIcon = conv.streaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
-      streamIconColor = conv.streaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
+      const hasStreamingIndicator = conv.streaming || hasOptimisticStreaming;
+      streamIcon = hasStreamingIndicator ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
+      streamIconColor = hasStreamingIndicator ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(conv.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(conv.backgroundTaskCount ?? 0);
       chronoTaskIcon = chronoTaskIndicator(countChronoTasks(conv.tasks));
