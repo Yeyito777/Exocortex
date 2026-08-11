@@ -46,7 +46,7 @@ function foldersWithStreamingIndicator(
   for (const conv of sidebar.conversations) {
     const hasModelWork = hasInProgressModelWork(conv);
     const hasVisibleUnread = conv.unread && !hasModelWork;
-    if (!hasModelWork && !hasVisibleUnread) continue;
+    if (!conv.streaming && !hasVisibleUnread) continue;
     let folderId = conv.folderId ?? null;
     const seen = new Set<string>();
     while (folderId && parentById.has(folderId) && !seen.has(folderId)) {

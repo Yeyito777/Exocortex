@@ -47,7 +47,7 @@ import {
 import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
 import { openTargetDetached } from "./openable";
-import { msUntilNextElapsedSecond } from "./time";
+import { msUntilHoursMinutesUpdate, msUntilNextElapsedSecond } from "./time";
 import type { Event, QueueTiming } from "./protocol";
 import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
 import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
@@ -56,6 +56,7 @@ import { startManualCompaction } from "./compact";
 import { runStreamFinishedPing, shouldPingForStreamCompletion } from "./ping";
 import { stripStartupLaunchEcho } from "./startupinput";
 import { focusedConversationTasks, msUntilTaskPanelEntryUpdate } from "./activitypanel";
+import { deferredChronoSleepTask } from "./taskvisibility";
 import { beginOlderHistoryLoad, INITIAL_BUFFER_ADDITIONAL_TURNS, OLDER_HISTORY_PAGE_TURNS, shouldLoadOlderHistory } from "./historypagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { log } from "./log";
@@ -313,6 +314,14 @@ function resetStreamTick(): void {
   for (const task of focusedConversationTasks(state)) {
     const delay = msUntilTaskPanelEntryUpdate(task);
     if (delay !== null) tickDelays.push(delay);
+  }
+  if (state.sidebar.open) {
+    for (const conversation of state.sidebar.conversations) {
+      const sleep = deferredChronoSleepTask(conversation);
+      if (sleep?.dueAt === undefined) continue;
+      const delay = msUntilHoursMinutesUpdate(sleep.dueAt);
+      if (delay !== null) tickDelays.push(delay);
+    }
   }
   if (tickDelays.length > 0) {
     streamTickTimer = setTimeout(scheduleRender, Math.min(...tickDelays));

@@ -15,7 +15,8 @@ import {
   getSidebarSearchBarViewport,
 } from "../sidebarsearch";
 import { theme } from "../theme";
-import { hasInProgressModelWork, shouldDisplayConversationTask } from "../taskvisibility";
+import { deferredChronoSleepTask, hasInProgressModelWork, shouldDisplayConversationTask } from "../taskvisibility";
+import { formatHoursMinutesUntil } from "../time";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import type { ConversationTaskSummary } from "../messages";
 
@@ -30,10 +31,19 @@ interface FolderAggregate {
   chronoTaskCount: number;
 }
 
+function deferredSleepStatus(task: ConversationTaskSummary): { primary: string; secondary: string } {
+  return {
+    primary: "    ↳",
+    secondary: task.dueAt !== undefined && Number.isFinite(task.dueAt)
+      ? ` wakes in ${formatHoursMinutesUntil(task.dueAt)}`
+      : " wakes",
+  };
+}
+
 function countChronoTasks(tasks: readonly ConversationTaskSummary[] | undefined): number {
   let count = 0;
   for (const task of tasks ?? []) {
-    if (task.kind !== "chrono" || task.chronoMode === "sleep" || !shouldDisplayConversationTask(task)) continue;
+    if (task.kind !== "chrono" || !shouldDisplayConversationTask(task)) continue;
     count++;
   }
   return count;
@@ -71,7 +81,7 @@ function buildFolderAggregates(
       seen.add(folderId);
       const aggregate = aggregates.get(folderId)!;
       aggregate.count++;
-      if (hasModelWork) aggregate.streamingCount++;
+      if (conv.streaming) aggregate.streamingCount++;
       aggregate.globalIdle ||= hasGlobalIdle;
       aggregate.unread ||= hasUnread;
       if (hasUnread) aggregate.unreadCount++;
@@ -182,11 +192,16 @@ export function renderSidebar(
   const selectedDisplayIdx = selectedDisplayRow(displayRows, sidebar);
 
   const listRows = sidebarListRows(totalRows, sidebar);
+  const selectedDisplayEnd = listRows > 1
+    && displayRows[selectedDisplayIdx + 1]?.type === "status"
+    && sameItem(displayRows[selectedDisplayIdx + 1]?.item ?? null, sidebar.selectedItem)
+    ? selectedDisplayIdx + 1
+    : selectedDisplayIdx;
   let scrollOffset = sidebar.scrollOffset;
   if (selectedDisplayIdx < scrollOffset) {
     scrollOffset = revealPrecedingSectionLabel(displayRows, selectedDisplayIdx);
-  } else if (selectedDisplayIdx >= scrollOffset + listRows) {
-    scrollOffset = selectedDisplayIdx - listRows + 1;
+  } else if (selectedDisplayEnd >= scrollOffset + listRows) {
+    scrollOffset = selectedDisplayEnd - listRows + 1;
   }
   scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, displayRows.length - listRows)));
   sidebar.scrollOffset = scrollOffset;
@@ -220,6 +235,26 @@ export function renderSidebar(
         theme.sidebarBg + theme.muted +
         pad(" " + "─".repeat(innerWidth - 2) + " ", innerWidth) +
         theme.reset + borderBg + borderFg + "│" + theme.reset,
+      );
+      continue;
+    }
+
+    if (dr.type === "status") {
+      const conv = convs[dr.convIdx ?? -1];
+      const sleep = conv ? deferredChronoSleepTask(conv) : null;
+      const itemVisualKey = itemKey(dr.item ?? null);
+      const isSelected = sameItem(sidebar.selectedItem, dr.item ?? null);
+      const isVisual = itemVisualKey !== null && visualItemKeys.has(itemVisualKey);
+      const isPendingDelete = itemVisualKey !== null && pendingDeleteKeys.has(itemVisualKey);
+      const bg = isSelected || isVisual ? theme.sidebarSelBg : theme.sidebarBg;
+      const status = sleep ? deferredSleepStatus(sleep) : { primary: "", secondary: "" };
+      const statusWidth = termWidth(status.primary) + termWidth(status.secondary);
+      const trailing = " ".repeat(Math.max(0, innerWidth - statusWidth));
+      const primaryFg = isPendingDelete ? theme.error : theme.success;
+      const secondaryFg = isPendingDelete ? theme.error : theme.muted;
+      rows.push(
+        theme.reset + bg + primaryFg + status.primary + secondaryFg + status.secondary + trailing
+        + theme.reset + borderBg + borderFg + "│" + theme.reset,
       );
       continue;
     }
@@ -277,8 +312,8 @@ export function renderSidebar(
       // canonical transcript is loaded and durably appended by the daemon.
       const hasModelWork = hasInProgressModelWork(conv) || conv.id === optimisticStreamingConvId;
       const hasUnread = !notificationsMuted && conv.unread && !hasModelWork;
-      streamIcon = hasModelWork ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
-      streamIconColor = hasModelWork ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
+      streamIcon = conv.streaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
+      streamIconColor = conv.streaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(conv.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(conv.backgroundTaskCount ?? 0);
       chronoTaskIcon = chronoTaskIndicator(countChronoTasks(conv.tasks));

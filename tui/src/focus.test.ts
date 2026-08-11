@@ -1507,6 +1507,23 @@ describe("sidebar folders", () => {
     expect(sidebarHitTest(4, 10, state.sidebar)).toEqual({ type: "conversation", id: "conv-a" });
   });
 
+  test("sidebar hit testing maps a sleep status row to its conversation", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [conversation("sleeping", 1, {
+      tasks: [{
+        id: "chrono:sleep:long",
+        kind: "chrono",
+        title: "Sleeping",
+        startedAt: 1,
+        dueAt: Date.now() + 10 * 60_000,
+        chronoMode: "sleep",
+      }],
+    })];
+
+    expect(sidebarHitTest(3, 10, state.sidebar)).toEqual({ type: "conversation", id: "sleeping" });
+    expect(sidebarHitTest(4, 10, state.sidebar)).toEqual({ type: "conversation", id: "sleeping" });
+  });
+
   test("l enters a folder and h leaves back to the parent", () => {
     const state = createInitialState();
     state.sidebar.open = true;
