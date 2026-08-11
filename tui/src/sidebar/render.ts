@@ -33,7 +33,7 @@ interface FolderAggregate {
 
 function deferredSleepStatus(task: ConversationTaskSummary): { primary: string; secondary: string } {
   return {
-    primary: "  ↳",
+    primary: "    ↳",
     secondary: task.dueAt !== undefined && Number.isFinite(task.dueAt)
       ? ` wakes in ${formatHoursMinutesUntil(task.dueAt)}`
       : " wakes",

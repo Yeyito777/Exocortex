@@ -184,7 +184,7 @@ describe("sidebar rendering", () => {
     expect(rows.find(row => row.includes("Deferred sleep"))).not.toContain("◉");
     expect(rows.find(row => row.includes("Deferred sleep"))).toContain(`${theme.success}◷ `);
     const sleepStatus = rows.find(row => row.includes("wakes in"));
-    expect(sleepStatus).toContain(`${theme.success}  ↳${theme.muted} wakes in 2h 35m`);
+    expect(sleepStatus).toContain(`${theme.success}    ↳${theme.muted} wakes in 2h 35m`);
     expect(sleepStatus).not.toContain("Sleeping");
     expect(sleepStatus).not.toContain("◉");
     expect(sleepStatus).not.toContain("◷");
