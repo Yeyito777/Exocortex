@@ -98,7 +98,9 @@ describe("Chrono scheduler", () => {
     await startChronoService();
     createChronoSchedule({ ownerConversationId: owner, afterSeconds: 0.02, message: "Wake now" });
     await waitUntil(() => getQueuedMessages(owner).length === 1);
-    expect(getQueuedMessages(owner)[0].text).toContain("[chrono wake:");
+    const wake = getQueuedMessages(owner)[0];
+    expect(wake.timing).toBe("next-turn");
+    expect(wake.text).toContain("[chrono wake:");
     expect(listChronoSchedules(owner)).toHaveLength(0);
   });
 
@@ -196,10 +198,11 @@ describe("Chrono scheduler", () => {
     });
     expect(result.schedule?.target.kind).toBe("command");
     await waitUntil(() => getQueuedMessages(owner).length === 1);
-    const wake = getQueuedMessages(owner)[0].text;
-    expect(wake).toContain("[chrono hard wake:");
-    expect(wake).toContain("Investigate health.");
-    expect(wake).toContain("unhealthy");
+    const wake = getQueuedMessages(owner)[0];
+    expect(wake.timing).toBe("next-turn");
+    expect(wake.text).toContain("[chrono hard wake:");
+    expect(wake.text).toContain("Investigate health.");
+    expect(wake.text).toContain("unhealthy");
   });
 
   test("runs an owned command soft-wake in its conversation workspace", async () => {
