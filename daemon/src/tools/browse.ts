@@ -495,7 +495,7 @@ export const browse: Tool = {
     },
     required: ["url"],
   },
-  systemHint: "Browse uses an inner AI call to parse web-readable responses in auto mode. Use mode=download whenever the complete response must be preserved, including text, JavaScript, JSON, or source code; it saves the payload to the conversation workspace without AI interpretation and reports its path and SHA-256. Attachments and binary responses are also saved automatically. On HTTP 403, browse may retry in a dedicated inactive tab of the running vimbrowser profile, using its browser fingerprint, cookies, and site storage; the tab is reset afterward. Adjust the prompt to your needs.",
+  systemHint: "Browse uses an inner AI call to parse web-readable responses in auto mode. Use mode=download whenever the complete response must be preserved, including text, JavaScript, JSON, or source code; it saves the payload to the conversation workspace without AI interpretation and reports its path and SHA-256. Attachments and binary responses are also saved automatically. Adjust the prompt to your needs.",
   display: {
     label: "Browse",
     color: "#50c8c8",  // teal
