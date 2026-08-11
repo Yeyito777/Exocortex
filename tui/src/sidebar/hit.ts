@@ -4,8 +4,9 @@ import type { SidebarState } from "./state";
 
 /**
  * Hit-test a screen row click to find which sidebar item was clicked.
- * Returns null if the click was on a non-entry row (header, separator, label,
- * delimiter, or out of bounds).
+ * A conversation's secondary status row targets the same conversation. Returns
+ * null for other non-entry rows (header, separator, label, delimiter, or out of
+ * bounds).
  *
  * @param screenRow 1-based screen row
  * @param sidebar current sidebar state
@@ -23,6 +24,6 @@ export function sidebarHitTest(screenRow: number, totalRows: number, sidebar: Si
   if (displayIdx < 0 || displayIdx >= displayRows.length) return null;
 
   const dr = displayRows[displayIdx];
-  if (dr.type !== "entry") return null;
+  if (dr.type !== "entry" && dr.type !== "status") return null;
   return dr.item ?? null;
 }

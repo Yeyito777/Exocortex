@@ -152,14 +152,15 @@ describe("sidebar rendering", () => {
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
   });
 
-  test("keeps the blue in-progress indicator for deferred Chrono sleeps", () => {
+  test("shows an iconless wake-time status below deferred Chrono sleeps", () => {
     const sidebar = createSidebarState();
+    const wakeAt = new Date(2030, 0, 2, 15, 42).getTime();
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
     sidebar.conversations = [
       conversation("deferred-sleep", 0, {
         title: "Deferred sleep",
         folderId: "folder",
-        tasks: [{ id: "chrono-long-sleep", kind: "chrono", title: "Sleep for ten minutes", startedAt: 0, chronoMode: "sleep" }],
+        tasks: [{ id: "chrono-long-sleep", kind: "chrono", title: "Sleep for ten minutes", startedAt: 0, dueAt: wakeAt, chronoMode: "sleep" }],
       }),
       conversation("live-sleep", 1, {
         title: "Live sleep",
@@ -175,17 +176,23 @@ describe("sidebar rendering", () => {
     ];
 
     let rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.accent}◉2 `);
+    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.accent}◉ `);
+    expect(rows.find(row => row.includes("Work"))).not.toContain("◉1 ");
     expect(rows.find(row => row.includes("Work"))).not.toContain("◷");
 
     sidebar.currentFolderId = "folder";
     rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Deferred sleep"))).toContain(`${theme.accent}◉ `);
+    expect(rows.find(row => row.includes("Deferred sleep"))).not.toContain("◉");
     expect(rows.find(row => row.includes("Deferred sleep"))).not.toContain("◷");
+    const sleepStatus = rows.find(row => row.includes("Sleeping"));
+    expect(sleepStatus).toContain(`${theme.success}  Sleeping${theme.muted} · wakes 3:42 PM`);
+    expect(sleepStatus).not.toContain("◉");
+    expect(sleepStatus).not.toContain("◷");
     expect(rows.find(row => row.includes("Live sleep"))).toContain(`${theme.accent}◉ `);
     expect(rows.find(row => row.includes("Live sleep"))).not.toContain("◷");
     expect(rows.find(row => row.includes("Waiting"))).not.toContain("◉");
     expect(rows.find(row => row.includes("Waiting"))).not.toContain("◷");
+    expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
   });
 
   test("omits goal badges while aggregating other activity through folder trees", () => {
