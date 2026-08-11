@@ -1,5 +1,5 @@
 import { getMarkFromTitle } from "../marks";
-import { currentFolder, isConversationMuted, isFolderMuted } from "./folders";
+import { areConversationNotificationsMuted, areFolderNotificationsMuted, currentFolder } from "./folders";
 import { sameSidebarItem as sameItem, sidebarItemKey as itemKey } from "./items";
 import { SIDEBAR_WIDTH } from "./layout";
 import {
@@ -275,6 +275,7 @@ export function renderSidebar(
     let itemFg = theme.muted;
     let notificationCount = 0;
     let notificationsMuted = false;
+    let explicitlyMuted = false;
 
     if (item?.type === "up") {
       rawTitle = "..";
@@ -285,7 +286,8 @@ export function renderSidebar(
     } else if (item?.type === "folder") {
       const folder = sidebar.folders[dr.folderIdx ?? -1];
       const aggregate = folder ? folderAggregates?.get(folder.id) : null;
-      notificationsMuted = folder ? isFolderMuted(sidebar, folder.id) : false;
+      notificationsMuted = folder ? areFolderNotificationsMuted(sidebar, folder.id) : false;
+      explicitlyMuted = folder?.muted === true;
       rawTitle = folder ? `📁 ${folder.name}/ ${aggregate?.count ?? 0}` : "📁 folder/";
       const streamingCount = aggregate?.streamingCount ?? 0;
       const hasGlobalIdle = aggregate?.globalIdle ?? false;
@@ -300,7 +302,8 @@ export function renderSidebar(
     } else if (item?.type === "conversation") {
       const conv = convs[dr.convIdx ?? -1];
       if (!conv) continue;
-      notificationsMuted = isConversationMuted(sidebar, conv);
+      notificationsMuted = areConversationNotificationsMuted(sidebar, conv);
+      explicitlyMuted = conv.muted === true;
       isCurrent = conv.id === currentConvId;
       const hasGlobalIdle = globalIdleConvIds.has(conv.id);
       const hasModelWork = hasInProgressModelWork(conv);
@@ -320,7 +323,10 @@ export function renderSidebar(
     const iconsWidth = termWidth(chronoTaskIcon) + termWidth(subagentIcon) + termWidth(backgroundTaskIcon)
       + termWidth(starIcon) + termWidth(emojiIcon);
     const prefixWidth = termWidth(prefix) + termWidth(streamIcon) + iconsWidth;
-    const muteIcon = notificationsMuted ? " 🔕" : "";
+    // The bell represents this item's durable preference, not the effective
+    // notification policy inherited from its folder path. Inherited muting
+    // still suppresses unread indicators and badges below.
+    const muteIcon = explicitlyMuted ? " 🔕" : "";
     const notificationBadge = notificationsMuted ? null : renderNotificationBadge(notificationCount);
     const badgeGap = notificationBadge ? 1 : 0;
     const badgeWidth = notificationBadge?.width ?? 0;

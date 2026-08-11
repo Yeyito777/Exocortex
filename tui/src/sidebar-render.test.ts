@@ -343,6 +343,67 @@ describe("sidebar rendering", () => {
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
   });
 
+  test("shows mute bells only for explicit conversation preferences inside muted folders", () => {
+    const sidebar = createSidebarState();
+    sidebar.currentFolderId = "muted-folder";
+    sidebar.folders = [{
+      id: "muted-folder",
+      name: "Muted folder",
+      parentId: null,
+      createdAt: 0,
+      updatedAt: 0,
+      pinned: false,
+      muted: true,
+      sortOrder: 0,
+    }];
+    sidebar.conversations = [
+      conversation("inherited", 0, {
+        title: "Inherited preference",
+        folderId: "muted-folder",
+        muted: false,
+        notificationsMuted: true,
+        unread: true,
+      }),
+      conversation("explicit", 1, {
+        title: "Explicit preference",
+        folderId: "muted-folder",
+        muted: true,
+        notificationsMuted: true,
+        unread: true,
+      }),
+    ];
+
+    const rows = renderSidebar(sidebar, 8, true, null);
+    const inheritedRow = rows.find(candidate => candidate.includes("Inherited preference"));
+    const explicitRow = rows.find(candidate => candidate.includes("Explicit preference"));
+
+    expect(inheritedRow).toBeDefined();
+    expect(inheritedRow).not.toContain("🔕");
+    expect(inheritedRow).not.toContain(`${theme.success}◉ `);
+    expect(inheritedRow).not.toContain(theme.notificationBg);
+    expect(explicitRow).toContain("🔕");
+    expect(explicitRow).not.toContain(`${theme.success}◉ `);
+    expect(explicitRow).not.toContain(theme.notificationBg);
+  });
+
+  test("shows nested folder mute bells only for each folder's explicit preference", () => {
+    const sidebar = createSidebarState();
+    sidebar.currentFolderId = "parent";
+    sidebar.folders = [
+      { id: "parent", name: "Parent", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, muted: true, sortOrder: 0 },
+      { id: "inherited", name: "Inherited child", parentId: "parent", createdAt: 0, updatedAt: 0, pinned: false, muted: false, sortOrder: 0 },
+      { id: "explicit", name: "Explicit child", parentId: "parent", createdAt: 0, updatedAt: 0, pinned: false, muted: true, sortOrder: 1 },
+    ];
+
+    const rows = renderSidebar(sidebar, 8, true, null);
+    const inheritedRow = rows.find(candidate => candidate.includes("Inherited child"));
+    const explicitRow = rows.find(candidate => candidate.includes("Explicit child"));
+
+    expect(inheritedRow).toBeDefined();
+    expect(inheritedRow).not.toContain("🔕");
+    expect(explicitRow).toContain("🔕");
+  });
+
   test("muted folders keep live streaming indicators while replacing unread badges", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [{

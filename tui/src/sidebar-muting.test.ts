@@ -78,4 +78,30 @@ describe("sidebar muting", () => {
     expect(sidebar.conversations.find(conv => conv.id === "nested")).toMatchObject({ notificationsMuted: true, unread: false });
     expect(sidebar.conversations.find(conv => conv.id === "root")).toMatchObject({ notificationsMuted: false, unread: true });
   });
+
+  test("conversation mute preferences remain independent inside a muted folder", () => {
+    const sidebar = createSidebarState();
+    sidebar.currentFolderId = "parent";
+    sidebar.folders = [folder("parent", { muted: true })];
+    sidebar.conversations = [conversation("selected", {
+      folderId: "parent",
+      notificationsMuted: true,
+    })];
+    sidebar.selectedItem = { type: "conversation", id: "selected" };
+    sidebar.selectedId = "selected";
+
+    expect(handleSidebarKey({ type: "char", char: "M" }, sidebar)).toEqual({
+      type: "mute_conversation",
+      convId: "selected",
+      muted: true,
+    });
+    expect(sidebar.conversations[0]).toMatchObject({ muted: true, notificationsMuted: true });
+
+    expect(handleSidebarKey({ type: "char", char: "M" }, sidebar)).toEqual({
+      type: "mute_conversation",
+      convId: "selected",
+      muted: false,
+    });
+    expect(sidebar.conversations[0]).toMatchObject({ muted: false, notificationsMuted: true });
+  });
 });

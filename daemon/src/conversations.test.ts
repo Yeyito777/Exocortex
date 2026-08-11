@@ -1876,6 +1876,28 @@ describe("unread persistence", () => {
     markUnread(id);
     expect(isUnread(id)).toBe(true);
   });
+
+  test("moving conversations preserves their explicit mute preferences", () => {
+    const mutedParent = createFolder(`Muted source ${Date.now()} ${Math.random()}`)!;
+    FOLDER_IDS.push(mutedParent.id);
+    expect(muteFolder(mutedParent.id, true)).toBe(true);
+
+    const inheritedId = mkId("move-inherited-mute");
+    const explicitId = mkId("move-explicit-mute");
+    create(inheritedId, "openai", "gpt-5.4", "inherited", undefined, false, mutedParent.id);
+    create(explicitId, "openai", "gpt-5.4", "explicit", undefined, false, mutedParent.id);
+    expect(mute(explicitId, true)).toBe(true);
+
+    expect(getSummary(inheritedId)).toMatchObject({ muted: false, notificationsMuted: true });
+    expect(getSummary(explicitId)).toMatchObject({ muted: true, notificationsMuted: true });
+
+    expect(moveConversationToFolder(inheritedId, null)).toBe(true);
+    expect(moveConversationToFolder(explicitId, null)).toBe(true);
+
+    expect(getSummary(inheritedId)).toMatchObject({ muted: false });
+    expect(getSummary(inheritedId)?.notificationsMuted).toBeUndefined();
+    expect(getSummary(explicitId)).toMatchObject({ muted: true, notificationsMuted: true });
+  });
 });
 
 describe("listRunningConversationIds", () => {
