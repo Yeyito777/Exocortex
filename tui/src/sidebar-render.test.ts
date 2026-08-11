@@ -59,6 +59,21 @@ describe("sidebar rendering", () => {
     expect(plainRow).not.toContain("◉ ");
   });
 
+  test("renders a locally pending direct send as streaming before the daemon summary arrives", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
+    sidebar.conversations = [
+      conversation("pending", 0, { title: "Pending send", folderId: "folder", streaming: false }),
+    ];
+
+    let rows = renderSidebar(sidebar, 8, true, "pending", new Set(), "pending");
+    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.accent}◉ `);
+
+    sidebar.currentFolderId = "folder";
+    rows = renderSidebar(sidebar, 8, true, "pending", new Set(), "pending");
+    expect(rows.find(row => row.includes("Pending send"))).toContain(`${theme.accent}◉ `);
+  });
+
   test("propagates global-idle indicators to containing folders", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];

@@ -52,6 +52,7 @@ function countChronoTasks(tasks: readonly ConversationTaskSummary[] | undefined)
 function buildFolderAggregates(
   sidebar: SidebarState,
   globalIdleConvIds: ReadonlySet<string>,
+  optimisticStreamingConvId: string | null,
 ): Map<string, FolderAggregate> {
   const aggregates = new Map<string, FolderAggregate>();
   const parentById = new Map<string, string | null>();
@@ -71,7 +72,8 @@ function buildFolderAggregates(
 
   for (const conv of sidebar.conversations) {
     const hasGlobalIdle = globalIdleConvIds.has(conv.id);
-    const hasModelWork = hasInProgressModelWork(conv);
+    const hasOptimisticStreaming = conv.id === optimisticStreamingConvId;
+    const hasModelWork = hasInProgressModelWork(conv) || hasOptimisticStreaming;
     const hasUnread = conv.unread && !hasModelWork;
     const chronoTaskCount = countChronoTasks(conv.tasks);
     let folderId = conv.folderId ?? null;
@@ -80,7 +82,7 @@ function buildFolderAggregates(
       seen.add(folderId);
       const aggregate = aggregates.get(folderId)!;
       aggregate.count++;
-      if (conv.streaming) aggregate.streamingCount++;
+      if (conv.streaming || hasOptimisticStreaming) aggregate.streamingCount++;
       aggregate.globalIdle ||= hasGlobalIdle;
       aggregate.unread ||= hasUnread;
       if (hasUnread) aggregate.unreadCount++;
@@ -143,6 +145,7 @@ export function renderSidebar(
   focused: boolean,
   currentConvId: string | null,
   globalIdleConvIds: ReadonlySet<string> = new Set(),
+  optimisticStreamingConvId: string | null = null,
 ): string[] {
   const rows: string[] = [];
   const innerWidth = SIDEBAR_WIDTH - 1; // -1 for right border │
@@ -166,7 +169,9 @@ export function renderSidebar(
   // Build display rows: section labels + delimiter + sidebar entries
   const convs = sidebar.conversations;
   const displayRows = buildDisplayRows(sidebar);
-  const folderAggregates = sidebar.folders.length > 0 ? buildFolderAggregates(sidebar, globalIdleConvIds) : null;
+  const folderAggregates = sidebar.folders.length > 0
+    ? buildFolderAggregates(sidebar, globalIdleConvIds, optimisticStreamingConvId)
+    : null;
   // Compute visual selection once per render. Calling selectedVisualItems() per
   // row rebuilds displayRows each time; with an active /? filter this made `v`
   // feel very laggy on large conversation lists.
@@ -306,10 +311,15 @@ export function renderSidebar(
       explicitlyMuted = conv.muted === true;
       isCurrent = conv.id === currentConvId;
       const hasGlobalIdle = globalIdleConvIds.has(conv.id);
-      const hasModelWork = hasInProgressModelWork(conv);
+      // Direct sends create pendingAI before IPC. Reflect that local accepted
+      // input immediately instead of leaving the sidebar idle while a cold
+      // canonical transcript is loaded and durably appended by the daemon.
+      const hasOptimisticStreaming = conv.id === optimisticStreamingConvId;
+      const hasModelWork = hasInProgressModelWork(conv) || hasOptimisticStreaming;
       const hasUnread = !notificationsMuted && conv.unread && !hasModelWork;
-      streamIcon = conv.streaming ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
-      streamIconColor = conv.streaming ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
+      const hasStreamingIndicator = conv.streaming || hasOptimisticStreaming;
+      streamIcon = hasStreamingIndicator ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
+      streamIconColor = hasStreamingIndicator ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(conv.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(conv.backgroundTaskCount ?? 0);
       chronoTaskIcon = chronoTaskIndicator(countChronoTasks(conv.tasks));

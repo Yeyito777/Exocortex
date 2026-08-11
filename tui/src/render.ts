@@ -1194,6 +1194,7 @@ export function render(state: RenderState): void {
       state.panelFocus === "sidebar",
       state.convId,
       new Set(state.queuedMessages.filter(isGlobalIdleQueuedMessage).map(message => message.convId)),
+      state.pendingAI ? state.convId : null,
     );
   }
 

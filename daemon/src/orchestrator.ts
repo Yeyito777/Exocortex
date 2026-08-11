@@ -16,7 +16,7 @@ import { getToolDefs, buildExecutor, summarizeTool, toolCallsRequireWatchdogPaus
 import { ensureConversationCustomTools } from "./tools/custom-tools";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
@@ -785,7 +785,8 @@ async function orchestrateAssistantTurn(
     const checkpointAccountScope = compactionsThisTurn > 0
       ? latestCompactionAccountScope
       : previous?.accountScope ?? accountScope;
-    const transcriptHistoryCount = liveConv.messages.filter(isReplayHistoryMessage).length;
+    const replayPrefix = currentReplayHistoryPrefix(liveConv.messages);
+    const transcriptHistoryCount = replayPrefix.historyCount;
     const candidate: ActiveContext = {
       version: 1,
       kind: latestCompactionKind ?? previous!.kind,
@@ -794,9 +795,9 @@ async function orchestrateAssistantTurn(
       ...(checkpointAccountScope ? { accountScope: checkpointAccountScope } : {}),
       messages: structuredClone(messages),
       transcriptHistoryCount,
-      transcriptPrefixHash: historyPrefixHash(liveConv.messages, transcriptHistoryCount),
+      transcriptPrefixHash: replayPrefix.hash,
       compactionHistoryCount: transcriptHistoryCount,
-      compactionPrefixHash: historyPrefixHash(liveConv.messages, transcriptHistoryCount),
+      compactionPrefixHash: replayPrefix.hash,
       windowId: currentWindowId,
       windowNumber: currentWindowNumber,
       compactedAt: latestCompactedAt ?? previous!.compactedAt,

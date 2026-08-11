@@ -1097,6 +1097,7 @@ describe("trimConversation", () => {
       content: [{ type: "tool_result", tool_use_id: "tool-2", content: "second output" }],
       metadata: null,
     });
+    const originalContent = conv.messages[0]!.content;
 
     const result = trimConversation(id, "toolresults", 1);
 
@@ -1104,6 +1105,7 @@ describe("trimConversation", () => {
     expect(result?.changed).toBe(true);
     expect(result?.message).toContain("Trimmed 1 tool result");
     expect(get(id)?.messages[0]?.content).toEqual([{ type: "tool_result", tool_use_id: "tool-1", content: "[Output removed by /trim]" }]);
+    expect(get(id)?.messages[0]?.content).not.toBe(originalContent);
     expect(get(id)?.messages[1]?.content).toEqual([{ type: "tool_result", tool_use_id: "tool-2", content: "second output" }]);
   });
 });

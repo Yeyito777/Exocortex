@@ -28,6 +28,7 @@ import {
   isReplayHistoryMessage,
   isValidActiveContextCached,
   summarizeConversation,
+  validatedActiveContextCompactionHistoryCount,
 } from "./messages";
 import type { ToolOutputInfo } from "./protocol";
 import { buildDisplayData } from "./display";
@@ -289,7 +290,11 @@ function pagedUserFingerprint(convId: string, userIndex: number, message: Stored
 function projectedEditableHistoryStart(conv: Conversation): number | null | undefined {
   const active = conv.activeContext;
   if (active) {
-    const count = activeContextCompactionHistoryCount(active, conv.messages);
+    // The store validates an active context when it materializes the canonical
+    // conversation. Reuse that cached proof here instead of re-stringifying and
+    // hashing the complete compacted prefix inside every user-message append.
+    // A cache miss still takes the defensive validation path.
+    const count = validatedActiveContextCompactionHistoryCount(active, conv.messages);
     return count == null ? null : count;
   }
   return conv.messages.some((message) => message.metadata?.kind === "context_compaction_finished")

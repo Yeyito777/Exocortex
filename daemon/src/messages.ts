@@ -263,15 +263,107 @@ export function historyPrefixHash(messages: StoredMessage[], historyCount: numbe
   for (const message of messages) {
     if (seen >= historyCount) break;
     if (!isReplayHistoryMessage(message)) continue;
-    hash.update(JSON.stringify({
-      role: message.role,
-      content: message.content,
-      providerData: message.providerData ?? null,
-    }));
-    hash.update("\n");
+    updateHistoryPrefixHash(hash, message);
     seen += 1;
   }
   return hash.digest("hex").slice(0, 24);
+}
+
+function updateHistoryPrefixHash(hash: ReturnType<typeof createHash>, message: StoredMessage): void {
+  hash.update(JSON.stringify({
+    role: message.role,
+    content: message.content,
+    providerData: message.providerData ?? null,
+  }));
+  hash.update("\n");
+}
+
+interface ReplayHistoryPrefixSnapshot {
+  message: StoredMessage;
+  role: StoredMessage["role"];
+  content: StoredMessage["content"];
+  providerData: StoredMessage["providerData"];
+  isReplayHistory: boolean;
+}
+
+interface ReplayHistoryPrefixCache {
+  /** SHA-256 state immediately after the snapshotted transcript prefix. */
+  hash: ReturnType<typeof createHash>;
+  historyCount: number;
+  /** Every canonical row, including rows excluded from provider replay. */
+  transcriptPrefix: ReplayHistoryPrefixSnapshot[];
+}
+
+// A conversation transcript is append-only during an ordinary turn. Preserve
+// the SHA-256 state at its canonical edge so accepting the next user message
+// hashes only the newly appended user/assistant tail, not every historical tool
+// result and image again. The key and snapshots are weak/reference based, just
+// like the active-context validation cache below, so evicted conversations and
+// replaced/mutated transcript prefixes cannot reuse stale state.
+const replayHistoryPrefixCache = new WeakMap<StoredMessage[], ReplayHistoryPrefixCache>();
+
+function replayHistoryPrefixSnapshot(message: StoredMessage): ReplayHistoryPrefixSnapshot {
+  return {
+    message,
+    role: message.role,
+    content: message.content,
+    providerData: message.providerData,
+    isReplayHistory: isReplayHistoryMessage(message),
+  };
+}
+
+function replayHistoryPrefixCacheMatches(
+  messages: StoredMessage[],
+  cached: ReplayHistoryPrefixCache,
+): boolean {
+  if (messages.length < cached.transcriptPrefix.length) return false;
+  for (let index = 0; index < cached.transcriptPrefix.length; index++) {
+    const message = messages[index];
+    const saved = cached.transcriptPrefix[index];
+    if (message !== saved.message || message.role !== saved.role
+        || message.content !== saved.content || message.providerData !== saved.providerData
+        || isReplayHistoryMessage(message) !== saved.isReplayHistory) return false;
+  }
+  return true;
+}
+
+function rememberReplayHistoryPrefix(
+  messages: StoredMessage[],
+  processedMessageCount: number,
+  historyCount: number,
+  hash: ReturnType<typeof createHash>,
+): void {
+  const cached = replayHistoryPrefixCache.get(messages);
+  if (cached && replayHistoryPrefixCacheMatches(messages, cached)
+      && cached.transcriptPrefix.length >= processedMessageCount) return;
+  replayHistoryPrefixCache.set(messages, {
+    hash: hash.copy(),
+    historyCount,
+    transcriptPrefix: messages.slice(0, processedMessageCount).map(replayHistoryPrefixSnapshot),
+  });
+}
+
+/** Number and legacy-compatible hash at the current append-only replay edge. */
+export function currentReplayHistoryPrefix(messages: StoredMessage[]): {
+  historyCount: number;
+  hash: string;
+} {
+  const cached = replayHistoryPrefixCache.get(messages);
+  const canExtend = cached !== undefined && replayHistoryPrefixCacheMatches(messages, cached);
+  const hash = canExtend ? cached.hash.copy() : createHash("sha256");
+  let historyCount = canExtend ? cached.historyCount : 0;
+  const start = canExtend ? cached.transcriptPrefix.length : 0;
+  const transcriptPrefix = canExtend ? cached.transcriptPrefix.slice() : [];
+
+  for (let index = start; index < messages.length; index++) {
+    const message = messages[index];
+    transcriptPrefix.push(replayHistoryPrefixSnapshot(message));
+    if (!isReplayHistoryMessage(message)) continue;
+    updateHistoryPrefixHash(hash, message);
+    historyCount += 1;
+  }
+  replayHistoryPrefixCache.set(messages, { hash, historyCount, transcriptPrefix });
+  return { historyCount, hash: hash.copy().digest("hex").slice(0, 24) };
 }
 
 /**
@@ -325,6 +417,7 @@ function historyPrefixHashes(messages: StoredMessage[], historyCounts: number[])
   const hash = createHash("sha256");
   let seen = 0;
   let targetIndex = 0;
+  let processedMessageCount = 0;
   const finishTargetsAtCurrentCount = () => {
     while (targets[targetIndex] === seen) {
       hashes.set(seen, hash.copy().digest("hex").slice(0, 24));
@@ -333,18 +426,19 @@ function historyPrefixHashes(messages: StoredMessage[], historyCounts: number[])
   };
   finishTargetsAtCurrentCount();
 
-  for (const message of messages) {
+  for (let index = 0; index < messages.length; index++) {
     if (targetIndex >= targets.length) break;
+    const message = messages[index];
+    processedMessageCount = index + 1;
     if (!isReplayHistoryMessage(message)) continue;
-    hash.update(JSON.stringify({
-      role: message.role,
-      content: message.content,
-      providerData: message.providerData ?? null,
-    }));
-    hash.update("\n");
+    updateHistoryPrefixHash(hash, message);
     seen += 1;
     finishTargetsAtCurrentCount();
   }
+  // A cold SQLite load already paid to validate this immutable prefix. Retain
+  // its resumable SHA state so the immediately-following send can extend it
+  // through only the post-compaction tail.
+  rememberReplayHistoryPrefix(messages, processedMessageCount, seen, hash);
   return hashes;
 }
 
@@ -858,18 +952,18 @@ export function createStoredUserContextCheckpoint(
   transcript: StoredMessage[] = conv.messages,
   contextTokens: number | null = conv.lastContextTokens,
 ): StoredUserContextCheckpoint {
-  const transcriptHistoryCount = transcript.filter(isReplayHistoryMessage).length;
   const active = conv.activeContext && isValidActiveContextCached(conv.activeContext, transcript)
     ? conv.activeContext
     : null;
+  const replayPrefix = currentReplayHistoryPrefix(transcript);
   return {
     version: 1,
     provider: conv.provider,
     model: conv.model,
     windowId: active?.windowId ?? null,
-    transcriptHistoryCount,
-    transcriptPrefixHash: historyPrefixHash(transcript, transcriptHistoryCount),
-    contextTokens: contextTokens ?? (transcriptHistoryCount === 0 ? 0 : null),
+    transcriptHistoryCount: replayPrefix.historyCount,
+    transcriptPrefixHash: replayPrefix.hash,
+    contextTokens: contextTokens ?? (replayPrefix.historyCount === 0 ? 0 : null),
   };
 }
 
