@@ -42,6 +42,7 @@ function countChronoTasks(tasks: readonly ConversationTaskSummary[] | undefined)
 function buildFolderAggregates(
   sidebar: SidebarState,
   globalIdleConvIds: ReadonlySet<string>,
+  optimisticStreamingConvId: string | null,
 ): Map<string, FolderAggregate> {
   const aggregates = new Map<string, FolderAggregate>();
   const parentById = new Map<string, string | null>();
@@ -61,7 +62,7 @@ function buildFolderAggregates(
 
   for (const conv of sidebar.conversations) {
     const hasGlobalIdle = globalIdleConvIds.has(conv.id);
-    const hasModelWork = hasInProgressModelWork(conv);
+    const hasModelWork = hasInProgressModelWork(conv) || conv.id === optimisticStreamingConvId;
     const hasUnread = conv.unread && !hasModelWork;
     const chronoTaskCount = countChronoTasks(conv.tasks);
     let folderId = conv.folderId ?? null;
@@ -133,6 +134,7 @@ export function renderSidebar(
   focused: boolean,
   currentConvId: string | null,
   globalIdleConvIds: ReadonlySet<string> = new Set(),
+  optimisticStreamingConvId: string | null = null,
 ): string[] {
   const rows: string[] = [];
   const innerWidth = SIDEBAR_WIDTH - 1; // -1 for right border │
@@ -156,7 +158,9 @@ export function renderSidebar(
   // Build display rows: section labels + delimiter + sidebar entries
   const convs = sidebar.conversations;
   const displayRows = buildDisplayRows(sidebar);
-  const folderAggregates = sidebar.folders.length > 0 ? buildFolderAggregates(sidebar, globalIdleConvIds) : null;
+  const folderAggregates = sidebar.folders.length > 0
+    ? buildFolderAggregates(sidebar, globalIdleConvIds, optimisticStreamingConvId)
+    : null;
   // Compute visual selection once per render. Calling selectedVisualItems() per
   // row rebuilds displayRows each time; with an active /? filter this made `v`
   // feel very laggy on large conversation lists.
@@ -268,7 +272,10 @@ export function renderSidebar(
       notificationsMuted = isConversationMuted(sidebar, conv);
       isCurrent = conv.id === currentConvId;
       const hasGlobalIdle = globalIdleConvIds.has(conv.id);
-      const hasModelWork = hasInProgressModelWork(conv);
+      // Direct sends create pendingAI before IPC. Reflect that local accepted
+      // input immediately instead of leaving the sidebar idle while a cold
+      // canonical transcript is loaded and durably appended by the daemon.
+      const hasModelWork = hasInProgressModelWork(conv) || conv.id === optimisticStreamingConvId;
       const hasUnread = !notificationsMuted && conv.unread && !hasModelWork;
       streamIcon = hasModelWork ? "◉ " : hasGlobalIdle ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = hasModelWork ? theme.accent : hasGlobalIdle ? theme.warning : hasUnread ? theme.success : "";

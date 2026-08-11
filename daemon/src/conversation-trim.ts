@@ -156,8 +156,11 @@ function trimToolResultsFromStart(conv: Conversation, count: number): TrimConver
     const message = conv.messages[index];
     if (message.role !== "user" || !Array.isArray(message.content)) continue;
 
-    for (const block of message.content) {
+    const nextContent = message.content.slice();
+    let changedMessage = false;
+    for (let blockIndex = 0; blockIndex < nextContent.length; blockIndex++) {
       if (strippedResults >= count) break;
+      const block = nextContent[blockIndex];
       if (block.type !== "tool_result") continue;
       if (block.content === TRIMMED_TOOL_RESULT_PLACEHOLDER) continue;
 
@@ -166,9 +169,14 @@ function trimToolResultsFromStart(conv: Conversation, count: number): TrimConver
       if (saved <= 0) continue;
 
       removedChars += saved;
-      (block as { content: string }).content = TRIMMED_TOOL_RESULT_PLACEHOLDER;
+      nextContent[blockIndex] = { ...block, content: TRIMMED_TOOL_RESULT_PLACEHOLDER };
+      changedMessage = true;
       strippedResults++;
     }
+    // Replay-prefix integrity caches use canonical message/content identity to
+    // validate append-only extension. Preserve that invariant for /trim rather
+    // than mutating a nested block behind the cache's content reference.
+    if (changedMessage) message.content = nextContent;
   }
 
   if (strippedResults === 0) {
