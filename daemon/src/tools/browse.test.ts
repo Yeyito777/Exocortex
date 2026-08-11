@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { browseInternalsForTest } from "./browse";
@@ -26,9 +27,10 @@ describe("browse source", () => {
     expect(source).toContain("1. [Title](URL)");
   });
 
-  test("tells the model that direct downloads bypass AI interpretation", () => {
+  test("tells the model how to preserve readable responses without AI interpretation", () => {
     const source = readFileSync(join(import.meta.dir, "browse.ts"), "utf8");
-    expect(source).toContain("Direct downloads and binary responses are saved to the conversation workspace without AI interpretation.");
+    expect(source).toContain("Use mode=download whenever the complete response must be preserved");
+    expect(source).toContain("including text, JavaScript, JSON, or source code");
   });
 
   test("does not import deterministic browse helpers", () => {
@@ -40,6 +42,47 @@ describe("browse source", () => {
 });
 
 describe("browse direct downloads", () => {
+  test("forced download saves a textual JavaScript response and bypasses the digest cache", async () => {
+    const cwd = workspace();
+    const url = "https://cdn.example.test/static/main.forced-download.js";
+    const asset = Buffer.from("window.__completeAsset = 'yes';\n", "utf8");
+    let fetchCalls = 0;
+    let summaryCalls = 0;
+    const dependencies = {
+      fetch: async () => {
+        fetchCalls++;
+        return new Response(fetchCalls === 1 ? "cached digest content" : asset, {
+          headers: { "content-type": "application/javascript; charset=utf-8" },
+        });
+      },
+      summarize: async () => {
+        summaryCalls++;
+        return "digest";
+      },
+    };
+
+    const digested = await browseInternalsForTest.executeBrowse(
+      { url, prompt: "summarize it" },
+      { cwd },
+      undefined,
+      dependencies,
+    );
+    const downloaded = await browseInternalsForTest.executeBrowse(
+      { url, mode: "download" },
+      { cwd },
+      undefined,
+      dependencies,
+    );
+
+    expect(digested.output).toBe("digest");
+    expect(downloaded.isError).toBe(false);
+    expect(downloaded.output).toContain(join(cwd, "main.forced-download.js"));
+    expect(downloaded.output).toContain(createHash("sha256").update(asset).digest("hex"));
+    expect(readFileSync(join(cwd, "main.forced-download.js"))).toEqual(asset);
+    expect(fetchCalls).toBe(2);
+    expect(summaryCalls).toBe(1);
+  });
+
   test("saves binary CDN responses byte-for-byte without calling the summarizer", async () => {
     const cwd = workspace();
     const bytes = new Uint8Array([0, 255, 1, 128, 42]);
@@ -212,9 +255,114 @@ describe("browse direct downloads", () => {
     expect(result.output).toContain("broken download");
     expect(readdirSync(cwd)).toEqual([]);
   });
+
+  test("rejects unknown download modes before fetching", async () => {
+    let fetchCalls = 0;
+    const result = await browseInternalsForTest.executeBrowse(
+      { url: "https://example.test/asset", mode: "raw" },
+      undefined,
+      undefined,
+      {
+        fetch: async () => {
+          fetchCalls++;
+          return new Response("unexpected");
+        },
+        summarize: async () => "unexpected",
+      },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("'mode' must be either 'auto' or 'download'");
+    expect(fetchCalls).toBe(0);
+  });
 });
 
 describe("browse vimbrowser fallback", () => {
+  test("uses the exact browser-profile downloader for a forced download after HTTP 403", async () => {
+    const cwd = workspace();
+    const path = join(cwd, "authenticated.js");
+    const bytes = Buffer.from("authenticated exact bytes\n");
+    let pageFallbackCalls = 0;
+    let downloadFallbackCalls = 0;
+    let summaryCalls = 0;
+    const vimbrowserFetch = Object.assign(
+      async () => {
+        pageFallbackCalls++;
+        return null;
+      },
+      {
+        download: async (url: string, directory: string) => {
+          downloadFallbackCalls++;
+          expect(directory).toBe(cwd);
+          writeFileSync(path, bytes);
+          return {
+            bytes: bytes.length,
+            contentType: "application/javascript",
+            downloadPath: path,
+            pageUrl: url,
+            sha256: createHash("sha256").update(bytes).digest("hex"),
+          };
+        },
+      },
+    );
+
+    const result = await browseInternalsForTest.executeBrowse(
+      { url: "https://blocked.example.test/authenticated.js", mode: "download" },
+      { cwd },
+      undefined,
+      {
+        fetch: async () => new Response("blocked", { status: 403, statusText: "Forbidden" }),
+        vimbrowserFetch,
+        summarize: async () => {
+          summaryCalls++;
+          return "unexpected summary";
+        },
+      },
+    );
+
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain(path);
+    expect(result.output).toContain(createHash("sha256").update(bytes).digest("hex"));
+    expect(downloadFallbackCalls).toBe(1);
+    expect(pageFallbackCalls).toBe(0);
+    expect(summaryCalls).toBe(0);
+  });
+
+  test("never substitutes rendered HTML when an exact browser download is unavailable", async () => {
+    let pageFallbackCalls = 0;
+    let summaryCalls = 0;
+    const vimbrowserFetch = Object.assign(
+      async () => {
+        pageFallbackCalls++;
+        return {
+          html: "<main>This rendered page is not the response payload.</main>",
+          pageUrl: "https://blocked.example.test/asset.js",
+        };
+      },
+      { download: async () => null },
+    );
+
+    const result = await browseInternalsForTest.executeBrowse(
+      { url: "https://blocked.example.test/asset.js", mode: "download" },
+      undefined,
+      undefined,
+      {
+        fetch: async () => new Response("blocked", { status: 403, statusText: "Forbidden" }),
+        vimbrowserFetch,
+        summarize: async () => {
+          summaryCalls++;
+          return "unexpected summary";
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      output: "Error fetching https://blocked.example.test/asset.js: HTTP 403 Forbidden",
+      isError: true,
+    });
+    expect(pageFallbackCalls).toBe(0);
+    expect(summaryCalls).toBe(0);
+  });
+
   test("uses rendered browser HTML after a direct HTTP 403", async () => {
     let fallbackUrl = "";
     let summarizedMarkdown = "";

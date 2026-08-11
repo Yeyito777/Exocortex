@@ -5,9 +5,10 @@
  * through a provider-aware inner LLM call to produce a focused summary.
  * For this experiment, the inner summarizer itself is asked to include a
  * final markdown Relevant Links section instead of using deterministic link
- * extraction. Caches raw fetches for 15 minutes. Handles HTML, JSON, and
- * plain text content types. Direct downloads and binary responses are saved
- * to the conversation workspace instead of being sent to the inner LLM.
+ * extraction. Caches converted readable pages for 15 minutes. Handles HTML,
+ * JSON, and plain text content types. Attachments, binary responses, and
+ * explicit mode=download requests are saved to the conversation workspace
+ * instead of being sent to the inner LLM.
  */
 
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
@@ -58,6 +59,8 @@ interface FetchedPage {
   markdown: string;
   pageUrl: string;
 }
+
+type BrowseMode = "auto" | "download";
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -197,9 +200,17 @@ function responseBodyToMarkdown(rawBody: string, contentType: string, pageUrl: s
   return rawBody;
 }
 
+function downloadsDisabledResult(contentType = "unknown content type"): ToolResult {
+  return {
+    output: `The URL points to a downloadable file (${contentType || "unknown content type"}), but downloads are disabled in this read-only session. Use the browse tool in the main conversation to save it.`,
+    isError: false,
+  };
+}
+
 async function fetchPage(
   fetchUrl: string,
   originalUrl: URL,
+  mode: BrowseMode,
   context: ToolExecutionContext | undefined,
   fetchImpl: FetchLike,
   vimbrowserFetch?: VimbrowserPageFetcher,
@@ -220,7 +231,37 @@ async function fetchPage(
   const crossHostRedirect = res.url ? ensureSameHostRedirect(originalUrl, res.url) : null;
   if (crossHostRedirect) return crossHostRedirect;
 
-  if (res.status === 403 && vimbrowserFetch) {
+  if (res.status === 403 && mode === "download" && vimbrowserFetch?.download) {
+    await res.body?.cancel().catch(() => {});
+    if (context?.allowDownloads === false) {
+      return downloadsDisabledResult(normalizedContentType(res.headers));
+    }
+    log("info", `browse: direct download returned HTTP 403; trying vimbrowser for ${finalUrl}`);
+    try {
+      const browserDownload = await vimbrowserFetch.download(
+        finalUrl,
+        context?.cwd ?? process.cwd(),
+        signal,
+      );
+      if (browserDownload) {
+        if ("redirectUrl" in browserDownload) {
+          return ensureSameHostRedirect(originalUrl, browserDownload.redirectUrl) ?? {
+            output: `Error: unexpected browser download redirect to ${browserDownload.redirectUrl}`,
+            isError: true,
+          };
+        }
+        log("info", `browse: vimbrowser downloaded ${browserDownload.pageUrl} (${browserDownload.bytes} bytes)`);
+        return browserDownload;
+      }
+      log("debug", "browse: vimbrowser download fallback is unavailable");
+    } catch (error) {
+      if (signal?.aborted || isAbortLikeError(error)) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      log("warn", `browse: vimbrowser download fallback failed (${message})`);
+    }
+  }
+
+  if (res.status === 403 && mode === "auto" && vimbrowserFetch) {
     await res.body?.cancel().catch(() => {});
     log("info", `browse: direct fetch returned HTTP 403; trying vimbrowser for ${finalUrl}`);
     try {
@@ -246,13 +287,10 @@ async function fetchPage(
     return { output: `Error fetching ${fetchUrl}: HTTP ${res.status} ${res.statusText}`, isError: true };
   }
 
-  if (shouldDownloadResponse(res.headers, finalUrl)) {
+  if (mode === "download" || shouldDownloadResponse(res.headers, finalUrl)) {
     if (context?.allowDownloads === false) {
       await res.body?.cancel().catch(() => {});
-      return {
-        output: `The URL points to a downloadable file (${normalizedContentType(res.headers) || "unknown content type"}), but downloads are disabled in this read-only session. Use the browse tool in the main conversation to save it.`,
-        isError: false,
-      };
+      return downloadsDisabledResult(normalizedContentType(res.headers));
     }
     return downloadResponse(res, finalUrl, context?.cwd ?? process.cwd(), signal);
   }
@@ -268,24 +306,27 @@ async function fetchPage(
 async function getPageContent(
   fetchUrl: string,
   originalUrl: URL,
+  mode: BrowseMode,
   context: ToolExecutionContext | undefined,
   fetchImpl: FetchLike,
   vimbrowserFetch?: VimbrowserPageFetcher,
   signal?: AbortSignal,
 ): Promise<FetchedPage | DownloadedFile | ToolResult> {
-  cleanCache();
-  const cached = fetchCache.get(fetchUrl);
-  if (cached) {
-    log("debug", `browse: cache hit for ${fetchUrl}`);
-    return { markdown: cached.content, pageUrl: cached.pageUrl };
+  if (mode === "auto") {
+    cleanCache();
+    const cached = fetchCache.get(fetchUrl);
+    if (cached) {
+      log("debug", `browse: cache hit for ${fetchUrl}`);
+      return { markdown: cached.content, pageUrl: cached.pageUrl };
+    }
   }
 
-  const fetched = await fetchPage(fetchUrl, originalUrl, context, fetchImpl, vimbrowserFetch, signal);
+  const fetched = await fetchPage(fetchUrl, originalUrl, mode, context, fetchImpl, vimbrowserFetch, signal);
   if ("isError" in fetched) return fetched;
 
   if ("downloadPath" in fetched) return fetched;
 
-  setCacheEntry(fetchUrl, fetched.pageUrl, fetched.markdown);
+  if (mode === "auto") setCacheEntry(fetchUrl, fetched.pageUrl, fetched.markdown);
   return fetched;
 }
 
@@ -364,8 +405,13 @@ async function executeBrowse(
 ): Promise<ToolResult> {
   const url = getString(input, "url");
   const prompt = getString(input, "prompt");
+  const requestedMode = input.mode;
 
   if (!url) return { output: "Error: missing 'url' parameter", isError: true };
+  if (requestedMode !== undefined && requestedMode !== "auto" && requestedMode !== "download") {
+    return { output: "Error: 'mode' must be either 'auto' or 'download'", isError: true };
+  }
+  const mode: BrowseMode = requestedMode === "download" ? "download" : "auto";
 
   const fetchUrl = normalizeBrowseUrl(url);
 
@@ -381,6 +427,7 @@ async function executeBrowse(
     const page = await getPageContent(
       fetchUrl,
       parsedUrl,
+      mode,
       context,
       dependencies.fetch,
       dependencies.vimbrowserFetch,
@@ -390,7 +437,10 @@ async function executeBrowse(
     if ("downloadPath" in page) {
       const typeLabel = page.contentType || "unknown content type";
       return {
-        output: `Downloaded ${page.pageUrl} to ${page.downloadPath} (${page.bytes.toLocaleString()} bytes, ${typeLabel}).`,
+        output: [
+          `Downloaded ${page.pageUrl} to ${page.downloadPath} (${page.bytes.toLocaleString()} bytes, ${typeLabel}).`,
+          `SHA-256: ${page.sha256}`,
+        ].join("\n"),
         isError: false,
       };
     }
@@ -428,7 +478,7 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 
 export const browse: Tool = {
   name: "browse",
-  description: "Read content from a URL or download a direct file URL. Supports web pages, feeds, APIs, community sites, and CDN files.",
+  description: "Read content from a URL or save its exact response payload. Supports web pages, feeds, APIs, community sites, and CDN files.",
   parallelSafety: "exclusive",
   defaultTimeoutMs: 120_000,
   settleOnAbort: true,
@@ -437,10 +487,15 @@ export const browse: Tool = {
     properties: {
       url: { type: "string", description: "The URL to browse" },
       prompt: { type: "string", description: "What to look for or extract from the page" },
+      mode: {
+        type: "string",
+        enum: ["auto", "download"],
+        description: "auto (default) digests readable content and saves attachments/binary responses; download saves the complete response payload regardless of MIME type without AI interpretation",
+      },
     },
-    required: ["url", "prompt"],
+    required: ["url"],
   },
-  systemHint: "Browse uses an inner AI call to parse web-readable responses. Direct downloads and binary responses are saved to the conversation workspace without AI interpretation. On HTTP 403, browse may retry in a dedicated inactive tab of the running vimbrowser profile, using its browser fingerprint, cookies, and site storage; the tab is reset afterward. Adjust the prompt to your needs.",
+  systemHint: "Browse uses an inner AI call to parse web-readable responses in auto mode. Use mode=download whenever the complete response must be preserved, including text, JavaScript, JSON, or source code; it saves the payload to the conversation workspace without AI interpretation and reports its path and SHA-256. Attachments and binary responses are also saved automatically. On HTTP 403, browse may retry in a dedicated inactive tab of the running vimbrowser profile, using its browser fingerprint, cookies, and site storage; the tab is reset afterward. Adjust the prompt to your needs.",
   display: {
     label: "Browse",
     color: "#50c8c8",  // teal

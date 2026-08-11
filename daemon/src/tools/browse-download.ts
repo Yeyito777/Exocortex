@@ -1,8 +1,9 @@
 import { open, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 
-const MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024;
+export const MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024;
 
 const TEXT_APPLICATION_TYPES = new Set([
   "application/ecmascript",
@@ -74,6 +75,7 @@ export interface DownloadedFile {
   contentType: string;
   downloadPath: string;
   pageUrl: string;
+  sha256: string;
 }
 
 export function normalizedContentType(headers: Headers): string {
@@ -255,6 +257,7 @@ export async function downloadResponse(
 
   const filename = downloadFilename(response.headers, pageUrl);
   const reserved = await reserveDownloadFile(resolve(directory), filename);
+  const digest = createHash("sha256");
   let bytes = 0;
   let completed = false;
   const reader = response.body?.getReader();
@@ -271,6 +274,7 @@ export async function downloadResponse(
         if (next.done) break;
 
         assertDownloadSize(bytes + next.value.byteLength);
+        digest.update(next.value);
         let offset = 0;
         while (offset < next.value.byteLength) {
           const written = await reserved.file.write(
@@ -302,5 +306,6 @@ export async function downloadResponse(
     contentType: normalizedContentType(response.headers),
     downloadPath: reserved.path,
     pageUrl,
+    sha256: digest.digest("hex"),
   };
 }
