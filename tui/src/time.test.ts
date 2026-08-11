@@ -19,10 +19,10 @@ describe("msUntilNextElapsedSecond", () => {
 });
 
 describe("hours/minutes countdown", () => {
-  test("always includes integer hours and minutes without seconds", () => {
-    expect(formatHoursMinutesUntil(10 * 60_000, 0)).toBe("0h 10m");
+  test("omits zero hours and never includes seconds", () => {
+    expect(formatHoursMinutesUntil(10 * 60_000, 0)).toBe("10m");
     expect(formatHoursMinutesUntil(2 * 60 * 60_000 + 34 * 60_000 + 1, 0)).toBe("2h 35m");
-    expect(formatHoursMinutesUntil(0, 1)).toBe("0h 0m");
+    expect(formatHoursMinutesUntil(0, 1)).toBe("0m");
   });
 
   test("refreshes when the rounded-up minute can change", () => {
