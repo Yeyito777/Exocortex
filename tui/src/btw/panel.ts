@@ -11,6 +11,7 @@ import { clampCursor, contentBounds, logicalLineRange, stripAnsi } from "../hist
 import { renderLineWithCursor, renderLineWithSearch, renderLineWithSelection } from "../cursorrender";
 import { findSearchMatches } from "../search";
 import type { VimMode } from "../vim";
+import { pinBottomRelativeScrollOffset } from "../viewportscroll";
 
 const ESC = "\x1b[";
 const moveTo = (row: number, col: number) => `${ESC}${row};${col}H`;
@@ -197,6 +198,7 @@ export function renderBtwPanel(
   const wrapped = document.lines.length > 0
     ? document.lines
     : [`${theme.muted}${truncateToWidth(btw.phase === "error" ? "No answer was produced." : btw.status || "Thinking…", contentWidth)}${theme.reset}${panelBg}`];
+  const previousTotal = btw.historyLines.length;
   btw.historyLines = wrapped;
   btw.historyWrapContinuation = document.lines.length > 0 ? document.cont : [false];
   btw.historyWrapJoiners = document.lines.length > 0 ? document.join : [""];
@@ -206,6 +208,7 @@ export function renderBtwPanel(
   const maxScroll = Math.max(0, wrapped.length - contentRows);
   btw.maxScroll = maxScroll;
   btw.viewportRows = contentRows;
+  btw.scrollOffset = pinBottomRelativeScrollOffset(btw.scrollOffset, previousTotal, wrapped.length);
   btw.scrollOffset = Math.max(0, Math.min(btw.scrollOffset, maxScroll));
   btw.historyCursor = clampCursor(btw.historyCursor, wrapped);
   const start = Math.max(0, wrapped.length - contentRows - btw.scrollOffset);

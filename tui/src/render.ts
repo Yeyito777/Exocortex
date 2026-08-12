@@ -49,6 +49,7 @@ import {
   flushFrame,
   moveTo,
 } from "./frame";
+import { pinBottomRelativeScrollOffset } from "./viewportscroll";
 
 interface HistoryRenderCacheEntry {
   width: number;
@@ -1310,9 +1311,7 @@ export function render(state: RenderState): void {
   // Pin scroll position: if user is scrolled up and content changes,
   // adjust offset so the viewport stays on the same content.
   const prevTotal = state.layout.totalLines;
-  if (state.scrollOffset > 0 && prevTotal > 0 && totalLines !== prevTotal) {
-    state.scrollOffset = Math.max(0, state.scrollOffset + (totalLines - prevTotal));
-  }
+  state.scrollOffset = pinBottomRelativeScrollOffset(state.scrollOffset, prevTotal, totalLines);
 
   // Cache layout for scroll and mouse functions
   state.layout.totalLines = totalLines;

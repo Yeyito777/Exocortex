@@ -37,6 +37,14 @@ export function handleBtwKey(key: KeyEvent, state: RenderState): BtwKeyResult | 
     && !state.search?.barOpen;
   if (!btwUiAvailable || (!promptFocused && !btwFocused)) return null;
 
+  // Match the prompt's attachment stack: Backspace at the left edge removes
+  // pending images first. Once none remain, the same gesture dismisses BTW
+  // without altering any draft text to the right of the cursor.
+  if (promptFocused && key.type === "backspace" && state.cursorPos === 0) {
+    if (state.pendingImages.length > 0) return null;
+    return { type: "btw_close" };
+  }
+
   // Focused BTW uses the normal history Vim context. Keep only the panel-close
   // shortcut here and let every navigation/selection key reach that shared path.
   if (btwFocused) {

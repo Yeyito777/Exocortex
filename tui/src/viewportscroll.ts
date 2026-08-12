@@ -22,6 +22,22 @@ export function clampViewStart(totalLines: number, viewportHeight: number, viewS
   return Math.max(0, Math.min(viewStart, maxViewStartFor(totalLines, viewportHeight)));
 }
 
+/**
+ * Keep a scrolled-up, bottom-relative viewport on the same content when its
+ * document grows or shrinks. Offset zero deliberately remains zero so a
+ * bottom-pinned viewport continues following new output.
+ */
+export function pinBottomRelativeScrollOffset(
+  scrollOffset: number,
+  previousTotalLines: number,
+  nextTotalLines: number,
+): number {
+  if (scrollOffset <= 0 || previousTotalLines <= 0 || nextTotalLines === previousTotalLines) {
+    return scrollOffset;
+  }
+  return Math.max(0, scrollOffset + nextTotalLines - previousTotalLines);
+}
+
 export function ensureCursorRowVisibleInViewport(view: CursorViewport): CursorViewport {
   const viewportHeight = Math.max(0, view.viewportHeight);
   const totalLines = Math.max(0, view.totalLines);

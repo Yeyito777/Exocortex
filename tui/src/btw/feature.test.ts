@@ -301,6 +301,32 @@ describe("BTW foreground panel", () => {
     expect(getBtwPanelPreferredHeight(btw, 100)).toBe(20);
   });
 
+  test("keeps a scrolled-up viewport anchored while the answer continues streaming", () => {
+    const rows = (start: number, end: number) => Array.from(
+      { length: end - start + 1 },
+      (_, index) => `row ${String(start + index).padStart(3, "0")}`,
+    );
+    const btw = panelState({ text: rows(1, 30).join("\n") });
+
+    renderBtwPanel(btw, 100, 8, 10, 1);
+    btw.scrollOffset = 10;
+    let rendered = renderBtwPanel(btw, 100, 8, 10, 1);
+    let plain = stripAnsi(rendered!.payload);
+    expect(plain).toContain("row 015");
+    expect(plain).toContain("row 020");
+    expect(plain).not.toContain("row 021");
+
+    btw.text += `\n${rows(31, 35).join("\n")}`;
+    rendered = renderBtwPanel(btw, 100, 8, 10, 1);
+    plain = stripAnsi(rendered!.payload);
+
+    expect(btw.scrollOffset).toBe(15);
+    expect(plain).toContain("row 015");
+    expect(plain).toContain("row 020");
+    expect(plain).not.toContain("row 021");
+    expect(plain).not.toContain("row 035");
+  });
+
   test("renders a wide four-row answer card without keybind help", () => {
     const btw = panelState({ phase: "complete", text: "**The answer** is read-only." });
     const rendered = renderBtwPanel(btw, 100, 4, 20, 31);
@@ -403,6 +429,32 @@ describe("BTW foreground panel", () => {
 
     state.vim.mode = "insert";
     expect(handleFocusedKey({ type: "ctrl-q" }, state)).toEqual({ type: "btw_close" });
+  });
+
+  test("Backspace at the start of the prompt removes images before closing BTW", () => {
+    const state = createInitialState();
+    state.btw = panelState();
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "insert";
+    state.inputBuffer = "keep this draft";
+    state.cursorPos = 0;
+    state.pendingImages = [{
+      mediaType: "image/png",
+      base64: "image-data",
+      sizeBytes: 10,
+    }];
+
+    expect(handleFocusedKey({ type: "backspace" }, state)).toEqual({ type: "handled" });
+    expect(state.pendingImages).toHaveLength(0);
+    expect(state.btw).not.toBeNull();
+
+    expect(handleFocusedKey({ type: "backspace" }, state)).toEqual({ type: "btw_close" });
+    expect(state.inputBuffer).toBe("keep this draft");
+
+    state.cursorPos = 1;
+    expect(handleFocusedKey({ type: "backspace" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("eep this draft");
   });
 
   test("Ctrl-N cycles from the visible BTW history through chat history to the prompt", () => {

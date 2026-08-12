@@ -1,9 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import {
+  pinBottomRelativeScrollOffset,
   scrollLineWithStickyCursorInViewport,
   scrollPageWithCursorInViewport,
   scrollWithCursorInViewport,
 } from "./viewportscroll";
+
+describe("bottom-relative viewport pinning", () => {
+  test("tracks document growth only after the user scrolls away from the bottom", () => {
+    expect(pinBottomRelativeScrollOffset(10, 30, 35)).toBe(15);
+    expect(pinBottomRelativeScrollOffset(0, 30, 35)).toBe(0);
+  });
+});
 
 describe("vim-style viewport scrolling", () => {
   test("Ctrl+E/Y keep the cursor sticky unless it leaves the viewport", () => {
