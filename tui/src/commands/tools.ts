@@ -11,23 +11,42 @@ const ACTIONS: CompletionItem[] = [
 
 type CommandState = Parameters<SlashCommand["handler"]>[1];
 
+type ToolKind = "internal" | "external";
+
 interface AvailableToolRef {
-  kind: "internal" | "external";
-  name: string;
+  kind: ToolKind;
+  /** Canonical name sent to the daemon in a policy mutation. */
+  policyName: string;
+  /** Unambiguous name shown and accepted by /tools. */
+  commandName: string;
   label: string;
   category: "Internal" | "External" | "Custom";
 }
 
-/** Keep tool kinds available to policy mutations without exposing them in command text. */
+function toolCommandName(kind: ToolKind, policyName: string): string {
+  if (policyName !== "exo") return policyName;
+  return kind === "internal" ? "exocortex" : "exo-cli";
+}
+
+function availableToolRef(
+  kind: ToolKind,
+  policyName: string,
+  label: string,
+  category: AvailableToolRef["category"],
+): AvailableToolRef {
+  return { kind, policyName, commandName: toolCommandName(kind, policyName), label, category };
+}
+
+/** Keep canonical policy names available without exposing ambiguous names in command text. */
 function availableToolRefs(state: CommandState): AvailableToolRef[] {
   return [
     ...state.toolRegistry
-      .map((tool) => ({ kind: "internal" as const, name: tool.name, label: tool.label, category: "Internal" as const })),
+      .map((tool) => availableToolRef("internal", tool.name, tool.label, "Internal")),
     ...(state.activeToolPolicy?.internal ?? [])
       .filter((tool) => tool.modulePath && !state.toolRegistry.some((registered) => registered.name === tool.name))
-      .map((tool) => ({ kind: "internal" as const, name: tool.name, label: tool.label, category: "Custom" as const })),
+      .map((tool) => availableToolRef("internal", tool.name, tool.label, "Custom")),
     ...state.externalToolStyles
-      .map((tool) => ({ kind: "external" as const, name: tool.cmd, label: tool.label, category: "External" as const })),
+      .map((tool) => availableToolRef("external", tool.cmd, tool.label, "External")),
   ];
 }
 
@@ -60,16 +79,16 @@ function parseTargets(values: string[], state: CommandState): {
       if (!name) return null;
       refs.push({ kind, name });
     } else {
-      const matches = available.filter((tool) => tool.name === value);
-      if (matches.length > 0) {
-        // A shared display name represents every matching implementation. This
-        // keeps the command UX unified even if an internal and external tool
-        // happen to use the same name.
-        for (const match of matches) {
-          if (!refs.some((ref) => ref.kind === match.kind && ref.name === match.name)) {
-            refs.push({ kind: match.kind, name: match.name });
-          }
+      const match = available.find((tool) => tool.commandName === value);
+      if (match) {
+        if (!refs.some((ref) => ref.kind === match.kind && ref.name === match.policyName)) {
+          refs.push({ kind: match.kind, name: match.policyName });
         }
+      } else if (available.some((tool) => tool.policyName === value && tool.commandName !== value)) {
+        // Do not reinterpret an ambiguous canonical name such as `exo` as a
+        // module path. Its internal and external implementations have distinct
+        // command names (`exocortex` and `exo-cli`).
+        return null;
       } else {
         modulePaths.push(value);
       }
@@ -79,10 +98,10 @@ function parseTargets(values: string[], state: CommandState): {
 }
 
 export function formatToolPolicySnapshot(snapshot: ToolPolicySnapshot, changed: boolean): string {
-  const list = (entries: ToolPolicySnapshot["internal"], enabled: boolean) => {
+  const list = (kind: ToolKind, entries: ToolPolicySnapshot["internal"], enabled: boolean) => {
     const names = entries
       .filter((entry) => entry.enabled === enabled)
-      .map((entry) => entry.name);
+      .map((entry) => toolCommandName(kind, entry.name));
     return names.length > 0 ? names.join(", ") : "(none)";
   };
   return [
@@ -90,12 +109,12 @@ export function formatToolPolicySnapshot(snapshot: ToolPolicySnapshot, changed: 
     `Mode: ${snapshot.source}${snapshot.scoped ? " · scoped subagent" : ""}`,
     "",
     "Enabled:",
-    `  Internal: ${list(snapshot.internal, true)}`,
-    `  External: ${list(snapshot.external, true)}`,
+    `  Internal: ${list("internal", snapshot.internal, true)}`,
+    `  External: ${list("external", snapshot.external, true)}`,
     "",
     "Disabled:",
-    `  Internal: ${list(snapshot.internal, false)}`,
-    `  External: ${list(snapshot.external, false)}`,
+    `  Internal: ${list("internal", snapshot.internal, false)}`,
+    `  External: ${list("external", snapshot.external, false)}`,
     ...((snapshot.modules?.length ?? 0) > 0
       ? [
           "",
@@ -113,13 +132,9 @@ export const TOOLS_COMMAND: SlashCommand = {
   description: "Show or change this conversation's tool availability",
   args: ACTIONS,
   getArgs: (state) => {
-    const grouped = new Map<string, AvailableToolRef[]>();
-    for (const tool of availableToolRefs(state)) {
-      grouped.set(tool.name, [...(grouped.get(tool.name) ?? []), tool]);
-    }
-    const refs: CompletionItem[] = [...grouped].map(([name, tools]) => ({
-      name,
-      desc: `${[...new Set(tools.map((tool) => tool.category))].join(" / ")} · ${[...new Set(tools.map((tool) => tool.label))].join(" / ")}`,
+    const refs: CompletionItem[] = availableToolRefs(state).map((tool) => ({
+      name: tool.commandName,
+      desc: `${tool.category} · ${tool.label}`,
     }));
     const moduleRefs: CompletionItem[] = (state.activeToolPolicy?.modules ?? []).map((module) => ({
       name: module.path,

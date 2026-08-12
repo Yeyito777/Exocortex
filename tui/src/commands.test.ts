@@ -1422,24 +1422,30 @@ describe("/tools", () => {
     expect(state.inputBuffer).toBe("/tools enable read");
   });
 
-  test("treats a shared tool name as one UI option while preserving both policy refs", () => {
+  test("offers and mutates internal Exocortex and the external exo CLI separately", () => {
     const state = createInitialState();
-    state.toolRegistry = [{ name: "exo", label: "Exo", color: "#ffffff" }];
+    state.toolRegistry = [{ name: "exo", label: "Exocortex", color: "#ffffff" }];
     state.externalToolStyles = [{ cmd: "exo", label: "Exocortex CLI", color: "#ffffff" }];
 
     expect(getCommandArgs(state, "/tools")["/tools enable"]).toEqual([
-      { name: "exo", desc: "Internal / External · Exo / Exocortex CLI" },
+      { name: "exocortex", desc: "Internal · Exocortex" },
+      { name: "exo-cli", desc: "External · Exocortex CLI" },
     ]);
-    expect(tryCommand("/tools disable exo", state)).toEqual({
+    expect(tryCommand("/tools disable exocortex", state)).toEqual({
       type: "tool_policy",
       mutation: {
         action: "disable",
-        tools: [
-          { kind: "internal", name: "exo" },
-          { kind: "external", name: "exo" },
-        ],
+        tools: [{ kind: "internal", name: "exo" }],
       },
     });
+    expect(tryCommand("/tools disable exo-cli", state)).toEqual({
+      type: "tool_policy",
+      mutation: {
+        action: "disable",
+        tools: [{ kind: "external", name: "exo" }],
+      },
+    });
+    expect(tryCommand("/tools disable exo", state)).toEqual({ type: "handled" });
   });
 
   test("works on a blank conversation draft and rejects malformed references", () => {
@@ -1473,10 +1479,10 @@ describe("/tools", () => {
     expect(output).toContain([
       "Enabled:",
       "  Internal: read",
-      "  External: exo",
+      "  External: exo-cli",
       "",
       "Disabled:",
-      "  Internal: exo",
+      "  Internal: exocortex",
       "  External: gmail",
     ].join("\n"));
     expect(output).not.toContain("Warning: bash");
