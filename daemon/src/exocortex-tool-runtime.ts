@@ -98,6 +98,7 @@ export interface ExocortexToolRuntimeDependencies {
     task: string,
     childStartedAt: number,
     subagentMaxDepth: number | null,
+    trackAsSubagent: boolean,
   ): unknown;
   completeParentNotification?(childConvId: string, outcome: AssistantTurnOutcome): void;
   /** Compatibility seam for isolated runtime tests without the durable manager. */
@@ -759,6 +760,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const requestedTitle = convId ? undefined : subagentTitleInput(input);
     let taskTitle: string;
     let created = false;
+    let trackAsSubagent = false;
     let requestedExistingToolPolicy: ReturnType<typeof normalizeToolPolicySelection> | null = null;
     let existingToolPolicyChanged = false;
 
@@ -842,6 +844,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       convStore.setToolPolicy(convId, childToolPolicy);
       taskTitle = requestedTitle!;
       created = true;
+      trackAsSubagent = true;
       broadcastConversationUpdated(server, convId);
       broadcastSidebar();
       log("info", `exo tool: created subagent ${convId} (${selection.provider}/${selection.model})`);
@@ -850,6 +853,10 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       if (!target) throw new Error(`Conversation ${convId} not found`);
       ensureScopedDelegationTarget(parentConvId, convId);
       taskTitle = target.title || "Subagent task";
+      // Sending to a regular existing conversation is cross-conversation work,
+      // not a new child task owned by the caller. Existing scoped/standalone
+      // subagent conversations keep their activity classification when reused.
+      trackAsSubagent = Boolean(target.subagentPolicy);
       if (existingToolPolicyRequested) {
         requestedExistingToolPolicy = normalizeToolPolicySelection(
           requestedInternalTools!,
@@ -900,7 +907,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth);
       return queuedExistingSendResult();
     }
-    if (!created) ensureSubagentCapacity(parentConvId);
+    if (!created && trackAsSubagent) ensureSubagentCapacity(parentConvId);
     persistRequestedExistingToolPolicy();
     const shouldDetach = mode !== "wait";
     const startedAt = Date.now();
@@ -908,19 +915,19 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     if (shouldDetach) {
       const notify = booleanInput(input, "notify_parent", true) && Boolean(parentConvId);
       if (notify && parentConvId) {
-        deps.beginParentNotification?.({ convId: parentConvId }, convId, text, startedAt, maxDepth);
+        deps.beginParentNotification?.({ convId: parentConvId }, convId, text, startedAt, maxDepth, trackAsSubagent);
       }
-      setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt });
+      if (trackAsSubagent) setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt });
       void deps.runTurn(convId, text, maxDepth, startedAt).then(outcome => {
         if (outcome.suspended) return;
-        setTrackedSubagent(parentConvId, convId!, false);
+        if (trackAsSubagent) setTrackedSubagent(parentConvId, convId!, false);
         if (notify && parentConvId) {
           if (deps.completeParentNotification) deps.completeParentNotification(convId!, outcome);
           else deps.notifyParent?.(parentConvId, convId!, text, outcome);
         }
       }).catch(error => {
-        setTrackedSubagent(parentConvId, convId!, false);
-        log("error", `exo tool: detached subagent ${convId} failed: ${error instanceof Error ? error.message : error}`);
+        if (trackAsSubagent) setTrackedSubagent(parentConvId, convId!, false);
+        log("error", `exo tool: detached ${trackAsSubagent ? "subagent" : "send"} ${convId} failed: ${error instanceof Error ? error.message : error}`);
         if (notify && parentConvId) {
           const outcome = failedOutcome(error);
           if (deps.completeParentNotification) deps.completeParentNotification(convId!, outcome);
@@ -951,7 +958,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     const onAbort = () => convStore.getActiveJob(convId!)?.abort(signal?.reason);
     signal?.addEventListener("abort", onAbort, { once: true });
-    setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt });
+    if (trackAsSubagent) setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt });
     try {
       const outcome = await deps.runTurn(convId, text, maxDepth, startedAt);
       const full = booleanInput(input, "full", false);
@@ -966,7 +973,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         isError: !outcome.ok,
       };
     } finally {
-      setTrackedSubagent(parentConvId, convId, false);
+      if (trackAsSubagent) setTrackedSubagent(parentConvId, convId, false);
       signal?.removeEventListener("abort", onAbort);
     }
   };

@@ -1115,7 +1115,7 @@ describe("handler subagent folder placement", () => {
     expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation_moved" }));
   });
 
-  test("does not re-home existing conversations on detached parent-notifying sends", async () => {
+  test("does not classify detached parent-notifying sends to regular existing conversations as subagents", async () => {
     const parentId = mkId("parent-notify-target");
     const childId = mkId("existing-detached-child");
     create(parentId, "openai", "gpt-5.4", "parent");
@@ -1153,18 +1153,11 @@ describe("handler subagent folder placement", () => {
 
     expect(sent).toContainEqual(expect.objectContaining({ type: "ack", reqId: "req-existing-detached", convId: childId }));
     expect(getSummary(childId)?.folderId ?? null).toBeNull();
-    expect(getSummary(parentId)?.subagentCount).toBe(1);
-    expect(getSummary(parentId)?.tasks).toEqual([
-      { id: childId, kind: "subagent", title: "existing child", startedAt: 123 },
+    expect(getSummary(parentId)?.subagentCount).toBe(0);
+    expect(getSummary(parentId)?.tasks).toEqual([]);
+    expect(listPendingSubagentNotifications({ childConvId: childId })).toEqual([
+      expect.objectContaining({ parentConvId: parentId, trackAsSubagent: false }),
     ]);
-    expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({
-      type: "conversation_updated",
-      summary: expect.objectContaining({
-        id: parentId,
-        subagentCount: 1,
-        tasks: [{ id: childId, kind: "subagent", title: "existing child", startedAt: 123 }],
-      }),
-    }));
     expect(server.broadcast).not.toHaveBeenCalledWith(expect.objectContaining({ type: "conversation_moved" }));
 
     finishChild(makeAssistantOutcome());

@@ -429,7 +429,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const related = listPendingSubagentNotifications({ childConvId });
     settlePendingSubagentNotifications(childConvId, outcome);
     if (!(outcome.aborted && outcome.daemonRestart)) {
-      const parentIds = new Set(related.map((record) => record.parentConvId));
+      const parentIds = new Set(
+        related.filter((record) => record.trackAsSubagent).map((record) => record.parentConvId),
+      );
       const knownParent = getSubagentParentConversationId(childConvId);
       if (knownParent) parentIds.add(knownParent);
       for (const parentConvId of parentIds) {
@@ -1793,9 +1795,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             break;
           }
           const trackedParentId = cmd.notifyParent?.convId;
+          // Detached sends to ordinary existing conversations are not child
+          // subagent tasks. Conversations explicitly created as subagents retain
+          // that classification when another turn is sent to them.
+          const trackAsSubagent = Boolean(target?.subagentPolicy);
           if (cmd.notifyParent) {
             try {
-              notificationRuntime.begin(cmd.notifyParent, cmd.convId, cmd.text, cmd.startedAt, null);
+              notificationRuntime.begin(cmd.notifyParent, cmd.convId, cmd.text, cmd.startedAt, null, trackAsSubagent);
             } catch (err) {
               server.sendTo(client, {
                 type: "error",
@@ -1806,14 +1812,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               break;
             }
           }
-          if (trackedParentId && setSubagentActive(trackedParentId, cmd.convId, true, {
+          if (trackAsSubagent && trackedParentId && setSubagentActive(trackedParentId, cmd.convId, true, {
             title: target?.title || "Subagent task",
             startedAt: cmd.startedAt,
           })) {
             broadcastConversationUpdated(server, trackedParentId);
           }
           const finishTrackedSubagent = () => {
-            if (trackedParentId && setSubagentActive(trackedParentId, cmd.convId, false)) {
+            if (trackAsSubagent && trackedParentId && setSubagentActive(trackedParentId, cmd.convId, false)) {
               broadcastConversationUpdated(server, trackedParentId);
             }
           };

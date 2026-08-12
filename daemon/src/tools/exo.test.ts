@@ -433,6 +433,94 @@ describe("native exo daemon runtime", () => {
     expect(notifyParent).toHaveBeenCalledWith(parentId, childId, "Inspect /tmp/project", expect.objectContaining({ ok: true }));
   });
 
+  test("does not classify detached sends to regular existing conversations as subagents", async () => {
+    const parentId = id("existing-send-parent");
+    const targetId = id("existing-send-target");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
+    create(targetId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "existing target");
+    let resolveTurn!: (outcome: ReturnType<typeof successfulOutcome>) => void;
+    const runTurn = mock(() => new Promise<ReturnType<typeof successfulOutcome>>((resolve) => {
+      resolveTurn = resolve;
+    }));
+    const beginParentNotification = mock(() => {});
+    const completeParentNotification = mock(() => {});
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn,
+      beginParentNotification,
+      completeParentNotification,
+      hasCredentials: () => true,
+    });
+
+    const result = await runtime.execute({
+      action: "send",
+      conversation_id: targetId,
+      text: "Share this update",
+      mode: "detach",
+      max_depth: 0,
+    }, parentId);
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.output)).toMatchObject({
+      conversation_id: targetId,
+      status: "running",
+      detached: true,
+      created: false,
+    });
+    expect(beginParentNotification).toHaveBeenCalledWith(
+      { convId: parentId },
+      targetId,
+      "Share this update",
+      expect.any(Number),
+      0,
+      false,
+    );
+    expect(getSummary(parentId)).toMatchObject({ subagentCount: 0, tasks: [] });
+    const activeTasks = JSON.parse((await runtime.execute({ action: "tasks" }, parentId)).output);
+    expect(activeTasks).toMatchObject({ total: 0, tasks: [] });
+
+    resolveTurn(successfulOutcome("update received"));
+    await Promise.resolve();
+    expect(completeParentNotification).toHaveBeenCalledWith(targetId, expect.objectContaining({ ok: true }));
+    expect(getSummary(parentId)).toMatchObject({ subagentCount: 0, tasks: [] });
+  });
+
+  test("continues tracking detached turns in existing subagent conversations", async () => {
+    const parentId = id("existing-subagent-parent");
+    const childId = id("existing-subagent-child");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
+    create(childId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "existing child");
+    setSubagentPolicy(childId, {
+      parentConversationId: parentId,
+      allowEdits: false,
+      parentSystemInstructions: "",
+    });
+    let resolveTurn!: (outcome: ReturnType<typeof successfulOutcome>) => void;
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn: () => new Promise((resolve) => { resolveTurn = resolve; }),
+      hasCredentials: () => true,
+    });
+
+    const result = await runtime.execute({
+      action: "send",
+      conversation_id: childId,
+      text: "Continue the delegated task",
+      mode: "detach",
+      notify_parent: false,
+      max_depth: 0,
+    }, parentId);
+
+    expect(result.isError).toBe(false);
+    expect(getSummary(parentId)).toMatchObject({
+      subagentCount: 1,
+      tasks: [expect.objectContaining({ id: childId, kind: "subagent" })],
+    });
+    resolveTurn(successfulOutcome());
+    await Promise.resolve();
+    expect(getSummary(parentId)).toMatchObject({ subagentCount: 0, tasks: [] });
+  });
+
   test("lets the parent explicitly grant edit tools and override subagent effort", async () => {
     const parentId = id("editable-parent");
     create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
@@ -646,6 +734,7 @@ describe("native exo daemon runtime", () => {
       "survive restart",
       startedAt,
       1,
+      true,
     );
     expect(beginParentNotification.mock.invocationCallOrder[0]).toBeLessThan(runTurn.mock.invocationCallOrder[0]);
 

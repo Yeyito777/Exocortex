@@ -1,11 +1,13 @@
 /**
- * Durable detached-subagent completion notifications.
+ * Durable detached-send completion notifications.
  *
- * The running child -> parent relationship cannot live only in a Promise
- * callback: that callback disappears when the daemon restarts. This sidecar is
- * written before a detached child starts, transitions to `ready` when the child
- * outcome is known, and is removed only after the notification user message is
- * durably present in the parent's transcript.
+ * The running target -> notifying-parent relationship cannot live only in a
+ * Promise callback: that callback disappears when the daemon restarts. This
+ * sidecar is written before a detached turn starts, transitions to `ready` when
+ * the target outcome is known, and is removed only after the notification user
+ * message is durably present in the parent's transcript. Historical API names
+ * retain "subagent", while `trackAsSubagent` distinguishes actual child work
+ * from sends to ordinary existing conversations.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
@@ -26,6 +28,8 @@ export interface PendingSubagentNotification {
   maxChars?: number;
   childStartedAt: number;
   subagentMaxDepth: number | null;
+  /** Whether this detached turn is a child subagent task owned by the parent. */
+  trackAsSubagent: boolean;
   state: "running" | "ready";
   /** Complete model-visible parent prompt. Present only when state=ready. */
   text?: string;
@@ -56,6 +60,7 @@ export interface SubagentNotificationRuntime {
     task: string,
     childStartedAt: number,
     subagentMaxDepth: number | null,
+    trackAsSubagent?: boolean,
   ): PendingSubagentNotification;
   complete(childConvId: string, outcome: SubagentNotificationOutcome): void;
   deliverReady(childConvId?: string): void;
@@ -97,6 +102,9 @@ function normalizeRecord(raw: unknown): PendingSubagentNotification | null {
     ...(maxChars ? { maxChars } : {}),
     childStartedAt: Number(record.childStartedAt),
     subagentMaxDepth,
+    // Version-1 records predate cross-conversation classification and were all
+    // projected as subagent activity, so retain that behavior when reloading.
+    trackAsSubagent: record.trackAsSubagent !== false,
     state: record.state,
     ...(record.state === "ready" ? { text: record.text! } : {}),
     createdAt: Number(record.createdAt),
@@ -161,6 +169,7 @@ export function beginPendingSubagentNotification(
   task: string,
   childStartedAt: number,
   subagentMaxDepth: number | null,
+  trackAsSubagent = true,
 ): PendingSubagentNotification {
   ensureLoaded();
   const alreadyRunning = [...notifications.values()].find((record) =>
@@ -182,6 +191,7 @@ export function beginPendingSubagentNotification(
     ...(typeof parent.maxChars === "number" && parent.maxChars > 0 ? { maxChars: Math.floor(parent.maxChars) } : {}),
     childStartedAt,
     subagentMaxDepth,
+    trackAsSubagent,
     state: "running",
     createdAt: now,
     updatedAt: now,

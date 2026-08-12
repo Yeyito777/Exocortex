@@ -57,6 +57,28 @@ describe("durable subagent notifications", () => {
     ]);
   });
 
+  test("persists whether a detached turn should count as subagent activity", () => {
+    const parentConvId = conversation("regular-send-parent");
+    const targetConvId = conversation("regular-send-target");
+
+    beginPendingSubagentNotification(
+      { convId: parentConvId },
+      targetConvId,
+      "send an update",
+      84,
+      0,
+      false,
+    );
+
+    expect(reloadPendingSubagentNotifications()).toEqual([
+      expect.objectContaining({
+        parentConvId,
+        childConvId: targetConvId,
+        trackAsSubagent: false,
+      }),
+    ]);
+  });
+
   test("keeps restart-aborted work running, then makes its successful replay ready", () => {
     const parentConvId = conversation("restart-parent");
     const childConvId = conversation("restart-child");
