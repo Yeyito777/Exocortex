@@ -1087,6 +1087,36 @@ describe("native exo daemon runtime", () => {
     expect(get(childId)?.toolPolicy).toBeNull();
   });
 
+  test("can enable Exocortex for a regular target after an exhausted delegated turn", async () => {
+    const parentId = id("regular-tools-parent");
+    const targetId = id("regular-tools-target");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
+    create(targetId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "regular target");
+    get(targetId)!.subagentMaxDepth = 0;
+    setToolPolicy(targetId, { internal: ["read"], external: [] });
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn: async () => successfulOutcome(),
+      hasCredentials: () => true,
+    });
+
+    const result = await runtime.execute({
+      action: "commands",
+      command: "tools",
+      args: {
+        operation: "set",
+        conversation_id: targetId,
+        internal_tools: ["read", "exo"],
+        external_tools: [],
+      },
+    }, parentId);
+
+    expect(result.isError).toBe(false);
+    const policy = JSON.parse(result.output).tool_policy;
+    expect(policy.internal.find((tool: { name: string }) => tool.name === "exo").enabled).toBe(true);
+    expect(get(targetId)?.toolPolicy).toEqual({ internal: ["read", "exo"], external: [] });
+  });
+
   test("discovers notification sources and subscribes the active conversation", async () => {
     const parentId = id("notification-parent");
     create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "Notification parent");

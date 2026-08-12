@@ -156,6 +156,38 @@ describe("handler conversation tool policy", () => {
     expect(broadcasted.at(-1)).toMatchObject({ type: "tool_policy", convId: id, changed: true, snapshot: { source: "default" } });
   });
 
+  test("enables Exocortex through /tools after a regular delegated turn exhausted its depth", async () => {
+    const id = mkId("tool-policy-exocortex-after-delegation");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const conversation = get(id)!;
+    conversation.subagentMaxDepth = 0;
+    conversation.toolPolicy = { internal: ["read"], external: [] };
+    const sent: Array<Record<string, any>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "set_tool_policy",
+      reqId: "enable-exocortex",
+      convId: id,
+      mutation: { action: "enable", tools: [{ kind: "internal", name: "exo" }] },
+    });
+
+    expect(get(id)?.toolPolicy?.internal).toContain("exo");
+    expect(sent.at(-1)).toMatchObject({
+      type: "tool_policy",
+      reqId: "enable-exocortex",
+      changed: true,
+      snapshot: {
+        internal: expect.arrayContaining([expect.objectContaining({ name: "exo", enabled: true })]),
+      },
+    });
+  });
+
   test("keeps blank-draft choices ephemeral and applies them when the conversation is created", async () => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
     IDS.push(id);

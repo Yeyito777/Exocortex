@@ -1482,8 +1482,9 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         convId,
         nextPolicy.internal,
       );
-      if ((conversation.subagentMaxDepth ?? null) !== null
-        && (conversation.subagentMaxDepth ?? 0) <= 0
+      if (conversation.subagentPolicy
+        && typeof conversation.subagentMaxDepth === "number"
+        && conversation.subagentMaxDepth <= 0
         && nextPolicy.internal.includes("exo")) {
         throw new Error("Cannot enable internal tool exo for a conversation with max_depth=0");
       }

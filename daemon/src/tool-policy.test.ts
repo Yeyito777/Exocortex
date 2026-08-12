@@ -63,6 +63,30 @@ describe("conversation tool policy", () => {
     expect(resolveConversationToolPolicy(conv).configurableInternalToolNames).toEqual(["read", "write"]);
   });
 
+  test("regular policy status ignores an exhausted budget retained from a delegated turn", () => {
+    const conv = createConversation("regular-after-delegation", "openai", "gpt-5.6-sol");
+    conv.subagentMaxDepth = 0;
+    conv.toolPolicy = { internal: ["read", "write", "exo"], external: [] };
+
+    expect(resolveConversationToolPolicy(conv).configurableInternalToolNames).toEqual(["read", "write", "exo"]);
+    expect(buildToolPolicySnapshot(conv).internal.find((tool) => tool.name === "exo")?.enabled).toBe(true);
+    expect(resolveConversationToolPolicy(conv, 0).configurableInternalToolNames).toEqual(["read", "write"]);
+  });
+
+  test("mutating a regular policy preserves exo after an exhausted delegated turn", async () => {
+    const conv = createConversation("regular-mutation-after-delegation", "openai", "gpt-5.6-sol");
+    conv.subagentMaxDepth = 0;
+    conv.toolPolicy = { internal: ["read", "write", "exo"], external: [] };
+
+    const policy = await applyToolPolicyMutation(conv, {
+      action: "disable",
+      tools: [{ kind: "internal", name: "write" }],
+    });
+
+    expect(policy?.internal).toContain("exo");
+    expect(policy?.internal).not.toContain("write");
+  });
+
   test("enable, disable, and reset produce persisted exact policies", async () => {
     const conv = createConversation("mutations", "openai", "gpt-5.6-sol");
     conv.toolPolicy = { internal: ["read", "glob", "grep", "browse"], external: [] };

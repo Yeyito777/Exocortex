@@ -58,7 +58,13 @@ export interface ResolvedToolPolicy {
 
 export function resolveConversationToolPolicy(
   conversation: Pick<Conversation, "subagentPolicy" | "subagentMaxDepth" | "toolPolicy">,
-  maxDepth: number | null = conversation.subagentMaxDepth ?? null,
+  // A regular conversation retains the budget from its last delegated turn until
+  // another turn starts. That value is not part of its persistent tool policy.
+  // Callers building an active delegated turn pass its depth explicitly; policy
+  // management only inherits the durable depth ceiling of scoped subagents.
+  maxDepth: number | null = conversation.subagentPolicy
+    ? conversation.subagentMaxDepth ?? null
+    : null,
 ): ResolvedToolPolicy {
   const registeredInternal = getConfigurableInternalToolNames(conversation);
   const registeredInternalSet = new Set(registeredInternal);
