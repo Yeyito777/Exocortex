@@ -1265,12 +1265,17 @@ export function render(state: RenderState): void {
   let btwPanel = null;
   if (state.btw) {
     const availableRows = Math.max(1, baseMessageAreaHeight);
-    const preferredHeight = getBtwPanelPreferredHeight(state.btw, chatW);
+    const btwRenderOptions = {
+      toolRegistry: state.toolRegistry,
+      externalToolStyles: state.externalToolStyles,
+      showToolOutput: state.showToolOutput,
+    };
+    const preferredHeight = getBtwPanelPreferredHeight(state.btw, chatW, btwRenderOptions);
     const btwHeight = availableRows >= 3
       ? Math.min(preferredHeight, availableRows, MAX_BTW_PANEL_HEIGHT)
       : 1;
     const btwTop = bottomStartRow - btwHeight;
-    btwPanel = renderBtwPanel(state.btw, chatW, btwHeight, btwTop, chatCol);
+    btwPanel = renderBtwPanel(state.btw, chatW, btwHeight, btwTop, chatCol, btwRenderOptions);
   }
   const messageAreaHeight = Math.max(0, baseMessageAreaHeight - (btwPanel?.height ?? 0));
 

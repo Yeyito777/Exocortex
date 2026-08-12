@@ -1,6 +1,7 @@
-/** Compact foreground panel for a conversation-owned `/btw` answer. */
+/** Compact foreground panel for a conversation-owned `/btw` assistant history. */
 
-import { markdownWordWrap } from "../markdown";
+import { renderBlockCached, renderSystemMessage } from "../blockrenderer";
+import type { Block, ExternalToolStyle, ToolDisplayInfo } from "../messages";
 import { padRightToWidth, padVisibleRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import { theme } from "../theme";
 import type { BtwPanelState } from "./state";
@@ -18,16 +19,75 @@ export interface BtwPanelRender {
 
 export const MAX_BTW_PANEL_HEIGHT = 20;
 
+export interface BtwPanelRenderOptions {
+  toolRegistry?: ToolDisplayInfo[];
+  externalToolStyles?: ExternalToolStyle[];
+  showToolOutput?: boolean;
+}
+
+const EMPTY_TOOL_REGISTRY: ToolDisplayInfo[] = [];
+const EMPTY_EXTERNAL_TOOL_STYLES: ExternalToolStyle[] = [];
+
 function cleanInline(text: string): string {
   return text.replace(/[\r\n\t]+/g, " ").replace(/[\x00-\x1F\x7F]/g, "").replace(/\s+/g, " ").trim();
 }
 
-/** Grow with the streamed answer, then use a scrolling viewport after 20 rows. */
-export function getBtwPanelPreferredHeight(btw: BtwPanelState, width: number): number {
+function legacyTextBlock(btw: BtwPanelState): Block[] {
+  return btw.text ? [{ type: "text", text: btw.text }] : [];
+}
+
+/** Render BTW blocks through the ordinary assistant-history block renderer. */
+function renderBtwContentRows(
+  btw: BtwPanelState,
+  contentWidth: number,
+  options: BtwPanelRenderOptions,
+): string[] {
+  const toolRegistry = options.toolRegistry ?? EMPTY_TOOL_REGISTRY;
+  const externalToolStyles = options.externalToolStyles ?? EMPTY_EXTERNAL_TOOL_STYLES;
+  const blocks = btw.blocks.length > 0 ? btw.blocks : legacyTextBlock(btw);
+  const erroredToolCallIds = new Set(
+    blocks
+      .filter((block): block is Extract<Block, { type: "tool_result" }> => block.type === "tool_result" && block.isError)
+      .map(block => block.toolCallId),
+  );
+  const rows: string[] = [];
+
+  for (const block of blocks) {
+    // Text/thinking blocks add the normal two-space assistant indent after
+    // wrapping, while tool blocks account for their own prefixes internally.
+    const blockWidth = block.type === "text" || block.type === "thinking"
+      ? Math.max(1, contentWidth - 2)
+      : contentWidth;
+    const rendered = renderBlockCached(
+      block,
+      blockWidth,
+      toolRegistry,
+      externalToolStyles,
+      options.showToolOutput ?? false,
+      block.type === "tool_call" && erroredToolCallIds.has(block.toolCallId),
+    );
+    rows.push(...rendered.lines);
+  }
+
+  // Normal history surfaces terminal stream failures as a visible system notice.
+  // Keep the same behavior inside the retained card rather than hiding an error
+  // as soon as any partial assistant block exists.
+  if (btw.phase === "error" && btw.status) {
+    rows.push(...renderSystemMessage(`✗ ${btw.status}`, contentWidth, theme.error).lines);
+  }
+  return rows;
+}
+
+/** Grow with assistant history, then use a scrolling viewport after 20 rows. */
+export function getBtwPanelPreferredHeight(
+  btw: BtwPanelState,
+  width: number,
+  options: BtwPanelRenderOptions = {},
+): number {
   if (width < 22) return 1;
-  if (!btw.text) return 3;
   const contentWidth = Math.max(1, width - 4);
-  const answerRows = markdownWordWrap(btw.text, contentWidth, theme.appBg ?? "").lines.length;
+  const answerRows = renderBtwContentRows(btw, contentWidth, options).length;
+  if (answerRows === 0) return 3;
   return Math.min(MAX_BTW_PANEL_HEIGHT, Math.max(4, answerRows + 2));
 }
 
@@ -38,6 +98,7 @@ export function renderBtwPanel(
   height = 4,
   top = 1,
   left = 1,
+  options: BtwPanelRenderOptions = {},
 ): BtwPanelRender | null {
   if (width <= 0 || height <= 0 || top <= 0 || left <= 0) return null;
 
@@ -78,8 +139,9 @@ export function renderBtwPanel(
   const topLine = `${theme.bold}${outline}╭─ ${theme.text}${label}${theme.boldOff}${outline} ${"─".repeat(fillWidth)}╮`;
   const lines: string[] = [applyPanelBg(topLine)];
 
-  const wrapped = btw.text
-    ? markdownWordWrap(btw.text, contentWidth, panelBg).lines
+  const content = renderBtwContentRows(btw, contentWidth, options);
+  const wrapped = content.length > 0
+    ? content
     : [`${theme.muted}${truncateToWidth(btw.phase === "error" ? "No answer was produced." : btw.status || "Thinking…", contentWidth)}${theme.reset}${panelBg}`];
   const maxScroll = Math.max(0, wrapped.length - contentRows);
   btw.maxScroll = maxScroll;

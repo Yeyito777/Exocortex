@@ -133,6 +133,22 @@ describe("conversation-owned BTW sessions", () => {
     const fakeRunAgentLoop = ((messages, provider, model, callbacks, options) => {
       if (!options) throw new Error("BTW must pass agent options");
       captured = { messages, provider, model, options };
+      callbacks.onBlockStart("thinking");
+      callbacks.onThinkingChunk("I should inspect the frozen context.");
+      callbacks.onToolCall({
+        type: "tool_call",
+        toolCallId: "read-1",
+        toolName: "read",
+        input: { file_path: "README.md" },
+        summary: "README.md",
+      });
+      callbacks.onToolResult({
+        type: "tool_result",
+        toolCallId: "read-1",
+        toolName: "read",
+        output: "project notes",
+        isError: false,
+      });
       callbacks.onBlockStart("text");
       callbacks.onTextChunk("partial answer");
       return new Promise((_resolve, reject) => {
@@ -183,6 +199,18 @@ describe("conversation-owned BTW sessions", () => {
       expect(events.get(peer.id)?.some(event => event.type === "btw_text_chunk"
         && event.convId === convId && event.text === "partial answer")).toBe(true);
       expect(manager.getSnapshot(convId)?.text).toBe("partial answer");
+      expect(manager.getSnapshot(convId)?.blocks).toEqual([
+        { type: "thinking", text: "I should inspect the frozen context." },
+        { type: "tool_call", toolCallId: "read-1", toolName: "read", input: { file_path: "README.md" }, summary: "README.md" },
+        { type: "tool_result", toolCallId: "read-1", toolName: "read", output: "project notes", isError: false },
+        { type: "text", text: "partial answer" },
+      ]);
+      expect(events.get(owner.id)?.some(event => event.type === "btw_thinking_chunk"
+        && event.text === "I should inspect the frozen context.")).toBe(true);
+      expect(events.get(owner.id)?.some(event => event.type === "btw_tool_call"
+        && event.toolName === "read" && event.summary === "README.md")).toBe(true);
+      expect(events.get(owner.id)?.some(event => event.type === "btw_status"
+        && event.status.startsWith("Using "))).toBe(false);
       expect(manager.hasRunningProvider("deepseek")).toBe(true);
 
       // The owner socket disappearing does not own or interrupt conversation work.
@@ -192,6 +220,7 @@ describe("conversation-owned BTW sessions", () => {
 
       await new Promise(resolve => setTimeout(resolve, 120));
       expect(persisted.get(convId)?.text).toBe("partial answer");
+      expect(persisted.get(convId)?.blocks?.some(block => block.type === "thinking")).toBe(true);
 
       // Any client viewing the conversation can close its retained panel.
       expect(manager.close(peer, convId, "session-1")).toBe("closed");
@@ -461,11 +490,15 @@ describe("conversation-owned BTW sessions", () => {
     });
 
     try {
-      expect(manager.getSnapshot("complete-conv")).toEqual(complete);
+      expect(manager.getSnapshot("complete-conv")).toEqual({
+        ...complete,
+        blocks: [{ type: "text", text: "complete answer" }],
+      });
       expect(manager.getSnapshot("running-conv")).toMatchObject({
         sessionId: "running-session",
         phase: "error",
         text: "durable partial answer",
+        blocks: [{ type: "text", text: "durable partial answer" }],
         status: "Interrupted by daemon restart.",
         endedAt: expect.any(Number),
       });
@@ -475,7 +508,7 @@ describe("conversation-owned BTW sessions", () => {
       expect(events.get(client.id)?.at(-1)).toEqual({
         type: "btw_snapshot",
         convId: "complete-conv",
-        btw: complete,
+        btw: { ...complete, blocks: [{ type: "text", text: "complete answer" }] },
       });
       manager.sendSnapshot(client, "missing-conv");
       expect(events.get(client.id)?.at(-1)).toEqual({

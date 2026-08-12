@@ -3,7 +3,8 @@ import { runAgentLoop } from "../agent";
 import { createProviderTurnSession } from "../api";
 import { buildConversationApiContext } from "../context-compaction";
 import * as convStore from "../conversations";
-import type { ApiMessage, Conversation, ProviderId } from "../messages";
+import type { ApiMessage, Block, Conversation, ProviderId, ToolCallBlock, ToolResultBlock } from "../messages";
+import type { ContentBlock as ProviderContentBlock } from "../providers/types";
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "../providers/openai/auth";
 import { buildCodexWindowId } from "../providers/openai/identity";
 import { buildSystemPrompt } from "../system";
@@ -41,16 +42,29 @@ export interface PreparedBtwRun {
 
 export interface BtwRunHooks {
   onStatus(status: string): void;
-  onContent(text: string): void;
+  onBlockStart(type: "text" | "thinking"): void;
   onTextChunk(text: string): void;
+  onThinkingChunk(text: string): void;
+  onBlocksUpdate(blocks: Block[]): void;
+  onToolCall(block: ToolCallBlock): void;
+  onToolResult(block: ToolResultBlock): void;
   onHeaders(headers: Headers): void;
 }
 
-function answerText(messages: readonly { type: string; text?: string }[]): string {
-  return messages
-    .filter((block): block is { type: "text"; text: string } => block.type === "text" && typeof block.text === "string")
-    .map(block => block.text)
-    .join("");
+function streamingBlocks(blocks: ProviderContentBlock[]): Block[] {
+  return blocks
+    .filter((block): block is Extract<ProviderContentBlock, { type: "text" | "thinking" }> => (
+      block.type === "text" || block.type === "thinking"
+    ))
+    .map(block => ({ type: block.type, text: block.text }));
+}
+
+function ensureRoundBlock(blocks: Block[], type: "text" | "thinking"): Extract<Block, { type: "text" | "thinking" }> {
+  const last = blocks.at(-1);
+  if (last?.type === type) return last;
+  const block: Extract<Block, { type: "text" | "thinking" }> = { type, text: "" };
+  blocks.push(block);
+  return block;
 }
 
 /** Freeze source replay/settings and build every provider/tool input synchronously. */
@@ -114,43 +128,47 @@ export async function runBtw(
   runLoop: RunAgentLoop,
   signal: AbortSignal,
   hooks: BtwRunHooks,
-): Promise<string> {
-  let committedText = "";
-  let roundText = "";
+): Promise<Block[]> {
+  let committedBlocks: Block[] = [];
+  let roundBlocks: Block[] = [];
   const turnSession = createProviderTurnSession(prepared.provider);
   const result = await runLoop(prepared.messages, prepared.provider, prepared.model, {
     onBlockStart: (type) => {
-      hooks.onStatus(type === "thinking" ? "Thinking…" : "Answering…");
+      roundBlocks.push({ type, text: "" });
+      hooks.onBlockStart(type);
     },
     onTextChunk: (text) => {
-      roundText += text;
+      ensureRoundBlock(roundBlocks, "text").text += text;
       hooks.onTextChunk(text);
     },
-    onThinkingChunk() {},
+    onThinkingChunk: (text) => {
+      ensureRoundBlock(roundBlocks, "thinking").text += text;
+      hooks.onThinkingChunk(text);
+    },
     onBlocksUpdate: (blocks) => {
-      roundText = answerText(blocks);
-      hooks.onContent(committedText + roundText);
+      roundBlocks = streamingBlocks(blocks);
+      hooks.onBlocksUpdate([...committedBlocks, ...roundBlocks]);
     },
     onSignature() {},
     onToolCall: (block) => {
-      const summary = summarizeTool(block.toolName, block.input);
-      hooks.onStatus(`Using ${summary.detail || summary.label || block.toolName}…`);
+      roundBlocks.push(structuredClone(block));
+      hooks.onToolCall(block);
     },
-    onToolResult: () => {
-      hooks.onStatus("Reviewing results…");
+    onToolResult: (block) => {
+      roundBlocks.push(structuredClone(block));
+      hooks.onToolResult(block);
     },
     onTokensUpdate() {},
     onContextUpdate() {},
     onHeaders: hooks.onHeaders,
     onRetry: (attempt, maxAttempts, errorMessage) => {
-      roundText = "";
-      hooks.onContent(committedText);
+      roundBlocks = [];
+      hooks.onBlocksUpdate([...committedBlocks]);
       hooks.onStatus(`Retrying ${attempt}/${maxAttempts}: ${errorMessage}`);
     },
     onRoundComplete: () => {
-      committedText += roundText;
-      roundText = "";
-      hooks.onStatus("Thinking…");
+      committedBlocks = [...committedBlocks, ...roundBlocks];
+      roundBlocks = [];
     },
   }, {
     system: prepared.system,
@@ -171,5 +189,5 @@ export async function runBtw(
     codexTurnId: `${prepared.convId}:btw:${prepared.sessionId}`,
     codexTurnStartedAtMs: prepared.startedAt,
   });
-  return answerText(result.blocks);
+  return result.blocks;
 }

@@ -82,6 +82,7 @@ describe("render caching and frame diffing", () => {
       startedAt: 100,
       endedAt: 200,
       phase: "complete",
+      blocks: [{ type: "text", text: ["one", "two", "three", "four", "five"].join("\n") }],
       text: ["one", "two", "three", "four", "five"].join("\n"),
       status: "complete",
       scrollOffset: 0,

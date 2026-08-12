@@ -12,9 +12,10 @@ import { hasConfiguredCredentials } from "../auth";
 import * as convStore from "../conversations";
 import { onConversationRemoved, onConversationRemoving } from "../conversation-lifecycle";
 import { log } from "../log";
-import type { Conversation, ConversationBtw, ProviderId } from "../messages";
+import type { Block, Conversation, ConversationBtw, ProviderId } from "../messages";
 import * as persistence from "../persistence";
 import { BtwWorkspaceError, prepareBtwRun, runBtw } from "./runner";
+import { textFromBtwBlocks } from "./blocks";
 import { BtwRuntime } from "./runtime";
 import { BtwStateStore } from "./state-store";
 import type {
@@ -220,6 +221,7 @@ export class BtwSessionManager {
       startedAt: command.startedAt,
       endedAt: null,
       phase: "running",
+      blocks: [],
       text: "",
       status: "Thinking…",
     };
@@ -282,11 +284,26 @@ export class BtwSessionManager {
       this.stateStore.persistSoon();
       this.emit(command.convId, { type: "btw_status", convId: command.convId, sessionId: session.id, status }, [...session.requesters.keys()]);
     };
-    const sendContent = (text: string) => {
+    const persistProgress = () => this.stateStore.persistSoon();
+    const matchingBlock = (type: "text" | "thinking"): Extract<Block, { type: "text" | "thinking" }> => {
+      const last = state.blocks?.at(-1);
+      if (last?.type === type) return last;
+      const block: Extract<Block, { type: "text" | "thinking" }> = { type, text: "" };
+      (state.blocks ??= []).push(block);
+      return block;
+    };
+    const sendBlocks = (blocks: Block[]) => {
       if (!isCurrent()) return;
-      state.text = text;
-      this.stateStore.persistSoon();
-      this.emit(command.convId, { type: "btw_content", convId: command.convId, sessionId: session.id, text }, [...session.requesters.keys()]);
+      state.blocks = structuredClone(blocks);
+      state.text = textFromBtwBlocks(state.blocks);
+      persistProgress();
+      this.emit(command.convId, {
+        type: "btw_content",
+        convId: command.convId,
+        sessionId: session.id,
+        text: state.text,
+        blocks: structuredClone(state.blocks),
+      }, [...session.requesters.keys()]);
     };
 
     log("info", `btw: starting session ${session.id} for ${command.convId} from frozen snapshot (${prepared.provider}/${prepared.model}, snapshot=${prepared.snapshotSize})`);
@@ -294,18 +311,65 @@ export class BtwSessionManager {
 
     void runBtw(prepared, this.dependencies.runAgentLoop, abort.signal, {
       onStatus: sendStatus,
-      onContent: sendContent,
+      onBlockStart: (blockType) => {
+        if (!isCurrent()) return;
+        (state.blocks ??= []).push({ type: blockType, text: "" });
+        persistProgress();
+        this.emit(command.convId, {
+          type: "btw_block_start",
+          convId: command.convId,
+          sessionId: session.id,
+          blockType,
+        }, [...session.requesters.keys()]);
+      },
       onTextChunk: (text) => {
         if (!isCurrent()) return;
-        state.text += text;
-        this.stateStore.persistSoon();
+        matchingBlock("text").text += text;
+        state.text = textFromBtwBlocks(state.blocks ?? []);
+        persistProgress();
         this.emit(command.convId, { type: "btw_text_chunk", convId: command.convId, sessionId: session.id, text }, [...session.requesters.keys()]);
       },
+      onThinkingChunk: (text) => {
+        if (!isCurrent()) return;
+        matchingBlock("thinking").text += text;
+        persistProgress();
+        this.emit(command.convId, { type: "btw_thinking_chunk", convId: command.convId, sessionId: session.id, text }, [...session.requesters.keys()]);
+      },
+      onBlocksUpdate: sendBlocks,
+      onToolCall: (block) => {
+        if (!isCurrent()) return;
+        (state.blocks ??= []).push(structuredClone(block));
+        persistProgress();
+        this.emit(command.convId, {
+          type: "btw_tool_call",
+          convId: command.convId,
+          sessionId: session.id,
+          toolCallId: block.toolCallId,
+          toolName: block.toolName,
+          input: block.input,
+          summary: block.summary,
+          ...(block.presentation ? { presentation: block.presentation } : {}),
+        }, [...session.requesters.keys()]);
+      },
+      onToolResult: (block) => {
+        if (!isCurrent()) return;
+        (state.blocks ??= []).push(structuredClone(block));
+        persistProgress();
+        this.emit(command.convId, {
+          type: "btw_tool_result",
+          convId: command.convId,
+          sessionId: session.id,
+          toolCallId: block.toolCallId,
+          toolName: block.toolName,
+          output: block.output,
+          isError: block.isError,
+        }, [...session.requesters.keys()]);
+      },
       onHeaders: headers => this.callbacks.onHeaders(prepared.provider, headers),
-    }).then(text => {
+    }).then(blocks => {
       if (!isCurrent()) return;
       session.running = false;
-      sendContent(text);
+      sendBlocks(blocks);
       const endedAt = Date.now();
       state.phase = "complete";
       state.status = "Complete";
@@ -354,6 +418,7 @@ export class BtwSessionManager {
       startedAt: command.startedAt,
       endedAt,
       phase: "error",
+      blocks: [],
       text: "",
       status: message,
     };

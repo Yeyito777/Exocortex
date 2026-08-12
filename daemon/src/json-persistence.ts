@@ -17,6 +17,7 @@ import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
 import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal, ConversationBtw } from "./messages";
 import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, MAX_EXO_SUBAGENT_DEPTH, activeContextCompactionHistoryCount, historyPrefixHash, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, sortConversations, summarizeConversation } from "./messages";
 import type { QueuedMessageInfo } from "./protocol";
+import { normalizeBtwBlocks } from "./btw/blocks";
 
 // ── Schema version ──────────────────────────────────────────────────
 
@@ -1234,6 +1235,7 @@ function normalizeConversationBtw(raw: unknown): ConversationBtw | null {
     startedAt: Number(value.startedAt),
     endedAt: value.endedAt === null ? null : Number(value.endedAt),
     phase: value.phase,
+    ...(Array.isArray(value.blocks) ? { blocks: normalizeBtwBlocks(value.blocks, value.text) } : {}),
     text: value.text,
     status: value.status,
   };

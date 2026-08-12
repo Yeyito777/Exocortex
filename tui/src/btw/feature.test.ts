@@ -9,6 +9,7 @@ import { createInitialState } from "../state";
 import type { BtwPanelState } from "./state";
 import { termWidth } from "../textwidth";
 import { theme } from "../theme";
+import { hexToAnsi } from "../theme";
 import { closeBtwSession, startBtwSession } from "./controller";
 
 function panelState(overrides: Partial<BtwPanelState> = {}): BtwPanelState {
@@ -21,6 +22,7 @@ function panelState(overrides: Partial<BtwPanelState> = {}): BtwPanelState {
     startedAt: 100,
     endedAt: null,
     phase: "running",
+    blocks: [],
     text: "",
     status: "Thinking…",
     scrollOffset: 0,
@@ -123,11 +125,38 @@ describe("BTW event projection", () => {
       startedAt: 100,
     }, state, daemon);
     handleEvent({ type: "btw_text_chunk", convId: "conv-1", sessionId: "stale", text: "wrong" }, state, daemon);
+    handleEvent({ type: "btw_block_start", convId: "conv-1", sessionId: "btw-1", blockType: "thinking" }, state, daemon);
+    handleEvent({ type: "btw_thinking_chunk", convId: "conv-1", sessionId: "btw-1", text: "A concise reasoning summary" }, state, daemon);
+    handleEvent({
+      type: "btw_tool_call",
+      convId: "conv-1",
+      sessionId: "btw-1",
+      toolCallId: "read-1",
+      toolName: "read",
+      input: { file_path: "README.md" },
+      summary: "README.md",
+    }, state, daemon);
+    handleEvent({ type: "btw_block_start", convId: "conv-1", sessionId: "btw-1", blockType: "text" }, state, daemon);
     handleEvent({ type: "btw_text_chunk", convId: "conv-1", sessionId: "btw-1", text: "partial" }, state, daemon);
-    handleEvent({ type: "btw_content", convId: "conv-1", sessionId: "btw-1", text: "canonical answer" }, state, daemon);
+    handleEvent({
+      type: "btw_content",
+      convId: "conv-1",
+      sessionId: "btw-1",
+      text: "canonical answer",
+      blocks: [
+        { type: "thinking", text: "Canonical reasoning summary" },
+        { type: "tool_call", toolCallId: "read-1", toolName: "read", input: { file_path: "README.md" }, summary: "README.md" },
+        { type: "text", text: "canonical answer" },
+      ],
+    }, state, daemon);
     handleEvent({ type: "btw_finished", convId: "conv-1", sessionId: "btw-1", endedAt: 200 }, state, daemon);
 
     expect(state.btw?.text).toBe("canonical answer");
+    expect(state.btw?.blocks).toEqual([
+      { type: "thinking", text: "Canonical reasoning summary" },
+      { type: "tool_call", toolCallId: "read-1", toolName: "read", input: { file_path: "README.md" }, summary: "README.md" },
+      { type: "text", text: "canonical answer" },
+    ]);
     expect(state.btw?.phase).toBe("complete");
     expect(state.btw?.endedAt).toBe(200);
   });
@@ -281,6 +310,35 @@ describe("BTW foreground panel", () => {
     expect(rendered!.top).toBe(20);
     expect(rendered!.left).toBe(31);
     expect(btw.viewportRows).toBe(2);
+  });
+
+  test("reuses assistant block rendering for thinking summaries and colored tool calls", () => {
+    const btw = panelState({
+      blocks: [
+        { type: "thinking", text: "I should inspect the relevant file." },
+        {
+          type: "tool_call",
+          toolCallId: "read-1",
+          toolName: "read",
+          input: { file_path: "README.md" },
+          summary: "README.md",
+        },
+        { type: "text", text: "The file explains the project." },
+      ],
+      text: "The file explains the project.",
+    });
+    const options = {
+      toolRegistry: [{ name: "read", label: "Read", color: "#12abef" }],
+      externalToolStyles: [],
+    };
+    const preferredHeight = getBtwPanelPreferredHeight(btw, 100, options);
+    const rendered = renderBtwPanel(btw, 100, preferredHeight, 10, 1, options);
+    const plain = stripAnsi(rendered!.payload);
+
+    expect(plain).toContain("I should inspect the relevant file.");
+    expect(plain).toContain("Read README.md");
+    expect(plain).toContain("The file explains the project.");
+    expect(rendered!.payload).toContain(hexToAnsi("#12abef"));
   });
 
   test("renders an uncluttered one-row fallback in a constrained layout", () => {
