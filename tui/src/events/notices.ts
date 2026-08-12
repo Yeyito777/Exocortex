@@ -1,4 +1,4 @@
-import type { Event, SystemMessageEvent } from "../protocol";
+import type { DaemonShutdownMode, Event, SystemMessageEvent } from "../protocol";
 import type { RenderState } from "../state";
 import { resolveSystemMessageColor } from "../state";
 import { commitPendingAISegment } from "./pending-ai";
@@ -45,6 +45,10 @@ export function formatStreamRetryNotice(event: Extract<Event, { type: "stream_re
     return `${event.errorMessage} — retrying${reset}…`;
   }
   return `⟳ ${event.errorMessage} — retrying in ${event.delaySec}s (${event.attempt}/${event.maxAttempts})…`;
+}
+
+export function formatConnectionLostNotice(shutdownMode: DaemonShutdownMode | null): string | null {
+  return shutdownMode === "restart" ? null : "✗ Lost connection to daemon.";
 }
 
 export function shouldReconcileInlineSystemNoticeOnStop(event: SystemMessageEvent): boolean {

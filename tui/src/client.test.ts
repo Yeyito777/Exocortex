@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "net";
 import { unlinkSync } from "fs";
 import { DaemonClient } from "./client";
-import type { Command } from "./protocol";
+import type { Command, DaemonShutdownMode } from "./protocol";
 
 const testServers: Server[] = [];
 const testSockets: string[] = [];
@@ -593,6 +593,23 @@ describe("DaemonClient commands", () => {
 });
 
 describe("DaemonClient reconnect behavior", () => {
+  test("classifies a connection loss from the daemon's shutdown announcement", () => {
+    const events: unknown[] = [];
+    const shutdownModes: Array<DaemonShutdownMode | null> = [];
+    const client = new DaemonClient((event) => events.push(event));
+    const internal = client as any;
+    const socket = {};
+    internal.socket = socket;
+    internal._connected = true;
+    client.onConnectionLost((shutdownMode) => shutdownModes.push(shutdownMode));
+
+    internal.onData(JSON.stringify({ type: "daemon_shutdown", mode: "restart" }) + "\n");
+    internal.handleSocketClose(socket, true);
+
+    expect(shutdownModes).toEqual(["restart"]);
+    expect(events).toEqual([]);
+  });
+
   test("sends restart only to the currently connected socket and never queues it", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;

@@ -48,7 +48,7 @@ import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
 import { openTargetDetached } from "./openable";
 import { msUntilHoursMinutesUpdate, msUntilNextElapsedSecond } from "./time";
-import type { Event, QueueTiming } from "./protocol";
+import type { DaemonShutdownMode, Event, QueueTiming } from "./protocol";
 import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
 import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
 import { startReplayConversation } from "./replay";
@@ -64,6 +64,7 @@ import { CallMediaController } from "./call-media";
 import { formatMicGainDb, loadMicGainDb, saveMicGainDb } from "./mic-gain";
 import { applyTuiStartingState, availableStartingConversationId, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
+import { formatConnectionLostNotice } from "./events/notices";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -1352,9 +1353,9 @@ function confirmSelectedEditMessage(): void {
 }
 
 function requestDaemonRestart(): void {
-  // Do not add a "Daemon restarting" system message here. The ensuing
-  // "Lost connection to daemon" message plus reconnect/replay is the complete
-  // user-facing lifecycle signal; adding another chat-history entry is noise.
+  // Do not add a local lifecycle message here. The daemon records any interrupted
+  // turn as "Daemon restarted" and announces the planned shutdown so the generic
+  // connection-loss notice can be suppressed.
   daemon.restartDaemon();
 }
 
@@ -1636,7 +1637,7 @@ async function reconnectToDaemon(): Promise<void> {
   }
 }
 
-function handleDaemonConnectionLost(): void {
+function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): void {
   voiceInput?.cleanup();
   callMedia?.stop();
   // The client retains an ambiguous unwind with its operation UUID and replays
@@ -1649,7 +1650,8 @@ function handleDaemonConnectionLost(): void {
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
-  pushSystemMessage(state, "✗ Lost connection to daemon.", theme.error);
+  const notice = formatConnectionLostNotice(shutdownMode);
+  if (notice) pushSystemMessage(state, notice, theme.error);
   scheduleRender();
   void reconnectToDaemon();
 }

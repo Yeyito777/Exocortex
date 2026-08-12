@@ -7,7 +7,7 @@
 import { connect, type Socket } from "net";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
-import type { Command, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, ToolPolicyMutation, TrimMode, SidebarItemRef } from "./protocol";
+import type { Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, ToolPolicyMutation, TrimMode, SidebarItemRef } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
@@ -40,7 +40,8 @@ export class DaemonClient {
   private handler: EventHandler;
   private _connected = false;
   private socketPath: string;
-  private onDisconnect: (() => void) | null = null;
+  private onDisconnect: ((shutdownMode: DaemonShutdownMode | null) => void) | null = null;
+  private announcedShutdownMode: DaemonShutdownMode | null = null;
   private intentionalDisconnect = false;
   // Commands issued while the daemon is unavailable are replayed on the next
   // successful connect so the TUI can keep accepting input during reconnect.
@@ -85,6 +86,7 @@ export class DaemonClient {
       }
 
       this.intentionalDisconnect = false;
+      this.announcedShutdownMode = null;
       this.buffer = "";
 
       const socket = connect(this.socketPath);
@@ -102,15 +104,7 @@ export class DaemonClient {
         resolve({ replayedCommands });
       });
       socket.on("data", (data) => this.onData(data));
-      socket.on("close", () => {
-        const wasCurrentSocket = this.socket === socket;
-        if (wasCurrentSocket) {
-          this._connected = false;
-          this.socket = null;
-          this.buffer = "";
-        }
-        if (resolved && wasCurrentSocket && !this.intentionalDisconnect) this.onDisconnect?.();
-      });
+      socket.on("close", () => this.handleSocketClose(socket, resolved));
       socket.on("error", (err) => {
         this._connected = false;
         if (!resolved) {
@@ -125,8 +119,20 @@ export class DaemonClient {
     });
   }
 
-  onConnectionLost(handler: () => void): void {
+  onConnectionLost(handler: (shutdownMode: DaemonShutdownMode | null) => void): void {
     this.onDisconnect = handler;
+  }
+
+  private handleSocketClose(socket: Socket, connected: boolean): void {
+    const wasCurrentSocket = this.socket === socket;
+    const shutdownMode = wasCurrentSocket ? this.announcedShutdownMode : null;
+    if (wasCurrentSocket) {
+      this._connected = false;
+      this.socket = null;
+      this.buffer = "";
+      this.announcedShutdownMode = null;
+    }
+    if (connected && wasCurrentSocket && !this.intentionalDisconnect) this.onDisconnect?.(shutdownMode);
   }
 
   disconnect(): void {
@@ -136,6 +142,7 @@ export class DaemonClient {
     this.socket = null;
     this._connected = false;
     this.buffer = "";
+    this.announcedShutdownMode = null;
   }
 
   send(command: Command): void {
@@ -647,6 +654,13 @@ export class DaemonClient {
       try {
         const parseStartedAt = this.performanceProfilingEnabled ? performance.now() : 0;
         const event = JSON.parse(line) as Event;
+        if (event.type === "daemon_shutdown") {
+          // This is transport metadata rather than a user-facing event. Retain it
+          // until close so the reconnecting TUI can distinguish a planned daemon
+          // restart from every other connection loss.
+          this.announcedShutdownMode = event.mode;
+          continue;
+        }
         const parseMs = this.performanceProfilingEnabled ? performance.now() - parseStartedAt : 0;
         if (this.performanceProfilingEnabled && (event.type === "conversation_loaded" || event.type === "error") && event.reqId) {
           const pendingLoad = this.pendingConversationLoads.get(event.reqId);
