@@ -103,6 +103,7 @@ describe("native exo tool contract", () => {
     expect(schema).toContain('"internal_tools"');
     expect(schema).toContain('"external_tools"');
     expect(schema).toContain("persistently replace");
+    expect(schema).toContain("must retain exo");
     expect(schema).toContain('"task_id"');
     expect(schema).toContain("exact active background-task ID returned by action=tasks");
     expect(schema).toContain("Maximum number of additional subagent generations permitted");
@@ -653,6 +654,31 @@ describe("native exo daemon runtime", () => {
     }));
   });
 
+  test("does not let an existing send disable Exocortex for its calling conversation", async () => {
+    const parentId = id("self-disable-send");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
+    setToolPolicy(parentId, { internal: ["read", "exo"], external: [] });
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn: async () => successfulOutcome("should not run"),
+      hasCredentials: () => true,
+    });
+
+    const result = await runtime.execute({
+      action: "send",
+      conversation_id: parentId,
+      text: "remove orchestration",
+      internal_tools: ["read"],
+      external_tools: [],
+      max_depth: 1,
+    }, parentId);
+
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain("cannot disable itself for the conversation currently executing it");
+    expect(get(parentId)?.toolPolicy).toEqual({ internal: ["read", "exo"], external: [] });
+    expect(getQueuedMessages(parentId)).toEqual([]);
+  });
+
   test("prevents scoped children from escalating edit access or targeting unrelated conversations", async () => {
     const rootId = id("scoped-root");
     const childId = id("scoped-caller");
@@ -1025,13 +1051,27 @@ describe("native exo daemon runtime", () => {
       summary: expect.objectContaining({ id: childId }),
     }));
 
+    setToolPolicy(childId, { internal: ["read", "grep", "exo"], external: [] });
+    const selfDisable = await runtime.execute({
+      action: "commands",
+      command: "tools",
+      args: {
+        operation: "set",
+        internal_tools: ["read", "grep"],
+        external_tools: [],
+      },
+    }, childId, undefined, 1);
+    expect(selfDisable.isError).toBe(true);
+    expect(selfDisable.output).toContain("cannot disable itself for the conversation currently executing it");
+    expect(get(childId)?.toolPolicy).toEqual({ internal: ["read", "grep", "exo"], external: [] });
+
     const escalation = await runtime.execute({
       action: "commands",
       command: "tools",
       args: {
         operation: "set",
         conversation_id: childId,
-        internal_tools: ["read", "write"],
+        internal_tools: ["read", "write", "exo"],
         external_tools: [],
       },
     }, childId, undefined, 1);

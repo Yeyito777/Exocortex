@@ -698,6 +698,16 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }
   };
 
+  const assertCurrentConversationRetainsExocortex = (
+    parentConvId: string | undefined,
+    targetConvId: string,
+    internal: readonly string[],
+  ): void => {
+    if (parentConvId === targetConvId && !internal.includes("exo")) {
+      throw new Error("The Exocortex tool cannot disable itself for the conversation currently executing it.");
+    }
+  };
+
   const assertWithinCallerToolCeiling = (
     parentConvId: string | undefined,
     callerMaxDepth: number | null | undefined,
@@ -862,6 +872,11 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           requestedInternalTools!,
           requestedExternalTools!,
           target.toolPolicy?.customToolModules,
+        );
+        assertCurrentConversationRetainsExocortex(
+          parentConvId,
+          convId,
+          requestedExistingToolPolicy.internal,
         );
         if (maxDepth <= 0 && requestedExistingToolPolicy.internal.includes("exo")) {
           throw new Error("Cannot enable internal tool exo for a conversation when this send has max_depth=0");
@@ -1445,6 +1460,11 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         defaults.configurableInternalToolNames,
         defaults.externalToolNames,
       );
+      assertCurrentConversationRetainsExocortex(
+        parentConversationId,
+        convId,
+        defaults.configurableInternalToolNames,
+      );
       nextPolicy = null;
     } else {
       const internal = optionalStringArrayInput(args, "internal_tools");
@@ -1456,6 +1476,11 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         internal,
         external,
         conversation.toolPolicy?.customToolModules,
+      );
+      assertCurrentConversationRetainsExocortex(
+        parentConversationId,
+        convId,
+        nextPolicy.internal,
       );
       if ((conversation.subagentMaxDepth ?? null) !== null
         && (conversation.subagentMaxDepth ?? 0) <= 0
@@ -1933,11 +1958,11 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     },
     {
       name: "tools",
-      description: "View, replace, or reset a conversation's next-turn tool policy. Mutations cannot exceed the caller's effective tools.",
+      description: "View, replace, or reset a conversation's next-turn tool policy. Mutations cannot exceed the caller's effective tools, and the active caller cannot remove Exocortex from its own conversation.",
       inputSchema: commandSchema({
         operation: { type: "string", enum: ["get", "set", "reset"] },
         conversation_id: { type: "string", description: "Target conversation. Defaults to the active conversation." },
-        internal_tools: { type: "array", items: { type: "string" }, description: "Exact internal-tool list for set. Required with external_tools; external CLIs automatically retain Bash as their established transport." },
+        internal_tools: { type: "array", items: { type: "string" }, description: "Exact internal-tool list for set. Required with external_tools; the active caller must retain exo in its own conversation, and external CLIs automatically retain Bash as their established transport." },
         external_tools: { type: "array", items: { type: "string" }, description: "Exact external manifest-name list for set. Required with internal_tools." },
       }, ["operation"]),
       examples: [
