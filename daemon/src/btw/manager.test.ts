@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { BTW_READ_ONLY_TOOLS, BtwSessionManager } from ".";
 import * as convStore from "../conversations";
-import type { ConversationBtw } from "../messages";
+import type { ApiMessage, ConversationBtw } from "../messages";
 import type { Event } from "../protocol";
 import type { ConnectedClient, DaemonServer } from "../server";
 import { loadConversationBtwState, saveConversationBtwState } from "../persistence";
-import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, setActiveJob } from "../streaming";
+import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, pushStreamingBlock, setActiveJob } from "../streaming";
 import { buildExecutor, getToolDefs } from "../tools/registry";
 
 type RunAgentLoop = typeof import("../agent").runAgentLoop;
@@ -114,6 +114,7 @@ describe("conversation-owned BTW sessions", () => {
     const sourceAbort = new AbortController();
     setActiveJob(convId, sourceAbort, 100);
     initStreamingState(convId);
+    appendToStreamingBlock(convId, "thinking", "unfinished source reasoning");
     appendToStreamingBlock(convId, "text", "unfinished source assistant output");
 
     // The requester need not already subscribe; it still receives the full BTW
@@ -183,17 +184,32 @@ describe("conversation-owned BTW sessions", () => {
       expect(run.model).toBe("deepseek-v4-pro");
       expect(run.options.effort).toBe("high");
       expect(run.options.serviceTier).toBe("fast");
-      expect(run.options.promptCacheKey).toBe(`${convId}:btw:session-1`);
-      expect(run.options.getCodexWindowId?.()).toBe(`${convId}:0:btw:session-1`);
+      // BTW branches through the source conversation's stable cache identity and
+      // current context window instead of creating a cache-cold pseudo-session.
+      expect(run.options.promptCacheKey).toBe(convId);
+      expect(run.options.getCodexWindowId?.()).toBe(`${convId}:0`);
+      expect(run.options.codexTurnId).toBe(`${convId}:btw:session-1`);
       expect((run.options.tools as Array<{ name: string }>).map(tool => tool.name)).toEqual([
         "read", "glob", "grep", "browse",
       ]);
       expect(run.messages.at(-1)).toEqual({ role: "user", content: "answer from the snapshot" });
-      expect(JSON.stringify(run.messages)).not.toContain("unfinished source assistant output");
+      expect(run.messages.at(-2)).toEqual({
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "[In-progress assistant reasoning summary at BTW snapshot]\nunfinished source reasoning",
+          },
+          { type: "text", text: "unfinished source assistant output" },
+        ],
+      });
 
-      // The model input is a deep snapshot, not an alias of the live transcript.
+      // Durable and in-progress model input are both deep snapshots, not aliases
+      // of source state that may keep changing after BTW starts.
       conv.messages[0].content = "source changed after BTW started";
+      appendToStreamingBlock(convId, "text", " leaked later chunk");
       expect(run.messages[0].content).toBe("frozen source text");
+      expect(JSON.stringify(run.messages)).not.toContain("leaked later chunk");
       expect(events.get(owner.id)?.some(event => event.type === "btw_text_chunk"
         && event.convId === convId && event.text === "partial answer")).toBe(true);
       expect(events.get(peer.id)?.some(event => event.type === "btw_text_chunk"
@@ -233,6 +249,90 @@ describe("conversation-owned BTW sessions", () => {
       expect(manager.hasRunningProvider("deepseek")).toBe(false);
       expect(settledCount).toBe(1);
       expect(events.get(peer.id)?.some(event => event.type === "btw_error")).toBe(false);
+    } finally {
+      manager.dispose();
+      clearActiveJob(convId);
+      clearCurrentStreamingBlocks(convId);
+      convStore.remove(convId);
+    }
+  });
+
+  test("freezes a source tool call still in progress as structurally complete replay", async () => {
+    const convId = `test-btw-live-tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const conv = convStore.create(convId, "openai", "gpt-5.6-sol", "live tool source", "high", false);
+    conv.messages.push({ role: "user", content: "inspect the project", metadata: null });
+    const sourceAbort = new AbortController();
+    setActiveJob(convId, sourceAbort, 100);
+    initStreamingState(convId);
+    pushStreamingBlock(convId, {
+      type: "tool_call",
+      toolCallId: "source-read",
+      toolName: "read",
+      input: { file_path: "README.md" },
+      summary: "README.md",
+    });
+
+    let capturedMessages: Parameters<RunAgentLoop>[0] | null = null;
+    let capturedOptions: NonNullable<Parameters<RunAgentLoop>[4]> | null = null;
+    const fakeRunAgentLoop = ((messages, _provider, _model, _callbacks, options) => {
+      capturedMessages = structuredClone(messages);
+      capturedOptions = options ?? null;
+      return new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      });
+    }) as RunAgentLoop;
+    const client = testClient("btw-live-tool");
+    const manager = new BtwSessionManager(testServer([client], new Map()), { onHeaders() {}, onComplete() {} }, {
+      runAgentLoop: fakeRunAgentLoop,
+      hasConfiguredCredentials: () => true,
+      loadConversationBtwState: emptyPersistenceState,
+      saveConversationBtwState() {},
+    });
+
+    try {
+      manager.start(client, {
+        type: "btw_query",
+        sessionId: "live-tool-session",
+        convId,
+        query: "what is the source assistant doing?",
+        startedAt: 123,
+      });
+
+      const replay = capturedMessages as unknown as ApiMessage[];
+      const runOptions = capturedOptions as unknown as NonNullable<Parameters<RunAgentLoop>[4]>;
+      expect(replay).toEqual([
+        { role: "user", content: "inspect the project", metadata: null, providerData: undefined, contextTokens: undefined, contextCheckpoint: undefined },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "source-read", name: "read", input: { file_path: "README.md" } }],
+        },
+        {
+          role: "user",
+          content: [{
+            type: "tool_result",
+            tool_use_id: "source-read",
+            content: "[Source tool call was still in progress when the BTW snapshot was taken; no result was available.]",
+            is_error: true,
+          }],
+        },
+        { role: "user", content: "what is the source assistant doing?" },
+      ]);
+      expect(runOptions.promptCacheKey).toBe(convId);
+      expect(runOptions.getCodexWindowId?.()).toBe(`${convId}:0`);
+
+      // A result arriving after invocation belongs to the moving source turn, not
+      // the frozen BTW branch.
+      pushStreamingBlock(convId, {
+        type: "tool_result",
+        toolCallId: "source-read",
+        toolName: "read",
+        output: "late README contents",
+        isError: false,
+      });
+      expect(JSON.stringify(replay)).not.toContain("late README contents");
+
+      expect(manager.close(client, convId, "live-tool-session")).toBe("closed");
+      await new Promise(resolve => setTimeout(resolve, 0));
     } finally {
       manager.dispose();
       clearActiveJob(convId);
