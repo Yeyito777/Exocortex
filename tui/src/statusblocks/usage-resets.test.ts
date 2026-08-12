@@ -43,10 +43,12 @@ describe("usage reset status block", () => {
     expect(stripAnsi(block!.rows[1]).length).toBe(block!.width);
   });
 
-  test("shows an unknown expiry when no available credit has an expiry", () => {
+  test("does not appear when no usage resets are available", () => {
     const state = stateWithUsageResets();
     state.usageByProvider.openai!.resetCredits = { availableCount: 0, nextExpiresAt: null };
-    expect(stripAnsi(usageResetsBlock(state)!.rows[1]).trim()).toBe("Next Expiriy: ?");
+
+    expect(usageResetsBlock(state)).toBeNull();
+    expect(stripAnsi(renderStatusLine(state, 200).lines.join("\n"))).not.toContain("Usage Resets");
   });
 
   test("appears to the right of usage and context when all three fit", () => {

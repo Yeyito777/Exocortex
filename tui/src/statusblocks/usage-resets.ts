@@ -25,7 +25,7 @@ function formatTimeUntil(expiresAt: number | null, now: number): string {
 export function usageResetsBlock(state: RenderState): StatusBlock | null {
   if (state.provider !== "openai" || !state.authByProvider.openai) return null;
   const resetCredits = state.usageByProvider.openai?.resetCredits;
-  if (!resetCredits) return null;
+  if (!resetCredits || resetCredits.availableCount <= 0) return null;
 
   const countLabel = "  Usage Resets: ";
   const count = String(resetCredits.availableCount);
