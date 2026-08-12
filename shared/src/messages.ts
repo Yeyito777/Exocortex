@@ -310,6 +310,13 @@ export interface ConversationBtw {
   startedAt: number;
   endedAt: number | null;
   phase: "running" | "complete" | "error";
+  /**
+   * Assistant display history for the isolated turn. New sessions always include
+   * this; it remains optional on the wire so panels persisted by older versions
+   * can be upgraded from `text` when they are loaded.
+   */
+  blocks?: Block[];
+  /** Plain answer projection retained for compatibility and non-visual consumers. */
   text: string;
   status: string;
 }

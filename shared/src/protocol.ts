@@ -988,6 +988,14 @@ export interface BtwStartedEvent {
   startedAt: number;
 }
 
+/** Start a streamed text/thinking block in the isolated BTW history. */
+export interface BtwBlockStartEvent {
+  type: "btw_block_start";
+  convId: string;
+  sessionId: string;
+  blockType: "text" | "thinking";
+}
+
 /** Append streamed answer text to the currently displayed BTW content. */
 export interface BtwTextChunkEvent {
   type: "btw_text_chunk";
@@ -996,12 +1004,44 @@ export interface BtwTextChunkEvent {
   text: string;
 }
 
-/** Replace streamed answer text with a canonical snapshot (retry/final reconciliation). */
+/** Append streamed reasoning-summary text to the isolated BTW history. */
+export interface BtwThinkingChunkEvent {
+  type: "btw_thinking_chunk";
+  convId: string;
+  sessionId: string;
+  text: string;
+}
+
+/** Replace BTW history with a canonical snapshot (retry/final reconciliation). */
 export interface BtwContentEvent {
   type: "btw_content";
   convId: string;
   sessionId: string;
   text: string;
+  blocks?: Block[];
+}
+
+/** Append a completed tool invocation to the isolated BTW history. */
+export interface BtwToolCallEvent {
+  type: "btw_tool_call";
+  convId: string;
+  sessionId: string;
+  toolCallId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  summary: string;
+  presentation?: ToolCallPresentation;
+}
+
+/** Append a completed tool result to the isolated BTW history. */
+export interface BtwToolResultEvent {
+  type: "btw_tool_result";
+  convId: string;
+  sessionId: string;
+  toolCallId: string;
+  toolName: string;
+  output: string;
+  isError: boolean;
 }
 
 export interface BtwStatusEvent {
@@ -1661,8 +1701,12 @@ export type Event =
   | AckEvent
   | ConversationCreatedEvent
   | BtwStartedEvent
+  | BtwBlockStartEvent
   | BtwTextChunkEvent
+  | BtwThinkingChunkEvent
   | BtwContentEvent
+  | BtwToolCallEvent
+  | BtwToolResultEvent
   | BtwStatusEvent
   | BtwFinishedEvent
   | BtwErrorEvent

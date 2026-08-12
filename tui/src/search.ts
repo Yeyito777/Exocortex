@@ -10,12 +10,13 @@
 
 import type { KeyEvent } from "./input";
 import type { RenderState, SearchState } from "./state";
-import { focusHistory } from "./state";
+import { focusBtw, focusHistory } from "./state";
 import { ensureCursorVisible, stripAnsi } from "./historycursor";
 import { theme } from "./theme";
 import { findAllCaseInsensitiveMatchStarts, findCaseInsensitiveMatches, findNextSortedMatch } from "./searchutil";
 import { getViewportByWidth, padRightToWidth } from "./textwidth";
 import { resetPending } from "./vim/types";
+import { activeHistorySurface } from "./historysurface";
 
 export type SearchDirection = "forward" | "backward";
 export type SearchBarMode = "search" | "command";
@@ -31,7 +32,7 @@ interface SearchIndex {
 }
 
 function buildSearchIndex(state: RenderState): SearchIndex {
-  const lines = state.historyLines.map((line) => stripAnsi(line));
+  const lines = activeHistorySurface(state).lines.map((line) => stripAnsi(line));
   const lineStarts: number[] = [];
   let offset = 0;
 
@@ -75,13 +76,14 @@ function findNextMatch(
 }
 
 function moveHistoryCursorToMatch(state: RenderState, pos: number, index: SearchIndex): void {
-  state.historyCursor = posToRowCol(index, pos);
+  activeHistorySurface(state).setCursor(posToRowCol(index, pos));
   ensureCursorVisible(state);
 }
 
 function restoreSearchOrigin(state: RenderState, search: SearchState): void {
-  state.scrollOffset = search.savedScrollOffset;
-  state.historyCursor = { ...search.savedHistoryCursor };
+  const surface = activeHistorySurface(state);
+  surface.setScrollOffset(search.savedScrollOffset);
+  surface.setCursor({ ...search.savedHistoryCursor });
 }
 
 function buildBarState(
@@ -89,6 +91,7 @@ function buildBarState(
   barMode: SearchBarMode,
   direction: SearchDirection,
 ): SearchState {
+  const surface = activeHistorySurface(state);
   return {
     barOpen: true,
     barMode,
@@ -97,14 +100,14 @@ function buildBarState(
     barInput: "",
     barCursorPos: 0,
     highlightsVisible: state.search?.highlightsVisible ?? false,
-    savedScrollOffset: state.scrollOffset,
-    savedHistoryCursor: { ...state.historyCursor },
+    savedScrollOffset: surface.scrollOffset,
+    savedHistoryCursor: { ...surface.cursor },
     originChatFocus: state.chatFocus,
   };
 }
 
 function getSearchStartPos(search: SearchState, index: SearchIndex): number {
-  if (search.originChatFocus === "history") {
+  if (search.originChatFocus === "history" || search.originChatFocus === "btw") {
     return rowColToPos(index, search.savedHistoryCursor.row, search.savedHistoryCursor.col);
   }
   return Math.max(0, index.buffer.length - 1);
@@ -189,6 +192,14 @@ export function closeSearchBar(state: RenderState, cancel: boolean): void {
   search.barCursorPos = 0;
 }
 
+function focusSearchSurface(state: RenderState): void {
+  // Search bars do not change chatFocus, so the current focus identifies the
+  // document being searched. This also lets the shared n/N search register move
+  // cleanly from chat history to BTW when the user focuses the card later.
+  if (state.chatFocus === "btw" && state.btw) focusBtw(state);
+  else focusHistory(state);
+}
+
 export function jumpToSearchMatch(state: RenderState, direction: SearchDirection): boolean {
   const search = state.search;
   if (!search?.query) return false;
@@ -196,14 +207,15 @@ export function jumpToSearchMatch(state: RenderState, direction: SearchDirection
   const index = buildSearchIndex(state);
   if (!index.buffer.length) return false;
 
-  const fromPos = state.chatFocus === "history"
-    ? rowColToPos(index, state.historyCursor.row, state.historyCursor.col)
+  const surface = activeHistorySurface(state);
+  const fromPos = state.chatFocus === "history" || state.chatFocus === "btw"
+    ? rowColToPos(index, surface.cursor.row, surface.cursor.col)
     : Math.max(0, index.buffer.length - 1);
   const matchPos = findNextMatch(index.buffer, search.query, fromPos, direction);
   if (matchPos == null) return false;
 
   search.highlightsVisible = true;
-  focusHistory(state);
+  focusSearchSurface(state);
   moveHistoryCursorToMatch(state, matchPos, index);
   return true;
 }
@@ -230,7 +242,7 @@ export function handleSearchBarKey(state: RenderState, key: KeyEvent): SearchKey
       search.query = search.barInput;
       search.highlightsVisible = true;
       liveSearchToNearestMatch(state);
-      focusHistory(state);
+      focusSearchSurface(state);
     }
     closeSearchBar(state, false);
     return { type: "handled" };

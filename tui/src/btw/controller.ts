@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { RenderState } from "../state";
+import { focusPrompt } from "../state";
 import { createStartingBtw } from "./state";
 
 export interface BtwDaemonActions {
@@ -33,6 +34,7 @@ export function startBtwSession(
 export function closeBtwSession(state: RenderState, daemon: BtwDaemonActions): void {
   const session = state.btw;
   if (!session) return;
+  if (state.chatFocus === "btw") focusPrompt(state);
   state.btw = null;
   daemon.closeBtw(session.sourceConvId, session.sessionId);
 }

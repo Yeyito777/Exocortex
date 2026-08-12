@@ -9,10 +9,11 @@ import { createInitialState } from "../state";
 import type { BtwPanelState } from "./state";
 import { termWidth } from "../textwidth";
 import { theme } from "../theme";
+import { hexToAnsi } from "../theme";
 import { closeBtwSession, startBtwSession } from "./controller";
 
 function panelState(overrides: Partial<BtwPanelState> = {}): BtwPanelState {
-  return {
+  return Object.assign({
     sessionId: "btw-1",
     sourceConvId: "conv-1",
     query: "What does this code do?",
@@ -21,13 +22,22 @@ function panelState(overrides: Partial<BtwPanelState> = {}): BtwPanelState {
     startedAt: 100,
     endedAt: null,
     phase: "running",
+    blocks: [],
     text: "",
     status: "Thinking…",
     scrollOffset: 0,
     maxScroll: 0,
     viewportRows: 1,
-    ...overrides,
-  };
+    historyCursor: { row: 0, col: 0 },
+    historyCurswant: null,
+    historyVisualAnchor: { row: 0, col: 0 },
+    historyLines: [],
+    historyWrapContinuation: [],
+    historyWrapJoiners: [],
+    historyCopyLines: [],
+    historyMessageBounds: [],
+    historyLineAnchors: [],
+  }, overrides);
 }
 
 function conversation(id: string, sortOrder: number): ConversationSummary {
@@ -123,11 +133,38 @@ describe("BTW event projection", () => {
       startedAt: 100,
     }, state, daemon);
     handleEvent({ type: "btw_text_chunk", convId: "conv-1", sessionId: "stale", text: "wrong" }, state, daemon);
+    handleEvent({ type: "btw_block_start", convId: "conv-1", sessionId: "btw-1", blockType: "thinking" }, state, daemon);
+    handleEvent({ type: "btw_thinking_chunk", convId: "conv-1", sessionId: "btw-1", text: "A concise reasoning summary" }, state, daemon);
+    handleEvent({
+      type: "btw_tool_call",
+      convId: "conv-1",
+      sessionId: "btw-1",
+      toolCallId: "read-1",
+      toolName: "read",
+      input: { file_path: "README.md" },
+      summary: "README.md",
+    }, state, daemon);
+    handleEvent({ type: "btw_block_start", convId: "conv-1", sessionId: "btw-1", blockType: "text" }, state, daemon);
     handleEvent({ type: "btw_text_chunk", convId: "conv-1", sessionId: "btw-1", text: "partial" }, state, daemon);
-    handleEvent({ type: "btw_content", convId: "conv-1", sessionId: "btw-1", text: "canonical answer" }, state, daemon);
+    handleEvent({
+      type: "btw_content",
+      convId: "conv-1",
+      sessionId: "btw-1",
+      text: "canonical answer",
+      blocks: [
+        { type: "thinking", text: "Canonical reasoning summary" },
+        { type: "tool_call", toolCallId: "read-1", toolName: "read", input: { file_path: "README.md" }, summary: "README.md" },
+        { type: "text", text: "canonical answer" },
+      ],
+    }, state, daemon);
     handleEvent({ type: "btw_finished", convId: "conv-1", sessionId: "btw-1", endedAt: 200 }, state, daemon);
 
     expect(state.btw?.text).toBe("canonical answer");
+    expect(state.btw?.blocks).toEqual([
+      { type: "thinking", text: "Canonical reasoning summary" },
+      { type: "tool_call", toolCallId: "read-1", toolName: "read", input: { file_path: "README.md" }, summary: "README.md" },
+      { type: "text", text: "canonical answer" },
+    ]);
     expect(state.btw?.phase).toBe("complete");
     expect(state.btw?.endedAt).toBe(200);
   });
@@ -283,6 +320,56 @@ describe("BTW foreground panel", () => {
     expect(btw.viewportRows).toBe(2);
   });
 
+  test("reuses assistant block rendering for thinking summaries and colored tool calls", () => {
+    const btw = panelState({
+      blocks: [
+        { type: "thinking", text: "I should inspect the relevant file." },
+        {
+          type: "tool_call",
+          toolCallId: "read-1",
+          toolName: "read",
+          input: { file_path: "README.md" },
+          summary: "README.md",
+        },
+        { type: "text", text: "The file explains the project." },
+      ],
+      text: "The file explains the project.",
+    });
+    const options = {
+      toolRegistry: [{ name: "read", label: "Read", color: "#12abef" }],
+      externalToolStyles: [],
+    };
+    const preferredHeight = getBtwPanelPreferredHeight(btw, 100, options);
+    const rendered = renderBtwPanel(btw, 100, preferredHeight, 10, 1, options);
+    const plain = stripAnsi(rendered!.payload);
+
+    expect(plain).toContain("I should inspect the relevant file.");
+    expect(plain).toContain("Read README.md");
+    expect(plain).toContain("The file explains the project.");
+    expect(rendered!.payload).toContain(hexToAnsi("#12abef"));
+  });
+
+  test("renders the shared history cursor and visual selection decorations", () => {
+    const btw = panelState({
+      blocks: [{ type: "text", text: "alpha beta\ngamma delta" }],
+      text: "alpha beta\ngamma delta",
+    });
+
+    let rendered = renderBtwPanel(btw, 80, 4, 10, 1, {
+      focused: true,
+      vimMode: "normal",
+    });
+    expect(rendered?.payload).toContain(theme.cursorBg);
+
+    btw.historyVisualAnchor = { row: 0, col: 2 };
+    btw.historyCursor = { row: 1, col: 6 };
+    rendered = renderBtwPanel(btw, 80, 4, 10, 1, {
+      focused: true,
+      vimMode: "visual",
+    });
+    expect(rendered?.payload).toContain(theme.selectionBg);
+  });
+
   test("renders an uncluttered one-row fallback in a constrained layout", () => {
     const rendered = renderBtwPanel(panelState(), 20, 1, 5, 3);
     expect(rendered).not.toBeNull();
@@ -316,6 +403,81 @@ describe("BTW foreground panel", () => {
 
     state.vim.mode = "insert";
     expect(handleFocusedKey({ type: "ctrl-q" }, state)).toEqual({ type: "btw_close" });
+  });
+
+  test("Ctrl-N cycles from the visible BTW history through chat history to the prompt", () => {
+    const state = createInitialState();
+    state.btw = panelState({
+      blocks: [{ type: "text", text: Array.from({ length: 8 }, (_, i) => `btw row ${i + 1}`).join("\n") }],
+      text: Array.from({ length: 8 }, (_, i) => `btw row ${i + 1}`).join("\n"),
+    });
+    renderBtwPanel(state.btw, 80, 5);
+    state.historyLines = ["chat history must stay untouched"];
+    state.historyCursor = { row: 0, col: 7 };
+
+    expect(handleFocusedKey({ type: "ctrl-n" }, state)).toEqual({ type: "handled" });
+    expect(state.chatFocus).toBe("btw");
+    expect(state.vim.mode).toBe("normal");
+    expect(state.btw.historyCursor.row).toBe(7);
+    expect(state.historyCursor).toEqual({ row: 0, col: 7 });
+
+    expect(handleFocusedKey({ type: "ctrl-n" }, state)).toEqual({ type: "handled" });
+    expect(state.chatFocus).toBe("history");
+    expect(state.vim.mode).toBe("normal");
+    expect(state.historyCursor).toEqual({ row: 0, col: 0 });
+
+    expect(handleFocusedKey({ type: "ctrl-n" }, state)).toEqual({ type: "handled" });
+    expect(state.chatFocus).toBe("prompt");
+    expect(state.vim.mode).toBe("insert");
+  });
+
+  test("focused BTW reuses history Vim motions, visual quoting, and search", () => {
+    const state = createInitialState();
+    state.btw = panelState({
+      blocks: [{ type: "text", text: "alpha beta\ngamma delta\nomega target" }],
+      text: "alpha beta\ngamma delta\nomega target",
+    });
+    renderBtwPanel(state.btw, 80, 5);
+    state.historyCursor = { row: 0, col: 19 };
+
+    handleFocusedKey({ type: "ctrl-n" }, state);
+    handleFocusedKey({ type: "char", char: "g" }, state);
+    handleFocusedKey({ type: "char", char: "g" }, state);
+    expect(state.btw.historyCursor.row).toBe(0);
+    expect(state.historyCursor).toEqual({ row: 0, col: 19 });
+
+    handleFocusedKey({ type: "char", char: "v" }, state);
+    handleFocusedKey({ type: "char", char: "$" }, state);
+    expect(state.vim.mode).toBe("visual");
+    handleFocusedKey({ type: "char", char: ";" }, state);
+    expect(state.chatFocus).toBe("prompt");
+    expect(state.inputBuffer).toContain('"""\nalpha beta\n"""');
+
+    handleFocusedKey({ type: "ctrl-n" }, state);
+    handleFocusedKey({ type: "char", char: "/" }, state);
+    for (const char of "target") handleFocusedKey({ type: "char", char }, state);
+    handleFocusedKey({ type: "enter" }, state);
+    expect(state.chatFocus).toBe("btw");
+    expect(state.btw.historyCursor.row).toBe(2);
+    expect(state.search?.query).toBe("target");
+  });
+
+  test("Enter opens a target under the focused BTW history cursor", () => {
+    const state = createInitialState();
+    state.btw = panelState({
+      blocks: [{ type: "text", text: "Generated /tmp/btw-result.png" }],
+      text: "Generated /tmp/btw-result.png",
+    });
+    renderBtwPanel(state.btw, 80, 4);
+
+    handleFocusedKey({ type: "ctrl-n" }, state);
+    handleFocusedKey({ type: "char", char: "0" }, state);
+    for (let i = 0; i < 12; i++) handleFocusedKey({ type: "char", char: "l" }, state);
+
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
+      type: "open_target",
+      target: "/tmp/btw-result.png",
+    });
   });
 
   test("sidebar keeps j/k, Ctrl scrolling, and Ctrl-Q while BTW is visible", () => {
@@ -365,7 +527,7 @@ describe("BTW foreground panel", () => {
     expect(state.btw.scrollOffset).toBe(5);
   });
 
-  test("Ctrl scrolling targets BTW from the prompt but chat history when history is focused", () => {
+  test("Ctrl scrolling from the prompt continues to target chat history, not BTW", () => {
     const state = createInitialState();
     state.btw = panelState({ scrollOffset: 0, maxScroll: 10, viewportRows: 6 });
     state.panelFocus = "chat";
@@ -373,13 +535,6 @@ describe("BTW foreground panel", () => {
     state.vim.mode = "insert";
     state.inputBuffer = "keep this prompt";
     state.cursorPos = state.inputBuffer.length;
-
-    expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
-    expect(state.btw.scrollOffset).toBe(3);
-    expect(state.inputBuffer).toBe("keep this prompt");
-
-    state.chatFocus = "history";
-    state.vim.mode = "normal";
     state.historyLines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
     state.historyCursor = { row: 29, col: 0 };
     state.layout.totalLines = 30;
@@ -387,7 +542,17 @@ describe("BTW foreground panel", () => {
     state.scrollOffset = 0;
 
     expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
-    expect(state.btw.scrollOffset).toBe(3);
+    expect(state.btw.scrollOffset).toBe(0);
+    expect(state.scrollOffset).toBeGreaterThan(0);
+    expect(state.inputBuffer).toBe("keep this prompt");
+
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.historyCursor = { row: 29, col: 0 };
+    state.scrollOffset = 0;
+
+    expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
+    expect(state.btw.scrollOffset).toBe(0);
     expect(state.scrollOffset).toBeGreaterThan(0);
   });
 });

@@ -6,10 +6,7 @@ import {
   BTW_RESTART_ERROR,
 } from "./constants";
 import type { BtwPersistenceDependencies } from "./types";
-
-function cloneBtw(btw: ConversationBtw): ConversationBtw {
-  return { ...btw };
-}
+import { cloneBtw } from "./blocks";
 
 /**
  * Owns durable panel state and accepted-session receipts.

@@ -292,6 +292,7 @@ function renderDelayForEvent(event: Event): number {
     case "streaming_sync":
     case "tokens_update":
     case "btw_text_chunk":
+    case "btw_thinking_chunk":
     case "btw_content":
       return STREAM_CHUNK_FRAME_DELAY_MS;
     default:

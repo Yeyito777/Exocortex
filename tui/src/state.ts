@@ -215,7 +215,7 @@ export interface RenderState {
   contextTokens: number | null;
   /** Which panel has focus — sidebar or chat. */
   panelFocus: PanelFocus;
-  /** Which sub-panel within chat has focus — prompt or history. */
+  /** Which sub-panel within chat has focus — prompt, chat history, or BTW history. */
   chatFocus: ChatFocus;
   /** Conversations sidebar state. */
   sidebar: SidebarState;
@@ -563,6 +563,18 @@ export function focusHistory(state: RenderState): void {
   commitFocusedPromptInsert(state);
   state.panelFocus = "chat";
   state.chatFocus = "history";
+  state.vim.mode = "normal";
+}
+
+/** Focus the conversation-owned BTW card using the ordinary history Vim context. */
+export function focusBtw(state: RenderState): void {
+  if (!state.btw) {
+    focusHistory(state);
+    return;
+  }
+  commitFocusedPromptInsert(state);
+  state.panelFocus = "chat";
+  state.chatFocus = "btw";
   state.vim.mode = "normal";
 }
 

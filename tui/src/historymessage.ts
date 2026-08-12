@@ -2,7 +2,7 @@
  * Shared helpers for resolving semantic row ranges inside rendered messages.
  */
 
-import type { RenderState } from "./state";
+import type { HistorySurface } from "./historysurface";
 import { stripAnsi } from "./historymotions";
 
 export interface HistoryRowRange {
@@ -11,11 +11,11 @@ export interface HistoryRowRange {
 }
 
 export function trimRowsToContent(
-  state: RenderState,
+  surface: HistorySurface,
   startRow: number,
   endRow: number,
 ): HistoryRowRange | null {
-  const lines = state.historyLines;
+  const lines = surface.lines;
   let start = startRow;
   let end = endRow;
   while (start < end && stripAnsi(lines[start]).trim() === "") start++;
@@ -28,11 +28,11 @@ export function trimRowsToContent(
  * thinking, tool-call, and tool-result blocks.
  */
 export function findFinalAssistantTextRows(
-  state: RenderState,
+  surface: HistorySurface,
   startRow: number,
   endRow: number,
 ): HistoryRowRange | null {
-  const anchors = state.historyLineAnchors ?? [];
+  const anchors = surface.lineAnchors ?? [];
   let currentOwner: object | null = null;
   let currentStart = -1;
   let currentEnd = -1;
@@ -68,7 +68,7 @@ export function findFinalAssistantTextRows(
   finishCurrent();
 
   if (finalStart >= 0 && finalEnd > finalStart) {
-    return trimRowsToContent(state, finalStart, finalEnd);
+    return trimRowsToContent(surface, finalStart, finalEnd);
   }
   return null;
 }

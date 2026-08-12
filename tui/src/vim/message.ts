@@ -18,6 +18,7 @@ import { keyString, resetPending } from "./types";
 import { copyToClipboard } from "./clipboard";
 import { stripAnsi, contentBounds, ensureCursorVisible, joinLogicalLines } from "../historycursor";
 import { findFinalAssistantTextRows, trimRowsToContent } from "../historymessage";
+import { activeHistorySurface, type HistorySurface } from "../historysurface";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -108,17 +109,18 @@ function resolveMessageRows(
   state: RenderState,
   key: "m" | "M",
 ): { startRow: number; endRow: number } | null {
-  const bounds = findMessageBoundsAtCursor(state);
+  const surface = activeHistorySurface(state);
+  const bounds = findMessageBoundsAtCursor(surface);
   if (!bounds) return null;
 
   if (key === "M") return { startRow: bounds.start, endRow: bounds.end };
 
   if (bounds.role === "assistant") {
-    const finalText = findFinalAssistantTextRows(state, bounds.contentStart, bounds.contentEnd);
+    const finalText = findFinalAssistantTextRows(surface, bounds.contentStart, bounds.contentEnd);
     if (finalText) return finalText;
   }
 
-  return trimRowsToContent(state, bounds.contentStart, bounds.contentEnd);
+  return trimRowsToContent(surface, bounds.contentStart, bounds.contentEnd);
 }
 
 /** vim/vam in history: snap visual selection to the chat message at cursor. */
@@ -127,22 +129,23 @@ function selectHistoryMessage(key: "m" | "M", state: RenderState): Handled {
   if (!range) return HANDLED;
 
   const { startRow, endRow } = range;
-  const lines = state.historyLines;
+  const surface = activeHistorySurface(state);
+  const lines = surface.lines;
   const startBnd = contentBounds(stripAnsi(lines[startRow]));
   const endBnd = contentBounds(stripAnsi(lines[endRow - 1]));
 
-  state.historyVisualAnchor = { row: startRow, col: startBnd.start };
-  state.historyCursor = { row: endRow - 1, col: endBnd.end };
+  surface.setVisualAnchor({ row: startRow, col: startBnd.start });
+  surface.setCursor({ row: endRow - 1, col: endBnd.end });
   ensureCursorVisible(state);
   return HANDLED;
 }
 
 /** Find the MessageBound that contains the current history cursor row. */
 function findMessageBoundsAtCursor(
-  state: RenderState,
+  surface: HistorySurface,
 ): { role: RenderState["historyMessageBounds"][number]["role"]; start: number; end: number; contentStart: number; contentEnd: number } | null {
-  const row = state.historyCursor.row;
-  for (const b of state.historyMessageBounds) {
+  const row = surface.cursor.row;
+  for (const b of surface.messageBounds) {
     if (row >= b.start && row < b.end) return b;
   }
   return null;
@@ -152,11 +155,12 @@ function findMessageBoundsAtCursor(
 function extractHistoryMessageText(state: RenderState, key: "m" | "M"): string {
   const range = resolveMessageRows(state, key);
   if (!range) return "";
+  const surface = activeHistorySurface(state);
 
   return joinLogicalLines(
-    state.historyLines, state.historyWrapContinuation,
+    surface.lines, surface.wrapContinuation,
     range.startRow, range.endRow - 1,
-    state.historyWrapJoiners,
-    state.historyCopyLines,
+    surface.wrapJoiners,
+    surface.copyLines,
   );
 }

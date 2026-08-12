@@ -82,11 +82,21 @@ describe("render caching and frame diffing", () => {
       startedAt: 100,
       endedAt: 200,
       phase: "complete",
+      blocks: [{ type: "text", text: ["one", "two", "three", "four", "five"].join("\n") }],
       text: ["one", "two", "three", "four", "five"].join("\n"),
       status: "complete",
       scrollOffset: 0,
       maxScroll: 0,
       viewportRows: 1,
+      historyCursor: { row: 0, col: 0 },
+      historyCurswant: null,
+      historyVisualAnchor: { row: 0, col: 0 },
+      historyLines: [],
+      historyWrapContinuation: [],
+      historyWrapJoiners: [],
+      historyCopyLines: [],
+      historyMessageBounds: [],
+      historyLineAnchors: [],
     };
 
     const writes = positionedWrites(captureRenderOutput(state));

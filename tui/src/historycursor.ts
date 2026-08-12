@@ -10,7 +10,7 @@
 import type { KeyEvent } from "./input";
 import type { Action } from "./keybinds";
 import type { RenderState } from "./state";
-import { getScrollOffsetForViewStart, getViewStart } from "./chatscroll";
+import { getScrollOffsetForViewStart } from "./chatscroll";
 import {
   ensureCursorRowVisibleInViewport,
   scrollLineWithStickyCursorInViewport,
@@ -23,6 +23,7 @@ import { resolveTextObject, isTextObjectKey } from "./vim/textobjects";
 import { appendPromptQuoteBlock } from "./promptstate";
 import { nextGraphemeEnd } from "./graphemes";
 import { findFinalAssistantTextRows } from "./historymessage";
+import { activeHistorySurface, historySurfaceViewStart, type HistorySurface } from "./historysurface";
 import {
   stripAnsi, contentBounds, clampCol, clampCursor,
   logicalLineRange,
@@ -57,17 +58,17 @@ export function createHistoryCursor(): HistoryCursor {
 
 type RenderedMessageBound = RenderState["historyMessageBounds"][number];
 
-function getUserMessageBounds(state: RenderState): RenderedMessageBound[] {
-  return state.historyMessageBounds.filter((bound) => bound.role === "user");
+function getUserMessageBounds(surface: HistorySurface): RenderedMessageBound[] {
+  return surface.messageBounds.filter((bound) => bound.role === "user");
 }
 
 type RenderedAIResponseBound = RenderedMessageBound & { responseStart: number };
 
-function getAIResponseBounds(state: RenderState): RenderedAIResponseBound[] {
+function getAIResponseBounds(surface: HistorySurface): RenderedAIResponseBound[] {
   const responses: RenderedAIResponseBound[] = [];
-  for (const bound of state.historyMessageBounds) {
+  for (const bound of surface.messageBounds) {
     if (bound.role !== "assistant") continue;
-    const finalText = findFinalAssistantTextRows(state, bound.contentStart, bound.contentEnd);
+    const finalText = findFinalAssistantTextRows(surface, bound.contentStart, bound.contentEnd);
     if (finalText) responses.push({ ...bound, responseStart: finalText.startRow });
   }
   return responses;
@@ -86,38 +87,38 @@ function isMessageNavigationAction(action: Action): boolean {
  * place the cursor. Backward jumps use the position just after that row so a
  * message beginning on the bottom edge is included.
  */
-function messageNavigationOriginRow(action: Action, state: RenderState, cursorRow: number): number {
+function messageNavigationOriginRow(action: Action, state: RenderState, surface: HistorySurface, cursorRow: number): number {
   if (state.chatFocus !== "prompt" || !isMessageNavigationAction(action)) return cursorRow;
-  if (state.layout.messageAreaHeight <= 0 || state.historyLines.length === 0) return cursorRow;
+  if (surface.viewportHeight <= 0 || surface.lines.length === 0) return cursorRow;
 
-  const viewStart = getViewStart(state);
+  const viewStart = historySurfaceViewStart(surface);
   const viewEnd = Math.min(
-    state.historyLines.length - 1,
-    viewStart + state.layout.messageAreaHeight - 1,
+    surface.lines.length - 1,
+    viewStart + surface.viewportHeight - 1,
   );
   const movingBackward = action === "history_prev_message" || action === "history_prev_ai_message";
   return movingBackward ? viewEnd + 1 : viewEnd;
 }
 
-function jumpHistoryCursorToRow(state: RenderState, row: number): void {
-  state.historyCursor = { row, col: clampCol(0, state.historyLines, row) };
-  state.historyCurswant = null;
+function jumpHistoryCursorToRow(surface: HistorySurface, row: number): void {
+  surface.setCursor({ row, col: clampCol(0, surface.lines, row) });
+  surface.setCurswant(null);
 }
 
 function isRowWithinBound(row: number, bound: RenderedMessageBound): boolean {
   return row >= bound.start && row < bound.end;
 }
 
-function resetHistoryCurswant(state: RenderState): void {
-  state.historyCurswant = null;
+function resetHistoryCurswant(surface: HistorySurface): void {
+  surface.setCurswant(null);
 }
 
-function moveHistoryLine(state: RenderState, direction: -1 | 1): void {
-  const desiredCol = state.historyCurswant ?? state.historyCursor.col;
-  state.historyCursor = direction < 0
-    ? lineUp(state.historyCursor, state.historyLines, desiredCol)
-    : lineDown(state.historyCursor, state.historyLines, desiredCol);
-  state.historyCurswant = desiredCol;
+function moveHistoryLine(surface: HistorySurface, direction: -1 | 1): void {
+  const desiredCol = surface.curswant ?? surface.cursor.col;
+  surface.setCursor(direction < 0
+    ? lineUp(surface.cursor, surface.lines, desiredCol)
+    : lineDown(surface.cursor, surface.lines, desiredCol));
+  surface.setCurswant(desiredCol);
 }
 
 // ── Dispatch ───────────────────────────────────────────────────────
@@ -127,31 +128,32 @@ function moveHistoryLine(state: RenderState, direction: -1 | 1): void {
  * Returns true if the action was handled.
  */
 export function applyHistoryAction(action: Action, state: RenderState): boolean {
-  const lines = state.historyLines;
-  const cur = state.historyCursor;
+  const surface = activeHistorySurface(state);
+  const lines = surface.lines;
+  const cur = surface.cursor;
 
   if (lines.length === 0) return true;
 
-  const wrapCont = state.historyWrapContinuation;
-  const navigationRow = messageNavigationOriginRow(action, state, cur.row);
+  const wrapCont = surface.wrapContinuation;
+  const navigationRow = messageNavigationOriginRow(action, state, surface, cur.row);
 
   switch (action) {
-    case "history_left":    state.historyCursor = charLeft(cur, lines); resetHistoryCurswant(state); break;
-    case "history_right":   state.historyCursor = charRight(cur, lines); resetHistoryCurswant(state); break;
-    case "history_up":      moveHistoryLine(state, -1); break;
-    case "history_down":    moveHistoryLine(state, 1); break;
-    case "history_w":       state.historyCursor = wordForward(cur, lines); resetHistoryCurswant(state); break;
-    case "history_b":       state.historyCursor = wordBackward(cur, lines); resetHistoryCurswant(state); break;
-    case "history_e":       state.historyCursor = wordEnd(cur, lines); resetHistoryCurswant(state); break;
-    case "history_W":       state.historyCursor = wordForwardBig(cur, lines); resetHistoryCurswant(state); break;
-    case "history_B":       state.historyCursor = wordBackwardBig(cur, lines); resetHistoryCurswant(state); break;
-    case "history_E":       state.historyCursor = wordEndBig(cur, lines); resetHistoryCurswant(state); break;
-    case "history_0":       state.historyCursor = lineStart(cur, lines, wrapCont); resetHistoryCurswant(state); break;
-    case "history_dollar":  state.historyCursor = lineEnd(cur, lines, wrapCont); resetHistoryCurswant(state); break;
-    case "history_gg":      state.historyCursor = bufferStart(lines); resetHistoryCurswant(state); break;
-    case "history_G":       state.historyCursor = bufferEnd(lines); resetHistoryCurswant(state); break;
+    case "history_left":    surface.setCursor(charLeft(cur, lines)); resetHistoryCurswant(surface); break;
+    case "history_right":   surface.setCursor(charRight(cur, lines)); resetHistoryCurswant(surface); break;
+    case "history_up":      moveHistoryLine(surface, -1); break;
+    case "history_down":    moveHistoryLine(surface, 1); break;
+    case "history_w":       surface.setCursor(wordForward(cur, lines)); resetHistoryCurswant(surface); break;
+    case "history_b":       surface.setCursor(wordBackward(cur, lines)); resetHistoryCurswant(surface); break;
+    case "history_e":       surface.setCursor(wordEnd(cur, lines)); resetHistoryCurswant(surface); break;
+    case "history_W":       surface.setCursor(wordForwardBig(cur, lines)); resetHistoryCurswant(surface); break;
+    case "history_B":       surface.setCursor(wordBackwardBig(cur, lines)); resetHistoryCurswant(surface); break;
+    case "history_E":       surface.setCursor(wordEndBig(cur, lines)); resetHistoryCurswant(surface); break;
+    case "history_0":       surface.setCursor(lineStart(cur, lines, wrapCont)); resetHistoryCurswant(surface); break;
+    case "history_dollar":  surface.setCursor(lineEnd(cur, lines, wrapCont)); resetHistoryCurswant(surface); break;
+    case "history_gg":      surface.setCursor(bufferStart(lines)); resetHistoryCurswant(surface); break;
+    case "history_G":       surface.setCursor(bufferEnd(lines)); resetHistoryCurswant(surface); break;
     case "history_prev_message": {
-      const bounds = getUserMessageBounds(state);
+      const bounds = getUserMessageBounds(surface);
       if (bounds.length === 0) break;
       // Jump only among user messages.
       // Pressing { inside a user message goes to its start; pressing {
@@ -160,11 +162,11 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
       for (let i = bounds.length - 1; i >= 0; i--) {
         if (bounds[i].contentStart < navigationRow) { target = i; break; }
       }
-      if (target >= 0) jumpHistoryCursorToRow(state, bounds[target].contentStart);
+      if (target >= 0) jumpHistoryCursorToRow(surface, bounds[target].contentStart);
       break;
     }
     case "history_next_message": {
-      const bounds = getUserMessageBounds(state);
+      const bounds = getUserMessageBounds(surface);
       if (bounds.length === 0) break;
       // Jump only among user-message starts.
       // Pressing } moves to the next user-message start; if the cursor is
@@ -174,38 +176,38 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
         if (bounds[i].contentStart > navigationRow) { target = i; break; }
       }
       if (target >= 0) {
-        jumpHistoryCursorToRow(state, bounds[target].contentStart);
+        jumpHistoryCursorToRow(surface, bounds[target].contentStart);
       } else {
         const lastBound = bounds[bounds.length - 1];
         if (isRowWithinBound(navigationRow, lastBound)) {
-          state.historyCursor = bufferEnd(lines);
-          resetHistoryCurswant(state);
+          surface.setCursor(bufferEnd(lines));
+          resetHistoryCurswant(surface);
         }
       }
       break;
     }
     case "history_prev_ai_message": {
-      const bounds = getAIResponseBounds(state);
+      const bounds = getAIResponseBounds(surface);
       let target = -1;
       for (let i = bounds.length - 1; i >= 0; i--) {
         if (bounds[i].responseStart < navigationRow) { target = i; break; }
       }
-      if (target >= 0) jumpHistoryCursorToRow(state, bounds[target].responseStart);
+      if (target >= 0) jumpHistoryCursorToRow(surface, bounds[target].responseStart);
       break;
     }
     case "history_next_ai_message": {
-      const bounds = getAIResponseBounds(state);
+      const bounds = getAIResponseBounds(surface);
       let target = -1;
       for (let i = 0; i < bounds.length; i++) {
         if (bounds[i].responseStart > navigationRow) { target = i; break; }
       }
       if (target >= 0) {
-        jumpHistoryCursorToRow(state, bounds[target].responseStart);
+        jumpHistoryCursorToRow(surface, bounds[target].responseStart);
       } else {
         // Unlike forward user-message navigation, ] always falls through to
         // the conversation end when there is no later AI response text.
-        state.historyCursor = bufferEnd(lines);
-        resetHistoryCurswant(state);
+        surface.setCursor(bufferEnd(lines));
+        resetHistoryCurswant(surface);
       }
       break;
     }
@@ -225,7 +227,7 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
  * `dir`: positive = up, negative = down.
  */
 export function scrollHalfPageWithCursor(state: RenderState, dir: number): void {
-  const amount = Math.floor(state.layout.messageAreaHeight / 2);
+  const amount = Math.floor(activeHistorySurface(state).viewportHeight / 2);
   scrollHistoryViewportWithCursor(state, dir, amount);
 }
 
@@ -233,36 +235,38 @@ export function scrollHalfPageWithCursor(state: RenderState, dir: number): void 
  * Ctrl+B / Ctrl+F — Vim-style page scroll with cursor placed at the edge of the new page.
  */
 export function scrollFullPageWithCursor(state: RenderState, dir: number): void {
-  const totalLines = state.historyLines.length;
+  const surface = activeHistorySurface(state);
+  const totalLines = surface.lines.length;
   if (totalLines === 0) return;
 
-  const { messageAreaHeight } = state.layout;
+  const messageAreaHeight = surface.viewportHeight;
   const next = scrollPageWithCursorInViewport({
     totalLines,
     viewportHeight: messageAreaHeight,
-    viewStart: getViewStart(state),
-    cursorRow: state.historyCursor.row,
+    viewStart: historySurfaceViewStart(surface),
+    cursorRow: surface.cursor.row,
   }, dir);
 
-  state.historyCursor = clampCursor({ row: next.cursorRow, col: state.historyCursor.col }, state.historyLines);
-  state.scrollOffset = getScrollOffsetForViewStart(totalLines, messageAreaHeight, next.viewStart);
+  surface.setCursor(clampCursor({ row: next.cursorRow, col: surface.cursor.col }, surface.lines));
+  surface.setScrollOffset(getScrollOffsetForViewStart(totalLines, messageAreaHeight, next.viewStart));
 }
 
 /** Apply the shared cursor-aware page scroll logic to chat history's inverted scrollOffset. */
 function scrollHistoryViewportWithCursor(state: RenderState, dir: number, amount: number): void {
-  const totalLines = state.historyLines.length;
+  const surface = activeHistorySurface(state);
+  const totalLines = surface.lines.length;
   if (totalLines === 0) return;
 
-  const { messageAreaHeight } = state.layout;
+  const messageAreaHeight = surface.viewportHeight;
   const next = scrollWithCursorInViewport({
     totalLines,
     viewportHeight: messageAreaHeight,
-    viewStart: getViewStart(state),
-    cursorRow: state.historyCursor.row,
+    viewStart: historySurfaceViewStart(surface),
+    cursorRow: surface.cursor.row,
   }, dir, amount);
 
-  state.historyCursor = clampCursor({ row: next.cursorRow, col: state.historyCursor.col }, state.historyLines);
-  state.scrollOffset = getScrollOffsetForViewStart(totalLines, messageAreaHeight, next.viewStart);
+  surface.setCursor(clampCursor({ row: next.cursorRow, col: surface.cursor.col }, surface.lines));
+  surface.setScrollOffset(getScrollOffsetForViewStart(totalLines, messageAreaHeight, next.viewStart));
 }
 
 /**
@@ -272,19 +276,20 @@ function scrollHistoryViewportWithCursor(state: RenderState, dir: number, amount
  * `dir`: positive = up (Ctrl+Y), negative = down (Ctrl+E).
  */
 export function scrollLineWithStickyCursor(state: RenderState, dir: number): void {
-  const totalLines = state.historyLines.length;
+  const surface = activeHistorySurface(state);
+  const totalLines = surface.lines.length;
   if (totalLines === 0) return;
 
-  const { messageAreaHeight } = state.layout;
+  const messageAreaHeight = surface.viewportHeight;
   const next = scrollLineWithStickyCursorInViewport({
     totalLines,
     viewportHeight: messageAreaHeight,
-    viewStart: getViewStart(state),
-    cursorRow: state.historyCursor.row,
+    viewStart: historySurfaceViewStart(surface),
+    cursorRow: surface.cursor.row,
   }, dir);
 
-  state.historyCursor = clampCursor({ row: next.cursorRow, col: state.historyCursor.col }, state.historyLines);
-  state.scrollOffset = getScrollOffsetForViewStart(totalLines, messageAreaHeight, next.viewStart);
+  surface.setCursor(clampCursor({ row: next.cursorRow, col: surface.cursor.col }, surface.lines));
+  surface.setScrollOffset(getScrollOffsetForViewStart(totalLines, messageAreaHeight, next.viewStart));
 }
 
 // ── Find interception for history ────────────────────────────────
@@ -296,7 +301,8 @@ export function scrollLineWithStickyCursor(state: RenderState, dir: number): voi
  */
 export function handleHistoryFind(key: KeyEvent, state: RenderState): boolean {
   const vim = state.vim;
-  const lines = state.historyLines;
+  const surface = activeHistorySurface(state);
+  const lines = surface.lines;
 
   // Resolve pending find — waiting for the target character
   if (vim.pendingFind) {
@@ -304,10 +310,10 @@ export function handleHistoryFind(key: KeyEvent, state: RenderState): boolean {
     const dir = vim.pendingFind;
     vim.lastFind = { char: key.char, direction: dir };
     vim.pendingFind = null;
-    state.historyCursor = dir === "f"
-      ? findForward(state.historyCursor, lines, key.char)
-      : findBackward(state.historyCursor, lines, key.char);
-    resetHistoryCurswant(state);
+    surface.setCursor(dir === "f"
+      ? findForward(surface.cursor, lines, key.char)
+      : findBackward(surface.cursor, lines, key.char));
+    resetHistoryCurswant(surface);
     ensureCursorVisible(state);
     return true;
   }
@@ -329,10 +335,10 @@ export function handleHistoryFind(key: KeyEvent, state: RenderState): boolean {
     const dir = key.char === ";"
       ? vim.lastFind.direction
       : (vim.lastFind.direction === "f" ? "F" : "f") as "f" | "F";
-    state.historyCursor = dir === "f"
-      ? findForward(state.historyCursor, lines, vim.lastFind.char)
-      : findBackward(state.historyCursor, lines, vim.lastFind.char);
-    resetHistoryCurswant(state);
+    surface.setCursor(dir === "f"
+      ? findForward(surface.cursor, lines, vim.lastFind.char)
+      : findBackward(surface.cursor, lines, vim.lastFind.char));
+    resetHistoryCurswant(surface);
     ensureCursorVisible(state);
     return true;
   }
@@ -364,8 +370,9 @@ export function handleHistoryTextObject(
   const modifier = vim.pendingTextObjectModifier;
   vim.pendingTextObjectModifier = null;
 
-  const lines = state.historyLines;
-  const cursor = state.historyCursor;
+  const surface = activeHistorySurface(state);
+  const lines = surface.lines;
+  const cursor = surface.cursor;
   const row = cursor.row;
   const plain = stripAnsi(lines[row] ?? "");
 
@@ -389,9 +396,9 @@ export function handleHistoryTextObject(
 
   if (inVisual) {
     // Snap visual selection to the text object range
-    state.historyVisualAnchor = { row, col: rangeStart };
-    state.historyCursor = { row, col: rangeEnd - 1 }; // inclusive
-    resetHistoryCurswant(state);
+    surface.setVisualAnchor({ row, col: rangeStart });
+    surface.setCursor({ row, col: rangeEnd - 1 }); // inclusive
+    resetHistoryCurswant(surface);
     ensureCursorVisible(state);
     return { type: "handled" };
   }
@@ -421,16 +428,16 @@ function normalizeHistorySelection(anchor: HistoryCursor, cursor: HistoryCursor)
 }
 
 function extractHistoryCharwiseSelection(
-  state: RenderState,
+  surface: HistorySurface,
   start: HistoryCursor,
   end: HistoryCursor,
 ): string {
-  const lines = state.historyLines;
-  const wrapCont = state.historyWrapContinuation;
-  const wrapJoiners = state.historyWrapJoiners;
+  const lines = surface.lines;
+  const wrapCont = surface.wrapContinuation;
+  const wrapJoiners = surface.wrapJoiners;
   if (start.row === end.row) {
     const plain = stripAnsi(lines[start.row] ?? "");
-    return copyLineSlice(state, start.row, start.col, nextGraphemeEnd(plain, end.col)) ?? "";
+    return copyLineSlice(surface, start.row, start.col, nextGraphemeEnd(plain, end.col)) ?? "";
   }
 
   const result: string[] = [];
@@ -441,7 +448,7 @@ function extractHistoryCharwiseSelection(
     const sliceEnd = r === end.row
       ? nextGraphemeEnd(plain, end.col)
       : nextGraphemeEnd(plain, lineEnd);
-    const text = copyLineSlice(state, r, sliceStart, sliceEnd);
+    const text = copyLineSlice(surface, r, sliceStart, sliceEnd);
     if (text == null) continue;
 
     if (r === start.row || !wrapCont[r] || result.length === 0) {
@@ -456,10 +463,11 @@ function extractHistoryCharwiseSelection(
 
 /** Extract the selected text from history in visual/visual-line mode. */
 export function getHistoryVisualSelection(state: RenderState): string {
-  const lines = state.historyLines;
-  const wrapCont = state.historyWrapContinuation;
-  const wrapJoiners = state.historyWrapJoiners;
-  const { start, end } = normalizeHistorySelection(state.historyVisualAnchor, state.historyCursor);
+  const surface = activeHistorySurface(state);
+  const lines = surface.lines;
+  const wrapCont = surface.wrapContinuation;
+  const wrapJoiners = surface.wrapJoiners;
+  const { start, end } = normalizeHistorySelection(surface.visualAnchor, surface.cursor);
 
   let startRow = start.row;
   let endRow = end.row;
@@ -470,10 +478,10 @@ export function getHistoryVisualSelection(state: RenderState): string {
       startRow = logicalLineRange(startRow, wrapCont).first;
       endRow = logicalLineRange(endRow, wrapCont).last;
     }
-    return joinLogicalLines(lines, wrapCont, startRow, endRow, wrapJoiners, state.historyCopyLines);
+    return joinLogicalLines(lines, wrapCont, startRow, endRow, wrapJoiners, surface.copyLines);
   }
 
-  return extractHistoryCharwiseSelection(state, start, end);
+  return extractHistoryCharwiseSelection(surface, start, end);
 }
 
 // ── History cursor action dispatch (yank, visual yank, motions) ───
@@ -487,13 +495,14 @@ export function handleHistoryCursorAction(
   action: Action,
   state: RenderState,
 ): { type: "handled" } {
+  const surface = activeHistorySurface(state);
   if (action === "history_yy") {
-    const wrapCont = state.historyWrapContinuation;
-    const curRow = state.historyCursor.row;
+    const wrapCont = surface.wrapContinuation;
+    const curRow = surface.cursor.row;
     const { first, last } = wrapCont.length > 0
       ? logicalLineRange(curRow, wrapCont)
       : { first: curRow, last: curRow };
-    const plain = joinLogicalLines(state.historyLines, wrapCont, first, last, state.historyWrapJoiners, state.historyCopyLines);
+    const plain = joinLogicalLines(surface.lines, wrapCont, first, last, surface.wrapJoiners, surface.copyLines);
     if (plain) copyToClipboard(plain);
     ensureCursorVisible(state);
     return { type: "handled" };
@@ -559,12 +568,12 @@ function wholeCopyLine(
 }
 
 function copyLineSlice(
-  state: RenderState,
+  surface: HistorySurface,
   row: number,
   startCol: number,
   endCol: number,
 ): string | null {
-  const projection = state.historyCopyLines?.[row] ?? null;
+  const projection = surface.copyLines?.[row] ?? null;
   if (projection?.skip) return null;
   if (projection) {
     const start = Math.max(0, Math.min(projection.text.length, startCol - projection.displayStart));
@@ -572,7 +581,7 @@ function copyLineSlice(
     return projection.text.slice(start, end);
   }
 
-  const plain = stripAnsi(state.historyLines[row] ?? "");
+  const plain = stripAnsi(surface.lines[row] ?? "");
   return plain.slice(startCol, endCol);
 }
 
@@ -582,12 +591,13 @@ function copyLineSlice(
  * this respects scrollOffset so the user doesn't lose their scroll position.
  */
 export function placeAtVisibleBottom(state: RenderState): HistoryCursor {
-  const lines = state.historyLines;
+  const surface = activeHistorySurface(state);
+  const lines = surface.lines;
   if (lines.length === 0) return { row: 0, col: 0 };
 
-  const { messageAreaHeight } = state.layout;
+  const messageAreaHeight = surface.viewportHeight;
 
-  const viewStart = getViewStart(state);
+  const viewStart = historySurfaceViewStart(surface);
   const viewEnd = Math.min(lines.length - 1, viewStart + messageAreaHeight - 1);
 
   return { row: viewEnd, col: clampCol(0, lines, viewEnd) };
@@ -595,12 +605,14 @@ export function placeAtVisibleBottom(state: RenderState): HistoryCursor {
 
 /** Adjust scrollOffset so the cursor row is within the visible message area. */
 export function ensureCursorVisible(state: RenderState): void {
-  const { totalLines, messageAreaHeight } = state.layout;
+  const surface = activeHistorySurface(state);
+  const totalLines = surface.lines.length;
+  const messageAreaHeight = surface.viewportHeight;
   const next = ensureCursorRowVisibleInViewport({
     totalLines,
     viewportHeight: messageAreaHeight,
-    viewStart: getViewStart(state),
-    cursorRow: state.historyCursor.row,
+    viewStart: historySurfaceViewStart(surface),
+    cursorRow: surface.cursor.row,
   });
-  state.scrollOffset = getScrollOffsetForViewStart(totalLines, messageAreaHeight, next.viewStart);
+  surface.setScrollOffset(getScrollOffsetForViewStart(totalLines, messageAreaHeight, next.viewStart));
 }
