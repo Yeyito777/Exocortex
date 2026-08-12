@@ -325,9 +325,13 @@ export function handleFocusedKey(
       openEditMessageModal(state);
       return { type: "handled" };
     case "focus_history":
-      // A visible BTW card is the foreground history surface. Ctrl+N enters it
-      // instead of placing an invisible cursor behind it in chat history.
-      if (isAnyHistoryFocused(state)) {
+      // Cycle through the two history surfaces when BTW is visible:
+      // prompt/sidebar → BTW → chat history → prompt.
+      if (state.panelFocus === "chat" && state.chatFocus === "btw") {
+        focusHistory(state);
+        state.historyCursor = placeAtVisibleBottom(state);
+        state.historyCurswant = null;
+      } else if (isAnyHistoryFocused(state)) {
         focusPrompt(state);
       } else if (state.btw) {
         focusBtw(state);

@@ -45,16 +45,6 @@ export function handleBtwKey(key: KeyEvent, state: RenderState): BtwKeyResult | 
     return null;
   }
 
-  // Ctrl scrolling targets BTW even while the prompt is in insert mode.
-  const page = Math.max(1, btw.viewportRows - 1);
-  const halfPage = Math.max(1, Math.floor(btw.viewportRows / 2));
-  if (key.type === "ctrl-y") return scrollBtw(state, 1);
-  if (key.type === "ctrl-e") return scrollBtw(state, -1);
-  if (key.type === "ctrl-u") return scrollBtw(state, halfPage);
-  if (key.type === "ctrl-d") return scrollBtw(state, -halfPage);
-  if (key.type === "ctrl-b") return scrollBtw(state, page);
-  if (key.type === "ctrl-f") return scrollBtw(state, -page);
-
   // Only standalone normal-mode prompt keys are borrowed by BTW. Visual mode and
   // pending Vim sequences keep their prompt bindings.
   if (state.vim.mode !== "normal" || vimHasPendingInput(state)) return null;

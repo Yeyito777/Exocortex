@@ -405,7 +405,7 @@ describe("BTW foreground panel", () => {
     expect(handleFocusedKey({ type: "ctrl-q" }, state)).toEqual({ type: "btw_close" });
   });
 
-  test("Ctrl-N focuses the visible BTW history instead of the chat history", () => {
+  test("Ctrl-N cycles from the visible BTW history through chat history to the prompt", () => {
     const state = createInitialState();
     state.btw = panelState({
       blocks: [{ type: "text", text: Array.from({ length: 8 }, (_, i) => `btw row ${i + 1}`).join("\n") }],
@@ -420,6 +420,11 @@ describe("BTW foreground panel", () => {
     expect(state.vim.mode).toBe("normal");
     expect(state.btw.historyCursor.row).toBe(7);
     expect(state.historyCursor).toEqual({ row: 0, col: 7 });
+
+    expect(handleFocusedKey({ type: "ctrl-n" }, state)).toEqual({ type: "handled" });
+    expect(state.chatFocus).toBe("history");
+    expect(state.vim.mode).toBe("normal");
+    expect(state.historyCursor).toEqual({ row: 0, col: 0 });
 
     expect(handleFocusedKey({ type: "ctrl-n" }, state)).toEqual({ type: "handled" });
     expect(state.chatFocus).toBe("prompt");
@@ -522,7 +527,7 @@ describe("BTW foreground panel", () => {
     expect(state.btw.scrollOffset).toBe(5);
   });
 
-  test("Ctrl scrolling targets BTW from the prompt but chat history when history is focused", () => {
+  test("Ctrl scrolling from the prompt continues to target chat history, not BTW", () => {
     const state = createInitialState();
     state.btw = panelState({ scrollOffset: 0, maxScroll: 10, viewportRows: 6 });
     state.panelFocus = "chat";
@@ -530,13 +535,6 @@ describe("BTW foreground panel", () => {
     state.vim.mode = "insert";
     state.inputBuffer = "keep this prompt";
     state.cursorPos = state.inputBuffer.length;
-
-    expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
-    expect(state.btw.scrollOffset).toBe(3);
-    expect(state.inputBuffer).toBe("keep this prompt");
-
-    state.chatFocus = "history";
-    state.vim.mode = "normal";
     state.historyLines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
     state.historyCursor = { row: 29, col: 0 };
     state.layout.totalLines = 30;
@@ -544,7 +542,17 @@ describe("BTW foreground panel", () => {
     state.scrollOffset = 0;
 
     expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
-    expect(state.btw.scrollOffset).toBe(3);
+    expect(state.btw.scrollOffset).toBe(0);
+    expect(state.scrollOffset).toBeGreaterThan(0);
+    expect(state.inputBuffer).toBe("keep this prompt");
+
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.historyCursor = { row: 29, col: 0 };
+    state.scrollOffset = 0;
+
+    expect(handleFocusedKey({ type: "ctrl-u" }, state)).toEqual({ type: "handled" });
+    expect(state.btw.scrollOffset).toBe(0);
     expect(state.scrollOffset).toBeGreaterThan(0);
   });
 });
