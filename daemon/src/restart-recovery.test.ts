@@ -232,6 +232,45 @@ describe("restart recovery file", () => {
     expect(complete).toHaveBeenCalledWith(childConvId, expect.objectContaining({ ok: true }));
   });
 
+  test("recovers a detached existing-conversation send without projecting subagent activity", async () => {
+    const parentConvId = makeConversation("existing-send-parent");
+    const targetConvId = makeConversation("existing-send-target");
+    beginPendingSubagentNotification(
+      { convId: parentConvId },
+      targetConvId,
+      "continue the existing conversation",
+      789_123,
+      0,
+      false,
+    );
+    const server = makeServer();
+    const complete = mock(() => {});
+    registerSubagentNotificationRuntime(server as object, {
+      begin: beginPendingSubagentNotification,
+      complete,
+      deliverReady: () => {},
+    });
+
+    const scheduled = recoverInterruptedStreams(server);
+    expect(scheduled).toContain(targetConvId);
+    expect(getSummary(parentConvId)).toMatchObject({ subagentCount: 0, tasks: [] });
+    await Promise.resolve();
+
+    expect(orchestrateSendMessage).toHaveBeenCalledWith(
+      server,
+      null,
+      undefined,
+      targetConvId,
+      "continue the existing conversation",
+      789_123,
+      expect.any(Object),
+      undefined,
+      { subagentMaxDepth: 0 },
+    );
+    expect(complete).toHaveBeenCalledWith(targetConvId, expect.objectContaining({ ok: true }));
+    expect(getSummary(parentConvId)).toMatchObject({ subagentCount: 0, tasks: [] });
+  });
+
   test("replays an in-progress persisted subagent and retains its parent completion callback", async () => {
     const parentConvId = makeConversation("replay-subagent-parent");
     const childConvId = makeConversation("replay-subagent-child");

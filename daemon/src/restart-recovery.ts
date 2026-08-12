@@ -291,6 +291,7 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
   }
   convIds = normalizeConvIds([...convIds, ...runningNotifications.map((record) => record.childConvId)]);
   for (const record of runningNotifications) {
+    if (!record.trackAsSubagent) continue;
     const childTitle = convStore.getIndexedSummary(record.childConvId)?.title.trim()
       || record.task.split("\n")[0].replace(/\s+/g, " ").trim()
       || "Subagent task";
@@ -322,7 +323,7 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
           blocks: [],
           error: `Subagent conversation ${convId} no longer exists after restart.`,
         });
-        if (setSubagentActive(orphaned.parentConvId, convId, false)) {
+        if (orphaned.trackAsSubagent && setSubagentActive(orphaned.parentConvId, convId, false)) {
           broadcastConversationUpdated(server, orphaned.parentConvId);
         }
       }
