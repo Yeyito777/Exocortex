@@ -17,7 +17,6 @@ import { focusHistory, focusPrompt } from "./state";
 import type { Action } from "./keybinds";
 import type { KeyResult } from "./focus";
 import {
-  scrollUp, scrollDown,
   scrollLineUp, scrollLineDown,
   scrollHalfUp, scrollHalfDown,
   scrollPageUp, scrollPageDown,
@@ -29,6 +28,7 @@ import { clampNormal, nextGraphemeEnd } from "./vim/buffer";
 import { pushUndo, markInsertEntry, commitInsertSession, undo as undoFn, redo as redoFn } from "./undo";
 import {
   ensureCursorVisible,
+  applyHistoryAction,
   handleHistoryFind as historyFindHandler,
   handleHistoryTextObject as historyTextObjectHandler,
   handleHistoryCursorAction,
@@ -37,6 +37,7 @@ import {
 } from "./historycursor";
 import { movePromptCursorVerticalWithCurswant } from "./promptline";
 import { handleMessageTextObject } from "./vim/message";
+import { activeHistorySurface, isAnyHistoryFocused } from "./historysurface";
 
 export type AsyncUiMutationCallback = () => void;
 
@@ -188,8 +189,9 @@ export function processVimKey(
       }
       // Set visual anchor for history when entering visual mode
       if ((result.mode === "visual" || result.mode === "visual-line")
-          && state.chatFocus === "history") {
-        state.historyVisualAnchor = { ...state.historyCursor };
+          && isAnyHistoryFocused(state)) {
+        const surface = activeHistorySurface(state);
+        surface.setVisualAnchor({ ...surface.cursor });
       }
       // If switching to insert from sidebar/history, also focus prompt
       if (result.mode === "insert" && state.chatFocus !== "prompt") {
@@ -295,9 +297,8 @@ function handleContextNavigation(dir: "up" | "down", state: RenderState): KeyRes
     return { type: "handled" };
   }
   // History scroll
-  if (state.chatFocus === "history") {
-    if (dir === "up") scrollUp(state);
-    else scrollDown(state);
+  if (isAnyHistoryFocused(state)) {
+    applyHistoryAction(dir === "up" ? "history_up" : "history_down", state);
   }
   return { type: "handled" };
 }
@@ -339,7 +340,7 @@ export function handleScrollAction(action: Action, state: RenderState): void {
     return;
   }
 
-  const inHistory = state.panelFocus === "chat" && state.chatFocus === "history";
+  const inHistory = isAnyHistoryFocused(state);
 
   if (inHistory) {
     // Vim-style: cursor moves with scroll
@@ -350,8 +351,17 @@ export function handleScrollAction(action: Action, state: RenderState): void {
       case "scroll_half_down": scrollHalfPageWithCursor(state, -1);   return;
       case "scroll_page_up":   scrollFullPageWithCursor(state, 1);    return;
       case "scroll_page_down": scrollFullPageWithCursor(state, -1);   return;
-      case "scroll_top":       scrollToTop(state); ensureCursorVisible(state); return;
-      case "scroll_bottom":    scrollToBottom(state); ensureCursorVisible(state); return;
+      case "scroll_top": {
+        const surface = activeHistorySurface(state);
+        surface.setScrollOffset(Math.max(0, surface.lines.length - surface.viewportHeight));
+        ensureCursorVisible(state);
+        return;
+      }
+      case "scroll_bottom": {
+        activeHistorySurface(state).setScrollOffset(0);
+        ensureCursorVisible(state);
+        return;
+      }
     }
   }
 

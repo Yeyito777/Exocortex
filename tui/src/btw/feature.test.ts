@@ -13,7 +13,7 @@ import { hexToAnsi } from "../theme";
 import { closeBtwSession, startBtwSession } from "./controller";
 
 function panelState(overrides: Partial<BtwPanelState> = {}): BtwPanelState {
-  return {
+  return Object.assign({
     sessionId: "btw-1",
     sourceConvId: "conv-1",
     query: "What does this code do?",
@@ -28,8 +28,16 @@ function panelState(overrides: Partial<BtwPanelState> = {}): BtwPanelState {
     scrollOffset: 0,
     maxScroll: 0,
     viewportRows: 1,
-    ...overrides,
-  };
+    historyCursor: { row: 0, col: 0 },
+    historyCurswant: null,
+    historyVisualAnchor: { row: 0, col: 0 },
+    historyLines: [],
+    historyWrapContinuation: [],
+    historyWrapJoiners: [],
+    historyCopyLines: [],
+    historyMessageBounds: [],
+    historyLineAnchors: [],
+  }, overrides);
 }
 
 function conversation(id: string, sortOrder: number): ConversationSummary {
@@ -341,6 +349,27 @@ describe("BTW foreground panel", () => {
     expect(rendered!.payload).toContain(hexToAnsi("#12abef"));
   });
 
+  test("renders the shared history cursor and visual selection decorations", () => {
+    const btw = panelState({
+      blocks: [{ type: "text", text: "alpha beta\ngamma delta" }],
+      text: "alpha beta\ngamma delta",
+    });
+
+    let rendered = renderBtwPanel(btw, 80, 4, 10, 1, {
+      focused: true,
+      vimMode: "normal",
+    });
+    expect(rendered?.payload).toContain(theme.cursorBg);
+
+    btw.historyVisualAnchor = { row: 0, col: 2 };
+    btw.historyCursor = { row: 1, col: 6 };
+    rendered = renderBtwPanel(btw, 80, 4, 10, 1, {
+      focused: true,
+      vimMode: "visual",
+    });
+    expect(rendered?.payload).toContain(theme.selectionBg);
+  });
+
   test("renders an uncluttered one-row fallback in a constrained layout", () => {
     const rendered = renderBtwPanel(panelState(), 20, 1, 5, 3);
     expect(rendered).not.toBeNull();
@@ -374,6 +403,76 @@ describe("BTW foreground panel", () => {
 
     state.vim.mode = "insert";
     expect(handleFocusedKey({ type: "ctrl-q" }, state)).toEqual({ type: "btw_close" });
+  });
+
+  test("Ctrl-N focuses the visible BTW history instead of the chat history", () => {
+    const state = createInitialState();
+    state.btw = panelState({
+      blocks: [{ type: "text", text: Array.from({ length: 8 }, (_, i) => `btw row ${i + 1}`).join("\n") }],
+      text: Array.from({ length: 8 }, (_, i) => `btw row ${i + 1}`).join("\n"),
+    });
+    renderBtwPanel(state.btw, 80, 5);
+    state.historyLines = ["chat history must stay untouched"];
+    state.historyCursor = { row: 0, col: 7 };
+
+    expect(handleFocusedKey({ type: "ctrl-n" }, state)).toEqual({ type: "handled" });
+    expect(state.chatFocus).toBe("btw");
+    expect(state.vim.mode).toBe("normal");
+    expect(state.btw.historyCursor.row).toBe(7);
+    expect(state.historyCursor).toEqual({ row: 0, col: 7 });
+
+    expect(handleFocusedKey({ type: "ctrl-n" }, state)).toEqual({ type: "handled" });
+    expect(state.chatFocus).toBe("prompt");
+    expect(state.vim.mode).toBe("insert");
+  });
+
+  test("focused BTW reuses history Vim motions, visual quoting, and search", () => {
+    const state = createInitialState();
+    state.btw = panelState({
+      blocks: [{ type: "text", text: "alpha beta\ngamma delta\nomega target" }],
+      text: "alpha beta\ngamma delta\nomega target",
+    });
+    renderBtwPanel(state.btw, 80, 5);
+    state.historyCursor = { row: 0, col: 19 };
+
+    handleFocusedKey({ type: "ctrl-n" }, state);
+    handleFocusedKey({ type: "char", char: "g" }, state);
+    handleFocusedKey({ type: "char", char: "g" }, state);
+    expect(state.btw.historyCursor.row).toBe(0);
+    expect(state.historyCursor).toEqual({ row: 0, col: 19 });
+
+    handleFocusedKey({ type: "char", char: "v" }, state);
+    handleFocusedKey({ type: "char", char: "$" }, state);
+    expect(state.vim.mode).toBe("visual");
+    handleFocusedKey({ type: "char", char: ";" }, state);
+    expect(state.chatFocus).toBe("prompt");
+    expect(state.inputBuffer).toContain('"""\nalpha beta\n"""');
+
+    handleFocusedKey({ type: "ctrl-n" }, state);
+    handleFocusedKey({ type: "char", char: "/" }, state);
+    for (const char of "target") handleFocusedKey({ type: "char", char }, state);
+    handleFocusedKey({ type: "enter" }, state);
+    expect(state.chatFocus).toBe("btw");
+    expect(state.btw.historyCursor.row).toBe(2);
+    expect(state.search?.query).toBe("target");
+  });
+
+  test("Enter opens a target under the focused BTW history cursor", () => {
+    const state = createInitialState();
+    state.btw = panelState({
+      blocks: [{ type: "text", text: "Generated /tmp/btw-result.png" }],
+      text: "Generated /tmp/btw-result.png",
+    });
+    renderBtwPanel(state.btw, 80, 4);
+
+    handleFocusedKey({ type: "ctrl-n" }, state);
+    handleFocusedKey({ type: "char", char: "0" }, state);
+    for (let i = 0; i < 12; i++) handleFocusedKey({ type: "char", char: "l" }, state);
+
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
+      type: "open_target",
+      target: "/tmp/btw-result.png",
+    });
   });
 
   test("sidebar keeps j/k, Ctrl scrolling, and Ctrl-Q while BTW is visible", () => {

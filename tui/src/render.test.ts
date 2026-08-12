@@ -88,6 +88,15 @@ describe("render caching and frame diffing", () => {
       scrollOffset: 0,
       maxScroll: 0,
       viewportRows: 1,
+      historyCursor: { row: 0, col: 0 },
+      historyCurswant: null,
+      historyVisualAnchor: { row: 0, col: 0 },
+      historyLines: [],
+      historyWrapContinuation: [],
+      historyWrapJoiners: [],
+      historyCopyLines: [],
+      historyMessageBounds: [],
+      historyLineAnchors: [],
     };
 
     const writes = positionedWrites(captureRenderOutput(state));

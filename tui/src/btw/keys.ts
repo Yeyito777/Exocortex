@@ -24,17 +24,26 @@ function scrollBtw(state: RenderState, delta: number): BtwKeyResult {
 /** Handle only the foreground panel's borrowed prompt keys. */
 export function handleBtwKey(key: KeyEvent, state: RenderState): BtwKeyResult | null {
   const promptFocused = state.panelFocus === "chat" && state.chatFocus === "prompt";
+  const btwFocused = state.panelFocus === "chat" && state.chatFocus === "btw";
 
   // Ctrl-Q closes BTW from either prompt mode. Other focused panels retain its
   // normal conversation-abort behavior.
-  if (state.btw && promptFocused && key.type === "ctrl-q") return { type: "btw_close" };
+  if (state.btw && (promptFocused || btwFocused) && key.type === "ctrl-q") return { type: "btw_close" };
 
   const btw = state.btw;
   const btwUiAvailable = btw !== null
     && !state.sidebar.prompt
     && !state.sidebar.search?.barOpen
     && !state.search?.barOpen;
-  if (!btwUiAvailable || !promptFocused) return null;
+  if (!btwUiAvailable || (!promptFocused && !btwFocused)) return null;
+
+  // Focused BTW uses the normal history Vim context. Keep only the panel-close
+  // shortcut here and let every navigation/selection key reach that shared path.
+  if (btwFocused) {
+    if (state.vim.mode === "normal" && !vimHasPendingInput(state)
+        && key.type === "char" && key.char === "q") return { type: "btw_close" };
+    return null;
+  }
 
   // Ctrl scrolling targets BTW even while the prompt is in insert mode.
   const page = Math.max(1, btw.viewportRows - 1);

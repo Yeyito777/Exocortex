@@ -14,7 +14,7 @@
 import type { KeyEvent } from "./input";
 import type { MoveSidebarItemsOptions, SidebarItemRef } from "./protocol";
 import type { RenderState } from "./state";
-import { EDIT_INDEX_INSTRUCTIONS, focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
+import { EDIT_INDEX_INSTRUCTIONS, focusBtw, focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
 import { resolveAction, sidebarTopShortcutIndex } from "./keybinds";
 import { handleChatKey } from "./chat";
 import { toggleSidebarPreservingViewport, toggleToolOutputPreservingViewport } from "./chatscroll";
@@ -56,6 +56,7 @@ import { log } from "./log";
 import { copyToClipboard } from "./vim/clipboard";
 import { handleBtwKey } from "./btw/keys";
 import { collectDisplayedToolResultIds } from "./events/tool-outputs";
+import { activeHistorySurface, isAnyHistoryFocused } from "./historysurface";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -324,9 +325,15 @@ export function handleFocusedKey(
       openEditMessageModal(state);
       return { type: "handled" };
     case "focus_history":
-      // Toggle: if already in history → back to prompt, otherwise → history
-      if (state.panelFocus === "chat" && state.chatFocus === "history") {
+      // A visible BTW card is the foreground history surface. Ctrl+N enters it
+      // instead of placing an invisible cursor behind it in chat history.
+      if (isAnyHistoryFocused(state)) {
         focusPrompt(state);
+      } else if (state.btw) {
+        focusBtw(state);
+        const surface = activeHistorySurface(state);
+        surface.setCursor(placeAtVisibleBottom(state));
+        surface.setCurswant(null);
       } else {
         focusHistory(state);
         state.historyCursor = placeAtVisibleBottom(state);
@@ -388,7 +395,7 @@ export function handleFocusedKey(
       break;
   }
 
-  if (action === "submit" && state.panelFocus === "chat" && state.chatFocus === "history") {
+  if (action === "submit" && isAnyHistoryFocused(state)) {
     const target = openableTargetAtHistoryCursor(state);
     return target ? { type: "open_target", target } : { type: "handled" };
   }

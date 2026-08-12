@@ -1,6 +1,7 @@
 import type { Block } from "../messages";
 import type { Event } from "../protocol";
 import type { RenderState } from "../state";
+import { focusPrompt } from "../state";
 import { createRunningBtw, projectConversationBtw } from "./state";
 
 function matchingSession(state: RenderState, sessionId: string) {
@@ -33,6 +34,7 @@ export function handleBtwEvent(event: Event, state: RenderState): boolean {
       return true;
 
     case "btw_snapshot":
+      if (!event.btw && state.chatFocus === "btw") focusPrompt(state);
       state.btw = projectConversationBtw(event.convId, event.btw);
       return true;
 
@@ -119,7 +121,10 @@ export function handleBtwEvent(event: Event, state: RenderState): boolean {
       return true;
 
     case "btw_closed":
-      if (state.btw?.sessionId === event.sessionId) state.btw = null;
+      if (state.btw?.sessionId === event.sessionId) {
+        if (state.chatFocus === "btw") focusPrompt(state);
+        state.btw = null;
+      }
       return true;
 
     default:

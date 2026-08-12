@@ -1269,6 +1269,9 @@ export function render(state: RenderState): void {
       toolRegistry: state.toolRegistry,
       externalToolStyles: state.externalToolStyles,
       showToolOutput: state.showToolOutput,
+      focused: state.panelFocus === "chat" && state.chatFocus === "btw",
+      vimMode: state.vim.mode,
+      searchQuery: state.chatFocus === "btw" ? getActiveSearchQuery(state) : null,
     };
     const preferredHeight = getBtwPanelPreferredHeight(state.btw, chatW, btwRenderOptions);
     const btwHeight = availableRows >= 3
@@ -1398,7 +1401,9 @@ export function render(state: RenderState): void {
     hlLast = range.last;
   }
 
-  const searchQuery = getActiveSearchQuery(state);
+  // Search belongs to the focused history surface. When BTW is focused its
+  // renderer paints the matches; do not also highlight the background chat.
+  const searchQuery = state.chatFocus === "btw" ? null : getActiveSearchQuery(state);
 
   renderMessageArea(
     ctx, allLines, viewportRows,

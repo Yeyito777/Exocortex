@@ -1,4 +1,7 @@
 import type { Block, ConversationBtw, ModelId, ProviderId } from "../messages";
+import type { MessageBound, RenderLineAnchor } from "../conversation";
+import type { HistoryCursor } from "../historycursor";
+import type { WrapCopyLine } from "../textwrap";
 
 /** TUI-only projection of the durable conversation-owned BTW state. */
 export interface BtwPanelState extends Omit<ConversationBtw, "phase" | "blocks"> {
@@ -11,7 +14,29 @@ export interface BtwPanelState extends Omit<ConversationBtw, "phase" | "blocks">
   /** Renderer-populated bounds used by foreground scrolling keys. */
   maxScroll: number;
   viewportRows: number;
+  /** Normal history-navigation projection used while Ctrl+N focuses this card. */
+  historyCursor: HistoryCursor;
+  historyCurswant: number | null;
+  historyVisualAnchor: HistoryCursor;
+  historyLines: string[];
+  historyWrapContinuation: boolean[];
+  historyWrapJoiners: string[];
+  historyCopyLines: Array<WrapCopyLine | null>;
+  historyMessageBounds: MessageBound[];
+  historyLineAnchors: RenderLineAnchor[];
 }
+
+const navigationState = () => ({
+  historyCursor: { row: 0, col: 0 },
+  historyCurswant: null,
+  historyVisualAnchor: { row: 0, col: 0 },
+  historyLines: [],
+  historyWrapContinuation: [],
+  historyWrapJoiners: [],
+  historyCopyLines: [],
+  historyMessageBounds: [],
+  historyLineAnchors: [],
+});
 
 export function projectConversationBtw(
   convId: string,
@@ -25,6 +50,7 @@ export function projectConversationBtw(
     scrollOffset: 0,
     maxScroll: 0,
     viewportRows: 1,
+    ...navigationState(),
   };
 }
 
@@ -51,6 +77,7 @@ export function createStartingBtw(
     scrollOffset: 0,
     maxScroll: 0,
     viewportRows: 1,
+    ...navigationState(),
   };
 }
 
@@ -79,5 +106,6 @@ export function createRunningBtw(
     scrollOffset: 0,
     maxScroll: 0,
     viewportRows: 1,
+    ...navigationState(),
   };
 }

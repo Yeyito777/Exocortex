@@ -14,7 +14,7 @@ import { handlePromptKey, type PromptKeyResult } from "./promptline";
 
 // ── Types ───────────────────────────────────────────────────────────
 
-export type ChatFocus = "prompt" | "history";
+export type ChatFocus = "prompt" | "history" | "btw";
 
 /** Re-export PromptKeyResult as the chat-level result type — same shape. */
 export type ChatKeyResult = PromptKeyResult;
