@@ -99,7 +99,7 @@ describe("restart recovery file", () => {
     expect(readInterruptedStreamIds()).toEqual([]);
   });
 
-  test("interrupted active goals recover through goal continuation, not plain replay", () => {
+  test("interrupted active goals replay the interrupted turn before goal continuation", () => {
     const goalConvId = makeConversation("goal");
     setGoal(goalConvId, "finish the goal");
     const normalConvId = makeConversation("normal");
@@ -108,10 +108,12 @@ describe("restart recovery file", () => {
     const scheduled = recoverInterruptedStreams(makeServer());
 
     expect(scheduled).toEqual([goalConvId, normalConvId]);
-    expect(orchestrateGoalContinuation).toHaveBeenCalledTimes(1);
-    expect((orchestrateGoalContinuation.mock.calls[0] as unknown[] | undefined)?.[1]).toBe(goalConvId);
-    expect(orchestrateReplayConversation).toHaveBeenCalledTimes(1);
-    expect((orchestrateReplayConversation.mock.calls[0] as unknown[] | undefined)?.[3]).toBe(normalConvId);
+    expect(orchestrateReplayConversation).toHaveBeenCalledTimes(2);
+    expect(orchestrateReplayConversation.mock.calls.map(call => (call as unknown[])[3])).toEqual([
+      goalConvId,
+      normalConvId,
+    ]);
+    expect(orchestrateGoalContinuation).not.toHaveBeenCalled();
   });
 
   test("catchable shutdown records and aborts active streams for replay", async () => {

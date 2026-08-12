@@ -334,7 +334,6 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
     }
 
     scheduled.push(convId);
-    const conv = convStore.get(convId);
     const callbacks = buildRecoveryCallbacks(server, convId);
     const pendingNotification = runningNotifications.find((record) => record.childConvId === convId);
     if (pendingNotification) {
@@ -379,38 +378,29 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
       });
       continue;
     }
-    if (conv?.goal?.status === "active") {
-      log("info", `restart-recovery: continuing interrupted active goal ${convId}`);
-      void orchestrateGoalContinuation(server, convId, callbacks).then((outcome) => {
-        if (outcome.ok) {
-          log("info", `restart-recovery: goal continuation completed for ${convId}`);
-        } else {
-          log("warn", `restart-recovery: goal continuation did not complete for ${convId}: ${outcome.error ?? "unknown error"}`);
-        }
-      }).catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        log("error", `restart-recovery: goal continuation failed for ${convId}: ${message}`);
-      });
-    } else {
-      log("info", `restart-recovery: replaying interrupted conversation ${convId}`);
-      void orchestrateReplayConversation(
-        server,
-        null,
-        undefined,
-        convId,
-        Date.now(),
-        callbacks,
-      ).then((outcome) => {
-        if (outcome.ok) {
-          log("info", `restart-recovery: replay completed for ${convId}`);
-        } else {
-          log("warn", `restart-recovery: replay did not complete for ${convId}: ${outcome.error ?? "unknown error"}`);
-        }
-      }).catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        log("error", `restart-recovery: replay failed for ${convId}: ${message}`);
-      });
-    }
+    // Always restore the interrupted turn itself first, including when the
+    // conversation has an active goal. A successful replay will schedule the
+    // ordinary post-turn goal continuation from the orchestrator finalizer.
+    // Starting with orchestrateGoalContinuation here would instead append a new
+    // continuation notification and skip the interrupted turn entirely.
+    log("info", `restart-recovery: replaying interrupted conversation ${convId}`);
+    void orchestrateReplayConversation(
+      server,
+      null,
+      undefined,
+      convId,
+      Date.now(),
+      callbacks,
+    ).then((outcome) => {
+      if (outcome.ok) {
+        log("info", `restart-recovery: replay completed for ${convId}`);
+      } else {
+        log("warn", `restart-recovery: replay did not complete for ${convId}: ${outcome.error ?? "unknown error"}`);
+      }
+    }).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      log("error", `restart-recovery: replay failed for ${convId}: ${message}`);
+    });
   }
 
   if (scheduled.length > 0) {
