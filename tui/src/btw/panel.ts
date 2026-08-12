@@ -143,7 +143,7 @@ export function getBtwPanelPreferredHeight(
   const contentWidth = Math.max(1, width - 4);
   const answerRows = renderBtwContent(btw, contentWidth, options).lines.length;
   if (answerRows === 0) return 3;
-  return Math.min(MAX_BTW_PANEL_HEIGHT, Math.max(4, answerRows + 2));
+  return Math.min(MAX_BTW_PANEL_HEIGHT, answerRows + 2);
 }
 
 /** Render a compact-to-expanded card at the caller-provided screen position. */

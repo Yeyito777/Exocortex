@@ -279,6 +279,24 @@ describe("BTW foreground panel", () => {
     }
   });
 
+  test("does not add an empty row for the first one-line thinking summary", () => {
+    const btw = panelState({
+      blocks: [{ type: "thinking", text: "Checking the implementation" }],
+    });
+    const preferredHeight = getBtwPanelPreferredHeight(btw, 100);
+    const rendered = renderBtwPanel(btw, 100, preferredHeight, 10, 1);
+    const rows = rendered!.payload
+      .split(/\x1b\[\d+;\d+H/)
+      .filter(Boolean)
+      .map(stripAnsi);
+
+    expect(preferredHeight).toBe(3);
+    expect(rendered?.height).toBe(3);
+    expect(btw.viewportRows).toBe(1);
+    expect(rows.filter(row => row.includes("│"))).toHaveLength(1);
+    expect(rows[1]).toContain("Checking the implementation");
+  });
+
   test("grows with the streamed answer up to 20 rows, then scrolls the newest output", () => {
     const btw = panelState({ text: ["one", "two", "three", "four", "five"].join("\n") });
     expect(getBtwPanelPreferredHeight(btw, 100)).toBe(7);
