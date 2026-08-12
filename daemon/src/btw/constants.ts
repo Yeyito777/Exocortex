@@ -1,13 +1,27 @@
-/** Tools exposed to the isolated one-shot agent. Keep this list read-only. */
+/** The only advertised source-conversation tools that a BTW executor may run. */
 export const BTW_READ_ONLY_TOOLS = ["read", "grep", "glob", "browse"] as const;
 
-export const BTW_WRAPPER_NOTE = [
-  "# BTW session",
-  "You are answering a one-shot question against a frozen snapshot of an existing conversation.",
-  "Answer the user's BTW query directly and do not ask follow-up questions.",
-  "This answer is displayed in a conversation-owned panel and is not part of the model-visible transcript.",
-  "You have read-only tools only. Do not attempt or claim to modify files, processes, conversations, schedules, or external state.",
-].join("\n");
+export function appendBtwQueryInstructions(
+  query: string,
+  advertisedToolNames: readonly string[],
+): string {
+  const permitted = new Set<string>(BTW_READ_ONLY_TOOLS);
+  const readOnly = advertisedToolNames.filter(name => permitted.has(name));
+  const disabled = advertisedToolNames.filter(name => !permitted.has(name));
+  return [
+    query,
+    "",
+    "[BTW aside]",
+    "Answer the question above as a one-shot aside that is not part of the conversation transcript.",
+    disabled.length > 0
+      ? `Do not call these advertised tools because their executors are disabled for this aside: ${disabled.join(", ")}.`
+      : "Do not attempt to modify files, processes, conversations, schedules, or external state.",
+    readOnly.length > 0
+      ? `Only these read-only tools may run if needed: ${readOnly.join(", ")}.`
+      : "No tools may run for this aside.",
+    "Answer directly and do not ask a follow-up question.",
+  ].join("\n");
+}
 
 export const BTW_PERSIST_DEBOUNCE_MS = 100;
 export const BTW_PERSIST_RETRY_MS = 250;

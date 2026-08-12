@@ -1196,6 +1196,75 @@ describe("OpenAI replay input", () => {
     secondSession.destroy();
   });
 
+  test("a one-shot request with the same prompt cache key does not displace the parked conversation session", async () => {
+    const calls = mockOpenAIWebSocket([
+      { events: [
+        { type: "response.created", response: { id: "resp_source_1" } },
+        { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_source_1" } },
+        { type: "response.output_text.delta", item_id: "msg_source_1", output_index: 0, content_index: 0, delta: "source one" },
+        { type: "response.completed", response: { id: "resp_source_1", usage: { input_tokens: 2, output_tokens: 1 }, output: [{ type: "message", id: "msg_source_1", content: [{ type: "output_text", text: "source one" }] }] } },
+        { type: "response.created", response: { id: "resp_source_2" } },
+        { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_source_2" } },
+        { type: "response.output_text.delta", item_id: "msg_source_2", output_index: 0, content_index: 0, delta: "source two" },
+        { type: "response.completed", response: { id: "resp_source_2", usage: { input_tokens: 1, output_tokens: 1 }, output: [{ type: "message", id: "msg_source_2", content: [{ type: "output_text", text: "source two" }] }] } },
+      ] },
+      { events: [
+        { type: "response.created", response: { id: "resp_aside" } },
+        { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_aside" } },
+        { type: "response.output_text.delta", item_id: "msg_aside", output_index: 0, content_index: 0, delta: "aside" },
+        { type: "response.completed", response: { id: "resp_aside", usage: { input_tokens: 2, output_tokens: 1 }, output: [{ type: "message", id: "msg_aside", content: [{ type: "output_text", text: "aside" }] }] } },
+      ] },
+    ]);
+    const callbacks = { onText: () => {}, onThinking: () => {} };
+    const sourceInput: ApiMessage[] = [{ role: "user", content: "source question" }];
+    const firstSession = createOpenAITurnSession();
+    const first = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      sourceInput,
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-shared", turnSession: firstSession },
+    );
+    firstSession.close();
+
+    // `/btw` deliberately omits a turn session. It still sends the source
+    // prompt_cache_key to OpenAI, but owns and closes a separate websocket.
+    const aside = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [...sourceInput, { role: "user", content: "aside question" }],
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-shared" },
+    );
+    expect(aside.text).toBe("aside");
+    expect(calls).toHaveLength(2);
+    expect(calls[1].isClosed()).toBe(true);
+    expect(JSON.parse(calls[1].sent[0]).prompt_cache_key).toBe("conv-shared");
+
+    const secondSession = createOpenAITurnSession();
+    const second = await streamMessageWithSession(
+      { accessToken: "test-token", accountId: null },
+      [
+        ...sourceInput,
+        { role: "assistant", content: [{ type: "text", text: first.text }], providerData: first.assistantProviderData },
+        { role: "user", content: "source follow-up" },
+      ],
+      "gpt-5.4",
+      callbacks,
+      { promptCacheKey: "conv-shared", turnSession: secondSession },
+    );
+
+    expect(second.text).toBe("source two");
+    expect(calls).toHaveLength(2);
+    expect(calls[0].sent).toHaveLength(2);
+    const followUpBody = JSON.parse(calls[0].sent[1]);
+    expect(followUpBody.previous_response_id).toBe("resp_source_1");
+    expect(followUpBody.input).toEqual([
+      { type: "message", role: "user", content: [{ type: "input_text", text: "source follow-up" }] },
+    ]);
+    secondSession.destroy();
+  });
+
   test("clears Codex turn-state when reusing a parked websocket for a new user turn", async () => {
     const calls = mockOpenAIWebSocket([{ events: [
       { type: "response.metadata", headers: { "x-codex-turn-state": "turn-state-1" } },

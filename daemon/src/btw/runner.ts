@@ -1,17 +1,16 @@
 import type { BtwQueryCommand } from "../protocol";
 import { runAgentLoop } from "../agent";
-import { createProviderTurnSession } from "../api";
 import { buildConversationApiContext } from "../context-compaction";
+import { buildConversationRequestSurface } from "../conversation-request-surface";
 import * as convStore from "../conversations";
 import type { ApiContentBlock, ApiMessage, Block, Conversation, ProviderId, ToolCallBlock, ToolResultBlock } from "../messages";
 import type { ContentBlock as ProviderContentBlock } from "../providers/types";
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "../providers/openai/auth";
 import { buildCodexWindowId } from "../providers/openai/identity";
-import { buildSystemPrompt } from "../system";
-import { buildExecutor, getToolDefs, summarizeTool } from "../tools/registry";
+import { buildExecutor, summarizeTool } from "../tools/registry";
 import type { ToolExecutionContext } from "../tools/types";
 import { ensureConversationWorkspace } from "../workspace-service";
-import { BTW_READ_ONLY_TOOLS, BTW_WRAPPER_NOTE } from "./constants";
+import { appendBtwQueryInstructions, BTW_READ_ONLY_TOOLS } from "./constants";
 
 type RunAgentLoop = typeof runAgentLoop;
 
@@ -31,7 +30,7 @@ export interface PreparedBtwRun {
   snapshotSize: number;
   messages: ApiMessage[];
   system: string;
-  tools: ReturnType<typeof getToolDefs>;
+  tools: ReturnType<typeof buildConversationRequestSurface>["tools"];
   executor: ReturnType<typeof buildExecutor>;
   effort: Conversation["effort"];
   serviceTier: "fast" | undefined;
@@ -167,19 +166,20 @@ export function prepareBtwRun(conv: Conversation, command: BtwQueryCommand, quer
   const sourceProgress = projectBtwSourceProgress(
     structuredClone(convStore.getCurrentStreamingBlocks(command.convId) ?? []),
   );
-  const messages: ApiMessage[] = [
-    ...snapshot,
-    ...sourceProgress,
-    { role: "user", content: query },
-  ];
-  const system = buildSystemPrompt({
+  const requestSurface = buildConversationRequestSurface(conv, {
     conversationInstructions: convStore.getEffectiveSystemInstructions(command.convId) || undefined,
     conversationId: command.convId,
     workingDirectory,
-    toolNames: BTW_READ_ONLY_TOOLS,
-    includeExternalToolHints: false,
-    wrapperNote: BTW_WRAPPER_NOTE,
+    subagentMaxDepth: conv.subagentMaxDepth ?? null,
   });
+  const messages: ApiMessage[] = [
+    ...snapshot,
+    ...sourceProgress,
+    {
+      role: "user",
+      content: appendBtwQueryInstructions(query, requestSurface.tools.map(tool => tool.name)),
+    },
+  ];
   const toolContext: ToolExecutionContext = {
     provider,
     model: conv.model,
@@ -196,8 +196,11 @@ export function prepareBtwRun(conv: Conversation, command: BtwQueryCommand, quer
     model: conv.model,
     snapshotSize: snapshot.length,
     messages,
-    system,
-    tools: getToolDefs(BTW_READ_ONLY_TOOLS),
+    system: requestSurface.system,
+    // Preserve the source conversation's exact advertised tool schemas so the
+    // provider can reuse its cached prefix. The executor remains the security
+    // boundary and rejects every tool outside the read-only allowlist.
+    tools: requestSurface.tools,
     executor: buildExecutor(toolContext, BTW_READ_ONLY_TOOLS),
     effort: conv.effort,
     serviceTier: conv.fastMode ? "fast" : undefined,
@@ -219,7 +222,6 @@ export async function runBtw(
 ): Promise<Block[]> {
   let committedBlocks: Block[] = [];
   let roundBlocks: Block[] = [];
-  const turnSession = createProviderTurnSession(prepared.provider);
   const result = await runLoop(prepared.messages, prepared.provider, prepared.model, {
     onBlockStart: (type) => {
       roundBlocks.push({ type, text: "" });
@@ -271,7 +273,10 @@ export async function runBtw(
     serviceTier: prepared.serviceTier,
     promptCacheKey: prepared.promptCacheKey,
     tracking: { source: "btw", conversationId: prepared.convId },
-    turnSession: turnSession ?? undefined,
+    // BTW is one isolated assistant turn. Deliberately avoid adopting/parking the
+    // source conversation's local websocket + previous_response_id state. The
+    // provider still receives the source promptCacheKey below, while each BTW
+    // provider round uses an owned one-request transport.
     getCodexWindowId: () => prepared.sourceWindowId,
     accountScope: prepared.accountScope,
     codexTurnId: `${prepared.convId}:btw:${prepared.sessionId}`,

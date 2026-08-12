@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { BTW_READ_ONLY_TOOLS, BtwSessionManager } from ".";
+import { appendBtwQueryInstructions, BTW_READ_ONLY_TOOLS, BtwSessionManager } from ".";
 import * as convStore from "../conversations";
 import type { ApiMessage, ConversationBtw } from "../messages";
 import type { Event } from "../protocol";
@@ -8,6 +8,8 @@ import type { ConnectedClient, DaemonServer } from "../server";
 import { loadConversationBtwState, saveConversationBtwState } from "../persistence";
 import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, pushStreamingBlock, setActiveJob } from "../streaming";
 import { buildExecutor, getToolDefs } from "../tools/registry";
+import { buildConversationRequestSurface } from "../conversation-request-surface";
+import { ensureConversationWorkspace } from "../workspace-service";
 
 type RunAgentLoop = typeof import("../agent").runAgentLoop;
 
@@ -54,13 +56,11 @@ function clonePersistenceState(state: ReturnType<typeof emptyPersistenceState>) 
 }
 
 describe("BTW read-only tool boundary", () => {
-  test("advertises exactly the four approved read-only tools", () => {
-    expect(getToolDefs(BTW_READ_ONLY_TOOLS).map(tool => tool.name)).toEqual([
-      "read",
-      "glob",
-      "grep",
-      "browse",
-    ]);
+  test("puts the executor restriction after the user query", () => {
+    const content = appendBtwQueryInstructions("answer this", ["read", "write", "bash"]);
+    expect(content).toStartWith("answer this\n\n[BTW aside]");
+    expect(content).toContain("executors are disabled for this aside: write, bash");
+    expect(content).toContain("Only these read-only tools may run if needed: read");
   });
 
   test("executor rejects a mutating tool even if a provider fabricates the call", async () => {
@@ -189,10 +189,24 @@ describe("conversation-owned BTW sessions", () => {
       expect(run.options.promptCacheKey).toBe(convId);
       expect(run.options.getCodexWindowId?.()).toBe(`${convId}:0`);
       expect(run.options.codexTurnId).toBe(`${convId}:btw:session-1`);
-      expect((run.options.tools as Array<{ name: string }>).map(tool => tool.name)).toEqual([
-        "read", "glob", "grep", "browse",
-      ]);
-      expect(run.messages.at(-1)).toEqual({ role: "user", content: "answer from the snapshot" });
+      expect(run.options.turnSession).toBeUndefined();
+      const sourceSurface = buildConversationRequestSurface(conv, {
+        conversationId: convId,
+        workingDirectory: ensureConversationWorkspace(convId),
+        conversationInstructions: convStore.getEffectiveSystemInstructions(convId) || undefined,
+        subagentMaxDepth: conv.subagentMaxDepth ?? null,
+      });
+      expect(run.options.system).toBe(sourceSurface.system);
+      const advertisedToolNames = (run.options.tools as Array<{ name: string }>).map(tool => tool.name);
+      // The model sees the source conversation's ordinary tool surface so its
+      // cache-sensitive request shape remains identical.
+      expect(run.options.tools).toEqual(sourceSurface.tools);
+      expect(advertisedToolNames).toEqual(getToolDefs(undefined, convId).map(tool => tool.name));
+      expect(advertisedToolNames).toContain("write");
+      expect(run.messages.at(-1)).toEqual({
+        role: "user",
+        content: appendBtwQueryInstructions("answer from the snapshot", advertisedToolNames),
+      });
       expect(run.messages.at(-2)).toEqual({
         role: "assistant",
         content: [
@@ -210,6 +224,16 @@ describe("conversation-owned BTW sessions", () => {
       appendToStreamingBlock(convId, "text", " leaked later chunk");
       expect(run.messages[0].content).toBe("frozen source text");
       expect(JSON.stringify(run.messages)).not.toContain("leaked later chunk");
+      const [forbiddenResult] = await run.options.executor!([{
+        id: "forbidden-write",
+        name: "write",
+        input: { file_path: "/tmp/btw-must-not-write", content: "nope" },
+      }]);
+      expect(forbiddenResult).toMatchObject({
+        toolName: "write",
+        isError: true,
+        output: "Tool unavailable in this session: write",
+      });
       expect(events.get(owner.id)?.some(event => event.type === "btw_text_chunk"
         && event.convId === convId && event.text === "partial answer")).toBe(true);
       expect(events.get(peer.id)?.some(event => event.type === "btw_text_chunk"
@@ -300,6 +324,7 @@ describe("conversation-owned BTW sessions", () => {
 
       const replay = capturedMessages as unknown as ApiMessage[];
       const runOptions = capturedOptions as unknown as NonNullable<Parameters<RunAgentLoop>[4]>;
+      const advertisedToolNames = (runOptions.tools as Array<{ name: string }>).map(tool => tool.name);
       expect(replay).toEqual([
         { role: "user", content: "inspect the project", metadata: null, providerData: undefined, contextTokens: undefined, contextCheckpoint: undefined },
         {
@@ -315,7 +340,10 @@ describe("conversation-owned BTW sessions", () => {
             is_error: true,
           }],
         },
-        { role: "user", content: "what is the source assistant doing?" },
+        {
+          role: "user",
+          content: appendBtwQueryInstructions("what is the source assistant doing?", advertisedToolNames),
+        },
       ]);
       expect(runOptions.promptCacheKey).toBe(convId);
       expect(runOptions.getCodexWindowId?.()).toBe(`${convId}:0`);
@@ -351,7 +379,7 @@ describe("conversation-owned BTW sessions", () => {
     const server = testServer([client], new Map());
     const signals = new Map<string, AbortSignal>();
     const fakeRunAgentLoop = ((messages, _provider, _model, _callbacks, options) => {
-      const query = String(messages.at(-1)?.content ?? "");
+      const query = String(messages.at(-1)?.content ?? "").split("\n\n[BTW aside]")[0];
       if (!options?.signal) throw new Error("missing BTW abort signal");
       signals.set(query, options.signal);
       return new Promise((_resolve, reject) => {

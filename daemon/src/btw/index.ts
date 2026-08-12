@@ -1,4 +1,4 @@
-export { BTW_READ_ONLY_TOOLS } from "./constants";
+export { appendBtwQueryInstructions, BTW_READ_ONLY_TOOLS } from "./constants";
 export { BtwSessionManager } from "./manager";
 export type {
   BtwCloseResult,

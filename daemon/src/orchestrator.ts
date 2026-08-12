@@ -10,9 +10,8 @@
 import { log } from "./log";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
-import { buildSystemPrompt } from "./system";
 import { getMaxContext, supportsImageInputs } from "./providers/registry";
-import { getToolDefs, buildExecutor, summarizeTool, toolCallsRequireWatchdogPause, getRegisteredTools, getCustomToolDisplayInfo } from "./tools/registry";
+import { buildExecutor, summarizeTool, toolCallsRequireWatchdogPause, getRegisteredTools, getCustomToolDisplayInfo } from "./tools/registry";
 import { ensureConversationCustomTools } from "./tools/custom-tools";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
@@ -20,8 +19,6 @@ import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
-import { scopedSubagentPromptOptions } from "./subagent-policy";
-import { resolveConversationToolPolicy } from "./tool-policy";
 import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
 import { quarantineActiveContext } from "./active-context-quarantine";
 import { goalContinuationUserMessage } from "./goals";
@@ -55,6 +52,7 @@ import {
   interruptDeferredChronoSleep,
   type DeferredChronoSleep,
 } from "./chrono-service";
+import { buildConversationRequestSurface } from "./conversation-request-surface";
 
 // ── Transcript marker helpers ──────────────────────────────────────
 
@@ -642,22 +640,15 @@ async function orchestrateAssistantTurn(
   // incremental item, then safely falls back to full replay of the checkpoint.
   const providerTurnSession = ext.streamMessageFn ? null : createProviderTurnSession(conv.provider);
   const codexTurnId = `${convId}:${startedAt}`;
-  // Expose a child turn's remaining delegation budget to prevent predictable
-  // rejected send/queue attempts when its max depth is zero.
-  const scopedPromptOptions = scopedSubagentPromptOptions(liveConv, subagentMaxDepth);
-  const resolvedToolPolicy = resolveConversationToolPolicy(liveConv, subagentMaxDepth);
-  const allowedToolNames = resolvedToolPolicy.internalToolNames;
-  const systemPrompt = buildSystemPrompt({
+  const requestSurface = buildConversationRequestSurface(liveConv, {
     conversationInstructions: systemInstructionsText || undefined,
     conversationId: convId,
     workingDirectory,
     subagentMaxDepth,
-    ...(scopedPromptOptions ?? {}),
-    toolNames: allowedToolNames,
-    includeExternalToolHints: true,
-    externalToolNames: resolvedToolPolicy.externalToolNames,
   });
-  const toolDefs = getToolDefs(allowedToolNames, convId);
+  const systemPrompt = requestSurface.system;
+  const toolDefs = requestSurface.tools;
+  const allowedToolNames = requestSurface.toolNames;
   const contextLimit = getMaxContext(conv.provider, conv.model);
   const startingCompactionCount = conv.activeContext?.compactionCount ?? 0;
   let currentWindowNumber = conv.activeContext?.windowNumber ?? 0;
