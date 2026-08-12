@@ -19,11 +19,13 @@ export interface PingCommand {
   reqId?: string;
 }
 
+export type DaemonShutdownMode = "stop" | "restart";
+
 /** Service wrapper handshake before it sends the daemon its shutdown signal. */
 export interface PrepareShutdownCommand {
   type: "prepare_shutdown";
   reqId?: string;
-  mode: "stop" | "restart";
+  mode: DaemonShutdownMode;
 }
 
 /** Ask the daemon on this connection to restart its own process instance. */
@@ -953,6 +955,12 @@ export interface PongEvent {
   reqId?: string;
 }
 
+/** Sent before a graceful daemon shutdown so clients can classify the disconnect. */
+export interface DaemonShutdownEvent {
+  type: "daemon_shutdown";
+  mode: DaemonShutdownMode;
+}
+
 export interface AckEvent {
   type: "ack";
   reqId?: string;
@@ -1649,6 +1657,7 @@ export interface ErrorEvent {
 
 export type Event =
   | PongEvent
+  | DaemonShutdownEvent
   | AckEvent
   | ConversationCreatedEvent
   | BtwStartedEvent

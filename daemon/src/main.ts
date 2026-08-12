@@ -128,6 +128,10 @@ async function startDaemon(): Promise<void> {
       const requestedMode = resolveDaemonShutdownMode(exitCode, hasActiveGoalRestartMarker());
       const shutdownMode = beginDaemonShutdown(requestedMode);
       log("info", `exocortexd: shutting down (${reason}, mode=${shutdownMode})`);
+      // Give connected clients the graceful shutdown reason while the socket is
+      // still writable. In particular, this keeps a planned restart from also
+      // looking like an unrelated transport failure in the TUI.
+      server.broadcast({ type: "daemon_shutdown", mode: shutdownMode });
       stopWatchdog();
       stopExternalNotificationSoftWakeService();
       stopChronoService();
