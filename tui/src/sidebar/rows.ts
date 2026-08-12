@@ -8,7 +8,6 @@ import {
   getVisibleFolderIndicesForQuery,
   getVisibleConversationIndicesForQuery,
 } from "../sidebarsearch";
-import { deferredChronoSleepTask } from "../taskvisibility";
 
 export interface SidebarRowsState {
   conversations: ConversationSummary[];
@@ -19,7 +18,7 @@ export interface SidebarRowsState {
 }
 
 export interface DisplayRow {
-  type: "label" | "delimiter" | "entry" | "status";
+  type: "label" | "delimiter" | "entry";
   convIdx?: number;
   folderIdx?: number;
   item?: SidebarSelectableItem;
@@ -55,23 +54,12 @@ export function buildDisplayRows(sidebar: SidebarRowsState): DisplayRow[] {
 
   const pinned = entries.filter(entry => entry.pinned);
   const unpinned = entries.filter(entry => !entry.pinned);
-  const appendEntry = (entry: typeof entries[number]) => {
-    rows.push(entry.row);
-    if (!("convIdx" in entry.row)) return;
-    const convIdx = entry.row.convIdx;
-    if (!deferredChronoSleepTask(sidebar.conversations[convIdx])) return;
-    rows.push({
-      type: "status",
-      convIdx,
-      item: entry.row.item,
-    });
-  };
   if (pinned.length > 0) {
     if (!sidebar.currentFolderId) rows.push({ type: "label", text: " Pinned" });
-    for (const entry of pinned) appendEntry(entry);
+    for (const entry of pinned) rows.push(entry.row);
     if (unpinned.length > 0) rows.push({ type: "delimiter" });
   }
-  for (const entry of unpinned) appendEntry(entry);
+  for (const entry of unpinned) rows.push(entry.row);
   return rows;
 }
 

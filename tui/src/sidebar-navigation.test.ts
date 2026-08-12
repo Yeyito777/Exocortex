@@ -53,7 +53,7 @@ describe("sidebar streaming navigation", () => {
     expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "project" });
   });
 
-  test("does not give folders a blue indicator for descendant deferred Chrono sleeps", () => {
+  test("jumps to a folder with a descendant durable Chrono sleep indicator", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [folder("project", 2)];
     sidebar.conversations = [
@@ -70,7 +70,7 @@ describe("sidebar streaming navigation", () => {
     expect(handleSidebarAction("nav_next_streaming", sidebar)).toEqual({ type: "handled" });
 
     expect(sidebar.currentFolderId).toBeNull();
-    expect(sidebar.selectedItem as unknown).toEqual({ type: "conversation", id: "root" });
+    expect(sidebar.selectedItem as unknown).toEqual({ type: "folder", id: "project" });
   });
 
   test("uses visible sidebar order and wraps across folder streaming indicators", () => {

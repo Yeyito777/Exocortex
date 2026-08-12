@@ -1507,7 +1507,7 @@ describe("sidebar folders", () => {
     expect(sidebarHitTest(4, 10, state.sidebar)).toEqual({ type: "conversation", id: "conv-a" });
   });
 
-  test("sidebar hit testing maps a sleep status row to its conversation", () => {
+  test("a durable sleep occupies a single clickable sidebar row", () => {
     const state = createInitialState();
     state.sidebar.conversations = [conversation("sleeping", 1, {
       tasks: [{
@@ -1521,7 +1521,7 @@ describe("sidebar folders", () => {
     })];
 
     expect(sidebarHitTest(3, 10, state.sidebar)).toEqual({ type: "conversation", id: "sleeping" });
-    expect(sidebarHitTest(4, 10, state.sidebar)).toEqual({ type: "conversation", id: "sleeping" });
+    expect(sidebarHitTest(4, 10, state.sidebar)).toBeNull();
   });
 
   test("l enters a folder and h leaves back to the parent", () => {

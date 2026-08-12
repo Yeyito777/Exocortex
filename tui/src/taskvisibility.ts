@@ -1,13 +1,12 @@
 import type { ConversationSummary, ConversationTaskSummary } from "./messages";
 
-/** Return the durable sleep that currently suspends a conversation, if any. */
-export function deferredChronoSleepTask(
+/** Whether a durable Chrono sleep currently suspends a conversation. */
+export function isDurablySleeping(
   conversation: Pick<ConversationSummary, "streaming" | "tasks">,
-): ConversationTaskSummary | null {
-  if (conversation.streaming) return null;
-  return conversation.tasks?.find(
+): boolean {
+  return !conversation.streaming && conversation.tasks?.some(
     task => task.kind === "chrono" && task.chronoMode === "sleep",
-  ) ?? null;
+  ) === true;
 }
 
 /**
@@ -15,15 +14,13 @@ export function deferredChronoSleepTask(
  *
  * Long Chrono sleeps deliberately close the provider websocket and suspend the
  * turn, so `streaming` becomes false even though the turn has not completed.
- * This is useful for attention/unread behavior; rendering should distinguish a
- * durable sleep from connected streaming rather than giving both a blue dot.
+ * This remains useful for attention and activity navigation even though the
+ * sidebar renders the suspended state differently from connected streaming.
  */
 export function hasInProgressModelWork(
   conversation: Pick<ConversationSummary, "streaming" | "tasks">,
 ): boolean {
-  return conversation.streaming || conversation.tasks?.some(
-    task => task.kind === "chrono" && task.chronoMode === "sleep",
-  ) === true;
+  return conversation.streaming || isDurablySleeping(conversation);
 }
 
 /**

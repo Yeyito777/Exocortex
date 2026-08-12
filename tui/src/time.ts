@@ -14,22 +14,6 @@ export function msUntilNextElapsedSecond(startedAt: number, now = Date.now()): n
   return remainder === 0 ? 1000 : 1000 - remainder;
 }
 
-/** Format time remaining as whole hours and minutes, rounding up to avoid understating it. */
-export function formatHoursMinutesUntil(dueAt: number, now = Date.now()): string {
-  const totalMinutes = Math.max(0, Math.ceil((dueAt - now) / 60_000));
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-}
-
-/** Return the delay until a rounded-up hours/minutes countdown can change. */
-export function msUntilHoursMinutesUpdate(dueAt: number, now = Date.now()): number | null {
-  const remainingMs = dueAt - now;
-  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return null;
-  const remainder = remainingMs % 60_000;
-  return remainder === 0 ? 60_000 : remainder;
-}
-
 /** Format a timestamp for display in system notices and metadata. */
 export function formatTimestamp(timestamp: number, locale = "en-US"): string {
   return new Date(timestamp).toLocaleString(locale);
