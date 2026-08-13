@@ -204,7 +204,8 @@ function isRecoverableToolTab(tab: VimbrowserTab): boolean {
     && tab.title === VIMBROWSER_TAB_TITLE;
 }
 
-function challengePage(title: string, html: string): boolean {
+/** Detect access/security interstitials returned instead of requested content. */
+export function isAccessChallengePage(title: string, html: string): boolean {
   if (/^(?:just a moment|please wait|establishing a secure connection)/i.test(title.trim())) {
     return true;
   }
@@ -214,6 +215,9 @@ function challengePage(title: string, html: string): boolean {
     /cf-chl-/i,
     /bunny[_-]shield/i,
     /checking (?:if the site connection is secure|your browser)/i,
+    /verifying you are\s+human/i,
+    /reviews? the security of your connection/i,
+    /document\.cookie\s*=\s*["'][^"']*_chal=/i,
   ].some(pattern => pattern.test(html));
 }
 
@@ -485,7 +489,7 @@ export function createVimbrowserPageFetcher(
           if (navigationErrorPage(lastUrl)) {
             throw new Error(`vimbrowser could not load ${requestedUrl} (${lastUrl})`);
           }
-          if (!challengePage(title, html) && html.trim()) {
+          if (!isAccessChallengePage(title, html) && html.trim()) {
             return { html, pageUrl: lastUrl };
           }
           sawChallenge = true;
@@ -533,7 +537,7 @@ export function createVimbrowserPageFetcher(
           if (navigationErrorPage(lastUrl)) {
             throw new Error(`vimbrowser could not load ${requestedUrl} (${lastUrl})`);
           }
-          if (!challengePage(title, "")) return lastUrl;
+          if (!isAccessChallengePage(title, "")) return lastUrl;
           sawChallenge = true;
         }
       } else {
@@ -731,7 +735,7 @@ export function createVimbrowserPageFetcher(
 export const fetchPageWithVimbrowser = createVimbrowserPageFetcher();
 
 export const browseVimbrowserInternalsForTest = {
-  challengePage,
+  challengePage: isAccessChallengePage,
   downloadScriptMarkers: DOWNLOAD_SCRIPT_MARKERS,
   navigationScript,
   tabTitle: VIMBROWSER_TAB_TITLE,

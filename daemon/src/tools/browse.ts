@@ -15,7 +15,7 @@ import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./type
 import { cap, getString, summarizeParams } from "./util";
 import { htmlToMarkdown } from "./html";
 import { complete } from "../llm";
-import { formatToolAbortMessage, isAbortLikeError } from "../abort";
+import { createAbortError } from "../abort";
 import { log } from "../log";
 import { getInnerLlmSummaryOptions } from "./inner-llm";
 import { createHash } from "node:crypto";
@@ -27,6 +27,7 @@ import {
 } from "./browse-download";
 import {
   fetchPageWithVimbrowser,
+  isAccessChallengePage,
   type VimbrowserPageFetcher,
 } from "./browse-vimbrowser";
 
@@ -39,6 +40,7 @@ const MAX_SUMMARY_CACHE_ENTRIES = 100;
 const BROWSE_USER_AGENT = "Mozilla/5.0 (compatible; Exocortex/1.0)";
 const BROWSE_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 const BROWSE_MAX_TOKENS = 4096;
+const BROWSE_RESPONSE_HEADER_TIMEOUT_MS = 20_000;
 const SUMMARY_MARKDOWN_MAX_CHARS = 200_000;
 const SUMMARY_MARKDOWN_HEAD_CHARS = 160_000;
 const SUMMARY_MARKDOWN_TAIL_CHARS = SUMMARY_MARKDOWN_MAX_CHARS - SUMMARY_MARKDOWN_HEAD_CHARS;
@@ -68,6 +70,17 @@ interface BrowseDependencies {
   fetch: FetchLike;
   summarize: typeof summarizeContent;
   vimbrowserFetch?: VimbrowserPageFetcher;
+  responseHeaderTimeoutMs?: number;
+}
+
+class BrowseResponseHeaderTimeoutError extends Error {
+  constructor(
+    readonly url: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`no HTTP response headers after ${formatDuration(timeoutMs)}`);
+    this.name = "BrowseResponseHeaderTimeoutError";
+  }
 }
 
 // ── Cache ──────────────────────────────────────────────────────────
@@ -168,6 +181,122 @@ function normalizeBrowseUrl(url: string): string {
   return url.startsWith("http://") ? `https://${url.slice(7)}` : url;
 }
 
+function formatDuration(milliseconds: number): string {
+  if (milliseconds < 1_000) return `${milliseconds}ms`;
+  const seconds = milliseconds / 1_000;
+  return `${Number.isInteger(seconds) ? seconds.toFixed(0) : seconds.toFixed(1)}s`;
+}
+
+function wwwRetrySuggestion(fetchUrl: string): string | null {
+  try {
+    const candidate = new URL(fetchUrl);
+    if (candidate.hostname.startsWith("www.")
+      || candidate.hostname === "localhost"
+      || !candidate.hostname.includes(".")
+      || /^(?:\d{1,3}\.){3}\d{1,3}$/.test(candidate.hostname)
+      || candidate.hostname.includes(":")) {
+      return null;
+    }
+    candidate.hostname = `www.${candidate.hostname}`;
+    return candidate.href;
+  } catch {
+    return null;
+  }
+}
+
+function nestedErrorCode(error: unknown): string | null {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4; depth++) {
+    if (!current || typeof current !== "object") return null;
+    const value = current as { code?: unknown; cause?: unknown };
+    if (typeof value.code === "string") return value.code;
+    current = value.cause;
+  }
+  return null;
+}
+
+function directFetchFailure(fetchUrl: string, error: unknown): ToolResult {
+  const code = nestedErrorCode(error);
+  const detail = error instanceof Error ? error.message : String(error);
+  let diagnosis: string;
+
+  if (error instanceof BrowseResponseHeaderTimeoutError || code === "ETIMEDOUT") {
+    const duration = error instanceof BrowseResponseHeaderTimeoutError
+      ? formatDuration(error.timeoutMs)
+      : "the network timeout";
+    diagnosis = `No HTTP response headers arrived within ${duration}. DNS resolution, the TCP/TLS connection, or the server may be unreachable.`;
+  } else if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+    diagnosis = `DNS resolution failed${code ? ` (${code})` : ""}.`;
+  } else if (code === "ECONNREFUSED") {
+    diagnosis = "The remote host refused the TCP connection before sending HTTP response headers.";
+  } else if (code === "ECONNRESET" || code === "EPIPE") {
+    diagnosis = `The network connection ended before HTTP response headers arrived (${code}).`;
+  } else if (code?.includes("CERT") || code?.startsWith("ERR_TLS")) {
+    diagnosis = `The TLS handshake failed before HTTP response headers arrived (${code}).`;
+  } else {
+    diagnosis = `The request failed before HTTP response headers arrived${detail ? `: ${detail}` : "."}`;
+  }
+
+  const suggestion = wwwRetrySuggestion(fetchUrl);
+  return {
+    output: [
+      `Error fetching ${fetchUrl}: ${diagnosis}`,
+      ...(suggestion
+        ? [`If the site publishes a canonical www hostname, retry it explicitly: ${suggestion}`]
+        : []),
+    ].join("\n"),
+    isError: true,
+  };
+}
+
+async function fetchResponseHeaders(
+  fetchImpl: FetchLike,
+  fetchUrl: string,
+  init: RequestInit & { tls?: { rejectUnauthorized: boolean } },
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<{ response: Response; release: () => void }> {
+  if (signal?.aborted) throw createAbortError();
+
+  const request = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let onParentAbort: (() => void) | undefined;
+  const cancellation = new Promise<never>((_resolve, reject) => {
+    onParentAbort = () => {
+      request.abort(signal?.reason);
+      reject(createAbortError());
+    };
+    if (signal) signal.addEventListener("abort", onParentAbort, { once: true });
+
+    timeout = setTimeout(() => {
+      const error = new BrowseResponseHeaderTimeoutError(fetchUrl, timeoutMs);
+      request.abort(error);
+      reject(error);
+    }, timeoutMs);
+  });
+
+  try {
+    const response = await Promise.race([
+      fetchImpl(fetchUrl, { ...init, signal: request.signal }),
+      cancellation,
+    ]);
+    if (timeout) clearTimeout(timeout);
+    let released = false;
+    return {
+      response,
+      release: () => {
+        if (released) return;
+        released = true;
+        if (signal && onParentAbort) signal.removeEventListener("abort", onParentAbort);
+      },
+    };
+  } catch (error) {
+    if (timeout) clearTimeout(timeout);
+    if (signal && onParentAbort) signal.removeEventListener("abort", onParentAbort);
+    throw error;
+  }
+}
+
 function ensureSameHostRedirect(originalUrl: URL, finalUrl: string): ToolResult | null {
   try {
     const finalParsed = new URL(finalUrl);
@@ -215,92 +344,170 @@ async function fetchPage(
   fetchImpl: FetchLike,
   vimbrowserFetch?: VimbrowserPageFetcher,
   signal?: AbortSignal,
+  responseHeaderTimeoutMs = BROWSE_RESPONSE_HEADER_TIMEOUT_MS,
 ): Promise<FetchedPage | DownloadedFile | ToolResult> {
+  const fetchStartedAt = Date.now();
   log("info", `browse: fetching ${fetchUrl}`);
-  const res = await fetchImpl(fetchUrl, {
-    headers: {
-      "User-Agent": BROWSE_USER_AGENT,
-      Accept: BROWSE_ACCEPT,
-    },
-    redirect: "follow",
-    signal,
-    tls: { rejectUnauthorized: false },
-  } as RequestInit & { tls?: { rejectUnauthorized: boolean } });
+  let res: Response;
+  let releaseFetchSignal: (() => void) | undefined;
+  try {
+    const fetched = await fetchResponseHeaders(fetchImpl, fetchUrl, {
+      headers: {
+        "User-Agent": BROWSE_USER_AGENT,
+        Accept: BROWSE_ACCEPT,
+      },
+      redirect: "follow",
+      tls: { rejectUnauthorized: false },
+    }, signal, responseHeaderTimeoutMs);
+    res = fetched.response;
+    releaseFetchSignal = fetched.release;
+  } catch (error) {
+    if (signal?.aborted) throw createAbortError();
+    const failure = directFetchFailure(fetchUrl, error);
+    log("warn", `browse: direct fetch failed before response headers for ${fetchUrl} (${failure.output.split("\n", 1)[0]})`);
+    return failure;
+  }
+  try {
+    log("info", `browse: response headers received for ${fetchUrl} (HTTP ${res.status}, ${Date.now() - fetchStartedAt}ms)`);
 
-  const finalUrl = res.url || fetchUrl;
-  const crossHostRedirect = res.url ? ensureSameHostRedirect(originalUrl, res.url) : null;
-  if (crossHostRedirect) return crossHostRedirect;
-
-  if (res.status === 403 && mode === "download" && vimbrowserFetch?.download) {
-    await res.body?.cancel().catch(() => {});
-    if (context?.allowDownloads === false) {
-      return downloadsDisabledResult(normalizedContentType(res.headers));
+    const finalUrl = res.url || fetchUrl;
+    const crossHostRedirect = res.url ? ensureSameHostRedirect(originalUrl, res.url) : null;
+    if (crossHostRedirect) {
+      await res.body?.cancel().catch(() => {});
+      return crossHostRedirect;
     }
-    log("info", `browse: direct download returned HTTP 403; trying vimbrowser for ${finalUrl}`);
+
+    if (res.status === 403 && mode === "download" && vimbrowserFetch?.download) {
+      await res.body?.cancel().catch(() => {});
+      if (context?.allowDownloads === false) {
+        return downloadsDisabledResult(normalizedContentType(res.headers));
+      }
+      log("info", `browse: direct download returned HTTP 403; trying vimbrowser for ${finalUrl}`);
+      try {
+        const browserDownload = await vimbrowserFetch.download(
+          finalUrl,
+          context?.cwd ?? process.cwd(),
+          signal,
+        );
+        if (browserDownload) {
+          if ("redirectUrl" in browserDownload) {
+            return ensureSameHostRedirect(originalUrl, browserDownload.redirectUrl) ?? {
+              output: `Error: unexpected browser download redirect to ${browserDownload.redirectUrl}`,
+              isError: true,
+            };
+          }
+          log("info", `browse: vimbrowser downloaded ${browserDownload.pageUrl} (${browserDownload.bytes} bytes)`);
+          return browserDownload;
+        }
+        log("debug", "browse: vimbrowser download fallback is unavailable");
+      } catch (error) {
+        if (signal?.aborted) throw createAbortError();
+        const message = error instanceof Error ? error.message : String(error);
+        log("warn", `browse: vimbrowser download fallback failed (${message})`);
+      }
+    }
+
+    if (res.status === 403 && mode === "auto" && vimbrowserFetch) {
+      await res.body?.cancel().catch(() => {});
+      log("info", `browse: direct fetch returned HTTP 403; trying vimbrowser for ${finalUrl}`);
+      try {
+        const browserPage = await vimbrowserFetch(finalUrl, signal);
+        if (browserPage) {
+          const browserRedirect = ensureSameHostRedirect(originalUrl, browserPage.pageUrl);
+          if (browserRedirect) return browserRedirect;
+          log("info", `browse: vimbrowser fallback loaded ${browserPage.pageUrl} (${browserPage.html.length} chars)`);
+          return {
+            markdown: responseBodyToMarkdown(browserPage.html, "text/html", browserPage.pageUrl),
+            pageUrl: browserPage.pageUrl,
+          };
+        }
+        log("debug", "browse: vimbrowser fallback is unavailable");
+      } catch (error) {
+        if (signal?.aborted) throw createAbortError();
+        const message = error instanceof Error ? error.message : String(error);
+        log("warn", `browse: vimbrowser fallback failed (${message})`);
+      }
+    }
+
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return { output: `Error fetching ${fetchUrl}: HTTP ${res.status} ${res.statusText}`, isError: true };
+    }
+
+    if (mode === "download" || shouldDownloadResponse(res.headers, finalUrl)) {
+      if (context?.allowDownloads === false) {
+        await res.body?.cancel().catch(() => {});
+        return downloadsDisabledResult(normalizedContentType(res.headers));
+      }
+      try {
+        return await downloadResponse(res, finalUrl, context?.cwd ?? process.cwd(), signal);
+      } catch (error) {
+        if (signal?.aborted) throw createAbortError();
+        const message = error instanceof Error ? error.message : String(error);
+        log("warn", `browse: HTTP response download failed for ${finalUrl} (${message})`);
+        return {
+          output: `Error downloading the HTTP response body from ${finalUrl} after response headers arrived: ${message}`,
+          isError: true,
+        };
+      }
+    }
+
+    const contentType = res.headers.get("content-type") ?? "";
+    const bodyStartedAt = Date.now();
+    let rawBody: string;
     try {
-      const browserDownload = await vimbrowserFetch.download(
-        finalUrl,
-        context?.cwd ?? process.cwd(),
-        signal,
-      );
-      if (browserDownload) {
-        if ("redirectUrl" in browserDownload) {
-          return ensureSameHostRedirect(originalUrl, browserDownload.redirectUrl) ?? {
-            output: `Error: unexpected browser download redirect to ${browserDownload.redirectUrl}`,
+      rawBody = await res.text();
+    } catch (error) {
+      if (signal?.aborted) throw createAbortError();
+      const message = error instanceof Error ? error.message : String(error);
+      log("warn", `browse: HTTP response body read failed for ${finalUrl} (${message})`);
+      return {
+        output: `Error reading the HTTP response body from ${finalUrl} after response headers arrived: ${message}`,
+        isError: true,
+      };
+    }
+    log("info", `browse: response body read for ${finalUrl} (${rawBody.length} chars, ${Date.now() - bodyStartedAt}ms)`);
+
+    if (mode === "auto"
+      && (contentType.includes("text/html") || contentType.includes("application/xhtml"))
+      && isAccessChallengePage("", rawBody)) {
+      log("info", `browse: direct fetch returned an access challenge; trying vimbrowser for ${finalUrl}`);
+      if (vimbrowserFetch) {
+        try {
+          const browserPage = await vimbrowserFetch(finalUrl, signal);
+          if (browserPage) {
+            const browserRedirect = ensureSameHostRedirect(originalUrl, browserPage.pageUrl);
+            if (browserRedirect) return browserRedirect;
+            log("info", `browse: vimbrowser fallback cleared access challenge for ${browserPage.pageUrl} (${browserPage.html.length} chars)`);
+            return {
+              markdown: responseBodyToMarkdown(browserPage.html, "text/html", browserPage.pageUrl),
+              pageUrl: browserPage.pageUrl,
+            };
+          }
+        } catch (error) {
+          if (signal?.aborted) throw createAbortError();
+          const message = error instanceof Error ? error.message : String(error);
+          log("warn", `browse: vimbrowser challenge fallback failed (${message})`);
+          return {
+            output: `Error fetching ${finalUrl}: the server returned a human-verification/access challenge, and the browser fallback could not clear it (${message}).`,
             isError: true,
           };
         }
-        log("info", `browse: vimbrowser downloaded ${browserDownload.pageUrl} (${browserDownload.bytes} bytes)`);
-        return browserDownload;
       }
-      log("debug", "browse: vimbrowser download fallback is unavailable");
-    } catch (error) {
-      if (signal?.aborted || isAbortLikeError(error)) throw error;
-      const message = error instanceof Error ? error.message : String(error);
-      log("warn", `browse: vimbrowser download fallback failed (${message})`);
+      return {
+        output: `Error fetching ${finalUrl}: the server returned a human-verification/access challenge, and the browser fallback is unavailable.`,
+        isError: true,
+      };
     }
-  }
 
-  if (res.status === 403 && mode === "auto" && vimbrowserFetch) {
-    await res.body?.cancel().catch(() => {});
-    log("info", `browse: direct fetch returned HTTP 403; trying vimbrowser for ${finalUrl}`);
-    try {
-      const browserPage = await vimbrowserFetch(finalUrl, signal);
-      if (browserPage) {
-        const browserRedirect = ensureSameHostRedirect(originalUrl, browserPage.pageUrl);
-        if (browserRedirect) return browserRedirect;
-        log("info", `browse: vimbrowser fallback loaded ${browserPage.pageUrl} (${browserPage.html.length} chars)`);
-        return {
-          markdown: responseBodyToMarkdown(browserPage.html, "text/html", browserPage.pageUrl),
-          pageUrl: browserPage.pageUrl,
-        };
-      }
-      log("debug", "browse: vimbrowser fallback is unavailable");
-    } catch (error) {
-      if (signal?.aborted || isAbortLikeError(error)) throw error;
-      const message = error instanceof Error ? error.message : String(error);
-      log("warn", `browse: vimbrowser fallback failed (${message})`);
-    }
+    const markdown = responseBodyToMarkdown(rawBody, contentType, finalUrl);
+    return {
+      markdown,
+      pageUrl: finalUrl,
+    };
+  } finally {
+    releaseFetchSignal?.();
   }
-
-  if (!res.ok) {
-    return { output: `Error fetching ${fetchUrl}: HTTP ${res.status} ${res.statusText}`, isError: true };
-  }
-
-  if (mode === "download" || shouldDownloadResponse(res.headers, finalUrl)) {
-    if (context?.allowDownloads === false) {
-      await res.body?.cancel().catch(() => {});
-      return downloadsDisabledResult(normalizedContentType(res.headers));
-    }
-    return downloadResponse(res, finalUrl, context?.cwd ?? process.cwd(), signal);
-  }
-
-  const rawBody = await res.text();
-  const markdown = responseBodyToMarkdown(rawBody, res.headers.get("content-type") ?? "", finalUrl);
-  return {
-    markdown,
-    pageUrl: finalUrl,
-  };
 }
 
 async function getPageContent(
@@ -311,6 +518,7 @@ async function getPageContent(
   fetchImpl: FetchLike,
   vimbrowserFetch?: VimbrowserPageFetcher,
   signal?: AbortSignal,
+  responseHeaderTimeoutMs = BROWSE_RESPONSE_HEADER_TIMEOUT_MS,
 ): Promise<FetchedPage | DownloadedFile | ToolResult> {
   if (mode === "auto") {
     cleanCache();
@@ -321,7 +529,16 @@ async function getPageContent(
     }
   }
 
-  const fetched = await fetchPage(fetchUrl, originalUrl, mode, context, fetchImpl, vimbrowserFetch, signal);
+  const fetched = await fetchPage(
+    fetchUrl,
+    originalUrl,
+    mode,
+    context,
+    fetchImpl,
+    vimbrowserFetch,
+    signal,
+    responseHeaderTimeoutMs,
+  );
   if ("isError" in fetched) return fetched;
 
   if ("downloadPath" in fetched) return fetched;
@@ -385,6 +602,7 @@ async function summarizeContent(
     setSummaryCacheEntry(cacheKey, summary);
     return summary;
   } catch (err) {
+    if (signal?.aborted) throw createAbortError();
     const msg = err instanceof Error ? err.message : String(err);
     log("warn", `browse: summarization failed (${msg}), returning raw content`);
     return fallbackRawContent(url, markdown, prompt);
@@ -422,7 +640,6 @@ async function executeBrowse(
     return { output: `Error: invalid URL: ${url}`, isError: true };
   }
 
-  const startTime = Date.now();
   try {
     const page = await getPageContent(
       fetchUrl,
@@ -432,6 +649,7 @@ async function executeBrowse(
       dependencies.fetch,
       dependencies.vimbrowserFetch,
       signal,
+      dependencies.responseHeaderTimeoutMs,
     );
     if ("isError" in page) return page;
     if ("downloadPath" in page) {
@@ -456,10 +674,7 @@ async function executeBrowse(
     const summary = await dependencies.summarize(page.pageUrl, page.markdown, prompt, context, signal);
     return { output: cap(summary), isError: false };
   } catch (err) {
-    if (signal?.aborted || isAbortLikeError(err)) {
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      return { output: formatToolAbortMessage(signal, elapsed), isError: false };
-    }
+    if (signal?.aborted) throw createAbortError();
 
     const msg = err instanceof Error ? err.message : String(err);
     log("error", `browse: ${msg}`);
@@ -479,7 +694,7 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 export const browse: Tool = {
   name: "browse",
   description: "Read content from a URL or save its exact response payload. Supports web pages, feeds, APIs, community sites, and CDN files.",
-  parallelSafety: "exclusive",
+  parallelSafety: "safe",
   defaultTimeoutMs: 120_000,
   settleOnAbort: true,
   inputSchema: {

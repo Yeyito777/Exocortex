@@ -25,6 +25,17 @@ describe("formatToolAbortMessage", () => {
     );
   });
 
+  test("gives browse-specific timeout guidance instead of filesystem advice", () => {
+    const ac = new AbortController();
+    ac.abort(toolTimeoutReason("browse", 120_000));
+
+    const message = formatToolAbortMessage(ac.signal, "120.0");
+    expect(message).toBe(
+      'Tool "browse" timed out after 120.0s (deadline 120s). The web fetch, browser fallback, download, or page digest did not finish before the deadline; retry the canonical URL or make separate follow-up calls.',
+    );
+    expect(message).not.toContain("path/pattern");
+  });
+
   test("explains daemon restart tool interruption honestly", () => {
     const ac = new AbortController();
     ac.abort("daemon-restart");

@@ -84,6 +84,8 @@ describe("browse vimbrowser backend", () => {
     const { challengePage } = browseVimbrowserInternalsForTest;
     expect(challengePage("Just a moment...", "<html></html>")).toBe(true);
     expect(challengePage("", "You've been blocked by network security.")).toBe(true);
+    expect(challengePage("", "<h1>Verifying you are human.</h1><p>The server reviews the security of your connection.</p>")).toBe(true);
+    expect(challengePage("", 'document.cookie="artsci_chal=" + answer; document.location.reload(true)')).toBe(true);
     expect(challengePage("Documentation", "<main>Useful content</main>")).toBe(false);
   });
 

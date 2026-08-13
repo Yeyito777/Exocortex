@@ -252,6 +252,7 @@ describe("browse direct downloads", () => {
     );
 
     expect(result.isError).toBe(true);
+    expect(result.output).toContain("downloading the HTTP response body");
     expect(result.output).toContain("broken download");
     expect(readdirSync(cwd)).toEqual([]);
   });
@@ -391,6 +392,63 @@ describe("browse vimbrowser fallback", () => {
     expect(result).toEqual({ output: "browser-backed summary", isError: false });
   });
 
+  test("uses rendered browser HTML after a successful HTTP response contains an access challenge", async () => {
+    let fallbackUrl = "";
+    let summarizedMarkdown = "";
+    const result = await browseInternalsForTest.executeBrowse(
+      { url: "https://challenge.example.test/page", prompt: "find the real page" },
+      undefined,
+      undefined,
+      {
+        fetch: async () => new Response(
+          '<html><body><h1>Verifying you are human.</h1><p>The server reviews the security of your connection.</p></body></html>',
+          { status: 200, headers: { "content-type": "text/html" } },
+        ),
+        vimbrowserFetch: async url => {
+          fallbackUrl = url;
+          return {
+            html: "<main><h1>Faculty Registrar</h1><p>Actual rendered content.</p></main>",
+            pageUrl: url,
+          };
+        },
+        summarize: async (_url, markdown) => {
+          summarizedMarkdown = markdown;
+          return "rendered challenge-free summary";
+        },
+      },
+    );
+
+    expect(fallbackUrl).toBe("https://challenge.example.test/page");
+    expect(summarizedMarkdown).toContain("Faculty Registrar");
+    expect(summarizedMarkdown).not.toContain("Verifying you are human");
+    expect(result).toEqual({ output: "rendered challenge-free summary", isError: false });
+  });
+
+  test("reports an access challenge instead of summarizing the interstitial when browser fallback is unavailable", async () => {
+    let summaryCalls = 0;
+    const result = await browseInternalsForTest.executeBrowse(
+      { url: "https://challenge-unavailable.example.test/page", prompt: "read it" },
+      undefined,
+      undefined,
+      {
+        fetch: async () => new Response("<h1>Verifying you are human.</h1>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }),
+        vimbrowserFetch: async () => null,
+        summarize: async () => {
+          summaryCalls++;
+          return "unexpected summary";
+        },
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("human-verification/access challenge");
+    expect(result.output).toContain("browser fallback is unavailable");
+    expect(summaryCalls).toBe(0);
+  });
+
   test("preserves the original 403 when vimbrowser is unavailable", async () => {
     const result = await browseInternalsForTest.executeBrowse(
       { url: "https://unavailable.example.test/page", prompt: "read it" },
@@ -448,5 +506,132 @@ describe("browse vimbrowser fallback", () => {
     expect(result.isError).toBe(false);
     expect(result.output).toContain("URL redirected to a different host");
     expect(result.output).toContain("https://login.example.test/session");
+  });
+});
+
+describe("browse network deadlines", () => {
+  test("returns a response-header-stage timeout with a canonical-host suggestion", async () => {
+    let requestSignal: AbortSignal | undefined;
+    const result = await browseInternalsForTest.executeBrowse(
+      { url: "https://artsci.example.test/current/faculty-registrar", prompt: "read it" },
+      undefined,
+      undefined,
+      {
+        fetch: async (_input, init) => {
+          requestSignal = init?.signal ?? undefined;
+          return await new Promise<Response>(() => {});
+        },
+        summarize: async () => "unexpected summary",
+        responseHeaderTimeoutMs: 5,
+      },
+    );
+
+    expect(requestSignal?.aborted).toBe(true);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("No HTTP response headers arrived within 5ms");
+    expect(result.output).toContain("DNS resolution, the TCP/TLS connection, or the server may be unreachable");
+    expect(result.output).toContain("https://www.artsci.example.test/current/faculty-registrar");
+    expect(result.output).not.toContain("path/pattern");
+  });
+
+  test("classifies DNS failures before response headers", async () => {
+    const dnsError = Object.assign(new Error("fetch failed"), {
+      cause: Object.assign(new Error("name not found"), { code: "ENOTFOUND" }),
+    });
+    const result = await browseInternalsForTest.executeBrowse(
+      { url: "https://missing.example.test/page", prompt: "read it" },
+      undefined,
+      undefined,
+      {
+        fetch: async () => { throw dnsError; },
+        summarize: async () => "unexpected summary",
+      },
+    );
+
+    expect(result).toEqual({
+      output: [
+        "Error fetching https://missing.example.test/page: DNS resolution failed (ENOTFOUND).",
+        "If the site publishes a canonical www hostname, retry it explicitly: https://www.missing.example.test/page",
+      ].join("\n"),
+      isError: true,
+    });
+  });
+
+  test("identifies a readable response-body failure separately from connection setup", async () => {
+    const brokenBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial"));
+        controller.error(new Error("body stream reset"));
+      },
+    });
+    const result = await browseInternalsForTest.executeBrowse(
+      { url: "https://body-reset.example.test/page", prompt: "read it" },
+      undefined,
+      undefined,
+      {
+        fetch: async () => new Response(brokenBody, { headers: { "content-type": "text/html" } }),
+        summarize: async () => "unexpected summary",
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Error reading the HTTP response body");
+    expect(result.output).toContain("after response headers arrived");
+    expect(result.output).toContain("body stream reset");
+  });
+
+  test("propagates an outer abort instead of formatting a duplicate timeout inside browse", async () => {
+    const controller = new AbortController();
+    let started!: () => void;
+    const fetchStarted = new Promise<void>(resolve => { started = resolve; });
+    const execution = browseInternalsForTest.executeBrowse(
+      { url: "https://slow.example.test/page", prompt: "read it" },
+      undefined,
+      controller.signal,
+      {
+        fetch: async () => {
+          started();
+          return await new Promise<Response>(() => {});
+        },
+        summarize: async () => "unexpected summary",
+        responseHeaderTimeoutMs: 60_000,
+      },
+    );
+
+    await fetchStarted;
+    controller.abort({ type: "tool-timeout", toolName: "browse", timeoutMs: 120_000 });
+    await expect(execution).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  test("keeps outer cancellation connected while reading the response body", async () => {
+    const controller = new AbortController();
+    let bodyReading!: () => void;
+    const bodyReadStarted = new Promise<void>(resolve => { bodyReading = resolve; });
+    const execution = browseInternalsForTest.executeBrowse(
+      { url: "https://slow-body.example.test/page", prompt: "read it" },
+      undefined,
+      controller.signal,
+      {
+        fetch: async (_input, init) => {
+          const body = new ReadableStream<Uint8Array>({
+            start(streamController) {
+              init?.signal?.addEventListener("abort", () => {
+                streamController.error(new DOMException("Aborted", "AbortError"));
+              }, { once: true });
+            },
+            pull() {
+              bodyReading();
+              return new Promise<void>(() => {});
+            },
+          });
+          return new Response(body, { headers: { "content-type": "text/html" } });
+        },
+        summarize: async () => "unexpected summary",
+      },
+    );
+
+    await bodyReadStarted;
+    controller.abort({ type: "tool-timeout", toolName: "browse", timeoutMs: 120_000 });
+    await expect(execution).rejects.toMatchObject({ name: "AbortError" });
   });
 });

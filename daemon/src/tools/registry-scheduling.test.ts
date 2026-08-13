@@ -15,12 +15,12 @@ function call(name: string, id = name): ApiToolCall {
 }
 
 describe("tool execution scheduling", () => {
-  test("marks read-only tools as parallel-safe and potentially mutating tools as exclusive", () => {
+  test("marks independently isolated tools as parallel-safe and potentially conflicting tools as exclusive", () => {
     expect(getToolParallelSafety("read")).toBe("safe");
     expect(getToolParallelSafety("glob")).toBe("safe");
     expect(getToolParallelSafety("grep")).toBe("safe");
+    expect(getToolParallelSafety("browse")).toBe("safe");
 
-    expect(getToolParallelSafety("browse")).toBe("exclusive");
     expect(getToolParallelSafety("bash")).toBe("exclusive");
     expect(getToolParallelSafety("write")).toBe("exclusive");
     expect(getToolParallelSafety("edit")).toBe("exclusive");
@@ -46,8 +46,7 @@ describe("tool execution scheduling", () => {
     }))).toEqual([
       { mode: "parallel", names: ["read", "grep"] },
       { mode: "exclusive", names: ["edit"] },
-      { mode: "parallel", names: ["glob"] },
-      { mode: "exclusive", names: ["browse"] },
+      { mode: "parallel", names: ["glob", "browse"] },
       { mode: "exclusive", names: ["bash"] },
       { mode: "parallel", names: ["read"] },
     ]);
@@ -96,5 +95,22 @@ describe("tool execution scheduling", () => {
     expect(result.isError).toBe(true);
     expect(result.output).toContain('Tool "patch" timed out');
     expect(result.output).toContain("No files were changed before the patch stopped.");
+  });
+
+  test("deduplicates a settle-on-abort tool's own copy of the timeout message", async () => {
+    const controller = new AbortController();
+    controller.abort(toolTimeoutReason("browse", 120_000));
+    const abortMessage = 'Tool "browse" timed out after 0.0s (deadline 120s). The web fetch, browser fallback, download, or page digest did not finish before the deadline; retry the canonical URL or make separate follow-up calls.';
+
+    const result = await registryInternalsForTest.execTool(
+      call("browse", "deduplicated-timeout"),
+      Promise.resolve({ output: `${abortMessage}\n\n${abortMessage}`, isError: false }),
+      controller.signal,
+      true,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toBe(abortMessage);
+    expect(result.output.match(/Tool "browse" timed out/g)).toHaveLength(1);
   });
 });

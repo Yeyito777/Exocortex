@@ -52,7 +52,10 @@ export function formatToolAbortMessage(signal: AbortSignal | undefined, elapsedS
     const configuredSeconds = (signal.reason.timeoutMs / 1000).toFixed(
       signal.reason.timeoutMs % 1000 === 0 ? 0 : 1,
     );
-    return `Tool "${signal.reason.toolName}" timed out after ${elapsedSeconds}s (deadline ${configuredSeconds}s). Narrow the path/pattern or split the operation into smaller calls.`;
+    const advice = signal.reason.toolName === "browse"
+      ? "The web fetch, browser fallback, download, or page digest did not finish before the deadline; retry the canonical URL or make separate follow-up calls."
+      : "Narrow the path/pattern or split the operation into smaller calls.";
+    return `Tool "${signal.reason.toolName}" timed out after ${elapsedSeconds}s (deadline ${configuredSeconds}s). ${advice}`;
   }
   if (signal?.reason === "watchdog") {
     return `Watchdog timed out after ${elapsedSeconds}s (stream was inactive too long).`;

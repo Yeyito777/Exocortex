@@ -175,7 +175,14 @@ async function execTool(
     if (settleOnAbort && signal?.aborted) {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       const abortMessage = formatToolAbortMessage(signal, elapsed);
-      const details = result.output.trim();
+      let details = result.output.trim();
+      while (details === abortMessage || details.startsWith(`${abortMessage}\n\n`)) {
+        if (details === abortMessage) {
+          details = "";
+          break;
+        }
+        details = details.slice(abortMessage.length).trimStart();
+      }
       return {
         toolCallId: call.id,
         toolName: call.name,
