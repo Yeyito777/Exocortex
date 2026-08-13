@@ -2,6 +2,7 @@ import type { Block, ConversationBtw, ModelId, ProviderId } from "../messages";
 import type { MessageBound, RenderLineAnchor } from "../conversation";
 import type { HistoryCursor } from "../historycursor";
 import type { WrapCopyLine } from "../textwrap";
+import type { StreamingResponseAutoscrollState } from "../viewportscroll";
 
 /** TUI-only projection of the durable conversation-owned BTW state. */
 export interface BtwPanelState extends Omit<ConversationBtw, "phase" | "blocks"> {
@@ -11,6 +12,8 @@ export interface BtwPanelState extends Omit<ConversationBtw, "phase" | "blocks">
   blocks: Block[];
   /** Visual lines above the bottom of the answer viewport. */
   scrollOffset: number;
+  /** Shared final-response follow/hold state for the streamed BTW answer. */
+  streamingResponseAutoscroll: StreamingResponseAutoscrollState | null;
   /** Renderer-populated bounds used by foreground scrolling keys. */
   maxScroll: number;
   viewportRows: number;
@@ -48,6 +51,7 @@ export function projectConversationBtw(
     blocks: structuredClone(btw.blocks ?? (btw.text ? [{ type: "text" as const, text: btw.text }] : [])),
     sourceConvId: convId,
     scrollOffset: 0,
+    streamingResponseAutoscroll: null,
     maxScroll: 0,
     viewportRows: 1,
     ...navigationState(),
@@ -75,6 +79,7 @@ export function createStartingBtw(
     text: "",
     status: "Starting…",
     scrollOffset: 0,
+    streamingResponseAutoscroll: null,
     maxScroll: 0,
     viewportRows: 1,
     ...navigationState(),
@@ -104,6 +109,7 @@ export function createRunningBtw(
     text: "",
     status: "Thinking…",
     scrollOffset: 0,
+    streamingResponseAutoscroll: null,
     maxScroll: 0,
     viewportRows: 1,
     ...navigationState(),

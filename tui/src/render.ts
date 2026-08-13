@@ -13,7 +13,7 @@
 
 import type { RenderState } from "./state";
 import type { ImageAttachment } from "./messages";
-import { getViewStart } from "./chatscroll";
+import { applyChatStreamingResponseAutoscroll, getViewStart } from "./chatscroll";
 import { renderTopbar } from "./topbar";
 import { buildDisplayRows, renderConversationActionMenu, renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { isGlobalIdleQueuedMessage } from "./queue";
@@ -1311,6 +1311,7 @@ export function render(state: RenderState): void {
   // Pin scroll position: if user is scrolled up and content changes,
   // adjust offset so the viewport stays on the same content.
   const prevTotal = state.layout.totalLines;
+  const previousScrollOffset = state.scrollOffset;
   state.scrollOffset = pinBottomRelativeScrollOffset(state.scrollOffset, prevTotal, totalLines);
 
   // Cache layout for scroll and mouse functions
@@ -1321,6 +1322,14 @@ export function render(state: RenderState): void {
   state.layout.sepAbove = bottomStartRow;
   state.layout.firstInputRow = firstInputRow;
   state.layout.sepBelow = sepBelow;
+
+  applyChatStreamingResponseAutoscroll(
+    state,
+    lineAnchors,
+    totalLines,
+    messageAreaHeight,
+    previousScrollOffset,
+  );
 
   const viewStart = getViewStart(state);
 

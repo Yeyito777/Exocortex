@@ -7,6 +7,7 @@ import { computeBottomLayout } from "./chatlayout";
 import { SIDEBAR_WIDTH } from "./sidebar";
 import type { RenderState } from "./state";
 import { isVisuallyBlankLine } from "./terminaltext";
+import { updateStreamingResponseAutoscroll } from "./viewportscroll";
 
 /**
  * First historyLines index visible in the message area.
@@ -29,6 +30,50 @@ export function getScrollOffsetForViewStart(totalLines: number, messageAreaHeigh
 
 export function getViewStart(state: RenderState): number {
   return getViewStartFor(state.layout.totalLines, state.layout.messageAreaHeight, state.scrollOffset);
+}
+
+/** Apply final-response follow/hold behavior to the main chat viewport. */
+export function applyChatStreamingResponseAutoscroll(
+  state: RenderState,
+  lineAnchors: RenderLineAnchor[],
+  totalLines: number,
+  messageAreaHeight: number,
+  previousScrollOffset: number,
+): void {
+  const pending = state.pendingAI;
+  const blockIndex = (pending?.blocks.length ?? 0) - 1;
+  const block = blockIndex >= 0 ? pending?.blocks[blockIndex] : null;
+  const hasActiveGoal = state.goal?.status === "active";
+  let responseStart = -1;
+  let responseEnd = -1;
+
+  if (pending && block?.type === "text" && !hasActiveGoal) {
+    for (let row = 0; row < lineAnchors.length; row++) {
+      const anchor = lineAnchors[row];
+      if (anchor.owner !== block || anchor.segment !== "assistant_block") continue;
+      if (responseStart === -1) responseStart = row;
+      responseEnd = row + 1;
+    }
+  }
+
+  const logicalBlockIndex = state.pendingAIBlockOffset
+    + state.pendingAIPartialCommittedBlocks.length
+    + blockIndex;
+  const responseId = responseStart >= 0 && pending
+    ? `${state.convId ?? "draft"}:${pending.metadata?.startedAt ?? "unknown"}:${logicalBlockIndex}`
+    : null;
+  const update = updateStreamingResponseAutoscroll({
+    state: state.streamingResponseAutoscroll,
+    responseId,
+    responseStart,
+    responseEnd,
+    previousScrollOffset,
+    scrollOffset: state.scrollOffset,
+    totalLines,
+    viewportHeight: messageAreaHeight,
+  });
+  state.streamingResponseAutoscroll = update.state;
+  state.scrollOffset = update.scrollOffset;
 }
 
 type AnchorRowMap = Map<number, number>;

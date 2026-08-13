@@ -86,6 +86,7 @@ describe("render caching and frame diffing", () => {
       text: ["one", "two", "three", "four", "five"].join("\n"),
       status: "complete",
       scrollOffset: 0,
+      streamingResponseAutoscroll: null,
       maxScroll: 0,
       viewportRows: 1,
       historyCursor: { row: 0, col: 0 },
@@ -247,6 +248,13 @@ describe("render caching and frame diffing", () => {
       type: "text",
       text: ("Initial streaming text with enough words to wrap across terminal columns. ").repeat(40),
     });
+    state.goal = {
+      objective: "Keep following autonomous output",
+      status: "active",
+      createdAt: 1,
+      updatedAt: 1,
+      turns: 0,
+    };
     captureRenderOutput(state); // prime previous-frame cache with an overflowing viewport
 
     (state.pendingAI.blocks[0] as { type: "text"; text: string }).text += (
@@ -257,6 +265,68 @@ describe("render caching and frame diffing", () => {
     const clearCount = (out.match(/\x1b\[2K/g) || []).length;
     expect(out).toMatch(/\x1b\[3;\d+r/);
     expect(clearCount).toBeLessThan(state.layout.messageAreaHeight);
+  });
+
+  test("follows a non-goal final response, then holds its beginning when it overflows", () => {
+    const state = createInitialState();
+    state.cols = 80;
+    state.rows = 16;
+    state.messages = [{
+      role: "assistant",
+      blocks: [{
+        type: "text",
+        text: Array.from({ length: 30 }, (_, index) => `older ${String(index + 1).padStart(2, "0")}`).join("\n"),
+      }],
+      metadata: null,
+    }];
+    state.pendingAI = createPendingAI(123, state.model);
+    const response = { type: "text" as const, text: "answer 01\nanswer 02" };
+    state.pendingAI.blocks.push(response);
+    state.scrollOffset = 8;
+
+    renderSilently(state);
+    expect(state.scrollOffset).toBe(0);
+    expect(state.streamingResponseAutoscroll?.mode).toBe("following");
+
+    response.text = Array.from(
+      { length: state.layout.messageAreaHeight + 2 },
+      (_, index) => `answer ${String(index + 1).padStart(2, "0")}`,
+    ).join("\n");
+    renderSilently(state);
+
+    const responseStart = state.historyLineAnchors.findIndex(anchor => anchor.owner === response);
+    const viewStart = state.layout.totalLines - state.layout.messageAreaHeight - state.scrollOffset;
+    expect(responseStart).toBeGreaterThanOrEqual(0);
+    expect(state.streamingResponseAutoscroll?.mode).toBe("anchored");
+    expect(viewStart).toBe(responseStart);
+
+    response.text += "\nanswer later 1\nanswer later 2";
+    renderSilently(state);
+    const grownViewStart = state.layout.totalLines - state.layout.messageAreaHeight - state.scrollOffset;
+    expect(grownViewStart).toBe(responseStart);
+  });
+
+  test("keeps ordinary bottom following for active goals", () => {
+    const state = createInitialState();
+    state.cols = 80;
+    state.rows = 16;
+    state.goal = {
+      objective: "Run autonomously",
+      status: "active",
+      createdAt: 1,
+      updatedAt: 1,
+      turns: 0,
+    };
+    state.pendingAI = createPendingAI(123, state.model);
+    state.pendingAI.blocks.push({
+      type: "text",
+      text: Array.from({ length: 30 }, (_, index) => `goal row ${index + 1}`).join("\n"),
+    });
+
+    renderSilently(state);
+
+    expect(state.scrollOffset).toBe(0);
+    expect(state.streamingResponseAutoscroll).toBeNull();
   });
 
   test("positions focused conversation tasks at the message area's top-right", () => {

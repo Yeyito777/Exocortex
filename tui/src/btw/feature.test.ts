@@ -26,6 +26,7 @@ function panelState(overrides: Partial<BtwPanelState> = {}): BtwPanelState {
     text: "",
     status: "Thinking…",
     scrollOffset: 0,
+    streamingResponseAutoscroll: null,
     maxScroll: 0,
     viewportRows: 1,
     historyCursor: { row: 0, col: 0 },
@@ -297,7 +298,7 @@ describe("BTW foreground panel", () => {
     expect(rows[1]).toContain("Checking the implementation");
   });
 
-  test("grows with the streamed answer up to 20 rows, then scrolls the newest output", () => {
+  test("grows with the streamed answer up to 20 rows, then holds the answer's first row", () => {
     const btw = panelState({ text: ["one", "two", "three", "four", "five"].join("\n") });
     expect(getBtwPanelPreferredHeight(btw, 100)).toBe(7);
     let rendered = renderBtwPanel(btw, 100, 7, 10, 1);
@@ -312,11 +313,33 @@ describe("BTW foreground panel", () => {
     expect(rendered?.height).toBe(20);
     expect(btw.viewportRows).toBe(18);
     expect(btw.maxScroll).toBe(12);
-    expect(plain).toContain("row 030");
-    expect(plain).not.toContain("row 001");
+    expect(btw.streamingResponseAutoscroll?.mode).toBe("anchored");
+    expect(plain).toContain("row 001");
+    expect(plain).not.toContain("row 030");
 
     btw.phase = "complete";
     expect(getBtwPanelPreferredHeight(btw, 100)).toBe(20);
+  });
+
+  test("holds the beginning of final text rather than earlier thinking", () => {
+    const btw = panelState({
+      blocks: [
+        { type: "thinking", text: "thinking 1\nthinking 2\nthinking 3" },
+        {
+          type: "text",
+          text: Array.from({ length: 10 }, (_, index) => `answer ${String(index + 1).padStart(2, "0")}`).join("\n"),
+        },
+      ],
+    });
+
+    const rendered = renderBtwPanel(btw, 100, 10, 10, 1);
+    const plain = stripAnsi(rendered!.payload);
+
+    expect(btw.viewportRows).toBe(8);
+    expect(btw.streamingResponseAutoscroll?.mode).toBe("anchored");
+    expect(plain).toContain("answer 01");
+    expect(plain).not.toContain("thinking 3");
+    expect(plain).not.toContain("answer 10");
   });
 
   test("keeps a scrolled-up viewport anchored while the answer continues streaming", () => {
@@ -488,7 +511,7 @@ describe("BTW foreground panel", () => {
     expect(handleFocusedKey({ type: "ctrl-n" }, state)).toEqual({ type: "handled" });
     expect(state.chatFocus).toBe("btw");
     expect(state.vim.mode).toBe("normal");
-    expect(state.btw.historyCursor.row).toBe(7);
+    expect(state.btw.historyCursor.row).toBe(2);
     expect(state.historyCursor).toEqual({ row: 0, col: 7 });
 
     expect(handleFocusedKey({ type: "ctrl-n" }, state)).toEqual({ type: "handled" });

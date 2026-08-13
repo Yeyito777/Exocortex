@@ -11,7 +11,7 @@ import { clampCursor, contentBounds, logicalLineRange, stripAnsi } from "../hist
 import { renderLineWithCursor, renderLineWithSearch, renderLineWithSelection } from "../cursorrender";
 import { findSearchMatches } from "../search";
 import type { VimMode } from "../vim";
-import { pinBottomRelativeScrollOffset } from "../viewportscroll";
+import { pinBottomRelativeScrollOffset, updateStreamingResponseAutoscroll } from "../viewportscroll";
 
 const ESC = "\x1b[";
 const moveTo = (row: number, col: number) => `${ESC}${row};${col}H`;
@@ -53,6 +53,7 @@ interface BtwContentDocument {
   copy: Array<WrapCopyLine | null>;
   messageBounds: MessageBound[];
   lineAnchors: RenderLineAnchor[];
+  finalTextRows: { start: number; end: number } | null;
 }
 
 /** Render BTW blocks through the ordinary assistant-history block renderer. */
@@ -107,6 +108,15 @@ function renderBtwContent(
   }
 
   const assistantEnd = rows.length;
+  const finalBlock = blocks.at(-1);
+  let finalTextRows: { start: number; end: number } | null = null;
+  if (finalBlock?.type === "text") {
+    for (let row = 0; row < lineAnchors.length; row++) {
+      if (lineAnchors[row].owner !== finalBlock) continue;
+      if (!finalTextRows) finalTextRows = { start: row, end: row + 1 };
+      else finalTextRows.end = row + 1;
+    }
+  }
   const messageBounds: MessageBound[] = assistantEnd > 0 ? [{
     role: "assistant",
     start: 0,
@@ -130,7 +140,7 @@ function renderBtwContent(
     }
     messageBounds.push({ role: "system", start, end: rows.length, contentStart: start, contentEnd: rows.length });
   }
-  return { lines: rows, cont, join, copy, messageBounds, lineAnchors };
+  return { lines: rows, cont, join, copy, messageBounds, lineAnchors, finalTextRows };
 }
 
 /** Grow with assistant history, then use a scrolling viewport after 20 rows. */
@@ -163,6 +173,7 @@ export function renderBtwPanel(
     btw.maxScroll = 0;
     btw.viewportRows = 1;
     btw.scrollOffset = 0;
+    btw.streamingResponseAutoscroll = null;
     return {
       payload: moveTo(top, left) + panelBg + theme.accent + padRightToWidth(label, width) + theme.reset,
       width,
@@ -199,6 +210,7 @@ export function renderBtwPanel(
     ? document.lines
     : [`${theme.muted}${truncateToWidth(btw.phase === "error" ? "No answer was produced." : btw.status || "Thinking…", contentWidth)}${theme.reset}${panelBg}`];
   const previousTotal = btw.historyLines.length;
+  const previousScrollOffset = btw.scrollOffset;
   btw.historyLines = wrapped;
   btw.historyWrapContinuation = document.lines.length > 0 ? document.cont : [false];
   btw.historyWrapJoiners = document.lines.length > 0 ? document.join : [""];
@@ -210,6 +222,22 @@ export function renderBtwPanel(
   btw.viewportRows = contentRows;
   btw.scrollOffset = pinBottomRelativeScrollOffset(btw.scrollOffset, previousTotal, wrapped.length);
   btw.scrollOffset = Math.max(0, Math.min(btw.scrollOffset, maxScroll));
+  const finalTextRows = btw.phase === "running" ? document.finalTextRows : null;
+  const responseId = finalTextRows
+    ? `${btw.sourceConvId}:${btw.sessionId}:${btw.blocks.length > 0 ? btw.blocks.length - 1 : "legacy"}`
+    : null;
+  const autoscroll = updateStreamingResponseAutoscroll({
+    state: btw.streamingResponseAutoscroll,
+    responseId,
+    responseStart: finalTextRows?.start ?? -1,
+    responseEnd: finalTextRows?.end ?? -1,
+    previousScrollOffset,
+    scrollOffset: btw.scrollOffset,
+    totalLines: wrapped.length,
+    viewportHeight: contentRows,
+  });
+  btw.streamingResponseAutoscroll = autoscroll.state;
+  btw.scrollOffset = Math.max(0, Math.min(autoscroll.scrollOffset, maxScroll));
   btw.historyCursor = clampCursor(btw.historyCursor, wrapped);
   const start = Math.max(0, wrapped.length - contentRows - btw.scrollOffset);
   const visible = wrapped.slice(start, start + contentRows).map((line, visibleIndex) => {

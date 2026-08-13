@@ -940,7 +940,6 @@ function handleSubmit(): void {
       });
       clearPrompt(state);
       state.pendingImages = [];
-      state.scrollOffset = 0;
       scheduleRender();
       return;
     }
@@ -973,7 +972,6 @@ function handleSubmit(): void {
   if (!state.authByProvider[state.provider]) {
     clearPrompt(state);
     state.pendingImages = [];
-    state.scrollOffset = 0;
     enqueuePendingAuthMessage(messageText, images);
     showLoginRequiredPrompt();
     scheduleRender();
@@ -982,7 +980,6 @@ function handleSubmit(): void {
 
   clearPrompt(state);
   state.pendingImages = [];
-  state.scrollOffset = 0;
   sendDirectly(messageText, images);
 }
 
@@ -1155,7 +1152,6 @@ function submitPendingVoiceTranscription(
   }
   clearPrompt(state);
   state.pendingImages = [];
-  state.scrollOffset = 0;
   const submission: SubmittedVoiceTranscription = {
     message,
     queuedMessage,
@@ -1374,7 +1370,6 @@ function handleKey(key: KeyEvent): void {
       const qr = confirmQueueMessage(state);
       if (qr.action === "send_direct") {
         clearPrompt(state);
-        state.scrollOffset = 0;
         sendDirectly(qr.text, qr.images);
       } else if (qr.action === "queue") {
         daemon.queueMessage(qr.convId, qr.text, qr.timing, qr.images, { queueId: qr.queueId });
