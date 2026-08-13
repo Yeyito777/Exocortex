@@ -67,6 +67,58 @@ function ensureRoundBlock(blocks: Block[], type: "text" | "thinking"): Extract<B
   return block;
 }
 
+const MISSING_SOURCE_TOOL_RESULT = "[Source tool call was still in progress when the BTW snapshot was taken; no result was available.]";
+
+function missingSourceToolResultBlocks(
+  pending: ReadonlyMap<string, Extract<ApiContentBlock, { type: "tool_use" }>>,
+): Array<Extract<ApiContentBlock, { type: "tool_result" }>> {
+  return [...pending.values()].map((call) => ({
+    type: "tool_result",
+    tool_use_id: call.id,
+    content: MISSING_SOURCE_TOOL_RESULT,
+    is_error: true,
+  }));
+}
+
+/**
+ * Close any tool-use boundary that was durably persisted before its deferred
+ * result arrived. Chrono sleep intentionally leaves exactly this shape while a
+ * conversation is suspended, but a frozen BTW branch cannot wait for the
+ * source turn to resume and OpenAI rejects a replay with a dangling call.
+ */
+export function completeBtwReplayToolCalls(messages: readonly ApiMessage[]): ApiMessage[] {
+  const replay: ApiMessage[] = [];
+  const pending = new Map<string, Extract<ApiContentBlock, { type: "tool_use" }>>();
+
+  for (const message of messages) {
+    if (pending.size > 0) {
+      const toolResults = message.role === "user" && Array.isArray(message.content)
+        ? message.content.filter((block): block is Extract<ApiContentBlock, { type: "tool_result" }> => block.type === "tool_result")
+        : [];
+
+      for (const result of toolResults) pending.delete(result.tool_use_id);
+      if (pending.size > 0) {
+        if (toolResults.length > 0 && Array.isArray(message.content)) {
+          replay.push({ ...message, content: [...message.content, ...missingSourceToolResultBlocks(pending)] });
+          pending.clear();
+          continue;
+        }
+        replay.push({ role: "user", content: missingSourceToolResultBlocks(pending) });
+      }
+      pending.clear();
+    }
+
+    replay.push(message);
+    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (block.type === "tool_use") pending.set(block.id, block);
+    }
+  }
+
+  if (pending.size > 0) replay.push({ role: "user", content: missingSourceToolResultBlocks(pending) });
+  return replay;
+}
+
 /**
  * Project the source conversation's non-canonical assistant tail into valid API
  * replay. Completed tool rounds are already durable in `conv.messages`; this is
@@ -128,7 +180,7 @@ export function projectBtwSourceProgress(blocks: readonly Block[]): ApiMessage[]
     } : {
       type: "tool_result",
       tool_use_id: callId,
-      content: "[Source tool call was still in progress when the BTW snapshot was taken; no result was available.]",
+      content: MISSING_SOURCE_TOOL_RESULT,
       is_error: true,
     });
   }
@@ -166,6 +218,7 @@ export function prepareBtwRun(conv: Conversation, command: BtwQueryCommand, quer
   const sourceProgress = projectBtwSourceProgress(
     structuredClone(convStore.getCurrentStreamingBlocks(command.convId) ?? []),
   );
+  const replay = completeBtwReplayToolCalls([...snapshot, ...sourceProgress]);
   const requestSurface = buildConversationRequestSurface(conv, {
     conversationInstructions: convStore.getEffectiveSystemInstructions(command.convId) || undefined,
     conversationId: command.convId,
@@ -173,8 +226,7 @@ export function prepareBtwRun(conv: Conversation, command: BtwQueryCommand, quer
     subagentMaxDepth: conv.subagentMaxDepth ?? null,
   });
   const messages: ApiMessage[] = [
-    ...snapshot,
-    ...sourceProgress,
+    ...replay,
     {
       role: "user",
       content: appendBtwQueryInstructions(query, requestSurface.tools.map(tool => tool.name)),

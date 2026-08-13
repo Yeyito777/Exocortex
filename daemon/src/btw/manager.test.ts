@@ -369,6 +369,85 @@ describe("conversation-owned BTW sessions", () => {
     }
   });
 
+  test("completes a durably suspended source tool call before the BTW query", async () => {
+    const convId = `test-btw-suspended-tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const conv = convStore.create(convId, "openai", "gpt-5.6-sol", "suspended tool source", "high", false);
+    conv.messages.push(
+      { role: "user", content: "monitor the run", metadata: null },
+      {
+        role: "assistant",
+        content: [{
+          type: "tool_use",
+          id: "sleep-call",
+          name: "chrono",
+          input: { action: "sleep", duration: "10m" },
+        }],
+        metadata: null,
+      },
+    );
+
+    let capturedMessages: Parameters<RunAgentLoop>[0] | null = null;
+    let capturedOptions: NonNullable<Parameters<RunAgentLoop>[4]> | null = null;
+    const fakeRunAgentLoop = ((messages, _provider, _model, _callbacks, options) => {
+      capturedMessages = structuredClone(messages);
+      capturedOptions = options ?? null;
+      return new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      });
+    }) as RunAgentLoop;
+    const client = testClient("btw-suspended-tool");
+    const manager = new BtwSessionManager(testServer([client], new Map()), { onHeaders() {}, onComplete() {} }, {
+      runAgentLoop: fakeRunAgentLoop,
+      hasConfiguredCredentials: () => true,
+      loadConversationBtwState: emptyPersistenceState,
+      saveConversationBtwState() {},
+    });
+
+    try {
+      manager.start(client, {
+        type: "btw_query",
+        sessionId: "suspended-tool-session",
+        convId,
+        query: "what is the current state?",
+        startedAt: 123,
+      });
+
+      const replay = capturedMessages as unknown as ApiMessage[];
+      const runOptions = capturedOptions as unknown as NonNullable<Parameters<RunAgentLoop>[4]>;
+      const advertisedToolNames = (runOptions.tools as Array<{ name: string }>).map(tool => tool.name);
+      expect(replay).toEqual([
+        { role: "user", content: "monitor the run", metadata: null, providerData: undefined, contextTokens: undefined, contextCheckpoint: undefined },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "sleep-call", name: "chrono", input: { action: "sleep", duration: "10m" } }],
+          metadata: null,
+          providerData: undefined,
+          contextTokens: undefined,
+          contextCheckpoint: undefined,
+        },
+        {
+          role: "user",
+          content: [{
+            type: "tool_result",
+            tool_use_id: "sleep-call",
+            content: "[Source tool call was still in progress when the BTW snapshot was taken; no result was available.]",
+            is_error: true,
+          }],
+        },
+        {
+          role: "user",
+          content: appendBtwQueryInstructions("what is the current state?", advertisedToolNames),
+        },
+      ]);
+
+      expect(manager.close(client, convId, "suspended-tool-session")).toBe("closed");
+      await new Promise(resolve => setTimeout(resolve, 0));
+    } finally {
+      manager.dispose();
+      convStore.remove(convId);
+    }
+  });
+
   test("keeps independent sessions in separate conversations", async () => {
     const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const firstId = `test-btw-first-${suffix}`;
