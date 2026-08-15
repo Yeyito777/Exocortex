@@ -615,7 +615,7 @@ async function executeBashImpl(
           : [
               `Output is being written to: ${capturePath}`,
               "• View output so far → read tool on that file",
-              `• Wait for it to finish → ${isWindows ? `bash with command "Get-Content -Path '${capturePath}' -Wait -Tail 50" and await=N` : `bash with command "tail -f ${capturePath}" and await=N`} (where N is how long you're willing to wait in seconds, prevents hangs)`,
+              `• Wait for it to finish → chrono wait with task_id="${backgroundTaskId()}" and max_wait=<duration>`,
             ]),
         `• Check if still running → ${checkCmd}`,
         `• Stop it → ${stopCmd}`,

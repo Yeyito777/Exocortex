@@ -333,6 +333,7 @@ describe("bash explicit backgrounding", () => {
     expect(result.isError).toBe(false);
     expect(result.output).toContain("Command backgrounded immediately by request");
     expect(result.output).toContain("Output is being written to:");
+    expect(result.output).toMatch(/chrono wait with task_id="bash:\d+:[a-z0-9]+" and max_wait=<duration>/);
     if (process.platform !== "win32") {
       expect(result.output).toContain("kill -0 -- -");
       expect(result.output).toContain("kill -- -");
