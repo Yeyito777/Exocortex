@@ -30,7 +30,7 @@ import type { AutocompleteState } from "./autocomplete";
 import type { ConversationGoal, ProviderAuthInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { BtwPanelState } from "./btw/state";
-import type { StreamingResponseAutoscrollState } from "./viewportscroll";
+import { createConversationScrollState, type ConversationScrollState } from "./conversationscroll/types";
 
 // ── Queue types ────────────────────────────────────────────────────
 
@@ -204,8 +204,8 @@ export interface RenderState {
   cols: number;
   rows: number;
   scrollOffset: number;
-  /** Follow/hold state for the current non-goal assistant text response. */
-  streamingResponseAutoscroll: StreamingResponseAutoscrollState | null;
+  /** TUI-local per-conversation position memory and response-scroll policy. */
+  conversationScroll: ConversationScrollState;
   /** Whether each provider currently has configured credentials. */
   authByProvider: Record<ProviderId, boolean>;
   /** Rich auth metadata for each provider, reported by the daemon. */
@@ -625,7 +625,7 @@ export function createInitialState(): RenderState {
     cols: process.stdout.columns || 80,
     rows: process.stdout.rows || 24,
     scrollOffset: 0,
-    streamingResponseAutoscroll: null,
+    conversationScroll: createConversationScrollState(),
     authByProvider: {
       openai: false,
       deepseek: false,

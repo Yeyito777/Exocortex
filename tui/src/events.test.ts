@@ -3,6 +3,7 @@ import { browserOpenCommand, handleEvent, type DaemonActions } from "./events";
 import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostics";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary } from "./messages";
 import { createInitialState } from "./state";
+import { prepareConversationOpen } from "./conversationscroll";
 
 const daemon: DaemonActions = {
   subscribe() {},
@@ -575,6 +576,45 @@ describe("GPT-Live transcript events", () => {
     expect(displayedBlocks.filter(block => block.type === "tool_call" && block.toolCallId === "call-read")).toHaveLength(1);
     expect(state.pendingAIBlockOffset).toBe(2);
     expect(state.pendingAIPartialCommittedBlocks).toEqual([]);
+  });
+});
+
+describe("conversation scroll restoration", () => {
+  test("carries pre-load unread state into completed background conversation placement", () => {
+    const state = createInitialState();
+    state.convId = "current";
+    state.layout.totalLines = 100;
+    state.layout.messageAreaHeight = 20;
+    state.scrollOffset = 40;
+    state.sidebar.conversations = [
+      summary({ id: "current" }),
+      summary({ id: "background", unread: true, streaming: false }),
+    ];
+
+    prepareConversationOpen(state, "background");
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "background",
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      fastMode: false,
+      entries: [{
+        type: "ai",
+        blocks: [{ type: "text", text: Array.from({ length: 30 }, (_, index) => `answer ${index + 1}`).join("\n") }],
+        metadata: null,
+      }],
+      contextTokens: 100,
+      toolOutputsIncluded: false,
+      hasOlderHistory: true,
+    }, state, daemon);
+
+    expect(state.conversationScroll.positions.get("current")).toBe(0.5);
+    expect(state.conversationScroll.pendingRestore).toEqual({
+      convId: "background",
+      mode: "unread-response",
+      waitForInitialBackfill: false,
+    });
   });
 });
 

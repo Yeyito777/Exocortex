@@ -14,8 +14,14 @@ import { storageDir } from "@exocortex/shared/paths";
 import type { ConversationSummary } from "./messages";
 import type { SidebarSelectableItem } from "./sidebar/items";
 import type { RenderState } from "./state";
+import {
+  applyConversationScrollPositions,
+  captureConversationScrollPositions,
+  parseConversationScrollPositions,
+  type SerializedConversationScrollPositions,
+} from "./conversationscroll/persistence";
 
-const TUI_STARTING_STATE_VERSION = 1;
+const TUI_STARTING_STATE_VERSION = 2;
 
 interface ClosedSidebarStartingState {
   open: false;
@@ -32,6 +38,7 @@ export interface TuiStartingState {
   version: typeof TUI_STARTING_STATE_VERSION;
   focusedConversationId: string | null;
   sidebar: ClosedSidebarStartingState | OpenSidebarStartingState;
+  conversationScrollPositions: SerializedConversationScrollPositions;
 }
 
 export function tuiStartingStatePath(): string {
@@ -73,16 +80,21 @@ function parseSidebarItem(value: unknown): SidebarSelectableItem | null | undefi
 }
 
 function parseStartingState(value: unknown): TuiStartingState | null {
-  if (!isRecord(value) || value.version !== TUI_STARTING_STATE_VERSION || !isRecord(value.sidebar)) return null;
+  if (!isRecord(value) || (value.version !== 1 && value.version !== TUI_STARTING_STATE_VERSION) || !isRecord(value.sidebar)) return null;
 
   const focusedConversationId = parseOptionalId(value.focusedConversationId);
   if (focusedConversationId === undefined || typeof value.sidebar.open !== "boolean") return null;
+  const conversationScrollPositions = value.version === 1
+    ? {}
+    : parseConversationScrollPositions(value.conversationScrollPositions);
+  if (conversationScrollPositions === null) return null;
 
   if (!value.sidebar.open) {
     return {
       version: TUI_STARTING_STATE_VERSION,
       focusedConversationId,
       sidebar: { open: false },
+      conversationScrollPositions,
     };
   }
 
@@ -106,10 +118,11 @@ function parseStartingState(value: unknown): TuiStartingState | null {
       selectedItem,
       scrollOffset,
     },
+    conversationScrollPositions,
   };
 }
 
-export function captureTuiStartingState(state: Pick<RenderState, "convId" | "sidebar">): TuiStartingState {
+export function captureTuiStartingState(state: RenderState): TuiStartingState {
   const sidebar = state.sidebar.open
     ? {
         open: true as const,
@@ -123,12 +136,14 @@ export function captureTuiStartingState(state: Pick<RenderState, "convId" | "sid
     version: TUI_STARTING_STATE_VERSION,
     focusedConversationId: state.convId,
     sidebar,
+    conversationScrollPositions: captureConversationScrollPositions(state),
   };
 }
 
 /** Seed local state before the daemon's first authoritative conversations list arrives. */
 export function applyTuiStartingState(state: RenderState, startingState: TuiStartingState): void {
   state.convId = startingState.focusedConversationId;
+  applyConversationScrollPositions(state, startingState.conversationScrollPositions);
   state.sidebar.open = startingState.sidebar.open;
   if (!startingState.sidebar.open) return;
 

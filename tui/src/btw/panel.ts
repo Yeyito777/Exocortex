@@ -11,7 +11,8 @@ import { clampCursor, contentBounds, logicalLineRange, stripAnsi } from "../hist
 import { renderLineWithCursor, renderLineWithSearch, renderLineWithSelection } from "../cursorrender";
 import { findSearchMatches } from "../search";
 import type { VimMode } from "../vim";
-import { pinBottomRelativeScrollOffset, updateStreamingResponseAutoscroll } from "../viewportscroll";
+import { applyBtwConversationScroll } from "../conversationscroll/btw";
+import { pinBottomRelativeScrollOffset } from "../viewportscroll";
 
 const ESC = "\x1b[";
 const moveTo = (row: number, col: number) => `${ESC}${row};${col}H`;
@@ -222,22 +223,14 @@ export function renderBtwPanel(
   btw.viewportRows = contentRows;
   btw.scrollOffset = pinBottomRelativeScrollOffset(btw.scrollOffset, previousTotal, wrapped.length);
   btw.scrollOffset = Math.max(0, Math.min(btw.scrollOffset, maxScroll));
-  const finalTextRows = btw.phase === "running" ? document.finalTextRows : null;
-  const responseId = finalTextRows
-    ? `${btw.sourceConvId}:${btw.sessionId}:${btw.blocks.length > 0 ? btw.blocks.length - 1 : "legacy"}`
-    : null;
-  const autoscroll = updateStreamingResponseAutoscroll({
-    state: btw.streamingResponseAutoscroll,
-    responseId,
-    responseStart: finalTextRows?.start ?? -1,
-    responseEnd: finalTextRows?.end ?? -1,
+  applyBtwConversationScroll(
+    btw,
+    document.finalTextRows,
     previousScrollOffset,
-    scrollOffset: btw.scrollOffset,
-    totalLines: wrapped.length,
-    viewportHeight: contentRows,
-  });
-  btw.streamingResponseAutoscroll = autoscroll.state;
-  btw.scrollOffset = Math.max(0, Math.min(autoscroll.scrollOffset, maxScroll));
+    wrapped.length,
+    contentRows,
+    maxScroll,
+  );
   btw.historyCursor = clampCursor(btw.historyCursor, wrapped);
   const start = Math.max(0, wrapped.length - contentRows - btw.scrollOffset);
   const visible = wrapped.slice(start, start + contentRows).map((line, visibleIndex) => {

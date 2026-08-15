@@ -2,7 +2,7 @@ import type { Block, ConversationBtw, ModelId, ProviderId } from "../messages";
 import type { MessageBound, RenderLineAnchor } from "../conversation";
 import type { HistoryCursor } from "../historycursor";
 import type { WrapCopyLine } from "../textwrap";
-import type { StreamingResponseAutoscrollState } from "../viewportscroll";
+import type { StreamingResponseAutoscrollState } from "../conversationscroll/types";
 
 /** TUI-only projection of the durable conversation-owned BTW state. */
 export interface BtwPanelState extends Omit<ConversationBtw, "phase" | "blocks"> {

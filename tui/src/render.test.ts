@@ -286,7 +286,7 @@ describe("render caching and frame diffing", () => {
 
     renderSilently(state);
     expect(state.scrollOffset).toBe(0);
-    expect(state.streamingResponseAutoscroll?.mode).toBe("following");
+    expect(state.conversationScroll.streamingResponse?.mode).toBe("following");
 
     response.text = Array.from(
       { length: state.layout.messageAreaHeight + 2 },
@@ -297,7 +297,7 @@ describe("render caching and frame diffing", () => {
     const responseStart = state.historyLineAnchors.findIndex(anchor => anchor.owner === response);
     const viewStart = state.layout.totalLines - state.layout.messageAreaHeight - state.scrollOffset;
     expect(responseStart).toBeGreaterThanOrEqual(0);
-    expect(state.streamingResponseAutoscroll?.mode).toBe("anchored");
+    expect(state.conversationScroll.streamingResponse?.mode).toBe("anchored");
     expect(viewStart).toBe(responseStart);
 
     response.text += "\nanswer later 1\nanswer later 2";
@@ -326,7 +326,43 @@ describe("render caching and frame diffing", () => {
     renderSilently(state);
 
     expect(state.scrollOffset).toBe(0);
-    expect(state.streamingResponseAutoscroll).toBeNull();
+    expect(state.conversationScroll.streamingResponse).toBeNull();
+  });
+
+  test("opens a completed unread conversation at its overflowing final response", () => {
+    const state = createInitialState();
+    state.convId = "background-complete";
+    state.cols = 80;
+    state.rows = 16;
+    const finalResponse = {
+      type: "text" as const,
+      text: Array.from({ length: 30 }, (_, index) => `unread answer ${String(index + 1).padStart(2, "0")}`).join("\n"),
+    };
+    state.messages = [
+      { role: "user", text: "Work in the background", metadata: null },
+      {
+        role: "assistant",
+        blocks: [
+          { type: "thinking", text: "Background work completed" },
+          finalResponse,
+        ],
+        metadata: null,
+      },
+    ];
+    state.conversationScroll.pendingRestore = {
+      convId: "background-complete",
+      mode: "unread-response",
+      waitForInitialBackfill: false,
+    };
+
+    renderSilently(state);
+
+    const responseStart = state.historyLineAnchors.findIndex(anchor => anchor.owner === finalResponse);
+    const viewStart = state.layout.totalLines - state.layout.messageAreaHeight - state.scrollOffset;
+    expect(responseStart).toBeGreaterThanOrEqual(0);
+    expect(viewStart).toBe(responseStart);
+    expect(state.pendingAI).toBeNull();
+    expect(state.conversationScroll.pendingRestore).toBeNull();
   });
 
   test("positions focused conversation tasks at the message area's top-right", () => {

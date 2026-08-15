@@ -45,6 +45,12 @@ import {
 import type { DaemonActions } from "./types";
 import { clearCallTranscriptDrafts, reconcileCallTranscriptDrafts } from "./call";
 import { collectDisplayEntryToolResultIds } from "./tool-outputs";
+import {
+  beginConversationScrollRestore,
+  completeInitialConversationBackfill,
+  forgetConversationScroll,
+  pruneConversationScrollPositions,
+} from "../conversationscroll";
 
 export function handleConversationCreated(
   event: Extract<Event, { type: "conversation_created" }>,
@@ -91,6 +97,7 @@ export function handleConversationCreated(
 
 export function handleConversationsList(event: Extract<Event, { type: "conversations_list" }>, state: RenderState): void {
   updateConversationList(state.sidebar, event.conversations, event.folders ?? []);
+  pruneConversationScrollPositions(state, event.conversations.map(conversation => conversation.id));
   const activeConvId = state.convId;
   if (activeConvId && !event.conversations.some(conversation => conversation.id === activeConvId)) {
     // The list is authoritative reconnect catch-up. If this client missed a
@@ -101,6 +108,7 @@ export function handleConversationsList(event: Extract<Event, { type: "conversat
 }
 
 function clearRemovedActiveConversation(state: RenderState, convId: string): void {
+  forgetConversationScroll(state, convId);
   state.convId = null;
   state.draftFolderId = state.sidebar.currentFolderId;
   state.messages = [];
@@ -146,6 +154,7 @@ export function handleConversationRestored(event: Extract<Event, { type: "conver
 }
 
 export function handleConversationDeleted(event: Extract<Event, { type: "conversation_deleted" }>, state: RenderState): void {
+  forgetConversationScroll(state, event.convId);
   // Remove from sidebar (in case another client deleted it).
   const idx = state.sidebar.conversations.findIndex(c => c.id === event.convId);
   if (idx !== -1) {
@@ -184,6 +193,12 @@ export function handleConversationLoaded(
   }
   const previousConvId = state.convId;
   const sameConversation = previousConvId === event.convId;
+  beginConversationScrollRestore(
+    state,
+    event.convId,
+    sameConversation,
+    event.hasOlderHistory ?? false,
+  );
   if (!sameConversation) clearCallTranscriptDrafts(state);
   const beforeApply = sameConversation ? captureAssistantDisplaySnapshot(state) : null;
   const previousShowToolOutput = state.showToolOutput;
@@ -402,6 +417,9 @@ export function handleConversationHistoryLoaded(
     && !(state.panelFocus === "chat" && state.chatFocus === "history");
   if (canFastPathInitialBackfill) prependOlderMessages();
   else preserveViewportAcrossHistoryMutation(state, prependOlderMessages);
+  if (event.requestSource === "initial-backfill") {
+    completeInitialConversationBackfill(state, event.convId);
+  }
 
   const newToolCallIds = collectDisplayEntryToolResultIds(event.entries);
   if (newToolCallIds.length > 0) {

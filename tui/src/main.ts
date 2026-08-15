@@ -64,6 +64,11 @@ import { formatMicGainDb, loadMicGainDb, saveMicGainDb } from "./mic-gain";
 import { applyTuiStartingState, availableStartingConversationId, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { formatConnectionLostNotice } from "./events/notices";
+import {
+  forgetConversationScroll,
+  leaveConversationView,
+  prepareConversationOpen,
+} from "./conversationscroll";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -443,7 +448,10 @@ function onDaemonEvent(event: Event): void {
       const startingState = pendingStartingState;
       pendingStartingState = null;
       const convId = availableStartingConversationId(startingState, event.conversations);
-      if (convId && state.convId === convId) daemon.loadConversation(convId);
+      if (convId && state.convId === convId) {
+        prepareConversationOpen(state, convId);
+        daemon.loadConversation(convId);
+      }
     }
   }
 
@@ -643,6 +651,7 @@ function abandonPendingToolPolicyDraft(): void {
 function startNewConversation(): void {
   const wasFolderInstructionsDoc = state.folderInstructionsDoc !== null;
   pendingNewConversationConvId = null;
+  leaveConversationView(state);
   if (state.convId) {
     unsubscribeConversation(state.convId);
   }
@@ -724,6 +733,7 @@ function handleSubmit(): void {
           startNewConversation();
           break;
         case "create_conversation_for_instructions":
+          leaveConversationView(state);
           if (state.convId) unsubscribeConversation(state.convId);
           state.convId = null;
           state.btw = null;
@@ -1418,6 +1428,7 @@ function handleKey(key: KeyEvent): void {
     case "load_conversation":
       state.folderInstructionsDoc = null;
       {
+        prepareConversationOpen(state, result.convId);
         const reqId = daemon.loadConversation(result.convId);
         const renderMs = renderAfterLocalUiMutation();
         if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
@@ -1426,6 +1437,7 @@ function handleKey(key: KeyEvent): void {
       }
       return;
     case "open_folder_instructions":
+      leaveConversationView(state);
       if (state.convId) unsubscribeConversation(state.convId);
       openFolderInstructionsDocument(state, result.folderId);
       daemon.loadFolderInstructions(result.folderId);
@@ -1439,6 +1451,7 @@ function handleKey(key: KeyEvent): void {
     case "delete_conversation":
       daemon.deleteConversation(result.convId);
       clearAllQueuedMessagesForConversation(state, result.convId);
+      forgetConversationScroll(state, result.convId);
       // If deleting the current conversation, clear the chat
       if (state.convId === result.convId) {
         state.convId = null;
@@ -1455,7 +1468,10 @@ function handleKey(key: KeyEvent): void {
       break;
     case "delete_conversations": {
       daemon.deleteConversations(result.convIds);
-      for (const convId of result.convIds) clearAllQueuedMessagesForConversation(state, convId);
+      for (const convId of result.convIds) {
+        clearAllQueuedMessagesForConversation(state, convId);
+        forgetConversationScroll(state, convId);
+      }
       if (state.convId && result.convIds.includes(state.convId)) {
         state.convId = null;
         state.draftFolderId = state.sidebar.currentFolderId;
@@ -1550,6 +1566,7 @@ function handleMouse(ev: MouseEvent): void {
     case "load_conversation":
       state.folderInstructionsDoc = null;
       {
+        prepareConversationOpen(state, result.convId);
         const reqId = daemon.loadConversation(result.convId);
         const renderMs = renderAfterLocalUiMutation();
         if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
@@ -1558,6 +1575,7 @@ function handleMouse(ev: MouseEvent): void {
       }
       return;
     case "open_folder_instructions":
+      leaveConversationView(state);
       if (state.convId) unsubscribeConversation(state.convId);
       openFolderInstructionsDocument(state, result.folderId);
       daemon.loadFolderInstructions(result.folderId);

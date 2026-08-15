@@ -13,7 +13,8 @@
 
 import type { RenderState } from "./state";
 import type { ImageAttachment } from "./messages";
-import { applyChatStreamingResponseAutoscroll, getViewStart } from "./chatscroll";
+import { getViewStart } from "./chatscroll";
+import { applyChatConversationScroll, hasReadyConversationScrollRestore } from "./conversationscroll";
 import { renderTopbar } from "./topbar";
 import { buildDisplayRows, renderConversationActionMenu, renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { isGlobalIdleQueuedMessage } from "./queue";
@@ -108,6 +109,7 @@ function canReuseHistoryRender(
 
 function shouldForceFullHistoryRender(state: RenderState): boolean {
   return state.pendingAI !== null
+    || hasReadyConversationScrollRestore(state)
     || state.scrollOffset > 0
     || state.showToolOutput
     || state.toolOutputsLoaded
@@ -1323,9 +1325,10 @@ export function render(state: RenderState): void {
   state.layout.firstInputRow = firstInputRow;
   state.layout.sepBelow = sepBelow;
 
-  applyChatStreamingResponseAutoscroll(
+  applyChatConversationScroll(
     state,
     lineAnchors,
+    messageBounds,
     totalLines,
     messageAreaHeight,
     previousScrollOffset,

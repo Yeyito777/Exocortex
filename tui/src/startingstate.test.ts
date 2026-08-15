@@ -74,7 +74,7 @@ describe("TUI starting state", () => {
     state.sidebar.scrollOffset = 7;
 
     expect(captureTuiStartingState(state)).toEqual({
-      version: 1,
+      version: 2,
       focusedConversationId: "focused-conversation",
       sidebar: {
         open: true,
@@ -82,6 +82,7 @@ describe("TUI starting state", () => {
         selectedItem: { type: "conversation", id: "cursor-conversation" },
         scrollOffset: 7,
       },
+      conversationScrollPositions: {},
     });
   });
 
@@ -94,15 +95,16 @@ describe("TUI starting state", () => {
     state.sidebar.scrollOffset = 12;
 
     expect(captureTuiStartingState(state)).toEqual({
-      version: 1,
+      version: 2,
       focusedConversationId: null,
       sidebar: { open: false },
+      conversationScrollPositions: {},
     });
   });
 
   test("seeds state and preserves the saved sidebar cursor when lists arrive", () => {
     const startingState: TuiStartingState = {
-      version: 1,
+      version: 2,
       focusedConversationId: "focused-conversation",
       sidebar: {
         open: true,
@@ -110,6 +112,7 @@ describe("TUI starting state", () => {
         selectedItem: { type: "conversation", id: "cursor-conversation" },
         scrollOffset: 4,
       },
+      conversationScrollPositions: { "focused-conversation": 0.4 },
     };
     const state = createInitialState();
 
@@ -125,27 +128,40 @@ describe("TUI starting state", () => {
     expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "cursor-conversation" });
     expect(state.sidebar.selectedId).toBe("cursor-conversation");
     expect(state.sidebar.scrollOffset).toBe(4);
+    expect(state.conversationScroll.positions.get("focused-conversation")).toBe(0.4);
     expect(availableStartingConversationId(startingState, state.sidebar.conversations)).toBe("focused-conversation");
   });
 
   test("does not try to load a saved conversation that no longer exists", () => {
     const startingState: TuiStartingState = {
-      version: 1,
+      version: 2,
       focusedConversationId: "deleted-conversation",
       sidebar: { open: false },
+      conversationScrollPositions: {},
     };
 
     expect(availableStartingConversationId(startingState, [conversation("still-here")])).toBeNull();
   });
 
+  test("captures the focused conversation's viewport percentage", () => {
+    const state = createInitialState();
+    state.convId = "focused";
+    state.layout.totalLines = 100;
+    state.layout.messageAreaHeight = 20;
+    state.scrollOffset = 40;
+
+    expect(captureTuiStartingState(state).conversationScrollPositions).toEqual({ focused: 0.5 });
+  });
+
   test("atomically replaces the previous close's state", () => {
     const first: TuiStartingState = {
-      version: 1,
+      version: 2,
       focusedConversationId: "first",
       sidebar: { open: false },
+      conversationScrollPositions: { first: 0.25 },
     };
     const second: TuiStartingState = {
-      version: 1,
+      version: 2,
       focusedConversationId: "second",
       sidebar: {
         open: true,
@@ -153,6 +169,7 @@ describe("TUI starting state", () => {
         selectedItem: { type: "folder", id: "projects" },
         scrollOffset: 2,
       },
+      conversationScrollPositions: { second: 0.75 },
     };
 
     saveTuiStartingState(first);
@@ -179,5 +196,29 @@ describe("TUI starting state", () => {
       sidebar: { open: true, currentFolderId: null, selectedItem: null, scrollOffset: -1 },
     }));
     expect(loadTuiStartingState()).toBeNull();
+
+    writeFileSync(statePath, JSON.stringify({
+      version: 2,
+      focusedConversationId: "conversation",
+      sidebar: { open: false },
+      conversationScrollPositions: { conversation: 2 },
+    }));
+    expect(loadTuiStartingState()).toBeNull();
+  });
+
+  test("migrates version-one state without conversation positions", () => {
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(statePath, JSON.stringify({
+      version: 1,
+      focusedConversationId: "conversation",
+      sidebar: { open: false },
+    }));
+
+    expect(loadTuiStartingState()).toEqual({
+      version: 2,
+      focusedConversationId: "conversation",
+      sidebar: { open: false },
+      conversationScrollPositions: {},
+    });
   });
 });
