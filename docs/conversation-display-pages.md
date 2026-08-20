@@ -74,11 +74,13 @@ full-history hashing passes. All later opens are bounded page reads.
 
 ## Edit identities
 
-Compact pages use `page-v1:<hash>` user fingerprints derived from conversation
-ID, absolute real-user index, and that user message. They are opaque stale-edit
-guards, not provider replay hashes. The unwind path accepts both these identities
-and the legacy full-prefix hash, preserving compatibility with already-open or
-older clients.
+Compact pages use `page-v2:<hash>` user fingerprints derived from immutable
+canonical message content. Conversation ID, absolute real-user index, and turn
+start time remain separate edit-command boundaries, so cloned rows can safely
+reuse the content identity and background token attribution does not invalidate
+an open editor. The unwind path also accepts persisted `page-v1` identities and
+the legacy full-prefix hash, preserving compatibility with already-open or older
+clients.
 
 ## Initial backfill
 

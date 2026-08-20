@@ -184,7 +184,8 @@ describe("SQLite transaction fault boundaries", () => {
     const sourceUser = store.loadDisplayPage(source.id, 20)?.entries.find((entry) => entry.type === "user");
     const clonedUser = store.loadDisplayPage(target.id, 20)?.entries.find((entry) => entry.type === "user");
     expect(clonedUser).toMatchObject({ type: "user", text: "first" });
-    expect((clonedUser as any)?.unwindFingerprint).not.toBe((sourceUser as any)?.unwindFingerprint);
+    expect((clonedUser as any)?.unwindFingerprint).toMatch(/^page-v2:/);
+    expect((clonedUser as any)?.unwindFingerprint).toBe((sourceUser as any)?.unwindFingerprint);
 
     // A forced verification save must find every copied/rebound message hash
     // current; otherwise it would rewrite the transcript suffix.
@@ -248,6 +249,51 @@ describe("SQLite transaction fault boundaries", () => {
 
     store = new SqliteConversationStore({ path });
     expect(store.load("abrupt-wal")?.messages).toHaveLength(2);
+    expect(store.integrityCheck().ok).toBe(true);
+    store.close();
+  });
+
+  test("recovers a committed clone before its deferred WAL checkpoint", () => {
+    const { root, path } = pathFor("clone-deferred-checkpoint");
+    let store = new SqliteConversationStore({ path });
+    const source = createConversation("clone-deferred-source", "openai", "gpt-5.6-sol", 0, "source");
+    source.messages.push(
+      { role: "user", content: "run", metadata: null },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "deferred-tool", name: "bash", input: {} }],
+        metadata: null,
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "deferred-tool", content: "durable payload".repeat(1_000) }],
+        metadata: null,
+      },
+    );
+    store.save(source);
+    store.close();
+
+    const modulePath = join(import.meta.dir, "sqlite-conversation-store.ts");
+    const child = Bun.spawnSync([
+      process.execPath,
+      "-e",
+      `const { SqliteConversationStore } = await import(${JSON.stringify(modulePath)});\n` +
+      `const store = new SqliteConversationStore({ path: ${JSON.stringify(path)} });\n` +
+      `store.cloneConversation("clone-deferred-source", { id: "clone-deferred-target", title: "clone", sortOrder: 1, createdAt: 2, updatedAt: 2 });\n` +
+      `process.exit(0);`,
+    ], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, EXOCORTEX_CONFIG_DIR: root },
+    });
+    expect(child.exitCode).toBe(0);
+
+    store = new SqliteConversationStore({ path });
+    expect(store.load("clone-deferred-target")?.messages).toEqual(source.messages);
+    expect(store.loadToolOutputs("clone-deferred-target")).toEqual([{
+      toolCallId: "deferred-tool",
+      output: "durable payload".repeat(1_000),
+    }]);
     expect(store.integrityCheck().ok).toBe(true);
     store.close();
   });
@@ -657,7 +703,7 @@ describe("SQLite maintenance", () => {
       { type: "conversation_removed", id: "maintenance" },
     ]);
     expect(store.diagnostics()).toMatchObject({
-      schemaVersion: 8,
+      schemaVersion: 9,
       liveConversations: 1,
       deletedConversations: 1,
       messages: 4,
@@ -694,6 +740,82 @@ describe("SQLite maintenance", () => {
     deleteStatement.run();
     deleteStatement.finalize();
     expect(store.diagnostics()).toMatchObject({ messageBlobs: 0, toolOutputReferences: 0, messages: 0 });
+    expect(store.integrityCheck().ok).toBe(true);
+    store.close();
+  });
+
+  test("re-homes copy-on-write clone blobs when owners are rewritten or deleted", () => {
+    const { path } = pathFor("clone-blob-cow");
+    const store = new SqliteConversationStore({ path });
+    const source = createConversation("clone-blob-source", "openai", "gpt-5.6-sol", 0, "source");
+    source.messages.push(
+      { role: "user", content: "run it", metadata: null },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "cow-tool", name: "bash", input: { command: "printf old" } }],
+        metadata: null,
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "cow-tool", content: "old payload".repeat(10_000) }],
+        metadata: null,
+      },
+      { role: "assistant", content: "done", metadata: null },
+    );
+    store.save(source);
+
+    const targets = ["clone-blob-a", "clone-blob-b"];
+    expect(store.cloneConversation(source.id, {
+      id: targets[0], title: "a", sortOrder: 1, createdAt: 10, updatedAt: 10,
+    })?.id).toBe(targets[0]);
+    // Cloning an alias flattens directly to the immutable physical owner.
+    expect(store.cloneConversation(targets[0], {
+      id: targets[1], title: "b", sortOrder: 2, createdAt: 20, updatedAt: 20,
+    })?.id).toBe(targets[1]);
+    expect(store.db.query<{ count: number }, []>(`
+      SELECT COUNT(*) AS count FROM message_blobs
+      WHERE conversation_id IN ('clone-blob-source','clone-blob-a','clone-blob-b')
+    `).get()!.count).toBe(1);
+    expect(store.db.query<{ count: number }, []>(`
+      SELECT COUNT(*) AS count FROM message_blob_aliases
+      WHERE conversation_id IN ('clone-blob-a','clone-blob-b')
+    `).get()!.count).toBe(2);
+
+    const resultBlock = Array.isArray(source.messages[2].content) ? source.messages[2].content[0] : null;
+    if (!resultBlock || resultBlock.type !== "tool_result") throw new Error("missing fixture tool result");
+    resultBlock.content = "new payload";
+    store.save(source, { forceMessages: true });
+    expect(store.loadToolOutputs(source.id)).toEqual([{ toolCallId: "cow-tool", output: "new payload" }]);
+    for (const id of targets) {
+      expect(store.loadToolOutputs(id)).toEqual([{
+        toolCallId: "cow-tool",
+        output: "old payload".repeat(10_000),
+      }]);
+    }
+
+    const cloneOwners = store.db.query<{ conversation_id: string }, []>(`
+      SELECT conversation_id FROM message_blobs
+      WHERE conversation_id IN ('clone-blob-a','clone-blob-b')
+    `).all();
+    expect(cloneOwners).toHaveLength(1);
+    expect(store.db.query<{ count: number }, []>(`
+      SELECT COUNT(*) AS count FROM message_blob_aliases
+      WHERE conversation_id IN ('clone-blob-a','clone-blob-b')
+    `).get()!.count).toBe(1);
+
+    const ownerId = cloneOwners[0].conversation_id;
+    const survivorId = targets.find((id) => id !== ownerId)!;
+    store.db.query("DELETE FROM conversations WHERE id=?").run(ownerId);
+    expect(store.loadToolOutputs(survivorId)).toEqual([{
+      toolCallId: "cow-tool",
+      output: "old payload".repeat(10_000),
+    }]);
+    expect(store.db.query<{ count: number }, [string]>(`
+      SELECT COUNT(*) AS count FROM message_blobs WHERE conversation_id=?
+    `).get(survivorId)!.count).toBe(1);
+    expect(store.db.query<{ count: number }, [string]>(`
+      SELECT COUNT(*) AS count FROM message_blob_aliases WHERE conversation_id=?
+    `).get(survivorId)!.count).toBe(0);
     expect(store.integrityCheck().ok).toBe(true);
     store.close();
   });
@@ -816,8 +938,8 @@ describe("SQLite maintenance", () => {
     store.close();
   });
 
-  test("migrates every schema checkpoint through v8 transactionally", () => {
-    for (let version = 1; version <= 7; version++) {
+  test("migrates every schema checkpoint through v9 transactionally", () => {
+    for (let version = 1; version <= 8; version++) {
       const { path } = pathFor(`schema-v${version}`);
       let store = new SqliteConversationStore({ path, targetSchemaVersion: version });
       expect(store.db.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(version);
@@ -825,7 +947,7 @@ describe("SQLite maintenance", () => {
       store.close();
 
       store = new SqliteConversationStore({ path });
-      expect(store.diagnostics().schemaVersion).toBe(8);
+      expect(store.diagnostics().schemaVersion).toBe(9);
       expect(store.integrityCheck().ok).toBe(true);
       store.close();
     }

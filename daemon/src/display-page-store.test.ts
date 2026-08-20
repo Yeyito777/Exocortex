@@ -94,7 +94,7 @@ describe("display page store", () => {
       pinnedEntries: [{ type: "system_instructions", text: "Be concise." }],
     });
     expect(newest.entries.filter((entry) => entry.type === "user").map((entry) => entry.text)).toEqual(["u5", "u6 recent image"]);
-    expect(newest.entries.find((entry) => entry.type === "user")?.unwindFingerprint).toMatch(/^page-v1:/);
+    expect(newest.entries.find((entry) => entry.type === "user")?.unwindFingerprint).toMatch(/^page-v2:/);
     expect(JSON.stringify(newest.entries)).not.toContain("SECRET_TOOL_OUTPUT");
     expect(JSON.stringify(newest.entries)).toContain("RECENT_IMAGE_BASE64");
 
@@ -136,7 +136,7 @@ describe("display page store", () => {
 
     const before = loadDisplayPage(convId, 1)!;
     const target = before.entries.find((entry) => entry.type === "user")!;
-    expect(target.unwindFingerprint).toMatch(/^page-v1:/);
+    expect(target.unwindFingerprint).toMatch(/^page-v2:/);
     expect(await unwindTo(convId, 2, "page-fingerprint-unwind", undefined, target.unwindFingerprint)).not.toBeNull();
     expect(writeDisplayProjection(get(convId)!)).toBe(true);
 

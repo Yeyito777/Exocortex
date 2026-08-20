@@ -1379,7 +1379,7 @@ async function performUnwindTo(
   }
   const targetFingerprintMatches = (): boolean => targetFingerprint === undefined
     || (displayPageStore.isPagedUserFingerprint(targetFingerprint)
-      ? displayPageStore.pagedUserFingerprint(id, userMessageIndex, targetMessage!) === targetFingerprint
+      ? displayPageStore.pagedUserFingerprintMatches(targetFingerprint, id, userMessageIndex, targetMessage!)
       : historyPrefixHash(conv.messages, targetHistoryCount + 1) === targetFingerprint);
   if (!targetFingerprintMatches()) {
     log("warn", `conversations: refusing unwind with stale target fingerprint for ${id} at user index ${userMessageIndex}`);

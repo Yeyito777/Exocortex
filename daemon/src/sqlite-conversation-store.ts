@@ -48,8 +48,9 @@ import * as legacy from "./json-persistence";
 import { log } from "./log";
 import type { ConversationRepository, ConversationToolPolicyState } from "./conversation-repository";
 import type { ConversationCloneTarget } from "./conversation-clone";
+import { pagedUserFingerprint, storedMessageFingerprint as messageFingerprint } from "./message-fingerprint";
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 const DEFAULT_FILE = "exocortex.sqlite3";
 const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
 
@@ -194,17 +195,6 @@ function assertSafeId(id: string): void {
   }
 }
 
-function messageFingerprint(message: StoredMessage): string {
-  return sha256(JSON.stringify({
-    role: message.role,
-    content: message.content,
-    metadata: message.metadata,
-    providerData: message.providerData ?? null,
-    contextTokens: message.contextTokens ?? null,
-    contextCheckpoint: message.contextCheckpoint ?? null,
-  }));
-}
-
 function messageSnapshot(message: StoredMessage): LoadedMessageSnapshot {
   return {
     ref: message,
@@ -294,16 +284,6 @@ function normalizeFolder(folder: PersistedFolderSummary): PersistedFolderSummary
   };
 }
 
-function pagedUserFingerprint(convId: string, userIndex: number, message: StoredMessage): string {
-  const hash = createHash("sha256");
-  hash.update(convId);
-  hash.update("\n");
-  hash.update(String(userIndex));
-  hash.update("\n");
-  hash.update(JSON.stringify({ role: message.role, content: message.content, providerData: message.providerData ?? null }));
-  return `page-v1:${hash.digest("hex").slice(0, 24)}`;
-}
-
 function projectedEditableHistoryStart(conv: Conversation): number | null | undefined {
   const active = conv.activeContext;
   if (active) {
@@ -358,6 +338,7 @@ export class SqliteConversationStore implements ConversationRepository {
   private closed = false;
   private readonly readOnly: boolean;
   private readonly faultInjection?: (point: string) => void;
+  private deferredCheckpointTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: SqliteConversationStoreOptions = {}) {
     this.path = resolve(options.path ?? sqliteConversationStorePath());
@@ -677,10 +658,157 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(8, "conversation and folder muting", Date.now());
       })();
     }
+    if (current < 9 && targetVersion >= 9) {
+      this.db.transaction(() => {
+        this.db.exec(`
+          -- Clone aliases keep large immutable payloads copy-on-write. Existing
+          -- payload rows remain owners, so this migration performs no data copy.
+          CREATE TABLE message_blob_aliases (
+            conversation_id TEXT NOT NULL,
+            message_sequence INTEGER NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('tool_result','image')),
+            ordinal INTEGER NOT NULL,
+            owner_conversation_id TEXT NOT NULL,
+            owner_message_sequence INTEGER NOT NULL,
+            owner_kind TEXT NOT NULL CHECK (owner_kind IN ('tool_result','image')),
+            owner_ordinal INTEGER NOT NULL,
+            payload_bytes INTEGER NOT NULL,
+            content_hash TEXT NOT NULL,
+            PRIMARY KEY (conversation_id, message_sequence, kind, ordinal),
+            FOREIGN KEY (conversation_id, message_sequence)
+              REFERENCES messages(conversation_id, sequence) ON DELETE CASCADE
+          ) WITHOUT ROWID, STRICT;
+          CREATE INDEX message_blob_aliases_lookup_idx
+            ON message_blob_aliases(conversation_id, kind, message_sequence, ordinal);
+          CREATE INDEX message_blob_aliases_owner_idx
+            ON message_blob_aliases(
+              owner_conversation_id, owner_message_sequence, owner_kind, owner_ordinal
+            );
+
+          -- Transaction-local scratch state for the rehome trigger below. The
+          -- trigger removes every row it inserts, and rollback covers both.
+          CREATE TABLE message_blob_rehomes (
+            owner_conversation_id TEXT NOT NULL,
+            owner_message_sequence INTEGER NOT NULL,
+            owner_kind TEXT NOT NULL,
+            owner_ordinal INTEGER NOT NULL,
+            replacement_conversation_id TEXT NOT NULL,
+            replacement_message_sequence INTEGER NOT NULL,
+            replacement_kind TEXT NOT NULL,
+            replacement_ordinal INTEGER NOT NULL,
+            PRIMARY KEY (
+              owner_conversation_id, owner_message_sequence, owner_kind, owner_ordinal
+            )
+          ) WITHOUT ROWID, STRICT;
+
+          CREATE VIEW resolved_message_blobs AS
+            SELECT conversation_id, message_sequence, kind, ordinal,
+                   payload_json, payload_bytes, content_hash
+            FROM message_blobs
+            UNION ALL
+            SELECT a.conversation_id, a.message_sequence, a.kind, a.ordinal,
+                   owner.payload_json, a.payload_bytes, a.content_hash
+            FROM message_blob_aliases a
+            JOIN message_blobs owner
+              ON owner.conversation_id=a.owner_conversation_id
+             AND owner.message_sequence=a.owner_message_sequence
+             AND owner.kind=a.owner_kind
+             AND owner.ordinal=a.owner_ordinal;
+
+          -- If an owner is later rewritten or hard-deleted, transfer its bytes
+          -- once to one dependent row and redirect the remaining aliases there.
+          CREATE TRIGGER message_blob_owner_rehome_before_delete
+          BEFORE DELETE ON message_blobs
+          WHEN EXISTS (
+            SELECT 1 FROM message_blob_aliases
+            WHERE owner_conversation_id=old.conversation_id
+              AND owner_message_sequence=old.message_sequence
+              AND owner_kind=old.kind
+              AND owner_ordinal=old.ordinal
+          )
+          BEGIN
+            INSERT INTO message_blob_rehomes
+            SELECT old.conversation_id, old.message_sequence, old.kind, old.ordinal,
+                   conversation_id, message_sequence, kind, ordinal
+            FROM message_blob_aliases
+            WHERE owner_conversation_id=old.conversation_id
+              AND owner_message_sequence=old.message_sequence
+              AND owner_kind=old.kind
+              AND owner_ordinal=old.ordinal
+            ORDER BY conversation_id, message_sequence, kind, ordinal
+            LIMIT 1;
+
+            INSERT INTO message_blobs(
+              conversation_id, message_sequence, kind, ordinal,
+              payload_json, payload_bytes, content_hash
+            )
+            SELECT replacement_conversation_id, replacement_message_sequence,
+                   replacement_kind, replacement_ordinal,
+                   old.payload_json, old.payload_bytes, old.content_hash
+            FROM message_blob_rehomes
+            WHERE owner_conversation_id=old.conversation_id
+              AND owner_message_sequence=old.message_sequence
+              AND owner_kind=old.kind
+              AND owner_ordinal=old.ordinal;
+
+            UPDATE message_blob_aliases
+            SET owner_conversation_id=(
+                  SELECT replacement_conversation_id FROM message_blob_rehomes
+                  WHERE owner_conversation_id=old.conversation_id
+                    AND owner_message_sequence=old.message_sequence
+                    AND owner_kind=old.kind AND owner_ordinal=old.ordinal
+                ),
+                owner_message_sequence=(
+                  SELECT replacement_message_sequence FROM message_blob_rehomes
+                  WHERE owner_conversation_id=old.conversation_id
+                    AND owner_message_sequence=old.message_sequence
+                    AND owner_kind=old.kind AND owner_ordinal=old.ordinal
+                ),
+                owner_kind=(
+                  SELECT replacement_kind FROM message_blob_rehomes
+                  WHERE owner_conversation_id=old.conversation_id
+                    AND owner_message_sequence=old.message_sequence
+                    AND owner_kind=old.kind AND owner_ordinal=old.ordinal
+                ),
+                owner_ordinal=(
+                  SELECT replacement_ordinal FROM message_blob_rehomes
+                  WHERE owner_conversation_id=old.conversation_id
+                    AND owner_message_sequence=old.message_sequence
+                    AND owner_kind=old.kind AND owner_ordinal=old.ordinal
+                )
+            WHERE owner_conversation_id=old.conversation_id
+              AND owner_message_sequence=old.message_sequence
+              AND owner_kind=old.kind
+              AND owner_ordinal=old.ordinal;
+
+            DELETE FROM message_blob_aliases
+            WHERE (conversation_id, message_sequence, kind, ordinal)=(
+              SELECT replacement_conversation_id, replacement_message_sequence,
+                     replacement_kind, replacement_ordinal
+              FROM message_blob_rehomes
+              WHERE owner_conversation_id=old.conversation_id
+                AND owner_message_sequence=old.message_sequence
+                AND owner_kind=old.kind AND owner_ordinal=old.ordinal
+            );
+
+            DELETE FROM message_blob_rehomes
+            WHERE owner_conversation_id=old.conversation_id
+              AND owner_message_sequence=old.message_sequence
+              AND owner_kind=old.kind
+              AND owner_ordinal=old.ordinal;
+          END;
+        `);
+        this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(9, "copy-on-write cloned message blobs", Date.now());
+      })();
+    }
   }
 
   close(): void {
     if (this.closed) return;
+    if (this.deferredCheckpointTimer) {
+      clearTimeout(this.deferredCheckpointTimer);
+      this.deferredCheckpointTimer = null;
+    }
     try { this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch { /* best effort */ }
     this.db.close();
     this.closed = true;
@@ -691,13 +819,70 @@ export class SqliteConversationStore implements ConversationRepository {
 
   checkpoint(mode: "PASSIVE" | "FULL" | "RESTART" | "TRUNCATE" = "PASSIVE"): void {
     this.assertOpen();
+    if (this.deferredCheckpointTimer) {
+      clearTimeout(this.deferredCheckpointTimer);
+      this.deferredCheckpointTimer = null;
+    }
     this.db.exec(`PRAGMA wal_checkpoint(${mode})`);
+    if (!this.readOnly) this.db.exec("PRAGMA wal_autocheckpoint=1000");
+  }
+
+  /**
+   * Keep a bulk clone's logically committed WAL transaction off the request
+   * latency path. PASSIVE checkpointing is rebuildable maintenance; the WAL is
+   * already process-crash-safe and close/backup still checkpoint synchronously.
+   */
+  private suspendAutoCheckpoint(): boolean {
+    const alreadyDeferred = this.deferredCheckpointTimer !== null;
+    if (this.deferredCheckpointTimer) {
+      clearTimeout(this.deferredCheckpointTimer);
+      this.deferredCheckpointTimer = null;
+    }
+    this.db.exec("PRAGMA wal_autocheckpoint=0");
+    return alreadyDeferred;
+  }
+
+  private scheduleDeferredCheckpoint(): void {
+    if (this.closed || this.readOnly) return;
+    if (this.deferredCheckpointTimer) clearTimeout(this.deferredCheckpointTimer);
+    this.deferredCheckpointTimer = setTimeout(() => {
+      this.deferredCheckpointTimer = null;
+      if (this.closed) return;
+      try {
+        this.db.exec("PRAGMA wal_checkpoint(PASSIVE)");
+      } catch (error) {
+        log("warn", `sqlite: deferred clone checkpoint failed: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        try { this.db.exec("PRAGMA wal_autocheckpoint=1000"); } catch { /* close raced the callback */ }
+      }
+    }, 1000);
+    this.deferredCheckpointTimer.unref?.();
   }
 
   integrityCheck(): IntegrityReport {
     this.assertOpen();
     const quickCheck = this.db.query<Record<string, string>, []>("PRAGMA quick_check").all().flatMap((row) => Object.values(row));
     const foreignKeyErrors = this.db.query<Record<string, unknown>, []>("PRAGMA foreign_key_check").all();
+    const schemaVersion = this.db.query<{ version: number }, []>(
+      "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
+    ).get()!.version;
+    if (schemaVersion >= 9) {
+      const danglingAliases = this.db.query<{ count: number }, []>(`
+        SELECT COUNT(*) AS count
+        FROM message_blob_aliases alias
+        LEFT JOIN message_blobs owner
+          ON owner.conversation_id=alias.owner_conversation_id
+         AND owner.message_sequence=alias.owner_message_sequence
+         AND owner.kind=alias.owner_kind
+         AND owner.ordinal=alias.owner_ordinal
+        WHERE owner.conversation_id IS NULL
+      `).get()!.count;
+      const pendingRehomes = this.db.query<{ count: number }, []>(
+        "SELECT COUNT(*) AS count FROM message_blob_rehomes",
+      ).get()!.count;
+      if (danglingAliases > 0) foreignKeyErrors.push({ table: "message_blob_aliases", danglingOwners: danglingAliases });
+      if (pendingRehomes > 0) foreignKeyErrors.push({ table: "message_blob_rehomes", pendingRows: pendingRehomes });
+    }
     return { ok: quickCheck.length === 1 && quickCheck[0] === "ok" && foreignKeyErrors.length === 0, quickCheck, foreignKeyErrors };
   }
 
@@ -719,8 +904,8 @@ export class SqliteConversationStore implements ConversationRepository {
       deletedConversations: scalar("SELECT COUNT(*) FROM conversations WHERE deleted_at IS NOT NULL"),
       messages: scalar("SELECT COUNT(*) FROM messages"),
       canonicalContentBytes: scalar("SELECT COALESCE(SUM(content_bytes), 0) FROM conversations"),
-      messageBlobs: scalar("SELECT COUNT(*) FROM message_blobs"),
-      messageBlobBytes: scalar("SELECT COALESCE(SUM(payload_bytes), 0) FROM message_blobs"),
+      messageBlobs: scalar("SELECT COUNT(*) FROM resolved_message_blobs"),
+      messageBlobBytes: scalar("SELECT COALESCE(SUM(payload_bytes), 0) FROM resolved_message_blobs"),
       displayEntries: scalar("SELECT COUNT(*) FROM display_entries"),
       toolOutputReferences: scalar("SELECT COUNT(*) FROM tool_outputs"),
       queuedMessages: scalar("SELECT COUNT(*) FROM queued_messages"),
@@ -912,26 +1097,8 @@ export class SqliteConversationStore implements ConversationRepository {
       FROM messages WHERE conversation_id=? ORDER BY sequence
     `).all(id);
     const blobs = this.db.query<MessageBlobRow, [string]>(`
-      SELECT message_sequence, ordinal, kind, payload_json FROM message_blobs
+      SELECT message_sequence, ordinal, kind, payload_json FROM resolved_message_blobs
       WHERE conversation_id=? ORDER BY message_sequence, kind, ordinal
-    `).all(id);
-    return storedMessagesFromRows(rows, blobs).map(({ message }) => message);
-  }
-
-  /** Load only user-authored rows needed to rebind paged unwind fingerprints. */
-  private loadRealUserMessages(id: string): StoredMessage[] {
-    const rows = this.db.query<MessageRow, [string]>(`
-      SELECT sequence, role, content_json, metadata_json, provider_data_json,
-             context_tokens_json, context_checkpoint_json, has_provider_data,
-             has_context_tokens, has_context_checkpoint
-      FROM messages WHERE conversation_id=? AND is_real_user=1 ORDER BY sequence
-    `).all(id);
-    const blobs = this.db.query<MessageBlobRow, [string]>(`
-      SELECT b.message_sequence, b.ordinal, b.kind, b.payload_json
-      FROM message_blobs b
-      JOIN messages m ON m.conversation_id=b.conversation_id AND m.sequence=b.message_sequence
-      WHERE b.conversation_id=? AND m.is_real_user=1
-      ORDER BY b.message_sequence, b.kind, b.ordinal
     `).all(id);
     return storedMessagesFromRows(rows, blobs).map(({ message }) => message);
   }
@@ -952,7 +1119,7 @@ export class SqliteConversationStore implements ConversationRepository {
     `).all(id, windowId);
     const blobs = this.db.query<MessageBlobRow, [string, string]>(`
       SELECT b.message_sequence, b.ordinal, b.kind, b.payload_json
-      FROM message_blobs b
+      FROM resolved_message_blobs b
       JOIN messages m ON m.conversation_id=b.conversation_id AND m.sequence=b.message_sequence
       WHERE b.conversation_id=? AND m.context_checkpoint_json IS NOT NULL
         AND json_extract(m.context_checkpoint_json, '$.windowId')=?
@@ -1017,9 +1184,10 @@ export class SqliteConversationStore implements ConversationRepository {
 
   /**
    * Clone normalized rows in one transaction instead of materializing and then
-   * re-serializing the complete transcript. Only real user rows (for clone-bound
-   * unwind fingerprints) and the handful of rebound checkpoints enter JS. The
-   * clone and its sidebar undo record share the same transaction.
+   * re-serializing the complete transcript. Large blobs become copy-on-write
+   * aliases, page identities derive from stored hashes, and only the handful of
+   * rebound checkpoint rows enter JS. Clone state and sidebar undo share one
+   * transaction.
    */
   cloneConversation(sourceId: string, target: ConversationCloneTarget): PersistedConversationSummary | null {
     assertSafeId(sourceId);
@@ -1033,151 +1201,161 @@ export class SqliteConversationStore implements ConversationRepository {
     `).get(sourceId);
     const targetWindowId = active ? `${target.id}:${active.window_number}` : null;
 
-    this.db.transaction(() => {
-      this.db.query(`
-        INSERT INTO conversations(
-          id, provider, model, effort, fast_mode, created_at, updated_at,
-          last_context_tokens, marked, pinned, muted, sort_order, folder_id, title,
-          goal_json, subagent_max_depth, subagent_policy_json, tool_policy_json,
-          storage_generation, message_count, stored_message_count,
-          display_entry_count, content_bytes, deleted_at
-        )
-        SELECT ?, provider, model, effort, fast_mode, ?, ?,
-               last_context_tokens, marked, pinned, muted, ?, folder_id, ?,
-               NULL, NULL, NULL, tool_policy_json,
-               1, message_count, stored_message_count,
-               display_entry_count, content_bytes, NULL
-        FROM conversations WHERE id=? AND deleted_at IS NULL
-      `).run(
-        target.id,
-        target.createdAt,
-        target.updatedAt,
-        target.sortOrder,
-        target.title,
-        sourceId,
-      );
-      this.faultInjection?.("clone.after-conversation");
-
-      if (active && targetWindowId) {
+    const checkpointWasAlreadyDeferred = this.suspendAutoCheckpoint();
+    let committed = false;
+    try {
+      this.db.transaction(() => {
         this.db.query(`
-          INSERT INTO active_contexts(
-            conversation_id, kind, provider, model, transcript_history_count,
-            transcript_prefix_hash, compaction_history_count, compaction_prefix_hash,
-            window_id, window_number, compacted_at, payload_json
+          INSERT INTO conversations(
+            id, provider, model, effort, fast_mode, created_at, updated_at,
+            last_context_tokens, marked, pinned, muted, sort_order, folder_id, title,
+            goal_json, subagent_max_depth, subagent_policy_json, tool_policy_json,
+            storage_generation, message_count, stored_message_count,
+            display_entry_count, content_bytes, deleted_at
           )
-          SELECT ?, kind, provider, model, transcript_history_count,
-                 transcript_prefix_hash, compaction_history_count, compaction_prefix_hash,
-                 ?, window_number, compacted_at,
-                 replace(payload_json, json_quote(window_id), json_quote(?))
-          FROM active_contexts WHERE conversation_id=?
-        `).run(target.id, targetWindowId, targetWindowId, sourceId);
-        this.db.query(`
-          INSERT INTO messages(
-            conversation_id, sequence, role, content_json, metadata_json,
-            provider_data_json, context_tokens_json, context_checkpoint_json,
-            is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
-            has_provider_data, has_context_tokens, has_context_checkpoint
-          )
-          SELECT ?, sequence, role, content_json, metadata_json,
-                 provider_data_json, context_tokens_json,
-                 CASE
-                   WHEN context_checkpoint_json IS NOT NULL
-                     AND json_extract(context_checkpoint_json, '$.windowId')=?
-                   THEN json_set(context_checkpoint_json, '$.windowId', ?)
-                   ELSE context_checkpoint_json
-                 END,
-                 is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
-                 has_provider_data, has_context_tokens, has_context_checkpoint
-          FROM messages WHERE conversation_id=? ORDER BY sequence
-        `).run(target.id, active.window_id, targetWindowId, sourceId);
-      } else {
-        this.db.query(`
-          INSERT INTO messages(
-            conversation_id, sequence, role, content_json, metadata_json,
-            provider_data_json, context_tokens_json, context_checkpoint_json,
-            is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
-            has_provider_data, has_context_tokens, has_context_checkpoint
-          )
-          SELECT ?, sequence, role, content_json, metadata_json,
-                 provider_data_json, context_tokens_json, context_checkpoint_json,
-                 is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
-                 has_provider_data, has_context_tokens, has_context_checkpoint
-          FROM messages WHERE conversation_id=? ORDER BY sequence
-        `).run(target.id, sourceId);
-      }
-
-      this.db.query(`
-        INSERT INTO tool_outputs(
-          conversation_id, message_sequence, ordinal, tool_call_id, output, is_error
-        )
-        SELECT ?, message_sequence, ordinal, tool_call_id, output, is_error
-        FROM tool_outputs WHERE conversation_id=?
-      `).run(target.id, sourceId);
-      this.db.query(`
-        INSERT INTO message_blobs(
-          conversation_id, message_sequence, kind, ordinal,
-          payload_json, payload_bytes, content_hash
-        )
-        SELECT ?, message_sequence, kind, ordinal,
-               payload_json, payload_bytes, content_hash
-        FROM message_blobs WHERE conversation_id=?
-      `).run(target.id, sourceId);
-      this.faultInjection?.("clone.after-messages");
-
-      this.db.query(`
-        INSERT INTO display_entries(
-          conversation_id, pinned, entry_index, user_index, type, payload_json
-        )
-        SELECT ?, pinned, entry_index, user_index, type, payload_json
-        FROM display_entries WHERE conversation_id=?
-      `).run(target.id, sourceId);
-
-      // A paged unwind fingerprint intentionally binds a user turn to its
-      // conversation ID. Recompute only those compact rows; tool outputs and old
-      // image payloads remain deferred in message_blobs.
-      const realUsers = this.loadRealUserMessages(target.id);
-      // One statement per bounded batch avoids thousands of JS/SQLite crossings
-      // for chats with many user turns while staying below SQLite's bind limit.
-      const fingerprintBatchSize = 500;
-      for (let start = 0; start < realUsers.length; start += fingerprintBatchSize) {
-        const batch = realUsers.slice(start, start + fingerprintBatchSize);
-        const cases = batch.map((_, offset) => `WHEN ${start + offset} THEN ?`).join(" ");
-        const fingerprints = batch.map((message, offset) =>
-          pagedUserFingerprint(target.id, start + offset, message)
+          SELECT ?, provider, model, effort, fast_mode, ?, ?,
+                 last_context_tokens, marked, pinned, muted, ?, folder_id, ?,
+                 NULL, NULL, NULL, tool_policy_json,
+                 1, message_count, stored_message_count,
+                 display_entry_count, content_bytes, NULL
+          FROM conversations WHERE id=? AND deleted_at IS NULL
+        `).run(
+          target.id,
+          target.createdAt,
+          target.updatedAt,
+          target.sortOrder,
+          target.title,
+          sourceId,
         );
-        this.db.query(`
-          UPDATE display_entries
-          SET payload_json=json_set(
-            payload_json,
-            '$.unwindFingerprint',
-            CASE user_index ${cases} END
-          )
-          WHERE conversation_id=? AND pinned=0 AND type='user'
-            AND user_index BETWEEN ? AND ?
-        `).run(...fingerprints, target.id, start, start + batch.length - 1);
-      }
+        this.faultInjection?.("clone.after-conversation");
 
-      // Rebinding checkpoint window IDs changes the full-message fingerprint,
-      // but not canonical content hashes or active-context history hashes.
-      if (targetWindowId) {
-        const rebound = this.loadMessagesWithCheckpointWindow(target.id, targetWindowId);
-        if (rebound.length > 0) {
-          const cases = rebound.map(({ sequence }) => `WHEN ${sequence} THEN ?`).join(" ");
-          const sequences = rebound.map(({ sequence }) => sequence).join(",");
+        if (active && targetWindowId) {
           this.db.query(`
-            UPDATE messages
-            SET message_hash=CASE sequence ${cases} END
-            WHERE conversation_id=? AND sequence IN (${sequences})
-          `).run(...rebound.map(({ message }) => messageFingerprint(message)), target.id);
+            INSERT INTO active_contexts(
+              conversation_id, kind, provider, model, transcript_history_count,
+              transcript_prefix_hash, compaction_history_count, compaction_prefix_hash,
+              window_id, window_number, compacted_at, payload_json
+            )
+            SELECT ?, kind, provider, model, transcript_history_count,
+                   transcript_prefix_hash, compaction_history_count, compaction_prefix_hash,
+                   ?, window_number, compacted_at,
+                   replace(payload_json, json_quote(window_id), json_quote(?))
+            FROM active_contexts WHERE conversation_id=?
+          `).run(target.id, targetWindowId, targetWindowId, sourceId);
+          this.db.query(`
+            INSERT INTO messages(
+              conversation_id, sequence, role, content_json, metadata_json,
+              provider_data_json, context_tokens_json, context_checkpoint_json,
+              is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
+              has_provider_data, has_context_tokens, has_context_checkpoint
+            )
+            SELECT ?, sequence, role, content_json, metadata_json,
+                   provider_data_json, context_tokens_json,
+                   CASE
+                     WHEN context_checkpoint_json IS NOT NULL
+                       AND json_extract(context_checkpoint_json, '$.windowId')=?
+                     THEN json_set(context_checkpoint_json, '$.windowId', ?)
+                     ELSE context_checkpoint_json
+                   END,
+                   is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
+                   has_provider_data, has_context_tokens, has_context_checkpoint
+            FROM messages WHERE conversation_id=? ORDER BY sequence
+          `).run(target.id, active.window_id, targetWindowId, sourceId);
+        } else {
+          this.db.query(`
+            INSERT INTO messages(
+              conversation_id, sequence, role, content_json, metadata_json,
+              provider_data_json, context_tokens_json, context_checkpoint_json,
+              is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
+              has_provider_data, has_context_tokens, has_context_checkpoint
+            )
+            SELECT ?, sequence, role, content_json, metadata_json,
+                   provider_data_json, context_tokens_json, context_checkpoint_json,
+                   is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
+                   has_provider_data, has_context_tokens, has_context_checkpoint
+            FROM messages WHERE conversation_id=? ORDER BY sequence
+          `).run(target.id, sourceId);
         }
+
+        this.db.query(`
+          INSERT INTO tool_outputs(
+            conversation_id, message_sequence, ordinal, tool_call_id, output, is_error
+          )
+          SELECT ?, message_sequence, ordinal, tool_call_id, output, is_error
+          FROM tool_outputs WHERE conversation_id=?
+        `).run(target.id, sourceId);
+        this.db.query(`
+          INSERT INTO message_blob_aliases(
+            conversation_id, message_sequence, kind, ordinal,
+            owner_conversation_id, owner_message_sequence, owner_kind, owner_ordinal,
+            payload_bytes, content_hash
+          )
+          SELECT ?, message_sequence, kind, ordinal,
+                 conversation_id, message_sequence, kind, ordinal,
+                 payload_bytes, content_hash
+          FROM message_blobs WHERE conversation_id=?
+          UNION ALL
+          SELECT ?, message_sequence, kind, ordinal,
+                 owner_conversation_id, owner_message_sequence, owner_kind, owner_ordinal,
+                 payload_bytes, content_hash
+          FROM message_blob_aliases WHERE conversation_id=?
+        `).run(target.id, sourceId, target.id, sourceId);
+        this.faultInjection?.("clone.after-messages");
+
+        this.db.query(`
+          INSERT INTO display_entries(
+            conversation_id, pinned, entry_index, user_index, type, payload_json
+          )
+          SELECT ?, pinned, entry_index, user_index, type, payload_json
+          FROM display_entries WHERE conversation_id=?
+        `).run(target.id, sourceId);
+
+        // Rebinding checkpoint window IDs changes the full-message fingerprint,
+        // but not canonical content hashes or active-context history hashes.
+        if (targetWindowId) {
+          const rebound = this.loadMessagesWithCheckpointWindow(target.id, targetWindowId);
+          if (rebound.length > 0) {
+            const cases = rebound.map(({ sequence }) => `WHEN ${sequence} THEN ?`).join(" ");
+            const sequences = rebound.map(({ sequence }) => sequence).join(",");
+            this.db.query(`
+              UPDATE messages
+              SET message_hash=CASE sequence ${cases} END
+              WHERE conversation_id=? AND sequence IN (${sequences})
+            `).run(...rebound.map(({ message }) => messageFingerprint(message)), target.id);
+          }
+        }
+        // New page-v2 identities derive directly from already-stored content hashes,
+        // so cloning never has to parse user text or image payloads.
+        this.db.query(`
+          WITH users(user_index, content_hash) AS MATERIALIZED (
+            SELECT ROW_NUMBER() OVER (ORDER BY sequence) - 1 AS user_index, content_hash
+            FROM messages WHERE conversation_id=? AND is_real_user=1
+          )
+          UPDATE display_entries AS entry
+          SET payload_json=json_set(
+            entry.payload_json,
+            '$.unwindFingerprint',
+            'page-v2:' || substr(users.content_hash, 1, 24)
+          )
+          FROM users
+          WHERE entry.conversation_id=? AND entry.pinned=0 AND entry.type='user'
+            AND users.user_index=entry.user_index
+        `).run(target.id, target.id);
+        // Clone creation and its undo record commit together. Besides closing a
+        // crash gap, this avoids a second large-WAL auto-checkpoint on the caller.
+        this.appendStackEntry("undo", { type: "conversation_removed", id: target.id });
+        this.db.query("DELETE FROM sidebar_history WHERE stack='redo'").run();
+        this.faultInjection?.("clone.after-display");
+        this.faultInjection?.("clone.before-commit");
+      })();
+      committed = true;
+    } finally {
+      if (committed || checkpointWasAlreadyDeferred) {
+        this.scheduleDeferredCheckpoint();
+      } else {
+        this.db.exec("PRAGMA wal_autocheckpoint=1000");
       }
-      // Clone creation and its undo record commit together. Besides closing a
-      // crash gap, this avoids a second large-WAL auto-checkpoint on the caller.
-      this.appendStackEntry("undo", { type: "conversation_removed", id: target.id });
-      this.db.query("DELETE FROM sidebar_history WHERE stack='redo'").run();
-      this.faultInjection?.("clone.after-display");
-      this.faultInjection?.("clone.before-commit");
-    })();
+    }
 
     return this.getSummary(target.id);
   }
@@ -1927,7 +2105,7 @@ export class SqliteConversationStore implements ConversationRepository {
       return this.db.query<ToolOutputRow, string[]>(`
         SELECT t.tool_call_id, m.content_json, b.payload_json FROM tool_outputs t
         JOIN messages m ON m.conversation_id=t.conversation_id AND m.sequence=t.message_sequence
-        LEFT JOIN message_blobs b ON b.conversation_id=t.conversation_id
+        LEFT JOIN resolved_message_blobs b ON b.conversation_id=t.conversation_id
           AND b.message_sequence=t.message_sequence AND b.kind='tool_result' AND b.ordinal=t.ordinal
         WHERE t.conversation_id=?${idFilter} ORDER BY t.message_sequence, t.ordinal
       `).all(id, ...(ids ?? []));

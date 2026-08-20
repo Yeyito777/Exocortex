@@ -28,8 +28,19 @@ import {
   isRealUserMessage,
   isReplayHistoryMessage,
 } from "./messages";
+import {
+  isPagedUserFingerprint,
+  pagedUserFingerprint,
+  pagedUserFingerprintMatches,
+} from "./message-fingerprint";
 import { buildDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
+
+export {
+  isPagedUserFingerprint,
+  pagedUserFingerprint,
+  pagedUserFingerprintMatches,
+} from "./message-fingerprint";
 
 const STORE_VERSION = 2;
 const CHUNK_ENTRY_COUNT = 64;
@@ -248,29 +259,6 @@ function projectedEditableHistoryStart(conv: Conversation): number | null | unde
   return conv.messages.some((message) => message.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND)
     ? null
     : undefined;
-}
-
-/** Opaque user identity used only to reject stale history-edit requests. */
-export function pagedUserFingerprint(
-  convId: string,
-  userIndex: number,
-  message: Pick<StoredMessage, "role" | "content" | "providerData">,
-): string {
-  const hash = createHash("sha256");
-  hash.update(convId);
-  hash.update("\n");
-  hash.update(String(userIndex));
-  hash.update("\n");
-  hash.update(JSON.stringify({
-    role: message.role,
-    content: message.content,
-    providerData: message.providerData ?? null,
-  }));
-  return `page-v1:${hash.digest("hex").slice(0, 24)}`;
-}
-
-export function isPagedUserFingerprint(value: string): boolean {
-  return /^page-v1:[0-9a-f]{24}$/.test(value);
 }
 
 function compactProjectionImages(entry: DisplayEntry, index: number, totalEntries: number): DisplayEntry {
