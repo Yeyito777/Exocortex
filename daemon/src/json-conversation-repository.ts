@@ -1,8 +1,9 @@
 import type { ConversationRepository } from "./conversation-repository";
-import type { Conversation, PersistedConversationSummary } from "./messages";
+import { summarizeConversation, type Conversation, type PersistedConversationSummary } from "./messages";
 import { collectToolOutputs } from "./display";
 import * as json from "./json-persistence";
 import * as displayPages from "./display-page-store";
+import { clonedConversationValue, type ConversationCloneTarget } from "./conversation-clone";
 
 /** Compatibility repository used by rollback, importer tests, and baselines. */
 export class JsonConversationRepository implements ConversationRepository {
@@ -45,6 +46,15 @@ export class JsonConversationRepository implements ConversationRepository {
       subagentPolicy: conversation.subagentPolicy ?? null,
       toolPolicy: conversation.toolPolicy ?? null,
     };
+  }
+
+  cloneConversation(sourceId: string, target: ConversationCloneTarget): PersistedConversationSummary | null {
+    const source = json.load(sourceId);
+    if (!source) return null;
+    const cloned = clonedConversationValue(source, target);
+    json.save(cloned);
+    json.pushTrashEntry({ type: "conversation_removed", id: cloned.id });
+    return summarizeConversation(cloned);
   }
 
   save(conv: Conversation): void {

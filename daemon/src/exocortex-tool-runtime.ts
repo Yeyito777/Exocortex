@@ -1395,9 +1395,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const convId = conversationIdInput(args, parentConversationId);
     const cloned = convStore.clone(convId);
     if (!cloned) throw new Error(`Conversation ${convId} not found`);
-    const summary = convStore.getSummary(cloned.id);
-    if (!summary) throw new Error(`Conversation ${convId} was cloned but its summary is unavailable`);
-    server.broadcast({ type: "conversation_restored", summary });
+    server.broadcast({ type: "conversation_restored", summary: cloned });
     broadcastSidebar();
     return ok(pretty({ source_conversation_id: convId, conversation_id: cloned.id, title: cloned.title }));
   };

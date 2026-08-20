@@ -6,10 +6,11 @@
  * like-for-like performance baselines.
  */
 
-import type { Conversation, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary } from "./messages";
+import { summarizeConversation, type Conversation, type ConversationSummary, type PersistedConversationSummary, type PersistedFolderSummary } from "./messages";
 import type { ToolOutputInfo } from "./protocol";
 import type { StoredDisplayHistoryPage } from "./display-page-store";
 import type { ConversationToolPolicyState } from "./conversation-repository";
+import { clonedConversationValue, type ConversationCloneTarget } from "./conversation-clone";
 import * as jsonPersistence from "./json-persistence";
 import { SqliteConversationStore, sqliteConversationStorePath, type IntegrityReport, type LegacyImportReport } from "./sqlite-conversation-store";
 
@@ -283,6 +284,20 @@ export function loadToolPolicyState(
     subagentPolicy: conversation.subagentPolicy ?? null,
     toolPolicy: conversation.toolPolicy ?? null,
   };
+}
+
+/** Clone canonical state plus undo while allowing normalized stores to copy rows in-place. */
+export function cloneConversation(
+  sourceId: string,
+  target: ConversationCloneTarget,
+): PersistedConversationSummary | null {
+  if (backend === "sqlite") return store().cloneConversation(sourceId, target);
+  const source = jsonPersistence.load(sourceId);
+  if (!source) return null;
+  const cloned = clonedConversationValue(source, target);
+  jsonPersistence.save(cloned);
+  jsonPersistence.pushTrashEntry({ type: "conversation_removed", id: cloned.id });
+  return summarizeConversation(cloned);
 }
 
 export function loadForDisplayProjection(id: string): Conversation | null {

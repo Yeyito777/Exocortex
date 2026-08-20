@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, createConversation, historyPrefixHash, type StoredMessage } from "./messages";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
+import { clonedConversationValue } from "./conversation-clone";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -59,6 +60,149 @@ function logicalState(store: SqliteConversationStore, id: string) {
 }
 
 describe("SQLite transaction fault boundaries", () => {
+  test("clones normalized rows atomically and rebinds clone-specific state", () => {
+    const { path } = pathFor("direct-clone");
+    const points: string[] = [];
+    let throwAt: string | null = null;
+    const store = new SqliteConversationStore({
+      path,
+      faultInjection(point) {
+        points.push(point);
+        if (point === throwAt) throw new Error(`injected ${point}`);
+      },
+    });
+    const source = createConversation("direct-clone-source", "openai", "gpt-5.6-sol", 3, "source");
+    source.goal = {
+      objective: "must not be inherited",
+      status: "active",
+      pausable: true,
+      completable: true,
+      createdAt: 1,
+      updatedAt: 1,
+      turns: 0,
+    };
+    source.subagentMaxDepth = 2;
+    source.subagentPolicy = {
+      parentConversationId: "parent",
+      allowEdits: false,
+      parentSystemInstructions: "parent constraints",
+    };
+    source.toolPolicy = { internal: ["read"], external: ["google"] };
+    source.messages.push(
+      { role: "user", content: "first", metadata: null },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "clone-tool", name: "bash", input: { command: "printf ok" } }],
+        metadata: null,
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "clone-tool", content: "large deferred result".repeat(10_000) }],
+        metadata: null,
+      },
+      { role: "assistant", content: "first answer", metadata: null },
+    );
+    const compactedPrefixHash = historyPrefixHash(source.messages, 4);
+    const sourceWindowId = `${source.id}:1`;
+    source.activeContext = {
+      version: 1,
+      kind: "openai_native",
+      provider: "openai",
+      model: source.model,
+      messages: [{
+        role: "assistant",
+        content: [],
+        metadata: null,
+        providerData: { openai: { compactionItems: [{ encryptedContent: "opaque" }] } },
+        contextCheckpoint: {
+          version: 1,
+          provider: "openai",
+          model: source.model,
+          windowId: sourceWindowId,
+          transcriptHistoryCount: 4,
+          transcriptPrefixHash: compactedPrefixHash,
+          contextTokens: 100,
+        },
+      }],
+      transcriptHistoryCount: 4,
+      transcriptPrefixHash: compactedPrefixHash,
+      compactionHistoryCount: 4,
+      compactionPrefixHash: compactedPrefixHash,
+      windowId: sourceWindowId,
+      windowNumber: 1,
+      compactedAt: 123,
+      compactionCount: 1,
+    };
+    source.messages.push({
+      role: "user",
+      content: "tail",
+      metadata: null,
+      contextCheckpoint: {
+        version: 1,
+        provider: "openai",
+        model: source.model,
+        windowId: sourceWindowId,
+        transcriptHistoryCount: 4,
+        transcriptPrefixHash: compactedPrefixHash,
+        contextTokens: 200,
+      },
+    });
+    store.save(source);
+
+    const target = {
+      id: "direct-clone-target",
+      title: "source 📋",
+      sortOrder: 3.5,
+      createdAt: 500,
+      updatedAt: 500,
+    };
+    points.length = 0;
+    expect(store.cloneConversation(source.id, target)).toMatchObject({
+      id: target.id,
+      title: target.title,
+      sortOrder: target.sortOrder,
+      goal: null,
+    });
+    expect(points).toEqual([
+      "clone.after-conversation",
+      "clone.after-messages",
+      "clone.after-display",
+      "clone.before-commit",
+    ]);
+    expect(store.popUndoEntry()).toEqual({ type: "conversation_removed", id: target.id });
+
+    const expected = clonedConversationValue(source, target);
+    const cloned = store.load(target.id)!;
+    expect(cloned.messages).toEqual(expected.messages);
+    expect(cloned.activeContext).toEqual(expected.activeContext);
+    expect(cloned.goal ?? null).toBeNull();
+    expect(cloned.subagentMaxDepth ?? null).toBeNull();
+    expect(cloned.subagentPolicy ?? null).toBeNull();
+    expect(cloned.toolPolicy).toEqual(source.toolPolicy);
+    expect(store.loadToolOutputs(target.id)).toEqual(store.loadToolOutputs(source.id));
+
+    const sourceUser = store.loadDisplayPage(source.id, 20)?.entries.find((entry) => entry.type === "user");
+    const clonedUser = store.loadDisplayPage(target.id, 20)?.entries.find((entry) => entry.type === "user");
+    expect(clonedUser).toMatchObject({ type: "user", text: "first" });
+    expect((clonedUser as any)?.unwindFingerprint).not.toBe((sourceUser as any)?.unwindFingerprint);
+
+    // A forced verification save must find every copied/rebound message hash
+    // current; otherwise it would rewrite the transcript suffix.
+    points.length = 0;
+    store.save(cloned, { forceMessages: true });
+    expect(points).not.toContain("save.after-messages");
+
+    throwAt = "clone.after-messages";
+    expect(() => store.cloneConversation(source.id, {
+      ...target,
+      id: "direct-clone-rolled-back",
+    })).toThrow("injected clone.after-messages");
+    expect(store.has("direct-clone-rolled-back")).toBe(false);
+    expect(store.popUndoEntry()).toBeNull();
+    expect(store.integrityCheck().ok).toBe(true);
+    store.close();
+  });
+
   test("appends and pops sidebar history without rewriting older rows", () => {
     const { path } = pathFor("targeted-sidebar-history");
     const store = new SqliteConversationStore({ path });

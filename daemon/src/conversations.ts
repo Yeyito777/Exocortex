@@ -7,7 +7,7 @@
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, ConversationToolPolicy } from "./messages";
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment, ToolPolicySnapshot } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, SidebarItemOrderUpdate, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
@@ -633,10 +633,11 @@ export function bumpToTop(id: string): boolean {
   return true;
 }
 
-/** Clone a conversation: deep-copy with a new ID, placed right after the original in sort order. */
-export function clone(id: string): Conversation | null {
-  const src = get(id);
-  if (!src) return null;
+/** Clone a conversation with a new ID, placed right after the original in sort order. */
+export function clone(id: string): ConversationSummary | null {
+  if (dirty.has(id)) flush(id);
+  const source = summaries.get(id);
+  if (!source) return null;
 
   let newId = generateId();
   while (hasConversation(newId) || persistence.hasDeletedConversation(newId)) newId = generateId();
@@ -646,51 +647,28 @@ export function clone(id: string): Conversation | null {
   createConversationWorkspace(newId);
 
   // Compute a sortOrder between the original and the item after it in the same folder.
-  const siblings = sidebarEntries(src.folderId ?? null);
+  const siblings = sidebarEntries(source.folderId ?? null);
   const srcIdx = siblings.findIndex(s => s.type === "conversation" && s.id === id);
   let newOrder: number;
-  if (srcIdx >= 0 && srcIdx + 1 < siblings.length && siblings[srcIdx + 1].pinned === src.pinned) {
+  if (srcIdx >= 0 && srcIdx + 1 < siblings.length && siblings[srcIdx + 1].pinned === source.pinned) {
     // Place between the original and the next item in the same section
-    newOrder = (src.sortOrder + siblings[srcIdx + 1].sortOrder) / 2;
+    newOrder = (source.sortOrder + siblings[srcIdx + 1].sortOrder) / 2;
   } else {
     // Last item in its section — place after it
-    newOrder = src.sortOrder + 1;
+    newOrder = source.sortOrder + 1;
   }
 
-  const conv: Conversation = {
+  const cloned = persistence.cloneConversation(id, {
     id: newId,
-    provider: src.provider,
-    model: src.model,
-    effort: src.effort ?? DEFAULT_EFFORT,
-    fastMode: src.fastMode ?? false,
-    messages: structuredClone(src.messages),
-    activeContext: src.activeContext
-      ? { ...structuredClone(src.activeContext), windowId: `${newId}:${src.activeContext.windowNumber}` }
-      : null,
+    title: (source.title || "clone") + " 📋",
+    sortOrder: newOrder,
     createdAt: now,
     updatedAt: now,
-    lastContextTokens: src.lastContextTokens,
-    marked: src.marked,
-    pinned: src.pinned,
-    muted: src.muted === true,
-    sortOrder: newOrder,
-    folderId: src.folderId ?? null,
-    title: (src.title || "clone") + " 📋",
-    toolPolicy: src.toolPolicy ? structuredClone(src.toolPolicy) : null,
-  };
-  if (src.activeContext && conv.activeContext) {
-    for (const message of [...conv.messages, ...conv.activeContext.messages]) {
-      if (message.contextCheckpoint?.windowId === src.activeContext.windowId) {
-        message.contextCheckpoint.windowId = conv.activeContext.windowId;
-      }
-    }
-  }
-
-  retainConversation(conv);
-  markDirty(newId);
-  flush(newId);
-  recordSidebarUndo({ type: "conversation_removed", id: newId });
-  return conv;
+  });
+  if (!cloned) return null;
+  summaries.set(newId, cloned);
+  saveSummaryIndex();
+  return getSummary(newId);
 }
 
 export function get(id: string): Conversation | undefined {

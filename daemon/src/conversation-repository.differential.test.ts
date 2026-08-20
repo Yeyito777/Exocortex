@@ -185,15 +185,16 @@ describe("JSON/SQLite deterministic differential state machine", () => {
     checkpoint("append and queue reorder");
 
     both((repo) => {
-      const source = repo.load(primaryId)!;
-      const cloned: Conversation = structuredClone(source);
-      cloned.id = cloneId;
-      cloned.title = "Differential clone";
-      cloned.createdAt += 100;
-      cloned.updatedAt += 100;
-      repo.save(cloned);
+      const source = repo.getSummary(primaryId)!;
+      expect(repo.cloneConversation(primaryId, {
+        id: cloneId,
+        title: "Differential clone",
+        sortOrder: source.sortOrder + 0.5,
+        createdAt: source.createdAt + 100,
+        updatedAt: source.updatedAt + 100,
+      })?.id).toBe(cloneId);
     });
-    checkpoint("clone-like copy");
+    checkpoint("durable clone");
 
     both((repo) => { expect(repo.trashConversations([cloneId], false)).toEqual([cloneId]); });
     checkpoint("soft delete");
