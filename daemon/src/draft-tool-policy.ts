@@ -10,6 +10,7 @@ function clonePolicy(policy: ConversationToolPolicy): ConversationToolPolicy {
   return {
     internal: [...policy.internal],
     external: [...policy.external],
+    ...(policy.knownExternal ? { knownExternal: [...policy.knownExternal] } : {}),
     ...(policy.customToolModules?.length ? {
       customToolModules: policy.customToolModules.map((module) => ({
         ...module,

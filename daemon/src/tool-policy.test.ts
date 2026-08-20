@@ -43,6 +43,41 @@ describe("conversation tool policy", () => {
     }
   });
 
+  test("new external manifests default enabled without re-enabling known disabled tools", () => {
+    const loaded: LoadedTool[] = ["google", "duo"].map((name) => ({
+      manifest: {
+        name,
+        bin: `./bin/${name}`,
+        systemHint: `${name} hint`,
+        display: { label: name, color: "#ffffff" },
+      },
+      binDir: `/tmp/${name}/bin`,
+      toolDir: `/tmp/${name}`,
+    }));
+    const restore = setLoadedExternalToolsForTest(loaded);
+    try {
+      const conv = createConversation("new-external", "openai", "gpt-5.6-sol");
+      conv.toolPolicy = {
+        internal: ["read"],
+        external: [],
+        knownExternal: ["google"],
+      };
+      expect(resolveConversationToolPolicy(conv).externalToolNames).toEqual(["duo"]);
+      expect(buildToolPolicySnapshot(conv).external).toEqual([
+        { name: "google", label: "google", enabled: false },
+        { name: "duo", label: "duo", enabled: true },
+      ]);
+
+      // Legacy exact policies did not record their manifest inventory. Their
+      // selected names become the old inventory, so a missing installed tool is
+      // treated as newly added and enabled immediately.
+      conv.toolPolicy = { internal: ["read"], external: ["google"] };
+      expect(resolveConversationToolPolicy(conv).externalToolNames).toEqual(["google", "duo"]);
+    } finally {
+      restore();
+    }
+  });
+
   test("legacy scoped defaults remain research-only unless edits were delegated", () => {
     const conv = createConversation("child", "openai", "gpt-5.6-sol");
     conv.subagentMaxDepth = 0;
@@ -131,7 +166,11 @@ describe("conversation tool policy", () => {
         action: "enable",
         tools: [{ kind: "external", name: "google" }],
       });
-      expect(enabled).toEqual({ internal: ["bash", "read"], external: ["google"] });
+      expect(enabled).toEqual({
+        internal: ["bash", "read"],
+        external: ["google"],
+        knownExternal: ["google"],
+      });
       conv.toolPolicy = enabled;
       await expect(applyToolPolicyMutation(conv, {
         action: "disable",
@@ -158,7 +197,11 @@ describe("conversation tool policy", () => {
       const conv = createConversation("external-child", "openai", "gpt-5.6-sol");
       conv.subagentMaxDepth = 0;
       conv.subagentPolicy = { parentConversationId: "root", allowEdits: false, parentSystemInstructions: "" };
-      conv.toolPolicy = { internal: ["read"], external: ["google"] };
+      conv.toolPolicy = {
+        internal: ["read"],
+        external: ["google"],
+        knownExternal: ["gmail", "google"],
+      };
       const resolved = resolveConversationToolPolicy(conv);
       expect(resolved.internalToolNames).toEqual(["bash", "read"]);
       expect(getToolDefs(resolved.internalToolNames).map((tool) => tool.name)).toEqual(["bash", "read"]);

@@ -143,7 +143,7 @@ export interface SubagentPolicy {
   parentSystemInstructions: string;
 }
 
-/** Exact per-conversation selection. Omission uses the root/scoped defaults. */
+/** Per-conversation selection. Omission uses the root/scoped defaults. */
 export interface ConversationCustomToolModule {
   /** Canonical absolute module path. */
   path: string;
@@ -162,6 +162,12 @@ export interface ConversationCustomToolModule {
 export interface ConversationToolPolicy {
   internal: string[];
   external: string[];
+  /**
+   * External manifests known when this explicit selection was last written.
+   * Installed manifests absent from this inventory are new and default enabled;
+   * this preserves deliberate disables without making newly installed tools opt-in.
+   */
+  knownExternal?: string[];
   /** Trusted internal-tool modules attached only to this conversation. */
   customToolModules?: ConversationCustomToolModule[];
 }

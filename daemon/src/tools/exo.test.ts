@@ -679,7 +679,7 @@ describe("native exo daemon runtime", () => {
     expect(getQueuedMessages(parentId)).toEqual([]);
   });
 
-  test("prevents scoped children from escalating edit access or targeting unrelated conversations", async () => {
+  test("allows scoped children to grant installed edit tools but still blocks unrelated targets", async () => {
     const rootId = id("scoped-root");
     const childId = id("scoped-caller");
     const unrelatedId = id("unrelated-target");
@@ -704,8 +704,10 @@ describe("native exo daemon runtime", () => {
       allow_edits: true,
       max_depth: 0,
     }, childId, undefined, 1);
-    expect(escalation).toMatchObject({ isError: true });
-    expect(escalation.output).toContain("cannot grant edit access");
+    expect(escalation).toMatchObject({ isError: false });
+    const escalatedChild = JSON.parse(escalation.output);
+    conversationIds.push(escalatedChild.conversation_id);
+    expect(escalatedChild.internal_tools).toEqual(expect.arrayContaining(["bash", "write", "edit", "patch"]));
 
     const unrelatedSend = await runtime.execute({
       action: "send",
@@ -1075,8 +1077,8 @@ describe("native exo daemon runtime", () => {
         external_tools: [],
       },
     }, childId, undefined, 1);
-    expect(escalation.isError).toBe(true);
-    expect(escalation.output).toContain("Cannot delegate unavailable internal tool: write");
+    expect(escalation.isError).toBe(false);
+    expect(get(childId)?.toolPolicy).toEqual({ internal: ["read", "write", "exo"], external: [] });
 
     const reset = JSON.parse((await runtime.execute({
       action: "commands",

@@ -601,6 +601,7 @@ export function setToolPolicy(id: string, policy: ConversationToolPolicy | null)
   conv.toolPolicy = policy ? {
     internal: [...new Set(policy.internal)],
     external: [...new Set(policy.external)],
+    ...(policy.knownExternal ? { knownExternal: [...new Set(policy.knownExternal)] } : {}),
     ...(policy.customToolModules?.length ? {
       customToolModules: policy.customToolModules.map((module) => ({
         ...module,

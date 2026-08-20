@@ -455,7 +455,7 @@ function migrateV17toV18(data: ConversationFileV17): ConversationFileV18 {
   };
 }
 
-/** v18 → v19: Persist exact internal/external per-conversation allowlists. */
+/** v18 → v19: Persist internal/external per-conversation selections. */
 function migrateV18toV19(data: ConversationFileV18): ConversationFileV19 {
   return { ...data, version: 19, toolPolicy: null };
 }

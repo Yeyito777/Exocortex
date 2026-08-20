@@ -137,7 +137,7 @@ export const exo: Tool = {
       internal_tools: {
         type: "array",
         items: { type: "string" },
-        description: "Exact configurable internal-tool allowlist. A new subagent defaults to research tools plus legacy allow_edits additions. For an existing send, internal_tools and external_tools must both be supplied and persistently replace the target's policy before its next turn. Cannot exceed the caller's effective tools, and a send targeting the calling conversation must retain exo.",
+        description: "Exact configurable internal-tool allowlist. A new subagent defaults to research tools plus legacy allow_edits additions. For an existing send, internal_tools and external_tools must both be supplied and persistently replace the target's policy before its next turn. Any installed tool may be selected, and a send targeting the calling conversation must retain exo.",
       },
       external_tools: {
         type: "array",

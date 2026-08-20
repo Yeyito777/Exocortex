@@ -655,7 +655,11 @@ describe("SQLite maintenance", () => {
     const { path } = pathFor("tool-policy");
     const store = new SqliteConversationStore({ path });
     const conv = createConversation("tool-policy", "openai", "gpt-5.6-sol");
-    conv.toolPolicy = { internal: ["read", "write"], external: ["google"] };
+    conv.toolPolicy = {
+      internal: ["read", "write"],
+      external: ["google"],
+      knownExternal: ["google", "duo"],
+    };
     store.save(conv);
     expect(store.load(conv.id)?.toolPolicy).toEqual(conv.toolPolicy);
     expect(store.loadToolPolicyState(conv.id)).toEqual({

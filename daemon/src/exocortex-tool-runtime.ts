@@ -60,7 +60,6 @@ import { buildSystemPrompt, reloadUserAddendum, setUserAddendum } from "./system
 import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { ensureConversationWorkspace } from "./workspace-service";
 import {
-  assertDelegatedSubset,
   buildToolPolicySnapshot,
   getDefaultSubagentInternalToolNames,
   normalizeToolPolicySelection,
@@ -708,23 +707,6 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }
   };
 
-  const assertWithinCallerToolCeiling = (
-    parentConvId: string | undefined,
-    callerMaxDepth: number | null | undefined,
-    internal: readonly string[],
-    external: readonly string[],
-  ): void => {
-    if (!parentConvId) return;
-    const caller = convStore.get(parentConvId);
-    if (!caller) throw new Error(`Calling conversation ${parentConvId} not found`);
-    const ceiling = resolveConversationToolPolicy(
-      caller,
-      callerMaxDepth ?? caller.subagentMaxDepth ?? null,
-    );
-    assertDelegatedSubset("internal", internal, ceiling.configurableInternalToolNames);
-    assertDelegatedSubset("external", external, ceiling.externalToolNames);
-  };
-
   const setRequestedModel = (convId: string, input: Record<string, unknown>): void => {
     const requestedEffort = effortInput(input.effort);
     const hasRequestedModel = typeof input.model === "string" && Boolean(input.model.trim());
@@ -807,7 +789,6 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       const selection = resolveModelSelection(input, "medium");
       ensureCanStart(selection.provider);
       const parent = parentConvId ? convStore.get(parentConvId) : undefined;
-      const parentTools = parent ? resolveConversationToolPolicy(parent, callerMaxDepth ?? parent.subagentMaxDepth ?? null) : null;
       let childInternalTools = validateToolSelection(
         "internal",
         requestedInternalTools ?? getDefaultSubagentInternalToolNames(maxDepth, requestedAllowEdits === true),
@@ -816,21 +797,6 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       let childExternalTools = validateToolSelection("external", requestedExternalTools ?? []);
       if (maxDepth <= 0 && childInternalTools.includes("exo")) {
         throw new Error("Cannot enable internal tool exo for a child with max_depth=0");
-      }
-      if (parentTools) {
-        if (requestedInternalTools) {
-          assertDelegatedSubset("internal", childInternalTools, parentTools.configurableInternalToolNames);
-        } else {
-          const parentInternal = new Set(parentTools.configurableInternalToolNames);
-          childInternalTools = childInternalTools.filter((name) => parentInternal.has(name));
-          if (requestedAllowEdits === true) {
-            const editTools = getDefaultSubagentInternalToolNames(maxDepth, true);
-            if (editTools.some((name) => !parentInternal.has(name))) {
-              throw new Error("A scoped subagent without edit access cannot grant edit access to a child.");
-            }
-          }
-        }
-        assertDelegatedSubset("external", childExternalTools, parentTools.externalToolNames);
       }
       const childCustomModules = (parent?.toolPolicy?.customToolModules ?? []).filter((module) => (
         module.tools.some((tool) => childInternalTools.includes(tool.name))
@@ -881,12 +847,6 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         if (maxDepth <= 0 && requestedExistingToolPolicy.internal.includes("exo")) {
           throw new Error("Cannot enable internal tool exo for a conversation when this send has max_depth=0");
         }
-        assertWithinCallerToolCeiling(
-          parentConvId,
-          callerMaxDepth,
-          requestedExistingToolPolicy.internal,
-          requestedExistingToolPolicy.external,
-        );
       }
       // A busy target cannot safely change models or start a nested turn. Preserve
       // the send as durable intent and let the queue scheduler run it next. An
@@ -1425,7 +1385,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     args: Record<string, unknown>,
     parentConversationId: string | undefined,
     _signal?: AbortSignal,
-    callerMaxDepth?: number | null,
+    _callerMaxDepth?: number | null,
   ): Promise<ToolResult> => {
     const operation = stringInput(args, "operation", true)!.toLowerCase();
     if (operation !== "get" && operation !== "set" && operation !== "reset") {
@@ -1452,12 +1412,6 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         throw new Error("internal_tools and external_tools are only accepted for operation=set");
       }
       const defaults = resolveConversationToolPolicy({ ...conversation, toolPolicy: null });
-      assertWithinCallerToolCeiling(
-        parentConversationId,
-        callerMaxDepth,
-        defaults.configurableInternalToolNames,
-        defaults.externalToolNames,
-      );
       assertCurrentConversationRetainsExocortex(
         parentConversationId,
         convId,
@@ -1486,12 +1440,6 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         && nextPolicy.internal.includes("exo")) {
         throw new Error("Cannot enable internal tool exo for a conversation with max_depth=0");
       }
-      assertWithinCallerToolCeiling(
-        parentConversationId,
-        callerMaxDepth,
-        nextPolicy.internal,
-        nextPolicy.external,
-      );
     }
 
     const previousPolicy = conversation.toolPolicy;
@@ -1957,7 +1905,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     },
     {
       name: "tools",
-      description: "View, replace, or reset a conversation's next-turn tool policy. Mutations cannot exceed the caller's effective tools, and the active caller cannot remove Exocortex from its own conversation.",
+      description: "View, replace, or reset a conversation's next-turn tool policy. Any installed tool may be selected; the active caller cannot remove Exocortex from its own conversation.",
       inputSchema: commandSchema({
         operation: { type: "string", enum: ["get", "set", "reset"] },
         conversation_id: { type: "string", description: "Target conversation. Defaults to the active conversation." },

@@ -83,7 +83,19 @@ export function resolveConversationToolPolicy(
   }
 
   const defaultExternal = scoped ? [] : installedExternal;
-  const externalToolNames = uniqueNames(selected?.external ?? defaultExternal)
+  const selectedExternal = new Set(uniqueNames(selected?.external ?? defaultExternal));
+  if (selected) {
+    // Explicit policies remember the inventory they were written against. A
+    // manifest installed later is enabled immediately instead of silently
+    // landing in the disabled set. Legacy policies have no inventory; treating
+    // their selected names as the old inventory upgrades newly discovered tools
+    // to enabled on first resolution.
+    const knownExternal = new Set(uniqueNames(selected.knownExternal ?? selected.external));
+    for (const name of installedExternal) {
+      if (!knownExternal.has(name)) selectedExternal.add(name);
+    }
+  }
+  const externalToolNames = orderedSelection(selectedExternal, installedExternal)
     .filter((name) => installedExternalSet.has(name));
 
   // External tools are deliberately not native tool schemas. They remain
@@ -133,23 +145,13 @@ export function normalizeToolPolicySelection(
   if (external.length > 0 && availableInternal.includes(EXTERNAL_TOOL_TRANSPORT)) {
     internal.add(EXTERNAL_TOOL_TRANSPORT);
   }
+  const knownExternal = getExternalToolNames();
   return {
     internal: orderedSelection(internal, availableInternal),
     external,
+    ...(knownExternal.length > 0 ? { knownExternal } : {}),
     ...(modules.length > 0 ? { customToolModules: modules } : {}),
   };
-}
-
-export function assertDelegatedSubset(
-  kind: "internal" | "external",
-  requested: readonly string[],
-  ceiling: readonly string[],
-): void {
-  const permitted = new Set(ceiling);
-  const denied = requested.filter((name) => !permitted.has(name));
-  if (denied.length > 0) {
-    throw new Error(`Cannot delegate unavailable ${kind} tool${denied.length === 1 ? "" : "s"}: ${denied.join(", ")}`);
-  }
 }
 
 function orderedSelection(names: ReadonlySet<string>, available: readonly string[]): string[] {
