@@ -38,6 +38,7 @@ export { activateSidebarItem } from "./sidebar/folderactions";
 export {
   createConversationActionMenu,
   handleConversationActionMenuKey,
+  openSelectedConversationActionMenu,
   renderConversationActionMenu,
 } from "./sidebar/conversationactions";
 export type {

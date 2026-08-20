@@ -9,6 +9,7 @@ import type { KeyEvent } from "../input";
 import { moveTo } from "../frame";
 import { theme } from "../theme";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
+import type { SidebarState } from "./state";
 
 export type ConversationAction = "copy_id" | "toggle_star" | "toggle_pin" | "delete";
 
@@ -39,6 +40,19 @@ export function createConversationActionMenu(
     selection: "copy_id",
     deleteConfirmation: false,
   };
+}
+
+/** Open the actions menu for the conversation currently selected in the sidebar. */
+export function openSelectedConversationActionMenu(sidebar: SidebarState): void {
+  const item = sidebar.selectedItem;
+  if (item?.type !== "conversation") return;
+  const conv = sidebar.conversations.find(candidate => candidate.id === item.id);
+  if (!conv) return;
+
+  sidebar.visualAnchor = null;
+  sidebar.pendingDeleteId = null;
+  sidebar.pendingDeleteItem = null;
+  sidebar.conversationActionMenu = createConversationActionMenu(conv.id, conv.marked, conv.pinned);
 }
 
 export function handleConversationActionMenuKey(

@@ -122,4 +122,30 @@ describe("sidebar conversation actions", () => {
     handleFocusedKey({ type: "char", char: ";" }, state);
     expect(state.sidebar.conversationActionMenu?.convId).toBe("conv-b");
   });
+
+  test("right click opens the menu for the conversation under the pointer", () => {
+    const state = sidebarState();
+    state.panelFocus = "chat";
+    state.mouseCursor = "hand";
+
+    expect(handleMouseEvent({
+      type: "mouse",
+      button: 2,
+      col: 5,
+      row: 4,
+      action: "press",
+      shift: false,
+      meta: false,
+      ctrl: false,
+    }, state)).toEqual({ type: "handled" });
+
+    expect(state.panelFocus as "chat" | "sidebar").toBe("sidebar");
+    expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "conv-b" });
+    expect(state.sidebar.conversationActionMenu).toMatchObject({
+      convId: "conv-b",
+      selection: "copy_id",
+      marked: false,
+      pinned: false,
+    });
+  });
 });

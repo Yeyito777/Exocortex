@@ -12,7 +12,13 @@ import type { RenderState } from "./state";
 import { focusHistory, focusPrompt, focusSidebar } from "./state";
 import type { KeyResult } from "./focus";
 import { scrollBy } from "./chat";
-import { activateSidebarItem, sidebarHitTest, scrollSidebar, SIDEBAR_WIDTH } from "./sidebar";
+import {
+  activateSidebarItem,
+  openSelectedConversationActionMenu,
+  sidebarHitTest,
+  scrollSidebar,
+  SIDEBAR_WIDTH,
+} from "./sidebar";
 import { mouse_cursor_pointer, mouse_cursor_text, mouse_cursor_hand } from "./terminal";
 import { clampCol, ensureCursorVisible } from "./historycursor";
 import { editMessageItemIndexAtMouse } from "./editmessage";
@@ -177,6 +183,18 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
 
     // Chat message area or anywhere else: scroll messages
     scrollBy(state, delta);
+    return { type: "handled" };
+  }
+
+  // ── Right click (button 2) ──────────────────────────────────────
+  if (button === 2 && action === "press" && inSidebar) {
+    // Select the item under the click without activating it, then open the same
+    // conversation-actions menu as the keyboard `;` shortcut.
+    const item = sidebarHitTest(row, state.rows, sidebar);
+    if (item) {
+      focusSidebarItem(sidebar, item);
+      openSelectedConversationActionMenu(sidebar);
+    }
     return { type: "handled" };
   }
 

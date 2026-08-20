@@ -24,7 +24,6 @@ import {
   focusNextCompletedConversation,
   focusNextStreamingConversation,
   focusPreviousEnteredConversation,
-  createConversationActionMenu,
   handleConversationActionMenuKey,
   handleSidebarConversationAction,
   handleSidebarKey,
@@ -32,6 +31,7 @@ import {
   handleSidebarPromptKey,
   handleSidebarViewportAction,
   moveSelection,
+  openSelectedConversationActionMenu,
   syncSelectedIndex,
 } from "./sidebar";
 import {
@@ -151,18 +151,6 @@ function loadActivityConversation(
   return focused
     ? loadSelectedConversation(state)
     : { type: "handled" };
-}
-
-function openSelectedConversationActionMenu(state: RenderState): void {
-  const item = state.sidebar.selectedItem;
-  if (item?.type !== "conversation") return;
-  const conv = state.sidebar.conversations.find(candidate => candidate.id === item.id);
-  if (!conv) return;
-
-  state.sidebar.visualAnchor = null;
-  state.sidebar.pendingDeleteId = null;
-  state.sidebar.pendingDeleteItem = null;
-  state.sidebar.conversationActionMenu = createConversationActionMenu(conv.id, conv.marked, conv.pinned);
 }
 
 function handleConversationActionMenuFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
@@ -450,7 +438,7 @@ export function handleFocusedKey(
       && state.vim.mode === "normal"
       && !vimHasPendingInput(state)
       && key.type === "char" && key.char === ";") {
-    openSelectedConversationActionMenu(state);
+    openSelectedConversationActionMenu(state.sidebar);
     return { type: "handled" };
   }
 
