@@ -2102,11 +2102,24 @@ export class SqliteConversationStore implements ConversationRepository {
     type ToolOutputRow = { tool_call_id: string; content_json: string; payload_json: string | null };
     const selectRows = (ids?: readonly string[]): ToolOutputRow[] => {
       const idFilter = ids ? ` AND t.tool_call_id IN (${sqlPlaceholders(ids.length)})` : "";
+      // Do not join the resolved_message_blobs UNION view here. SQLite
+      // materializes that compound view before applying this conversation's
+      // predicates, which turns an unwarmed Ctrl+O into a scan of every blob in
+      // the database. Point-join the local row/alias and its owner instead.
       return this.db.query<ToolOutputRow, string[]>(`
-        SELECT t.tool_call_id, m.content_json, b.payload_json FROM tool_outputs t
+        SELECT t.tool_call_id, m.content_json,
+               COALESCE(direct.payload_json, owner.payload_json) AS payload_json
+        FROM tool_outputs t
         JOIN messages m ON m.conversation_id=t.conversation_id AND m.sequence=t.message_sequence
-        LEFT JOIN resolved_message_blobs b ON b.conversation_id=t.conversation_id
-          AND b.message_sequence=t.message_sequence AND b.kind='tool_result' AND b.ordinal=t.ordinal
+        LEFT JOIN message_blobs direct ON direct.conversation_id=t.conversation_id
+          AND direct.message_sequence=t.message_sequence
+          AND direct.kind='tool_result' AND direct.ordinal=t.ordinal
+        LEFT JOIN message_blob_aliases alias ON alias.conversation_id=t.conversation_id
+          AND alias.message_sequence=t.message_sequence
+          AND alias.kind='tool_result' AND alias.ordinal=t.ordinal
+        LEFT JOIN message_blobs owner ON owner.conversation_id=alias.owner_conversation_id
+          AND owner.message_sequence=alias.owner_message_sequence
+          AND owner.kind=alias.owner_kind AND owner.ordinal=alias.owner_ordinal
         WHERE t.conversation_id=?${idFilter} ORDER BY t.message_sequence, t.ordinal
       `).all(id, ...(ids ?? []));
     };

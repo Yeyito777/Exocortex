@@ -180,6 +180,10 @@ describe("SQLite transaction fault boundaries", () => {
     expect(cloned.subagentPolicy ?? null).toBeNull();
     expect(cloned.toolPolicy).toEqual(source.toolPolicy);
     expect(store.loadToolOutputs(target.id)).toEqual(store.loadToolOutputs(source.id));
+    expect(store.loadToolOutputs(target.id, ["clone-tool"])).toEqual([{
+      toolCallId: "clone-tool",
+      output: "large deferred result".repeat(10_000),
+    }]);
 
     const sourceUser = store.loadDisplayPage(source.id, 20)?.entries.find((entry) => entry.type === "user");
     const clonedUser = store.loadDisplayPage(target.id, 20)?.entries.find((entry) => entry.type === "user");
