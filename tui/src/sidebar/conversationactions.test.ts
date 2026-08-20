@@ -1,16 +1,28 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  conversationActionMenuHitTest,
   createConversationActionMenu,
   handleConversationActionMenuKey,
+  handleConversationActionMenuMouse,
   renderConversationActionMenu,
 } from "./conversationactions";
+import type { MouseEvent } from "../input";
 import { theme } from "../theme";
 
 function stripAnsi(text: string): string {
   return text
     .replace(/\x1b\[\d+;\d+H/g, "\n")
     .replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function mouseEvent(
+  col: number,
+  row: number,
+  button: number,
+  action: MouseEvent["action"],
+): MouseEvent {
+  return { type: "mouse", col, row, button, action, shift: false, meta: false, ctrl: false };
 }
 
 describe("conversation action menu", () => {
@@ -45,6 +57,65 @@ describe("conversation action menu", () => {
       type: "action",
       action: "delete",
     });
+  });
+
+  test("hit-tests, highlights, and activates menu rows with the mouse", () => {
+    const menu = createConversationActionMenu("conv-1", false, false);
+
+    expect(conversationActionMenuHitTest(menu, 3, 29, 20, 80, 31, 5)).toBe("toggle_star");
+    expect(conversationActionMenuHitTest(menu, 3, 29, 20, 80, 29, 5)).toBe("chrome");
+    expect(conversationActionMenuHitTest(menu, 3, 29, 20, 80, 50, 5)).toBeNull();
+
+    expect(handleConversationActionMenuMouse(
+      menu,
+      mouseEvent(31, 5, 3, "motion"),
+      3,
+      29,
+      20,
+      80,
+    )).toEqual({ type: "handled" });
+    expect(menu.selection).toBe("toggle_star");
+
+    expect(handleConversationActionMenuMouse(
+      menu,
+      mouseEvent(31, 5, 0, "press"),
+      3,
+      29,
+      20,
+      80,
+    )).toEqual({ type: "action", action: "toggle_star" });
+  });
+
+  test("mouse clicks preserve delete confirmation and close the menu when outside", () => {
+    const menu = createConversationActionMenu("conv-1", false, false);
+
+    expect(handleConversationActionMenuMouse(
+      menu,
+      mouseEvent(31, 7, 0, "press"),
+      3,
+      29,
+      20,
+      80,
+    )).toEqual({ type: "handled" });
+    expect(menu.selection).toBe("delete");
+    expect(menu.deleteConfirmation).toBe(true);
+    expect(handleConversationActionMenuMouse(
+      menu,
+      mouseEvent(31, 7, 0, "press"),
+      3,
+      29,
+      20,
+      80,
+    )).toEqual({ type: "action", action: "delete" });
+
+    expect(handleConversationActionMenuMouse(
+      menu,
+      mouseEvent(50, 10, 0, "press"),
+      3,
+      29,
+      20,
+      80,
+    )).toEqual({ type: "close" });
   });
 
   test("renders beside the sidebar with all options and destructive text in red", () => {

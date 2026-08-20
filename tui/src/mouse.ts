@@ -10,10 +10,13 @@
 import type { MouseEvent } from "./input";
 import type { RenderState } from "./state";
 import { focusHistory, focusPrompt, focusSidebar } from "./state";
-import type { KeyResult } from "./focus";
+import { handleConversationActionMenuResult, type KeyResult } from "./focus";
 import { scrollBy } from "./chat";
 import {
   activateSidebarItem,
+  conversationActionMenuAnchorRow,
+  conversationActionMenuHitTest,
+  handleConversationActionMenuMouse,
   openSelectedConversationActionMenu,
   sidebarHitTest,
   scrollSidebar,
@@ -80,6 +83,23 @@ type CursorShape = "pointer" | "text" | "hand";
 function cursorZone(col: number, row: number, state: RenderState): CursorShape {
   const { layout, sidebar } = state;
 
+  const menu = sidebar.conversationActionMenu;
+  if (menu) {
+    const anchorRow = conversationActionMenuAnchorRow(sidebar, menu.convId);
+    const hit = conversationActionMenuHitTest(
+      menu,
+      anchorRow,
+      SIDEBAR_WIDTH + 1,
+      state.rows,
+      state.cols,
+      col,
+      row,
+    );
+    // The open menu is modal: action rows are clickable, while every other
+    // location is an outside-click dismissal target rather than underlying UI.
+    return hit && hit !== "chrome" ? "hand" : "pointer";
+  }
+
   // Sidebar area
   if (sidebar.open && col <= SIDEBAR_WIDTH) {
     // Hand for clickable conversation entries, pointer for chrome
@@ -132,7 +152,18 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
     return { type: "handled" };
   }
   if (state.queuePrompt) return { type: "handled" };
-  if (state.sidebar.conversationActionMenu) return { type: "handled" };
+  if (state.sidebar.conversationActionMenu) {
+    const menu = state.sidebar.conversationActionMenu;
+    const result = handleConversationActionMenuMouse(
+      menu,
+      ev,
+      conversationActionMenuAnchorRow(state.sidebar, menu.convId),
+      SIDEBAR_WIDTH + 1,
+      state.rows,
+      state.cols,
+    );
+    return handleConversationActionMenuResult(result, state);
+  }
 
   const { col, row, button, action } = ev;
   const { layout, sidebar } = state;

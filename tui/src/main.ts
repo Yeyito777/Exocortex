@@ -1357,6 +1357,25 @@ function requestDaemonRestart(): void {
   daemon.restartDaemon();
 }
 
+function deleteConversationFromUi(convId: string): void {
+  daemon.deleteConversation(convId);
+  clearAllQueuedMessagesForConversation(state, convId);
+  forgetConversationScroll(state, convId);
+  // If deleting the current conversation, clear the chat.
+  if (state.convId === convId) {
+    state.convId = null;
+    state.draftFolderId = state.sidebar.currentFolderId;
+    state.messages = [];
+    clearPendingAI(state);
+    state.contextTokens = 0;
+    state.goal = null;
+    state.btw = null;
+    resetToolOutputState(state);
+    resetHistoryPagination(state);
+    resetNewConversationDefaults(state);
+  }
+}
+
 function handleKey(key: KeyEvent): void {
   const inputBefore = state.inputBuffer;
   const voicePromptBufferBefore = state.voicePromptJobs.length > 0 || state.voicePrompt?.phase === "transcribing"
@@ -1449,22 +1468,7 @@ function handleKey(key: KeyEvent): void {
       startNewConversation();
       break;
     case "delete_conversation":
-      daemon.deleteConversation(result.convId);
-      clearAllQueuedMessagesForConversation(state, result.convId);
-      forgetConversationScroll(state, result.convId);
-      // If deleting the current conversation, clear the chat
-      if (state.convId === result.convId) {
-        state.convId = null;
-        state.draftFolderId = state.sidebar.currentFolderId;
-        state.messages = [];
-        clearPendingAI(state);
-        state.contextTokens = 0;
-        state.goal = null;
-        state.btw = null;
-        resetToolOutputState(state);
-        resetHistoryPagination(state);
-        resetNewConversationDefaults(state);
-      }
+      deleteConversationFromUi(result.convId);
       break;
     case "delete_conversations": {
       daemon.deleteConversations(result.convIds);
@@ -1548,11 +1552,13 @@ function handleMouse(ev: MouseEvent): void {
   if (ev.action === "motion") {
     const prevFocus = state.panelFocus;
     const prevSidebarItem = state.sidebar.selectedItem;
+    const prevConversationActionSelection = state.sidebar.conversationActionMenu?.selection;
     const prevCursorRow = state.historyCursor.row;
     const prevCursorCol = state.historyCursor.col;
     handleMouseEvent(ev, state);
     if (state.panelFocus !== prevFocus
         || state.sidebar.selectedItem !== prevSidebarItem
+        || state.sidebar.conversationActionMenu?.selection !== prevConversationActionSelection
         || state.historyCursor.row !== prevCursorRow
         || state.historyCursor.col !== prevCursorCol) {
       renderAfterLocalUiMutation();
@@ -1583,9 +1589,18 @@ function handleMouse(ev: MouseEvent): void {
     case "edit_message_confirm":
       confirmSelectedEditMessage();
       break;
+    case "delete_conversation":
+      deleteConversationFromUi(result.convId);
+      break;
+    case "mark_conversation":
+      daemon.markConversation(result.convId, result.marked);
+      break;
+    case "pin_conversation":
+      daemon.pinConversation(result.convId, result.pinned);
+      break;
     case "handled":
       break;
-    // Mouse events don't trigger most actions — ignore other result types
+    // Ignore result types that are not currently emitted by mouse interactions.
     default:
       break;
   }

@@ -36,13 +36,17 @@ import type { SidebarKeyResult } from "./sidebar/types";
 
 export { activateSidebarItem } from "./sidebar/folderactions";
 export {
+  conversationActionMenuAnchorRow,
+  conversationActionMenuHitTest,
   createConversationActionMenu,
   handleConversationActionMenuKey,
+  handleConversationActionMenuMouse,
   openSelectedConversationActionMenu,
   renderConversationActionMenu,
 } from "./sidebar/conversationactions";
 export type {
   ConversationAction,
+  ConversationActionMenuHit,
   ConversationActionMenuState,
   ConversationActionMenuKeyResult,
 } from "./sidebar/conversationactions";

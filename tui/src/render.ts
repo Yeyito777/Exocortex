@@ -16,7 +16,7 @@ import type { ImageAttachment } from "./messages";
 import { getViewStart } from "./chatscroll";
 import { applyChatConversationScroll, hasReadyConversationScrollRestore } from "./conversationscroll";
 import { renderTopbar } from "./topbar";
-import { buildDisplayRows, renderConversationActionMenu, renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
+import { conversationActionMenuAnchorRow, renderConversationActionMenu, renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { isGlobalIdleQueuedMessage } from "./queue";
 import { getSidebarSearchBarViewport } from "./sidebarsearch";
 import { buildMessageLines, type BuildMessageLinesResult } from "./conversation";
@@ -1490,15 +1490,9 @@ export function render(state: RenderState): void {
   // ── Sidebar conversation action menu ──────────────────────────
   if (sidebarOpen && state.sidebar.conversationActionMenu) {
     const menu = state.sidebar.conversationActionMenu;
-    const displayRow = buildDisplayRows(state.sidebar).findIndex(row => (
-      row.type === "entry"
-      && row.item?.type === "conversation"
-      && row.item.id === menu.convId
-    ));
-    const anchorRow = displayRow === -1 ? 3 : 3 + displayRow - state.sidebar.scrollOffset;
     appendPositionedPayload(ctx, renderConversationActionMenu(
       menu,
-      anchorRow,
+      conversationActionMenuAnchorRow(state.sidebar, menu.convId),
       SIDEBAR_WIDTH + 1,
       rows,
       cols,

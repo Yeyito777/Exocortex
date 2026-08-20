@@ -33,6 +33,7 @@ import {
   moveSelection,
   openSelectedConversationActionMenu,
   syncSelectedIndex,
+  type ConversationActionMenuKeyResult,
 } from "./sidebar";
 import {
   handleSidebarSearchBarKey,
@@ -153,10 +154,12 @@ function loadActivityConversation(
     : { type: "handled" };
 }
 
-function handleConversationActionMenuFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
+export function handleConversationActionMenuResult(
+  result: ConversationActionMenuKeyResult,
+  state: RenderState,
+): KeyResult {
   const menu = state.sidebar.conversationActionMenu;
   if (!menu) return { type: "handled" };
-  const result = handleConversationActionMenuKey(menu, key);
   if (result.type === "close") {
     state.sidebar.conversationActionMenu = null;
     return { type: "handled" };
@@ -169,6 +172,12 @@ function handleConversationActionMenuFocusedKey(key: KeyEvent, state: RenderStat
     return { type: "handled" };
   }
   return mapSidebarResult(handleSidebarConversationAction(result.action, menu.convId, state.sidebar));
+}
+
+function handleConversationActionMenuFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
+  const menu = state.sidebar.conversationActionMenu;
+  if (!menu) return { type: "handled" };
+  return handleConversationActionMenuResult(handleConversationActionMenuKey(menu, key), state);
 }
 
 export function handleFocusedKey(

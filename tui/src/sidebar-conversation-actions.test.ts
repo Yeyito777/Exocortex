@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent } from "./mouse";
 import type { ConversationSummary } from "./messages";
+import type { MouseEvent } from "./input";
+import { SIDEBAR_WIDTH } from "./sidebar";
 import { createInitialState } from "./state";
 
 function conversation(id: string, sortOrder: number, overrides: Partial<ConversationSummary> = {}): ConversationSummary {
@@ -37,6 +39,15 @@ function sidebarState() {
   state.sidebar.selectedId = "conv-a";
   state.sidebar.selectedIndex = 0;
   return state;
+}
+
+function mouseEvent(
+  col: number,
+  row: number,
+  button: number,
+  action: MouseEvent["action"],
+): MouseEvent {
+  return { type: "mouse", col, row, button, action, shift: false, meta: false, ctrl: false };
 }
 
 describe("sidebar conversation actions", () => {
@@ -147,5 +158,56 @@ describe("sidebar conversation actions", () => {
       marked: false,
       pinned: false,
     });
+  });
+
+  test("hover highlights a menu item and left click runs its action", () => {
+    const state = sidebarState();
+    state.mouseCursor = "hand";
+    handleFocusedKey({ type: "char", char: ";" }, state);
+
+    expect(handleMouseEvent(
+      mouseEvent(SIDEBAR_WIDTH + 3, 5, 3, "motion"),
+      state,
+    )).toEqual({ type: "handled" });
+    expect(state.sidebar.conversationActionMenu?.selection).toBe("toggle_star");
+
+    expect(handleMouseEvent(
+      mouseEvent(SIDEBAR_WIDTH + 3, 5, 0, "press"),
+      state,
+    )).toEqual({
+      type: "mark_conversation",
+      convId: "conv-a",
+      marked: true,
+    });
+    expect(state.sidebar.conversationActionMenu).toBeNull();
+    expect(state.sidebar.conversations[0]?.marked).toBe(true);
+  });
+
+  test("clicking Delete confirms once and deletes on the second click", () => {
+    const state = sidebarState();
+    state.mouseCursor = "hand";
+    handleFocusedKey({ type: "char", char: ";" }, state);
+    const clickDelete = () => handleMouseEvent(
+      mouseEvent(SIDEBAR_WIDTH + 3, 7, 0, "press"),
+      state,
+    );
+
+    expect(clickDelete()).toEqual({ type: "handled" });
+    expect(state.sidebar.conversationActionMenu).toMatchObject({
+      selection: "delete",
+      deleteConfirmation: true,
+    });
+    expect(clickDelete()).toEqual({ type: "delete_conversation", convId: "conv-a" });
+    expect(state.sidebar.conversationActionMenu).toBeNull();
+    expect(state.sidebar.conversations.map(conv => conv.id)).toEqual(["conv-b"]);
+  });
+
+  test("left click outside the menu closes it", () => {
+    const state = sidebarState();
+    state.mouseCursor = "pointer";
+    handleFocusedKey({ type: "char", char: ";" }, state);
+
+    expect(handleMouseEvent(mouseEvent(60, 10, 0, "press"), state)).toEqual({ type: "handled" });
+    expect(state.sidebar.conversationActionMenu).toBeNull();
   });
 });
