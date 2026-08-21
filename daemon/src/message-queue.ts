@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { ImageAttachment } from "./messages";
-import type { QueueTiming, QueuedMessageInfo, QueueWaitTarget } from "./protocol";
+import type { QueueTiming, QueuedMessageInfo, QueueWaitTarget, UserMessageAutomation } from "./protocol";
 import * as persistence from "./persistence";
 
 export interface QueuedMessage extends QueuedMessageInfo {
@@ -52,6 +52,7 @@ function publicEntry(entry: QueuedMessage): QueuedMessageInfo {
 function cloneEntry(entry: QueuedMessage): QueuedMessage {
   return {
     ...entry,
+    ...(entry.automation ? { automation: { ...entry.automation } } : {}),
     ...(entry.command ? { command: { ...entry.command } } : {}),
     ...(entry.images ? { images: entry.images.map(image => ({ ...image })) } : {}),
   };
@@ -145,6 +146,7 @@ export function pushQueuedMessage(
   subagentNotificationId?: string,
   id: string = randomUUID(),
   createdAt = Date.now(),
+  automation?: UserMessageAutomation,
 ): QueuedMessage {
   const existing = messages.find(entry => entry.id === id);
   if (existing) return cloneEntry(existing);
@@ -156,6 +158,7 @@ export function pushQueuedMessage(
     images,
     source: "daemon",
     createdAt,
+    ...(automation ? { automation: { ...automation } } : {}),
     subagentMaxDepth,
     subagentNotificationId,
   };

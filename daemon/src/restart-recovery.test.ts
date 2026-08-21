@@ -218,7 +218,10 @@ describe("restart recovery file", () => {
       987_654,
       expect.any(Object),
       undefined,
-      { subagentMaxDepth: 2 },
+      {
+        subagentMaxDepth: 2,
+        automation: { kind: "exo_send", sourceId: parentConvId },
+      },
     );
     expect(orchestrateReplayConversation).not.toHaveBeenCalledWith(
       expect.anything(),
@@ -265,7 +268,10 @@ describe("restart recovery file", () => {
       789_123,
       expect.any(Object),
       undefined,
-      { subagentMaxDepth: 0 },
+      {
+        subagentMaxDepth: 0,
+        automation: { kind: "exo_send", sourceId: parentConvId },
+      },
     );
     expect(complete).toHaveBeenCalledWith(targetConvId, expect.objectContaining({ ok: true }));
     expect(getSummary(parentConvId)).toMatchObject({ subagentCount: 0, tasks: [] });

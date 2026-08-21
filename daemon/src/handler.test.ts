@@ -688,6 +688,10 @@ describe("handler external notification routing", () => {
       "[notification] Discord · account:paramount:notifications",
       "DM from Fede: hello",
     ].join("\n"));
+    expect(queued[0].automation).toEqual({
+      kind: "external_notification",
+      sourceId: expect.any(String),
+    });
     expect(sent.find(event => event.reqId === "publish-1")).toEqual(expect.objectContaining({
       type: "external_notification_publish_result",
       deliveries: [expect.objectContaining({ status: "queued", convId: id })],
@@ -737,7 +741,11 @@ describe("handler external notification routing", () => {
     expect(get(id)?.messages.at(-1)).toEqual(expect.objectContaining({
       role: "user",
       content: expect.stringContaining("Message from Mom: hi"),
-      metadata: expect.objectContaining({ system: true, kind: "external_notification" }),
+      metadata: expect.objectContaining({
+        system: true,
+        kind: "external_notification",
+        automation: { kind: "external_notification", sourceId: expect.any(String) },
+      }),
     }));
     expect(sent.find(event => event.reqId === "inbox-publish")).toEqual(expect.objectContaining({
       deliveries: [expect.objectContaining({ status: "inbox", convId: id })],
@@ -1300,6 +1308,7 @@ describe("handler background task notifications", () => {
       expect.objectContaining({
         timing: "next-turn",
         text: expect.stringContaining("[notification] Background task completed: bash:1234"),
+        automation: { kind: "background_task_completion", sourceId: "bash:1234" },
       }),
     ]);
   });
@@ -1405,8 +1414,59 @@ describe("handler replay_conversation", () => {
       expect.objectContaining({
         subagentNotificationId: pending.id,
         text: expect.stringContaining(`exo:${childId}`),
+        automation: { kind: "subagent_completion", sourceId: childId },
       }),
     ]);
+  });
+
+  test("manual replay tags a restored subagent task that had not started before restart", async () => {
+    const parentId = mkId("manual-restore-parent");
+    const childId = mkId("manual-restore-child");
+    create(parentId, "openai", "gpt-5.4", "parent");
+    create(childId, "openai", "gpt-5.4", "child");
+    const childStartedAt = 765_432;
+    beginPendingSubagentNotification(
+      { convId: parentId },
+      childId,
+      "restore after restart",
+      childStartedAt,
+      1,
+    );
+    setActiveJob(parentId, new AbortController(), Date.now());
+
+    const server = {
+      sendTo: mock(() => {}),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "replay_conversation",
+      reqId: "req-manual-subagent-restore",
+      convId: childId,
+      startedAt: Date.now(),
+    });
+
+    expect(orchestrateSendMessage).toHaveBeenCalledWith(
+      server,
+      expect.anything(),
+      "req-manual-subagent-restore",
+      childId,
+      "restore after restart",
+      childStartedAt,
+      expect.any(Object),
+      undefined,
+      {
+        subagentMaxDepth: 1,
+        automation: { kind: "exo_send", sourceId: parentId },
+      },
+    );
+    expect(orchestrateReplayConversation).not.toHaveBeenCalled();
   });
 });
 

@@ -322,6 +322,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           "next-turn",
           undefined,
           parent.subagentMaxDepth ?? null,
+          undefined,
+          undefined,
+          undefined,
+          { kind: "background_task_completion", sourceId: pending.completion.taskId },
         );
         pendingBackgroundNotifications.delete(id);
         log("info", `handler: queued background task completion notification ${pending.completion.taskId} for ${pending.convId}`);
@@ -344,7 +348,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         Date.now(),
         buildOrchestrationCallbacks(pending.convId),
         undefined,
-        { subagentMaxDepth: parent.subagentMaxDepth ?? null },
+        {
+          subagentMaxDepth: parent.subagentMaxDepth ?? null,
+          automation: { kind: "background_task_completion", sourceId: pending.completion.taskId },
+        },
       ).catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
         log("error", `handler: background task notification send failed for ${pending.convId}: ${message}`);
@@ -363,6 +370,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       undefined,
       convStore.get(record.parentConvId)?.subagentMaxDepth ?? null,
       record.id,
+      undefined,
+      undefined,
+      { kind: "subagent_completion", sourceId: record.childConvId },
     );
     log("info", `handler: queued durable subagent completion notification ${record.childConvId} -> parent ${record.parentConvId}`);
   };
@@ -411,6 +421,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         {
           subagentMaxDepth: parent.subagentMaxDepth ?? null,
           subagentNotificationId: record.id,
+          automation: { kind: "subagent_completion", sourceId: record.childConvId },
         },
       ).then(() => {
         // Preflight failures do not accept the user message and therefore leave
@@ -453,7 +464,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
   exocortexRuntime = createExocortexToolRuntime({
     server,
-    runTurn: (convId, text, maxDepth, startedAt) => {
+    runTurn: (convId, text, maxDepth, startedAt, automation) => {
       const turn = orchestrateSendMessage(
         server,
         null,
@@ -463,7 +474,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         startedAt,
         buildOrchestrationCallbacks(convId),
         undefined,
-        { subagentMaxDepth: maxDepth },
+        { subagentMaxDepth: maxDepth, automation },
       );
       maybeStartAutoTitleGeneration(convId);
       return turn;
@@ -830,7 +841,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               pending.childStartedAt,
               buildOrchestrationCallbacks(entry.convId),
               undefined,
-              { subagentMaxDepth: pending.subagentMaxDepth, queueEntryId: entry.id },
+              {
+                subagentMaxDepth: pending.subagentMaxDepth,
+                queueEntryId: entry.id,
+                automation: { kind: "exo_send", sourceId: pending.parentConvId },
+              },
             )
           : await orchestrateReplayConversation(
               server,
@@ -898,6 +913,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             subagentMaxDepth: entry.subagentMaxDepth ?? null,
             subagentNotificationId: entry.subagentNotificationId,
             queueEntryId: entry.id,
+            automation: entry.automation,
           },
         );
       // Preflight failures happen before orchestration accepts/removes
@@ -1299,7 +1315,19 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const adoptDraftWorkspace = cmd.draftToolPolicyId !== undefined
           && hasDraftWorkspaceReservation(cmd.draftToolPolicyId);
         if (initialMessage) {
-          convStore.createWithInitialUserMessage(id, provider, model, title, effort, fastMode, initialMessage, folderId, adoptDraftWorkspace);
+          convStore.createWithInitialUserMessage(
+            id,
+            provider,
+            model,
+            title,
+            effort,
+            fastMode,
+            cmd.subagent
+              ? { ...initialMessage, automation: { kind: "exo_send" } }
+              : initialMessage,
+            folderId,
+            adoptDraftWorkspace,
+          );
         } else {
           convStore.create(id, provider, model, title, effort, fastMode, folderId, adoptDraftWorkspace);
         }
@@ -1741,7 +1769,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
                 status: queued.duplicate ? "duplicate" : "queued",
               });
             } else if (subscription.delivery === "inbox") {
-              if (!convStore.appendExternalInboxNotification(subscription.convId, envelope, Date.now())) {
+              if (!convStore.appendExternalInboxNotification(subscription.convId, envelope, Date.now(), subscription.id)) {
                 throw new Error("Conversation not found");
               }
               recordExternalNotificationReceipt(subscription.id, eventId);
@@ -1754,7 +1782,17 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               // queue scheduler starts it immediately when idle or after the
               // conversation's active turn when busy.
               const queueId = `external:${subscription.id}:${eventId}`;
-              convStore.pushQueuedMessage(subscription.convId, envelope, "next-turn", undefined, null, undefined, queueId, Date.now());
+              convStore.pushQueuedMessage(
+                subscription.convId,
+                envelope,
+                "next-turn",
+                undefined,
+                null,
+                undefined,
+                queueId,
+                Date.now(),
+                { kind: "external_notification", sourceId: subscription.id },
+              );
               recordExternalNotificationReceipt(subscription.id, eventId);
               deliveries.push({ subscriptionId: subscription.id, convId: subscription.convId, status: "queued" });
             }
@@ -1827,7 +1865,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
           const turn = orchestrateSendMessage(
             server, null, undefined, cmd.convId, cmd.text, cmd.startedAt, callbacks, cmd.images,
-            { subagentMaxDepth: null },
+            {
+              subagentMaxDepth: null,
+              automation: {
+                kind: "exo_send",
+                ...(trackedParentId ? { sourceId: trackedParentId } : {}),
+              },
+            },
           );
           maybeStartAutoTitleGeneration(cmd.convId);
           void turn.then((outcome) => {
@@ -1877,7 +1921,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               pending.childStartedAt,
               buildOrchestrationCallbacks(cmd.convId),
               undefined,
-              { subagentMaxDepth: pending.subagentMaxDepth },
+              {
+                subagentMaxDepth: pending.subagentMaxDepth,
+                automation: { kind: "exo_send", sourceId: pending.parentConvId },
+              },
             )
           : await orchestrateReplayConversation(
               server,

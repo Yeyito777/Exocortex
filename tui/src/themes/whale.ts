@@ -40,6 +40,7 @@ export const whale: Theme = {
   // Background colors
   topbarBg:      `${ESC}48;2;29;155;240m`,    // accent (#1d9bf0) as background
   userBg:        `${ESC}48;2;9;13;53m`,       // #090d35
+  automatedUserBg: `${ESC}48;2;14;31;44m`,    // #0e1f2c (soft blue-slate)
   sidebarBg:     `${ESC}48;2;3;8;20m`,        // #030814
   sidebarSelBg:  `${ESC}48;2;15;25;60m`,      // #0f193c
   cursorBg:      `${ESC}48;2;72;202;228m`,    // #48cae4 (matches vimNormal)

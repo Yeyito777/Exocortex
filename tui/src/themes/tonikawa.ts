@@ -40,6 +40,7 @@ export const tonikawa: Theme = {
   // Background colors
   topbarBg:       `${ESC}48;2;169;67;113m`,    // #a94371 (deep rose)
   userBg:         `${ESC}48;2;33;26;33m`,      // #211a21
+  automatedUserBg: `${ESC}48;2;36;32;49m`,     // #242031 (soft lavender-slate)
   sidebarBg:      `${ESC}48;2;23;19;26m`,      // #17131a
   sidebarSelBg:   `${ESC}48;2;48;35;49m`,      // #302331
   cursorBg:       `${ESC}48;2;228;127;172m`,   // #e47fac (matches accent)

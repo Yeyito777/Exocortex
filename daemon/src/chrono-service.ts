@@ -929,7 +929,17 @@ function enqueueHardWake(occurrence: PendingOccurrence, hardWake: CommandHardWak
     hardWake.message,
     ...(hardWake.includeOutput ? ["", "Command output:", capOutput(output || "(no output)")] : []),
   ].join("\n");
-  convStore.pushQueuedMessage(hardWake.conversationId, text, "next-turn", undefined, null, undefined, queueId);
+  convStore.pushQueuedMessage(
+    hardWake.conversationId,
+    text,
+    "next-turn",
+    undefined,
+    null,
+    undefined,
+    queueId,
+    undefined,
+    { kind: "chrono_hard_wake", sourceId: occurrence.scheduleId },
+  );
 }
 
 async function executeOccurrence(occurrence: PendingOccurrence): Promise<void> {
@@ -953,7 +963,17 @@ async function executeOccurrence(occurrence: PendingOccurrence): Promise<void> {
         log("warn", `chrono: dropping wake ${occurrence.id}; conversation ${occurrence.target.conversationId} no longer exists`);
       } else if (!occurrenceAlreadyDelivered(occurrence)) {
         const text = `[chrono wake: ${occurrence.scheduleId}]\n${occurrence.target.message}`;
-        convStore.pushQueuedMessage(occurrence.target.conversationId, text, "next-turn", undefined, null, undefined, occurrence.id);
+        convStore.pushQueuedMessage(
+          occurrence.target.conversationId,
+          text,
+          "next-turn",
+          undefined,
+          null,
+          undefined,
+          occurrence.id,
+          undefined,
+          { kind: "chrono_wake", sourceId: occurrence.scheduleId },
+        );
       }
     } else {
       let { output, failed } = occurrence.commandResult ?? { output: "", failed: false };

@@ -615,6 +615,29 @@ describe("tool-result folding", () => {
     expect(entries[2].type).toBe("ai");
   });
 
+  test("automated model-visible system notice → forwards automation metadata", () => {
+    const metadata: MessageMetadata = {
+      startedAt: 1_500,
+      endedAt: 1_500,
+      model: "gpt-5.5",
+      tokens: 0,
+      system: true,
+      kind: "external_notification",
+      automation: { kind: "external_notification", sourceId: "subscription-1" },
+    };
+    const { entries } = build([{
+      role: "user",
+      content: "[notification] WhatsApp message",
+      metadata,
+    }]);
+
+    expect(entries).toEqual([{
+      type: "system",
+      text: "[notification] WhatsApp message",
+      metadata,
+    }]);
+  });
+
   test("persisted compaction completion → retained as a muted typed system entry", () => {
     const metadata: MessageMetadata = {
       startedAt: 2_000,

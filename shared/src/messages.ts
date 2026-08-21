@@ -163,6 +163,41 @@ export const REALTIME_TRANSCRIPT_KIND = "realtime_transcript";
 export const REALTIME_CALL_STATUS_KIND = "realtime_call_status";
 
 /**
+ * Machine-readable provenance for daemon/model-authored prompts that travel
+ * through the same conversation path as user-authored messages.
+ *
+ * This tag is deliberately independent from MessageMetadata.system: automated
+ * prompts remain ordinary model-visible turns unless their producer also marks
+ * them as a system notice.
+ */
+export const USER_MESSAGE_AUTOMATION_KINDS = [
+  "external_notification",
+  "background_task_completion",
+  "chrono_wake",
+  "chrono_hard_wake",
+  "exo_send",
+  "subagent_completion",
+  "goal_continuation",
+  "realtime_delegation",
+] as const;
+
+export type UserMessageAutomationKind = typeof USER_MESSAGE_AUTOMATION_KINDS[number];
+
+export interface UserMessageAutomation {
+  kind: UserMessageAutomationKind;
+  /** Stable producer-specific identity when one is useful for diagnostics. */
+  sourceId?: string;
+}
+
+export function isUserMessageAutomation(value: unknown): value is UserMessageAutomation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Partial<UserMessageAutomation>;
+  return typeof candidate.kind === "string"
+    && (USER_MESSAGE_AUTOMATION_KINDS as readonly string[]).includes(candidate.kind)
+    && (candidate.sourceId === undefined || typeof candidate.sourceId === "string");
+}
+
+/**
  * Metadata attached to a message. Persisted by the daemon,
  * rendered by the client.
  */
@@ -186,6 +221,8 @@ export interface MessageMetadata {
   subagentNotificationId?: string;
   /** Durable id used to deduplicate a user message accepted from the persistent queue. */
   queueEntryId?: string;
+  /** Provenance for a non-human prompt intentionally represented as a user turn. */
+  automation?: UserMessageAutomation;
   /** Session/source identity for persisted realtime call turns and lifecycle markers. */
   realtimeCallId?: string;
   realtimeAdapterType?: "tui" | "external";

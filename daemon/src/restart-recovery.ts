@@ -359,7 +359,13 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
             pendingNotification.childStartedAt,
             callbacks,
             undefined,
-            { subagentMaxDepth: pendingNotification.subagentMaxDepth },
+            {
+              subagentMaxDepth: pendingNotification.subagentMaxDepth,
+              automation: {
+                kind: "exo_send",
+                sourceId: pendingNotification.parentConvId,
+              },
+            },
           );
       void turn.then((outcome) => {
         getSubagentNotificationRuntime(server)?.complete(convId, outcome);

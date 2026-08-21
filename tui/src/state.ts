@@ -27,7 +27,7 @@ import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
 import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
-import type { ConversationGoal, ProviderAuthInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget } from "./protocol";
+import type { ConversationGoal, ProviderAuthInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { BtwPanelState } from "./btw/state";
 import { createConversationScrollState, type ConversationScrollState } from "./conversationscroll/types";
@@ -54,6 +54,8 @@ export interface QueuedMessage {
    * FIFO. The TUI retains only an optimistic/display projection.
    */
   source?: "daemon" | "global-idle";
+  /** Machine-readable provenance for daemon/model-authored queued prompts. */
+  automation?: UserMessageAutomation;
   /** New-conversation /queue entries reserve a client conversation id here. */
   target?: "conversation" | "new-conversation";
   /** Captured draft settings for target === "new-conversation". */

@@ -49,6 +49,7 @@ export interface Theme {
   // Background colors
   topbarBg: string;       // Top bar
   userBg: string;         // User message bubble
+  automatedUserBg: string; // Automated user-role message bubble
   sidebarBg: string;      // Sidebar body
   sidebarSelBg: string;   // Sidebar selected item
   cursorBg: string;       // Inline cursor (history, visual mode)

@@ -6,7 +6,7 @@
  * In-flight stream tracking lives in streaming.ts.
  */
 
-import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, ConversationToolPolicy } from "./messages";
+import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, ConversationToolPolicy, UserMessageAutomation } from "./messages";
 import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment, ToolPolicySnapshot } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, SidebarItemOrderUpdate, TrimMode, ToolOutputInfo } from "./protocol";
@@ -563,7 +563,7 @@ export function createWithInitialUserMessage(
   title: string | undefined,
   effort: EffortLevel | undefined,
   fastMode: boolean,
-  message: { text: string; startedAt: number; images?: ImageAttachment[] },
+  message: { text: string; startedAt: number; images?: ImageAttachment[]; automation?: UserMessageAutomation },
   folderId: string | null = null,
   adoptExistingWorkspace = false,
 ): Conversation {
@@ -574,6 +574,7 @@ export function createWithInitialUserMessage(
   const parentId = folderId && folders.has(folderId) ? folderId : null;
   const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
   conv.messages.push(createStoredUserMessage(message.text, model, message.startedAt, message.images, {
+    automation: message.automation,
     contextCheckpoint: createStoredUserContextCheckpoint(conv),
   }));
   retainConversation(conv);
@@ -2734,12 +2735,20 @@ export function markUnread(convId: string): void {
  * model turn. It remains model-visible on the next user turn and is rendered as
  * a provenance-tagged system notice rather than user-authored text.
  */
-export function appendExternalInboxNotification(convId: string, text: string, startedAt = Date.now()): boolean {
+export function appendExternalInboxNotification(
+  convId: string,
+  text: string,
+  startedAt = Date.now(),
+  sourceId?: string,
+): boolean {
   const conv = get(convId);
   if (!conv) return false;
   if (!appendMessages(
     convId,
-    [createModelVisibleSystemNotice(text, conv.model, "external_notification", startedAt)],
+    [createModelVisibleSystemNotice(text, conv.model, "external_notification", startedAt, {
+      kind: "external_notification",
+      ...(sourceId ? { sourceId } : {}),
+    })],
     { updatedAt: Math.max(conv.updatedAt, startedAt) },
   )) return false;
   markUnread(convId);
@@ -2839,6 +2848,10 @@ export function promoteRealtimeTranscript(
 
     message.content = replacement;
     message.contextTokens = null;
+    if (message.metadata) message.metadata.automation = {
+      kind: "realtime_delegation",
+      ...(callId ? { sourceId: callId } : {}),
+    };
     conv.updatedAt = Date.now();
     // This edits an existing canonical row in place rather than appending a new
     // object. Force field-level SQLite comparison from the changed sequence.

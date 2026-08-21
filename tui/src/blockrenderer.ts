@@ -41,6 +41,7 @@ interface UserMessageCacheEntry {
   cols: number;
   imagesKey: string;
   themeName: string;
+  background: string;
   result: WrapResult;
   flowDocument?: UserMessageFlowDocument;
   flow?: { starts: UserMessageFlowCursor[]; end: UserMessageFlowCursor } | null;
@@ -408,6 +409,7 @@ export function renderAdaptiveUserMessageRows(
   sourceStart: UserMessageFlowCursor,
   sourceEnd: UserMessageFlowCursor,
   colsForRow: (rowIndex: number) => number,
+  background = theme.userBg,
 ): AdaptiveUserMessageRow[] {
   const document = typeof text === "string" ? createUserMessageFlowDocument(text) : text;
   const hardLines = document.hardLines;
@@ -476,7 +478,7 @@ export function renderAdaptiveUserMessageRows(
       const row = rawRows[index];
       const padLeft = " ".repeat(Math.max(0, inner - termWidth(row.text)) + USER_BUBBLE_PADDING);
       rendered.push({
-        line: `${screenOffset}${theme.userBg}${padLeft}${row.text}${padRight}${theme.reset}`,
+        line: `${screenOffset}${background}${padLeft}${row.text}${padRight}${theme.reset}`,
         sourceStart: row.sourceStart,
         nextCursor: row.nextCursor,
       });
@@ -486,7 +488,12 @@ export function renderAdaptiveUserMessageRows(
   return rendered;
 }
 
-export function renderUserMessage(text: string, cols: number, images?: ImageAttachment[]): WrapResult {
+export function renderUserMessage(
+  text: string,
+  cols: number,
+  images?: ImageAttachment[],
+  background = theme.userBg,
+): WrapResult {
   text = sanitizeUntrustedText(text);
   const padding = USER_BUBBLE_PADDING; // horizontal padding inside bubble
   const margin = USER_BUBBLE_MARGIN;   // gap from right edge of screen
@@ -523,8 +530,8 @@ export function renderUserMessage(text: string, cols: number, images?: ImageAtta
   /** Append a right-aligned bubble line with optional style prefix. */
   const pushBubbleLine = (lineText: string, isCont: boolean, joiner = "", style?: string) => {
     const padLeft = " ".repeat(Math.max(0, inner - termWidth(lineText)) + padding);
-    const styledText = style ? `${style}${lineText}${theme.reset}${theme.userBg}` : lineText;
-    lines.push(`${screenOffset}${theme.userBg}${padLeft}${styledText}${padRight}${theme.reset}`);
+    const styledText = style ? `${style}${lineText}${theme.reset}${background}` : lineText;
+    lines.push(`${screenOffset}${background}${padLeft}${styledText}${padRight}${theme.reset}`);
     cont.push(isCont);
     join.push(isCont ? joiner : "");
   };
@@ -541,15 +548,22 @@ export function renderUserMessage(text: string, cols: number, images?: ImageAtta
   return { lines, cont, join };
 }
 
-export function renderUserMessageCached(owner: object, text: string, cols: number, images?: ImageAttachment[]): WrapResult {
+export function renderUserMessageCached(
+  owner: object,
+  text: string,
+  cols: number,
+  images?: ImageAttachment[],
+  background = theme.userBg,
+): WrapResult {
   const imagesKey = imageAttachmentsKey(images);
   const cached = userMessageRenderCache.get(owner);
-  if (cached && cached.text === text && cached.cols === cols && cached.imagesKey === imagesKey && cached.themeName === theme.name) {
+  if (cached && cached.text === text && cached.cols === cols && cached.imagesKey === imagesKey
+      && cached.themeName === theme.name && cached.background === background) {
     return cached.result;
   }
 
-  const result = renderUserMessage(text, cols, images);
-  userMessageRenderCache.set(owner, { text, cols, imagesKey, themeName: theme.name, result });
+  const result = renderUserMessage(text, cols, images, background);
+  userMessageRenderCache.set(owner, { text, cols, imagesKey, themeName: theme.name, background, result });
   return result;
 }
 
@@ -559,6 +573,7 @@ export function userMessageFlowMetadataCached(
   text: string,
   cols: number,
   images?: ImageAttachment[],
+  background = theme.userBg,
 ): ({ document: UserMessageFlowDocument } & {
   starts: UserMessageFlowCursor[];
   end: UserMessageFlowCursor;
@@ -569,8 +584,9 @@ export function userMessageFlowMetadataCached(
     || cached.text !== text
     || cached.cols !== cols
     || cached.imagesKey !== imagesKey
-    || cached.themeName !== theme.name) {
-    renderUserMessageCached(owner, text, cols, images);
+    || cached.themeName !== theme.name
+    || cached.background !== background) {
+    renderUserMessageCached(owner, text, cols, images, background);
     cached = userMessageRenderCache.get(owner)!;
   }
   cached.flowDocument ??= createUserMessageFlowDocument(text);

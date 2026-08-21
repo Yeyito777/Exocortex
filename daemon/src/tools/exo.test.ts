@@ -411,7 +411,13 @@ describe("native exo daemon runtime", () => {
     expect(getSummary(parentId)?.tasks).toEqual([
       expect.objectContaining({ id: childId, kind: "subagent", title: "Inspect project files", startedAt: expect.any(Number) }),
     ]);
-    expect(runTurn).toHaveBeenCalledWith(childId, "Inspect /tmp/project", 0, expect.any(Number));
+    expect(runTurn).toHaveBeenCalledWith(
+      childId,
+      "Inspect /tmp/project",
+      0,
+      expect.any(Number),
+      { kind: "exo_send", sourceId: parentId },
+    );
     expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({
       type: "conversation_updated",
       summary: expect.objectContaining({ id: parentId, subagentCount: 1 }),
@@ -647,7 +653,13 @@ describe("native exo daemon runtime", () => {
     expect(result.output).toContain("permission confirmed");
     expect(result.output).toContain("Persistent tool policy updated for this and future turns.");
     expect(get(childId)?.toolPolicy).toEqual({ internal: ["read"], external: [] });
-    expect(runTurn).toHaveBeenCalledWith(childId, "confirm the new policy", 0, expect.any(Number));
+    expect(runTurn).toHaveBeenCalledWith(
+      childId,
+      "confirm the new policy",
+      0,
+      expect.any(Number),
+      { kind: "exo_send", sourceId: parentId },
+    );
     expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({
       type: "conversation_updated",
       summary: expect.objectContaining({ id: childId }),
@@ -791,7 +803,12 @@ describe("native exo daemon runtime", () => {
 
     const queued = await runtime.execute({ action: "send", conversation_id: parentId, text: "follow up", max_depth: 0 }, parentId);
     expect(queued.isError).toBe(false);
-    expect(getQueuedMessages(parentId)).toEqual([expect.objectContaining({ text: "follow up", timing: "next-turn", subagentMaxDepth: 0 })]);
+    expect(getQueuedMessages(parentId)).toEqual([expect.objectContaining({
+      text: "follow up",
+      timing: "next-turn",
+      subagentMaxDepth: 0,
+      automation: { kind: "exo_send", sourceId: parentId },
+    })]);
   });
 
   test("queues sends to an already-streaming conversation regardless of mode", async () => {
@@ -827,6 +844,7 @@ describe("native exo daemon runtime", () => {
       text: `follow up (${mode ?? "default"})`,
       timing: "next-turn",
       subagentMaxDepth: 0,
+      automation: { kind: "exo_send", sourceId: parentId },
     })));
 
     const policyResult = await runtime.execute({
@@ -904,7 +922,13 @@ describe("native exo daemon runtime", () => {
     const childId = allowed.output.match(/exo:([^\s]+)/)?.[1];
     expect(childId).toBeTruthy();
     if (childId) conversationIds.push(childId);
-    expect(runTurn).toHaveBeenLastCalledWith(childId, "allowed", 1, expect.any(Number));
+    expect(runTurn).toHaveBeenLastCalledWith(
+      childId,
+      "allowed",
+      1,
+      expect.any(Number),
+      { kind: "exo_send", sourceId: parentId },
+    );
 
     const missingQueueDepth = await runtime.execute({
       action: "queue",

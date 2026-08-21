@@ -15,7 +15,7 @@ import { buildExecutor, summarizeTool, toolCallsRequireWatchdogPause, getRegiste
 import { ensureConversationCustomTools } from "./tools/custom-tools";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type UserMessageAutomation } from "./messages";
 import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
@@ -187,6 +187,8 @@ interface AssistantTurnOptions {
   subagentNotificationId?: string;
   /** Durable daemon queue identity accepted by this user turn. */
   queueEntryId?: string;
+  /** Provenance for a daemon/model-authored prompt represented as a user turn. */
+  automation?: UserMessageAutomation;
   /** Force one context compaction without requesting an assistant response. */
   manualCompaction?: boolean;
   /** Promote the persisted voice transcript into a visible backend request. */
@@ -202,7 +204,7 @@ interface AssistantTurnOptions {
   streamChainHandoff?: boolean;
 }
 
-export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId">;
+export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId" | "automation">;
 
 export async function orchestrateSendMessage(
   server: DaemonServer,
@@ -326,6 +328,9 @@ async function orchestrateAssistantTurn(
   const userMessage = goalContinuation && conv.goal?.status === "active"
     ? { text: goalContinuationUserMessage(conv.goal) }
     : requestedUserMessage;
+  const automation: UserMessageAutomation | undefined = goalContinuation
+    ? { kind: "goal_continuation" }
+    : options.automation;
   const replaying = !userMessage;
   let interruptedSleep: DeferredChronoSleep | null = null;
 
@@ -450,6 +455,7 @@ async function orchestrateAssistantTurn(
     acceptedUserMessage = createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images, {
       subagentNotificationId: options.subagentNotificationId,
       queueEntryId: options.queueEntryId,
+      automation,
       contextCheckpoint,
     });
   }
@@ -488,6 +494,7 @@ async function orchestrateAssistantTurn(
         startedAt,
         images: userMessage.images,
         ...(options.queueEntryId ? { queueId: options.queueEntryId } : {}),
+        ...(automation ? { automation } : {}),
       }, client);
     } else {
       server.sendToSubscribers(convId, {
@@ -497,6 +504,7 @@ async function orchestrateAssistantTurn(
         startedAt,
         images: userMessage.images,
         ...(options.queueEntryId ? { queueId: options.queueEntryId } : {}),
+        ...(automation ? { automation } : {}),
       });
     }
   }
@@ -1103,6 +1111,7 @@ async function orchestrateAssistantTurn(
         const storedUser = createStoredUserMessage(qm.text, conv.model, injectedStartedAt, qm.images, {
           subagentNotificationId: qm.subagentNotificationId,
           queueEntryId: qm.id,
+          automation: qm.automation,
           contextCheckpoint,
         });
         apiMsgs.push({
@@ -1135,6 +1144,7 @@ async function orchestrateAssistantTurn(
           startedAt: storedUser.metadata?.startedAt ?? Date.now(),
           images: qm.images,
           queueId: qm.id,
+          ...(qm.automation ? { automation: qm.automation } : {}),
         });
       }
       return apiMsgs;
@@ -1606,6 +1616,7 @@ async function orchestrateAssistantTurn(
           subagentMaxDepth: first.subagentMaxDepth ?? null,
           subagentNotificationId: first.subagentNotificationId,
           queueEntryId: first.id,
+          automation: first.automation,
           streamChainHandoff: true,
         });
       } finally {

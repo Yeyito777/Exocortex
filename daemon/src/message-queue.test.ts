@@ -59,6 +59,17 @@ describe("durable daemon message queue", () => {
     expect(getQueuedMessages("conv-a").map(message => message.id)).toEqual(["queue-b"]);
   });
 
+  test("publishes and persists automated-message provenance", () => {
+    const automation = { kind: "background_task_completion" as const, sourceId: "bash:123" };
+    pushQueuedMessage("conv-a", "finished", "next-turn", undefined, undefined, undefined, "automated", 10, automation);
+
+    expect(listQueuedMessages()).toEqual([
+      expect.objectContaining({ id: "automated", automation }),
+    ]);
+    expect(loadQueuedMessagesFromDisk()).toBe(1);
+    expect(getQueuedMessageById("automated")?.automation).toEqual(automation);
+  });
+
   test("removes duplicate-text entries by id without touching their neighbor", () => {
     pushQueuedMessage("conv-a", "duplicate", "next-turn", undefined, undefined, undefined, "first");
     pushQueuedMessage("conv-a", "duplicate", "message-end", undefined, undefined, undefined, "second");
