@@ -22,6 +22,7 @@ import type { ConversationTaskSummary } from "../messages";
 interface FolderAggregate {
   count: number;
   streamingCount: number;
+  goalReviewing: boolean;
   durableSleep: boolean;
   globalIdle: boolean;
   unread: boolean;
@@ -53,6 +54,7 @@ function buildFolderAggregates(
     aggregates.set(folder.id, {
       count: 0,
       streamingCount: 0,
+      goalReviewing: false,
       durableSleep: false,
       globalIdle: false,
       unread: false,
@@ -77,7 +79,8 @@ function buildFolderAggregates(
       seen.add(folderId);
       const aggregate = aggregates.get(folderId)!;
       aggregate.count++;
-      if (conv.streaming || hasOptimisticStreaming) aggregate.streamingCount++;
+      if (conv.streaming || conv.goalReviewing || hasOptimisticStreaming) aggregate.streamingCount++;
+      aggregate.goalReviewing ||= conv.goalReviewing === true;
       aggregate.durableSleep ||= hasDurableSleep;
       aggregate.globalIdle ||= hasGlobalIdle;
       aggregate.unread ||= hasUnread;
@@ -266,12 +269,13 @@ export function renderSidebar(
       explicitlyMuted = folder?.muted === true;
       rawTitle = folder ? `📁 ${folder.name}/ ${aggregate?.count ?? 0}` : "📁 folder/";
       const streamingCount = aggregate?.streamingCount ?? 0;
+      const goalReviewing = aggregate?.goalReviewing ?? false;
       const hasDurableSleep = aggregate?.durableSleep ?? false;
       const hasGlobalIdle = aggregate?.globalIdle ?? false;
       const hasUnread = !notificationsMuted && (aggregate?.unread ?? false);
       const hasWarningActivity = hasDurableSleep || hasGlobalIdle;
       streamIcon = streamingCount > 0 ? folderStreamingIndicator(streamingCount) : hasWarningActivity ? "◉ " : hasUnread ? "◉ " : "";
-      streamIconColor = streamingCount > 0 ? theme.accent : hasWarningActivity ? theme.warning : hasUnread ? theme.success : "";
+      streamIconColor = goalReviewing ? theme.goal : streamingCount > 0 ? theme.accent : hasWarningActivity ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
       chronoTaskIcon = chronoTaskIndicator(aggregate?.chronoTaskCount ?? 0);
@@ -291,10 +295,10 @@ export function renderSidebar(
       const hasDurableSleep = isDurablySleeping(conv);
       const hasModelWork = hasInProgressModelWork(conv) || hasOptimisticStreaming;
       const hasUnread = !notificationsMuted && conv.unread && !hasModelWork;
-      const hasStreamingIndicator = conv.streaming || hasOptimisticStreaming;
+      const hasStreamingIndicator = conv.streaming || conv.goalReviewing === true || hasOptimisticStreaming;
       const hasWarningActivity = hasDurableSleep || hasGlobalIdle;
       streamIcon = hasStreamingIndicator ? "◉ " : hasWarningActivity ? "◉ " : hasUnread ? "◉ " : "";
-      streamIconColor = hasStreamingIndicator ? theme.accent : hasWarningActivity ? theme.warning : hasUnread ? theme.success : "";
+      streamIconColor = conv.goalReviewing === true ? theme.goal : hasStreamingIndicator ? theme.accent : hasWarningActivity ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(conv.subagentCount ?? 0);
       backgroundTaskIcon = backgroundTaskIndicator(conv.backgroundTaskCount ?? 0);
       chronoTaskIcon = chronoTaskIndicator(countChronoTasks(conv.tasks));

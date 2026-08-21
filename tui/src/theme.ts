@@ -35,8 +35,9 @@ export interface Theme {
   text: string;        // Default text
   muted: string;       // Muted gray (explicit fg color, not dim attribute)
   error: string;       // Errors, interruptions
-  warning: string;     // Streaming indicator
-  success: string;     // Connected indicator
+  warning: string;     // Queued/suspended activity indicator
+  success: string;     // Completed/unread activity indicator
+  goal: string;        // Hidden goal-controller review indicator
   prompt: string;      // Input prompt ❯
   tool: string;        // Tool call labels
   command: string;     // Valid slash commands & macros in prompt

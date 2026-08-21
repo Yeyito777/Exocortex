@@ -28,6 +28,7 @@ export const whale: Theme = {
   error:    `${ESC}31m`,                 // red
   warning:  `${ESC}33m`,                 // yellow
   success:  `${ESC}38;2;80;200;120m`,    // #50c878 green
+  goal:     `${ESC}38;2;199;146;234m`,   // #c792ea purple
   prompt:   `${ESC}34m`,                 // blue
   tool:     `${ESC}35m`,                 // magenta
   command:  `${ESC}38;2;174;214;254m`,   // #aed6fe

@@ -18,9 +18,9 @@ export function isDurablySleeping(
  * sidebar renders the suspended state differently from connected streaming.
  */
 export function hasInProgressModelWork(
-  conversation: Pick<ConversationSummary, "streaming" | "tasks">,
+  conversation: Pick<ConversationSummary, "streaming" | "goalReviewing" | "tasks">,
 ): boolean {
-  return conversation.streaming || isDurablySleeping(conversation);
+  return conversation.streaming || conversation.goalReviewing === true || isDurablySleeping(conversation);
 }
 
 /**
