@@ -600,10 +600,9 @@ function deferredSleepOutput(sleep: DeferredChronoSleep): string {
   const resumedAt = sleep.resumedAt ?? Date.now();
   const elapsed = formatElapsedDuration(resumedAt - sleep.startedAt);
   const requested = formatElapsedDuration(sleep.durationMs);
-  const reason = sleep.resumeReason === "user_message"
-    ? " The sleep ended early because the user sent a message."
-    : "";
-  return `Sleep finished after ${elapsed} (requested ${requested}).${reason}`;
+  return sleep.resumeReason === "user_message"
+    ? `Sleep interrupted after ${elapsed} because the user sent a message (requested ${requested}).`
+    : `Sleep finished after ${elapsed} (requested ${requested}).`;
 }
 
 function removeDeferredSleep(sleep: DeferredChronoSleep): void {

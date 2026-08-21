@@ -393,8 +393,16 @@ export function handleEvent(
       const preservedToolOutputResult = !event.toolOutputsIncluded && preservedToolOutputs.size > 0
         ? applyPreservedToolResultOutputs(state, preservedToolOutputs)
         : { patchedOutputs: 0, patchedToolNames: 0 };
-      if (!event.toolOutputsIncluded && preservedToolOutputResult.patchedOutputs > 0) {
-        state.toolOutputsLoaded = previousToolOutputsLoaded || state.toolOutputsLoaded;
+      if (!event.toolOutputsIncluded && shouldPreserveCompactToolOutputs) {
+        // A compact refresh can introduce a tool result that did not exist in
+        // the local expanded window (notably when a user message interrupts a
+        // deferred Chrono sleep). Existing outputs can be restored from local
+        // state, but that does not mean the newly introduced result was loaded.
+        // Only retain the full-window loaded bit when every displayed result was
+        // present before the refresh; otherwise the fetch below must fill it in.
+        const allDisplayedToolOutputsPreserved = collectDisplayedToolResultIds(state)
+          .every((toolCallId) => preservedToolOutputs.has(toolCallId));
+        state.toolOutputsLoaded = previousToolOutputsLoaded && allDisplayedToolOutputsPreserved;
         state.showToolOutput = previousShowToolOutput || state.showToolOutput;
         state.toolOutputsLoading = false;
         state.showToolOutputAfterLoad = false;

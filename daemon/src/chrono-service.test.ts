@@ -179,8 +179,8 @@ describe("Chrono scheduler", () => {
     expect(interrupted).toMatchObject({ id: deferred.id, state: "resuming", resumeReason: "user_message" });
     const result = get(owner)!.messages.at(-1)!;
     const output = (result.content as Array<{ content?: string }>)[0]?.content ?? "";
-    expect(output).toContain("Sleep finished after 2m 5s");
-    expect(output).toContain("ended early because the user sent a message");
+    expect(output).toContain("Sleep interrupted after 2m 5s because the user sent a message");
+    expect(output).toContain("requested 10m");
     expect(listDeferredChronoSleeps(owner)).toHaveLength(1);
 
     completeDeferredChronoSleepResume(deferred.id);

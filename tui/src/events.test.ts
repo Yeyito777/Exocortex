@@ -1310,6 +1310,52 @@ describe("disk sync assistant diagnostics", () => {
     });
   });
 
+  test("loads a tool result introduced by a compact same-conversation load while expanded", () => {
+    const loadRequests: string[][] = [];
+    const localDaemon: DaemonActions = {
+      ...daemon,
+      loadToolOutputs(_convId, toolCallIds) { loadRequests.push(toolCallIds ?? []); },
+    };
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.showToolOutput = true;
+    state.toolOutputsLoaded = true;
+    state.messages.push({
+      role: "assistant",
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: {}, summary: "$ make" },
+        { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "full output", isError: false },
+      ],
+      metadata: null,
+    });
+
+    handleEvent({
+      type: "conversation_loaded",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      entries: [{
+        type: "ai",
+        blocks: [
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: {}, summary: "$ make" },
+          { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
+          { type: "tool_call", toolCallId: "sleep-1", toolName: "chrono", input: {}, summary: "sleep: 1h" },
+          { type: "tool_result", toolCallId: "sleep-1", toolName: "", output: "", isError: false },
+        ],
+        metadata: null,
+      }],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, localDaemon);
+
+    expect(state.showToolOutput).toBe(true);
+    expect(state.toolOutputsLoaded).toBe(false);
+    expect(state.toolOutputsLoading).toBe(true);
+    expect(loadRequests).toEqual([["call-1", "sleep-1"]]);
+  });
+
   test("preserves expanded tool output across a compact history update", () => {
     let loadToolOutputsCalls = 0;
     const localDaemon: DaemonActions = {
@@ -1352,6 +1398,73 @@ describe("disk sync assistant diagnostics", () => {
       blocks: [
         { type: "tool_call", toolCallId: "call-1" },
         { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "full output", isError: false },
+      ],
+    });
+  });
+
+  test("loads a newly introduced deferred-sleep result after a compact history update", () => {
+    const loadRequests: string[][] = [];
+    const localDaemon: DaemonActions = {
+      ...daemon,
+      loadToolOutputs(_convId, toolCallIds) { loadRequests.push(toolCallIds ?? []); },
+    };
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.showToolOutput = true;
+    state.toolOutputsLoaded = true;
+    state.messages.push({
+      role: "assistant",
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: {}, summary: "$ make" },
+        { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "full output", isError: false },
+        { type: "tool_call", toolCallId: "sleep-1", toolName: "chrono", input: {}, summary: "sleep: 1h" },
+      ],
+      metadata: null,
+    });
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-1",
+      entries: [{
+        type: "ai",
+        blocks: [
+          { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: {}, summary: "$ make" },
+          { type: "tool_result", toolCallId: "call-1", toolName: "", output: "", isError: false },
+          { type: "tool_call", toolCallId: "sleep-1", toolName: "chrono", input: {}, summary: "sleep: 1h" },
+          { type: "tool_result", toolCallId: "sleep-1", toolName: "", output: "", isError: false },
+        ],
+        metadata: null,
+      }],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, localDaemon);
+
+    expect(state.showToolOutput).toBe(true);
+    expect(state.toolOutputsLoaded).toBe(false);
+    expect(state.toolOutputsLoading).toBe(true);
+    expect(loadRequests).toEqual([["call-1", "sleep-1"]]);
+
+    handleEvent({
+      type: "tool_outputs_loaded",
+      convId: "conv-1",
+      outputs: [
+        { toolCallId: "call-1", output: "full output" },
+        { toolCallId: "sleep-1", output: "Sleep interrupted after 9s because the user sent a message (requested 1h)." },
+      ],
+    }, state, localDaemon);
+
+    expect(state.toolOutputsLoaded).toBe(true);
+    expect(state.messages[0]).toMatchObject({
+      role: "assistant",
+      blocks: [
+        { type: "tool_call", toolCallId: "call-1" },
+        { type: "tool_result", toolCallId: "call-1", output: "full output" },
+        { type: "tool_call", toolCallId: "sleep-1" },
+        {
+          type: "tool_result",
+          toolCallId: "sleep-1",
+          output: "Sleep interrupted after 9s because the user sent a message (requested 1h).",
+        },
       ],
     });
   });

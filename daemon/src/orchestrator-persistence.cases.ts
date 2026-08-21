@@ -712,7 +712,7 @@ describe("DB-first orchestrator persistence", () => {
     expect(toolResultMessage.content).toContainEqual(expect.objectContaining({
       type: "tool_result",
       tool_use_id: "long-sleep-call",
-      content: expect.stringContaining("ended early because the user sent a message"),
+      content: expect.stringContaining("Sleep interrupted after"),
     }));
     expect(loadPersisted(convId)!.messages.map(message => message.role)).toEqual([
       "user", "assistant", "user", "user", "assistant",

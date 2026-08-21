@@ -44,7 +44,7 @@ import {
 } from "./streaming-snapshot";
 import type { DaemonActions } from "./types";
 import { clearCallTranscriptDrafts, reconcileCallTranscriptDrafts } from "./call";
-import { collectDisplayEntryToolResultIds } from "./tool-outputs";
+import { collectDisplayedToolResultIds, collectDisplayEntryToolResultIds } from "./tool-outputs";
 import {
   beginConversationScrollRestore,
   completeInitialConversationBackfill,
@@ -338,19 +338,28 @@ export function handleConversationLoaded(
   const preservedToolOutputResult = !event.toolOutputsIncluded && preservedToolOutputs.size > 0
     ? applyPreservedToolResultOutputs(state, preservedToolOutputs)
     : { patchedOutputs: 0, patchedToolNames: 0 };
-  if (sameConversation && !event.toolOutputsIncluded && preservedToolOutputResult.patchedOutputs > 0) {
-    state.toolOutputsLoaded = previousToolOutputsLoaded || state.toolOutputsLoaded;
+  if (shouldPreserveCompactToolOutputs) {
+    const displayedToolResultIds = collectDisplayedToolResultIds(state);
+    const allDisplayedToolOutputsPreserved = displayedToolResultIds
+      .every((toolCallId) => preservedToolOutputs.has(toolCallId));
+    state.toolOutputsLoaded = previousToolOutputsLoaded && allDisplayedToolOutputsPreserved;
     state.showToolOutput = previousShowToolOutput || state.showToolOutput;
     state.toolOutputsLoading = false;
     state.showToolOutputAfterLoad = false;
-    log("info", `tui: preserved compact disk-sync tool outputs ${JSON.stringify({
-      source: "conversation_loaded",
-      convId: event.convId,
-      patchedOutputs: preservedToolOutputResult.patchedOutputs,
-      patchedToolNames: preservedToolOutputResult.patchedToolNames,
-      restoredShowToolOutput: state.showToolOutput,
-      restoredToolOutputsLoaded: state.toolOutputsLoaded,
-    })}`);
+    if (preservedToolOutputResult.patchedOutputs > 0) {
+      log("info", `tui: preserved compact disk-sync tool outputs ${JSON.stringify({
+        source: "conversation_loaded",
+        convId: event.convId,
+        patchedOutputs: preservedToolOutputResult.patchedOutputs,
+        patchedToolNames: preservedToolOutputResult.patchedToolNames,
+        restoredShowToolOutput: state.showToolOutput,
+        restoredToolOutputsLoaded: state.toolOutputsLoaded,
+      })}`);
+    }
+    if (state.showToolOutput && !state.toolOutputsLoaded && displayedToolResultIds.length > 0) {
+      state.toolOutputsLoading = true;
+      daemon.loadToolOutputs(event.convId, displayedToolResultIds);
+    }
   }
 
   const preservedAssistantExtensionResult = sameConversation
