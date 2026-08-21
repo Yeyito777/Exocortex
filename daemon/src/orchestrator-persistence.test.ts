@@ -19,7 +19,7 @@ describe("DB-first orchestrator persistence", () => {
     });
     const output = `${child.stdout.toString()}${child.stderr.toString()}`;
     expect(child.exitCode, output).toBe(0);
-    expect(output).toContain("10 pass");
+    expect(output).toContain("13 pass");
     expect(output).toContain("0 fail");
   });
 });

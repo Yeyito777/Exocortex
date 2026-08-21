@@ -32,7 +32,7 @@ import { clearConversationCustomTools } from "./tools/custom-tools";
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
   isStreaming, isStreamHandoffActive, beginStreamHandoff, clearStreamHandoff,
-  setActiveJob, getActiveJob, isRestartRecoverableJob, clearActiveJob, getStreamingStartedAt,
+  setActiveJob, getActiveJob, getActiveJobKind, isGoalReviewing, isRestartRecoverableJob, clearActiveJob, getStreamingStartedAt,
   setStreamingTokens, getStreamingTokens, nextStreamSeq, getStreamSeq,
   setContextCompactionStartedAt, getContextCompactionStartedAt,
   requestHistoryUnwind, isHistoryUnwindPending, clearHistoryUnwindPending,
@@ -43,7 +43,7 @@ export {
   setStreamingCommittedBlockCount, getStreamingCommittedBlockCount,
   setStreamingCommittedMessageCount, getStreamingCommittedMessageCount,
   pushStreamingBlock, appendToStreamingBlock, clearCurrentStreamingBlocks,
-  requestGoalContinuationAfterStream, consumeGoalContinuationAfterStream, clearGoalContinuationAfterStream,
+  requestGoalReviewAfterStream, consumeGoalReviewAfterStream, clearGoalReviewAfterStream,
 } from "./streaming";
 export {
   getQueuedMessages, getQueuedMessageById, listQueuedMessages, listInternalQueuedMessages,
@@ -713,10 +713,21 @@ export function setGoal(id: string, objective: string, options: SetGoalOptions =
   return conv.goal;
 }
 
-export function updateGoalStatus(id: string, status: ConversationGoalStatus): ConversationGoal | null {
+export function updateGoalStatus(
+  id: string,
+  status: ConversationGoalStatus,
+  options: { pausedBy?: "user" | "controller"; reason?: string } = {},
+): ConversationGoal | null {
   const conv = get(id);
   if (!conv?.goal) return null;
   conv.goal.status = status;
+  if (status === "paused") {
+    conv.goal.pausedBy = options.pausedBy;
+    conv.goal.pauseReason = options.reason?.trim() || undefined;
+  } else {
+    delete conv.goal.pausedBy;
+    delete conv.goal.pauseReason;
+  }
   conv.goal.updatedAt = Date.now();
   markDirty(id);
   flush(id);
@@ -767,7 +778,7 @@ function removeConversationState(id: string): boolean {
     messageQueue.persistQueuedMessagesSnapshot();
     persistence.removeConversationUnwindReceipt(id);
   }
-  streaming.clearGoalContinuationAfterStream(id);
+  streaming.clearGoalReviewAfterStream(id);
   streaming.clearHistoryUnwindPending(id);
   return wasUnread;
 }
@@ -1416,7 +1427,7 @@ async function performUnwindTo(
   // during the abort wait, suspension disappears on restart and the queue is
   // still intact; a successful unwind explicitly clears it below.
   messageQueue.suspendQueuedMessageDelivery(id);
-  const goalContinuationBeforeAbort = streaming.consumeGoalContinuationAfterStream(id);
+  const goalContinuationBeforeAbort = streaming.consumeGoalReviewAfterStream(id);
   let committed = false;
   let stoppedAbortedStream = false;
   try {
@@ -1538,7 +1549,7 @@ async function performUnwindTo(
       // will finish the queue cleanup without deleting later queue entries.
       log("error", `conversations: failed to persist queue cleanup after unwind ${id}: ${err instanceof Error ? err.message : String(err)}`);
     }
-    streaming.clearGoalContinuationAfterStream(id);
+    streaming.clearGoalReviewAfterStream(id);
     const result: ConversationUnwindResult = {
       status: "applied",
       operationId,
@@ -1566,9 +1577,9 @@ async function performUnwindTo(
       streaming.clearHistoryUnwindPending(id, operationId);
     }
     if (!committed) {
-      const goalContinuationDuringWait = streaming.consumeGoalContinuationAfterStream(id);
+      const goalContinuationDuringWait = streaming.consumeGoalReviewAfterStream(id);
       if (goalContinuationBeforeAbort || goalContinuationDuringWait) {
-        streaming.requestGoalContinuationAfterStream(id);
+        streaming.requestGoalReviewAfterStream(id);
       }
       // A pending unwind makes the exact aborted stream skip its obsolete final
       // save. If the cut did not commit, restore that interrupted state now.
@@ -1959,6 +1970,7 @@ export function listSummaries(): ConversationSummary[] {
     result.push({
       ...summary,
       streaming: streaming.isStreaming(summary.id),
+      ...(streaming.isGoalReviewing(summary.id) ? { goalReviewing: true } : {}),
       ...(streaming.isStreaming(summary.id) && !streaming.isRestartRecoverableJob(summary.id) ? { restartRecoverable: false } : {}),
       unread: !notificationsMuted && unread.has(summary.id),
       ...(notificationsMuted ? { notificationsMuted: true } : {}),
@@ -2380,6 +2392,7 @@ export function getSummary(id: string): ConversationSummary | null {
   return {
     ...summary,
     streaming: streaming.isStreaming(id),
+    ...(streaming.isGoalReviewing(id) ? { goalReviewing: true } : {}),
     ...(streaming.isStreaming(id) && !streaming.isRestartRecoverableJob(id) ? { restartRecoverable: false } : {}),
     unread: !notificationsMuted && unread.has(id),
     ...(notificationsMuted ? { notificationsMuted: true } : {}),

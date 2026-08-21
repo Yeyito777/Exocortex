@@ -1369,6 +1369,7 @@ function deleteConversationFromUi(convId: string): void {
     clearPendingAI(state);
     state.contextTokens = 0;
     state.goal = null;
+    state.goalReviewing = false;
     state.btw = null;
     resetToolOutputState(state);
     resetHistoryPagination(state);
@@ -1483,6 +1484,7 @@ function handleKey(key: KeyEvent): void {
         clearPendingAI(state);
         state.contextTokens = 0;
         state.goal = null;
+        state.goalReviewing = false;
         state.btw = null;
         resetToolOutputState(state);
         resetHistoryPagination(state);

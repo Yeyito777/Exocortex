@@ -1,15 +1,6 @@
 import type { Tool } from "./types";
 import { readExocortexConfig, type ExocortexConfig } from "@exocortex/shared/config";
-import { applyModelGoalAction, GOAL_TOOL_SYSTEM_HINT, goalPermissionFlagSuffix, normalizeGoalSetOptions } from "../goals";
-
-type GoalAction = "set" | "pause" | "resume" | "complete";
-
-function actionFromInput(input: Record<string, unknown>): GoalAction | null {
-  const action = input.action;
-  return action === "set" || action === "pause" || action === "resume" || action === "complete"
-    ? action
-    : null;
-}
+import { GOAL_TOOL_SYSTEM_HINT, goalPermissionFlagSuffix, normalizeGoalSetOptions, setGoal } from "../goals";
 
 export function isGoalToolFeatureEnabled(config: ExocortexConfig = readExocortexConfig()): boolean {
   // The goal tool is product behavior by default; hide/disable it only when the
@@ -19,73 +10,48 @@ export function isGoalToolFeatureEnabled(config: ExocortexConfig = readExocortex
 
 export const goal: Tool = {
   name: "goal",
-  description: "Set a goal that lets you work on a task for 100+ hours, only use when the user explicitly tells you to set a goal.",
+  description: "Set a goal that lets you work on a task for 100+ hours. Only use it when the user explicitly asks you to set a goal.",
   systemHint: GOAL_TOOL_SYSTEM_HINT,
   isAvailable: isGoalToolFeatureEnabled,
   inputSchema: {
     type: "object",
     properties: {
-      action: {
-        type: "string",
-        enum: ["set", "pause", "resume", "complete"],
-        description: "Goal lifecycle action to perform.",
-      },
       objective: {
         type: "string",
-        description: "Required for action=set. The new active goal objective.",
+        description: "The new active goal objective.",
       },
       pausable: {
         type: "boolean",
-        description: "Optional for action=set. Whether this goal may be paused later. Defaults to true. If completable is false, this is forced to false.",
+        description: "Whether the private goal controller may pause this goal later. Defaults to true. If completable is false, this is forced to false.",
       },
       completable: {
         type: "boolean",
-        description: "Optional for action=set. Whether this goal may be marked complete later. Defaults to true. If false, pausable is also forced false.",
-      },
-      reason: {
-        type: "string",
-        description: "Optional short reason, especially useful when pausing for user input or completing a goal.",
+        description: "Whether the private goal controller may mark this goal complete later. Defaults to true. If false, pausable is also forced to false.",
       },
     },
-    required: ["action"],
+    required: ["objective"],
     additionalProperties: false,
   },
   display: { label: "Goal", color: "#c792ea" },
   summarize(input) {
-    const action = actionFromInput(input);
-    if (!action) return { label: "Goal", detail: "invalid action" };
-    if (action === "set") {
-      const objective = typeof input.objective === "string" ? input.objective : "";
-      const options = normalizeGoalSetOptions({
-        pausable: typeof input.pausable === "boolean" ? input.pausable : undefined,
-        completable: typeof input.completable === "boolean" ? input.completable : undefined,
-      });
-      const suffix = goalPermissionFlagSuffix(options);
-      return { label: "Goal", detail: objective ? `set: ${objective}${suffix}` : `set${suffix}` };
-    }
-    const reason = typeof input.reason === "string" ? input.reason.trim() : "";
-    return { label: "Goal", detail: reason ? `${action}: ${reason}` : action };
+    const objective = typeof input.objective === "string" ? input.objective : "";
+    const options = normalizeGoalSetOptions({
+      pausable: typeof input.pausable === "boolean" ? input.pausable : undefined,
+      completable: typeof input.completable === "boolean" ? input.completable : undefined,
+    });
+    const suffix = goalPermissionFlagSuffix(options);
+    return { label: "Goal", detail: objective ? `set: ${objective}${suffix}` : `set${suffix}` };
   },
   async execute(input, context) {
     const convId = context?.conversationId;
     if (!convId) return { output: "No active conversation goal context.", isError: true };
 
-    const action = actionFromInput(input);
-    if (!action) return { output: "Invalid goal action. Use set, pause, resume, or complete.", isError: true };
-
-    const objective = typeof input.objective === "string" ? input.objective.trim() : undefined;
-    const options = action === "set"
-      ? {
-        pausable: typeof input.pausable === "boolean" ? input.pausable : undefined,
-        completable: typeof input.completable === "boolean" ? input.completable : undefined,
-      }
-      : undefined;
-    const result = applyModelGoalAction(convId, action, objective, options);
-    if (!result.ok) return { output: result.message, isError: true };
-
-    const reason = typeof input.reason === "string" && input.reason.trim()
-      ? `\nReason: ${input.reason.trim()}`
-      : "";
-    return { output: `${result.message}${reason}`, isError: false };
+    const objective = typeof input.objective === "string" ? input.objective.trim() : "";
+    if (!objective) return { output: "Goal objective cannot be empty.", isError: true };
+    const result = setGoal(convId, objective, {
+      pausable: typeof input.pausable === "boolean" ? input.pausable : undefined,
+      completable: typeof input.completable === "boolean" ? input.completable : undefined,
+    });
+    return { output: result.message, isError: !result.ok };
   },
 };

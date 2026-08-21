@@ -309,7 +309,7 @@ async function startDaemon(): Promise<void> {
   }
   const recoveredGoals = recoverActiveGoals(server, recoveredStreams);
   if (recoveredGoals.length > 0) {
-    console.log(`  goals: scheduled ${recoveredGoals.length} active goal continuation(s): ${recoveredGoals.join(", ")}`);
+    console.log(`  goals: scheduled ${recoveredGoals.length} active goal review(s): ${recoveredGoals.join(", ")}`);
     profileMark("active_goals_recovered", { count: recoveredGoals.length });
   }
   const pendingNotifications = deliverPendingSubagentNotifications(server);

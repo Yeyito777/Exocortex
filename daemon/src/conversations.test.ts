@@ -1911,6 +1911,16 @@ describe("unread persistence", () => {
 });
 
 describe("listRunningConversationIds", () => {
+  test("projects hidden goal reviews as serialized, non-assistant activity", () => {
+    const id = mkId("goal-review-summary");
+    create(id, "openai", "gpt-5.5");
+
+    setActiveJob(id, new AbortController(), Date.now(), false, "goal_controller");
+
+    expect(getSummary(id)).toMatchObject({ streaming: true, goalReviewing: true, restartRecoverable: false });
+    expect(getPendingStreamSnapshot(id)).toBeNull();
+  });
+
   test("returns only conversations with active streams", () => {
     const running = mkId("running");
     const idle = mkId("idle");

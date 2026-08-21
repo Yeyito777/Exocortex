@@ -368,6 +368,8 @@ function formatTokenSourceLabel(source: TokenUsageSource): string {
   switch (source) {
     case "conversation":
       return "conversation";
+    case "goal_controller":
+      return "goal controller";
     case "btw":
       return "BTW";
     case "llm_complete":

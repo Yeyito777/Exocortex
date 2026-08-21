@@ -12,7 +12,7 @@ import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import type { RealtimeCallAdapter, RealtimeCallParticipant } from "@exocortex/shared/protocol";
 import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
-import { orchestrateCompactConversation, orchestrateGoalContinuation, orchestrateRealtimeDelegation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
+import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateRealtimeDelegation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
 import { buildSystemPrompt } from "./system";
 import { createConversationWorkspace, ensureConversationWorkspace } from "./workspace-service";
@@ -554,6 +554,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           model: summary?.model ?? page.model,
           effort: summary?.effort ?? page.effort,
           fastMode: summary?.fastMode ?? page.fastMode,
+          goalReviewing: summary?.goalReviewing ?? false,
           entries: responseEntries,
           historyStartIndex: page.startIndex,
           historyStartUserIndex: page.startUserIndex,
@@ -609,6 +610,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       model: compactData.model,
       effort: compactData.effort,
       fastMode: compactData.fastMode,
+      goalReviewing: summary?.goalReviewing ?? false,
       entries: responseEntries,
       ...(page ? {
         historyStartIndex: page.startIndex,
@@ -1364,8 +1366,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.subscribe(client, id);
           server.sendToSubscribers(id, { type: "goal_updated", reqId: cmd.reqId, convId: id, goal, message: goalResult?.message ?? `Goal set: ${goalObjective}` });
           startTitleGeneration(server, id, { extraContext: goalObjective });
-          void orchestrateGoalContinuation(server, id, buildOrchestrationCallbacks(id)).catch((err) => {
-            log("error", `handler: initial new-conversation goal continuation failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+          void orchestrateGoalCycle(server, id, buildOrchestrationCallbacks(id)).catch((err) => {
+            log("error", `handler: initial new-conversation goal review failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
           });
         } else if (titleContext && !initialMessage) {
           startTitleGeneration(server, id, { extraContext: titleContext });
@@ -1579,8 +1581,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
           log("info", `handler: set goal for ${cmd.convId}: "${objective.slice(0, 80)}"`);
           if (goal?.status === "active") {
-            void orchestrateGoalContinuation(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId), { subagentMaxDepth: null }).catch((err) => {
-              log("error", `handler: initial goal continuation failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
+            void orchestrateGoalCycle(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId), { subagentMaxDepth: null }).catch((err) => {
+              log("error", `handler: initial goal review failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
             });
           }
           break;
@@ -1590,16 +1592,19 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           const result = applyUserGoalAction(conv, "resume");
           const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
           if (goal?.status === "active" && !convStore.isStreaming(cmd.convId)) {
-            void orchestrateGoalContinuation(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId), { subagentMaxDepth: null }).catch((err) => {
-              log("error", `handler: resumed goal continuation failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
+            void orchestrateGoalCycle(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId), { subagentMaxDepth: null }).catch((err) => {
+              log("error", `handler: resumed goal review failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
             });
           } else if (goal?.status === "active") {
-            convStore.requestGoalContinuationAfterStream(cmd.convId);
+            convStore.requestGoalReviewAfterStream(cmd.convId);
             log("info", `handler: resumed goal for ${cmd.convId} while streaming; continuation will run after the active stream stops`);
           }
           break;
         }
 
+        if ((cmd.action === "pause" || cmd.action === "complete") && convStore.isGoalReviewing(cmd.convId)) {
+          convStore.getActiveJob(cmd.convId)?.abort("goal-state-changed");
+        }
         const result = applyUserGoalAction(conv, cmd.action);
         server.sendTo(client, { type: "goal_updated", reqId: cmd.reqId, convId: cmd.convId, goal: result.goal, message: result.message });
         if (cmd.action !== "show") broadcastConversationUpdated(server, cmd.convId);

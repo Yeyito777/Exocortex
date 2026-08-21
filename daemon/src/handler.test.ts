@@ -3,7 +3,7 @@ import { clearConversationDefaults, saveConversationDefaults } from "@exocortex/
 import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, setGoal, setToolPolicy, updateGoalStatus } from "./conversations";
+import { appendMessages, consumeGoalReviewAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, setGoal, setToolPolicy, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setStreamingCommittedMessageCount } from "./streaming";
 import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
@@ -38,14 +38,14 @@ const orchestrateSendMessage = mock(async () => makeAssistantOutcome());
 const orchestrateReplayConversation = mock(async () => makeAssistantOutcome());
 const orchestrateRealtimeDelegation = mock(async () => makeAssistantOutcome());
 const orchestrateCompactConversation = mock(async () => makeAssistantOutcome());
-const orchestrateGoalContinuation = mock(async () => {});
+const orchestrateGoalCycle = mock(async () => {});
 
 mock.module("./orchestrator", () => ({
   orchestrateSendMessage,
   orchestrateReplayConversation,
   orchestrateRealtimeDelegation,
   orchestrateCompactConversation,
-  orchestrateGoalContinuation,
+  orchestrateGoalCycle,
 }));
 
 const { createHandler } = await import("./handler");
@@ -897,7 +897,7 @@ describe("handler new_conversation defaults", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
-    orchestrateGoalContinuation.mockClear();
+    orchestrateGoalCycle.mockClear();
     clearConversationDefaults();
     cleanupIds();
   });
@@ -1117,7 +1117,7 @@ describe("handler subagent folder placement", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
-    orchestrateGoalContinuation.mockClear();
+    orchestrateGoalCycle.mockClear();
     cleanupIds();
   });
   afterEach(cleanupIds);
@@ -1251,7 +1251,7 @@ describe("handler background task notifications", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
-    orchestrateGoalContinuation.mockClear();
+    orchestrateGoalCycle.mockClear();
     cleanupIds();
   });
   afterEach(cleanupIds);
@@ -1318,7 +1318,7 @@ describe("handler replay_conversation", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
-    orchestrateGoalContinuation.mockClear();
+    orchestrateGoalCycle.mockClear();
     cleanupIds();
   });
   afterEach(cleanupIds);
@@ -1797,7 +1797,7 @@ describe("handler set_goal resume", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
-    orchestrateGoalContinuation.mockClear();
+    orchestrateGoalCycle.mockClear();
     cleanupIds();
   });
   afterEach(cleanupIds);
@@ -1830,8 +1830,8 @@ describe("handler set_goal resume", () => {
       message: "Goal resumed.",
       goal: expect.objectContaining({ status: "active" }),
     }));
-    expect(orchestrateGoalContinuation).toHaveBeenCalledTimes(1);
-    expect(orchestrateGoalContinuation).toHaveBeenCalledWith(
+    expect(orchestrateGoalCycle).toHaveBeenCalledTimes(1);
+    expect(orchestrateGoalCycle).toHaveBeenCalledWith(
       server,
       convId,
       expect.objectContaining({
@@ -1873,8 +1873,8 @@ describe("handler set_goal resume", () => {
       message: "Goal resumed.",
       goal: expect.objectContaining({ status: "active" }),
     }));
-    expect(consumeGoalContinuationAfterStream(convId)).toBe(true);
-    expect(orchestrateGoalContinuation).not.toHaveBeenCalled();
+    expect(consumeGoalReviewAfterStream(convId)).toBe(true);
+    expect(orchestrateGoalCycle).not.toHaveBeenCalled();
   });
 
   test("completing a goal clears it and returns a null goal update", async () => {
@@ -1911,7 +1911,7 @@ describe("handler abort", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
-    orchestrateGoalContinuation.mockClear();
+    orchestrateGoalCycle.mockClear();
     cleanupIds();
   });
   afterEach(cleanupIds);
@@ -2022,7 +2022,7 @@ describe("handler load_conversation late-join streaming snapshots", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
-    orchestrateGoalContinuation.mockClear();
+    orchestrateGoalCycle.mockClear();
     cleanupIds();
   });
   afterEach(cleanupIds);

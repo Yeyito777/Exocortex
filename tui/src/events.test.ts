@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { browserOpenCommand, handleEvent, type DaemonActions } from "./events";
 import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostics";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary } from "./messages";
-import { createInitialState } from "./state";
+import { createInitialState, isStreaming } from "./state";
 import { prepareConversationOpen } from "./conversationscroll";
 
 const daemon: DaemonActions = {
@@ -33,6 +33,28 @@ describe("auth browser opener", () => {
 
   test("uses cmd start on Windows", () => {
     expect(browserOpenCommand("https://example.com/auth", "win32")).toEqual(["cmd", "/c", "start", "", "https://example.com/auth"]);
+  });
+});
+
+describe("hidden goal review state", () => {
+  test("queues sends while the controller owns the focused conversation", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+
+    handleEvent({
+      type: "conversation_updated",
+      summary: summary({ goalReviewing: true, streaming: true }),
+    }, state, daemon);
+
+    expect(state.pendingAI).toBeNull();
+    expect(state.goalReviewing).toBe(true);
+    expect(isStreaming(state)).toBe(true);
+
+    handleEvent({
+      type: "conversation_updated",
+      summary: summary({ goalReviewing: false, streaming: false }),
+    }, state, daemon);
+    expect(isStreaming(state)).toBe(false);
   });
 });
 

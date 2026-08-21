@@ -2,11 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { create, get, remove } from "./conversations";
 import { DEFAULT_EFFORT } from "./messages";
 import {
-  applyModelGoalAction,
+  applyGoalControllerAction,
   applyUserGoalAction,
   goalCanComplete,
   goalCanPause,
-  goalContinuationUserMessage,
   goalPermissionFlagSuffix,
   setGoal,
 } from "./goals";
@@ -27,18 +26,21 @@ afterEach(() => {
 });
 
 describe("goal tool schema", () => {
-  test("exposes pausable and completable set parameters", () => {
+  test("ordinary conversations can only set goals", () => {
     expect(goalTool.inputSchema).toMatchObject({
       properties: {
+        objective: { type: "string" },
         pausable: { type: "boolean" },
         completable: { type: "boolean" },
       },
+      required: ["objective"],
     });
+    expect((goalTool.inputSchema.properties as Record<string, unknown>).action).toBeUndefined();
+    expect((goalTool.inputSchema.properties as Record<string, unknown>).reason).toBeUndefined();
   });
 
-  test("summarizes disabled permissions as CLI-style flags", () => {
+  test("summarizes disabled controller permissions as CLI-style flags", () => {
     expect(goalTool.summarize({
-      action: "set",
       objective: "Continue assisting the user until instructed otherwise.",
       pausable: false,
       completable: false,
@@ -50,9 +52,8 @@ describe("goal tool schema", () => {
 });
 
 describe("goal permissions", () => {
-  test("defaults allow pause and complete", () => {
+  test("defaults allow controller pause and complete", () => {
     const convId = makeConversation("defaults");
-
     const result = setGoal(convId, "finish everything");
 
     expect(result.ok).toBe(true);
@@ -64,7 +65,6 @@ describe("goal permissions", () => {
 
   test("completable=false forces pausable=false", () => {
     const convId = makeConversation("no-complete");
-
     const result = setGoal(convId, "keep going", { pausable: true, completable: false });
 
     expect(result.ok).toBe(true);
@@ -74,63 +74,71 @@ describe("goal permissions", () => {
     expect(goalCanComplete(result.goal)).toBe(false);
   });
 
-  test("model cannot pause or complete a goal when the corresponding permission is disabled", () => {
+  test("controller cannot pause or complete when the corresponding permission is disabled", () => {
     const pauseLockedId = makeConversation("pause-locked");
     setGoal(pauseLockedId, "do not pause", { pausable: false });
 
-    expect(applyModelGoalAction(pauseLockedId, "pause")).toMatchObject({
+    expect(applyGoalControllerAction(pauseLockedId, "pause", "need input")).toMatchObject({
       ok: false,
       message: "This goal cannot be paused.",
     });
-    expect(applyModelGoalAction(pauseLockedId, "complete")).toMatchObject({
+    expect(applyGoalControllerAction(pauseLockedId, "complete", "done")).toMatchObject({
       ok: true,
-      message: "Goal complete.",
       goal: null,
     });
-    expect(get(pauseLockedId)?.goal).toBeNull();
 
     const completeLockedId = makeConversation("complete-locked");
     setGoal(completeLockedId, "do not complete", { completable: false });
-
-    expect(applyModelGoalAction(completeLockedId, "pause")).toMatchObject({
+    expect(applyGoalControllerAction(completeLockedId, "pause", "blocked")).toMatchObject({
       ok: false,
       message: "This goal cannot be paused.",
     });
-    expect(applyModelGoalAction(completeLockedId, "complete")).toMatchObject({
+    expect(applyGoalControllerAction(completeLockedId, "complete", "done")).toMatchObject({
       ok: false,
       message: "This goal cannot be completed.",
     });
   });
 
-  test("user goal actions can pause and complete regardless of AI permissions", () => {
+  test("controller pause records its source and reason", () => {
+    const convId = makeConversation("controller-pause");
+    setGoal(convId, "wait when blocked");
+
+    const result = applyGoalControllerAction(convId, "pause", "Choose a deployment region.");
+
+    expect(result).toMatchObject({
+      ok: true,
+      message: "Goal paused: Choose a deployment region.",
+      goal: {
+        status: "paused",
+        pausedBy: "controller",
+        pauseReason: "Choose a deployment region.",
+      },
+    });
+  });
+
+  test("user actions override AI permissions and mark manual pauses", () => {
     const convId = makeConversation("user-override");
     setGoal(convId, "user remains in control", { completable: false });
 
     expect(applyUserGoalAction(get(convId)!, "pause")).toMatchObject({
       ok: true,
-      message: "Goal paused.",
-      goal: expect.objectContaining({ status: "paused" }),
+      goal: expect.objectContaining({ status: "paused", pausedBy: "user" }),
     });
     expect(applyUserGoalAction(get(convId)!, "resume")).toMatchObject({
       ok: true,
-      message: "Goal resumed.",
       goal: expect.objectContaining({ status: "active" }),
     });
-    expect(applyUserGoalAction(get(convId)!, "complete")).toMatchObject({
-      ok: true,
-      message: "Goal complete.",
-      goal: null,
-    });
-    expect(get(convId)?.goal).toBeNull();
+    expect(get(convId)?.goal).not.toHaveProperty("pausedBy");
+    expect(applyUserGoalAction(get(convId)!, "complete")).toMatchObject({ ok: true, goal: null });
   });
 
-  test("model completion clears the goal instead of leaving a complete status", () => {
+  test("controller completion clears the goal", () => {
     const convId = makeConversation("complete-clears");
     setGoal(convId, "finish and disappear");
 
-    const result = applyModelGoalAction(convId, "complete");
+    const result = applyGoalControllerAction(convId, "complete", "All checks pass.");
 
-    expect(result).toMatchObject({ ok: true, message: "Goal complete.", goal: null });
+    expect(result).toMatchObject({ ok: true, message: "Goal complete: All checks pass.", goal: null });
     expect(get(convId)?.goal).toBeNull();
   });
 
@@ -138,38 +146,5 @@ describe("goal permissions", () => {
     expect(goalPermissionFlagSuffix({ pausable: true, completable: true })).toBe("");
     expect(goalPermissionFlagSuffix({ pausable: false, completable: true })).toBe(" --unpausable");
     expect(goalPermissionFlagSuffix({ pausable: false, completable: false })).toBe(" --unpausable --uncompletable");
-  });
-});
-
-describe("goal continuation messages", () => {
-  test("includes concise pause and completion guidance when both actions are allowed", () => {
-    const convId = makeConversation("continue-default");
-    const result = setGoal(convId, "ship the thing");
-
-    expect(goalContinuationUserMessage(result.goal!)).toBe(
-      "[notification] Continue the active goal:\n\nship the thing\n\n"
-      + "If the goal is finished, mark it complete. "
-      + "If you are blocked or need user input or review, pause it. "
-      + "Otherwise, keep working.",
-    );
-  });
-
-  test("omits pause references when only completion is allowed", () => {
-    const convId = makeConversation("continue-no-pause");
-    const result = setGoal(convId, "ship the thing", { pausable: false });
-
-    const message = goalContinuationUserMessage(result.goal!);
-    expect(message).toBe(
-      "[notification] Continue the active goal:\n\nship the thing\n\n"
-      + "If the goal is finished, mark it complete. Otherwise, keep working.",
-    );
-    expect(message).not.toContain("pause");
-  });
-
-  test("uses only the continuation directive when pause and complete are disabled", () => {
-    const convId = makeConversation("continue-work-only");
-    const result = setGoal(convId, "ship the thing", { completable: false });
-
-    expect(goalContinuationUserMessage(result.goal!)).toBe("[notification] Continue the active goal:\n\nship the thing");
   });
 });

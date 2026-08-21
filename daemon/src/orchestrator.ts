@@ -21,7 +21,8 @@ import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
 import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
 import { quarantineActiveContext } from "./active-context-quarantine";
-import { goalContinuationUserMessage } from "./goals";
+import { applyGoalControllerAction, updateGoalStatus } from "./goals";
+import { decideGoalControllerAction } from "./goal-controller";
 import { createProviderTurnSession, streamMessage } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
 import type { RealtimeCallSpeakerAttribution, StreamingStopReason } from "./protocol";
@@ -177,7 +178,8 @@ interface AssistantTurnOptions {
     text: string;
     images?: ImageAttachment[];
   };
-  goalContinuation?: boolean;
+  /** Exact hidden-controller instruction that starts an autonomous worker turn. */
+  goalContinuationPrompt?: string;
   /**
    * Explicitly install a delegation budget for this turn. Omission inherits the
    * conversation's persisted budget for automatic replay/goal continuations.
@@ -275,16 +277,210 @@ export async function orchestrateCompactConversation(
   });
 }
 
-export async function orchestrateGoalContinuation(
+export async function orchestrateGoalCycle(
   server: DaemonServer,
   convId: string,
   ext: OrchestrationCallbacks,
   policy: SubagentTurnPolicy = {},
 ): Promise<AssistantTurnOutcome> {
-  return await orchestrateAssistantTurn(server, null, undefined, convId, Date.now(), ext, {
-    ...policy,
-    goalContinuation: true,
+  const conv = convStore.get(convId);
+  if (!conv?.goal || conv.goal.status !== "active") {
+    return {
+      ok: false,
+      blocks: [],
+      tokens: 0,
+      durationMs: 0,
+      endedAt: Date.now(),
+      error: "No active goal to review.",
+    };
+  }
+  if (convStore.isStreaming(convId)) {
+    return {
+      ok: false,
+      blocks: [],
+      tokens: 0,
+      durationMs: 0,
+      endedAt: Date.now(),
+      error: "Already streaming",
+    };
+  }
+  convStore.beginStreamHandoff(convId, "goal_controller");
+  broadcastConversationUpdated(server, convId);
+  return await orchestrateGoalReviewHandoff(server, convId, ext, policy);
+}
+
+function formatGoalControllerPrompt(objective: string, prompt: string): string {
+  return [
+    "[goal continuation]",
+    `Active goal: ${objective}`,
+    prompt.trim(),
+  ].join("\n\n");
+}
+
+/**
+ * Replace a daemon-owned stream handoff with an isolated hidden goal review.
+ * The controller itself is an abortable, non-replayable job. Its output is
+ * never persisted; only a selected continuation prompt enters the transcript.
+ */
+async function orchestrateGoalReviewHandoff(
+  server: DaemonServer,
+  convId: string,
+  ext: OrchestrationCallbacks,
+  policy: SubagentTurnPolicy = {},
+): Promise<AssistantTurnOutcome> {
+  const startedAt = Date.now();
+  const buildOutcome = (ok: boolean, error?: string, aborted = false): AssistantTurnOutcome => ({
+    ok,
+    blocks: [],
+    tokens: 0,
+    durationMs: Date.now() - startedAt,
+    endedAt: Date.now(),
+    ...(error ? { error } : {}),
+    ...(aborted ? { aborted: true } : {}),
   });
+  const settleFailedHandoff = () => {
+    if (!convStore.isStreamHandoffActive(convId)) return;
+    convStore.clearStreamHandoff(convId);
+    broadcastConversationUpdated(server, convId);
+  };
+  const handoffToAssistant = async (options: AssistantTurnOptions): Promise<AssistantTurnOutcome> => {
+    convStore.beginStreamHandoff(convId);
+    convStore.clearActiveJob(convId);
+    broadcastConversationUpdated(server, convId);
+    const outcome = await orchestrateAssistantTurn(server, null, undefined, convId, Date.now(), ext, {
+      ...options,
+      streamChainHandoff: true,
+    });
+    // A successful worker may already have installed a new handoff for its own
+    // post-turn goal review. Clear only an unconsumed marker from failed preflight.
+    if (!outcome.ok && !convStore.getActiveJob(convId)) settleFailedHandoff();
+    return outcome;
+  };
+  const handoffQueuedMessage = async (): Promise<AssistantTurnOutcome | null> => {
+    const queued = convStore.getQueuedMessages(convId);
+    if (queued.length === 0) return null;
+    const first = queued[0]!;
+    log("info", `orchestrator: queued message superseded goal review for ${convId}: "${first.text.slice(0, 50)}"`);
+    return await handoffToAssistant({
+      userMessage: { text: first.text, images: first.images },
+      subagentMaxDepth: first.subagentMaxDepth ?? null,
+      subagentNotificationId: first.subagentNotificationId,
+      queueEntryId: first.id,
+      automation: first.automation,
+    });
+  };
+
+  const initial = convStore.get(convId);
+  if (!initial?.goal || initial.goal.status !== "active") {
+    settleFailedHandoff();
+    return buildOutcome(false, "No active goal to review.");
+  }
+  if (getDaemonShutdownMode()) {
+    settleFailedHandoff();
+    return buildOutcome(false, "Daemon is shutting down; goal review deferred until restart.");
+  }
+
+  if (!ext.streamMessageFn && !hasConfiguredCredentials(initial.provider)) {
+    settleFailedHandoff();
+    return buildOutcome(false, `Not authenticated for provider ${initial.provider}.`);
+  }
+
+  const goalAtStart = initial.goal;
+  const controller = new AbortController();
+  // Install the hidden job before any await. The TUI derives queueing behavior
+  // from goalReviewing, so even the worker-to-controller microtask boundary must
+  // never look idle.
+  convStore.setActiveJob(convId, controller, startedAt, false, "goal_controller");
+  broadcastConversationUpdated(server, convId);
+
+  // User input always wins over an autonomous review, including input queued in
+  // the microtask-sized gap between the worker finalizer and this function.
+  const alreadyQueued = await handoffQueuedMessage();
+  if (alreadyQueued) return alreadyQueued;
+  const accountScope = initial.provider === "openai" ? getCurrentOpenAIAccountScope() ?? undefined : undefined;
+  const contextLimit = getMaxContext(initial.provider, initial.model);
+  const maxHistoryChars = contextLimit == null ? undefined : Math.max(16_000, Math.floor(contextLimit * 3));
+  let decision: Awaited<ReturnType<typeof decideGoalControllerAction>>;
+
+  try {
+    decision = await decideGoalControllerAction(initial.messages, goalAtStart, {
+      provider: initial.provider,
+      model: initial.model,
+      effort: initial.effort,
+      serviceTier: initial.fastMode ? "fast" : undefined,
+      signal: controller.signal,
+      promptCacheKey: `${convId}:goal-controller`,
+      accountScope,
+      codexWindowId: buildCodexWindowId(`${convId}:goal-controller`),
+      codexTurnId: `${convId}:goal-controller:${startedAt}`,
+      codexTurnStartedAtMs: startedAt,
+      tracking: { source: "goal_controller", conversationId: convId },
+      maxHistoryChars,
+      onHeaders: ext.onHeaders,
+      onActivity: () => convStore.touchActivity(convId),
+      streamMessageFn: ext.streamMessageFn,
+    });
+    ext.onComplete();
+  } catch (error) {
+    ext.onComplete();
+    const aborted = controller.signal.aborted;
+    // Match ordinary worker finalization: durable user input must not be left
+    // stranded merely because the hidden request failed or was interrupted.
+    // Shutdown and unwind own their own recovery paths, so preserve the queue
+    // for those cases instead of starting a replacement worker.
+    if (!getDaemonShutdownMode() && !convStore.isHistoryUnwindPending(convId)) {
+      const queuedAfterFailure = await handoffQueuedMessage();
+      if (queuedAfterFailure) return queuedAfterFailure;
+    }
+    if (convStore.getActiveJob(convId) === controller) convStore.clearActiveJob(convId);
+    if (!aborted) {
+      const message = `✗ Goal controller failed: ${error instanceof Error ? error.message : String(error)}`;
+      convStore.appendMessages(convId, [{ role: "system", content: message, metadata: null }], { updatedAt: Date.now() });
+      server.sendToSubscribers(convId, { type: "system_message", convId, text: message, color: "error" });
+      log("error", `orchestrator: ${message} (${convId})`);
+    }
+    broadcastConversationUpdated(server, convId);
+    return buildOutcome(false, aborted ? "✗ Interrupted" : error instanceof Error ? error.message : String(error), aborted);
+  }
+
+  if (controller.signal.aborted) {
+    if (convStore.getActiveJob(convId) === controller) convStore.clearActiveJob(convId);
+    broadcastConversationUpdated(server, convId);
+    return buildOutcome(false, "✗ Interrupted", true);
+  }
+
+  // A queued message may have arrived while the hidden model was deciding. Its
+  // contents were absent from the snapshot, so discard the stale decision.
+  const queuedAfterReview = await handoffQueuedMessage();
+  if (queuedAfterReview) return queuedAfterReview;
+
+  const latest = convStore.get(convId);
+  if (!latest || latest.goal !== goalAtStart || latest.goal.status !== "active") {
+    if (convStore.getActiveJob(convId) === controller) convStore.clearActiveJob(convId);
+    broadcastConversationUpdated(server, convId);
+    return buildOutcome(false, "Goal changed while its next action was being reviewed.");
+  }
+
+  if (decision.action === "send_prompt") {
+    log("info", `orchestrator: goal controller selected a continuation for ${convId}: "${decision.prompt.slice(0, 80)}"`);
+    return await handoffToAssistant({
+      ...policy,
+      goalContinuationPrompt: formatGoalControllerPrompt(goalAtStart.objective, decision.prompt),
+    });
+  }
+
+  const lifecycle = applyGoalControllerAction(convId, decision.action, decision.reason);
+  if (convStore.getActiveJob(convId) === controller) convStore.clearActiveJob(convId);
+  server.sendToSubscribers(convId, {
+    type: "goal_updated",
+    convId,
+    goal: lifecycle.goal,
+    message: lifecycle.message,
+  });
+  broadcastConversationUpdated(server, convId);
+  if (!lifecycle.ok) return buildOutcome(false, lifecycle.message);
+  log("info", `orchestrator: goal controller selected ${decision.action} for ${convId}`);
+  return buildOutcome(true);
 }
 
 async function orchestrateAssistantTurn(
@@ -317,7 +513,7 @@ async function orchestrateAssistantTurn(
 
   const {
     userMessage: requestedUserMessage,
-    goalContinuation = false,
+    goalContinuationPrompt,
     manualCompaction = false,
     realtimeDelegation,
   } = options;
@@ -325,8 +521,9 @@ async function orchestrateAssistantTurn(
   // background-task and subagent completion notifications. Persist and
   // broadcast them through the ordinary user-message path so the TUI shows
   // the prompt instead of keeping it as provider-only synthetic context.
+  const goalContinuation = typeof goalContinuationPrompt === "string";
   const userMessage = goalContinuation && conv.goal?.status === "active"
-    ? { text: goalContinuationUserMessage(conv.goal) }
+    ? { text: goalContinuationPrompt }
     : requestedUserMessage;
   const automation: UserMessageAutomation | undefined = goalContinuation
     ? { kind: "goal_continuation" }
@@ -443,6 +640,16 @@ async function orchestrateAssistantTurn(
     // The transcript draft and canonical history must reconcile before backend
     // output begins streaming, so every client observes the exact model input.
     broadcastConversationHistoryUpdated(server, convId);
+    broadcastConversationUpdated(server, convId);
+  }
+  if (requestedUserMessage && conv.goal?.status === "paused" && conv.goal.pausedBy === "controller") {
+    const resumed = updateGoalStatus(convId, "active", "Goal resumed from new input.");
+    server.sendToSubscribers(convId, {
+      type: "goal_updated",
+      convId,
+      goal: resumed.goal,
+      message: resumed.message,
+    });
     broadcastConversationUpdated(server, convId);
   }
   const hadGoalAtStart = !!conv.goal;
@@ -1506,21 +1713,23 @@ async function orchestrateAssistantTurn(
     }
     stopStreamingSnapshotHeartbeat();
     // Decide whether the conversation remains active before clearing this turn's
-    // job. The daemon owns both queues and goal continuations, so clients no
+    // job. The daemon owns both queues and hidden goal reviews, so clients no
     // longer need to guess whether a streaming=false update is only transient.
     const shutdownMode = getDaemonShutdownMode();
     const allQueued = shutdownMode ? [] : convStore.getQueuedMessages(convId);
-    let shouldContinueActiveGoal = false;
+    let shouldReviewActiveGoal = false;
     if (shutdownMode) {
-      convStore.clearGoalContinuationAfterStream(convId);
+      convStore.clearGoalReviewAfterStream(convId);
       log("info", `orchestrator: preserved queued messages for ${convId} during daemon ${shutdownMode}`);
     } else if (allQueued.length === 0) {
-      const resumeRequestedAfterStream = convStore.consumeGoalContinuationAfterStream(convId);
-      shouldContinueActiveGoal = conv.goal?.status === "active"
+      const resumeRequestedAfterStream = convStore.consumeGoalReviewAfterStream(convId);
+      shouldReviewActiveGoal = conv.goal?.status === "active"
         && (resumeRequestedAfterStream || (outcome?.ok === true && !outcome.aborted && !outcome.suspended));
     }
-    const streamChainContinues = allQueued.length > 0 || shouldContinueActiveGoal;
-    if (streamChainContinues) convStore.beginStreamHandoff(convId);
+    const streamChainContinues = allQueued.length > 0 || shouldReviewActiveGoal;
+    if (streamChainContinues) {
+      convStore.beginStreamHandoff(convId, shouldReviewActiveGoal && allQueued.length === 0 ? "goal_controller" : undefined);
+    }
 
     const stoppedStreamSeq = convStore.nextStreamSeq(convId);
     const streamStopReason: StreamingStopReason | undefined = ac.signal.aborted && ac.signal.reason === "daemon-restart"
@@ -1608,34 +1817,31 @@ async function orchestrateAssistantTurn(
     if (allQueued.length > 0) {
       const first = allQueued[0];
       log("info", `orchestrator: draining queued message: "${first.text.slice(0, 50)}"`);
-      try {
-        // Await to keep queued turns in one promise. The private handoff option
-        // is intentionally unavailable to ordinary callers.
-        await orchestrateAssistantTurn(server, null, undefined, convId, Date.now(), ext, {
-          userMessage: { text: first.text, images: first.images },
-          subagentMaxDepth: first.subagentMaxDepth ?? null,
-          subagentNotificationId: first.subagentNotificationId,
-          queueEntryId: first.id,
-          automation: first.automation,
-          streamChainHandoff: true,
-        });
-      } finally {
-        settleFailedStreamHandoff();
-      }
-    } else if (shouldContinueActiveGoal) {
+      // Await to keep queued turns in one promise. The private handoff option
+      // is intentionally unavailable to ordinary callers.
+      const queuedOutcome = await orchestrateAssistantTurn(server, null, undefined, convId, Date.now(), ext, {
+        userMessage: { text: first.text, images: first.images },
+        subagentMaxDepth: first.subagentMaxDepth ?? null,
+        subagentNotificationId: first.subagentNotificationId,
+        queueEntryId: first.id,
+        automation: first.automation,
+        streamChainHandoff: true,
+      });
+      // A successful queued worker may have installed its own goal-review
+      // handoff. Clear only a marker left unconsumed by failed preflight.
+      if (!queuedOutcome.ok && !convStore.getActiveJob(convId)) settleFailedStreamHandoff();
+    } else if (shouldReviewActiveGoal) {
       queueMicrotask(() => {
         const latest = convStore.get(convId);
         if (!latest?.goal || latest.goal.status !== "active" || convStore.getQueuedMessages(convId).length > 0) {
           settleFailedStreamHandoff();
           return;
         }
-        log("info", `orchestrator: continuing active goal for ${convId}: "${latest.goal.objective.slice(0, 80)}"`);
-        void orchestrateAssistantTurn(server, null, undefined, convId, Date.now(), ext, {
-          goalContinuation: true,
-          streamChainHandoff: true,
-        }).catch((err) => {
-          log("error", `orchestrator: goal continuation failed for ${convId}: ${err instanceof Error ? err.message : String(err)}`);
-        }).finally(settleFailedStreamHandoff);
+        log("info", `orchestrator: reviewing active goal for ${convId}: "${latest.goal.objective.slice(0, 80)}"`);
+        void orchestrateGoalReviewHandoff(server, convId, ext).catch((err) => {
+          log("error", `orchestrator: goal review failed for ${convId}: ${err instanceof Error ? err.message : String(err)}`);
+          settleFailedStreamHandoff();
+        });
       });
     }
   }

@@ -194,6 +194,8 @@ export interface RenderState {
   effort: EffortLevel;
   fastMode: boolean;
   goal: ConversationGoal | null;
+  /** Hidden source-model goal lifecycle review currently owns the conversation. */
+  goalReviewing: boolean;
   convId: string | null;
   /** Reserved identity for tool choices on the current blank conversation draft. */
   pendingToolPolicyDraftId: string | null;
@@ -332,9 +334,9 @@ export interface RenderState {
   mouseCursor: "pointer" | "text" | "hand";
 }
 
-/** Streaming state is derived from pendingAI — no separate boolean. */
+/** Visible assistant streaming and hidden goal review both serialize user sends. */
 export function isStreaming(state: RenderState): boolean {
-  return state.pendingAI !== null;
+  return state.pendingAI !== null || state.goalReviewing;
 }
 
 /** Clear pending AI state — always use this instead of setting pendingAI = null directly. */
@@ -466,6 +468,7 @@ export function resetDraftConversationState(state: RenderState): void {
   clearStreamingTailMessages(state);
   state.contextTokens = 0;
   state.goal = null;
+  state.goalReviewing = false;
   state.btw = null;
   state.voicePrompt = null;
   state.voicePromptJobs = [];
@@ -486,6 +489,7 @@ export function openFolderInstructionsDocument(state: RenderState, folderId: str
   state.convId = null;
   state.contextTokens = 0;
   state.goal = null;
+  state.goalReviewing = false;
   state.btw = null;
   state.voicePrompt = null;
   state.voicePromptJobs = [];
@@ -618,6 +622,7 @@ export function createInitialState(): RenderState {
 	    effort: defaults.effort,
 	    fastMode: defaults.fastMode,
     goal: null,
+    goalReviewing: false,
     convId: null,
 	    pendingToolPolicyDraftId: null,
 	    draftFolderId: null,

@@ -2,7 +2,6 @@ import type { Conversation, ConversationGoal, ConversationGoalStatus } from "./m
 import * as convStore from "./conversations";
 
 export type UserGoalAction = "show" | "set" | "pause" | "resume" | "complete";
-export type ModelGoalAction = "set" | "pause" | "resume" | "complete";
 
 export interface GoalOperationResult {
   ok: boolean;
@@ -17,7 +16,7 @@ export interface GoalSetOptions {
 
 type IncompleteGoalStatus = Exclude<ConversationGoalStatus, "complete">;
 
-export const GOAL_TOOL_SYSTEM_HINT = "Only set a goal when the user explicitly asks you to. When setting one, capture the user's general direction rather than a specific next step. If a goal is already active, use this tool only to pause, resume, or complete it when appropriate.";
+export const GOAL_TOOL_SYSTEM_HINT = "Only set a goal when the user explicitly asks you to. Capture the user's general direction rather than a specific next step.";
 
 export function formatGoalSummary(goal: ConversationGoal | null | undefined): string {
   if (!goal) return "No goal set. Usage: /goal <objective>";
@@ -41,24 +40,6 @@ export function goalPermissionFlagSuffix(goal: ConversationGoal | Required<GoalS
   return flags.length ? ` ${flags.join(" ")}` : "";
 }
 
-export function goalContinuationUserMessage(goal: ConversationGoal): string {
-  const lifecycle = [
-    goalCanComplete(goal) ? "If the goal is finished, mark it complete." : null,
-    goalCanPause(goal) ? "If you are blocked or need user input or review, pause it." : null,
-    goalCanComplete(goal) || goalCanPause(goal) ? "Otherwise, keep working." : null,
-  ].filter((instruction): instruction is string => Boolean(instruction));
-  return [
-    "[notification] Continue the active goal:",
-    goal.objective,
-    lifecycle.join(" "),
-  ].filter(Boolean).join("\n\n");
-}
-
-function statusForModelAction(action: Exclude<ModelGoalAction, "set" | "complete">): IncompleteGoalStatus {
-  if (action === "pause") return "paused";
-  return "active";
-}
-
 export function normalizeGoalSetOptions(options: GoalSetOptions = {}): Required<GoalSetOptions> {
   const completable = options.completable ?? true;
   return {
@@ -76,13 +57,25 @@ export function setGoal(convId: string, objective: string, options: GoalSetOptio
   return { ok: true, goal, message: `Goal set: ${trimmed}${goalPermissionFlagSuffix(normalizedOptions)}` };
 }
 
-export function updateGoalStatus(convId: string, status: IncompleteGoalStatus, message: string, options: { enforceModelPermissions?: boolean } = {}): GoalOperationResult {
+export function updateGoalStatus(
+  convId: string,
+  status: IncompleteGoalStatus,
+  message: string,
+  options: {
+    enforceModelPermissions?: boolean;
+    pausedBy?: "user" | "controller";
+    reason?: string;
+  } = {},
+): GoalOperationResult {
   const currentGoal = convStore.getIndexedSummary(convId)?.goal ?? null;
   const enforceModelPermissions = options.enforceModelPermissions ?? false;
   if (enforceModelPermissions && status === "paused" && currentGoal && !goalCanPause(currentGoal)) {
     return { ok: false, goal: currentGoal, message: "This goal cannot be paused." };
   }
-  const goal = convStore.updateGoalStatus(convId, status);
+  const goal = convStore.updateGoalStatus(convId, status, {
+    pausedBy: options.pausedBy,
+    reason: options.reason,
+  });
   if (!goal) return { ok: false, goal: null, message: "No goal set." };
   return { ok: true, goal, message };
 }
@@ -106,7 +99,7 @@ export function applyUserGoalAction(conv: Conversation, action: UserGoalAction, 
     case "set":
       return setGoal(conv.id, objective ?? "");
     case "pause":
-      return updateGoalStatus(conv.id, "paused", "Goal paused.");
+      return updateGoalStatus(conv.id, "paused", "Goal paused.", { pausedBy: "user" });
     case "resume":
       return updateGoalStatus(conv.id, "active", "Goal resumed.");
     case "complete":
@@ -114,8 +107,23 @@ export function applyUserGoalAction(conv: Conversation, action: UserGoalAction, 
   }
 }
 
-export function applyModelGoalAction(convId: string, action: ModelGoalAction, objective?: string, options?: GoalSetOptions): GoalOperationResult {
-  if (action === "set") return setGoal(convId, objective ?? "", options);
-  if (action === "complete") return completeGoal(convId, "Goal complete.", { enforceModelPermissions: true });
-  return updateGoalStatus(convId, statusForModelAction(action), action === "pause" ? "Goal paused." : "Goal resumed.", { enforceModelPermissions: true });
+export function applyGoalControllerAction(
+  convId: string,
+  action: "pause" | "complete",
+  reason?: string,
+): GoalOperationResult {
+  const trimmedReason = reason?.trim();
+  if (action === "complete") {
+    return completeGoal(
+      convId,
+      trimmedReason ? `Goal complete: ${trimmedReason}` : "Goal complete.",
+      { enforceModelPermissions: true },
+    );
+  }
+  return updateGoalStatus(
+    convId,
+    "paused",
+    trimmedReason ? `Goal paused: ${trimmedReason}` : "Goal paused.",
+    { enforceModelPermissions: true, pausedBy: "controller", reason: trimmedReason },
+  );
 }

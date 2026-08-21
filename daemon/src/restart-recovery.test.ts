@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, readFileSync } from "fs";
-import { clearActiveJob, consumeGoalContinuationAfterStream, conversationCacheInternalsForTest, create, get, getQueuedMessages, getSummary, pushQueuedMessage, remove, requestGoalContinuationAfterStream, setActiveJob, setGoal, updateGoalStatus } from "./conversations";
+import { clearActiveJob, consumeGoalReviewAfterStream, conversationCacheInternalsForTest, create, get, getQueuedMessages, getSummary, pushQueuedMessage, remove, requestGoalReviewAfterStream, setActiveJob, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_EFFORT } from "./messages";
 
 const orchestrateReplayConversation = mock(async () => ({ ok: true }));
-const orchestrateGoalContinuation = mock(async () => ({ ok: true }));
+const orchestrateGoalCycle = mock(async () => ({ ok: true }));
 const orchestrateSendMessage = mock(async () => ({
   ok: true,
   blocks: [{ type: "text" as const, text: "recovered" }],
@@ -15,7 +15,7 @@ const orchestrateSendMessage = mock(async () => ({
 
 mock.module("./orchestrator", () => ({
   orchestrateReplayConversation,
-  orchestrateGoalContinuation,
+  orchestrateGoalCycle,
   orchestrateSendMessage,
 }));
 
@@ -52,7 +52,7 @@ afterEach(() => {
   clearInterruptedStreamIds();
   clearActiveGoalRestartMarker();
   orchestrateReplayConversation.mockClear();
-  orchestrateGoalContinuation.mockClear();
+  orchestrateGoalCycle.mockClear();
   orchestrateSendMessage.mockClear();
   resetPendingSubagentNotificationsForTest();
   resetConversationActivityForTest();
@@ -99,7 +99,7 @@ describe("restart recovery file", () => {
     expect(readInterruptedStreamIds()).toEqual([]);
   });
 
-  test("interrupted active goals replay the interrupted turn before goal continuation", () => {
+  test("interrupted active goals replay the interrupted turn before goal review", () => {
     const goalConvId = makeConversation("goal");
     setGoal(goalConvId, "finish the goal");
     const normalConvId = makeConversation("normal");
@@ -113,7 +113,7 @@ describe("restart recovery file", () => {
       goalConvId,
       normalConvId,
     ]);
-    expect(orchestrateGoalContinuation).not.toHaveBeenCalled();
+    expect(orchestrateGoalCycle).not.toHaveBeenCalled();
   });
 
   test("catchable shutdown records and aborts active streams for replay", async () => {
@@ -152,7 +152,7 @@ describe("restart recovery file", () => {
     const ac = new AbortController();
     setActiveJob(childConvId, ac, Date.now());
     pushQueuedMessage(childConvId, "do not run after start", "next-turn", undefined, 0);
-    requestGoalContinuationAfterStream(childConvId);
+    requestGoalReviewAfterStream(childConvId);
     beginPendingSubagentNotification(
       { convId: parentConvId },
       childConvId,
@@ -181,7 +181,7 @@ describe("restart recovery file", () => {
         source: "daemon",
       }),
     ]);
-    expect(consumeGoalContinuationAfterStream(childConvId)).toBe(false);
+    expect(consumeGoalReviewAfterStream(childConvId)).toBe(false);
   });
 
   test("restores a persisted subagent task even if restart happened before its user message was appended", async () => {
@@ -380,8 +380,8 @@ describe("restart recovery file", () => {
 
     expect(scheduled).toEqual([activeConvId]);
     expect(existsSync(activeGoalRestartPath())).toBe(false);
-    expect(orchestrateGoalContinuation).toHaveBeenCalledTimes(1);
-    expect((orchestrateGoalContinuation.mock.calls[0] as unknown[] | undefined)?.[1]).toBe(activeConvId);
+    expect(orchestrateGoalCycle).toHaveBeenCalledTimes(1);
+    expect((orchestrateGoalCycle.mock.calls[0] as unknown[] | undefined)?.[1]).toBe(activeConvId);
     expect(orchestrateReplayConversation).not.toHaveBeenCalled();
     expect(conversationCacheInternalsForTest.snapshot().ids).toContain(activeConvId);
     expect(conversationCacheInternalsForTest.snapshot().ids).not.toContain(pausedConvId);
@@ -394,7 +394,7 @@ describe("restart recovery file", () => {
     const scheduled = recoverActiveGoals(makeServer());
 
     expect(scheduled).toEqual([]);
-    expect(orchestrateGoalContinuation).not.toHaveBeenCalled();
+    expect(orchestrateGoalCycle).not.toHaveBeenCalled();
     expect(orchestrateReplayConversation).not.toHaveBeenCalled();
   });
 });

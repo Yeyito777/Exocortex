@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { clearHistoryUnwindPending, create, getActiveJob, getQueuedMessages, isUnread, pushQueuedMessage, remove, requestHistoryUnwind, setGoal, updateGoalStatus } from "./conversations";
 import { load as loadPersisted } from "./persistence";
-import { orchestrateGoalContinuation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
+import { orchestrateGoalCycle, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
 import { chronoInternalsForTest, listDeferredChronoSleeps } from "./chrono-service";
 
@@ -93,7 +93,19 @@ describe("DB-first orchestrator persistence", () => {
     create(convId, "openai", "gpt-5.6-sol");
     setGoal(convId, "finish the migration");
     const events: Array<Record<string, unknown>> = [];
-    const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks, options) => {
+      const tools = (options?.tools ?? []) as Array<{ name?: string }>;
+      if (tools.some(tool => tool.name === "send_prompt")) {
+        return {
+          text: "",
+          thinking: "",
+          stopReason: "tool_use" as const,
+          blocks: [],
+          toolCalls: [{ id: "goal-next", name: "send_prompt", input: { prompt: "Finish the migration verification." } }],
+          inputTokens: 10,
+          outputTokens: 2,
+        };
+      }
       updateGoalStatus(convId, "paused");
       streamCallbacks.onText("paused for review");
       return {
@@ -107,7 +119,7 @@ describe("DB-first orchestrator persistence", () => {
       };
     }) as typeof streamMessage;
 
-    const outcome = await orchestrateGoalContinuation(
+    const outcome = await orchestrateGoalCycle(
       server(events) as never,
       convId,
       callbacks(fakeStream),
@@ -348,19 +360,35 @@ describe("DB-first orchestrator persistence", () => {
     expect(summaryStreaming.slice(0, -1).every(Boolean)).toBe(true);
   });
 
-  test("keeps summaries streaming across an automatic goal continuation", async () => {
+  test("keeps summaries streaming across a hidden goal review and selected continuation", async () => {
     const convId = id("goal-chain-summary");
     create(convId, "openai", "gpt-5.6-sol");
     setGoal(convId, "finish the chain");
     const events: Array<Record<string, unknown>> = [];
     let streamCall = 0;
+    let controllerCall = 0;
     let completeCalls = 0;
     let resolveChain!: () => void;
     const chainFinished = new Promise<void>(resolve => { resolveChain = resolve; });
-    const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks, options) => {
       streamCall += 1;
-      const text = streamCall === 1 ? "working" : "pausing";
-      if (streamCall === 2) updateGoalStatus(convId, "paused");
+      const tools = (options?.tools ?? []) as Array<{ name?: string }>;
+      const isController = tools.some(tool => tool.name === "send_prompt");
+      if (isController) {
+        controllerCall += 1;
+        return {
+          text: "",
+          thinking: "",
+          stopReason: "tool_use" as const,
+          blocks: [],
+          toolCalls: controllerCall === 1
+            ? [{ id: "goal-next", name: "send_prompt", input: { prompt: "Finish the focused verification." } }]
+            : [{ id: "goal-pause", name: "goal_pause", input: { reason: "Need user review." } }],
+          inputTokens: 10,
+          outputTokens: 2,
+        };
+      }
+      const text = controllerCall === 0 ? "working" : "verification ready";
       streamCallbacks.onText(text);
       return {
         text,
@@ -384,7 +412,7 @@ describe("DB-first orchestrator persistence", () => {
         onHeaders() {},
         onComplete() {
           completeCalls += 1;
-          if (completeCalls === 2) resolveChain();
+          if (completeCalls === 4) resolveChain();
         },
         streamMessageFn: fakeStream,
       },
@@ -401,14 +429,226 @@ describe("DB-first orchestrator persistence", () => {
       if (timeout) clearTimeout(timeout);
     }
 
-    expect(streamCall).toBe(2);
+    expect(streamCall).toBe(4);
+    expect(loadPersisted(convId)?.messages.some(message => message.role === "user" && message.content === "[goal continuation]\n\nActive goal: finish the chain\n\nFinish the focused verification.")).toBe(true);
+    expect(loadPersisted(convId)?.goal).toMatchObject({ status: "paused", pausedBy: "controller" });
     const stopped = events.filter(event => event.type === "streaming_stopped");
-    expect(stopped.map(event => event.reason)).toEqual(["handoff", undefined]);
+    expect(stopped.map(event => event.reason)).toEqual(["handoff", "handoff"]);
     const summaryStreaming = events
       .filter(event => event.type === "conversation_updated")
       .map(event => (event.summary as { streaming: boolean }).streaming);
     expect(summaryStreaming.at(-1)).toBe(false);
     expect(summaryStreaming.slice(0, -1).every(Boolean)).toBe(true);
+  });
+
+  test("new input automatically resumes a controller-paused goal before the worker turn", async () => {
+    const convId = id("controller-pause-resume");
+    create(convId, "openai", "gpt-5.6-sol");
+    setGoal(convId, "finish after approval");
+    updateGoalStatus(convId, "paused", { pausedBy: "controller", reason: "Need approval." });
+    const events: Array<Record<string, unknown>> = [];
+    let completeCalls = 0;
+    let resolveChain!: () => void;
+    const chainFinished = new Promise<void>(resolve => { resolveChain = resolve; });
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks, options) => {
+      const tools = (options?.tools ?? []) as Array<{ name?: string }>;
+      if (tools.some(tool => tool.name === "send_prompt")) {
+        return {
+          text: "",
+          thinking: "",
+          stopReason: "tool_use" as const,
+          blocks: [],
+          toolCalls: [{ id: "goal-complete", name: "goal_complete", input: { reason: "Approval applied." } }],
+          inputTokens: 10,
+          outputTokens: 2,
+        };
+      }
+      streamCallbacks.onText("Applied the approval.");
+      return {
+        text: "Applied the approval.",
+        thinking: "",
+        stopReason: "stop" as const,
+        blocks: [{ type: "text" as const, text: "Applied the approval." }],
+        toolCalls: [],
+        inputTokens: 10,
+        outputTokens: 2,
+      };
+    }) as typeof streamMessage;
+
+    await orchestrateSendMessage(
+      server(events) as never,
+      null,
+      undefined,
+      convId,
+      "Approved; proceed.",
+      30_000,
+      {
+        onHeaders() {},
+        onComplete() {
+          completeCalls += 1;
+          if (completeCalls === 2) resolveChain();
+        },
+        streamMessageFn: fakeStream,
+      },
+    );
+    await chainFinished;
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "goal_updated",
+      message: "Goal resumed from new input.",
+      goal: expect.objectContaining({ status: "active" }),
+    }));
+    expect(loadPersisted(convId)?.goal ?? null).toBeNull();
+  });
+
+  test("queued user input supersedes a goal decision made from an older snapshot", async () => {
+    const convId = id("goal-review-queue");
+    create(convId, "openai", "gpt-5.6-sol");
+    setGoal(convId, "keep the queue authoritative");
+    let controllerCall = 0;
+    let completeCalls = 0;
+    let announceController!: () => void;
+    let releaseController!: () => void;
+    let resolveChain!: () => void;
+    const controllerStarted = new Promise<void>(resolve => { announceController = resolve; });
+    const controllerRelease = new Promise<void>(resolve => { releaseController = resolve; });
+    const chainFinished = new Promise<void>(resolve => { resolveChain = resolve; });
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks, options) => {
+      const tools = (options?.tools ?? []) as Array<{ name?: string }>;
+      if (tools.some(tool => tool.name === "send_prompt")) {
+        controllerCall += 1;
+        if (controllerCall === 1) {
+          announceController();
+          await controllerRelease;
+          return {
+            text: "",
+            thinking: "",
+            stopReason: "tool_use" as const,
+            blocks: [],
+            toolCalls: [{ id: "stale-next", name: "send_prompt", input: { prompt: "This stale instruction must be discarded." } }],
+            inputTokens: 10,
+            outputTokens: 2,
+          };
+        }
+        return {
+          text: "",
+          thinking: "",
+          stopReason: "tool_use" as const,
+          blocks: [],
+          toolCalls: [{ id: "pause-after-queue", name: "goal_pause", input: { reason: "Wait after handling queued input." } }],
+          inputTokens: 10,
+          outputTokens: 2,
+        };
+      }
+      streamCallbacks.onText("worker answer");
+      return {
+        text: "worker answer",
+        thinking: "",
+        stopReason: "stop" as const,
+        blocks: [{ type: "text" as const, text: "worker answer" }],
+        toolCalls: [],
+        inputTokens: 10,
+        outputTokens: 2,
+      };
+    }) as typeof streamMessage;
+
+    await orchestrateSendMessage(
+      server() as never,
+      null,
+      undefined,
+      convId,
+      "start",
+      31_000,
+      {
+        onHeaders() {},
+        onComplete() {
+          completeCalls += 1;
+          if (completeCalls === 4) resolveChain();
+        },
+        streamMessageFn: fakeStream,
+      },
+    );
+    await controllerStarted;
+    pushQueuedMessage(
+      convId,
+      "new authoritative input",
+      "message-end",
+      undefined,
+      undefined,
+      undefined,
+      "goal-queue-input",
+      Date.now(),
+      { kind: "chrono_wake", sourceId: "goal-review-queue-source" },
+    );
+    releaseController();
+    await chainFinished;
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const contents = loadPersisted(convId)!.messages.map(message => message.content);
+    expect(contents).toContain("new authoritative input");
+    expect(loadPersisted(convId)!.messages.find(message => message.content === "new authoritative input")?.metadata?.automation).toEqual({
+      kind: "chrono_wake",
+      sourceId: "goal-review-queue-source",
+    });
+    expect(contents).not.toContain("[goal continuation]\n\nActive goal: keep the queue authoritative\n\nThis stale instruction must be discarded.");
+    expect(loadPersisted(convId)?.goal).toMatchObject({ status: "paused", pausedBy: "controller" });
+  });
+
+  test("drains queued input when a manual goal change aborts the hidden review", async () => {
+    const convId = id("goal-review-abort-queue");
+    create(convId, "openai", "gpt-5.6-sol");
+    setGoal(convId, "keep queued input durable");
+    let workerCalls = 0;
+    let completeCalls = 0;
+    let resolveChain!: () => void;
+    const chainFinished = new Promise<void>(resolve => { resolveChain = resolve; });
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks, options) => {
+      const tools = (options?.tools ?? []) as Array<{ name?: string }>;
+      if (tools.some(tool => tool.name === "send_prompt")) {
+        pushQueuedMessage(convId, "input queued before manual pause", "message-end", undefined, undefined, undefined, "goal-abort-queue-input");
+        updateGoalStatus(convId, "paused", { pausedBy: "user" });
+        getActiveJob(convId)!.abort("goal-state-changed");
+        throw new Error("controller interrupted by manual pause");
+      }
+      workerCalls += 1;
+      const text = workerCalls === 1 ? "initial answer" : "handled queued input";
+      streamCallbacks.onText(text);
+      return {
+        text,
+        thinking: "",
+        stopReason: "stop" as const,
+        blocks: [{ type: "text" as const, text }],
+        toolCalls: [],
+        inputTokens: 10,
+        outputTokens: 2,
+      };
+    }) as typeof streamMessage;
+
+    await orchestrateSendMessage(
+      server() as never,
+      null,
+      undefined,
+      convId,
+      "start",
+      31_500,
+      {
+        onHeaders() {},
+        onComplete() {
+          completeCalls += 1;
+          if (completeCalls === 3) resolveChain();
+        },
+        streamMessageFn: fakeStream,
+      },
+    );
+    await chainFinished;
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(workerCalls).toBe(2);
+    expect(getQueuedMessages(convId)).toEqual([]);
+    expect(loadPersisted(convId)!.messages.map(message => message.content)).toContain("input queued before manual pause");
+    expect(loadPersisted(convId)?.goal).toMatchObject({ status: "paused", pausedBy: "user" });
+    expect(loadPersisted(convId)!.messages.some(message => message.role === "system" && String(message.content).includes("Goal controller failed"))).toBe(false);
   });
 
   test("stops a long Chrono sleep turn without marking it unread, then resumes it before a user message", async () => {

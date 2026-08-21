@@ -1265,6 +1265,8 @@ export interface ConversationLoadedEvent {
   model: ModelId;
   effort: EffortLevel;
   fastMode: boolean;
+  /** True while the hidden source-model goal controller is selecting a next action. */
+  goalReviewing?: boolean;
   /** The requested newest history window in display order, plus pinned system instructions. */
   entries: DisplayEntry[];
   /** Absolute index of the first included non-instructions history entry. */

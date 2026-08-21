@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
 import { log } from "./log";
-import { orchestrateGoalContinuation, orchestrateReplayConversation, orchestrateSendMessage } from "./orchestrator";
+import { orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage } from "./orchestrator";
 import type { DaemonServer } from "./server";
 import * as convStore from "./conversations";
 import { handleUsageHeaders, refreshUsage } from "./usage";
@@ -219,8 +219,8 @@ export async function prepareCatchableShutdownWithoutReplay(timeoutMs = 5_000): 
     for (const id of ids) {
       interrupted.add(id);
       // Queued user intent is durable and survives both stop and restart. Only
-      // autonomous goal continuation state is intentionally discarded here.
-      convStore.clearGoalContinuationAfterStream(id);
+      // autonomous goal-review state is intentionally discarded here.
+      convStore.clearGoalReviewAfterStream(id);
       const ac = convStore.getActiveJob(id);
       if (ac && !ac.signal.aborted) ac.abort("daemon-stop");
     }
@@ -387,9 +387,9 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
     }
     // Always restore the interrupted turn itself first, including when the
     // conversation has an active goal. A successful replay will schedule the
-    // ordinary post-turn goal continuation from the orchestrator finalizer.
-    // Starting with orchestrateGoalContinuation here would instead append a new
-    // continuation notification and skip the interrupted turn entirely.
+    // ordinary post-turn goal review from the orchestrator finalizer.
+    // Starting with a fresh goal review here would instead skip the interrupted
+    // worker turn entirely.
     log("info", `restart-recovery: replaying interrupted conversation ${convId}`);
     void orchestrateReplayConversation(
       server,
@@ -443,7 +443,7 @@ export function recoverActiveGoals(server: DaemonServer, excludeConvIds: Iterabl
 
     scheduled.push(convId);
     log("info", `restart-recovery: resuming active goal ${convId}`);
-    void orchestrateGoalContinuation(server, convId, buildRecoveryCallbacks(server, convId)).then((outcome) => {
+    void orchestrateGoalCycle(server, convId, buildRecoveryCallbacks(server, convId)).then((outcome) => {
       if (outcome.ok) {
         log("info", `restart-recovery: resumed goal completed for ${convId}`);
       } else {
@@ -456,7 +456,7 @@ export function recoverActiveGoals(server: DaemonServer, excludeConvIds: Iterabl
   }
 
   if (scheduled.length > 0) {
-    log("info", `restart-recovery: scheduled ${scheduled.length} active goal continuation(s): ${scheduled.join(", ")}`);
+    log("info", `restart-recovery: scheduled ${scheduled.length} active goal review(s): ${scheduled.join(", ")}`);
   }
 
   return scheduled;
