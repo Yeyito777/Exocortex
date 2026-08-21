@@ -339,7 +339,17 @@ function enqueueHardWake(occurrence: PendingExternalNotificationSoftWake): void 
       occurrence.event.text.trim(),
     ].join("\n");
   }
-  convStore.pushQueuedMessage(occurrence.convId, text, "next-turn", undefined, null, undefined, queueId, Date.now());
+  convStore.pushQueuedMessage(
+    occurrence.convId,
+    text,
+    "next-turn",
+    undefined,
+    null,
+    undefined,
+    queueId,
+    Date.now(),
+    { kind: "external_notification", sourceId: occurrence.subscriptionId },
+  );
 }
 
 async function executeOccurrence(occurrence: PendingExternalNotificationSoftWake, controller: AbortController): Promise<void> {

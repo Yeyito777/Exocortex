@@ -668,11 +668,20 @@ describe("daemon queue synchronization", () => {
         timing: "next-turn",
         source: "daemon",
         createdAt: 2,
+        automation: { kind: "chrono_wake", sourceId: "chrono:test" },
       }],
     }, state, daemon);
 
     expect(state.queuedMessages).toEqual([
-      { id: "shared", convId: "conv-2", text: "from another client", timing: "next-turn", source: "daemon", createdAt: 2 },
+      {
+        id: "shared",
+        convId: "conv-2",
+        text: "from another client",
+        timing: "next-turn",
+        source: "daemon",
+        createdAt: 2,
+        automation: { kind: "chrono_wake", sourceId: "chrono:test" },
+      },
       { convId: "conv-1", text: "Transcribing…", timing: "message-end" },
     ]);
   });
@@ -1363,6 +1372,26 @@ describe("disk sync assistant diagnostics", () => {
 });
 
 describe("streaming assistant metadata", () => {
+  test("preserves automated-message provenance on a live user event", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.model = "gpt-5.5";
+
+    handleEvent({
+      type: "user_message",
+      convId: "conv-1",
+      text: "scheduled work",
+      startedAt: 2,
+      queueId: "chrono:test:2",
+      automation: { kind: "chrono_wake", sourceId: "chrono:test" },
+    }, state, daemon);
+
+    expect(state.messages.at(-1)?.metadata).toMatchObject({
+      queueEntryId: "chrono:test:2",
+      automation: { kind: "chrono_wake", sourceId: "chrono:test" },
+    });
+  });
+
   test("does not duplicate a queued user turn when canonical history wins the race", () => {
     const state = createInitialState();
     state.convId = "conv-1";

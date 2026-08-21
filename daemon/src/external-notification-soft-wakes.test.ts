@@ -117,6 +117,10 @@ describe("external notification command soft wakes", () => {
     await waitUntil(() => getQueuedMessages(convId).length === 1);
     const wake = getQueuedMessages(convId)[0];
     expect(wake.id).toBe(`${queued.occurrenceId}:hard-wake`);
+    expect(wake.automation).toEqual({
+      kind: "external_notification",
+      sourceId: subscription.id,
+    });
     expect(wake.text).toContain("[notification] WhatsApp · message");
     expect(wake.text).toContain("Action: Handle the matching WhatsApp /ai query.");
     expect(wake.text).toContain("selected:whatsapp:chat-1:message-1:external-soft:");

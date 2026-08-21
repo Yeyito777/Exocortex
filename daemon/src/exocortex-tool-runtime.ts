@@ -8,7 +8,7 @@
 
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import { createHash } from "crypto";
-import type { DisplayEntry, ExternalNotificationSoftWake, QueueTiming } from "@exocortex/shared/protocol";
+import type { DisplayEntry, ExternalNotificationSoftWake, QueueTiming, UserMessageAutomation } from "@exocortex/shared/protocol";
 import {
   MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL,
   MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT,
@@ -87,7 +87,13 @@ export function getExocortexToolRuntime(server: DaemonServer): ExocortexToolRunt
 
 export interface ExocortexToolRuntimeDependencies {
   server: DaemonServer;
-  runTurn(convId: string, text: string, maxDepth: number, startedAt: number): Promise<AssistantTurnOutcome>;
+  runTurn(
+    convId: string,
+    text: string,
+    maxDepth: number,
+    startedAt: number,
+    automation: UserMessageAutomation,
+  ): Promise<AssistantTurnOutcome>;
   /** End the realtime call owned by a conversation. */
   stopCall?(convId: string): Promise<void>;
   /** Durable lifecycle hooks used by production. */
@@ -732,6 +738,10 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     callerMaxDepth: number | null | undefined,
     signal?: AbortSignal,
   ): Promise<ToolResult> => {
+    const automation: UserMessageAutomation = {
+      kind: "exo_send",
+      ...(parentConvId ? { sourceId: parentConvId } : {}),
+    };
     const text = stringInput(input, "text", true)!;
     const maxDepth = requestedMaxDepth(input, callerMaxDepth);
     let convId = stringInput(input, "conversation_id");
@@ -854,7 +864,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       // now but cannot alter schemas already assembled for the active turn.
       if (convStore.isStreaming(convId)) {
         persistRequestedExistingToolPolicy();
-        convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth);
+        convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth, undefined, undefined, undefined, automation);
         return queuedExistingSendResult();
       }
       setRequestedModel(convId, input);
@@ -868,7 +878,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     // made the target busy after the initial existing-conversation check.
     if (convStore.isStreaming(convId)) {
       persistRequestedExistingToolPolicy();
-      convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth);
+      convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth, undefined, undefined, undefined, automation);
       return queuedExistingSendResult();
     }
 
@@ -879,7 +889,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         throw new Error("Cannot start a nested turn on the active parent conversation; use mode=auto or action=queue.");
       }
       persistRequestedExistingToolPolicy();
-      convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth);
+      convStore.pushQueuedMessage(convId, text, "next-turn", undefined, maxDepth, undefined, undefined, undefined, automation);
       return queuedExistingSendResult();
     }
     if (!created && trackAsSubagent) ensureSubagentCapacity(parentConvId);
@@ -893,7 +903,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         deps.beginParentNotification?.({ convId: parentConvId }, convId, text, startedAt, maxDepth, trackAsSubagent);
       }
       if (trackAsSubagent) setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt });
-      void deps.runTurn(convId, text, maxDepth, startedAt).then(outcome => {
+      void deps.runTurn(convId, text, maxDepth, startedAt, automation).then(outcome => {
         if (outcome.suspended) return;
         if (trackAsSubagent) setTrackedSubagent(parentConvId, convId!, false);
         if (notify && parentConvId) {
@@ -935,7 +945,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     signal?.addEventListener("abort", onAbort, { once: true });
     if (trackAsSubagent) setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt });
     try {
-      const outcome = await deps.runTurn(convId, text, maxDepth, startedAt);
+      const outcome = await deps.runTurn(convId, text, maxDepth, startedAt, automation);
       const full = booleanInput(input, "full", false);
       const body = outcome.ok
         ? formatBlocks(outcome.blocks, full) || "(subagent completed without text output)"
@@ -1165,7 +1175,10 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     if (!convStore.getSummary(convId)) throw new Error(`Conversation ${convId} not found`);
     ensureScopedDelegationTarget(parentConvId, convId);
     const timing: QueueTiming = input.timing === "message-end" ? "message-end" : "next-turn";
-    convStore.pushQueuedMessage(convId, text, timing, undefined, maxDepth);
+    convStore.pushQueuedMessage(convId, text, timing, undefined, maxDepth, undefined, undefined, undefined, {
+      kind: "exo_send",
+      ...(parentConvId ? { sourceId: parentConvId } : {}),
+    });
     return ok(`Queued (${timing}, max_depth=${maxDepth}) for ${convId}`);
   };
 

@@ -15,7 +15,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, rename
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
 import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal, ConversationBtw } from "./messages";
-import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, MAX_EXO_SUBAGENT_DEPTH, activeContextCompactionHistoryCount, historyPrefixHash, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, sortConversations, summarizeConversation } from "./messages";
+import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, MAX_EXO_SUBAGENT_DEPTH, activeContextCompactionHistoryCount, historyPrefixHash, isUserMessageAutomation, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, sortConversations, summarizeConversation } from "./messages";
 import type { QueuedMessageInfo } from "./protocol";
 import { normalizeBtwBlocks } from "./btw/blocks";
 
@@ -1359,6 +1359,7 @@ function normalizeQueuedMessage(raw: unknown): PersistedQueuedMessage | null {
     normalized.subagentMaxDepth = entry.subagentMaxDepth;
   }
   if (typeof entry.subagentNotificationId === "string") normalized.subagentNotificationId = entry.subagentNotificationId;
+  if (isUserMessageAutomation(entry.automation)) normalized.automation = { ...entry.automation };
   return normalized;
 }
 

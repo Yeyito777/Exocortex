@@ -193,14 +193,22 @@ describe("realtime transcripts", () => {
     expect(messages[0]).toMatchObject({
       role: "user",
       content: replacement,
-      metadata: { startedAt: 1_000, kind: "realtime_transcript" },
+      metadata: {
+        startedAt: 1_000,
+        kind: "realtime_transcript",
+        automation: { kind: "realtime_delegation" },
+      },
       contextCheckpoint: { version: 1, transcriptHistoryCount: 0 },
       contextTokens: null,
     });
     expect(messages[1]).toMatchObject({ role: "assistant", content: "I’ll take a look." });
     expect(loadPersisted(id)?.messages[0]).toMatchObject({
       content: replacement,
-      metadata: { startedAt: 1_000, kind: "realtime_transcript" },
+      metadata: {
+        startedAt: 1_000,
+        kind: "realtime_transcript",
+        automation: { kind: "realtime_delegation" },
+      },
       contextTokens: null,
     });
     expect(promoteRealtimeTranscript(id, "unrelated speech", replacement)).toBe(false);

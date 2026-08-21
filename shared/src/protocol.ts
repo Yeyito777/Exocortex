@@ -8,9 +8,9 @@
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, ToolPolicyMutation, ToolPolicySnapshot } from "./messages";
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, ToolPolicyMutation, ToolPolicySnapshot, UserMessageAutomation } from "./messages";
 import type { RealtimeVoice } from "./realtime";
-export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, ToolPolicyMutation, ToolPolicySnapshot };
+export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, ToolPolicyMutation, ToolPolicySnapshot, UserMessageAutomation };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
@@ -680,6 +680,8 @@ export interface QueuedMessageInfo {
   images?: ImageAttachment[];
   /** Ordinary stream queues are delivered next-turn/message-end; global-idle entries wait on waitTarget. */
   source: "daemon" | "global-idle";
+  /** Present when this queued prompt was authored by Exocortex automation rather than a user/client. */
+  automation?: UserMessageAutomation;
   target?: "conversation" | "new-conversation";
   /** Captured settings used when target=new-conversation is created atomically with enqueue. */
   provider?: ProviderId;
@@ -1392,6 +1394,8 @@ export interface UserMessageEvent {
   images?: ImageAttachment[];
   /** Queue identity when this user message was accepted from the daemon-owned queue. */
   queueId?: string;
+  /** Present when the user-shaped turn was authored by Exocortex automation. */
+  automation?: UserMessageAutomation;
 }
 
 /** Authoritative full queue snapshot, broadcast after every mutation and during bootstrap. */

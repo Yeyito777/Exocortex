@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { clearHistoryUnwindPending, create, getActiveJob, getQueuedMessages, isUnread, pushQueuedMessage, remove, requestHistoryUnwind, setGoal, updateGoalStatus } from "./conversations";
 import { load as loadPersisted } from "./persistence";
-import { orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
+import { orchestrateGoalContinuation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
 import { chronoInternalsForTest, listDeferredChronoSleeps } from "./chrono-service";
 
@@ -86,6 +86,39 @@ describe("DB-first orchestrator persistence", () => {
       [{ type: "text", text: "durable answer" }],
     ]);
     expect(persisted.messages[1]?.metadata).toMatchObject({ startedAt, tokens: 3 });
+  });
+
+  test("tags goal continuations in canonical history and the live user event", async () => {
+    const convId = id("goal-automation");
+    create(convId, "openai", "gpt-5.6-sol");
+    setGoal(convId, "finish the migration");
+    const events: Array<Record<string, unknown>> = [];
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
+      updateGoalStatus(convId, "paused");
+      streamCallbacks.onText("paused for review");
+      return {
+        text: "paused for review",
+        thinking: "",
+        stopReason: "stop" as const,
+        blocks: [{ type: "text" as const, text: "paused for review" }],
+        toolCalls: [],
+        inputTokens: 10,
+        outputTokens: 3,
+      };
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateGoalContinuation(
+      server(events) as never,
+      convId,
+      callbacks(fakeStream),
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(loadPersisted(convId)!.messages[0]?.metadata?.automation).toEqual({ kind: "goal_continuation" });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "user_message",
+      automation: { kind: "goal_continuation" },
+    }));
   });
 
   test("makes retry markers canonical immediately and preserves their final ordering", async () => {
@@ -208,7 +241,17 @@ describe("DB-first orchestrator persistence", () => {
   test("commits a queued next-turn injection before removing its durable queue copy", async () => {
     const convId = id("queued-injection");
     create(convId, "openai", "gpt-5.6-sol");
-    pushQueuedMessage(convId, "queued interjection", "next-turn", undefined, undefined, undefined, "queued-injection-id");
+    pushQueuedMessage(
+      convId,
+      "queued interjection",
+      "next-turn",
+      undefined,
+      undefined,
+      undefined,
+      "queued-injection-id",
+      undefined,
+      { kind: "chrono_wake", sourceId: "chrono:test" },
+    );
     let streamCall = 0;
     const observed: { secondRequestContents: unknown[] | null; queueAfterCommit: number | null } = {
       secondRequestContents: null,
@@ -256,6 +299,10 @@ describe("DB-first orchestrator persistence", () => {
     expect(loadPersisted(convId)!.messages.map(message => message.role)).toEqual([
       "user", "assistant", "user", "user", "assistant",
     ]);
+    expect(loadPersisted(convId)!.messages.at(-2)?.metadata).toMatchObject({
+      queueEntryId: "queued-injection-id",
+      automation: { kind: "chrono_wake", sourceId: "chrono:test" },
+    });
   });
 
   test("keeps summaries streaming across a daemon-owned queued-turn handoff", async () => {

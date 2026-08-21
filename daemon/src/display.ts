@@ -170,7 +170,14 @@ export function buildDisplayData(
             .filter((c) => c.type === "text")
             .map((c) => (c as { type: "text"; text: string }).text)
             .join("\n") || JSON.stringify(msg.content);
-      entries.push({ type: "system", text });
+      entries.push({
+        type: "system",
+        text,
+        // Ordinary model-visible notices historically had no display metadata.
+        // Preserve that projection while exposing the automation tag when one
+        // is present so clients can distinguish externally generated notices.
+        ...(msg.metadata?.automation ? { metadata: msg.metadata } : {}),
+      });
       continue;
     }
     if (msg.role === "user") {

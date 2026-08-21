@@ -12,7 +12,7 @@ export * from "@exocortex/shared/messages";
 
 // ── API-level types (for stored conversations / API replay) ─────────
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, REALTIME_CALL_STATUS_KIND, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal, type ToolCallPresentation } from "@exocortex/shared/messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, REALTIME_CALL_STATUS_KIND, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal, type ToolCallPresentation, type UserMessageAutomation } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
 import { createHash } from "crypto";
 
@@ -241,6 +241,7 @@ export function createModelVisibleSystemNotice(
   model: ModelId,
   kind: string,
   startedAt = Date.now(),
+  automation?: UserMessageAutomation,
 ): StoredMessage & { role: "user"; content: string; metadata: MessageMetadata } {
   return {
     role: "user",
@@ -249,6 +250,7 @@ export function createModelVisibleSystemNotice(
       ...createMessageMetadata(startedAt, model, { endedAt: startedAt }),
       system: true,
       kind,
+      ...(automation ? { automation: { ...automation } } : {}),
     },
   };
 }
@@ -938,12 +940,14 @@ export function createStoredUserMessage(
   options: {
     subagentNotificationId?: string;
     queueEntryId?: string;
+    automation?: UserMessageAutomation;
     contextCheckpoint?: StoredUserContextCheckpoint;
   } = {},
 ): StoredMessage {
   const metadata = createMessageMetadata(startedAt, model, { endedAt: startedAt });
   if (options.subagentNotificationId) metadata.subagentNotificationId = options.subagentNotificationId;
   if (options.queueEntryId) metadata.queueEntryId = options.queueEntryId;
+  if (options.automation) metadata.automation = { ...options.automation };
   return {
     role: "user",
     content: buildUserContent(text, images),

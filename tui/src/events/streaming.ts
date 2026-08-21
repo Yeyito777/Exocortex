@@ -361,6 +361,7 @@ export function handleUserMessage(event: Extract<Event, { type: "user_message" }
     ? createMessageMetadata(event.startedAt, state.model, { endedAt: event.startedAt })
     : null;
   if (metadata && event.queueId) metadata.queueEntryId = event.queueId;
+  if (metadata && event.automation) metadata.automation = { ...event.automation };
   state.messages.push({
     role: "user",
     text: event.text,

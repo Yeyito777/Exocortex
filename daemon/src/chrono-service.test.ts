@@ -96,11 +96,12 @@ describe("Chrono scheduler", () => {
   test("hard wake durably queues a model turn", async () => {
     const owner = makeConversation("hardwake");
     await startChronoService();
-    createChronoSchedule({ ownerConversationId: owner, afterSeconds: 0.02, message: "Wake now" });
+    const created = createChronoSchedule({ ownerConversationId: owner, afterSeconds: 0.02, message: "Wake now" });
     await waitUntil(() => getQueuedMessages(owner).length === 1);
     const wake = getQueuedMessages(owner)[0];
     expect(wake.timing).toBe("next-turn");
     expect(wake.text).toContain("[chrono wake:");
+    expect(wake.automation).toEqual({ kind: "chrono_wake", sourceId: created.schedule?.id });
     expect(listChronoSchedules(owner)).toHaveLength(0);
   });
 
@@ -200,6 +201,7 @@ describe("Chrono scheduler", () => {
     await waitUntil(() => getQueuedMessages(owner).length === 1);
     const wake = getQueuedMessages(owner)[0];
     expect(wake.timing).toBe("next-turn");
+    expect(wake.automation).toEqual({ kind: "chrono_hard_wake", sourceId: result.schedule?.id });
     expect(wake.text).toContain("[chrono hard wake:");
     expect(wake.text).toContain("Investigate health.");
     expect(wake.text).toContain("unhealthy");
