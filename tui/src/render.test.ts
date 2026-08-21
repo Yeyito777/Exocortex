@@ -8,6 +8,7 @@ import { termWidth } from "./textwidth";
 import { hide_cursor, show_cursor } from "./terminal";
 import { SIDEBAR_WIDTH } from "./sidebar";
 import { renderUserMessage } from "./blockrenderer";
+import { scrollToTop } from "./chat";
 
 function captureRenderOutput(state: RenderState): string {
   let out = "";
@@ -398,6 +399,61 @@ describe("render caching and frame diffing", () => {
     expect(task).toBeDefined();
   });
 
+  test("keeps the first user-message row visible at the top of task-panel history", () => {
+    const state = createInitialState();
+    state.cols = 120;
+    state.rows = 20;
+    state.convId = "parent";
+    const firstMessage = [
+      `FIRST ROW ${"alpha ".repeat(15)}`,
+      `SECOND ROW ${"beta ".repeat(15)}`,
+      `THIRD ROW ${"gamma ".repeat(15)}`,
+    ].join("\n");
+    state.messages = [
+      { role: "user", text: firstMessage, metadata: null },
+      {
+        role: "assistant",
+        blocks: Array.from({ length: 30 }, (_, index) => ({
+          type: "text" as const,
+          text: `L${String(index).padStart(2, "0")} ${"history words ".repeat(6)}`,
+        })),
+        metadata: null,
+      },
+    ];
+    state.sidebar.conversations = [{
+      id: "parent",
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 2,
+      title: "Parent",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: [{ id: "child", kind: "subagent", title: "Task", startedAt: Date.now() - 2_000 }],
+    }];
+
+    renderSilently(state);
+    scrollToTop(state);
+    invalidateFrame(state);
+    const writes = positionedWrites(captureRenderOutput(state));
+    const firstUserRow = state.layout.historyViewportRows.findIndex(viewportRow => (
+      viewportRow && state.historyLineAnchors[viewportRow.lineIndex]?.segment === "user_content"
+    ));
+    const firstUserWrite = writes.filter(write => (
+      write.row === 3 + firstUserRow && write.col === 1
+    )).at(-1);
+
+    expect(firstUserRow).toBe(0);
+    expect(state.layout.historyViewportRows[0]).toMatchObject({ lineIndex: 0, startCol: 0 });
+    expect(stripCsi(stripAnsi(firstUserWrite?.text ?? ""))).toContain("FIRST ROW");
+  });
+
   test("places tasks below system instructions and wraps chat history beside them", () => {
     const state = createInitialState();
     state.cols = 120;
@@ -477,7 +533,7 @@ describe("render caching and frame diffing", () => {
     expect(termWidth(stripCsi(stripAnsi(belowPanel!.text)))).toBeGreaterThan(state.layout.historyWidth);
   });
 
-  test("pins a system-instructions box revealed by top reflow without duplicating rows", () => {
+  test("keeps a system-instructions box full-width when top-anchored task-panel reflow reaches it", () => {
     const state = createInitialState();
     state.cols = 120;
     state.rows = 30;
@@ -528,7 +584,7 @@ describe("render caching and frame diffing", () => {
     ));
 
     expect(instructionRows.map(row => row?.lineIndex)).toEqual([1, 2, 3, 4]);
-    expect(state.layout.taskPanelRect?.top).toBe(7);
+    expect(state.layout.taskPanelRect?.top).toBe(8);
     expect(instructionRows.slice(0, -1).every(row => (
       row !== null && termWidth(stripAnsi(state.historyLines[row.lineIndex])) === state.cols
     ))).toBe(true);

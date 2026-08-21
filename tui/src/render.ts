@@ -455,6 +455,35 @@ function visibleSystemInstructionsHeight(
   return height;
 }
 
+/**
+ * Keep any system-instructions box reached by a top-anchored task card at full
+ * width. The card moves just below the complete box rather than narrowing its
+ * fixed-width border rows. Reflow can initially duplicate those rows, so derive
+ * the offset from the adaptive viewport and count through the whole box.
+ */
+function topAnchoredTaskPanelOffset(
+  viewportRows: ViewportHistoryRow[],
+  lineAnchors: BuildMessageLinesResult["lineAnchors"],
+  panelEndOffset: number,
+): number {
+  let offset = 0;
+  for (let row = 0; row < viewportRows.length && row < panelEndOffset;) {
+    const segment = lineAnchors[viewportRows[row].lineIndex]?.segment;
+    if (!segment || !SYSTEM_INSTRUCTIONS_SEGMENTS.has(segment)) {
+      row++;
+      continue;
+    }
+
+    do {
+      row++;
+    } while (row < viewportRows.length && SYSTEM_INSTRUCTIONS_SEGMENTS.has(
+      lineAnchors[viewportRows[row].lineIndex]?.segment ?? "",
+    ));
+    offset = row;
+  }
+  return offset;
+}
+
 function composeSemanticUserRows(
   lineAnchors: BuildMessageLinesResult["lineAnchors"],
   start: ViewportSourceState,
@@ -781,9 +810,13 @@ function composeFloatingHistoryViewport(
     return rows;
   }
 
-  // Genuinely short histories should remain top-aligned. A full canonical
-  // viewport can go straight to the bounded bottom-anchored composition.
-  if (instructionStartIndex === viewStart && endLineIndex - viewStart < messageAreaHeight) {
+  // At the canonical top there is no preceding viewport that can reveal rows
+  // displaced by narrow wrapping, so keep the beginning anchored and clip any
+  // reflow overflow at the bottom. Genuinely short histories also stay
+  // top-aligned; a full canonical viewport can use the bottom-anchored path.
+  const atCanonicalTop = viewStart === 0 && instructionStartIndex === viewStart;
+  if (instructionStartIndex === viewStart
+    && (atCanonicalTop || endLineIndex - viewStart < messageAreaHeight)) {
     const directRows = composeViewportFrom(
       allLines,
       lineAnchors,
@@ -794,7 +827,8 @@ function composeFloatingHistoryViewport(
       narrowWidth,
       fullWidth,
     );
-    if (directRows.length <= messageAreaHeight) {
+    if (atCanonicalTop || directRows.length <= messageAreaHeight) {
+      const rows = directRows.slice(0, messageAreaHeight);
       floatingHistoryViewportCache.set(allLines, {
         lineAnchors,
         viewStart,
@@ -804,9 +838,9 @@ function composeFloatingHistoryViewport(
         panelHeight,
         narrowWidth,
         fullWidth,
-        rows: directRows,
+        rows,
       });
-      return directRows;
+      return rows;
     }
   }
 
@@ -1366,7 +1400,13 @@ export function render(state: RenderState): void {
     );
     const topLineIndex = viewportRows[0]?.lineIndex ?? viewStart;
     const nextOffset = taskLayout.panel
-      ? visibleSystemInstructionsHeight(lineAnchors, topLineIndex, messageAreaHeight)
+      ? viewStart === 0
+        ? topAnchoredTaskPanelOffset(
+            viewportRows,
+            lineAnchors,
+            taskPanelTopOffset + panelFlowHeight,
+          )
+        : visibleSystemInstructionsHeight(lineAnchors, topLineIndex, messageAreaHeight)
       : 0;
     if (nextOffset === taskPanelTopOffset
       && (nextOffset === 0 || topLineIndex === instructionStartIndex)) break;
