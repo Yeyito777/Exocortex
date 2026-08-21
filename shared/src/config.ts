@@ -69,9 +69,15 @@ export interface DeepSeekProviderConfig {
   baseUrl?: string;
 }
 
+export interface OpenCodeProviderConfig {
+  /** Override the OpenCode Zen API base URL. Defaults to https://opencode.ai/zen/v1. */
+  baseUrl?: string;
+}
+
 export interface ProvidersConfig {
   openai?: OpenAIProviderConfig;
   deepseek?: DeepSeekProviderConfig;
+  opencode?: OpenCodeProviderConfig;
   /** Preserve unknown provider config blocks. */
   [provider: string]: unknown;
 }
@@ -255,7 +261,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isProviderId(value: unknown): value is ProviderId {
-  return value === "openai" || value === "deepseek";
+  return value === "openai" || value === "deepseek" || value === "opencode";
 }
 
 function isEffortLevel(value: unknown): value is EffortLevel {

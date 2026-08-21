@@ -9,6 +9,7 @@ function logoutDescription(provider: ProviderId): string {
   switch (provider) {
     case "openai": return "Log out from OpenAI";
     case "deepseek": return "Forget the saved DeepSeek API key";
+    case "opencode": return "Public access requires no login";
   }
 }
 

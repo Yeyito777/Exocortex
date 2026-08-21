@@ -34,6 +34,7 @@ function getFallbackProvidersById(): Record<ProviderId, ProviderInfo> {
   fallbackProvidersByIdCache = {
     openai: buildFallbackProviderInfo("openai"),
     deepseek: buildFallbackProviderInfo("deepseek"),
+    opencode: buildFallbackProviderInfo("opencode"),
   };
   return fallbackProvidersByIdCache;
 }
@@ -50,6 +51,10 @@ const MODEL_ID_ALIASES: Record<ProviderId, Record<string, ModelId>> = {
     "v4-pro": "deepseek-v4-pro",
     flash: "deepseek-v4-flash",
     "v4-flash": "deepseek-v4-flash",
+  },
+  opencode: {
+    ox: "ox-alpha",
+    "ox-alpha-free": "ox-alpha",
   },
 };
 

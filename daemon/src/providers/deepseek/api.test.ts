@@ -104,4 +104,17 @@ describe("DeepSeek chat backend", () => {
     expect(body.thinking).toEqual({ type: "disabled" });
     expect(body.reasoning_effort).toBeUndefined();
   });
+
+  test("keeps text-block user content in DeepSeek's string format", () => {
+    expect(buildDeepSeekMessagesForTest([{
+      role: "user",
+      content: [
+        { type: "text", text: "hello" },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "invalid" } },
+      ],
+    }])).toEqual([{
+      role: "user",
+      content: "hello\n[Image omitted: DeepSeek does not support image inputs.]",
+    }]);
+  });
 });

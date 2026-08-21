@@ -73,6 +73,12 @@ const DEEPSEEK_FLASH_RATES: TokenPricingRates = {
   outputUsdPerMillion: 0.28,
 };
 
+const FREE_RATES: TokenPricingRates = {
+  inputUsdPerMillion: 0,
+  cachedInputUsdPerMillion: 0,
+  outputUsdPerMillion: 0,
+};
+
 const PROVIDER_PRICING_PROFILES: Record<ProviderId, ProviderPricingProfile> = {
   openai: {
     inferModel: (modelId) => /^gpt-/i.test(modelId),
@@ -102,6 +108,12 @@ const PROVIDER_PRICING_PROFILES: Record<ProviderId, ProviderPricingProfile> = {
         rates: DEEPSEEK_FLASH_RATES,
       },
     ],
+  },
+  opencode: {
+    inferModel: (modelId) => modelId === "ox-alpha",
+    defaultBasisModel: "ox-alpha",
+    defaultRates: FREE_RATES,
+    rules: [],
   },
 };
 

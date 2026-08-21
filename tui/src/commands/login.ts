@@ -11,6 +11,7 @@ function loginDescription(provider: ProviderId): string {
   switch (provider) {
     case "openai": return "Sign in with OpenAI";
     case "deepseek": return "Save a DeepSeek API key";
+    case "opencode": return "Check public OpenCode Zen access";
   }
 }
 

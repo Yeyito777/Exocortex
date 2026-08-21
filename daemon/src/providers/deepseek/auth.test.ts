@@ -15,6 +15,7 @@ afterEach(() => {
 
 describe("DeepSeek API-key auth", () => {
   test("instructs users to provide an API key when none is configured", async () => {
+    clearAuth();
     delete process.env.DEEPSEEK_API_KEY;
 
     await expect(ensureAuthenticated()).rejects.toThrow("/login deepseek <api-key>");

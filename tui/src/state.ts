@@ -636,14 +636,17 @@ export function createInitialState(): RenderState {
     authByProvider: {
       openai: false,
       deepseek: false,
+      opencode: false,
     },
     authInfoByProvider: {
       openai: createEmptyProviderAuthInfo(),
       deepseek: createEmptyProviderAuthInfo(),
+      opencode: createEmptyProviderAuthInfo(),
     },
     usageByProvider: {
       openai: null,
       deepseek: null,
+      opencode: null,
     },
     tokenStats: null,
     contextTokens: 0,

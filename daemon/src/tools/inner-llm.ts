@@ -18,6 +18,7 @@ const SUMMARY_MODEL_BY_PROVIDER: Record<ProviderId, ModelId> = {
   // the ChatGPT-account backend and request the fast service tier separately.
   openai: "gpt-5.6-terra",
   deepseek: "deepseek-v4-flash",
+  opencode: "ox-alpha",
 };
 
 const SUMMARY_SERVICE_TIER_BY_PROVIDER: Partial<Record<ProviderId, ServiceTier>> = {

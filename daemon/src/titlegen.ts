@@ -40,8 +40,9 @@ function titleModelForProvider(provider: ProviderId): string {
       // working GPT-5.4 mini model until a usable GPT-5.5 mini arrives.
       return "gpt-5.4-mini";
     case "deepseek":
-    default:
       return "deepseek-v4-flash";
+    case "opencode":
+      return "ox-alpha";
   }
 }
 
