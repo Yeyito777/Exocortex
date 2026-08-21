@@ -251,6 +251,35 @@ describe("ping config helpers", () => {
       isStreaming: false,
       streamStopReason: "unwind",
     })).toBe(false);
+    expect(shouldPingForStreamCompletion({
+      updatedConvId: "conv-a",
+      wasStreaming: true,
+      isStreaming: false,
+      streamStopReason: "suspended",
+    })).toBe(false);
+  });
+
+  test("queued, sleeping, and purple goal-review states do not trigger /ping", () => {
+    expect(shouldPingForStreamCompletion({
+      updatedConvId: "queued",
+      wasStreaming: true,
+      isStreaming: false,
+      hasPendingWork: true,
+    })).toBe(false);
+    expect(shouldPingForStreamCompletion({
+      updatedConvId: "sleeping",
+      wasStreaming: true,
+      isStreaming: false,
+      hasPendingWork: true,
+      streamStopReason: "suspended",
+    })).toBe(false);
+    expect(shouldPingForStreamCompletion({
+      updatedConvId: "goal-review",
+      wasStreaming: true,
+      isStreaming: true,
+      hasPendingWork: true,
+      streamStopReason: "handoff",
+    })).toBe(false);
   });
 
   test("sound playback uses a single deterministic ffmpeg-to-aplay command", async () => {

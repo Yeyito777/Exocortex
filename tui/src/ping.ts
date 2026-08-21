@@ -219,16 +219,17 @@ export interface StreamCompletionUpdate {
   updatedConvId: string;
   wasStreaming: boolean;
   isStreaming: boolean;
+  /** Durable work still represented by a queued/suspended/controller state. */
+  hasPendingWork?: boolean;
   streamStopReason?: StreamingStopReason;
 }
 
 /** A canonical summary transition means the whole daemon-owned turn chain settled. */
 export function shouldPingForStreamCompletion(update: StreamCompletionUpdate): boolean {
-  return update.streamStopReason !== "daemon-restart"
-    && update.streamStopReason !== "handoff"
-    && update.streamStopReason !== "unwind"
+  return update.streamStopReason === undefined
     && update.wasStreaming
-    && !update.isStreaming;
+    && !update.isStreaming
+    && !update.hasPendingWork;
 }
 
 export function runStreamFinishedPing(context: StreamFinishedPingContext = {}): void {

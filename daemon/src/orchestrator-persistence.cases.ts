@@ -680,7 +680,12 @@ describe("DB-first orchestrator persistence", () => {
     expect(isUnread(convId)).toBe(false);
     expect(listDeferredChronoSleeps(convId)).toHaveLength(1);
     expect(loadPersisted(convId)!.messages.map(message => message.role)).toEqual(["user", "assistant"]);
-    expect(events).toContainEqual(expect.objectContaining({ type: "streaming_stopped", convId }));
+    expect(events).toContainEqual(expect.objectContaining({ type: "streaming_stopped", convId, reason: "suspended" }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "conversation_updated",
+      streamStopReason: "suspended",
+      summary: expect.objectContaining({ id: convId, streaming: false }),
+    }));
 
     let resumedInput: import("./messages").ApiMessage[] | null = null;
     const resumeStream = (async (_provider, messages) => {

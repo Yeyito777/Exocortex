@@ -56,6 +56,7 @@ import { startManualCompaction } from "./compact";
 import { runStreamFinishedPing, shouldPingForStreamCompletion } from "./ping";
 import { stripStartupLaunchEcho } from "./startupinput";
 import { focusedConversationTasks, msUntilTaskPanelEntryUpdate } from "./activitypanel";
+import { hasInProgressModelWork } from "./taskvisibility";
 import { beginOlderHistoryLoad, INITIAL_BUFFER_ADDITIONAL_TURNS, OLDER_HISTORY_PAGE_TURNS, shouldLoadOlderHistory } from "./historypagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { log } from "./log";
@@ -479,6 +480,8 @@ function onDaemonEvent(event: Event): void {
     updatedConvId: event.summary.id,
     wasStreaming: wasUpdatedConversationStreaming,
     isStreaming: event.summary.streaming,
+    hasPendingWork: hasInProgressModelWork(event.summary)
+      || state.queuedMessages.some(message => message.convId === event.summary.id),
     streamStopReason: event.streamStopReason,
   })) {
     // Paint green before focus detection or sound setup can do synchronous I/O.

@@ -1734,7 +1734,12 @@ async function orchestrateAssistantTurn(
     const stoppedStreamSeq = convStore.nextStreamSeq(convId);
     const streamStopReason: StreamingStopReason | undefined = ac.signal.aborted && ac.signal.reason === "daemon-restart"
       ? "daemon-restart"
-      : undefined;
+      : outcome?.suspended
+        ? "suspended"
+        : undefined;
+    const publishedStopReason: StreamingStopReason | undefined = streamChainContinues
+      ? "handoff"
+      : streamStopReason;
     convStore.clearActiveJob(convId);
     convStore.clearCurrentStreamingBlocks(convId);
     convStore.resetChunkCounter(convId);
@@ -1752,12 +1757,12 @@ async function orchestrateAssistantTurn(
         type: "streaming_stopped",
         convId,
         streamSeq: stoppedStreamSeq,
-        ...(streamChainContinues ? { reason: "handoff" as const } : streamStopReason ? { reason: streamStopReason } : {}),
+        ...(publishedStopReason ? { reason: publishedStopReason } : {}),
         persistedBlocks: abortPersistedBlocks,
       });
       // During a handoff getSummary remains streaming=true. The final turn in
       // the chain is the only one that publishes streaming=false/unread=true.
-      broadcastConversationUpdated(server, convId, streamStopReason);
+      broadcastConversationUpdated(server, convId, publishedStopReason);
 
       // Reconcile clients after multi-round/marker/queued-turn event streams from
       // the canonical committed ordering. Paginated clients receive the bounded
