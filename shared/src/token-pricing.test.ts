@@ -44,9 +44,9 @@ describe("model token pricing", () => {
   });
 
   test("records Ox Alpha's limited-time OpenCode price as zero", () => {
-    expect(resolveModelTokenPricing("x-preview-f-free")).toEqual({
+    expect(resolveModelTokenPricing("ox-alpha")).toEqual({
       provider: "opencode",
-      basisModel: "x-preview-f-free",
+      basisModel: "ox-alpha",
       inputUsdPerMillion: 0,
       cachedInputUsdPerMillion: 0,
       outputUsdPerMillion: 0,

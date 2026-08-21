@@ -84,7 +84,7 @@ describe("conversation defaults config", () => {
     });
     expect(configuredConversationDefaults({ defaults: { conversation: { provider: "opencode" } } })).toEqual({
       provider: "opencode",
-      model: "x-preview-f-free",
+      model: "ox-alpha",
       effort: "high",
       fastMode: false,
     });

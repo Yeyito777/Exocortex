@@ -1,7 +1,7 @@
 import type { ModelInfo, ReasoningEffortInfo } from "@exocortex/shared/messages";
 import { log } from "../../log";
 import { getApiKey } from "./auth";
-import { OPENCODE_MODELS_PATH, OX_ALPHA_MODEL_ID } from "./constants";
+import { OPENCODE_MODELS_PATH, OX_ALPHA_MODEL_ID, OX_ALPHA_UPSTREAM_MODEL_ID } from "./constants";
 import { buildOpenCodeJsonHeaders, buildOpenCodeUrl } from "./http";
 import type { OpenCodeModelsResponse } from "./types";
 
@@ -13,7 +13,7 @@ export const OX_ALPHA_EFFORTS: ReasoningEffortInfo[] = [
 
 export const OX_ALPHA_MODEL: ModelInfo = {
   id: OX_ALPHA_MODEL_ID,
-  label: "Ox Alpha Free",
+  label: "Ox Alpha",
   maxContext: 1_000_000,
   supportedEfforts: OX_ALPHA_EFFORTS,
   defaultEffort: "high",
@@ -33,9 +33,9 @@ export async function fetchOpenCodeModels(): Promise<ModelInfo[]> {
   }
 
   const data = await res.json() as OpenCodeModelsResponse;
-  const available = data.data?.some((model) => model.id === OX_ALPHA_MODEL_ID) ?? false;
+  const available = data.data?.some((model) => model.id === OX_ALPHA_UPSTREAM_MODEL_ID) ?? false;
   if (!available) {
-    log("warn", `opencode models: ${OX_ALPHA_MODEL_ID} is no longer advertised; the limited-time preview may have ended`);
+    log("warn", "opencode models: Ox Alpha is no longer advertised; the limited-time preview may have ended");
     return [];
   }
   return FALLBACK_OPENCODE_MODELS;

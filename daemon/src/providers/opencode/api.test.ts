@@ -15,8 +15,9 @@ describe("OpenCode Zen chat backend", () => {
       ],
     }];
 
-    const body = buildRequestBody(messages, "x-preview-f-free", { effort: "max", maxTokens: 200 });
+    const body = buildRequestBody(messages, "ox-alpha", { effort: "max", maxTokens: 200 });
 
+    expect(body.model).toBe("x-preview-f-free");
     expect(body.reasoning_effort).toBe("max");
     expect(body.thinking).toEqual({ type: "enabled" });
     expect(body.max_tokens).toBe(200);
@@ -93,7 +94,7 @@ describe("OpenCode Zen chat backend", () => {
   });
 
   test("normalizes unsupported Exocortex effort levels to Ox Alpha low", () => {
-    expect(buildRequestBody([{ role: "user", content: "hi" }], "x-preview-f-free", { effort: "none" }).reasoning_effort).toBe("low");
-    expect(buildRequestBody([{ role: "user", content: "hi" }], "x-preview-f-free", { effort: "medium" }).reasoning_effort).toBe("low");
+    expect(buildRequestBody([{ role: "user", content: "hi" }], "ox-alpha", { effort: "none" }).reasoning_effort).toBe("low");
+    expect(buildRequestBody([{ role: "user", content: "hi" }], "ox-alpha", { effort: "medium" }).reasoning_effort).toBe("low");
   });
 });

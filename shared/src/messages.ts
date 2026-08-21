@@ -55,7 +55,7 @@ export const DEFAULT_PROVIDER_ORDER: readonly ProviderId[] = [DEFAULT_PROVIDER_I
 export const DEFAULT_MODEL_BY_PROVIDER = {
   openai: "gpt-5.6-sol",
   deepseek: "deepseek-v4-pro",
-  opencode: "x-preview-f-free",
+  opencode: "ox-alpha",
 } as const satisfies Record<ProviderId, ModelId>;
 
 // ── Effort ─────────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ export const MAX_CONTEXT: Record<string, number> = {
   "gpt-5.3-codex-spark": 128_000,
   "deepseek-v4-pro": 1_000_000,
   "deepseek-v4-flash": 1_000_000,
-  "x-preview-f-free": 1_000_000,
+  "ox-alpha": 1_000_000,
 };
 
 // ── Image attachments ──────────────────────────────────────────────

@@ -16,8 +16,8 @@ describe("OpenCode model catalog", () => {
 
     const models = await fetchOpenCodeModels();
     expect(models).toEqual([expect.objectContaining({
-      id: "x-preview-f-free",
-      label: "Ox Alpha Free",
+      id: "ox-alpha",
+      label: "Ox Alpha",
       maxContext: 1_000_000,
       supportsImages: true,
       defaultEffort: "high",

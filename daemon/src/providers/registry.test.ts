@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "@exocortex/shared/messages";
-import { getDefaultModel, getDefaultProvider, supportsImageInputs } from "./registry";
+import { canonicalizeModel, getDefaultModel, getDefaultProvider, isKnownModel, supportsImageInputs } from "./registry";
 
 describe("provider registry defaults", () => {
   test("prefers the shared default provider", () => {
@@ -17,6 +17,12 @@ describe("provider registry defaults", () => {
     expect(supportsImageInputs("openai", "gpt-5.5")).toBe(true);
     expect(supportsImageInputs("openai", "gpt-5.3-codex-spark")).toBe(false);
     expect(supportsImageInputs("deepseek", "deepseek-v4-pro")).toBe(false);
-    expect(supportsImageInputs("opencode", "x-preview-f-free")).toBe(true);
+    expect(supportsImageInputs("opencode", "ox-alpha")).toBe(true);
+  });
+
+  test("keeps OpenCode's upstream preview id behind the provider boundary", () => {
+    expect(canonicalizeModel("opencode", "ox")).toBe("ox-alpha");
+    expect(canonicalizeModel("opencode", "ox-alpha")).toBe("ox-alpha");
+    expect(isKnownModel("opencode", "x-preview-f-free")).toBe(false);
   });
 });

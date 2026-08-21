@@ -110,8 +110,8 @@ const PROVIDER_PRICING_PROFILES: Record<ProviderId, ProviderPricingProfile> = {
     ],
   },
   opencode: {
-    inferModel: (modelId) => modelId === "x-preview-f-free",
-    defaultBasisModel: "x-preview-f-free",
+    inferModel: (modelId) => modelId === "ox-alpha",
+    defaultBasisModel: "ox-alpha",
     defaultRates: FREE_RATES,
     rules: [],
   },

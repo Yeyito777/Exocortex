@@ -1,7 +1,7 @@
 import type { OAuthProfile } from "../../store";
 import { AuthError } from "../errors";
 import type { EnsureAuthResult, LoginCallbacks, LoginResult } from "../types";
-import { OPENCODE_MODELS_PATH, OPENCODE_PUBLIC_API_KEY, OX_ALPHA_MODEL_ID } from "./constants";
+import { OPENCODE_MODELS_PATH, OPENCODE_PUBLIC_API_KEY, OX_ALPHA_UPSTREAM_MODEL_ID } from "./constants";
 import { buildOpenCodeJsonHeaders, buildOpenCodeUrl, parseOpenCodeError } from "./http";
 import type { OpenCodeModelsResponse } from "./types";
 
@@ -33,7 +33,7 @@ async function fetchModels(apiKey: string): Promise<void> {
   }
   try {
     const data = JSON.parse(text) as OpenCodeModelsResponse;
-    if (data.data?.some((model) => model.id === OX_ALPHA_MODEL_ID)) return;
+    if (data.data?.some((model) => model.id === OX_ALPHA_UPSTREAM_MODEL_ID)) return;
   } catch {
     throw new AuthError("OpenCode Zen access check failed: invalid /models response");
   }

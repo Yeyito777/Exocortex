@@ -53,9 +53,8 @@ const MODEL_ID_ALIASES: Record<ProviderId, Record<string, ModelId>> = {
     "v4-flash": "deepseek-v4-flash",
   },
   opencode: {
-    ox: "x-preview-f-free",
-    "ox-alpha": "x-preview-f-free",
-    "ox-alpha-free": "x-preview-f-free",
+    ox: "ox-alpha",
+    "ox-alpha-free": "ox-alpha",
   },
 };
 

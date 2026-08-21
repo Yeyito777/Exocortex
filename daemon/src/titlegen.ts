@@ -42,7 +42,7 @@ function titleModelForProvider(provider: ProviderId): string {
     case "deepseek":
       return "deepseek-v4-flash";
     case "opencode":
-      return "x-preview-f-free";
+      return "ox-alpha";
   }
 }
 

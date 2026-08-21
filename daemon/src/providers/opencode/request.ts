@@ -6,6 +6,7 @@ import {
   type OpenAICompatibleRequestProfile,
 } from "../openai-compatible/request";
 import type { StreamOptions } from "../types";
+import { OX_ALPHA_MODEL_ID, OX_ALPHA_UPSTREAM_MODEL_ID } from "./constants";
 
 function mapOpenCodeEffort(effort: EffortLevel | undefined) {
   switch (effort) {
@@ -35,5 +36,6 @@ export function buildOpenCodeMessages(messages: ApiMessage[], system?: string) {
 }
 
 export function buildRequestBody(messages: ApiMessage[], model: ModelId, options: StreamOptions): OpenAICompatibleRequestBody {
-  return buildOpenAICompatibleRequestBody(messages, model, options, OPENCODE_REQUEST_PROFILE);
+  const upstreamModel = model === OX_ALPHA_MODEL_ID ? OX_ALPHA_UPSTREAM_MODEL_ID : model;
+  return buildOpenAICompatibleRequestBody(messages, upstreamModel, options, OPENCODE_REQUEST_PROFILE);
 }

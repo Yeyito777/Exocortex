@@ -13,8 +13,8 @@ describe("formatModelDisplayName", () => {
     expect(formatModelDisplayName("deepseek-v4-flash")).toBe("DeepSeek V4 Flash");
   });
 
-  test("uses the public name for the Ox Alpha preview id", () => {
-    expect(formatModelDisplayName("x-preview-f-free")).toBe("Ox Alpha Free");
+  test("formats the canonical Ox Alpha model id", () => {
+    expect(formatModelDisplayName("ox-alpha")).toBe("Ox Alpha");
   });
 
   test("falls back to capitalizing the raw id when no special formatter applies", () => {
