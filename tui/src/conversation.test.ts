@@ -35,6 +35,57 @@ describe("system instructions spacing", () => {
   });
 });
 
+describe("automated user-message provenance", () => {
+  test("uses a softened bubble and a readable source label", () => {
+    const state = createInitialState();
+    const human = { role: "user" as const, text: "I wrote this", metadata: null };
+    const automated = {
+      role: "user" as const,
+      text: "Check the deployment and report back.",
+      metadata: {
+        startedAt: 2_000,
+        endedAt: 2_000,
+        model: state.model,
+        tokens: 0,
+        automation: { kind: "chrono_wake" as const, sourceId: "chrono:demo" },
+      },
+    };
+    state.messages.push(human, automated);
+
+    const rendered = buildMessageLines(state, 100);
+    const humanLine = rendered.lines[rendered.lineAnchors.findIndex(anchor => anchor.owner === human && anchor.segment === "user_content")];
+    const automatedLine = rendered.lines[rendered.lineAnchors.findIndex(anchor => anchor.owner === automated && anchor.segment === "user_content")];
+    const labelIndex = rendered.lineAnchors.findIndex(anchor => anchor.owner === automated && anchor.segment === "automation_label");
+
+    expect(humanLine).toContain(theme.userBg);
+    expect(automatedLine).toContain(theme.automatedUserBg);
+    expect(stripAnsi(rendered.lines[labelIndex])).toContain("⚙ Chrono");
+  });
+
+  test("combines queued automation provenance with its timing", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    const queued = {
+      id: "queue-1",
+      convId: "conv-1",
+      text: "Process the latest subscription event.",
+      timing: "next-turn" as const,
+      source: "daemon" as const,
+      createdAt: 2_000,
+      automation: { kind: "external_notification" as const, sourceId: "subscription-1" },
+    };
+    state.queuedMessages.push(queued);
+
+    const rendered = buildMessageLines(state, 100);
+    const contentIndex = rendered.lineAnchors.findIndex(anchor => anchor.owner === queued && anchor.segment === "queued_content");
+    const labelIndex = rendered.lineAnchors.findIndex(anchor => anchor.owner === queued && anchor.segment === "queued_label");
+
+    expect(rendered.lines[contentIndex]).toContain(theme.automatedUserBg);
+    expect(stripAnsi(rendered.lines[labelIndex])).toContain("⚙ Notification");
+    expect(stripAnsi(rendered.lines[labelIndex])).toContain("next turn");
+  });
+});
+
 describe("context compaction status", () => {
   test("renders an animated Compacting status without a synthetic assistant block", () => {
     expect(compactionSpinnerText(1_000, 1_000)).toBe("⠋ Compacting...");

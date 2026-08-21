@@ -493,7 +493,11 @@ function composeSemanticUserRows(
 ): { rows: ViewportHistoryRow[]; requestedEnd: number } | null {
   const anchor = lineAnchors[lineIndex];
   const isUserFlow = anchor?.segment === "user_content" || anchor?.segment === "queued_content";
-  const owner = anchor?.owner as { text?: unknown } | undefined;
+  const owner = anchor?.owner as {
+    text?: unknown;
+    automation?: unknown;
+    metadata?: { automation?: unknown } | null;
+  } | undefined;
   if (!isUserFlow
     || !owner
     || typeof owner.text !== "string"
@@ -515,7 +519,14 @@ function composeSemanticUserRows(
     ? start.userFlow.sourceCursor
     : anchor.userFlowStart;
   const sourceEnd = lineAnchors[requestedEnd - 1].userFlowEnd!;
-  const adaptive = renderAdaptiveUserMessageRows(anchor.userFlowDocument, sourceStart, sourceEnd, colsForRow);
+  const automated = Boolean(owner.automation || owner.metadata?.automation);
+  const adaptive = renderAdaptiveUserMessageRows(
+    anchor.userFlowDocument,
+    sourceStart,
+    sourceEnd,
+    colsForRow,
+    automated ? theme.automatedUserBg : theme.userBg,
+  );
   const rows: ViewportHistoryRow[] = [];
   let canonicalLineIndex = lineIndex;
 

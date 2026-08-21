@@ -59,7 +59,16 @@ export function createHistoryCursor(): HistoryCursor {
 type RenderedMessageBound = RenderState["historyMessageBounds"][number];
 
 function getUserMessageBounds(surface: HistorySurface): RenderedMessageBound[] {
-  return surface.messageBounds.filter((bound) => bound.role === "user");
+  return surface.messageBounds.filter((bound) => {
+    if (bound.role !== "user") return false;
+    const owner = surface.lineAnchors[bound.contentStart]?.owner as {
+      role?: unknown;
+      metadata?: { automation?: unknown } | null;
+    } | undefined;
+    // Brace navigation is a shortcut through prompts the human actually wrote.
+    // Automated prompts remain visible and selectable, but do not become stops.
+    return !(owner?.role === "user" && owner.metadata?.automation);
+  });
 }
 
 type RenderedAIResponseBound = RenderedMessageBound & { responseStart: number };
@@ -155,7 +164,7 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
     case "history_prev_message": {
       const bounds = getUserMessageBounds(surface);
       if (bounds.length === 0) break;
-      // Jump only among user messages.
+      // Jump only among human-authored user messages.
       // Pressing { inside a user message goes to its start; pressing {
       // at that start goes to the previous user message's start.
       let target = -1;
@@ -168,7 +177,7 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
     case "history_next_message": {
       const bounds = getUserMessageBounds(surface);
       if (bounds.length === 0) break;
-      // Jump only among user-message starts.
+      // Jump only among human-authored user-message starts.
       // Pressing } moves to the next user-message start; if the cursor is
       // anywhere inside the last user message, jump to the conversation bottom.
       let target = -1;

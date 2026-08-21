@@ -40,6 +40,7 @@ export const cerberus: Theme = {
   // Background colors
   topbarBg:      `${ESC}48;2;211;47;47m`,    // #d32f2f (red accent as bg)
   userBg:        `${ESC}48;2;37;37;37m`,     // #252525
+  automatedUserBg: `${ESC}48;2;29;38;43m`,  // #1d262b (soft blue-slate)
   sidebarBg:     `${ESC}48;2;26;26;26m`,     // #1a1a1a
   sidebarSelBg:  `${ESC}48;2;51;51;51m`,     // #333333
   cursorBg:      `${ESC}48;2;211;47;47m`,    // #d32f2f (red)

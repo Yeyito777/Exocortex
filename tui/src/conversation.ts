@@ -6,7 +6,7 @@
  * in blockrenderer.ts.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Message, type MessageMetadata } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { theme } from "./theme";
@@ -48,6 +48,29 @@ function callTranscriptProvenance(metadata: MessageMetadata | null | undefined):
     .map(participant => `${participant.displayName} [${participant.trust}]`)
     .join(" + ");
   return `${names} · call transcript`;
+}
+
+const AUTOMATION_LABELS: Record<UserMessageAutomation["kind"], string> = {
+  external_notification: "Notification",
+  background_task_completion: "Background completion",
+  chrono_wake: "Chrono",
+  chrono_hard_wake: "Chrono hard wake",
+  exo_send: "Exo delegation",
+  subagent_completion: "Subagent completion",
+  goal_continuation: "Goal continuation",
+  realtime_delegation: "Realtime handoff",
+};
+
+function automationProvenance(automation: UserMessageAutomation | undefined): string | null {
+  return automation ? `⚙ ${AUTOMATION_LABELS[automation.kind]}` : null;
+}
+
+function userProvenance(metadata: MessageMetadata | null | undefined): string | null {
+  const automation = automationProvenance(metadata?.automation);
+  const transcript = metadata?.kind === REALTIME_TRANSCRIPT_KIND
+    ? callTranscriptProvenance(metadata)
+    : null;
+  return [automation, transcript].filter((label): label is string => Boolean(label)).join(" · ") || null;
 }
 
 /** Build the muted markdown-style completion divider, ending at the screen midpoint. */
@@ -208,6 +231,7 @@ export type RenderLineSegment =
   | "system_instructions_margin_bottom"
   | "system_instructions_top"
   | "system_message"
+  | "automation_label"
   | "transcript_label"
   | "user_content"
   | "user_margin_bottom"
@@ -379,10 +403,11 @@ export function buildMessageLines(
     if (msg.role === "user") {
       if (!firstUser) pushLine("", msg, "user_margin_top");  // top margin (skip for first)
       const contentStart = lines.length;
-      const rendered = renderUserMessageCached(msg, msg.text, availableWidth, msg.images);
+      const background = msg.metadata?.automation ? theme.automatedUserBg : theme.userBg;
+      const rendered = renderUserMessageCached(msg, msg.text, availableWidth, msg.images, background);
       pushBlock(msg, "user_content", rendered);
       const contentEnd = lines.length;
-      const flow = userMessageFlowMetadataCached(msg, msg.text, availableWidth, msg.images);
+      const flow = userMessageFlowMetadataCached(msg, msg.text, availableWidth, msg.images, background);
       if (flow && flow.starts.length === contentEnd - contentStart) {
         for (let row = 0; row < flow.starts.length; row++) {
           lineAnchors[contentStart + row].userFlowDocument = flow.document;
@@ -390,8 +415,9 @@ export function buildMessageLines(
           lineAnchors[contentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
         }
       }
-      if (msg.metadata?.kind === REALTIME_TRANSCRIPT_KIND) {
-        pushLine(rightAlignedProvenanceLabel(callTranscriptProvenance(msg.metadata), availableWidth), msg, "transcript_label");
+      const provenance = userProvenance(msg.metadata);
+      if (provenance) {
+        pushLine(rightAlignedProvenanceLabel(provenance, availableWidth), msg, msg.metadata?.automation ? "automation_label" : "transcript_label");
       }
       pushLine("", msg, "user_margin_bottom");               // bottom margin
       firstUser = false;
@@ -455,6 +481,8 @@ export function buildMessageLines(
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else {
       pushBlock(msg, "system_message", renderSystemMessage(msg.text, availableWidth, msg.color));
+      const provenance = automationProvenance(msg.metadata?.automation);
+      if (provenance) pushLine(rightAlignedProvenanceLabel(provenance, availableWidth), msg, "automation_label");
       pushMessageBound(msg.role, start, start, lines.length);
     }
   }
@@ -559,15 +587,17 @@ export function buildMessageLines(
         : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId),
     );
     for (const qm of queued) {
-      const timingLabel = queueTimingLabel(qm);
+      const provenance = automationProvenance(qm.automation);
+      const timingLabel = [provenance, queueTimingLabel(qm)].filter((label): label is string => Boolean(label)).join(" · ");
       pushLine("", qm, "queued_margin_top");
       // Render a dimmed user bubble
-      const qr = renderUserMessageCached(qm, qm.text, availableWidth, qm.images);
+      const background = qm.automation ? theme.automatedUserBg : theme.userBg;
+      const qr = renderUserMessageCached(qm, qm.text, availableWidth, qm.images, background);
       const queuedContentStart = lines.length;
       for (let i = 0; i < qr.lines.length; i++) {
         pushLine(`${theme.muted}${qr.lines[i]}${theme.reset}`, qm, "queued_content", i);
       }
-      const flow = userMessageFlowMetadataCached(qm, qm.text, availableWidth, qm.images);
+      const flow = userMessageFlowMetadataCached(qm, qm.text, availableWidth, qm.images, background);
       if (flow && flow.starts.length === qr.lines.length) {
         for (let row = 0; row < flow.starts.length; row++) {
           lineAnchors[queuedContentStart + row].userFlowDocument = flow.document;

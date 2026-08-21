@@ -123,6 +123,49 @@ describe("history brace navigation", () => {
     expect(state.historyCursor.row).toBe(userBounds[1].contentStart);
   });
 
+  test("{ and } skip automated user-role messages", () => {
+    const firstHuman = { role: "user" as const, text: "First human prompt", metadata: null };
+    const automated = {
+      role: "user" as const,
+      text: "Run the scheduled check",
+      metadata: {
+        startedAt: 2_000,
+        endedAt: 2_000,
+        model: "gpt-5.6-sol",
+        tokens: 0,
+        automation: { kind: "chrono_wake" as const, sourceId: "chrono:test" },
+      },
+    };
+    const secondHuman = { role: "user" as const, text: "Second human prompt", metadata: null };
+    const state = setupRenderedHistory([
+      firstHuman,
+      { role: "assistant", blocks: [{ type: "text", text: "First answer" }], metadata: null },
+      automated,
+      { role: "assistant", blocks: [{ type: "text", text: "Automated answer" }], metadata: null },
+      secondHuman,
+    ], 80);
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+
+    const boundFor = (owner: object) => state.historyMessageBounds.find(bound =>
+      state.historyLineAnchors[bound.contentStart]?.owner === owner,
+    );
+    const firstHumanBound = boundFor(firstHuman);
+    const automatedBound = boundFor(automated);
+    const secondHumanBound = boundFor(secondHuman);
+    expect(firstHumanBound).toBeDefined();
+    expect(automatedBound).toBeDefined();
+    expect(secondHumanBound).toBeDefined();
+
+    state.historyCursor = { row: firstHumanBound!.contentStart, col: 0 };
+    applyHistoryAction("history_next_message", state);
+    expect(state.historyCursor.row).toBe(secondHumanBound!.contentStart);
+
+    state.historyCursor = { row: secondHumanBound!.contentStart, col: 0 };
+    applyHistoryAction("history_prev_message", state);
+    expect(state.historyCursor.row).toBe(firstHumanBound!.contentStart);
+  });
+
   test("} from inside the last user message jumps to the bottom of the conversation", () => {
     const state = setupHistoryState();
     const lastUserBound = boundsByRole(state, "user").at(-1);
