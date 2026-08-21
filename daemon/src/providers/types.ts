@@ -180,6 +180,8 @@ export interface ProviderModelSource {
 }
 
 export interface ProviderAuthAdapter {
+  /** Authenticated public access that does not require persisted credentials. */
+  publicAccessLabel?: string;
   login(callbacks?: LoginCallbacks | ((msg: string) => void), options?: LoginOptions): Promise<LoginResult>;
   ensureAuthenticated(callbacks?: LoginCallbacks, options?: LoginOptions): Promise<EnsureAuthResult>;
   refreshTokens?: (refreshToken: string) => Promise<unknown>;

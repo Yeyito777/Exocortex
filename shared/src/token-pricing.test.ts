@@ -42,4 +42,14 @@ describe("model token pricing", () => {
   test("leaves models with no provider association explicitly unpriced", () => {
     expect(resolveModelTokenPricing("unknown-model")).toBeNull();
   });
+
+  test("records Ox Alpha's limited-time OpenCode price as zero", () => {
+    expect(resolveModelTokenPricing("x-preview-f-free")).toEqual({
+      provider: "opencode",
+      basisModel: "x-preview-f-free",
+      inputUsdPerMillion: 0,
+      cachedInputUsdPerMillion: 0,
+      outputUsdPerMillion: 0,
+    });
+  });
 });

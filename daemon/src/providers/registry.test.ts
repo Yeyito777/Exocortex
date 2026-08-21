@@ -10,11 +10,13 @@ describe("provider registry defaults", () => {
   test("uses the shared default models", () => {
     expect(getDefaultModel("openai")).toBe(DEFAULT_MODEL_BY_PROVIDER.openai);
     expect(getDefaultModel("deepseek")).toBe(DEFAULT_MODEL_BY_PROVIDER.deepseek);
+    expect(getDefaultModel("opencode")).toBe(DEFAULT_MODEL_BY_PROVIDER.opencode);
   });
 
   test("tracks per-model image input support", () => {
     expect(supportsImageInputs("openai", "gpt-5.5")).toBe(true);
     expect(supportsImageInputs("openai", "gpt-5.3-codex-spark")).toBe(false);
     expect(supportsImageInputs("deepseek", "deepseek-v4-pro")).toBe(false);
+    expect(supportsImageInputs("opencode", "x-preview-f-free")).toBe(true);
   });
 });

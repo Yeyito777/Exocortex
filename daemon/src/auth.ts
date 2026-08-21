@@ -100,13 +100,35 @@ export function getAuthByProvider(): Record<ProviderId, boolean> {
   return {
     openai: hasConfiguredCredentials("openai"),
     deepseek: hasConfiguredCredentials("deepseek"),
+    opencode: hasConfiguredCredentials("opencode"),
   };
 }
 
 export function getAuthInfo(provider: ProviderId): ProviderAuthInfo {
   const { accounts, currentIndex } = normalizeAuthRecords(loadProviderAuth<unknown>(provider));
   const stored = currentIndex >= 0 ? accounts[currentIndex] : null;
-  if (!stored?.tokens) return createEmptyProviderAuthInfo();
+  if (!stored?.tokens) {
+    const adapter = getProviderAdapter(provider);
+    const publicAccessLabel = adapter.auth.publicAccessLabel;
+    if (!publicAccessLabel) return createEmptyProviderAuthInfo();
+    return {
+      configured: true,
+      authenticated: true,
+      status: "logged_in",
+      email: null,
+      displayName: publicAccessLabel,
+      organizationName: adapter.label,
+      organizationType: "public",
+      organizationRole: null,
+      workspaceRole: null,
+      subscriptionType: "public",
+      rateLimitTier: null,
+      scopes: ["public"],
+      expiresAt: null,
+      updatedAt: null,
+      source: "public",
+    };
+  }
 
   const expired = isTokenExpired(stored.tokens);
   const refreshable = !!stored.tokens.refreshToken;
@@ -148,5 +170,6 @@ export function getAuthInfoByProvider(): Record<ProviderId, ProviderAuthInfo> {
   return {
     openai: getAuthInfo("openai"),
     deepseek: getAuthInfo("deepseek"),
+    opencode: getAuthInfo("opencode"),
   };
 }

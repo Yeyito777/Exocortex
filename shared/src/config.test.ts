@@ -82,5 +82,11 @@ describe("conversation defaults config", () => {
       effort: "medium",
       fastMode: false,
     });
+    expect(configuredConversationDefaults({ defaults: { conversation: { provider: "opencode" } } })).toEqual({
+      provider: "opencode",
+      model: "x-preview-f-free",
+      effort: "high",
+      fastMode: false,
+    });
   });
 });

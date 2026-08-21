@@ -345,6 +345,8 @@ function formatProviderLabel(provider: ProviderId): string {
       return "OpenAI";
     case "deepseek":
       return "DeepSeek";
+    case "opencode":
+      return "OpenCode Zen";
   }
 }
 

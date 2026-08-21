@@ -163,6 +163,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     if (!lowered) return undefined;
     if (lowered === "pro" || lowered === "flash" || lowered.startsWith("deepseek-") || lowered.startsWith("v4-")) return "deepseek";
     if (lowered.startsWith("gpt-") || lowered.startsWith("o1") || lowered.startsWith("o3") || lowered.startsWith("o4")) return "openai";
+    if (lowered === "ox" || lowered === "ox-alpha" || lowered === "ox-alpha-free" || lowered === "x-preview-f-free") return "opencode";
     return undefined;
   };
   const modelDefaultForProvider = (provider: import("./messages").ProviderId): string => {
@@ -3101,6 +3102,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "logout": {
         const provider = cmd.provider ?? getDefaultProvider().id;
+        if (getProviderAdapter(provider).auth.publicAccessLabel) {
+          server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: `${getProviderAdapter(provider).label} uses public access and has no session to log out.` });
+          break;
+        }
         if (provider === "openai" && rejectDuringOpenAIAccountMutation(client, cmd.reqId)) break;
         if (provider === "openai" && rejectOpenAIAccountMutationWhileStreaming(client, cmd.reqId)) break;
         clearAuth(provider);
