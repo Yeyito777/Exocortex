@@ -13,7 +13,7 @@ import {
 import { focusTargetAfterRemovingSidebarItems } from "../sidebar/removal";
 import { focusSidebarItem } from "../sidebar/selection";
 import type { RenderState } from "../state";
-import { preserveViewportAcrossHistoryMutation } from "../chatscroll";
+import { preserveViewportAcrossHistoryPrepend } from "../chatscroll";
 import {
   clearPendingAI,
   clearStreamingTailMessages,
@@ -416,7 +416,7 @@ export function handleConversationHistoryLoaded(
     && state.scrollOffset === 0
     && !(state.panelFocus === "chat" && state.chatFocus === "history");
   if (canFastPathInitialBackfill) prependOlderMessages();
-  else preserveViewportAcrossHistoryMutation(state, prependOlderMessages);
+  else preserveViewportAcrossHistoryPrepend(state, prependOlderMessages);
   if (event.requestSource === "initial-backfill") {
     completeInitialConversationBackfill(state, event.convId);
   }

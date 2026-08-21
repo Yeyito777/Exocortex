@@ -306,6 +306,20 @@ export function toggleSidebarPreservingViewport(state: RenderState): void {
  * viewport/cursor to rendered line identities and remap them afterward.
  */
 export function preserveViewportAcrossHistoryMutation(state: RenderState, mutate: () => void): void {
+  preserveViewportAcrossHistoryMutationFromRow(state, mutate, (oldViewStart) => oldViewStart);
+}
+
+type HistoryMutationViewportAnchor = (
+  oldViewStart: number,
+  oldRender: ReturnType<typeof buildMessageLines>,
+  messageAreaHeight: number,
+) => number;
+
+function preserveViewportAcrossHistoryMutationFromRow(
+  state: RenderState,
+  mutate: () => void,
+  selectViewportAnchorRow: HistoryMutationViewportAnchor,
+): void {
   const { messageAreaHeight } = state.layout;
   if (messageAreaHeight <= 0) {
     mutate();
@@ -316,6 +330,12 @@ export function preserveViewportAcrossHistoryMutation(state: RenderState, mutate
   const chatW = Math.max(1, state.cols - sidebarW);
   const oldRender = buildMessageLines(state, chatW);
   const oldViewStart = getViewStartFor(oldRender.lines.length, messageAreaHeight, state.scrollOffset);
+  const selectedAnchorRow = selectViewportAnchorRow(oldViewStart, oldRender, messageAreaHeight);
+  const oldViewportAnchorRow = Math.max(
+    oldViewStart,
+    Math.min(selectedAnchorRow, Math.max(oldViewStart, oldRender.lines.length - 1)),
+  );
+  const oldViewportAnchorOffset = oldViewportAnchorRow - oldViewStart;
   const oldCursorRow = state.historyCursor.row;
   const oldVisualAnchorRow = state.historyVisualAnchor.row;
 
@@ -326,14 +346,15 @@ export function preserveViewportAcrossHistoryMutation(state: RenderState, mutate
   const newLineIndex = buildRenderedLineIndex(newRender.lines);
 
   if (state.scrollOffset > 0) {
-    const newViewStart = remapRenderedRow(
-      oldViewStart,
+    const newViewportAnchorRow = remapRenderedRow(
+      oldViewportAnchorRow,
       oldRender.lines,
       oldRender.lineAnchors,
       newRender.lines,
       newAnchorIndex,
       newLineIndex,
     );
+    const newViewStart = newViewportAnchorRow - oldViewportAnchorOffset;
     state.scrollOffset = getScrollOffsetForViewStart(newRender.lines.length, messageAreaHeight, newViewStart);
   }
 
@@ -355,6 +376,33 @@ export function preserveViewportAcrossHistoryMutation(state: RenderState, mutate
   state.historyMessageBounds = newRender.messageBounds;
   state.historyLineAnchors = newRender.lineAnchors;
   state.layout.totalLines = newRender.lines.length;
+}
+
+function firstMovableHistoryRowInViewport(
+  oldViewStart: number,
+  oldRender: ReturnType<typeof buildMessageLines>,
+  messageAreaHeight: number,
+): number {
+  const viewEnd = Math.min(oldRender.lines.length, oldViewStart + messageAreaHeight);
+  for (let row = oldViewStart; row < viewEnd; row++) {
+    const segment = oldRender.lineAnchors[row]?.segment;
+    if (segment === "history_loading" || segment?.startsWith("system_instructions_")) continue;
+    return row;
+  }
+  return oldViewStart;
+}
+
+/**
+ * Prepend older history without anchoring the viewport to the fixed instructions
+ * prefix or the transient loading row.
+ *
+ * At the oldest loaded boundary those rows can occupy the top of the viewport,
+ * but neither moves with the existing conversation suffix when a page is
+ * inserted. Anchor the first visible conversation row at the same screen row so
+ * the newly loaded page appears above it instead of replacing the viewport.
+ */
+export function preserveViewportAcrossHistoryPrepend(state: RenderState, mutate: () => void): void {
+  preserveViewportAcrossHistoryMutationFromRow(state, mutate, firstMovableHistoryRowInViewport);
 }
 
 /** Toggle tool output while preserving the user's semantic position in history. */
