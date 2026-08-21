@@ -7,9 +7,8 @@
  * conversation summaries receive only the compact UI projection.
  *
  * Activity is normally ephemeral. Restart recovery reconstructs
- * notification-linked subagents and their task details from its durable
- * lifecycle sidecar before replaying them. Managed background processes are
- * stopped during graceful daemon shutdown and are not recovered after a crash.
+ * notification-linked subagents and officially detached Bash tasks from their
+ * durable lifecycle sidecars before replaying interrupted conversations.
  */
 
 import type { ConversationTaskSummary } from "@exocortex/shared/messages";
@@ -317,11 +316,15 @@ export function stopBackgroundTasksForConversation(convId: string): number {
   return ids.length;
 }
 
-/** Stop every managed background process during graceful daemon shutdown. */
+/** Stop every managed background process during an intentional daemon stop. */
 export function stopAllBackgroundTasks(): number {
   const ids = [...backgroundTasksByConversation.values()].flatMap(tasks => [...tasks.keys()]);
   for (const id of ids) stopBackgroundTask(id, true);
   return ids.length;
+}
+
+export function getActiveBackgroundTaskCount(): number {
+  return [...backgroundTasksByConversation.values()].reduce((sum, tasks) => sum + tasks.size, 0);
 }
 
 /** Wait briefly for close listeners to clear the active background catalog. */

@@ -1312,6 +1312,42 @@ describe("handler background task notifications", () => {
       }),
     ]);
   });
+
+  test("durably queues and deduplicates an idle recovered completion before model dispatch", () => {
+    const convId = mkId("background-recovered");
+    create(convId, "openai", "gpt-5.4", "parent");
+    const server = {
+      sendTo: mock(() => {}),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const completion = {
+      taskId: "bash:5678:recovered",
+      toolName: "bash",
+      title: "bun test daemon",
+      startedAt: 1_000,
+      endedAt: 2_500,
+      exitCode: 0,
+      signal: null,
+      outputPath: "/tmp/bash-output.tmp",
+    };
+
+    handle.backgroundTaskComplete(convId, completion);
+    handle.backgroundTaskComplete(convId, completion);
+
+    expect(orchestrateSendMessage).toHaveBeenCalledTimes(0);
+    expect(getQueuedMessages(convId)).toEqual([
+      expect.objectContaining({
+        timing: "next-turn",
+        automation: { kind: "background_task_completion", sourceId: completion.taskId },
+      }),
+    ]);
+  });
 });
 
 describe("handler replay_conversation", () => {

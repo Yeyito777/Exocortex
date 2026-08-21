@@ -89,6 +89,7 @@ export interface HandlerLifecycle {
 export interface DaemonCommandHandler {
   (client: ConnectedClient, cmd: Command): Promise<void>;
   stop(): Promise<void>;
+  backgroundTaskComplete(convId: string, completion: BackgroundTaskCompletion): void;
 }
 
 type RealtimeCallController = Pick<RealtimeCallManager,
@@ -123,6 +124,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   let callManager: RealtimeCallController;
   const delegatedCallByConversation = new Map<string, string>();
   const pendingBackgroundNotifications = new Map<string, { convId: string; completion: BackgroundTaskCompletion }>();
+  const enqueueBackgroundTaskCompletion = (convId: string, completion: BackgroundTaskCompletion): void => {
+    const id = `${convId}:${completion.taskId}:${completion.endedAt}`;
+    pendingBackgroundNotifications.set(id, { convId, completion });
+    deliverPendingBackgroundNotifications();
+  };
   configureChronoService(
     (convId) => broadcastConversationUpdated(server, convId),
     async (sleep) => {
@@ -247,9 +253,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       broadcastTokenStats();
     },
     onBackgroundTaskComplete: (completion: BackgroundTaskCompletion) => {
-      const id = `${convId}:${completion.taskId}:${completion.endedAt}`;
-      pendingBackgroundNotifications.set(id, { convId, completion });
-      deliverPendingBackgroundNotifications();
+      enqueueBackgroundTaskCompletion(convId, completion);
     },
     exocortex: exocortexRuntime,
   });
@@ -315,7 +319,19 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       const text = buildBackgroundTaskNotificationText(pending.completion);
-      if (convStore.isStreaming(pending.convId)) {
+      const automation = { kind: "background_task_completion" as const, sourceId: pending.completion.taskId };
+      const alreadyDurable = parent.messages.some(message => (
+        message.metadata?.automation?.kind === automation.kind
+        && message.metadata.automation.sourceId === automation.sourceId
+      )) || convStore.getQueuedMessages(pending.convId).some(message => (
+        message.automation?.kind === automation.kind
+        && message.automation.sourceId === automation.sourceId
+      ));
+      if (!alreadyDurable) {
+        // Persist every completion through the daemon-owned queue before
+        // acknowledging its runner sidecar. Idle conversations drain this on the
+        // next scheduler tick; streaming or temporarily unauthenticated owners
+        // retain it safely across another restart.
         convStore.pushQueuedMessage(
           pending.convId,
           text,
@@ -325,37 +341,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           undefined,
           undefined,
           undefined,
-          { kind: "background_task_completion", sourceId: pending.completion.taskId },
+          automation,
         );
-        pendingBackgroundNotifications.delete(id);
-        log("info", `handler: queued background task completion notification ${pending.completion.taskId} for ${pending.convId}`);
-        continue;
       }
-      if (!hasConfiguredCredentials(parent.provider)
-          || (openAIAccountMutationInFlight && parent.provider === "openai")) {
-        scheduleNotificationRetry();
-        continue;
-      }
-
       pendingBackgroundNotifications.delete(id);
-      log("info", `handler: sending background task completion notification ${pending.completion.taskId} to ${pending.convId}`);
-      void orchestrateSendMessage(
-        server,
-        null,
-        undefined,
-        pending.convId,
-        text,
-        Date.now(),
-        buildOrchestrationCallbacks(pending.convId),
-        undefined,
-        {
-          subagentMaxDepth: parent.subagentMaxDepth ?? null,
-          automation: { kind: "background_task_completion", sourceId: pending.completion.taskId },
-        },
-      ).catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        log("error", `handler: background task notification send failed for ${pending.convId}: ${message}`);
-      });
+      log("info", `${alreadyDurable ? "deduplicated" : "queued durable"} background task completion notification ${pending.completion.taskId} for ${pending.convId}`);
     }
   }
 
@@ -3182,5 +3172,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
   return Object.assign(handleCommand, {
     stop: () => callManager.stopAll(),
+    backgroundTaskComplete: enqueueBackgroundTaskCompletion,
   });
 }

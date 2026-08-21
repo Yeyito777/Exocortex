@@ -24,6 +24,13 @@ import { formatToolAbortMessage } from "../abort";
 import { isWindows, socketPath } from "@exocortex/shared/paths";
 import { rewriteExternalToolShellCommandForExecution } from "../external-tools";
 import { log } from "../log";
+import { getDaemonShutdownMode } from "../daemon-lifecycle";
+import {
+  backgroundTaskRecordPath,
+  removeBackgroundTaskRecord,
+  restoreBackgroundTaskNotification,
+  suppressBackgroundTaskNotification,
+} from "../background-task-state";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -36,12 +43,33 @@ const HEAD_PREVIEW_FRACTION = 0.7;
 
 interface TrackedBackgroundProcess {
   conversationId?: string;
+  taskId?: string;
+  recordPath?: string;
   suppressCompletionNotification: boolean;
 }
 
 /** Detached bash processes that may later be stopped by another bash tool call. */
 const trackedBackgroundProcesses = new Map<number, TrackedBackgroundProcess>();
 let isolatedRunnerPathForTest: string | null = null;
+
+/** Rebuild intentional-stop suppression after a replacement daemon adopts a runner. */
+export function trackRecoveredBackgroundProcess(
+  pid: number,
+  conversationId: string,
+  taskId: string,
+  recordPath: string,
+): void {
+  trackedBackgroundProcesses.set(pid, {
+    conversationId,
+    taskId,
+    recordPath,
+    suppressCompletionNotification: false,
+  });
+}
+
+export function untrackRecoveredBackgroundProcess(pid: number): void {
+  trackedBackgroundProcesses.delete(pid);
+}
 
 /**
  * Extract literal PIDs from direct process-termination commands.
@@ -107,6 +135,9 @@ function markIntentionalBackgroundTaskStops(command: string, conversationId?: st
     const tracked = trackedBackgroundProcesses.get(pid);
     if (tracked?.conversationId === conversationId) {
       tracked.suppressCompletionNotification = true;
+      if (tracked.recordPath) {
+        try { suppressBackgroundTaskNotification(tracked.recordPath); } catch { /* in-memory suppression still applies */ }
+      }
       marked.push(pid);
       log("info", `bash: suppressing redundant completion notification for intentionally stopped background task bash:${pid}`);
     }
@@ -117,7 +148,12 @@ function markIntentionalBackgroundTaskStops(command: string, conversationId?: st
 function restoreBackgroundTaskNotifications(pids: number[]): void {
   for (const pid of pids) {
     const tracked = trackedBackgroundProcesses.get(pid);
-    if (tracked) tracked.suppressCompletionNotification = false;
+    if (tracked) {
+      tracked.suppressCompletionNotification = false;
+      if (tracked.recordPath) {
+        try { restoreBackgroundTaskNotification(tracked.recordPath); } catch { /* best effort */ }
+      }
+    }
   }
 }
 
@@ -225,7 +261,7 @@ const KILL_GRACE_MS = 200;
  * On Windows, uses `taskkill /T /F` to kill the process tree (negative
  * PIDs are meaningless on Windows).
  */
-function killProcessGroup(pid: number): boolean {
+export function killProcessGroup(pid: number): boolean {
   if (isWindows) {
     try {
       spawn("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore" });
@@ -335,7 +371,8 @@ async function executeBashImpl(
   const intentionalStops = markIntentionalBackgroundTaskStops(command, context?.conversationId);
 
   const startTime = Date.now();
-  const capturePath = join(tmpdir(), `exocortex-bash-${process.pid}-${randomUUID()}.tmp`);
+  const executionId = randomUUID();
+  const capturePath = join(tmpdir(), `exocortex-bash-${process.pid}-${executionId}.tmp`);
   const inputEnv = input.env && typeof input.env === "object" && !Array.isArray(input.env)
     ? Object.fromEntries(Object.entries(input.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
     : {};
@@ -349,7 +386,23 @@ async function executeBashImpl(
       : [runnerPath];
     let runner: ChildProcessWithoutNullStreams;
     try {
-      runner = spawn(process.execPath, runnerArgs, {
+      const useTransientSystemdUnit = process.platform === "linux"
+        && Boolean(process.env.INVOCATION_ID)
+        && process.env.EXOCORTEX_DISABLE_TRANSIENT_BASH_UNITS !== "1"
+        && !isolatedRunnerPathForTest;
+      const executable = useTransientSystemdUnit ? "systemd-run" : process.execPath;
+      const executableArgs = useTransientSystemdUnit
+        ? [
+            "--user",
+            "--quiet",
+            "--collect",
+            "--pipe",
+            `--unit=exocortex-bash-${process.pid}-${executionId}`,
+            process.execPath,
+            ...runnerArgs,
+          ]
+        : runnerArgs;
+      runner = spawn(executable, executableArgs, {
         cwd,
         env: {
           ...process.env,
@@ -385,6 +438,9 @@ async function executeBashImpl(
     let processFailure: string | undefined;
     let timedOut = false;
     let runnerStderr = "";
+    let backgroundRequestedAt: number | undefined;
+    let recoveryRecordPath: string | undefined;
+    let removeAbortListener = () => {};
 
     const backgroundTaskId = () => commandPid
       ? `bash:${commandPid}:${startTime.toString(36)}`
@@ -439,19 +495,36 @@ async function executeBashImpl(
       completionNotified = true;
       const tracked = trackedBackgroundProcesses.get(commandPid);
       trackedBackgroundProcesses.delete(commandPid);
-      if (tracked?.suppressCompletionNotification) return;
-      context?.onBackgroundTaskComplete?.({
-        taskId: backgroundTaskId(),
-        toolName: "bash",
-        title: command!,
-        startedAt: startTime,
-        endedAt: Date.now(),
-        exitCode: code,
-        signal,
-        ...(processFailure ? {} : { outputPath: capturePath }),
-        ...(processFailure ? { outputError: processFailure } : {}),
-        ...(processFailure ? { failure: processFailure } : {}),
-      });
+      let completionAccepted = tracked?.suppressCompletionNotification === true;
+      if (!tracked?.suppressCompletionNotification) {
+        const completionCallback = context?.onBackgroundTaskComplete;
+        if (!completionCallback) {
+          completionAccepted = true;
+        } else {
+          try {
+            completionCallback({
+              taskId: backgroundTaskId(),
+              toolName: "bash",
+              title: command!,
+              startedAt: startTime,
+              endedAt: Date.now(),
+              exitCode: code,
+              signal,
+              ...(processFailure ? {} : { outputPath: capturePath }),
+              ...(processFailure ? { outputError: processFailure } : {}),
+              ...(processFailure ? { failure: processFailure } : {}),
+            });
+            completionAccepted = true;
+          } catch (err) {
+            log("warn", `bash: background completion ${backgroundTaskId()} was not durably accepted: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      }
+      // During restart the runner's completed record is the handoff to the next
+      // daemon. In an ordinary live process the callback above owns completion.
+      if (recoveryRecordPath && completionAccepted && getDaemonShutdownMode() !== "restart") {
+        removeBackgroundTaskRecord(recoveryRecordPath);
+      }
     }
 
     function setBackgroundTaskTracked(active: boolean, backgroundedAt?: number): void {
@@ -470,7 +543,12 @@ async function executeBashImpl(
           cwd,
           stop: (suppressCompletionNotification) => {
             const tracked = trackedBackgroundProcesses.get(commandPid!);
-            if (tracked && suppressCompletionNotification) tracked.suppressCompletionNotification = true;
+            if (tracked && suppressCompletionNotification) {
+              tracked.suppressCompletionNotification = true;
+              if (tracked.recordPath) {
+                try { suppressBackgroundTaskNotification(tracked.recordPath); } catch { /* best effort */ }
+              }
+            }
             return killProcessGroup(commandPid!);
           },
         } : undefined,
@@ -509,8 +587,29 @@ async function executeBashImpl(
       }
       backgroundRequested = true;
       backgroundTrigger = trigger;
+      backgroundRequestedAt = Date.now();
       clearRegisteredBackgrounder();
-      if (!writeRunnerRequest({ type: "background" })) {
+      const taskId = backgroundTaskId();
+      recoveryRecordPath = context?.conversationId
+        ? backgroundTaskRecordPath(taskId)
+        : undefined;
+      if (!writeRunnerRequest({
+        type: "background",
+        ...(context?.conversationId && recoveryRecordPath ? {
+          recovery: {
+            recordPath: recoveryRecordPath,
+            taskId,
+            ownerConversationId: context.conversationId,
+            title: command,
+            startedAt: startTime,
+            backgroundedAt: backgroundRequestedAt,
+            originDaemonPid: process.pid,
+            outputPath: capturePath,
+            cwd,
+            timeoutAt: startTime + timeoutMs,
+          },
+        } : {}),
+      })) {
         backgroundRequested = false;
         processFailure ??= "isolated bash runner closed before backgrounding";
         return false;
@@ -544,7 +643,8 @@ async function executeBashImpl(
         onAbort();
       } else {
         signal.addEventListener("abort", onAbort, { once: true });
-        runner.on("close", () => signal.removeEventListener("abort", onAbort));
+        removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+        runner.on("close", removeAbortListener);
       }
     }
 
@@ -553,6 +653,7 @@ async function executeBashImpl(
       if (bgTimer) clearTimeout(bgTimer);
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (helperKillTimer) clearTimeout(helperKillTimer);
+      removeAbortListener();
       if (code !== 0) restoreBackgroundTaskNotifications(intentionalStops);
       clearRegisteredBackgrounder();
       setBackgroundTaskTracked(false);
@@ -584,12 +685,15 @@ async function executeBashImpl(
       if (settled || !commandPid) return;
       wasBackgrounded = true;
       settled = true;
+      removeAbortListener();
       if (outputError) processFailure ??= outputError;
       trackedBackgroundProcesses.set(commandPid, {
         conversationId: context?.conversationId,
+        taskId: backgroundTaskId(),
+        ...(recoveryRecordPath ? { recordPath: recoveryRecordPath } : {}),
         suppressCompletionNotification: false,
       });
-      const backgroundedAt = Date.now();
+      const backgroundedAt = backgroundRequestedAt ?? Date.now();
       setBackgroundTaskTracked(true, backgroundedAt);
 
       let preview = (await readCapturedOutput()).trimEnd();
@@ -718,9 +822,18 @@ async function executeBashImpl(
       outputPath: capturePath,
       windows: isWindows,
       cwd,
+      env: {
+        ...process.env,
+        ...(context?.conversationId ? { EXOCORTEX_PARENT_CONV_ID: context.conversationId } : {}),
+        EXOCORTEX_SOCKET: socketPath(),
+        ...(context?.provider ? { EXOCORTEX_PARENT_PROVIDER: context.provider } : {}),
+        ...(context?.model ? { EXOCORTEX_PARENT_MODEL: context.model } : {}),
+        EXOCORTEX_WORKSPACE: cwd,
+        ...inputEnv,
+      },
       ...(typeof input.stdin === "string" ? { stdin: input.stdin } : {}),
-      ...(input.terminate_on_parent_exit === true ? { terminateOnParentExit: true } : {}),
-      ...(typeof input.runner_timeout_ms === "number" ? { timeoutMs: input.runner_timeout_ms } : {}),
+      terminateOnParentExit: true,
+      timeoutMs: typeof input.runner_timeout_ms === "number" ? input.runner_timeout_ms : timeoutMs,
     });
 
     timeoutTimer = setTimeout(() => {

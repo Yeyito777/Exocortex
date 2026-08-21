@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { spawn } from "child_process";
 import { bash, executeBashBackgroundable, intentionalBackgroundTaskStopPidsForTest, spillAndPreviewForTest } from "./bash";
 import type { BackgroundTaskCompletion } from "./types";
+import { backgroundTaskRecordPath, isBackgroundTaskNotificationSuppressed, readBackgroundTaskRecord } from "../background-task-state";
 
 const isWindows = process.platform === "win32";
 
@@ -168,6 +169,79 @@ describe("bash process-tree timeout", () => {
     expect(existsSync(markerPath)).toBe(false);
     rmSync(markerPath, { force: true });
     rmSync(outputPath, { force: true });
+  });
+
+  test("officially backgrounded runner survives loss of its original daemon channel", async () => {
+    if (process.platform === "win32") return;
+    const directory = mkdtempSync(join(tmpdir(), `exocortex-recoverable-runner-${process.pid}-`));
+    const markerPath = join(directory, "completed");
+    const outputPath = join(directory, "output");
+    const taskId = `bash:recoverable:${Date.now()}`;
+    const recordPath = backgroundTaskRecordPath(taskId, directory);
+    const runnerPath = join(import.meta.dir, "bash-runner.ts");
+    const runner = spawn(process.execPath, [runnerPath], { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let commandPid = 0;
+    let backgroundRequested = false;
+    let backgroundAcknowledged = false;
+    const closed = new Promise<void>((resolve, reject) => {
+      runner.on("error", reject);
+      runner.on("close", () => resolve());
+      runner.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8");
+        for (const line of stdout.split("\n")) {
+          if (!line) continue;
+          let event: { type?: string; pid?: number };
+          try { event = JSON.parse(line) as { type?: string; pid?: number }; }
+          catch { continue; }
+          if (event.type === "started" && event.pid && !backgroundRequested) {
+            commandPid = event.pid;
+            backgroundRequested = true;
+            runner.stdin.write(JSON.stringify({
+              type: "background",
+              recovery: {
+                recordPath,
+                taskId,
+                ownerConversationId: "recoverable-owner",
+                title: "recoverable command",
+                startedAt: Date.now(),
+                backgroundedAt: Date.now(),
+                originDaemonPid: process.pid,
+                outputPath,
+                cwd: directory,
+              },
+            }) + "\n");
+          }
+          if (event.type === "backgrounded" && !backgroundAcknowledged) {
+            backgroundAcknowledged = true;
+            // This is the exact channel loss caused by the old daemon exiting.
+            runner.stdin.end();
+          }
+        }
+      });
+    });
+    runner.stdin.write(JSON.stringify({
+      type: "start",
+      command: `sleep 0.15; touch '${markerPath}'`,
+      outputPath,
+      windows: false,
+      terminateOnParentExit: true,
+      timeoutMs: 5_000,
+      cwd: directory,
+      env: process.env,
+    }) + "\n");
+
+    await closed;
+    expect(commandPid).toBeGreaterThan(0);
+    expect(backgroundAcknowledged).toBe(true);
+    expect(existsSync(markerPath)).toBe(true);
+    expect(readBackgroundTaskRecord(recordPath)).toMatchObject({
+      state: "completed",
+      taskId,
+      pid: commandPid,
+      completion: { exitCode: 0, signal: null },
+    });
+    rmSync(directory, { recursive: true, force: true });
   });
 
   test("times out and kills descendants in the isolated command process group", async () => {
@@ -434,6 +508,33 @@ describe("bash explicit backgrounding", () => {
     }
     expect(activity).toEqual([true, false]);
     expect(completions).toHaveLength(0);
+    if (spillPath) rmSync(spillPath, { force: true });
+  });
+
+  test("restores durable notification delivery when an attempted stop command fails", async () => {
+    if (process.platform === "win32") return;
+    const completions: BackgroundTaskCompletion[] = [];
+    const context = {
+      conversationId: `failed-stop-${process.pid}-${Date.now()}`,
+      setBackgroundTaskActive: () => {},
+      onBackgroundTaskComplete: (completion: BackgroundTaskCompletion) => completions.push(completion),
+    };
+    const background = await executeBashBackgroundable({
+      command: "sleep 0.3",
+      background: true,
+    }, undefined, 60_000, context);
+    const taskId = background.output.match(/task_id="([^"]+)"/)?.[1];
+    const pid = Number(background.output.match(/PID (\d+)/)?.[1]);
+    expect(taskId).toBeTruthy();
+    expect(pid).toBeGreaterThan(0);
+
+    const failedStop = await executeBashBackgroundable({ command: `kill -NOT_A_SIGNAL ${pid}` }, undefined, 60_000, context);
+    expect(failedStop.isError).toBe(true);
+    expect(isBackgroundTaskNotificationSuppressed(backgroundTaskRecordPath(taskId!))).toBe(false);
+
+    for (let index = 0; index < 100 && completions.length === 0; index++) await Bun.sleep(10);
+    expect(completions).toHaveLength(1);
+    const spillPath = background.output.match(/Output is being written to: (\S+)/)?.[1];
     if (spillPath) rmSync(spillPath, { force: true });
   });
 
