@@ -997,7 +997,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             ? idleEntry.model
             : (provider === defaults.provider ? defaults.model : getDefaultModel(provider));
           const effort = normalizeEffort(provider, model, idleEntry.effort);
-          const fastMode = idleEntry.fastMode === true && supportsFastMode(provider);
+          const fastMode = idleEntry.fastMode === true && supportsFastMode(provider, model);
           const folderId = idleEntry.folderId
             && convStore.listSidebarState().folders.some(folder => folder.id === idleEntry.folderId)
             ? idleEntry.folderId
@@ -1266,11 +1266,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const requestedFastMode = typeof cmd.fastMode === "boolean"
           ? cmd.fastMode
           : (provider === conversationDefaults.provider && model === conversationDefaults.model ? conversationDefaults.fastMode : false);
-        if (cmd.fastMode === true && !supportsFastMode(provider)) {
+        if (cmd.fastMode === true && !supportsFastMode(provider, model)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Fast mode is only available for ${provider} conversations that support it.` });
           break;
         }
-        const fastMode = requestedFastMode && supportsFastMode(provider);
+        const fastMode = requestedFastMode && supportsFastMode(provider, model);
         const initialMessage = cmd.initialMessage;
         const goalObjective = cmd.goalObjective?.trim();
         const titleContext = cmd.titleContext?.trim();
@@ -1981,7 +1981,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         const nextEffort = normalizeEffort(nextProvider, cmd.model, conv.effort);
-        const nextFastMode = supportsFastMode(nextProvider) ? conv.fastMode : false;
+        const nextFastMode = supportsFastMode(nextProvider, cmd.model) ? conv.fastMode : false;
         // Keep the old checkpoint long enough for the orchestrator to detect an
         // incompatible replay. On the next turn it rebuilds from the canonical
         // transcript, sanitizes scoped provider data, and only compacts if the
@@ -2062,7 +2062,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           break;
         }
-        if (cmd.enabled && !supportsFastMode(conv.provider)) {
+        if (cmd.enabled && !supportsFastMode(conv.provider, conv.model)) {
           server.sendTo(client, {
             type: "error",
             reqId: cmd.reqId,
@@ -2362,12 +2362,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           }
           const model = cmd.model ?? (provider === defaults.provider ? defaults.model : getDefaultModel(provider));
           const effort = normalizeEffort(provider, model, cmd.effort ?? effortDefaultForSelection(provider, model));
-          if (cmd.fastMode === true && !supportsFastMode(provider)) {
+          if (cmd.fastMode === true && !supportsFastMode(provider, model)) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Fast mode is only available for ${provider} conversations that support it.` });
             server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
             break;
           }
-          const fastMode = (cmd.fastMode ?? fastDefaultForSelection(provider, model)) && supportsFastMode(provider);
+          const fastMode = (cmd.fastMode ?? fastDefaultForSelection(provider, model)) && supportsFastMode(provider, model);
           const folderId = cmd.folderId ?? null;
           if (folderId && !convStore.listSidebarState().folders.some(folder => folder.id === folderId)) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Folder ${folderId} not found` });
@@ -2953,7 +2953,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           model,
           maxTokens,
           effort: effortDefaultForSelection(provider, model),
-          serviceTier: fastDefaultForSelection(provider, model) && supportsFastMode(provider) ? "fast" : undefined,
+          serviceTier: fastDefaultForSelection(provider, model) && supportsFastMode(provider, model) ? "fast" : undefined,
           tracking: { source: cmd.trackingSource ?? "llm_complete" },
         })
           .then((result) => {

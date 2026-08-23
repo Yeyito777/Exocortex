@@ -11,7 +11,7 @@ export function syncModelEffortSelection(state: RenderState): void {
   const provider = state.providerRegistry.find((candidate) => candidate.id === state.provider);
   const model = provider?.models.find((candidate) => candidate.id === state.model) ?? null;
   state.effort = normalizeEffortForModel(model, state.effort);
-  if (provider && !provider.supportsFastMode) state.fastMode = false;
+  if (provider && (!provider.supportsFastMode || model?.supportsFastMode === false)) state.fastMode = false;
 }
 
 export function handleToolsAvailable(event: Extract<Event, { type: "tools_available" }>, state: RenderState): void {

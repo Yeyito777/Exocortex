@@ -31,5 +31,6 @@ function formatDeepSeekModelDisplayName(modelId: string): string | null {
  */
 export function formatModelDisplayName(modelId: ModelId): string {
   if (modelId === "ox-alpha") return "Ox Alpha";
+  if (modelId === "gpt-daybreak-blue-latest") return "Daybreak Blue";
   return formatDeepSeekModelDisplayName(modelId) ?? capitalizeFirst(modelId);
 }

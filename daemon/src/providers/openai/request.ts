@@ -1,7 +1,14 @@
 import type { ApiMessage, ApiContentBlock, ModelId, EffortLevel } from "../../messages";
 import type { StreamOptions } from "../types";
 import { buildPromptCacheBodyFields } from "./cache";
-import { supportsOpenAIReasoningSummary } from "./capabilities";
+import {
+  defaultOpenAIVerbosity,
+  supportsOpenAIFastServiceTier,
+  supportsOpenAIMaxReasoningEffort,
+  supportsOpenAIReasoningSummary,
+  usesOpenAIResponsesLite,
+} from "./capabilities";
+import { OPENAI_RESPONSES_LITE_WS_METADATA_KEY } from "./constants";
 import { buildCodexClientMetadata } from "./identity";
 import type { OpenAIReasoningItem } from "./types";
 import { isValidImagePayload } from "../../image-validation";
@@ -9,6 +16,8 @@ import { isValidImagePayload } from "../../image-validation";
 export type OpenAIInputItem =
   | { type: "message"; role: "user"; content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string }> }
   | { type: "message"; role: "assistant"; content: Array<{ type: "output_text"; text: string }>; id?: string }
+  | { type: "message"; role: "developer"; content: Array<{ type: "input_text"; text: string }> }
+  | { type: "additional_tools"; role: "developer"; tools: OpenAIResponsesLiteTool[] }
   | { type: "function_call"; call_id: string; name: string; arguments: string; id?: string }
   | { type: "function_call_output"; call_id: string; output: string }
   | { type: "reasoning"; id: string; encrypted_content?: string | null; summary: Array<{ type: "summary_text"; text: string }> }
@@ -16,19 +25,22 @@ export type OpenAIInputItem =
   | { type: "compaction_trigger" };
 
 const OPENAI_REASONING_SUMMARY = "detailed" as const;
+const OPENAI_ULTRA_MULTI_AGENT_INSTRUCTION = "<multi_agent_mode>Proactive multi-agent delegation is active.</multi_agent_mode>";
 const MAX_OPENAI_INPUT_IMAGES = 5;
 const OMITTED_OLDER_IMAGE_TEXT = `[Older image omitted from replay; only the latest ${MAX_OPENAI_INPUT_IMAGES} images are sent to OpenAI.]`;
 
 interface OpenAIRequestShape {
   model: ModelId;
-  instructions: string;
+  instructions?: string;
   tool_choice: string;
   parallel_tool_calls: boolean;
   include: string[];
   reasoning: {
     effort: string;
     summary?: string;
+    context?: "all_turns";
   };
+  text?: { verbosity: "low" | "medium" | "high" };
   service_tier?: string;
   tools?: Array<{
     type: string;
@@ -39,9 +51,22 @@ interface OpenAIRequestShape {
   }>;
 }
 
-function supportsOpenAIMaxEffort(model: ModelId): boolean {
-  return /^gpt-5\.6-/.test(model);
+interface OpenAIResponsesLiteFunctionTool {
+  type: "function";
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  strict: boolean;
 }
+
+interface OpenAIResponsesLiteNamespaceTool {
+  type: "namespace";
+  name: "functions";
+  description: "";
+  tools: OpenAIResponsesLiteFunctionTool[];
+}
+
+type OpenAIResponsesLiteTool = OpenAIResponsesLiteNamespaceTool;
 
 function mapEffort(effort: EffortLevel | undefined, model: ModelId): string {
   switch (effort) {
@@ -50,7 +75,10 @@ function mapEffort(effort: EffortLevel | undefined, model: ModelId): string {
     case "low": return "low";
     case "medium": return "medium";
     case "xhigh": return "xhigh";
-    case "max": return supportsOpenAIMaxEffort(model) ? "max" : "xhigh";
+    // Codex exposes Ultra as a client-side automatic-delegation mode while the
+    // Responses wire contract receives Max reasoning.
+    case "ultra":
+    case "max": return supportsOpenAIMaxReasoningEffort(model) ? "max" : "xhigh";
     case "high":
     default:
       return "high";
@@ -259,7 +287,45 @@ function buildOpenAITools(tools: StreamOptions["tools"]): OpenAIRequestShape["to
   }));
 }
 
-function mapServiceTier(serviceTier: StreamOptions["serviceTier"]): string | undefined {
+function buildResponsesLiteTools(tools: StreamOptions["tools"]): OpenAIResponsesLiteTool[] {
+  if (!tools || tools.length === 0) return [];
+  const functions = (tools as Array<{ name: string; description: string; input_schema: Record<string, unknown> }>).map((tool) => ({
+    type: "function" as const,
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.input_schema,
+    strict: false,
+  }));
+  return [{
+    type: "namespace",
+    name: "functions",
+    description: "",
+    tools: functions,
+  }];
+}
+
+function prependResponsesLiteContext(
+  input: OpenAIInputItem[],
+  system: string | undefined,
+  tools: StreamOptions["tools"],
+): void {
+  const prefix: OpenAIInputItem[] = [];
+  const additionalTools = buildResponsesLiteTools(tools);
+  if (additionalTools.length > 0) {
+    prefix.push({ type: "additional_tools", role: "developer", tools: additionalTools });
+  }
+  if (system) {
+    prefix.push({
+      type: "message",
+      role: "developer",
+      content: [{ type: "input_text", text: system }],
+    });
+  }
+  input.unshift(...prefix);
+}
+
+function mapServiceTier(serviceTier: StreamOptions["serviceTier"], model: ModelId): string | undefined {
+  if (!supportsOpenAIFastServiceTier(model)) return undefined;
   switch (serviceTier) {
     // OpenAI's Codex backend expects the fast tier under the wire value
     // `priority`, even though the app-level setting is exposed as `fast`.
@@ -274,15 +340,23 @@ function shouldRequestReasoningSummary(model: ModelId): boolean {
   return supportsOpenAIReasoningSummary(model);
 }
 
+function requestInstructions(model: ModelId, options: StreamOptions): string {
+  const base = options.system || "You are a helpful assistant.";
+  if (model !== "gpt-daybreak-blue-latest" || options.effort !== "ultra") return base;
+  return `${base}\n\n${OPENAI_ULTRA_MULTI_AGENT_INSTRUCTION}`;
+}
+
 function buildRequestShape(model: ModelId, options: StreamOptions): OpenAIRequestShape {
-  const tools = buildOpenAITools(options.tools);
-  const serviceTier = mapServiceTier(options.serviceTier);
+  const responsesLite = usesOpenAIResponsesLite(model);
+  const tools = responsesLite ? undefined : buildOpenAITools(options.tools);
+  const serviceTier = mapServiceTier(options.serviceTier, model);
   const effort = mapEffort(options.effort, model);
+  const verbosity = defaultOpenAIVerbosity(model);
   return {
     model,
-    instructions: options.system || "You are a helpful assistant.",
+    ...(responsesLite ? {} : { instructions: requestInstructions(model, options) }),
     tool_choice: "auto",
-    parallel_tool_calls: true,
+    parallel_tool_calls: !responsesLite,
     include: effort === "none" ? [] : ["reasoning.encrypted_content"],
     reasoning: {
       effort,
@@ -291,7 +365,9 @@ function buildRequestShape(model: ModelId, options: StreamOptions): OpenAIReques
       // with a 400, so omit it there and fall back to whatever reasoning data
       // the backend emits by default.
       ...(effort !== "none" && shouldRequestReasoningSummary(model) ? { summary: OPENAI_REASONING_SUMMARY } : {}),
+      ...(responsesLite ? { context: "all_turns" as const } : {}),
     },
+    ...(verbosity ? { text: { verbosity } } : {}),
     ...(serviceTier ? { service_tier: serviceTier } : {}),
     ...(tools ? { tools } : {}),
   };
@@ -303,8 +379,21 @@ export function buildRequestBody(
   options: StreamOptions,
 ): Record<string, unknown> {
   const input = buildOpenAIInput(messages);
+  if (usesOpenAIResponsesLite(model)) {
+    prependResponsesLiteContext(input, requestInstructions(model, options), options.tools);
+  }
   if (options.compaction) input.push({ type: "compaction_trigger" });
   const shape = buildRequestShape(model, options);
+  const clientMetadata = buildCodexClientMetadata(
+    options.promptCacheKey,
+    options.codexWindowId,
+    options.compaction ? options.compactionMetadata ?? {} : undefined,
+    options.codexTurnId,
+    options.codexTurnStartedAtMs,
+  );
+  if (usesOpenAIResponsesLite(model)) {
+    clientMetadata[OPENAI_RESPONSES_LITE_WS_METADATA_KEY] = "true";
+  }
   // Build the canonical full replay body. A turn-scoped websocket session may
   // transform this into a Codex-style incremental request with
   // previous_response_id at send time, while keeping this full body as the
@@ -312,13 +401,7 @@ export function buildRequestBody(
   return {
     ...shape,
     input,
-    client_metadata: buildCodexClientMetadata(
-      options.promptCacheKey,
-      options.codexWindowId,
-      options.compaction ? options.compactionMetadata ?? {} : undefined,
-      options.codexTurnId,
-      options.codexTurnStartedAtMs,
-    ),
+    client_metadata: clientMetadata,
     stream: true,
     store: false,
     ...buildPromptCacheBodyFields(options),

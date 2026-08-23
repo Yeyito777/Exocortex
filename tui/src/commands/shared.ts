@@ -31,8 +31,10 @@ export function providerAllowsCustomModels(state: RenderState, provider = state.
   return getProviderInfo(state, provider)?.allowsCustomModels ?? false;
 }
 
-export function providerSupportsFastMode(state: RenderState, provider = state.provider): boolean {
-  return getProviderInfo(state, provider)?.supportsFastMode ?? false;
+export function providerSupportsFastMode(state: RenderState, provider = state.provider, model = state.model): boolean {
+  const providerInfo = getProviderInfo(state, provider);
+  if (!providerInfo?.supportsFastMode) return false;
+  return getModelInfo(state, provider, model)?.supportsFastMode !== false;
 }
 
 export function providerCompletionItems(state: RenderState): CompletionItem[] {
@@ -100,7 +102,7 @@ export function applyProviderModelSelection(state: RenderState, provider: Provid
   setChosenProvider(state, provider);
   state.model = model;
   normalizeStateEffort(state, provider, model);
-  if (!providerSupportsFastMode(state, provider)) state.fastMode = false;
+  if (!providerSupportsFastMode(state, provider, model)) state.fastMode = false;
   state.contextTokens = previousContextTokens === 0 ? 0 : null;
 
   return {

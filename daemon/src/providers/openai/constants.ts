@@ -14,8 +14,10 @@ export const OPENAI_DEVICE_AUTH_VERIFICATION_URL = `${OPENAI_AUTH_ISSUER}/codex/
 export const OPENAI_DEVICE_AUTH_CALLBACK_URL = `${OPENAI_AUTH_ISSUER}/deviceauth/callback`;
 
 export const OPENAI_ORIGINATOR = "codex_cli_rs";
-export const OPENAI_CODEX_CLIENT_VERSION = process.env.OPENAI_CODEX_CLIENT_VERSION?.trim() || "0.99.0";
+export const OPENAI_CODEX_CLIENT_VERSION = process.env.OPENAI_CODEX_CLIENT_VERSION?.trim() || "0.150.0-alpha.7";
 export const OPENAI_RESPONSES_WEBSOCKETS_BETA = "responses_websockets=2026-02-06";
+export const OPENAI_RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite";
+export const OPENAI_RESPONSES_LITE_WS_METADATA_KEY = "ws_request_header_x_openai_internal_codex_responses_lite";
 export const OPENAI_ACCOUNTS_URL = `${CHATGPT_BASE_URL}/backend-api/accounts`;
 export const OPENAI_ACCOUNT_CHECK_URL = `${CHATGPT_BASE_URL}/backend-api/accounts/check/v4-2023-04-27`;
 export const OPENAI_MODELS_URL = `${CHATGPT_BASE_URL}/backend-api/codex/models`;

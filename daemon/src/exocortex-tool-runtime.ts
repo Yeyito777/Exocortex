@@ -378,7 +378,7 @@ function resolveModelSelection(input: Record<string, unknown>, fallbackEffort?: 
   const fastMode = provider === defaults.provider
     && model === defaults.model
     && defaults.fastMode
-    && supportsFastMode(provider);
+    && supportsFastMode(provider, model);
   return { provider, model, effort, fastMode };
 }
 
@@ -727,7 +727,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     if (!isKnownModel(provider, model) && !allowsCustomModels(provider)) throw new Error(unknownModelMessage(provider, model));
     ensureCanStart(provider);
     const effort = normalizeEffort(provider, model, requestedEffort ?? conv.effort);
-    const fastMode = supportsFastMode(provider) ? conv.fastMode : false;
+    const fastMode = supportsFastMode(provider, model) ? conv.fastMode : false;
     if (!convStore.setModel(convId, provider, model, effort, fastMode)) throw new Error(`Conversation ${convId} not found`);
     broadcastConversationUpdated(server, convId);
   };

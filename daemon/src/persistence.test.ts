@@ -887,7 +887,7 @@ describe("save / load round-trip", () => {
   });
 
   test("all EffortLevel values survive round-trip", () => {
-    const efforts: Conversation["effort"][] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+    const efforts: Conversation["effort"][] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
     for (const effort of efforts) {
       const id = mkId(`roundtrip-effort-${effort}`);

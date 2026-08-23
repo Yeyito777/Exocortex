@@ -191,7 +191,7 @@ function readManifest(id: string): DisplayPageManifest | null {
         || !parsed.source
         || (parsed.provider !== "openai" && parsed.provider !== "deepseek")
         || typeof parsed.model !== "string"
-        || !["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String(parsed.effort))
+        || !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(String(parsed.effort))
         || typeof parsed.fastMode !== "boolean"
         || (parsed.contextTokens !== null && !Number.isFinite(parsed.contextTokens))
         || !Array.isArray(parsed.pinnedEntries)

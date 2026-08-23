@@ -16,7 +16,7 @@ export type ProviderId = "openai" | "deepseek" | "opencode";
 /** Provider-scoped model identifier. */
 export type ModelId = string;
 
-export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 /** Reserved top-level folder used for autonomous subagent conversations. */
 export const SUBAGENTS_FOLDER_NAME = "subagents";
@@ -34,6 +34,8 @@ export interface ModelInfo {
   defaultEffort: EffortLevel;
   /** Whether the model accepts image inputs. Omitted means "assume yes" for backwards compatibility. */
   supportsImages?: boolean;
+  /** Whether the model supports its provider's fast service tier. Omitted means inherit the provider capability. */
+  supportsFastMode?: boolean;
 }
 
 export interface ProviderInfo {
@@ -60,11 +62,12 @@ export const DEFAULT_MODEL_BY_PROVIDER = {
 
 // ── Effort ─────────────────────────────────────────────────────────
 
-export const EFFORT_LEVELS: readonly EffortLevel[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+export const EFFORT_LEVELS: readonly EffortLevel[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 export const DEFAULT_EFFORT: EffortLevel = "high";
 
 /** Default effort fallback when the app only knows the provider/model ids. */
 export function defaultEffortForModelId(providerId: ProviderId, model: ModelId): EffortLevel {
+  if (providerId === "openai" && model === "gpt-daybreak-blue-latest") return "low";
   if (providerId === "openai" && (/^gpt-5\.6-/.test(model) || /^gpt-5\.5(?:-|$)/.test(model))) return "medium";
   return DEFAULT_EFFORT;
 }
@@ -95,6 +98,7 @@ export const MAX_CONTEXT: Record<string, number> = {
   "gpt-5.6-sol": 372_000,
   "gpt-5.6-terra": 372_000,
   "gpt-5.6-luna": 372_000,
+  "gpt-daybreak-blue-latest": 272_000,
   "gpt-5.5": 272_000,
   "gpt-5.4": 272_000,
   "gpt-5.4-mini": 272_000,

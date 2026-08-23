@@ -2,7 +2,7 @@ import { EFFORT_LEVELS, type EffortLevel, type ModelInfo, type ReasoningEffortIn
 import { formatModelDisplayName } from "@exocortex/shared/model-display";
 import { log } from "../../log";
 import { getVerifiedSession } from "./auth";
-import { supportsOpenAIImageInputs } from "./capabilities";
+import { supportsOpenAIFastServiceTier, supportsOpenAIImageInputs } from "./capabilities";
 import { OPENAI_CODEX_CLIENT_VERSION, OPENAI_MODELS_URL } from "./constants";
 import { buildOpenAIJsonHeaders } from "./http";
 
@@ -10,6 +10,7 @@ const DEFAULT_OPENAI_CONTEXT_TOKENS = 272_000;
 // Exocortex uses the ChatGPT Codex backend, where GPT-5.6 has a 372K
 // context window. The public OpenAI API exposes a separate 1.05M window.
 const GPT_5_6_CODEX_CONTEXT_TOKENS = 372_000;
+const DAYBREAK_BLUE_CONTEXT_TOKENS = 272_000;
 const CODEX_SPARK_CONTEXT_TOKENS = 128_000;
 
 const FALLBACK_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
@@ -25,6 +26,12 @@ const GPT_5_6_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
   { effort: "max", description: "Maximum reasoning for the hardest quality-first workloads" },
 ];
 
+const DAYBREAK_BLUE_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
+  ...FALLBACK_OPENAI_EFFORTS,
+  { effort: "max", description: "Maximum reasoning depth for the hardest problems" },
+  { effort: "ultra", description: "Maximum reasoning with automatic task delegation" },
+];
+
 function fallbackOpenAIModel(
   id: string,
   maxContext = DEFAULT_OPENAI_CONTEXT_TOKENS,
@@ -38,6 +45,7 @@ function fallbackOpenAIModel(
     supportedEfforts,
     defaultEffort,
     supportsImages: supportsOpenAIImageInputs(id),
+    supportsFastMode: supportsOpenAIFastServiceTier(id),
   };
 }
 
@@ -45,6 +53,7 @@ export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
   fallbackOpenAIModel("gpt-5.6-sol", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
   fallbackOpenAIModel("gpt-5.6-terra", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
   fallbackOpenAIModel("gpt-5.6-luna", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
+  fallbackOpenAIModel("gpt-daybreak-blue-latest", DAYBREAK_BLUE_CONTEXT_TOKENS, DAYBREAK_BLUE_OPENAI_EFFORTS, "low"),
   fallbackOpenAIModel("gpt-5.5"),
   fallbackOpenAIModel("gpt-5.4", DEFAULT_OPENAI_CONTEXT_TOKENS, FALLBACK_OPENAI_EFFORTS, "high"),
   fallbackOpenAIModel("gpt-5.4-mini"),
@@ -56,6 +65,7 @@ const PREFERRED_OPENAI_MODEL_ORDER = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
+  "gpt-daybreak-blue-latest",
   "gpt-5.5",
   "gpt-5.5-pro",
   "gpt-5.5-mini",
@@ -66,7 +76,8 @@ const PREFERRED_OPENAI_MODEL_ORDER = [
   "gpt-5.4-nano",
   "gpt-5.3-codex-spark",
 ] as const;
-const MANUAL_OPENAI_MODEL_IDS = new Set(["gpt-5.3-codex-spark"]);
+const MANUAL_OPENAI_MODEL_IDS = new Set(["gpt-5.3-codex-spark", "gpt-daybreak-blue-latest"]);
+const EXPOSED_HIDDEN_OPENAI_MODEL_IDS = new Set(["gpt-daybreak-blue-latest"]);
 
 type PrimaryOpenAIModelFamily = typeof PRIMARY_OPENAI_MODEL_FAMILIES[number];
 
@@ -115,6 +126,7 @@ function isPreferredOpenAIModel(model: OpenAICodexModel, preferredFamily: Primar
 }
 
 function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel | undefined): EffortLevel {
+  if (modelSlug === "gpt-daybreak-blue-latest") return apiDefaultEffort ?? "low";
   // Product preference: use medium effort for GPT-5.6/5.5-family models, even if
   // upstream model metadata reports a higher default.
   if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) return "medium";
@@ -126,6 +138,7 @@ function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel
 
 function fallbackEffortsForModel(modelSlug: string): ReasoningEffortInfo[] {
   if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) return GPT_5_6_OPENAI_EFFORTS;
+  if (modelSlug === "gpt-daybreak-blue-latest") return DAYBREAK_BLUE_OPENAI_EFFORTS;
   return FALLBACK_OPENAI_EFFORTS;
 }
 
@@ -144,6 +157,7 @@ function supportedEffortsForModel(modelSlug: string, apiEfforts: ReasoningEffort
 
 function fallbackContextWindow(modelSlug: string): number {
   if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) return GPT_5_6_CODEX_CONTEXT_TOKENS;
+  if (modelSlug === "gpt-daybreak-blue-latest") return DAYBREAK_BLUE_CONTEXT_TOKENS;
   if (modelSlug === "gpt-5.3-codex-spark") return CODEX_SPARK_CONTEXT_TOKENS;
   return DEFAULT_OPENAI_CONTEXT_TOKENS;
 }
@@ -165,13 +179,15 @@ function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
     supportedEfforts: supportedEffortsForModel(model.slug, supportedEfforts),
     defaultEffort: preferredDefaultEffort(model.slug, model.default_reasoning_level),
     supportsImages: supportsOpenAIImageInputs(model.slug),
+    supportsFastMode: supportsOpenAIFastServiceTier(model.slug),
   };
 }
 
 function selectPreferredOpenAIModels(models: OpenAICodexModel[]): ModelInfo[] {
   const visibleModels = models
     .filter((model) => model.supported_in_api !== false)
-    .filter((model) => model.visibility !== "hide")
+    .filter((model) => model.visibility !== "hide"
+      || (typeof model.slug === "string" && EXPOSED_HIDDEN_OPENAI_MODEL_IDS.has(model.slug)))
     .filter((model) => typeof model.slug !== "string" || !isUnsupportedOpenAIModel(model.slug));
   const preferredFamily = preferredOpenAIPrimaryFamily(visibleModels);
 
@@ -203,7 +219,8 @@ function mergeMissingFallbackModels(models: ModelInfo[], remoteModels: OpenAICod
     if (selectedModelIds.has(fallbackModel.id)) continue;
 
     const remoteModel = remoteModelById.get(fallbackModel.id);
-    if (remoteModel && (remoteModel.supported_in_api === false || remoteModel.visibility === "hide")) {
+    if (remoteModel && (remoteModel.supported_in_api === false
+      || (remoteModel.visibility === "hide" && !EXPOSED_HIDDEN_OPENAI_MODEL_IDS.has(fallbackModel.id)))) {
       continue;
     }
 

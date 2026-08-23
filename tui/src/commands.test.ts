@@ -27,6 +27,17 @@ const providers: ProviderInfo[] = [
         ],
         defaultEffort: "medium",
       },
+      {
+        id: "gpt-daybreak-blue-latest",
+        label: "Daybreak Blue",
+        maxContext: 272_000,
+        supportedEfforts: [
+          { effort: "low", description: "Fast" },
+          { effort: "ultra", description: "Delegating" },
+        ],
+        defaultEffort: "low",
+        supportsFastMode: false,
+      },
     ],
   },
   {
@@ -380,6 +391,20 @@ describe("/fast command", () => {
     expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Fast mode is only available for deepseek conversations that support it.");
   });
 
+  test("reports models without a fast service tier", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "openai";
+    state.model = "gpt-daybreak-blue-latest";
+    state.fastMode = false;
+
+    const result = tryCommand("/fast on", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(state.fastMode).toBe(false);
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Fast mode is only available for openai conversations that support it.");
+  });
+
   test("toggles fast mode when called without arguments", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
@@ -681,6 +706,22 @@ describe("/model", () => {
     expect(state.fastMode).toBe(false);
     expect(state.contextTokens).toBeNull();
     expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Model set to deepseek/deepseek-v4-pro (effort high) (fast off)");
+  });
+
+  test("switching to Daybreak Blue disables an existing fast selection", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "openai";
+    state.model = "gpt-5.4";
+    state.effort = "medium";
+    state.fastMode = true;
+    state.convId = "conv-openai";
+
+    const result = tryCommand("/model openai gpt-daybreak-blue-latest", state);
+
+    expect(result).toEqual({ type: "model_changed", provider: "openai", model: "gpt-daybreak-blue-latest" });
+    expect(state.fastMode).toBe(false);
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Model set to openai/gpt-daybreak-blue-latest (effort low) (fast off)");
   });
 
   test("warns when switching to a model with a smaller known context window", () => {

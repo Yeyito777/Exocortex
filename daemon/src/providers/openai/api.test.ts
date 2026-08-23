@@ -17,7 +17,7 @@ import {
   streamMessageWithSession,
 } from "./api";
 import { clearProviderAuth, saveProviderAuth } from "../../store";
-import { OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_TOKEN_URL } from "./constants";
+import { OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_RESPONSES_LITE_HEADER, OPENAI_TOKEN_URL } from "./constants";
 import { clearCloudflareCookiesForTest } from "./cookies";
 import { accountScopeForKey } from "./auth";
 import type { StoredOpenAIAuth } from "./session";
@@ -216,6 +216,7 @@ describe("OpenAI replay input", () => {
       expect(String(input)).toBe(OPENAI_CODEX_RESPONSES_URL);
       const headers = init?.headers as Record<string, string>;
       expect(headers["OpenAI-Beta"]).toBeUndefined();
+      expect(headers[OPENAI_RESPONSES_LITE_HEADER]).toBe("true");
       expect(headers.Accept).toBe("text/event-stream");
       const body = [
         `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_1" } })}`,
@@ -231,7 +232,7 @@ describe("OpenAI replay input", () => {
     const result = await streamMessageHttpWithSessionForTest(
       { accessToken: "test-token", accountId: null },
       [{ role: "user", content: "hello" }],
-      "gpt-5.4-mini",
+      "gpt-daybreak-blue-latest",
       { onText: () => {}, onThinking: () => {} },
       { effort: "none", preferHttp: true },
     );
@@ -274,6 +275,70 @@ describe("OpenAI replay input", () => {
     ], "gpt-5.5", 1234, { effort: "max" });
 
     expect((body.reasoning as { effort?: string }).effort).toBe("xhigh");
+  });
+
+  test("builds the Daybreak Blue Responses Lite contract", () => {
+    const body = buildRequestBodyForTest([
+      { role: "user", content: "inspect this defensively" },
+    ], "gpt-daybreak-blue-latest", 1234, {
+      system: "Use only authorized defensive techniques.",
+      effort: "ultra",
+      serviceTier: "fast",
+      tools: [{
+        name: "inspect",
+        description: "Inspect a target",
+        input_schema: {
+          type: "object",
+          properties: { target: { type: "string" } },
+          required: ["target"],
+        },
+      }],
+    });
+
+    expect(body.instructions).toBeUndefined();
+    expect(body.tools).toBeUndefined();
+    expect(body.parallel_tool_calls).toBe(false);
+    expect(body.service_tier).toBeUndefined();
+    expect(body.text).toEqual({ verbosity: "low" });
+    expect(body.reasoning).toMatchObject({ effort: "max", context: "all_turns" });
+    expect(body.client_metadata).toMatchObject({
+      ws_request_header_x_openai_internal_codex_responses_lite: "true",
+    });
+    expect(body.input).toEqual([
+      {
+        type: "additional_tools",
+        role: "developer",
+        tools: [{
+          type: "namespace",
+          name: "functions",
+          description: "",
+          tools: [{
+            type: "function",
+            name: "inspect",
+            description: "Inspect a target",
+            parameters: {
+              type: "object",
+              properties: { target: { type: "string" } },
+              required: ["target"],
+            },
+            strict: false,
+          }],
+        }],
+      },
+      {
+        type: "message",
+        role: "developer",
+        content: [{
+          type: "input_text",
+          text: "Use only authorized defensive techniques.\n\n<multi_agent_mode>Proactive multi-agent delegation is active.</multi_agent_mode>",
+        }],
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "inspect this defensively" }],
+      },
+    ]);
   });
 
   test("omits reasoning summary for gpt-5.3-codex-spark", () => {

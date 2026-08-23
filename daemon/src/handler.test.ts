@@ -1010,6 +1010,34 @@ describe("handler new_conversation defaults", () => {
     });
   });
 
+  test("rejects fast mode for Daybreak Blue at the daemon boundary", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "new_conversation",
+      reqId: "req-daybreak-fast",
+      provider: "openai",
+      model: "gpt-daybreak-blue-latest",
+      fastMode: true,
+    });
+
+    expect(sent.find((event) => event.type === "conversation_created")).toBeUndefined();
+    expect(sent.find((event) => event.type === "error")).toMatchObject({
+      reqId: "req-daybreak-fast",
+      message: "Fast mode is only available for openai conversations that support it.",
+    });
+  });
+
   test("an explicit OpenAI model infers OpenAI even when the saved default provider differs", async () => {
     saveConversationDefaults({ provider: "deepseek", model: "deepseek-v4-pro", effort: "max", fastMode: false });
     const sent: Array<Record<string, unknown>> = [];

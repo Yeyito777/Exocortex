@@ -17,6 +17,10 @@ describe("formatModelDisplayName", () => {
     expect(formatModelDisplayName("ox-alpha")).toBe("Ox Alpha");
   });
 
+  test("formats the hidden Daybreak Blue model id", () => {
+    expect(formatModelDisplayName("gpt-daybreak-blue-latest")).toBe("Daybreak Blue");
+  });
+
   test("falls back to capitalizing the raw id when no special formatter applies", () => {
     expect(formatModelDisplayName("o3")).toBe("O3");
     expect(formatModelDisplayName("my.custom-model")).toBe("My.custom-model");

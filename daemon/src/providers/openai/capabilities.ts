@@ -3,6 +3,10 @@ import type { ModelId } from "@exocortex/shared/messages";
 interface OpenAIModelCapabilityOverride {
   supportsReasoningSummary?: boolean;
   supportsImages?: boolean;
+  supportsMaxReasoningEffort?: boolean;
+  usesResponsesLite?: boolean;
+  supportsFastServiceTier?: boolean;
+  defaultVerbosity?: "low" | "medium" | "high";
 }
 
 // Model-level wire quirks verified against the Codex Responses endpoint.
@@ -11,6 +15,12 @@ const OPENAI_MODEL_CAPABILITY_OVERRIDES = new Map<ModelId, OpenAIModelCapability
   ["gpt-5.3-codex-spark", {
     supportsReasoningSummary: false,
     supportsImages: false,
+  }],
+  ["gpt-daybreak-blue-latest", {
+    supportsMaxReasoningEffort: true,
+    usesResponsesLite: true,
+    supportsFastServiceTier: false,
+    defaultVerbosity: "low",
   }],
 ]);
 
@@ -24,4 +34,21 @@ export function supportsOpenAIReasoningSummary(model: ModelId): boolean {
 
 export function supportsOpenAIImageInputs(model: ModelId): boolean {
   return openAIModelCapabilityOverride(model)?.supportsImages ?? true;
+}
+
+export function supportsOpenAIMaxReasoningEffort(model: ModelId): boolean {
+  return /^gpt-5\.6-/.test(model)
+    || openAIModelCapabilityOverride(model)?.supportsMaxReasoningEffort === true;
+}
+
+export function usesOpenAIResponsesLite(model: ModelId): boolean {
+  return openAIModelCapabilityOverride(model)?.usesResponsesLite === true;
+}
+
+export function supportsOpenAIFastServiceTier(model: ModelId): boolean {
+  return openAIModelCapabilityOverride(model)?.supportsFastServiceTier ?? true;
+}
+
+export function defaultOpenAIVerbosity(model: ModelId): "low" | "medium" | "high" | undefined {
+  return openAIModelCapabilityOverride(model)?.defaultVerbosity;
 }

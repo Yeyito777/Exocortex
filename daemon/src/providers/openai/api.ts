@@ -5,7 +5,8 @@ import { readExocortexConfig } from "@exocortex/shared/config";
 import { createHash } from "crypto";
 import { accountScopeForKey, getCurrentAccountKey, getOpenAIAuthSessionRevision, getVerifiedSession } from "./auth";
 import { AuthError, isContextWindowProviderError, isNonRetryableProviderError, NonRetryableProviderError } from "../errors";
-import { OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL } from "./constants";
+import { OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_RESPONSES_LITE_HEADER } from "./constants";
+import { usesOpenAIResponsesLite } from "./capabilities";
 import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "./cookies";
 import { buildOpenAIInput, buildRequestBody } from "./request";
@@ -403,6 +404,9 @@ async function streamMessageHttpWithSession(
   // The Codex HTTP endpoint streams Server-Sent Events. The websocket beta
   // header switches the backend into websocket mode and can make HTTP fail.
   delete headers["OpenAI-Beta"];
+  if (usesOpenAIResponsesLite(model)) {
+    headers[OPENAI_RESPONSES_LITE_HEADER] = "true";
+  }
   const cookieHeader = buildCloudflareCookieHeader(OPENAI_CODEX_RESPONSES_URL);
   if (cookieHeader) headers.Cookie = cookieHeader;
 

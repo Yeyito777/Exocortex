@@ -165,9 +165,10 @@ function parseSelectionOptions(args: string[]): ParsedOptions | { error: string 
   return { effort, fastMode };
 }
 
-function providerSupportsFastFallback(state: Parameters<SlashCommand["handler"]>[1], provider: ProviderId): boolean {
+function providerSupportsFastFallback(state: Parameters<SlashCommand["handler"]>[1], provider: ProviderId, model: ModelId): boolean {
   const info = getProviderInfo(state, provider);
-  return info ? info.supportsFastMode : provider === "openai";
+  if (!info) return provider === "openai" && model !== "gpt-daybreak-blue-latest";
+  return info.supportsFastMode && getModelInfo(state, provider, model)?.supportsFastMode !== false;
 }
 
 function defaultEffortForSelection(state: Parameters<SlashCommand["handler"]>[1], provider: ProviderId, model: ModelId): EffortLevel {
@@ -198,7 +199,7 @@ function validateSelection(
     return { error: `Invalid effort for ${provider}/${model}: ${effort}. Valid: ${levels.join(", ")}` };
   }
 
-  if (fastMode && !providerSupportsFastFallback(state, provider)) {
+  if (fastMode && !providerSupportsFastFallback(state, provider, model)) {
     return { error: `Fast mode is only available for ${provider} conversations that support it.` };
   }
 
@@ -248,14 +249,14 @@ function persistDefaults(state: Parameters<SlashCommand["handler"]>[1], defaults
   return { type: "handled" };
 }
 
-function fastItems(state: Parameters<SlashCommand["handler"]>[1], provider: ProviderId): CompletionItem[] {
-  return providerSupportsFastFallback(state, provider) ? FAST_ITEMS : FAST_UNAVAILABLE_ITEMS;
+function fastItems(state: Parameters<SlashCommand["handler"]>[1], provider: ProviderId, model: ModelId): CompletionItem[] {
+  return providerSupportsFastFallback(state, provider, model) ? FAST_ITEMS : FAST_UNAVAILABLE_ITEMS;
 }
 
 function addPositionalCompletions(registry: Record<string, CompletionItem[]>, state: Parameters<SlashCommand["handler"]>[1], key: string, provider: ProviderId, model: ModelId): void {
   registry[key] = effortItems(state, provider, model);
   for (const effort of effortItems(state, provider, model)) {
-    registry[`${key} ${effort.name}`] = fastItems(state, provider);
+    registry[`${key} ${effort.name}`] = fastItems(state, provider, model);
   }
 }
 

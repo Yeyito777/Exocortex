@@ -154,8 +154,10 @@ export function allowsCustomModels(providerId: ProviderId): boolean {
   return getProvider(providerId)?.allowsCustomModels ?? false;
 }
 
-export function supportsFastMode(providerId: ProviderId): boolean {
-  return getProvider(providerId)?.supportsFastMode ?? false;
+export function supportsFastMode(providerId: ProviderId, model?: ModelId): boolean {
+  const provider = getProvider(providerId);
+  if (!provider?.supportsFastMode) return false;
+  return !model || getModelInfo(providerId, model)?.supportsFastMode !== false;
 }
 
 export function supportsImageInputs(providerId: ProviderId, model: ModelId): boolean {
