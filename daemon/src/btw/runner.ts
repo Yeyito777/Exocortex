@@ -1,9 +1,9 @@
-import type { BtwQueryCommand } from "../protocol";
+import type { BtwFollowupCommand, BtwQueryCommand } from "../protocol";
 import { runAgentLoop } from "../agent";
 import { buildConversationApiContext } from "../context-compaction";
 import { buildConversationRequestSurface } from "../conversation-request-surface";
 import * as convStore from "../conversations";
-import type { ApiContentBlock, ApiMessage, Block, Conversation, ProviderId, ToolCallBlock, ToolResultBlock } from "../messages";
+import type { ApiContentBlock, ApiMessage, Block, Conversation, ConversationBtw, ConversationBtwTurn, ProviderId, ToolCallBlock, ToolResultBlock } from "../messages";
 import type { ContentBlock as ProviderContentBlock } from "../providers/types";
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "../providers/openai/auth";
 import { buildCodexWindowId } from "../providers/openai/identity";
@@ -11,6 +11,7 @@ import { buildExecutor, summarizeTool } from "../tools/registry";
 import type { ToolExecutionContext } from "../tools/types";
 import { ensureConversationWorkspace } from "../workspace-service";
 import { appendBtwQueryInstructions, BTW_READ_ONLY_TOOLS } from "./constants";
+import { ensureConversationBtwTurns } from "./blocks";
 
 type RunAgentLoop = typeof runAgentLoop;
 
@@ -196,6 +197,65 @@ export function projectBtwSourceProgress(blocks: readonly Block[]): ApiMessage[]
   return messages;
 }
 
+/**
+ * Rebuild provider-valid replay for a completed BTW answer. Display thinking has
+ * no reusable provider signature, so it becomes explicitly labelled assistant
+ * text. Tool-use/result boundaries remain structural, allowing a follow-up to
+ * continue the retained aside rather than treating it as an unrelated query.
+ */
+export function projectBtwTurnReplay(turn: ConversationBtwTurn): ApiMessage[] {
+  const replay: ApiMessage[] = [{ role: "user", content: turn.query }];
+  let assistant: ApiContentBlock[] = [];
+  let results: ApiContentBlock[] = [];
+
+  const flushAssistant = () => {
+    if (assistant.length === 0) return;
+    replay.push({ role: "assistant", content: assistant });
+    assistant = [];
+  };
+  const flushResults = () => {
+    if (results.length === 0) return;
+    replay.push({ role: "user", content: results });
+    results = [];
+  };
+
+  for (const block of turn.blocks ?? (turn.text ? [{ type: "text" as const, text: turn.text }] : [])) {
+    if (block.type === "tool_result") {
+      flushAssistant();
+      results.push({
+        type: "tool_result",
+        tool_use_id: block.toolCallId,
+        content: block.output,
+        is_error: block.isError,
+      });
+      continue;
+    }
+
+    flushResults();
+    if (block.type === "thinking") {
+      if (block.text.trim()) {
+        assistant.push({
+          type: "text",
+          text: `[Previous BTW reasoning summary]\n${block.text}`,
+        });
+      }
+    } else if (block.type === "text") {
+      if (block.text) assistant.push({ type: "text", text: block.text });
+    } else {
+      assistant.push({
+        type: "tool_use",
+        id: block.toolCallId,
+        name: block.toolName,
+        input: structuredClone(block.input),
+        ...(block.presentation ? { presentation: structuredClone(block.presentation) } : {}),
+      });
+    }
+  }
+  flushAssistant();
+  flushResults();
+  return completeBtwReplayToolCalls(replay);
+}
+
 /** Freeze source replay/settings and build every provider/tool input synchronously. */
 export function prepareBtwRun(conv: Conversation, command: BtwQueryCommand, query: string): PreparedBtwRun {
   let workingDirectory: string;
@@ -265,7 +325,29 @@ export function prepareBtwRun(conv: Conversation, command: BtwQueryCommand, quer
   };
 }
 
-/** Run the isolated agent and translate low-level loop callbacks into BTW progress. */
+/** Prepare a new assistant turn with the retained BTW dialogue before its query. */
+export function prepareBtwFollowupRun(
+  conv: Conversation,
+  command: BtwFollowupCommand,
+  btw: ConversationBtw,
+  query: string,
+): PreparedBtwRun {
+  const prepared = prepareBtwRun(conv, {
+    type: "btw_query",
+    convId: command.convId,
+    sessionId: command.turnId,
+    query,
+    startedAt: command.startedAt,
+  }, query);
+  const latestQuery = prepared.messages.pop()!;
+  const history = ensureConversationBtwTurns(btw)
+    .filter(turn => turn.id !== command.turnId)
+    .flatMap(projectBtwTurnReplay);
+  prepared.messages.push(...history, latestQuery);
+  return prepared;
+}
+
+/** Run one isolated aside turn and translate low-level loop callbacks into BTW progress. */
 export async function runBtw(
   prepared: PreparedBtwRun,
   runLoop: RunAgentLoop,

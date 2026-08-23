@@ -13,7 +13,7 @@ import { hexToAnsi } from "../theme";
 import { closeBtwSession, startBtwSession } from "./controller";
 
 function panelState(overrides: Partial<BtwPanelState> = {}): BtwPanelState {
-  return Object.assign({
+  const state = Object.assign({
     sessionId: "btw-1",
     sourceConvId: "conv-1",
     query: "What does this code do?",
@@ -38,7 +38,20 @@ function panelState(overrides: Partial<BtwPanelState> = {}): BtwPanelState {
     historyCopyLines: [],
     historyMessageBounds: [],
     historyLineAnchors: [],
-  }, overrides);
+  }, overrides) as BtwPanelState;
+  if (!overrides.turns) {
+    state.turns = [{
+      id: state.sessionId,
+      query: state.query,
+      startedAt: state.startedAt,
+      endedAt: state.endedAt,
+      phase: state.phase === "starting" ? "running" : state.phase,
+      blocks: state.blocks,
+      text: state.text,
+      status: state.status,
+    }];
+  }
+  return state;
 }
 
 function conversation(id: string, sortOrder: number): ConversationSummary {
@@ -90,6 +103,27 @@ describe("/btw command", () => {
     state.btw = panelState();
     expect(tryCommand("/btw close", state)).toEqual({ type: "btw_close_requested" });
   });
+
+  test("treats a query as a follow-up when a completed panel is already open", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.btw = panelState({ phase: "complete", endedAt: 200, status: "Complete" });
+
+    expect(tryCommand("/btw can you clarify that?", state)).toEqual({
+      type: "btw_requested",
+      query: "can you clarify that?",
+    });
+    expect(state.btw?.sessionId).toBe("btw-1");
+  });
+
+  test("does not replace an answer that is still running", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.btw = panelState({ phase: "running" });
+
+    expect(tryCommand("/btw another question", state)).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string })?.text).toContain("Wait for the current /btw answer");
+  });
 });
 
 describe("BTW session controller", () => {
@@ -99,6 +133,7 @@ describe("BTW session controller", () => {
     const calls: unknown[] = [];
     const daemon = {
       startBtw: (...args: unknown[]) => calls.push(["start", ...args]),
+      followupBtw: (...args: unknown[]) => calls.push(["followup", ...args]),
       closeBtw: (...args: unknown[]) => calls.push(["close", ...args]),
     };
 
@@ -115,6 +150,33 @@ describe("BTW session controller", () => {
     closeBtwSession(state, daemon);
     expect(state.btw).toBeNull();
     expect(calls.at(-1)).toEqual(["close", "conv-1", "stable-session"]);
+  });
+
+  test("appends a follow-up to the existing optimistic panel", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.btw = panelState({ phase: "complete", endedAt: 200, status: "Complete" });
+    const calls: unknown[] = [];
+    const daemon = {
+      startBtw: (...args: unknown[]) => calls.push(["start", ...args]),
+      followupBtw: (...args: unknown[]) => calls.push(["followup", ...args]),
+      closeBtw: (...args: unknown[]) => calls.push(["close", ...args]),
+    };
+
+    startBtwSession(state, daemon, "What about the edge case?", () => "turn-2", () => 300);
+
+    expect(state.btw).toMatchObject({
+      sessionId: "btw-1",
+      phase: "starting",
+      query: "What about the edge case?",
+    });
+    expect(state.btw?.turns.map(turn => turn.query)).toEqual([
+      "What does this code do?",
+      "What about the edge case?",
+    ]);
+    expect(calls).toEqual([[
+      "followup", "conv-1", "btw-1", "turn-2", "What about the edge case?", 300,
+    ]]);
   });
 });
 
@@ -182,6 +244,37 @@ describe("BTW event projection", () => {
 
     handleEvent({ type: "btw_closed", convId: "conv-1", sessionId: "btw-1" }, state, daemon);
     expect(state.btw).toBeNull();
+  });
+
+  test("streams a follow-up into the matching retained panel turn", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.btw = panelState({ phase: "complete", endedAt: 200, status: "Complete" });
+    const daemon = {} as Parameters<typeof handleEvent>[2];
+
+    handleEvent({
+      type: "btw_followup_started",
+      convId: "conv-1",
+      sessionId: "btw-1",
+      turnId: "turn-2",
+      query: "Can you clarify?",
+      startedAt: 300,
+    }, state, daemon);
+    handleEvent({ type: "btw_text_chunk", convId: "conv-1", sessionId: "btw-1", turnId: "turn-2", text: "Yes—" }, state, daemon);
+    handleEvent({ type: "btw_text_chunk", convId: "conv-1", sessionId: "btw-1", turnId: "stale", text: "wrong" }, state, daemon);
+    handleEvent({ type: "btw_finished", convId: "conv-1", sessionId: "btw-1", turnId: "turn-2", endedAt: 400 }, state, daemon);
+
+    expect(state.btw?.sessionId).toBe("btw-1");
+    expect(state.btw?.turns).toHaveLength(2);
+    expect(state.btw?.turns[0]?.query).toBe("What does this code do?");
+    expect(state.btw?.turns[1]).toMatchObject({
+      id: "turn-2",
+      query: "Can you clarify?",
+      text: "Yes—",
+      phase: "complete",
+      endedAt: 400,
+    });
+    expect(state.btw?.text).toBe("Yes—");
   });
 
   test("rehydrates the BTW owned by each loaded conversation until it is closed", () => {
@@ -385,6 +478,49 @@ describe("BTW foreground panel", () => {
     expect(rendered!.top).toBe(20);
     expect(rendered!.left).toBe(31);
     expect(btw.viewportRows).toBe(2);
+  });
+
+  test("renders follow-up questions and answers inside the original card", () => {
+    const firstAnswer = { type: "text" as const, text: "The first answer." };
+    const secondAnswer = { type: "text" as const, text: "The clarification." };
+    const btw = panelState({
+      query: "Can you clarify?",
+      startedAt: 300,
+      endedAt: 400,
+      phase: "complete",
+      blocks: [secondAnswer],
+      text: secondAnswer.text,
+      status: "Complete",
+      turns: [
+        {
+          id: "btw-1",
+          query: "What does this code do?",
+          startedAt: 100,
+          endedAt: 200,
+          phase: "complete",
+          blocks: [firstAnswer],
+          text: firstAnswer.text,
+          status: "Complete",
+        },
+        {
+          id: "turn-2",
+          query: "Can you clarify?",
+          startedAt: 300,
+          endedAt: 400,
+          phase: "complete",
+          blocks: [secondAnswer],
+          text: secondAnswer.text,
+          status: "Complete",
+        },
+      ],
+    });
+
+    const rendered = renderBtwPanel(btw, 100, 10, 10, 1);
+    const plain = stripAnsi(rendered!.payload);
+    expect(plain).toContain("What does this code do?");
+    expect(plain).toContain("The first answer.");
+    expect(plain).toContain("Can you clarify?");
+    expect(plain).toContain("The clarification.");
   });
 
   test("reuses assistant block rendering for thinking summaries and colored tool calls", () => {

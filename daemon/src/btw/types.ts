@@ -5,7 +5,10 @@ import type * as persistence from "../persistence";
 import type { ConnectedClient } from "../server";
 
 export interface BtwSession {
+  /** Stable retained panel/thread identity. */
   id: string;
+  /** Active question/answer turn identity. */
+  turnId: string;
   convId: string;
   provider: ProviderId;
   abort: AbortController;

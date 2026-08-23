@@ -1,4 +1,4 @@
-import type { Block } from "../messages";
+import type { Block, ConversationBtwTurn } from "../messages";
 import type { Event } from "../protocol";
 import type { RenderState } from "../state";
 import { focusPrompt } from "../state";
@@ -8,17 +8,39 @@ function matchingSession(state: RenderState, sessionId: string) {
   return state.btw?.sessionId === sessionId ? state.btw : null;
 }
 
+function matchingTurn(state: RenderState, sessionId: string, turnId?: string): ConversationBtwTurn | null {
+  const btw = matchingSession(state, sessionId);
+  if (!btw) return null;
+  const id = turnId ?? sessionId;
+  return btw.turns.find(turn => turn.id === id) ?? null;
+}
+
+function syncPanelFromTurn(state: RenderState, turn: ConversationBtwTurn): void {
+  const btw = state.btw;
+  if (!btw || btw.turns.at(-1) !== turn) return;
+  btw.query = turn.query;
+  btw.startedAt = turn.startedAt;
+  btw.endedAt = turn.endedAt;
+  btw.phase = turn.phase;
+  btw.blocks = turn.blocks ?? (turn.blocks = []);
+  btw.text = turn.text;
+  btw.status = turn.status;
+}
+
 function currentTextBlock(
   state: RenderState,
   sessionId: string,
+  turnId: string | undefined,
   type: "text" | "thinking",
 ): Extract<Block, { type: "text" }> | Extract<Block, { type: "thinking" }> | null {
-  const btw = matchingSession(state, sessionId);
-  if (!btw) return null;
-  const last = btw.blocks.at(-1);
+  const turn = matchingTurn(state, sessionId, turnId);
+  if (!turn) return null;
+  const blocks = turn.blocks ?? (turn.blocks = []);
+  const last = blocks.at(-1);
   if (last?.type === type && (last.type === "text" || last.type === "thinking")) return last;
   const block: { type: "text" | "thinking"; text: string } = { type, text: "" };
-  btw.blocks.push(block);
+  blocks.push(block);
+  syncPanelFromTurn(state, turn);
   return block;
 }
 
@@ -33,48 +55,86 @@ export function handleBtwEvent(event: Event, state: RenderState): boolean {
       state.btw = createRunningBtw(event);
       return true;
 
+    case "btw_followup_started": {
+      const btw = matchingSession(state, event.sessionId);
+      if (!btw) return true;
+      let turn = btw.turns.find(candidate => candidate.id === event.turnId);
+      if (!turn) {
+        turn = {
+          id: event.turnId,
+          query: event.query,
+          startedAt: event.startedAt,
+          endedAt: null,
+          phase: "running",
+          blocks: [],
+          text: "",
+          status: "Thinking…",
+        };
+        btw.turns.push(turn);
+      } else {
+        turn.query = event.query;
+        turn.startedAt = event.startedAt;
+        turn.endedAt = null;
+        turn.phase = "running";
+        turn.blocks = [];
+        turn.text = "";
+        turn.status = "Thinking…";
+      }
+      syncPanelFromTurn(state, turn);
+      return true;
+    }
+
     case "btw_snapshot":
       if (!event.btw && state.chatFocus === "btw") focusPrompt(state);
       state.btw = projectConversationBtw(event.convId, event.btw);
       return true;
 
     case "btw_block_start": {
-      const btw = matchingSession(state, event.sessionId);
-      if (btw) btw.blocks.push({ type: event.blockType, text: "" });
+      const turn = matchingTurn(state, event.sessionId, event.turnId);
+      if (turn) {
+        (turn.blocks ??= []).push({ type: event.blockType, text: "" });
+        syncPanelFromTurn(state, turn);
+      }
       return true;
     }
 
     case "btw_text_chunk":
       {
-        const btw = matchingSession(state, event.sessionId);
-        const block = currentTextBlock(state, event.sessionId, "text");
-        if (btw && block) {
+        const turn = matchingTurn(state, event.sessionId, event.turnId);
+        const block = currentTextBlock(state, event.sessionId, event.turnId, "text");
+        if (turn && block) {
           block.text += event.text;
-          btw.text += event.text;
+          turn.text += event.text;
+          syncPanelFromTurn(state, turn);
         }
       }
       return true;
 
     case "btw_thinking_chunk": {
-      const block = currentTextBlock(state, event.sessionId, "thinking");
-      if (block) block.text += event.text;
+      const turn = matchingTurn(state, event.sessionId, event.turnId);
+      const block = currentTextBlock(state, event.sessionId, event.turnId, "thinking");
+      if (turn && block) {
+        block.text += event.text;
+        syncPanelFromTurn(state, turn);
+      }
       return true;
     }
 
     case "btw_content":
       {
-        const btw = matchingSession(state, event.sessionId);
-        if (btw) {
-          btw.text = event.text;
-          btw.blocks = structuredClone(event.blocks ?? (event.text ? [{ type: "text" as const, text: event.text }] : []));
+        const turn = matchingTurn(state, event.sessionId, event.turnId);
+        if (turn) {
+          turn.text = event.text;
+          turn.blocks = structuredClone(event.blocks ?? (event.text ? [{ type: "text" as const, text: event.text }] : []));
+          syncPanelFromTurn(state, turn);
         }
       }
       return true;
 
     case "btw_tool_call": {
-      const btw = matchingSession(state, event.sessionId);
-      if (btw) {
-        btw.blocks.push({
+      const turn = matchingTurn(state, event.sessionId, event.turnId);
+      if (turn) {
+        (turn.blocks ??= []).push({
           type: "tool_call",
           toolCallId: event.toolCallId,
           toolName: event.toolName,
@@ -82,41 +142,57 @@ export function handleBtwEvent(event: Event, state: RenderState): boolean {
           summary: event.summary,
           ...(event.presentation ? { presentation: event.presentation } : {}),
         });
+        syncPanelFromTurn(state, turn);
       }
       return true;
     }
 
     case "btw_tool_result": {
-      const btw = matchingSession(state, event.sessionId);
-      if (btw) {
-        btw.blocks.push({
+      const turn = matchingTurn(state, event.sessionId, event.turnId);
+      if (turn) {
+        (turn.blocks ??= []).push({
           type: "tool_result",
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           output: event.output,
           isError: event.isError,
         });
+        syncPanelFromTurn(state, turn);
       }
       return true;
     }
 
     case "btw_status":
-      if (state.btw?.sessionId === event.sessionId) state.btw.status = event.status;
+      {
+        const turn = matchingTurn(state, event.sessionId, event.turnId);
+        if (turn) {
+          turn.status = event.status;
+          syncPanelFromTurn(state, turn);
+        }
+      }
       return true;
 
     case "btw_finished":
-      if (state.btw?.sessionId === event.sessionId) {
-        state.btw.phase = "complete";
-        state.btw.status = "Complete";
-        state.btw.endedAt = event.endedAt;
+      {
+        const turn = matchingTurn(state, event.sessionId, event.turnId);
+        if (turn) {
+          turn.phase = "complete";
+          turn.status = "Complete";
+          turn.endedAt = event.endedAt;
+          syncPanelFromTurn(state, turn);
+        }
       }
       return true;
 
     case "btw_error":
-      if (state.btw?.sessionId === event.sessionId) {
-        state.btw.phase = "error";
-        state.btw.status = event.message;
-        state.btw.endedAt = event.endedAt;
+      {
+        const turn = matchingTurn(state, event.sessionId, event.turnId);
+        if (turn) {
+          turn.phase = "error";
+          turn.status = event.message;
+          turn.endedAt = event.endedAt;
+          syncPanelFromTurn(state, turn);
+        }
       }
       return true;
 

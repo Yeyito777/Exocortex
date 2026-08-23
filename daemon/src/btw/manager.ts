@@ -1,21 +1,21 @@
-// Conversation-owned, durable one-shot `/btw` sessions.
+// Conversation-owned, durable `/btw` aside threads.
 //
 // A session freezes the source conversation's provider replay and settings, then
-// runs a separate agent loop whose only tools are an explicit read-only
-// allowlist. Its query/answer are not appended to model-visible chat history,
+// runs separate agent turns whose only tools are an explicit read-only
+// allowlist. Its questions/answers are not appended to model-visible chat history,
 // but the panel state is persisted by conversation until explicitly closed.
 
-import type { BtwQueryCommand, Event } from "../protocol";
+import type { BtwFollowupCommand, BtwQueryCommand, Event } from "../protocol";
 import type { DaemonServer, ConnectedClient } from "../server";
 import { runAgentLoop } from "../agent";
 import { hasConfiguredCredentials } from "../auth";
 import * as convStore from "../conversations";
 import { onConversationRemoved, onConversationRemoving } from "../conversation-lifecycle";
 import { log } from "../log";
-import type { Block, Conversation, ConversationBtw, ProviderId } from "../messages";
+import type { Block, Conversation, ConversationBtw, ConversationBtwTurn, ProviderId } from "../messages";
 import * as persistence from "../persistence";
-import { BtwWorkspaceError, prepareBtwRun, runBtw } from "./runner";
-import { textFromBtwBlocks } from "./blocks";
+import { BtwWorkspaceError, prepareBtwFollowupRun, prepareBtwRun, runBtw, type PreparedBtwRun } from "./runner";
+import { cloneBtw, ensureConversationBtwTurns, syncConversationBtwFromTurn, textFromBtwBlocks } from "./blocks";
 import { BtwRuntime } from "./runtime";
 import { BtwStateStore } from "./state-store";
 import type {
@@ -206,6 +206,7 @@ export class BtwSessionManager {
     const abort = new AbortController();
     const session: BtwSession = {
       id: command.sessionId,
+      turnId: command.sessionId,
       convId: command.convId,
       provider: prepared.provider,
       abort,
@@ -213,17 +214,28 @@ export class BtwSessionManager {
       requesters: new Map(),
     };
     this.runtime.addRequester(session, client);
-    const state: ConversationBtw = {
-      sessionId: command.sessionId,
+    const turn: ConversationBtwTurn = {
+      id: command.sessionId,
       query,
-      provider: prepared.provider,
-      model: prepared.model,
       startedAt: command.startedAt,
       endedAt: null,
       phase: "running",
       blocks: [],
       text: "",
       status: "Thinking…",
+    };
+    const state: ConversationBtw = {
+      sessionId: command.sessionId,
+      provider: prepared.provider,
+      model: prepared.model,
+      query: turn.query,
+      startedAt: turn.startedAt,
+      endedAt: turn.endedAt,
+      phase: turn.phase,
+      blocks: turn.blocks,
+      text: turn.text,
+      status: turn.status,
+      turns: [turn],
     };
     // A new query atomically replaces only this conversation's prior panel. If
     // the durable write fails, keep the previous session alive and authoritative.
@@ -262,88 +274,229 @@ export class BtwSessionManager {
       }, this.runtime.requesterList(previousSession, client));
     }
     if (previousSession) this.runtime.clearRequesters(previousSession);
-    this.runtime.beginProvider(prepared.provider);
+    this.launchTurn(prepared, state, turn, session, "start");
+  }
 
-    this.emit(command.convId, {
-      type: "btw_started",
-      sessionId: command.sessionId,
-      convId: command.convId,
+  /** Append a question to a retained BTW panel without replacing its identity/history. */
+  followup(client: ConnectedClient, command: BtwFollowupCommand): void {
+    const conv = convStore.get(command.convId);
+    const existing = this.stateStore.get(command.convId);
+
+    if (this.stateStore.hasSeen(command.convId, command.turnId)) {
+      const live = this.runtime.get(command.convId);
+      if (live?.id === command.sessionId && live.turnId === command.turnId) {
+        this.runtime.addRequester(live, client);
+      }
+      this.server.sendTo(client, {
+        type: "btw_mutation_settled",
+        convId: command.convId,
+        sessionId: command.sessionId,
+        turnId: command.turnId,
+        mutation: "followup",
+      });
+      this.sendSnapshot(client, command.convId);
+      return;
+    }
+
+    if (!conv || !existing || existing.sessionId !== command.sessionId) {
+      this.rejectFollowup(client, command, !conv
+        ? `Conversation ${command.convId} not found`
+        : "That /btw session is no longer open.");
+      return;
+    }
+    if (existing.phase === "running" || this.runtime.get(command.convId)?.running) {
+      this.rejectFollowup(client, command, "Wait for the current /btw answer before asking a follow-up.");
+      return;
+    }
+
+    const query = command.query.trim();
+    const startFailure = !query
+      ? "Usage: /btw <query>"
+      : this.callbacks.cannotStart?.(conv.provider)
+        ?? (!this.dependencies.hasConfiguredCredentials(conv.provider)
+          ? `Not authenticated for provider ${conv.provider}.`
+          : null);
+    if (startFailure) {
+      this.appendFollowupError(client, command, existing, query, startFailure);
+      return;
+    }
+
+    const nextState = cloneBtw(existing);
+    ensureConversationBtwTurns(nextState);
+    let prepared: PreparedBtwRun;
+    try {
+      prepared = prepareBtwFollowupRun(conv, command, nextState, query);
+    } catch (error) {
+      if (!(error instanceof BtwWorkspaceError)) throw error;
+      this.appendFollowupError(client, command, existing, query, error.message);
+      return;
+    }
+
+    const turn: ConversationBtwTurn = {
+      id: command.turnId,
       query,
-      provider: prepared.provider,
-      model: prepared.model,
       startedAt: command.startedAt,
-    }, [...session.requesters.keys()]);
+      endedAt: null,
+      phase: "running",
+      blocks: [],
+      text: "",
+      status: "Thinking…",
+    };
+    nextState.turns!.push(turn);
+    syncConversationBtwFromTurn(nextState, turn);
+    const session: BtwSession = {
+      id: command.sessionId,
+      turnId: command.turnId,
+      convId: command.convId,
+      provider: prepared.provider,
+      abort: new AbortController(),
+      running: true,
+      requesters: new Map(),
+    };
+    this.runtime.addRequester(session, client);
+    const previousSeen = this.stateStore.remember(command.convId, command.turnId);
+    this.runtime.set(command.convId, session);
+    this.stateStore.set(command.convId, nextState);
+    if (!this.stateStore.persistNow()) {
+      this.stateStore.set(command.convId, existing);
+      this.runtime.delete(command.convId);
+      this.stateStore.restoreRemembered(command.convId, previousSeen);
+      this.runtime.clearRequesters(session);
+      this.sendSnapshot(client, command.convId);
+      this.server.sendTo(client, { type: "error", convId: command.convId, message: "Failed to persist BTW follow-up; it will be retried after reconnect." });
+      return;
+    }
+
+    this.server.sendTo(client, {
+      type: "btw_mutation_settled",
+      convId: command.convId,
+      sessionId: command.sessionId,
+      turnId: command.turnId,
+      mutation: "followup",
+    });
+    this.launchTurn(prepared, nextState, turn, session, "followup");
+  }
+
+  private launchTurn(
+    prepared: PreparedBtwRun,
+    state: ConversationBtw,
+    turn: ConversationBtwTurn,
+    session: BtwSession,
+    kind: "start" | "followup",
+  ): void {
+    const convId = session.convId;
+    this.runtime.beginProvider(prepared.provider);
+    if (kind === "start") {
+      this.emit(convId, {
+        type: "btw_started",
+        sessionId: session.id,
+        convId,
+        query: turn.query,
+        provider: prepared.provider,
+        model: prepared.model,
+        startedAt: turn.startedAt,
+      }, [...session.requesters.keys()]);
+    } else {
+      this.emit(convId, {
+        type: "btw_followup_started",
+        sessionId: session.id,
+        turnId: session.turnId,
+        convId,
+        query: turn.query,
+        startedAt: turn.startedAt,
+      }, [...session.requesters.keys()]);
+    }
 
     const isCurrent = () => (
-      this.runtime.isCurrent(command.convId, session)
-      && this.stateStore.get(command.convId)?.sessionId === session.id
+      this.runtime.isCurrent(convId, session)
+      && this.stateStore.get(convId) === state
+      && state.sessionId === session.id
+      && state.turns?.at(-1) === turn
+      && turn.id === session.turnId
     );
+    const syncLatest = () => syncConversationBtwFromTurn(state, turn);
     const sendStatus = (status: string) => {
       if (!isCurrent()) return;
-      state.status = status;
+      turn.status = status;
+      syncLatest();
       this.stateStore.persistSoon();
-      this.emit(command.convId, { type: "btw_status", convId: command.convId, sessionId: session.id, status }, [...session.requesters.keys()]);
+      this.emit(convId, {
+        type: "btw_status",
+        convId,
+        sessionId: session.id,
+        turnId: session.turnId,
+        status,
+      }, [...session.requesters.keys()]);
     };
     const persistProgress = () => this.stateStore.persistSoon();
     const matchingBlock = (type: "text" | "thinking"): Extract<Block, { type: "text" | "thinking" }> => {
-      const last = state.blocks?.at(-1);
+      const last = turn.blocks?.at(-1);
       if (last?.type === type) return last;
       const block: Extract<Block, { type: "text" | "thinking" }> = { type, text: "" };
-      (state.blocks ??= []).push(block);
+      (turn.blocks ??= []).push(block);
+      syncLatest();
       return block;
     };
     const sendBlocks = (blocks: Block[]) => {
       if (!isCurrent()) return;
-      state.blocks = structuredClone(blocks);
-      state.text = textFromBtwBlocks(state.blocks);
+      turn.blocks = structuredClone(blocks);
+      turn.text = textFromBtwBlocks(turn.blocks);
+      syncLatest();
       persistProgress();
-      this.emit(command.convId, {
+      this.emit(convId, {
         type: "btw_content",
-        convId: command.convId,
+        convId,
         sessionId: session.id,
-        text: state.text,
-        blocks: structuredClone(state.blocks),
+        turnId: session.turnId,
+        text: turn.text,
+        blocks: structuredClone(turn.blocks),
       }, [...session.requesters.keys()]);
     };
 
-    log("info", `btw: starting session ${session.id} for ${command.convId} from frozen snapshot (${prepared.provider}/${prepared.model}, snapshot=${prepared.snapshotSize})`);
+    log("info", `btw: starting ${kind === "followup" ? "follow-up " : ""}turn ${session.turnId} in session ${session.id} for ${convId} (${prepared.provider}/${prepared.model}, snapshot=${prepared.snapshotSize})`);
     sendStatus("Thinking…");
 
-    void runBtw(prepared, this.dependencies.runAgentLoop, abort.signal, {
+    void runBtw(prepared, this.dependencies.runAgentLoop, session.abort.signal, {
       onStatus: sendStatus,
       onBlockStart: (blockType) => {
         if (!isCurrent()) return;
-        (state.blocks ??= []).push({ type: blockType, text: "" });
+        (turn.blocks ??= []).push({ type: blockType, text: "" });
+        syncLatest();
         persistProgress();
-        this.emit(command.convId, {
+        this.emit(convId, {
           type: "btw_block_start",
-          convId: command.convId,
+          convId,
           sessionId: session.id,
+          turnId: session.turnId,
           blockType,
         }, [...session.requesters.keys()]);
       },
       onTextChunk: (text) => {
         if (!isCurrent()) return;
         matchingBlock("text").text += text;
-        state.text = textFromBtwBlocks(state.blocks ?? []);
+        turn.text = textFromBtwBlocks(turn.blocks ?? []);
+        syncLatest();
         persistProgress();
-        this.emit(command.convId, { type: "btw_text_chunk", convId: command.convId, sessionId: session.id, text }, [...session.requesters.keys()]);
+        this.emit(convId, { type: "btw_text_chunk", convId, sessionId: session.id, turnId: session.turnId, text }, [...session.requesters.keys()]);
       },
       onThinkingChunk: (text) => {
         if (!isCurrent()) return;
         matchingBlock("thinking").text += text;
+        syncLatest();
         persistProgress();
-        this.emit(command.convId, { type: "btw_thinking_chunk", convId: command.convId, sessionId: session.id, text }, [...session.requesters.keys()]);
+        this.emit(convId, { type: "btw_thinking_chunk", convId, sessionId: session.id, turnId: session.turnId, text }, [...session.requesters.keys()]);
       },
       onBlocksUpdate: sendBlocks,
       onToolCall: (block) => {
         if (!isCurrent()) return;
-        (state.blocks ??= []).push(structuredClone(block));
+        (turn.blocks ??= []).push(structuredClone(block));
+        syncLatest();
         persistProgress();
-        this.emit(command.convId, {
+        this.emit(convId, {
           type: "btw_tool_call",
-          convId: command.convId,
+          convId,
           sessionId: session.id,
+          turnId: session.turnId,
           toolCallId: block.toolCallId,
           toolName: block.toolName,
           input: block.input,
@@ -353,12 +506,14 @@ export class BtwSessionManager {
       },
       onToolResult: (block) => {
         if (!isCurrent()) return;
-        (state.blocks ??= []).push(structuredClone(block));
+        (turn.blocks ??= []).push(structuredClone(block));
+        syncLatest();
         persistProgress();
-        this.emit(command.convId, {
+        this.emit(convId, {
           type: "btw_tool_result",
-          convId: command.convId,
+          convId,
           sessionId: session.id,
+          turnId: session.turnId,
           toolCallId: block.toolCallId,
           toolName: block.toolName,
           output: block.output,
@@ -371,27 +526,29 @@ export class BtwSessionManager {
       session.running = false;
       sendBlocks(blocks);
       const endedAt = Date.now();
-      state.phase = "complete";
-      state.status = "Complete";
-      state.endedAt = endedAt;
+      turn.phase = "complete";
+      turn.status = "Complete";
+      turn.endedAt = endedAt;
+      syncLatest();
       this.stateStore.persistNow();
-      this.emit(command.convId, { type: "btw_finished", convId: command.convId, sessionId: session.id, endedAt }, [...session.requesters.keys()]);
-      this.runtime.delete(command.convId);
+      this.emit(convId, { type: "btw_finished", convId, sessionId: session.id, turnId: session.turnId, endedAt }, [...session.requesters.keys()]);
+      this.runtime.delete(convId);
       this.runtime.clearRequesters(session);
-      log("info", `btw: completed session ${session.id} for ${command.convId}`);
+      log("info", `btw: completed turn ${session.turnId} in session ${session.id} for ${convId}`);
     }).catch(error => {
-      if (!isCurrent() || abortIsSessionClose(error, abort.signal)) return;
+      if (!isCurrent() || abortIsSessionClose(error, session.abort.signal)) return;
       session.running = false;
       const message = error instanceof Error ? error.message : String(error);
       const endedAt = Date.now();
-      state.phase = "error";
-      state.status = message;
-      state.endedAt = endedAt;
+      turn.phase = "error";
+      turn.status = message;
+      turn.endedAt = endedAt;
+      syncLatest();
       this.stateStore.persistNow();
-      this.emit(command.convId, { type: "btw_error", convId: command.convId, sessionId: session.id, message, endedAt }, [...session.requesters.keys()]);
-      this.runtime.delete(command.convId);
+      this.emit(convId, { type: "btw_error", convId, sessionId: session.id, turnId: session.turnId, message, endedAt }, [...session.requesters.keys()]);
+      this.runtime.delete(convId);
       this.runtime.clearRequesters(session);
-      log("warn", `btw: session ${session.id} failed: ${message}`);
+      log("warn", `btw: turn ${session.turnId} in session ${session.id} failed: ${message}`);
     }).finally(() => {
       this.runtime.finishProvider(prepared.provider);
       try {
@@ -402,6 +559,81 @@ export class BtwSessionManager {
     });
   }
 
+  private rejectFollowup(client: ConnectedClient, command: BtwFollowupCommand, message: string): void {
+    const previousSeen = this.stateStore.remember(command.convId, command.turnId);
+    if (!this.stateStore.persistNow()) {
+      this.stateStore.restoreRemembered(command.convId, previousSeen);
+      this.sendSnapshot(client, command.convId);
+      this.server.sendTo(client, { type: "error", convId: command.convId, message: "Failed to settle BTW follow-up; it will be retried after reconnect." });
+      return;
+    }
+    this.server.sendTo(client, {
+      type: "btw_mutation_settled",
+      convId: command.convId,
+      sessionId: command.sessionId,
+      turnId: command.turnId,
+      mutation: "followup",
+    });
+    this.sendSnapshot(client, command.convId);
+    this.server.sendTo(client, { type: "error", convId: command.convId, message });
+  }
+
+  private appendFollowupError(
+    client: ConnectedClient,
+    command: BtwFollowupCommand,
+    existing: ConversationBtw,
+    query: string,
+    message: string,
+  ): void {
+    const endedAt = Date.now();
+    const nextState = cloneBtw(existing);
+    const turns = ensureConversationBtwTurns(nextState);
+    const turn: ConversationBtwTurn = {
+      id: command.turnId,
+      query,
+      startedAt: command.startedAt,
+      endedAt,
+      phase: "error",
+      blocks: [],
+      text: "",
+      status: message,
+    };
+    turns.push(turn);
+    syncConversationBtwFromTurn(nextState, turn);
+    const previousSeen = this.stateStore.remember(command.convId, command.turnId);
+    this.stateStore.set(command.convId, nextState);
+    if (!this.stateStore.persistNow()) {
+      this.stateStore.set(command.convId, existing);
+      this.stateStore.restoreRemembered(command.convId, previousSeen);
+      this.sendSnapshot(client, command.convId);
+      this.server.sendTo(client, { type: "error", convId: command.convId, message: "Failed to persist BTW follow-up error; it will be retried after reconnect." });
+      return;
+    }
+    this.server.sendTo(client, {
+      type: "btw_mutation_settled",
+      convId: command.convId,
+      sessionId: command.sessionId,
+      turnId: command.turnId,
+      mutation: "followup",
+    });
+    this.emit(command.convId, {
+      type: "btw_followup_started",
+      sessionId: command.sessionId,
+      turnId: command.turnId,
+      convId: command.convId,
+      query,
+      startedAt: command.startedAt,
+    }, [client]);
+    this.emit(command.convId, {
+      type: "btw_error",
+      convId: command.convId,
+      sessionId: command.sessionId,
+      turnId: command.turnId,
+      message,
+      endedAt,
+    }, [client]);
+  }
+
   private replaceWithError(
     client: ConnectedClient,
     command: BtwQueryCommand,
@@ -410,17 +642,28 @@ export class BtwSessionManager {
     message: string,
   ): void {
     const endedAt = Date.now();
-    const btw: ConversationBtw = {
-      sessionId: command.sessionId,
+    const turn: ConversationBtwTurn = {
+      id: command.sessionId,
       query,
-      provider: conv.provider,
-      model: conv.model,
       startedAt: command.startedAt,
       endedAt,
       phase: "error",
       blocks: [],
       text: "",
       status: message,
+    };
+    const btw: ConversationBtw = {
+      sessionId: command.sessionId,
+      provider: conv.provider,
+      model: conv.model,
+      query: turn.query,
+      startedAt: turn.startedAt,
+      endedAt: turn.endedAt,
+      phase: turn.phase,
+      blocks: turn.blocks,
+      text: turn.text,
+      status: turn.status,
+      turns: [turn],
     };
     const previousState = this.stateStore.get(command.convId);
     const previousSession = this.runtime.get(command.convId);

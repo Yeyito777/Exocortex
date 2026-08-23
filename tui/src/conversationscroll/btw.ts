@@ -12,7 +12,7 @@ export function applyBtwConversationScroll(
 ): void {
   const activeFinalTextRows = btw.phase === "running" ? finalTextRows : null;
   const responseId = activeFinalTextRows
-    ? `${btw.sourceConvId}:${btw.sessionId}:${btw.blocks.length > 0 ? btw.blocks.length - 1 : "legacy"}`
+    ? `${btw.sourceConvId}:${btw.sessionId}:${btw.turns.at(-1)?.id ?? "legacy"}:${btw.blocks.length > 0 ? btw.blocks.length - 1 : "legacy"}`
     : null;
   const autoscroll = updateStreamingResponseAutoscroll({
     state: btw.streamingResponseAutoscroll,

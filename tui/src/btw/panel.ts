@@ -1,6 +1,6 @@
-/** Compact foreground panel for a conversation-owned `/btw` assistant history. */
+/** Compact foreground panel for a conversation-owned `/btw` aside history. */
 
-import { renderBlockCached, renderSystemMessage } from "../blockrenderer";
+import { renderBlockCached, renderSystemMessage, renderUserMessageCached } from "../blockrenderer";
 import type { Block, ExternalToolStyle, ToolDisplayInfo } from "../messages";
 import { padRightToWidth, padVisibleRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import { theme } from "../theme";
@@ -43,8 +43,10 @@ function cleanInline(text: string): string {
   return text.replace(/[\r\n\t]+/g, " ").replace(/[\x00-\x1F\x7F]/g, "").replace(/\s+/g, " ").trim();
 }
 
-function legacyTextBlock(btw: BtwPanelState): Block[] {
-  return btw.text ? [{ type: "text", text: btw.text }] : [];
+function turnBlocks(turn: BtwPanelState["turns"][number], latest?: BtwPanelState): Block[] {
+  const blocks = latest?.blocks ?? turn.blocks ?? [];
+  const text = latest?.text ?? turn.text;
+  return blocks.length ? blocks : text ? [{ type: "text", text }] : [];
 }
 
 interface BtwContentDocument {
@@ -65,32 +67,19 @@ function renderBtwContent(
 ): BtwContentDocument {
   const toolRegistry = options.toolRegistry ?? EMPTY_TOOL_REGISTRY;
   const externalToolStyles = options.externalToolStyles ?? EMPTY_EXTERNAL_TOOL_STYLES;
-  const blocks = btw.blocks.length > 0 ? btw.blocks : legacyTextBlock(btw);
-  const erroredToolCallIds = new Set(
-    blocks
-      .filter((block): block is Extract<Block, { type: "tool_result" }> => block.type === "tool_result" && block.isError)
-      .map(block => block.toolCallId),
-  );
   const rows: string[] = [];
   const cont: boolean[] = [];
   const join: string[] = [];
   const copy: Array<WrapCopyLine | null> = [];
   const lineAnchors: RenderLineAnchor[] = [];
+  const messageBounds: MessageBound[] = [];
+  let finalTextRows: { start: number; end: number } | null = null;
 
-  for (const block of blocks) {
-    // Text/thinking blocks add the normal two-space assistant indent after
-    // wrapping, while tool blocks account for their own prefixes internally.
-    const blockWidth = block.type === "text" || block.type === "thinking"
-      ? Math.max(1, contentWidth - 2)
-      : contentWidth;
-    const rendered = renderBlockCached(
-      block,
-      blockWidth,
-      toolRegistry,
-      externalToolStyles,
-      options.showToolOutput ?? false,
-      block.type === "tool_call" && erroredToolCallIds.has(block.toolCallId),
-    );
+  const pushRendered = (
+    owner: object,
+    segment: RenderLineAnchor["segment"],
+    rendered: { lines: string[]; cont: boolean[]; join: string[]; copy?: Array<WrapCopyLine | null> },
+  ) => {
     let logicalIndex = -1;
     let subIndex = 0;
     for (let index = 0; index < rendered.lines.length; index++) {
@@ -104,43 +93,88 @@ function renderBtwContent(
       cont.push(rendered.cont[index]);
       join.push(rendered.join[index]);
       copy.push(rendered.copy?.[index] ?? null);
-      lineAnchors.push({ owner: block, segment: "assistant_block", index: logicalIndex, subIndex });
+      lineAnchors.push({ owner, segment, index: logicalIndex, subIndex });
+    }
+  };
+  const pushBlank = (owner: object, segment: RenderLineAnchor["segment"]) => {
+    rows.push("");
+    cont.push(false);
+    join.push("");
+    copy.push(null);
+    lineAnchors.push({ owner, segment, index: 0, subIndex: 0 });
+  };
+
+  for (let turnIndex = 0; turnIndex < btw.turns.length; turnIndex++) {
+    const turn = btw.turns[turnIndex];
+    if (turnIndex > 0) {
+      const userStart = rows.length;
+      pushBlank(turn, "user_margin_top");
+      const userContentStart = rows.length;
+      pushRendered(turn, "user_content", renderUserMessageCached(turn, turn.query, contentWidth));
+      const userContentEnd = rows.length;
+      pushBlank(turn, "user_margin_bottom");
+      messageBounds.push({ role: "user", start: userStart, end: rows.length, contentStart: userContentStart, contentEnd: userContentEnd });
+    }
+
+    const latest = turnIndex === btw.turns.length - 1 ? btw : undefined;
+    const blocks = turnBlocks(turn, latest);
+    const erroredToolCallIds = new Set(
+      blocks
+        .filter((block): block is Extract<Block, { type: "tool_result" }> => block.type === "tool_result" && block.isError)
+        .map(block => block.toolCallId),
+    );
+    const assistantStart = rows.length;
+    for (const block of blocks) {
+      // Text/thinking blocks add the normal two-space assistant indent after
+      // wrapping, while tool blocks account for their own prefixes internally.
+      const blockWidth = block.type === "text" || block.type === "thinking"
+        ? Math.max(1, contentWidth - 2)
+        : contentWidth;
+      const rendered = renderBlockCached(
+        block,
+        blockWidth,
+        toolRegistry,
+        externalToolStyles,
+        options.showToolOutput ?? false,
+        block.type === "tool_call" && erroredToolCallIds.has(block.toolCallId),
+      );
+      const blockStart = rows.length;
+      pushRendered(block, "assistant_block", rendered);
+      if (turnIndex === btw.turns.length - 1 && block === blocks.at(-1) && block.type === "text" && rows.length > blockStart) {
+        finalTextRows = { start: blockStart, end: rows.length };
+      }
+    }
+
+    // A follow-up's user bubble should remain visible while its first assistant
+    // block has not arrived. The original turn keeps the compact legacy fallback.
+    if (turnIndex > 0 && blocks.length === 0 && turn.phase !== "error") {
+      const pending = renderSystemMessage(turn.status || "Thinking…", contentWidth, theme.muted);
+      pushRendered(turn, "system_message", pending);
+    }
+
+    if (rows.length > assistantStart) {
+      messageBounds.push({
+        role: "assistant",
+        start: assistantStart,
+        end: rows.length,
+        contentStart: assistantStart,
+        contentEnd: rows.length,
+      });
+    }
+    if (turn.phase === "error" && turn.status) {
+      const errorStart = rows.length;
+      const error = renderSystemMessage(`✗ ${turn.status}`, contentWidth, theme.error);
+      pushRendered(turn, "system_message", error);
+      messageBounds.push({
+        role: "system",
+        start: errorStart,
+        end: rows.length,
+        contentStart: errorStart,
+        contentEnd: rows.length,
+      });
     }
   }
 
-  const assistantEnd = rows.length;
-  const finalBlock = blocks.at(-1);
-  let finalTextRows: { start: number; end: number } | null = null;
-  if (finalBlock?.type === "text") {
-    for (let row = 0; row < lineAnchors.length; row++) {
-      if (lineAnchors[row].owner !== finalBlock) continue;
-      if (!finalTextRows) finalTextRows = { start: row, end: row + 1 };
-      else finalTextRows.end = row + 1;
-    }
-  }
-  const messageBounds: MessageBound[] = assistantEnd > 0 ? [{
-    role: "assistant",
-    start: 0,
-    end: assistantEnd,
-    contentStart: 0,
-    contentEnd: assistantEnd,
-  }] : [];
-
-  // Normal history surfaces terminal stream failures as a visible system notice.
-  // Keep the same behavior inside the retained card rather than hiding an error
-  // as soon as any partial assistant block exists.
-  if (btw.phase === "error" && btw.status) {
-    const error = renderSystemMessage(`✗ ${btw.status}`, contentWidth, theme.error);
-    const start = rows.length;
-    for (let index = 0; index < error.lines.length; index++) {
-      rows.push(error.lines[index]);
-      cont.push(error.cont[index]);
-      join.push(error.join[index]);
-      copy.push(null);
-      lineAnchors.push({ owner: btw, segment: "system_message", index, subIndex: 0 });
-    }
-    messageBounds.push({ role: "system", start, end: rows.length, contentStart: start, contentEnd: rows.length });
-  }
   return { lines: rows, cont, join, copy, messageBounds, lineAnchors, finalTextRows };
 }
 
@@ -170,7 +204,7 @@ export function renderBtwPanel(
 
   const panelBg = theme.appBg ?? "";
   if (width < 22 || height < 3) {
-    const label = truncateToWidth(` ${cleanInline(btw.query)}`, width);
+    const label = truncateToWidth(` ${cleanInline(btw.turns[0]?.query ?? btw.query)}`, width);
     btw.maxScroll = 0;
     btw.viewportRows = 1;
     btw.scrollOffset = 0;
@@ -198,7 +232,7 @@ export function renderBtwPanel(
     `${outline}│${theme.reset}${panelBg} ${padVisibleRightToWidth(text, contentWidth)} ${outline}│`,
   );
 
-  const query = cleanInline(btw.query);
+  const query = cleanInline(btw.turns[0]?.query ?? btw.query);
   const labelBudget = Math.max(1, width - termWidth("╭─  ╮"));
   const label = truncateToWidth(query, labelBudget);
   const topLeftPlain = `╭─ ${label} `;

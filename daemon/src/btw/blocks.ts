@@ -1,6 +1,7 @@
 import type {
   Block,
   ConversationBtw,
+  ConversationBtwTurn,
   ExternalToolStyle,
   ToolCallPresentation,
   ToolDisplayInfo,
@@ -104,9 +105,76 @@ export function textFromBtwBlocks(blocks: readonly Block[]): string {
     .join("");
 }
 
-export function cloneBtw(btw: ConversationBtw): ConversationBtw {
+function normalizeBtwTurn(value: unknown): ConversationBtwTurn | null {
+  if (!isRecord(value)
+      || typeof value.id !== "string"
+      || !value.id
+      || typeof value.query !== "string"
+      || !Number.isFinite(value.startedAt)
+      || (value.endedAt !== null && !Number.isFinite(value.endedAt))
+      || (value.phase !== "running" && value.phase !== "complete" && value.phase !== "error")
+      || typeof value.text !== "string"
+      || typeof value.status !== "string") return null;
   return {
+    id: value.id,
+    query: value.query,
+    startedAt: Number(value.startedAt),
+    endedAt: value.endedAt === null ? null : Number(value.endedAt),
+    phase: value.phase,
+    blocks: normalizeBtwBlocks(value.blocks, value.text),
+    text: value.text,
+    status: value.status,
+  };
+}
+
+/** Validate and deep-clone persisted BTW turns. */
+export function normalizeBtwTurns(value: unknown): ConversationBtwTurn[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((turn): ConversationBtwTurn[] => {
+    const normalized = normalizeBtwTurn(turn);
+    return normalized ? [normalized] : [];
+  });
+}
+
+/** Upgrade a one-shot panel in memory when its first follow-up is appended. */
+export function ensureConversationBtwTurns(btw: ConversationBtw): ConversationBtwTurn[] {
+  const existing = normalizeBtwTurns(btw.turns);
+  if (existing.length > 0) {
+    btw.turns = existing;
+    return existing;
+  }
+  const legacy: ConversationBtwTurn = {
+    id: btw.sessionId,
+    query: btw.query,
+    startedAt: btw.startedAt,
+    endedAt: btw.endedAt,
+    phase: btw.phase,
+    blocks: normalizeBtwBlocks(btw.blocks, btw.text),
+    text: btw.text,
+    status: btw.status,
+  };
+  btw.turns = [legacy];
+  return btw.turns;
+}
+
+/** Keep the legacy latest-turn fields coherent for older clients and consumers. */
+export function syncConversationBtwFromTurn(btw: ConversationBtw, turn: ConversationBtwTurn): void {
+  btw.query = turn.query;
+  btw.startedAt = turn.startedAt;
+  btw.endedAt = turn.endedAt;
+  btw.phase = turn.phase;
+  btw.blocks = turn.blocks;
+  btw.text = turn.text;
+  btw.status = turn.status;
+}
+
+export function cloneBtw(btw: ConversationBtw): ConversationBtw {
+  const turns = normalizeBtwTurns(btw.turns);
+  const cloned: ConversationBtw = {
     ...btw,
     blocks: normalizeBtwBlocks(btw.blocks, btw.text),
   };
+  if (turns.length > 0) cloned.turns = turns;
+  else delete cloned.turns;
+  return cloned;
 }

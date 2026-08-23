@@ -310,7 +310,7 @@ export interface RenderState {
   promptScrollOffset: number;
   /** Queue prompt overlay — non-null when the modal is showing. */
   queuePrompt: QueuePromptState | null;
-  /** Durable one-shot answer owned by the active conversation until closed. */
+  /** Durable read-only aside thread owned by the active conversation until closed. */
   btw: BtwPanelState | null;
   /** Chat-history search state for vim-style / and ? search. */
   search: SearchState | null;

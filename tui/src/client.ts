@@ -238,6 +238,10 @@ export class DaemonClient {
     this.send({ type: "btw_query", convId, sessionId, query, startedAt });
   }
 
+  followupBtw(convId: string, sessionId: string, turnId: string, query: string, startedAt: number): void {
+    this.send({ type: "btw_followup", convId, sessionId, turnId, query, startedAt });
+  }
+
   closeBtw(convId: string, sessionId?: string): void {
     this.send({ type: "btw_close", convId, sessionId });
   }

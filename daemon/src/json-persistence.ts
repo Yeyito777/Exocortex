@@ -17,7 +17,7 @@ import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
 import type { Conversation, StoredMessage, ApiMessage, ProviderId, ModelId, EffortLevel, ConversationSummary, PersistedConversationSummary, PersistedFolderSummary, SidebarItemRef, ConversationGoal, ConversationBtw } from "./messages";
 import { DEFAULT_EFFORT, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_ORDER, MAX_EXO_SUBAGENT_DEPTH, activeContextCompactionHistoryCount, historyPrefixHash, isUserMessageAutomation, isValidActiveContext, isValidActiveContextCached, rewindActiveContextToHistoryCount, sortConversations, summarizeConversation } from "./messages";
 import type { QueuedMessageInfo } from "./protocol";
-import { normalizeBtwBlocks } from "./btw/blocks";
+import { normalizeBtwBlocks, normalizeBtwTurns } from "./btw/blocks";
 
 // ── Schema version ──────────────────────────────────────────────────
 
@@ -1227,6 +1227,7 @@ function normalizeConversationBtw(raw: unknown): ConversationBtw | null {
   if (value.endedAt !== null && !Number.isFinite(value.endedAt)) return null;
   if (value.phase !== "running" && value.phase !== "complete" && value.phase !== "error") return null;
   if (typeof value.text !== "string" || typeof value.status !== "string") return null;
+  const turns = normalizeBtwTurns(value.turns);
   return {
     sessionId: value.sessionId,
     query: value.query,
@@ -1238,6 +1239,7 @@ function normalizeConversationBtw(raw: unknown): ConversationBtw | null {
     ...(Array.isArray(value.blocks) ? { blocks: normalizeBtwBlocks(value.blocks, value.text) } : {}),
     text: value.text,
     status: value.status,
+    ...(turns.length > 0 ? { turns } : {}),
   };
 }
 

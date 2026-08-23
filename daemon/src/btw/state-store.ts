@@ -6,7 +6,7 @@ import {
   BTW_RESTART_ERROR,
 } from "./constants";
 import type { BtwPersistenceDependencies } from "./types";
-import { cloneBtw } from "./blocks";
+import { cloneBtw, ensureConversationBtwTurns, syncConversationBtwFromTurn } from "./blocks";
 
 /**
  * Owns durable panel state and accepted-session receipts.
@@ -102,9 +102,11 @@ export class BtwStateStore {
         recovered = true;
       }
       if (btw.phase !== "running") continue;
-      btw.phase = "error";
-      btw.status = BTW_RESTART_ERROR;
-      btw.endedAt = recoveredAt;
+      const latest = ensureConversationBtwTurns(btw).at(-1)!;
+      latest.phase = "error";
+      latest.status = BTW_RESTART_ERROR;
+      latest.endedAt = recoveredAt;
+      syncConversationBtwFromTurn(btw, latest);
       recovered = true;
     }
     if (recovered) this.persistNow();

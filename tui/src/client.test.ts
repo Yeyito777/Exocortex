@@ -346,6 +346,43 @@ describe("DaemonClient commands", () => {
     expect(internal.btwMutationReplay.size).toBe(0);
   });
 
+  test("replays and settles a BTW follow-up by its turn id without replacing the panel id", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    const writes: string[] = [];
+    internal.socket = { write: (value: string) => { writes.push(value); } };
+    internal._connected = true;
+
+    client.followupBtw("conv-1", "panel-1", "turn-2", "clarify", 200);
+    expect(JSON.parse(writes.at(-1)!)).toEqual({
+      type: "btw_followup",
+      convId: "conv-1",
+      sessionId: "panel-1",
+      turnId: "turn-2",
+      query: "clarify",
+      startedAt: 200,
+    });
+    expect(internal.btwMutationReplay.size).toBe(1);
+
+    internal.onData(Buffer.from(`${JSON.stringify({
+      type: "btw_mutation_settled",
+      convId: "conv-1",
+      sessionId: "panel-1",
+      turnId: "other-turn",
+      mutation: "followup",
+    })}\n`));
+    expect(internal.btwMutationReplay.size).toBe(1);
+
+    internal.onData(Buffer.from(`${JSON.stringify({
+      type: "btw_mutation_settled",
+      convId: "conv-1",
+      sessionId: "panel-1",
+      turnId: "turn-2",
+      mutation: "followup",
+    })}\n`));
+    expect(internal.btwMutationReplay.size).toBe(0);
+  });
+
   test("does not let an enqueue settlement prematurely settle an unqueue for the same id", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;

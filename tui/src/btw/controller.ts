@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { RenderState } from "../state";
 import { focusPrompt } from "../state";
-import { createStartingBtw } from "./state";
+import { appendStartingBtwFollowup, createStartingBtw } from "./state";
 
 export interface BtwDaemonActions {
   startBtw(convId: string, sessionId: string, query: string, startedAt: number): void;
+  followupBtw(convId: string, sessionId: string, turnId: string, query: string, startedAt: number): void;
   closeBtw(convId: string, sessionId?: string): void;
 }
 
-/** Start an optimistic panel and issue the durable daemon mutation. */
+/** Start a panel, or append a follow-up when that conversation already owns one. */
 export function startBtwSession(
   state: RenderState,
   daemon: BtwDaemonActions,
@@ -17,8 +18,15 @@ export function startBtwSession(
   now: () => number = Date.now,
 ): void {
   if (!state.convId) return;
-  const sessionId = createSessionId();
   const startedAt = now();
+  if (state.btw?.sourceConvId === state.convId) {
+    const turnId = createSessionId();
+    const sessionId = state.btw.sessionId;
+    appendStartingBtwFollowup(state.btw, turnId, query, startedAt);
+    daemon.followupBtw(state.convId, sessionId, turnId, query, startedAt);
+    return;
+  }
+  const sessionId = createSessionId();
   state.btw = createStartingBtw(
     state.convId,
     sessionId,

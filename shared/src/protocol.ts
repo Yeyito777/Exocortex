@@ -117,13 +117,26 @@ export interface CompactConversationCommand {
   startedAt: number;
 }
 
-/** Run an isolated one-shot query owned by a conversation until explicitly closed. */
+/** Start an isolated BTW thread owned by a conversation until explicitly closed. */
 export interface BtwQueryCommand {
   type: "btw_query";
   reqId?: string;
   /** Client-generated identity used to reject stale events and closes. */
   sessionId: string;
   convId: string;
+  query: string;
+  startedAt: number;
+}
+
+/** Add a question to an existing retained BTW thread. */
+export interface BtwFollowupCommand {
+  type: "btw_followup";
+  reqId?: string;
+  convId: string;
+  /** Existing panel/thread identity. */
+  sessionId: string;
+  /** Client-generated mutation identity for this follow-up turn. */
+  turnId: string;
   query: string;
   startedAt: number;
 }
@@ -881,6 +894,7 @@ export type Command =
   | ReplayConversationCommand
   | CompactConversationCommand
   | BtwQueryCommand
+  | BtwFollowupCommand
   | BtwCloseCommand
   | SetModelCommand
   | SetEffortCommand
@@ -990,11 +1004,23 @@ export interface BtwStartedEvent {
   startedAt: number;
 }
 
+/** A follow-up turn was durably appended to an existing BTW thread. */
+export interface BtwFollowupStartedEvent {
+  type: "btw_followup_started";
+  sessionId: string;
+  turnId: string;
+  convId: string;
+  query: string;
+  startedAt: number;
+}
+
 /** Start a streamed text/thinking block in the isolated BTW history. */
 export interface BtwBlockStartEvent {
   type: "btw_block_start";
   convId: string;
   sessionId: string;
+  /** Defaults to sessionId for events from one-shot-only daemons. */
+  turnId?: string;
   blockType: "text" | "thinking";
 }
 
@@ -1003,6 +1029,7 @@ export interface BtwTextChunkEvent {
   type: "btw_text_chunk";
   convId: string;
   sessionId: string;
+  turnId?: string;
   text: string;
 }
 
@@ -1011,6 +1038,7 @@ export interface BtwThinkingChunkEvent {
   type: "btw_thinking_chunk";
   convId: string;
   sessionId: string;
+  turnId?: string;
   text: string;
 }
 
@@ -1019,6 +1047,7 @@ export interface BtwContentEvent {
   type: "btw_content";
   convId: string;
   sessionId: string;
+  turnId?: string;
   text: string;
   blocks?: Block[];
 }
@@ -1028,6 +1057,7 @@ export interface BtwToolCallEvent {
   type: "btw_tool_call";
   convId: string;
   sessionId: string;
+  turnId?: string;
   toolCallId: string;
   toolName: string;
   input: Record<string, unknown>;
@@ -1040,6 +1070,7 @@ export interface BtwToolResultEvent {
   type: "btw_tool_result";
   convId: string;
   sessionId: string;
+  turnId?: string;
   toolCallId: string;
   toolName: string;
   output: string;
@@ -1050,6 +1081,7 @@ export interface BtwStatusEvent {
   type: "btw_status";
   convId: string;
   sessionId: string;
+  turnId?: string;
   status: string;
 }
 
@@ -1057,6 +1089,7 @@ export interface BtwFinishedEvent {
   type: "btw_finished";
   convId: string;
   sessionId: string;
+  turnId?: string;
   endedAt: number;
 }
 
@@ -1064,6 +1097,7 @@ export interface BtwErrorEvent {
   type: "btw_error";
   convId: string;
   sessionId: string;
+  turnId?: string;
   message: string;
   endedAt: number;
 }
@@ -1079,7 +1113,9 @@ export interface BtwMutationSettledEvent {
   type: "btw_mutation_settled";
   convId: string;
   sessionId: string;
-  mutation: "start" | "close";
+  /** Present for follow-up settlements; the panel keeps its original sessionId. */
+  turnId?: string;
+  mutation: "start" | "followup" | "close";
 }
 
 /** Authoritative conversation-owned BTW state for loads and subscription catch-up. */
@@ -1707,6 +1743,7 @@ export type Event =
   | AckEvent
   | ConversationCreatedEvent
   | BtwStartedEvent
+  | BtwFollowupStartedEvent
   | BtwBlockStartEvent
   | BtwTextChunkEvent
   | BtwThinkingChunkEvent

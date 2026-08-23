@@ -340,9 +340,26 @@ export type Message = UserMessage | AIMessage | SystemMessage | SystemInstructio
 
 // ── Conversation BTW panel ─────────────────────────────────────────
 
-/** Durable one-shot answer owned by a conversation until explicitly closed. */
+/** One question/answer turn inside a durable BTW session. */
+export interface ConversationBtwTurn {
+  /** Stable mutation identity used to deduplicate follow-up delivery. */
+  id: string;
+  query: string;
+  startedAt: number;
+  endedAt: number | null;
+  phase: "running" | "complete" | "error";
+  /** Assistant display history for this turn. */
+  blocks?: Block[];
+  /** Plain answer projection retained for compatibility and non-visual consumers. */
+  text: string;
+  status: string;
+}
+
+/** Durable BTW thread owned by a conversation until explicitly closed. */
 export interface ConversationBtw {
+  /** Stable identity of the retained panel/thread. */
   sessionId: string;
+  /** Latest turn projection retained for compatibility with one-shot clients. */
   query: string;
   provider: ProviderId;
   model: ModelId;
@@ -358,6 +375,8 @@ export interface ConversationBtw {
   /** Plain answer projection retained for compatibility and non-visual consumers. */
   text: string;
   status: string;
+  /** Complete BTW question/answer history. Missing on sessions created by older versions. */
+  turns?: ConversationBtwTurn[];
 }
 
 // ── Conversation goals ───────────────────────────────────────────────

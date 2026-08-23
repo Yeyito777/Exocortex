@@ -4,7 +4,7 @@ import type { SlashCommand } from "../commands/types";
 
 export const BTW_COMMAND: SlashCommand = {
   name: "/btw",
-  description: "Ask a read-only one-shot question using a snapshot of this conversation",
+  description: "Ask a read-only aside, or follow up in its open panel",
   handler: (text, state) => {
     const trimmed = text.trim();
     const remainder = trimmed.slice("/btw".length).trim();
@@ -25,6 +25,11 @@ export const BTW_COMMAND: SlashCommand = {
     }
     if (!state.convId || state.folderInstructionsDoc) {
       pushSystemMessage(state, "Open a conversation before using /btw.", "warning");
+      clearPrompt(state);
+      return { type: "handled" };
+    }
+    if (state.btw && (state.btw.phase === "starting" || state.btw.phase === "running")) {
+      pushSystemMessage(state, "Wait for the current /btw answer before asking a follow-up.", "muted");
       clearPrompt(state);
       return { type: "handled" };
     }

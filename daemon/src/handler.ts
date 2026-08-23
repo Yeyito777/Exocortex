@@ -1541,6 +1541,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         break;
       }
 
+      case "btw_followup": {
+        btwManager.followup(client, cmd);
+        break;
+      }
+
       case "btw_close": {
         const result = btwManager.close(client, cmd.convId, cmd.sessionId);
         if (result === "already_closed" && !cmd.sessionId) {

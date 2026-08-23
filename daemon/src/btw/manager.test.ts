@@ -448,6 +448,96 @@ describe("conversation-owned BTW sessions", () => {
     }
   });
 
+  test("continues a completed BTW in the same durable panel with prior aside context", async () => {
+    const convId = `test-btw-followup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const conv = convStore.create(convId, "openai", "gpt-5.6-sol", "follow-up", "high", false);
+    conv.messages.push({ role: "user", content: "source context", metadata: null });
+    const client = testClient("btw-followup", [convId]);
+    const events = new Map<string, Event[]>();
+    const capturedMessages: ApiMessage[][] = [];
+    let runCount = 0;
+    const fakeRunAgentLoop = ((messages, _provider, _model, callbacks) => {
+      runCount += 1;
+      capturedMessages.push(structuredClone(messages));
+      const text = runCount === 1 ? "first aside answer" : "follow-up answer";
+      callbacks.onBlockStart("text");
+      callbacks.onTextChunk(text);
+      return Promise.resolve({
+        blocks: [{ type: "text", text }],
+        newMessages: [],
+        contextMessages: messages,
+        contextCompacted: false,
+        tokens: 0,
+        lastOutputTokens: 0,
+        durationMs: 1,
+      });
+    }) as RunAgentLoop;
+    let persisted = new Map<string, ConversationBtw>();
+    const manager = new BtwSessionManager(testServer([client], events), { onHeaders() {}, onComplete() {} }, {
+      runAgentLoop: fakeRunAgentLoop,
+      hasConfiguredCredentials: () => true,
+      loadConversationBtwState: emptyPersistenceState,
+      saveConversationBtwState: state => { persisted = cloneStates(state.btws); },
+    });
+
+    try {
+      manager.start(client, {
+        type: "btw_query",
+        sessionId: "panel-session",
+        convId,
+        query: "first aside question",
+        startedAt: 100,
+      });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(manager.getSnapshot(convId)).toMatchObject({
+        sessionId: "panel-session",
+        phase: "complete",
+        turns: [{ id: "panel-session", query: "first aside question", text: "first aside answer" }],
+      });
+
+      manager.followup(client, {
+        type: "btw_followup",
+        sessionId: "panel-session",
+        turnId: "followup-turn",
+        convId,
+        query: "clarify the aside",
+        startedAt: 200,
+      });
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      expect(runCount).toBe(2);
+      expect(manager.getSnapshot(convId)).toMatchObject({
+        sessionId: "panel-session",
+        query: "clarify the aside",
+        text: "follow-up answer",
+        phase: "complete",
+        turns: [
+          { id: "panel-session", query: "first aside question", text: "first aside answer", phase: "complete" },
+          { id: "followup-turn", query: "clarify the aside", text: "follow-up answer", phase: "complete" },
+        ],
+      });
+      expect(persisted.get(convId)?.sessionId).toBe("panel-session");
+
+      const followupReplay = capturedMessages[1];
+      expect(followupReplay).toContainEqual({ role: "user", content: "first aside question" });
+      expect(followupReplay).toContainEqual({
+        role: "assistant",
+        content: [{ type: "text", text: "first aside answer" }],
+      });
+      expect(followupReplay.at(-1)?.role).toBe("user");
+      expect(followupReplay.at(-1)?.content).toBeString();
+      expect(followupReplay.at(-1)?.content as string).toStartWith("clarify the aside\n\n[BTW aside]");
+      expect(events.get(client.id)?.some(event => event.type === "btw_followup_started"
+        && event.sessionId === "panel-session" && event.turnId === "followup-turn")).toBe(true);
+      expect(events.get(client.id)?.some(event => event.type === "btw_closed")).toBe(false);
+
+      expect(manager.close(client, convId, "panel-session")).toBe("closed");
+    } finally {
+      manager.dispose();
+      convStore.remove(convId);
+    }
+  });
+
   test("keeps independent sessions in separate conversations", async () => {
     const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const firstId = `test-btw-first-${suffix}`;
@@ -528,6 +618,7 @@ describe("conversation-owned BTW sessions", () => {
         type: "btw_text_chunk",
         convId,
         sessionId: "stable-session",
+        turnId: "stable-session",
         text: "after reconnect",
       });
 
