@@ -33,11 +33,12 @@ import { beginDaemonShutdown, DAEMON_RESTART_EXIT_CODE, resolveDaemonShutdownMod
 import { getToolDisplayInfo } from "./tools/registry";
 import { getProviders, refreshProviders } from "./providers/registry";
 import { socketPath, pidPath, runtimeDir, worktreeName, isWindows } from "@exocortex/shared/paths";
-import { stopAllBackgroundTasks, waitForBackgroundTasksToStop } from "./conversation-activity";
+import { getActiveBackgroundTaskCount, stopAllBackgroundTasks, waitForBackgroundTasksToStop } from "./conversation-activity";
 import { pruneExternalNotificationSubscriptions } from "./external-notifications";
 import { startExternalNotificationSoftWakeService, stopExternalNotificationSoftWakeService } from "./external-notification-soft-wakes";
 import { startDisplayIndexBackfill } from "./display-index-backfill";
-import { broadcastConversationToolPolicyUpdated } from "./conversation-events";
+import { broadcastConversationToolPolicyUpdated, broadcastConversationUpdated } from "./conversation-events";
+import { BackgroundTaskRecovery } from "./background-task-recovery";
 
 // ── Startup profiling ────────────────────────────────────────────────
 
@@ -115,6 +116,7 @@ async function startDaemon(): Promise<void> {
   // Create server — handler is set up with a forward reference
   // since the handler needs the server instance for sending events.
   let commandHandler: import("./handler").DaemonCommandHandler | null = null;
+  let backgroundTaskRecovery: BackgroundTaskRecovery | null = null;
   const server = new DaemonServer(SOCKET_PATH, (client, cmd) => commandHandler?.(client, cmd));
   profileMark("server_constructed");
 
@@ -156,14 +158,22 @@ async function startDaemon(): Promise<void> {
         }
       }
 
-      const stoppedBackgroundTasks = stopAllBackgroundTasks();
-      if (stoppedBackgroundTasks > 0) {
-        const remaining = await waitForBackgroundTasksToStop();
-        log(
-          remaining > 0 ? "warn" : "info",
-          `exocortexd: requested stop for ${stoppedBackgroundTasks} managed background task(s)${remaining > 0 ? `; ${remaining} still closing` : ""}`,
-        );
+      if (shutdownMode === "stop") {
+        const stoppedBackgroundTasks = stopAllBackgroundTasks();
+        if (stoppedBackgroundTasks > 0) {
+          const remaining = await waitForBackgroundTasksToStop();
+          log(
+            remaining > 0 ? "warn" : "info",
+            `exocortexd: requested stop for ${stoppedBackgroundTasks} managed background task(s)${remaining > 0 ? `; ${remaining} still closing` : ""}`,
+          );
+        }
+      } else {
+        const preservedBackgroundTasks = getActiveBackgroundTaskCount();
+        if (preservedBackgroundTasks > 0) {
+          log("info", `exocortexd: preserving ${preservedBackgroundTasks} managed background task(s) for replacement daemon adoption`);
+        }
       }
+      backgroundTaskRecovery?.stop();
 
       if (!isWindows) {
         await stopExternalToolsAsync();
@@ -216,6 +226,12 @@ async function startDaemon(): Promise<void> {
   // Load persisted conversations
   const conversationLoadStats = convStore.loadFromDisk();
   profileMark("conversations_loaded", conversationLoadStats);
+  backgroundTaskRecovery = new BackgroundTaskRecovery({
+    onConversationChanged: (convId) => { broadcastConversationUpdated(server, convId); },
+    onComplete: (convId, completion) => { commandHandler?.backgroundTaskComplete(convId, completion); },
+  });
+  const adoptedBackgroundTaskCount = backgroundTaskRecovery.start();
+  profileMark("background_tasks_recovered", { adoptedCount: adoptedBackgroundTaskCount });
   // Development/source installs can migrate legacy histories off the event loop.
   // Compiled Windows builds may not ship the worker's TypeScript entrypoint;
   // their projections are created lazily on first open/save instead.
@@ -317,6 +333,7 @@ async function startDaemon(): Promise<void> {
     console.log(`  subagents: resumed delivery of ${pendingNotifications} parent notification(s)`);
     profileMark("subagent_notifications_recovered", { count: pendingNotifications });
   }
+  backgroundTaskRecovery.enableCompletionDelivery();
 }
 
 // ── Main ────────────────────────────────────────────────────────────

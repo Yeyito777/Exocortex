@@ -9,6 +9,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { createWriteStream, type WriteStream } from "fs";
 import { createInterface } from "readline";
+import {
+  readProcessStartTime,
+  writeBackgroundTaskRecord,
+  type BackgroundTaskRecoveryMetadata,
+  type PersistedBackgroundTask,
+} from "../background-task-state";
 
 const MAX_CAPTURE_BYTES = 1_000_000;
 
@@ -21,10 +27,12 @@ interface StartRequest {
   terminateOnParentExit?: boolean;
   timeoutMs?: number;
   cwd: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 interface BackgroundRequest {
   type: "background";
+  recovery?: BackgroundTaskRecoveryMetadata;
 }
 
 type Request = StartRequest | BackgroundRequest;
@@ -53,15 +61,31 @@ let finalSent = false;
 let terminating = false;
 let terminateOnParentExit = false;
 let commandTimeout: ReturnType<typeof setTimeout> | undefined;
+let recoveryRecordPath: string | undefined;
+let recoveryRecord: PersistedBackgroundTask | undefined;
+let controlChannelOpen = true;
+
+process.stdout.on("error", () => {
+  controlChannelOpen = false;
+});
 
 function send(event: RunnerEvent, final = false): void {
   if (finalSent) return;
   if (final) finalSent = true;
+  if (!controlChannelOpen || process.stdout.destroyed) {
+    if (final) process.exit(0);
+    return;
+  }
   const payload = `${JSON.stringify(event)}\n`;
-  if (final) {
-    process.stdout.write(payload, () => process.exit(0));
-  } else {
-    process.stdout.write(payload);
+  try {
+    if (final) {
+      process.stdout.write(payload, () => process.exit(0));
+    } else {
+      process.stdout.write(payload);
+    }
+  } catch {
+    controlChannelOpen = false;
+    if (final) process.exit(0);
   }
 }
 
@@ -111,8 +135,47 @@ function writeOutput(data: Buffer): void {
   }
 }
 
-function enableBackgrounding(): void {
+function enableBackgrounding(request: BackgroundRequest): void {
   if (backgrounded) return;
+  if (request.recovery && commandProcess?.pid) {
+    const metadata = request.recovery;
+    const runnerStartTime = readProcessStartTime(process.pid);
+    const processStartTime = readProcessStartTime(commandProcess.pid);
+    const record: PersistedBackgroundTask = {
+      version: 1,
+      state: "running",
+      taskId: metadata.taskId,
+      ownerConversationId: metadata.ownerConversationId,
+      toolName: "bash",
+      title: metadata.title,
+      startedAt: metadata.startedAt,
+      backgroundedAt: metadata.backgroundedAt,
+      originDaemonPid: metadata.originDaemonPid,
+      runnerPid: process.pid,
+      ...(runnerStartTime ? { runnerStartTime } : {}),
+      pid: commandProcess.pid,
+      ...(processStartTime ? { processStartTime } : {}),
+      outputPath: metadata.outputPath,
+      cwd: metadata.cwd,
+      ...(metadata.timeoutAt !== undefined ? { timeoutAt: metadata.timeoutAt } : {}),
+    };
+    try {
+      writeBackgroundTaskRecord(metadata.recordPath, record);
+      recoveryRecordPath = metadata.recordPath;
+      recoveryRecord = record;
+    } catch (err) {
+      send({
+        type: "error",
+        message: `could not persist background task state: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      terminateCommandTree();
+      return;
+    }
+  }
+
+  // From this point onward the command is a durable detached task. Losing the
+  // original daemon control pipe must not terminate it.
+  terminateOnParentExit = false;
   backgrounded = true;
   send({
     type: "backgrounded",
@@ -123,13 +186,34 @@ function enableBackgrounding(): void {
 
 function finish(code: number | null, signal: string | null): void {
   if (commandTimeout) clearTimeout(commandTimeout);
-  const done = () => send({
-    type: "close",
-    code,
-    signal,
-    byteTruncated,
-    ...(outputError ? { outputError } : {}),
-  }, true);
+  const done = () => {
+    if (recoveryRecordPath && recoveryRecord) {
+      recoveryRecord = {
+        ...recoveryRecord,
+        state: "completed",
+        completion: {
+          endedAt: Date.now(),
+          exitCode: code,
+          signal,
+          byteTruncated,
+          ...(outputError ? { outputError } : {}),
+        },
+      };
+      try {
+        writeBackgroundTaskRecord(recoveryRecordPath, recoveryRecord);
+      } catch {
+        // The original daemon still receives the close event when connected.
+        // Recovery cannot be guaranteed when its durable state is unavailable.
+      }
+    }
+    send({
+      type: "close",
+      code,
+      signal,
+      byteTruncated,
+      ...(outputError ? { outputError } : {}),
+    }, true);
+  };
 
   const stream = outputStream;
   outputStream = null;
@@ -185,7 +269,7 @@ function start(request: StartRequest): void {
       request.windows ? ["-NoProfile", "-Command", request.command] : ["-c", request.command],
       {
         cwd: request.cwd,
-        env: { ...process.env },
+        env: request.env ? { ...request.env } : { ...process.env },
         stdio: ["pipe", "pipe", "pipe"],
         detached: !request.windows,
         windowsHide: request.windows,
@@ -228,7 +312,7 @@ lines.on("line", (line) => {
   }
 
   if (request.type === "start") start(request);
-  else if (request.type === "background") enableBackgrounding();
+  else if (request.type === "background") enableBackgrounding(request);
 });
 
 process.stdin.on("end", () => {
