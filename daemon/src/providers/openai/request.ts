@@ -6,6 +6,7 @@ import {
   supportsOpenAIFastServiceTier,
   supportsOpenAIMaxReasoningEffort,
   supportsOpenAIReasoningSummary,
+  supportsOpenAIUltraReasoningEffort,
   usesOpenAIResponsesLite,
 } from "./capabilities";
 import { OPENAI_RESPONSES_LITE_WS_METADATA_KEY } from "./constants";
@@ -342,7 +343,7 @@ function shouldRequestReasoningSummary(model: ModelId): boolean {
 
 function requestInstructions(model: ModelId, options: StreamOptions): string {
   const base = options.system || "You are a helpful assistant.";
-  if (model !== "gpt-daybreak-blue-latest" || options.effort !== "ultra") return base;
+  if (!supportsOpenAIUltraReasoningEffort(model) || options.effort !== "ultra") return base;
   return `${base}\n\n${OPENAI_ULTRA_MULTI_AGENT_INSTRUCTION}`;
 }
 

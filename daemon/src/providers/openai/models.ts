@@ -2,7 +2,7 @@ import { EFFORT_LEVELS, type EffortLevel, type ModelInfo, type ReasoningEffortIn
 import { formatModelDisplayName } from "@exocortex/shared/model-display";
 import { log } from "../../log";
 import { getVerifiedSession } from "./auth";
-import { supportsOpenAIFastServiceTier, supportsOpenAIImageInputs } from "./capabilities";
+import { supportsOpenAIFastServiceTier, supportsOpenAIImageInputs, supportsOpenAIUltraReasoningEffort } from "./capabilities";
 import { OPENAI_CODEX_CLIENT_VERSION, OPENAI_MODELS_URL } from "./constants";
 import { buildOpenAIJsonHeaders } from "./http";
 
@@ -24,6 +24,11 @@ const GPT_5_6_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
   { effort: "none", description: "Disable reasoning for the fastest responses" },
   ...FALLBACK_OPENAI_EFFORTS,
   { effort: "max", description: "Maximum reasoning for the hardest quality-first workloads" },
+];
+
+const GPT_5_6_ULTRA_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
+  ...GPT_5_6_OPENAI_EFFORTS,
+  { effort: "ultra", description: "Maximum reasoning with automatic task delegation" },
 ];
 
 const DAYBREAK_BLUE_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
@@ -50,8 +55,8 @@ function fallbackOpenAIModel(
 }
 
 export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
-  fallbackOpenAIModel("gpt-5.6-sol", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
-  fallbackOpenAIModel("gpt-5.6-terra", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
+  fallbackOpenAIModel("gpt-5.6-sol", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_ULTRA_OPENAI_EFFORTS),
+  fallbackOpenAIModel("gpt-5.6-terra", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_ULTRA_OPENAI_EFFORTS),
   fallbackOpenAIModel("gpt-5.6-luna", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
   fallbackOpenAIModel("gpt-daybreak-blue-latest", DAYBREAK_BLUE_CONTEXT_TOKENS, DAYBREAK_BLUE_OPENAI_EFFORTS, "low"),
   fallbackOpenAIModel("gpt-5.5"),
@@ -137,7 +142,11 @@ function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel
 }
 
 function fallbackEffortsForModel(modelSlug: string): ReasoningEffortInfo[] {
-  if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) return GPT_5_6_OPENAI_EFFORTS;
+  if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) {
+    return supportsOpenAIUltraReasoningEffort(modelSlug)
+      ? GPT_5_6_ULTRA_OPENAI_EFFORTS
+      : GPT_5_6_OPENAI_EFFORTS;
+  }
   if (modelSlug === "gpt-daybreak-blue-latest") return DAYBREAK_BLUE_OPENAI_EFFORTS;
   return FALLBACK_OPENAI_EFFORTS;
 }

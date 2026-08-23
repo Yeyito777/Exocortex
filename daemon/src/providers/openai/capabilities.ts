@@ -4,6 +4,7 @@ interface OpenAIModelCapabilityOverride {
   supportsReasoningSummary?: boolean;
   supportsImages?: boolean;
   supportsMaxReasoningEffort?: boolean;
+  supportsUltraReasoningEffort?: boolean;
   usesResponsesLite?: boolean;
   supportsFastServiceTier?: boolean;
   defaultVerbosity?: "low" | "medium" | "high";
@@ -12,12 +13,19 @@ interface OpenAIModelCapabilityOverride {
 // Model-level wire quirks verified against the Codex Responses endpoint.
 // Keep these here so request building and UI metadata stay in sync.
 const OPENAI_MODEL_CAPABILITY_OVERRIDES = new Map<ModelId, OpenAIModelCapabilityOverride>([
+  ["gpt-5.6-sol", {
+    supportsUltraReasoningEffort: true,
+  }],
+  ["gpt-5.6-terra", {
+    supportsUltraReasoningEffort: true,
+  }],
   ["gpt-5.3-codex-spark", {
     supportsReasoningSummary: false,
     supportsImages: false,
   }],
   ["gpt-daybreak-blue-latest", {
     supportsMaxReasoningEffort: true,
+    supportsUltraReasoningEffort: true,
     usesResponsesLite: true,
     supportsFastServiceTier: false,
     defaultVerbosity: "low",
@@ -43,6 +51,10 @@ export function supportsOpenAIMaxReasoningEffort(model: ModelId): boolean {
 
 export function usesOpenAIResponsesLite(model: ModelId): boolean {
   return openAIModelCapabilityOverride(model)?.usesResponsesLite === true;
+}
+
+export function supportsOpenAIUltraReasoningEffort(model: ModelId): boolean {
+  return openAIModelCapabilityOverride(model)?.supportsUltraReasoningEffort === true;
 }
 
 export function supportsOpenAIFastServiceTier(model: ModelId): boolean {

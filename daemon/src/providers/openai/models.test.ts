@@ -60,7 +60,9 @@ describe("OpenAI model selection", () => {
       defaultEffort: "medium",
       supportsImages: true,
     });
-    expect(models[0]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+    expect(models[0]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(models[1]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(models[2]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
     expect(models[3]).toMatchObject({
       id: "gpt-daybreak-blue-latest",
       label: "Daybreak Blue",
@@ -242,6 +244,7 @@ describe("OpenAI model selection", () => {
     expect(models.find((model) => model.id === "gpt-5.6-terra")?.defaultEffort).toBe("medium");
     expect(models.find((model) => model.id === "gpt-5.6-terra")?.maxContext).toBe(372_000);
     expect(models.find((model) => model.id === "gpt-5.6-terra")?.supportedEfforts.map((item) => item.effort)).toContain("max");
+    expect(models.find((model) => model.id === "gpt-5.6-terra")?.supportedEfforts.map((item) => item.effort)).toContain("ultra");
   });
 
   test("still prefers the GPT-5.5 family over GPT-5.4 when GPT-5.6 is absent upstream", () => {

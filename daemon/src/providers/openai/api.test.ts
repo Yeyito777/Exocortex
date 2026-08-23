@@ -269,6 +269,22 @@ describe("OpenAI replay input", () => {
     expect((body.reasoning as { effort?: string }).effort).toBe("max");
   });
 
+  test("Ultra enables proactive delegation for Sol and Terra but not Luna", () => {
+    for (const model of ["gpt-5.6-sol", "gpt-5.6-terra"]) {
+      const body = buildRequestBodyForTest([
+        { role: "user", content: "hello" },
+      ], model, 1234, { system: "Base instructions.", effort: "ultra" });
+
+      expect((body.reasoning as { effort?: string }).effort).toBe("max");
+      expect(body.instructions).toBe("Base instructions.\n\n<multi_agent_mode>Proactive multi-agent delegation is active.</multi_agent_mode>");
+    }
+
+    const luna = buildRequestBodyForTest([
+      { role: "user", content: "hello" },
+    ], "gpt-5.6-luna", 1234, { system: "Base instructions.", effort: "ultra" });
+    expect(luna.instructions).toBe("Base instructions.");
+  });
+
   test("max effort remains xhigh-compatible for older OpenAI models", () => {
     const body = buildRequestBodyForTest([
       { role: "user", content: "hello" },
