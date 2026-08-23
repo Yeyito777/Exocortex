@@ -71,6 +71,32 @@ function makeState(): RenderState {
 }
 
 describe("render caching and frame diffing", () => {
+  test("does not present the partial opening window before restoring a saved position", () => {
+    const state = makeState();
+    state.convId = "source";
+    expect(captureRenderOutput(state)).not.toBe("");
+    const previouslyPresentedLines = state.historyLines;
+
+    state.convId = "target";
+    state.messages = [{ role: "user", text: "target opening-window bottom", metadata: null }];
+    state.scrollOffset = 0;
+    state.conversationScroll.pendingRestore = {
+      convId: "target",
+      mode: "percentage",
+      percentage: 0.25,
+      waitForInitialBackfill: true,
+    };
+
+    expect(captureRenderOutput(state)).toBe("");
+    expect(state.historyLines).toBe(previouslyPresentedLines);
+    expect(state.conversationScroll.pendingRestore?.waitForInitialBackfill).toBe(true);
+
+    state.conversationScroll.pendingRestore.waitForInitialBackfill = false;
+    const restoredOutput = captureRenderOutput(state);
+    expect(stripCsi(restoredOutput)).toContain("target opening-window bottom");
+    expect(state.conversationScroll.pendingRestore).toBeNull();
+  });
+
   test("preserves the sidebar background and border beside an expanded BTW panel", () => {
     const state = makeState();
     state.sidebar.open = true;

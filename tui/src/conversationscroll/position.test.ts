@@ -5,6 +5,7 @@ import {
   beginConversationScrollRestore,
   captureScrollPercentage,
   completeInitialConversationBackfill,
+  isConversationScrollRestoreWaitingForInitialBackfill,
   prepareConversationOpen,
   pruneConversationScrollPositions,
   scrollOffsetForPercentage,
@@ -73,9 +74,26 @@ describe("conversation scroll percentages", () => {
       percentage: 0.25,
       waitForInitialBackfill: true,
     });
+    // The target becomes active when its canonical opening window is applied.
+    state.convId = "target";
+    expect(isConversationScrollRestoreWaitingForInitialBackfill(state)).toBe(true);
 
     completeInitialConversationBackfill(state, "target");
     expect(state.conversationScroll.pendingRestore?.waitForInitialBackfill).toBe(false);
+    expect(isConversationScrollRestoreWaitingForInitialBackfill(state)).toBe(false);
+  });
+
+  test("does not withhold the opening window for an exactly bottom-pinned position", () => {
+    const state = createInitialState();
+    state.convId = "target";
+    state.conversationScroll.pendingRestore = {
+      convId: "target",
+      mode: "percentage",
+      percentage: 1,
+      waitForInitialBackfill: true,
+    };
+
+    expect(isConversationScrollRestoreWaitingForInitialBackfill(state)).toBe(false);
   });
 
   test("prunes positions for conversations no longer reported by the daemon", () => {

@@ -14,7 +14,11 @@
 import type { RenderState } from "./state";
 import type { ImageAttachment } from "./messages";
 import { getViewStart } from "./chatscroll";
-import { applyChatConversationScroll, hasReadyConversationScrollRestore } from "./conversationscroll";
+import {
+  applyChatConversationScroll,
+  hasReadyConversationScrollRestore,
+  isConversationScrollRestoreWaitingForInitialBackfill,
+} from "./conversationscroll";
 import { renderTopbar } from "./topbar";
 import { conversationActionMenuAnchorRow, renderConversationActionMenu, renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { isGlobalIdleQueuedMessage } from "./queue";
@@ -1217,7 +1221,17 @@ function buildCursorPayload(
 
 // ── Main render ─────────────────────────────────────────────────────
 
-export function render(state: RenderState): void {
+/**
+ * Build and present one retained terminal frame.
+ *
+ * A remembered percentage is meaningful only after the initial history backfill
+ * has arrived. Keep the previously presented frame intact until then; otherwise
+ * the partial five-turn window is painted at the bottom for one frame before the
+ * completed window jumps to its restored position.
+ */
+export function render(state: RenderState): boolean {
+  if (isConversationScrollRestoreWaitingForInitialBackfill(state)) return false;
+
   const { cols, rows } = state;
 
   // App-wide background: fills empty areas and persists through resets
@@ -1587,4 +1601,5 @@ export function render(state: RenderState): void {
       : null,
     viewStart,
   });
+  return true;
 }

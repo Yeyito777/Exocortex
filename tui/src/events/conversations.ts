@@ -393,6 +393,9 @@ export function handleConversationHistoryLoaded(
     state.historyLoadingOlder = false;
     state.historyLoadingStartedAt = null;
     state.historyLoadingRequestId = null;
+    // The expected opening page was superseded by another canonical history
+    // window. Do not keep presentation blocked on a request we just discarded.
+    completeInitialConversationBackfill(state, event.convId);
     return;
   }
 
@@ -430,9 +433,9 @@ export function handleConversationHistoryLoaded(
     && !(state.panelFocus === "chat" && state.chatFocus === "history");
   if (canFastPathInitialBackfill) prependOlderMessages();
   else preserveViewportAcrossHistoryPrepend(state, prependOlderMessages);
-  if (event.requestSource === "initial-backfill") {
-    completeInitialConversationBackfill(state, event.convId);
-  }
+  // A matching page is sufficient to place a saved percentage. requestSource
+  // may be absent when talking to an older daemon, so key this off pending state.
+  completeInitialConversationBackfill(state, event.convId);
 
   const newToolCallIds = collectDisplayEntryToolResultIds(event.entries);
   if (newToolCallIds.length > 0) {

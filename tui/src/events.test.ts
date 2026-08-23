@@ -757,6 +757,12 @@ describe("paged conversation history events", () => {
     state.historyLoadingOlder = true;
     state.historyLoadingStartedAt = 100;
     state.historyLoadingRequestId = "history-1";
+    state.conversationScroll.pendingRestore = {
+      convId: "conv-1",
+      mode: "percentage",
+      percentage: 0.25,
+      waitForInitialBackfill: true,
+    };
     state.deferredHistoryRender = {
       convId: "conv-1",
       width: 80,
@@ -793,6 +799,7 @@ describe("paged conversation history events", () => {
     expect(state.historyHasOlder).toBe(false);
     expect(state.historyLoadingOlder).toBe(false);
     expect(state.deferredHistoryRender).toBeNull();
+    expect(state.conversationScroll.pendingRestore?.waitForInitialBackfill).toBe(false);
     // Bottom-anchored initial expansion skips the old/new double history reflow;
     // the normal render scheduled by main.ts replaces this cache afterward.
     expect(state.historyLines).toEqual(["cached visible bottom"]);
@@ -823,6 +830,62 @@ describe("paged conversation history events", () => {
     expect(state.messages).toEqual([]);
     expect(state.historyLoadingOlder).toBe(true);
     expect(state.historyLoadingRequestId).toBe("history-new");
+  });
+
+  test("releases a saved-position restore when its matching initial page is superseded", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.historyStartIndex = 20;
+    state.historyLoadingOlder = true;
+    state.historyLoadingRequestId = "history-initial";
+    state.conversationScroll.pendingRestore = {
+      convId: "conv-1",
+      mode: "percentage",
+      percentage: 0.25,
+      waitForInitialBackfill: true,
+    };
+
+    handleEvent({
+      type: "conversation_history_loaded",
+      reqId: "history-initial",
+      convId: "conv-1",
+      requestSource: "initial-backfill",
+      entries: [{ type: "user", text: "stale" }],
+      historyStartIndex: 10,
+      historyStartUserIndex: 5,
+      historyEndIndex: 15,
+      historyTotalEntries: 40,
+      hasOlderHistory: true,
+    }, state, daemon);
+
+    expect(state.messages).toEqual([]);
+    expect(state.historyLoadingOlder).toBe(false);
+    expect(state.historyLoadingRequestId).toBeNull();
+    expect(state.conversationScroll.pendingRestore?.waitForInitialBackfill).toBe(false);
+  });
+
+  test("releases a saved-position restore when the initial page request fails", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.historyLoadingOlder = true;
+    state.historyLoadingRequestId = "history-initial";
+    state.conversationScroll.pendingRestore = {
+      convId: "conv-1",
+      mode: "percentage",
+      percentage: 0.25,
+      waitForInitialBackfill: true,
+    };
+
+    handleEvent({
+      type: "error",
+      reqId: "history-initial",
+      convId: "conv-1",
+      message: "history failed",
+    }, state, daemon);
+
+    expect(state.historyLoadingOlder).toBe(false);
+    expect(state.historyLoadingRequestId).toBeNull();
+    expect(state.conversationScroll.pendingRestore?.waitForInitialBackfill).toBe(false);
   });
 
   test("loads only newly prepended tool outputs while output is expanded", () => {

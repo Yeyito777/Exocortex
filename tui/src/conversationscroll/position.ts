@@ -99,6 +99,15 @@ export function completeInitialConversationBackfill(state: RenderState, convId: 
   }
 }
 
+/** Whether painting now would show the partial opening window at the wrong position. */
+export function isConversationScrollRestoreWaitingForInitialBackfill(state: RenderState): boolean {
+  const pending = state.conversationScroll.pendingRestore;
+  return pending?.convId === state.convId
+    && pending.mode === "percentage"
+    && (pending.percentage ?? 1) < 1
+    && pending.waitForInitialBackfill;
+}
+
 export function hasReadyConversationScrollRestore(state: RenderState): boolean {
   const pending = state.conversationScroll.pendingRestore;
   return pending?.convId === state.convId && !pending.waitForInitialBackfill;

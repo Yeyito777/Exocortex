@@ -66,7 +66,9 @@ import { applyTuiStartingState, availableStartingConversationId, captureTuiStart
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { formatConnectionLostNotice } from "./events/notices";
 import {
+  completeInitialConversationBackfill,
   forgetConversationScroll,
+  isConversationScrollRestoreWaitingForInitialBackfill,
   leaveConversationView,
   prepareConversationOpen,
 } from "./conversationscroll";
@@ -242,8 +244,9 @@ const EVENT_LOOP_LAG_WARN_MS = 250;
 
 function performRender(): number {
   const renderStartedAt = performance.now();
-  render(state);
+  const framePresented = render(state);
   const renderMs = performance.now() - renderStartedAt;
+  if (!framePresented) return renderMs;
   if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
     log("warn", `perf: tui_slow_render ${JSON.stringify({
       convId: state.convId,
@@ -504,10 +507,21 @@ function onDaemonEvent(event: Event): void {
   }
 
   if (event.type === "conversation_loaded") {
-    // Paint the five-turn opening window before beginning the silent expansion
-    // to the normal fifteen-turn in-chat buffer.
+    // Normally paint the five-turn opening window before silently expanding it to
+    // the fifteen-turn in-chat buffer. A saved position needs the expanded window,
+    // though, so render() keeps the previous frame until that backfill is ready.
     const applyMs = PERFORMANCE_PROFILING_ENABLED ? performance.now() - eventStartedAt : 0;
-    const renderMs = renderImmediately();
+    const restoreWaitingForBackfill = isConversationScrollRestoreWaitingForInitialBackfill(state);
+    let renderMs = renderImmediately();
+    const initialBackfillRequested = requestOlderHistory(INITIAL_BUFFER_ADDITIONAL_TURNS, "initial-backfill");
+    if (initialBackfillRequested) {
+      if (!restoreWaitingForBackfill) scheduleRender(0);
+    } else if (restoreWaitingForBackfill) {
+      // Inconsistent/legacy history metadata must not leave frame presentation
+      // blocked forever. Restore against the opening window as a safe fallback.
+      completeInitialConversationBackfill(state, event.convId);
+      renderMs += renderImmediately();
+    }
     if (PERFORMANCE_PROFILING_ENABLED) {
       const totalMs = performance.now() - eventStartedAt;
       log(totalMs >= 250 ? "warn" : "info", `perf: conversation_open tui_applied ${JSON.stringify({
@@ -518,9 +532,10 @@ function onDaemonEvent(event: Event): void {
         totalMs,
         entries: event.entries.length,
         historyTotalEntries: event.historyTotalEntries ?? null,
+        restoreWaitingForBackfill,
+        initialBackfillRequested,
       })}`);
     }
-    if (requestOlderHistory(INITIAL_BUFFER_ADDITIONAL_TURNS, "initial-backfill")) scheduleRender(0);
     return;
   }
 

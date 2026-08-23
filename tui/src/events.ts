@@ -33,6 +33,7 @@ import {
 import { applyConversationUnwound } from "./editmessage";
 import { pushDisplayEntries } from "./events/display";
 import { preserveViewportAcrossHistoryMutation } from "./chatscroll";
+import { completeInitialConversationBackfill } from "./conversationscroll";
 import { CONV_SCOPED, observeStreamSeq } from "./events/stream-sequence";
 import {
   handleBlockStart,
@@ -150,6 +151,9 @@ export function handleEvent(
         state.historyLoadingOlder = false;
         state.historyLoadingStartedAt = null;
         state.historyLoadingRequestId = null;
+        // A failed opening backfill still has to release frame presentation;
+        // restore against the opening window instead of freezing indefinitely.
+        completeInitialConversationBackfill(state, event.convId);
       }
       if (event.convId === state.convId && state.pendingAI && state.pendingAI.blocks.length === 0) clearPendingAI(state);
       pushSystemMessage(state, `✗ ${event.message}`, theme.error);
@@ -390,6 +394,9 @@ export function handleEvent(
         state.historyLoadingStartedAt = null;
         state.historyLoadingRequestId = null;
       });
+      // A canonical replacement supersedes any initial page that was in flight.
+      // It is now the best available document for the pending saved position.
+      completeInitialConversationBackfill(state, event.convId);
       const preservedToolOutputResult = !event.toolOutputsIncluded && preservedToolOutputs.size > 0
         ? applyPreservedToolResultOutputs(state, preservedToolOutputs)
         : { patchedOutputs: 0, patchedToolNames: 0 };
