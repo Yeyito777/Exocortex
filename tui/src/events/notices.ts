@@ -47,8 +47,8 @@ export function formatStreamRetryNotice(event: Extract<Event, { type: "stream_re
   return `⟳ ${event.errorMessage} — retrying in ${event.delaySec}s (${event.attempt}/${event.maxAttempts})…`;
 }
 
-export function formatConnectionLostNotice(shutdownMode: DaemonShutdownMode | null): string | null {
-  return shutdownMode === "restart" ? null : "✗ Lost connection to daemon.";
+export function formatConnectionLostNotice(_shutdownMode: DaemonShutdownMode | null): string {
+  return "✗ Lost connection to daemon.";
 }
 
 export function shouldReconcileInlineSystemNoticeOnStop(event: SystemMessageEvent): boolean {

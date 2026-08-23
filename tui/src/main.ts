@@ -1354,9 +1354,9 @@ function confirmSelectedEditMessage(): void {
 }
 
 function requestDaemonRestart(): void {
-  // Do not add a local lifecycle message here. The daemon records any interrupted
-  // turn as "Daemon restarted" and announces the planned shutdown so the generic
-  // connection-loss notice can be suppressed.
+  // Do not add a local lifecycle message here. The connection-loss callback
+  // reports the transport transition, while the daemon separately records any
+  // interrupted turn as "Daemon restarted".
   daemon.restartDaemon();
 }
 
@@ -1675,8 +1675,7 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
-  const notice = formatConnectionLostNotice(shutdownMode);
-  if (notice) pushSystemMessage(state, notice, theme.error);
+  pushSystemMessage(state, formatConnectionLostNotice(shutdownMode), theme.error);
   scheduleRender();
   void reconnectToDaemon();
 }
