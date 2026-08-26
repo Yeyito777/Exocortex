@@ -1657,9 +1657,10 @@ describe("OpenAI reasoning summaries", () => {
           id: "resp_1",
           usage: {
             input_tokens: 123,
-            input_tokens_details: { cached_tokens: 100 },
+            input_tokens_details: { cached_tokens: 100, cache_write_tokens: 20 },
             output_tokens: 7,
           },
+          service_tier: "priority",
           output: [
             { type: "function_call", call_id: "call_1", name: "bash", arguments: '{"cmd":"echo hi"}' },
           ],
@@ -1669,7 +1670,9 @@ describe("OpenAI reasoning summaries", () => {
 
     expect(result.inputTokens).toBe(123);
     expect(result.cachedInputTokens).toBe(100);
+    expect(result.cacheMissInputTokens).toBe(20);
     expect(result.outputTokens).toBe(7);
+    expect(result.billingServiceTier).toBe("fast");
     expect(result.responseOutputItems).toEqual([
       { type: "function_call", call_id: "call_1", name: "bash", arguments: '{"cmd":"echo hi"}' },
     ]);

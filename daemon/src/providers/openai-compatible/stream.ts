@@ -16,7 +16,9 @@ interface ReadState {
   toolCalls: ApiToolCall[];
   inputTokens?: number;
   cachedInputTokens?: number;
+  cacheMissInputTokens?: number;
   outputTokens?: number;
+  billingServiceTier?: "standard" | "fast";
   stopReason: string;
 }
 
@@ -88,9 +90,22 @@ function handleUsage(state: ReadState, usage: unknown): void {
   if (!record) return;
   if (typeof record.prompt_tokens === "number" && Number.isFinite(record.prompt_tokens)) state.inputTokens = record.prompt_tokens;
   if (typeof record.completion_tokens === "number" && Number.isFinite(record.completion_tokens)) state.outputTokens = record.completion_tokens;
+
+  // DeepSeek reports these two explicit fields and guarantees that they sum to
+  // prompt_tokens. OpenAI-compatible providers may instead use the nested
+  // cached_tokens/cache_write_tokens shape.
+  if (typeof record.prompt_cache_hit_tokens === "number" && Number.isFinite(record.prompt_cache_hit_tokens)) {
+    state.cachedInputTokens = record.prompt_cache_hit_tokens;
+  }
+  if (typeof record.prompt_cache_miss_tokens === "number" && Number.isFinite(record.prompt_cache_miss_tokens)) {
+    state.cacheMissInputTokens = record.prompt_cache_miss_tokens;
+  }
   const promptDetails = asRecord(record.prompt_tokens_details);
   if (promptDetails && typeof promptDetails.cached_tokens === "number" && Number.isFinite(promptDetails.cached_tokens)) {
     state.cachedInputTokens = promptDetails.cached_tokens;
+  }
+  if (promptDetails && typeof promptDetails.cache_write_tokens === "number" && Number.isFinite(promptDetails.cache_write_tokens)) {
+    state.cacheMissInputTokens = promptDetails.cache_write_tokens;
   }
 }
 
@@ -117,6 +132,11 @@ function handleChoice(state: ReadState, choice: Record<string, unknown>, cb: Str
 
 function handleStreamEvent(state: ReadState, event: Record<string, unknown>, cb: StreamCallbacks, providerLabel: string): void {
   handleUsage(state, event.usage);
+  if (event.service_tier === "priority" || event.service_tier === "fast") {
+    state.billingServiceTier = "fast";
+  } else if (event.service_tier === "default") {
+    state.billingServiceTier = "standard";
+  }
   for (const rawChoice of Array.isArray(event.choices) ? event.choices : []) {
     const choice = asRecord(rawChoice);
     if (choice) handleChoice(state, choice, cb, providerLabel);
@@ -138,7 +158,9 @@ function finalizeReadState(state: ReadState, providerLabel: string): StreamResul
     toolCalls: state.toolCalls,
     inputTokens: state.inputTokens,
     cachedInputTokens: state.cachedInputTokens,
+    cacheMissInputTokens: state.cacheMissInputTokens,
     outputTokens: state.outputTokens,
+    billingServiceTier: state.billingServiceTier,
   };
 }
 

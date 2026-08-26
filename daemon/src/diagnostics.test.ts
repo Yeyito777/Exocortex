@@ -35,19 +35,26 @@ describe("diagnostics", () => {
         toolCalls: [{ id: "call_2", name: "bash", input: { command: "true" } }],
         inputTokens: 100,
         cachedInputTokens: 75,
+        cacheMissInputTokens: 20,
         outputTokens: 5,
+        billingServiceTier: "fast",
         requestDiagnostics: { usedIncremental: true, incrementalInputItems: 1, fullInputItems: 4 },
       },
       { source: "conversation", conversationId: "conv-1" },
     );
 
     const [record] = readDiagnostics("model-requests");
+    expect(record.version).toBe(2);
     expect(record.type).toBe("model_request");
     expect(record.provider).toBe("openai");
     expect(record.conversationId).toBe("conv-1");
     expect(record.cachedInputTokens).toBe(75);
-    expect(record.uncachedInputTokens).toBe(25);
+    expect(record.cacheMissInputTokens).toBe(20);
+    expect(record.uncachedInputTokens).toBe(5);
+    expect(record.unmeasuredInputTokens).toBe(0);
     expect(record.cacheHitRatio).toBe(0.75);
+    expect(record.billingServiceTier).toBe("fast");
+    expect(record.pricing).toBeNull();
     expect(record.toolCallsRequested).toEqual(["bash"]);
     expect(record.toolResultsIncluded).toEqual([{
       callId: "call_1",

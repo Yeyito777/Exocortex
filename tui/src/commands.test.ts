@@ -81,10 +81,32 @@ function totals(inputTokens: number, outputTokens: number, requests: number, cac
   return {
     inputTokens,
     cachedInputTokens,
+    cacheMissInputTokens: 0,
     uncachedInputTokens,
+    unmeasuredInputTokens: Math.max(0, inputTokens - cachedInputTokens - uncachedInputTokens),
     outputTokens,
     totalTokens: inputTokens + outputTokens,
     requests,
+    estimatedInputCostUsd: 0,
+    estimatedOutputCostUsd: 0,
+    pricedInputTokens: 0,
+    pricedOutputTokens: 0,
+  };
+}
+
+function withCapturedCost(
+  usage: TokenUsageTotals,
+  estimatedInputCostUsd: number,
+  estimatedOutputCostUsd: number,
+  pricedInputTokens = usage.inputTokens,
+  pricedOutputTokens = usage.outputTokens,
+): TokenUsageTotals {
+  return {
+    ...usage,
+    estimatedInputCostUsd,
+    estimatedOutputCostUsd,
+    pricedInputTokens,
+    pricedOutputTokens,
   };
 }
 
@@ -97,8 +119,8 @@ const tokenStats: TokenStatsSnapshot = {
       openai: totals(1_500, 500, 3, 1_000, 500),
     },
     byModel: {
-      "gpt-5.4": totals(1_200, 400, 2, 1_000, 200),
-      "deepseek-v4-pro": totals(300, 100, 1),
+      "gpt-5.4": withCapturedCost(totals(1_200, 400, 2, 1_000, 200), 0.00075, 0.006),
+      "deepseek-v4-pro": withCapturedCost(totals(300, 100, 1), 0, 0.000198, 0, 100),
     },
     bySource: {
       conversation: totals(1_200, 400, 2, 1_000, 200),
@@ -112,8 +134,8 @@ const tokenStats: TokenStatsSnapshot = {
       deepseek: totals(300, 100, 1),
     },
     byModel: {
-      "gpt-5.4": totals(1_600, 600, 3, 1_200, 400),
-      "deepseek-v4-pro": totals(600, 200, 2),
+      "gpt-5.4": withCapturedCost(totals(1_600, 600, 3, 1_200, 400), 0.0013, 0.009),
+      "deepseek-v4-pro": withCapturedCost(totals(600, 200, 2), 0, 0.000396, 0, 200),
     },
     bySource: {
       conversation: totals(1_900, 700, 4, 1_200, 700),
@@ -128,8 +150,8 @@ const tokenStats: TokenStatsSnapshot = {
         openai: totals(1_500, 500, 3, 1_000, 500),
       },
       byModel: {
-        "gpt-5.4": totals(1_200, 400, 2, 1_000, 200),
-        "deepseek-v4-pro": totals(300, 100, 1),
+        "gpt-5.4": withCapturedCost(totals(1_200, 400, 2, 1_000, 200), 0.00075, 0.006),
+        "deepseek-v4-pro": withCapturedCost(totals(300, 100, 1), 0, 0.000198, 0, 100),
       },
       bySource: {
         conversation: totals(1_200, 400, 2, 1_000, 200),
@@ -144,8 +166,8 @@ const tokenStats: TokenStatsSnapshot = {
         deepseek: totals(300, 100, 1),
       },
       byModel: {
-        "gpt-5.4": totals(400, 200, 1, 200, 200),
-        "deepseek-v4-pro": totals(300, 100, 1),
+        "gpt-5.4": withCapturedCost(totals(400, 200, 1, 200, 200), 0.00055, 0.003),
+        "deepseek-v4-pro": withCapturedCost(totals(300, 100, 1), 0, 0.000198, 0, 100),
       },
       bySource: {
         conversation: totals(700, 300, 2, 200, 200),
@@ -961,7 +983,7 @@ describe("/tokens", () => {
     expect(text).not.toContain("Top source tokens:");
   });
 
-  test("shows estimated cost summaries and provider-grouped lifetime model costs", () => {
+  test("shows captured exact-rate cost summaries and provider-grouped lifetime costs", () => {
     const state = createInitialState();
     state.tokenStats = structuredClone(tokenStats);
 
@@ -969,61 +991,47 @@ describe("/tokens", () => {
 
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("no cache assumptions");
     expect(text).toContain("Today:");
-    expect(text).toContain("$0.000764");
-    expect(text).toContain("$0.006087");
+    expect(text).toContain("$0.000750");
+    expect(text).toContain("$0.006198");
     expect(text).toContain("Week:");
-    expect(text).toContain("$0.001328");
-    expect(text).toContain("$0.009174");
+    expect(text).toContain("$0.001300");
+    expect(text).toContain("$0.009396");
     expect(text).toContain("Lifetime:");
-    expect(text).toContain("Measured input cache:");
-    expect(text).toContain("1,200");
-    expect(text).toContain("Unmeasured input:");
-    expect(text).toContain("600");
-    expect(text).not.toContain("Cost (");
+    expect(text).toContain("Input hit/miss-write/no-cache/unknown:");
+    expect(text).toContain("Cost coverage:");
+    expect(text).toContain("1,600");
+    expect(text).toContain("2,200");
     expect(text).toContain("OpenAI:");
     expect(text).toContain("    Gpt-5.4: ");
     expect(text).toContain("$0.001300");
     expect(text).toContain("$0.009000");
     expect(text).toContain("DeepSeek:");
     expect(text).toContain("    DeepSeek V4 Pro: ");
-    expect(text).toContain("$0.000028");
-    expect(text).toContain("$0.000174");
+    expect(text).toContain("$0.000396");
+    expect(text).not.toContain("cached fallback");
   });
 
-  test("automatically includes newly advertised GPT-5.6 and custom OpenAI models in cost estimates", () => {
+  test("uses exact GPT-5.6 costs but never assigns family rates to a custom model", () => {
     const state = createInitialState();
     const stats = structuredClone(tokenStats);
     stats.lifetime.byModel = {
-      "gpt-5.6-sol": totals(1_000_000, 1_000_000, 1),
+      "gpt-5.6-sol": withCapturedCost(totals(1_000_000, 1_000_000, 1, 0, 1_000_000), 8, 30),
       "codex-next": totals(1_000_000, 1_000_000, 1),
     };
     state.tokenStats = stats;
-    state.providerRegistry = structuredClone(providers);
-    state.providerRegistry[0].models.push({
-      id: "gpt-5.6-sol",
-      label: "Gpt-5.6-sol",
-      maxContext: 372_000,
-      supportedEfforts: [],
-      defaultEffort: "medium",
-    }, {
-      id: "codex-next",
-      label: "Codex-next",
-      maxContext: 372_000,
-      supportedEfforts: [],
-      defaultEffort: "medium",
-    });
 
     const result = tryCommand("/tokens cost", state);
 
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
     expect(text).toContain("    Gpt-5.6-sol: ");
-    expect(text).toContain("    Codex-next: ");
-    expect(text).toContain("$0.4750");
-    expect(text).toContain("$15.00");
-    expect(text).toContain("Gpt-5.6-sol → Gpt-5.4 rates");
-    expect(text).toContain("Codex-next → Gpt-5.4 rates");
+    expect(text).toContain("$8.00");
+    expect(text).toContain("$30.00");
+    expect(text).toContain("Codex-next:");
+    expect(text).not.toContain("    Codex-next: $ ");
+    expect(text).not.toContain("Pricing fallbacks:");
   });
 
   test("shows unpriced model usage instead of silently dropping it", () => {
@@ -1038,7 +1046,7 @@ describe("/tokens", () => {
 
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
-    expect(text).toContain("Unpriced models (excluded from cost):");
+    expect(text).toContain("Unpriced or unclassified tokens (excluded from cost):");
     expect(text).toContain("Unknown-model:");
     expect(text).toContain("123");
     expect(text).toContain("45");

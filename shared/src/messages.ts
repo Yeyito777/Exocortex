@@ -655,13 +655,25 @@ export interface TokenTrackingContext {
 
 export interface TokenUsageTotals {
   inputTokens: number;
-  /** Input tokens billed/served through provider prompt-cache discounts when known. */
+  /** Provider-reported cache hits/reads. */
   cachedInputTokens: number;
-  /** Input tokens known not to be cached. Zero for legacy/provider records without cache details. */
+  /** Provider-reported cache misses/writes (OpenAI `cache_write_tokens`). */
+  cacheMissInputTokens: number;
+  /** Input explicitly known to be neither a cache hit nor a cache miss/write. */
   uncachedInputTokens: number;
+  /** Residual input whose cache category was not fully reported. */
+  unmeasuredInputTokens: number;
   outputTokens: number;
   totalTokens: number;
   requests: number;
+  /** API-price estimate captured with the exact request rate class; excludes unpriceable input. */
+  estimatedInputCostUsd: number;
+  /** API-price estimate captured with the exact request rate class. */
+  estimatedOutputCostUsd: number;
+  /** Input tokens covered by estimatedInputCostUsd. */
+  pricedInputTokens: number;
+  /** Output tokens covered by estimatedOutputCostUsd. */
+  pricedOutputTokens: number;
 }
 
 export interface TokenStatsBucket extends TokenUsageTotals {
@@ -690,10 +702,16 @@ export function createTokenUsageTotals(): TokenUsageTotals {
   return {
     inputTokens: 0,
     cachedInputTokens: 0,
+    cacheMissInputTokens: 0,
     uncachedInputTokens: 0,
+    unmeasuredInputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
     requests: 0,
+    estimatedInputCostUsd: 0,
+    estimatedOutputCostUsd: 0,
+    pricedInputTokens: 0,
+    pricedOutputTokens: 0,
   };
 }
 

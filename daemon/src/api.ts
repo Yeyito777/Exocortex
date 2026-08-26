@@ -33,11 +33,17 @@ export async function streamMessage(
     recordTokenUsage(provider, model, {
       inputTokens: result.inputTokens,
       cachedInputTokens: result.cachedInputTokens,
+      cacheMissInputTokens: result.cacheMissInputTokens,
       outputTokens: result.outputTokens,
-    }, options.tracking);
+      billingServiceTier: result.billingServiceTier,
+    }, options.tracking, {
+      serviceTier: options.serviceTier ?? "standard",
+    });
   }
   if (PERFORMANCE_PROFILING_ENABLED) {
-    recordModelRequestDiagnostics(provider, model, messages, result, options.tracking, diagnosticMessages);
+    recordModelRequestDiagnostics(provider, model, messages, result, options.tracking, diagnosticMessages, {
+      serviceTier: options.serviceTier ?? "standard",
+    });
   }
   return result;
 }

@@ -25,8 +25,13 @@ export interface StreamResult {
   blocks: ContentBlock[];
   toolCalls: ApiToolCall[];
   inputTokens?: number;
+  /** Provider-reported prompt-cache hits/reads. */
   cachedInputTokens?: number;
+  /** Provider-reported prompt-cache misses/writes. */
+  cacheMissInputTokens?: number;
   outputTokens?: number;
+  /** Actual provider billing tier when the response reports it. */
+  billingServiceTier?: "standard" | "fast";
   /** Provider-wire output items from this response, used for guarded incremental continuation. */
   responseOutputItems?: unknown[];
   requestDiagnostics?: ModelRequestDiagnostics;

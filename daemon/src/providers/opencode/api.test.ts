@@ -81,7 +81,7 @@ describe("OpenCode Zen chat backend", () => {
     const result = readOpenCodeEventsForTest([
       { choices: [{ delta: { reasoning_content: "think" } }] },
       { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "bash", arguments: '{"command":"pwd"}' } }] }, finish_reason: "tool_calls" }] },
-      { choices: [], usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 64 } } },
+      { choices: [], usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 64, cache_write_tokens: 12 } } },
       { choices: [], cost: "0" },
     ]);
 
@@ -90,6 +90,7 @@ describe("OpenCode Zen chat backend", () => {
     expect(result.toolCalls).toEqual([{ id: "call_1", name: "bash", input: { command: "pwd" } }]);
     expect(result.inputTokens).toBe(100);
     expect(result.cachedInputTokens).toBe(64);
+    expect(result.cacheMissInputTokens).toBe(12);
     expect(result.outputTokens).toBe(20);
   });
 

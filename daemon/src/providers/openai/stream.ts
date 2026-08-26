@@ -15,7 +15,9 @@ interface OpenAIReadState {
   responseId?: string;
   inputTokens?: number;
   cachedInputTokens?: number;
+  cacheMissInputTokens?: number;
   outputTokens?: number;
+  billingServiceTier?: "standard" | "fast";
   stopReason: string;
   compactionDoneCount: number;
   responseCompleted: boolean;
@@ -528,9 +530,13 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
         id?: string;
         usage?: {
           input_tokens?: number;
-          input_tokens_details?: { cached_tokens?: number };
+          input_tokens_details?: {
+            cached_tokens?: number;
+            cache_write_tokens?: number;
+          };
           output_tokens?: number;
         };
+        service_tier?: string;
         incomplete_details?: { reason?: string };
         output?: Array<Record<string, unknown>>;
       } | undefined;
@@ -539,6 +545,12 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
         state.inputTokens = response?.usage?.input_tokens;
         state.outputTokens = response?.usage?.output_tokens;
         state.cachedInputTokens = response?.usage?.input_tokens_details?.cached_tokens;
+        state.cacheMissInputTokens = response?.usage?.input_tokens_details?.cache_write_tokens;
+        if (response?.service_tier === "priority" || response?.service_tier === "fast") {
+          state.billingServiceTier = "fast";
+        } else if (response?.service_tier === "default") {
+          state.billingServiceTier = "standard";
+        }
         for (const [outputIndex, item] of (response?.output ?? []).entries()) {
           if (item.type === "reasoning") {
             handleCompletedReasoningItem(state, item);
@@ -661,7 +673,9 @@ function finalizeReadState(state: OpenAIReadState): StreamResult {
     toolCalls: state.toolCalls,
     inputTokens: state.inputTokens,
     cachedInputTokens: state.cachedInputTokens,
+    cacheMissInputTokens: state.cacheMissInputTokens,
     outputTokens: state.outputTokens,
+    billingServiceTier: state.billingServiceTier,
     responseOutputItems: buildResponseOutputItems(state),
     ...(orderedCompactionItems.length > 0 ? { compactionItems: orderedCompactionItems } : {}),
     compactionDoneCount: state.compactionDoneCount,

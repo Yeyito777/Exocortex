@@ -2,11 +2,14 @@ import { appendFileSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync } 
 import { createHash } from "crypto";
 import { join } from "path";
 import { diagnosticsDir, worktreeName } from "@exocortex/shared/paths";
+import { resolveModelTokenPricing, type TokenPricingServiceTier } from "@exocortex/shared/token-pricing";
 import type { ApiContentBlock, ApiMessage, ModelId, ProviderId, TokenTrackingContext } from "./messages";
 import type { ApiToolCall, ModelRequestDiagnostics, StreamResult } from "./providers/types";
+import { canonicalizeModel } from "./providers/registry";
+import { classifyInputTokenUsage } from "./token-stats";
 import { log } from "./log";
 
-const DIAGNOSTICS_VERSION = 1;
+const DIAGNOSTICS_VERSION = 2;
 const INSTANCE_ID = worktreeName() ?? "main";
 const ERROR_REASON_MAX_CHARS = 2_000;
 const TOOL_RESULTS_PER_REQUEST_MAX = 32;
@@ -183,11 +186,18 @@ export function recordModelRequestDiagnostics(
   result: StreamResult,
   tracking?: TokenTrackingContext,
   newMessages: ApiMessage[] = messages,
+  request: { serviceTier?: TokenPricingServiceTier } = {},
 ): void {
   const timestamp = Date.now();
-  const inputTokens = result.inputTokens ?? 0;
-  const cachedInputTokens = result.cachedInputTokens ?? 0;
-  const uncachedInputTokens = result.cachedInputTokens == null ? 0 : Math.max(0, inputTokens - cachedInputTokens);
+  const input = classifyInputTokenUsage(provider, result.inputTokens, result.cachedInputTokens, result.cacheMissInputTokens);
+  const requestedServiceTier = request.serviceTier ?? "standard";
+  const billingServiceTier = result.billingServiceTier ?? requestedServiceTier;
+  const canonicalModel = canonicalizeModel(provider, model);
+  const pricing = resolveModelTokenPricing(canonicalModel, {
+    serviceTier: billingServiceTier,
+    inputTokens: input.inputTokens,
+    timestamp,
+  });
   const providerDiagnostics: ModelRequestDiagnostics | undefined = result.requestDiagnostics;
   const newToolResults = summarizeToolResults(newMessages);
   const omittedToolResults = Math.max(0, newToolResults.length - TOOL_RESULTS_PER_REQUEST_MAX);
@@ -199,13 +209,28 @@ export function recordModelRequestDiagnostics(
     instance: INSTANCE_ID,
     provider,
     model,
+    ...(canonicalModel !== model ? { canonicalModel } : {}),
     source: tracking?.source,
     conversationId: tracking?.conversationId,
-    inputTokens,
-    cachedInputTokens,
-    uncachedInputTokens,
+    inputTokens: input.inputTokens,
+    cachedInputTokens: input.cachedInputTokens,
+    cacheMissInputTokens: input.cacheMissInputTokens,
+    uncachedInputTokens: input.uncachedInputTokens,
+    unmeasuredInputTokens: input.unmeasuredInputTokens,
     outputTokens: result.outputTokens ?? 0,
-    cacheHitRatio: inputTokens > 0 && result.cachedInputTokens != null ? cachedInputTokens / inputTokens : null,
+    cacheHitRatio: input.inputTokens > 0 && result.cachedInputTokens != null
+      ? input.cachedInputTokens / input.inputTokens
+      : null,
+    requestedServiceTier,
+    billingServiceTier,
+    pricing: pricing?.provider === provider ? {
+      basisModel: pricing.basisModel,
+      rateClass: pricing.rateClass,
+      inputUsdPerMillion: pricing.inputUsdPerMillion,
+      cachedInputUsdPerMillion: pricing.cachedInputUsdPerMillion,
+      cacheMissInputUsdPerMillion: pricing.cacheMissInputUsdPerMillion,
+      outputUsdPerMillion: pricing.outputUsdPerMillion,
+    } : null,
     inputChars: inputCharCount(messages),
     inputMessages: messages.length,
     toolCallsRequested: result.toolCalls.map((call) => call.name),

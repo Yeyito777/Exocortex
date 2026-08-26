@@ -18,7 +18,12 @@ describe("DeepSeek chat backend", () => {
       },
       {
         choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "\"echo hi\"}" } }] }, finish_reason: "tool_calls" }],
-        usage: { prompt_tokens: 12, completion_tokens: 34 },
+        usage: {
+          prompt_tokens: 12,
+          prompt_cache_hit_tokens: 7,
+          prompt_cache_miss_tokens: 5,
+          completion_tokens: 34,
+        },
       },
     ], {
       onBlockStart: (type) => blockStarts.push(type),
@@ -29,6 +34,8 @@ describe("DeepSeek chat backend", () => {
     expect(result.text).toBe("hello");
     expect(result.stopReason).toBe("tool_use");
     expect(result.inputTokens).toBe(12);
+    expect(result.cachedInputTokens).toBe(7);
+    expect(result.cacheMissInputTokens).toBe(5);
     expect(result.outputTokens).toBe(34);
     expect(result.toolCalls).toEqual([{ id: "call_1", name: "bash", input: { command: "echo hi" } }]);
   });
