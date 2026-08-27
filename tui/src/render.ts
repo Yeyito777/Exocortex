@@ -23,7 +23,7 @@ import { renderTopbar } from "./topbar";
 import { conversationActionMenuAnchorRow, renderConversationActionMenu, renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { isGlobalIdleQueuedMessage } from "./queue";
 import { getSidebarSearchBarViewport } from "./sidebarsearch";
-import { buildMessageLines, type BuildMessageLinesResult } from "./conversation";
+import { buildMessageLines, type BuildMessageLinesResult, type RenderLineSegment } from "./conversation";
 import { wrappedLineOffsets } from "./promptline";
 import { computeBottomLayout, PROMPT_PREFIX_WIDTH } from "./chatlayout";
 import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar, applyLineBg } from "./terminal";
@@ -439,8 +439,21 @@ function wrapRenderedHistoryLine(line: string, width: number): { lines: string[]
   return { lines: wrapped.lines, joins: wrapped.join };
 }
 
-function continuationIndent(line: string, segment: BuildMessageLinesResult["lineAnchors"][number]["segment"] | undefined): string {
-  if (segment === "user_content" || segment === "queued_content" || segment === "queued_label") return "";
+function isRightAlignedHistorySegment(segment: RenderLineSegment | undefined): boolean {
+  return segment === "automation_label"
+    || segment === "queued_label"
+    || segment === "transcript_label";
+}
+
+/** Rows whose leading spaces express viewport alignment rather than semantic indentation. */
+function shiftsWithNarrowHistory(segment: RenderLineSegment | undefined): boolean {
+  return segment === "user_content"
+    || segment === "queued_content"
+    || isRightAlignedHistorySegment(segment);
+}
+
+function continuationIndent(line: string, segment: RenderLineSegment | undefined): string {
+  if (shiftsWithNarrowHistory(segment)) return "";
   return stripAnsi(line).match(/^ +(?=\S)/)?.[0] ?? "";
 }
 
@@ -600,7 +613,7 @@ function composeViewportFrom(
       const segment = lineAnchors[lineIndex]?.segment;
       if (overlapsPanel
         && startCol === 0
-        && (segment === "user_content" || segment === "queued_content")) {
+        && shiftsWithNarrowHistory(segment)) {
         const shifted = trimAnsiLeadingSpaces(remainder, Math.max(0, fullWidth - narrowWidth));
         remainder = shifted.line;
         startCol = shifted.removed;
@@ -690,7 +703,7 @@ function composeFixedWidthRows(
     const startsAsContinuation = sourceCol > 0;
     const segment = anchor?.segment;
     if (!startsAsContinuation
-      && (segment === "user_content" || segment === "queued_content")) {
+      && shiftsWithNarrowHistory(segment)) {
       const shifted = trimAnsiLeadingSpaces(sourceLine, Math.max(0, canonicalWidth - safeWidth));
       sourceLine = shifted.line;
       sourceCol = shifted.removed;
