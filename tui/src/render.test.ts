@@ -1058,6 +1058,88 @@ describe("render caching and frame diffing", () => {
       && termWidth(row.line) > state.layout.historyWidth)).toBe(true);
   });
 
+  test("keeps an automated message visible while its provenance label passes the task panel", () => {
+    const state = createInitialState();
+    state.cols = 120;
+    state.rows = 30;
+    state.convId = "parent";
+    const automated = {
+      role: "user" as const,
+      text: Array.from({ length: 500 }, (_, index) => `word${String(index).padStart(3, "0")}`).join(" "),
+      metadata: {
+        startedAt: 1,
+        endedAt: 1,
+        model: state.model,
+        tokens: 0,
+        automation: {
+          kind: "background_task_completion" as const,
+          sourceId: "bash:test",
+        },
+      },
+    };
+    state.messages = [
+      automated,
+      {
+        role: "assistant",
+        blocks: [{
+          type: "text",
+          text: Array.from({ length: 35 }, (_, index) => `NEW-${String(index).padStart(2, "0")}`).join("\n"),
+        }],
+        metadata: null,
+      },
+    ];
+    state.sidebar.conversations = [{
+      id: "parent",
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 2,
+      title: "Parent",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: Array.from({ length: 27 }, (_, index) => ({
+        id: `child-${index}`,
+        kind: "subagent" as const,
+        title: `Task ${index}`,
+        startedAt: Date.now() - 2_000,
+      })),
+    }];
+
+    captureRenderOutput(state);
+    const labelLineIndex = state.historyLineAnchors.findIndex(
+      anchor => anchor.owner === automated && anchor.segment === "automation_label",
+    );
+    const panelRect = state.layout.taskPanelRect!;
+    const panelHeight = panelRect.bottom - panelRect.top + 1;
+    const targetViewStart = labelLineIndex - panelHeight;
+    state.scrollOffset = state.layout.totalLines - state.layout.messageAreaHeight - targetViewStart;
+    invalidateFrame(state);
+    const writes = positionedWrites(captureRenderOutput(state));
+
+    const automatedRows = state.layout.historyViewportRows.flatMap((viewportRow, index) => {
+      if (!viewportRow || state.historyLineAnchors[viewportRow.lineIndex]?.owner !== automated) return [];
+      return [{ index, segment: state.historyLineAnchors[viewportRow.lineIndex].segment }];
+    });
+    const contentRows = automatedRows.filter(row => row.segment === "user_content");
+    const labelRows = automatedRows.filter(row => row.segment === "automation_label");
+
+    expect(contentRows.length).toBeGreaterThan(0);
+    expect(labelRows).toHaveLength(1);
+
+    const labelWrite = writes
+      .filter(write => write.row === 3 + labelRows[0]!.index && write.col === 1)
+      .at(-1);
+    const labelLine = stripCsi(stripAnsi(labelWrite?.text ?? ""));
+    expect(labelLine.trim()).toBe("⚙ Background completion");
+    expect(termWidth(labelLine)).toBeLessThanOrEqual(state.layout.historyWidth);
+  });
+
   test("keeps canonical scroll state stable when task-panel wrapping appears and disappears", () => {
     const state = createInitialState();
     state.cols = 120;
