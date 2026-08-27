@@ -41,6 +41,7 @@ export function leaveConversationView(state: RenderState): void {
   state.conversationScroll.pendingOpen = null;
   state.conversationScroll.pendingRestore = null;
   state.conversationScroll.streamingResponse = null;
+  state.conversationScroll.finalResponseViewport = null;
 }
 
 /** Capture unread before loadConversation clears it, and remember the outgoing viewport. */
@@ -75,6 +76,9 @@ export function beginConversationScrollRestore(
   state.conversationScroll.pendingOpen = null;
   state.conversationScroll.streamingResponse = sameConversation
     ? state.conversationScroll.streamingResponse
+    : null;
+  state.conversationScroll.finalResponseViewport = sameConversation
+    ? state.conversationScroll.finalResponseViewport
     : null;
   state.conversationScroll.pendingRestore = unreadAtOpen
     ? {
@@ -117,6 +121,9 @@ export function forgetConversationScroll(state: RenderState, convId: string): vo
   state.conversationScroll.positions.delete(convId);
   if (state.conversationScroll.pendingOpen?.convId === convId) state.conversationScroll.pendingOpen = null;
   if (state.conversationScroll.pendingRestore?.convId === convId) state.conversationScroll.pendingRestore = null;
+  if (state.conversationScroll.finalResponseViewport?.convId === convId) {
+    state.conversationScroll.finalResponseViewport = null;
+  }
 }
 
 export function pruneConversationScrollPositions(state: RenderState, validConversationIds: Iterable<string>): void {
@@ -128,4 +135,8 @@ export function pruneConversationScrollPositions(state: RenderState, validConver
   if (pendingOpenId && !valid.has(pendingOpenId)) state.conversationScroll.pendingOpen = null;
   const pendingRestoreId = state.conversationScroll.pendingRestore?.convId;
   if (pendingRestoreId && !valid.has(pendingRestoreId)) state.conversationScroll.pendingRestore = null;
+  const responseViewportId = state.conversationScroll.finalResponseViewport?.convId;
+  if (responseViewportId && !valid.has(responseViewportId)) {
+    state.conversationScroll.finalResponseViewport = null;
+  }
 }

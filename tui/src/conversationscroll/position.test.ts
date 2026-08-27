@@ -100,9 +100,16 @@ describe("conversation scroll percentages", () => {
     const state = createInitialState();
     state.conversationScroll.positions.set("keep", 0.25);
     state.conversationScroll.positions.set("deleted", 0.75);
+    state.conversationScroll.finalResponseViewport = {
+      convId: "deleted",
+      owner: {},
+      mode: "anchored",
+      lastScrollOffset: 4,
+    };
 
     pruneConversationScrollPositions(state, ["keep"]);
 
     expect([...state.conversationScroll.positions]).toEqual([["keep", 0.25]]);
+    expect(state.conversationScroll.finalResponseViewport).toBeNull();
   });
 });

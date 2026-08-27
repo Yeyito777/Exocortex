@@ -402,6 +402,152 @@ describe("render caching and frame diffing", () => {
     expect(state.conversationScroll.pendingRestore).toBeNull();
   });
 
+  test("anchors the first visual response row when task-panel reflow is what makes it overflow", () => {
+    const state = createInitialState();
+    state.convId = "background-reflow";
+    state.cols = 120;
+    state.rows = 20;
+    const thinking = {
+      type: "thinking" as const,
+      text: Array.from({ length: 8 }, (_, index) => `thinking ${index + 1}`).join("\n"),
+    };
+    const finalResponse = {
+      type: "text" as const,
+      text: [
+        `# ${"Title words ".repeat(18)}`,
+        ...Array.from({ length: 10 }, (_, index) => `answer ${index + 2}`),
+      ].join("\n"),
+    };
+    state.messages = [{
+      role: "assistant",
+      blocks: [thinking, finalResponse],
+      metadata: null,
+    }];
+    state.sidebar.conversations = [{
+      id: state.convId,
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 1,
+      title: "Background reflow",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: true,
+      sortOrder: 0,
+      tasks: [],
+    }];
+    state.conversationScroll.pendingRestore = {
+      convId: state.convId,
+      mode: "unread-response",
+      waitForInitialBackfill: false,
+    };
+
+    renderSilently(state);
+
+    expect(state.conversationScroll.finalResponseViewport).toMatchObject({
+      owner: finalResponse,
+      mode: "following",
+    });
+
+    // Focused policy/task data can arrive after the conversation itself. The
+    // one-shot unread intent must survive that first full-width render.
+    state.sidebar.conversations[0].tasks = [{
+      id: "child",
+      kind: "subagent",
+      title: "Inspect renderer flow",
+      startedAt: Date.now() - 2_000,
+    }];
+    renderSilently(state);
+
+    const responseStart = state.historyLineAnchors.findIndex(anchor => anchor.owner === finalResponse);
+    const responseEnd = state.historyLineAnchors.findLastIndex(anchor => anchor.owner === finalResponse) + 1;
+    expect(responseEnd - responseStart).toBeLessThanOrEqual(state.layout.messageAreaHeight);
+    expect(state.layout.historyViewportRows[0]).toMatchObject({
+      lineIndex: responseStart,
+      startCol: 0,
+    });
+    expect(state.conversationScroll.finalResponseViewport).toMatchObject({
+      owner: finalResponse,
+      mode: "anchored",
+    });
+
+    // Timer-driven task-panel renders must not revert to the bottom-anchored
+    // composition and clip the heading.
+    renderSilently(state);
+    expect(state.layout.historyViewportRows[0]).toMatchObject({
+      lineIndex: responseStart,
+      startCol: 0,
+    });
+  });
+
+  test("keeps a reflowed streaming response top-anchored across canonical completion", () => {
+    const state = createInitialState();
+    state.convId = "streaming-reflow";
+    state.cols = 120;
+    state.rows = 20;
+    state.sidebar.conversations = [{
+      id: state.convId,
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 0,
+      title: "Streaming reflow",
+      marked: false,
+      pinned: false,
+      streaming: true,
+      unread: false,
+      sortOrder: 0,
+      tasks: [{ id: "child", kind: "subagent", title: "Inspect renderer flow", startedAt: Date.now() - 2_000 }],
+    }];
+    state.pendingAI = createPendingAI(123, state.model);
+    state.pendingAI.blocks.push({
+      type: "thinking",
+      text: Array.from({ length: 8 }, (_, index) => `thinking ${index + 1}`).join("\n"),
+    });
+    const streamingResponse = {
+      type: "text" as const,
+      text: [
+        `# ${"Title words ".repeat(18)}`,
+        ...Array.from({ length: 10 }, (_, index) => `answer ${index + 2}`),
+      ].join("\n"),
+    };
+    state.pendingAI.blocks.push(streamingResponse);
+
+    renderSilently(state);
+
+    let responseStart = state.historyLineAnchors.findIndex(anchor => anchor.owner === streamingResponse);
+    expect(state.conversationScroll.streamingResponse?.mode).toBe("anchored");
+    expect(state.layout.historyViewportRows[0]).toMatchObject({ lineIndex: responseStart, startCol: 0 });
+
+    // message_complete canonicalizes block objects before the next render.
+    const completedResponse = structuredClone(streamingResponse);
+    state.messages = [{
+      role: "assistant",
+      blocks: [structuredClone(state.pendingAI.blocks[0]), completedResponse],
+      metadata: structuredClone(state.pendingAI.metadata),
+    }];
+    state.pendingAI = null;
+    renderSilently(state);
+
+    responseStart = state.historyLineAnchors.findIndex(anchor => anchor.owner === completedResponse);
+    expect(state.layout.historyViewportRows[0]).toMatchObject({ lineIndex: responseStart, startCol: 0 });
+    expect(state.conversationScroll.finalResponseViewport).toMatchObject({
+      owner: completedResponse,
+      mode: "anchored",
+    });
+
+    state.scrollOffset = 1;
+    renderSilently(state);
+    expect(state.conversationScroll.finalResponseViewport).toBeNull();
+  });
+
   test("positions focused conversation tasks at the message area's top-right", () => {
     const state = makeState();
     state.convId = "parent";

@@ -20,6 +20,8 @@ export function updateStreamingResponseAutoscroll(options: {
   responseId: string | null;
   responseStart: number;
   responseEnd: number;
+  /** Visual response height after viewport-only reflow, when it differs. */
+  responseHeight?: number;
   previousScrollOffset: number;
   scrollOffset: number;
   totalLines: number;
@@ -55,7 +57,8 @@ export function updateStreamingResponseAutoscroll(options: {
     return { state, scrollOffset };
   }
 
-  if (state.mode === "following" && responseEnd - responseStart > viewportHeight) {
+  const responseHeight = options.responseHeight ?? responseEnd - responseStart;
+  if (state.mode === "following" && responseHeight > viewportHeight) {
     state.mode = "anchored";
   }
 

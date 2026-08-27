@@ -8,6 +8,16 @@ export interface StreamingResponseAutoscrollState {
   lastScrollOffset: number;
 }
 
+/** Completed/open-response placement retained while its layout settles. */
+export interface FinalResponseViewportState {
+  convId: string | null;
+  owner: object;
+  /** Follow the bottom while it fits; preserve its exact visual top on overflow. */
+  mode: "following" | "anchored";
+  /** Offset applied by the policy on its previous rendered frame. */
+  lastScrollOffset: number;
+}
+
 export interface PendingConversationOpen {
   convId: string;
   unreadAtOpen: boolean;
@@ -28,6 +38,7 @@ export interface ConversationScrollState {
   pendingOpen: PendingConversationOpen | null;
   pendingRestore: PendingConversationScrollRestore | null;
   streamingResponse: StreamingResponseAutoscrollState | null;
+  finalResponseViewport: FinalResponseViewportState | null;
 }
 
 export function createConversationScrollState(): ConversationScrollState {
@@ -36,5 +47,6 @@ export function createConversationScrollState(): ConversationScrollState {
     pendingOpen: null,
     pendingRestore: null,
     streamingResponse: null,
+    finalResponseViewport: null,
   };
 }

@@ -59,4 +59,20 @@ describe("streaming response autoscroll", () => {
 
     expect(update).toMatchObject({ state: { mode: "dismissed" }, scrollOffset: 4 });
   });
+
+  test("anchors when viewport-only reflow overflows even if canonical rows fit", () => {
+    const update = updateStreamingResponseAutoscroll({
+      state: null,
+      responseId: "turn-1:text-2",
+      responseStart: 90,
+      responseEnd: 98,
+      responseHeight: 12,
+      previousScrollOffset: 0,
+      scrollOffset: 0,
+      totalLines: 99,
+      viewportHeight: 10,
+    });
+
+    expect(update).toMatchObject({ state: { mode: "anchored" } });
+  });
 });

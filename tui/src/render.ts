@@ -421,6 +421,7 @@ interface FloatingHistoryViewportCacheEntry {
   panelHeight: number;
   narrowWidth: number;
   fullWidth: number;
+  preserveTop: boolean;
   rows: ViewportHistoryRow[];
 }
 
@@ -792,6 +793,7 @@ function composeFloatingHistoryViewport(
   panelHeight: number,
   narrowWidth: number,
   fullWidth: number,
+  preserveTop = false,
 ): ViewportHistoryRow[] {
   const cached = floatingHistoryViewportCache.get(allLines);
   if (cached
@@ -802,7 +804,8 @@ function composeFloatingHistoryViewport(
     && cached.panelTopOffset === panelTopOffset
     && cached.panelHeight === panelHeight
     && cached.narrowWidth === narrowWidth
-    && cached.fullWidth === fullWidth) {
+    && cached.fullWidth === fullWidth
+    && cached.preserveTop === preserveTop) {
     return cached.rows;
   }
 
@@ -820,6 +823,37 @@ function composeFloatingHistoryViewport(
       panelHeight,
       narrowWidth,
       fullWidth,
+      preserveTop,
+      rows,
+    });
+    return rows;
+  }
+
+  // Final-response autoscroll is a semantic top anchor. The canonical history
+  // was wrapped at full chat width, so task-panel reflow can otherwise clip the
+  // first one or two visual chunks while preserving the viewport's bottom tail.
+  // Compose forward from the exact source start for this one placement mode.
+  if (preserveTop) {
+    const rows = composeViewportFrom(
+      allLines,
+      lineAnchors,
+      canonicalSourceState(allLines, viewStart),
+      endLineIndex,
+      panelTopOffset,
+      panelHeight,
+      narrowWidth,
+      fullWidth,
+    ).slice(0, messageAreaHeight);
+    floatingHistoryViewportCache.set(allLines, {
+      lineAnchors,
+      viewStart,
+      instructionStartIndex,
+      messageAreaHeight,
+      panelTopOffset,
+      panelHeight,
+      narrowWidth,
+      fullWidth,
+      preserveTop,
       rows,
     });
     return rows;
@@ -853,6 +887,7 @@ function composeFloatingHistoryViewport(
         panelHeight,
         narrowWidth,
         fullWidth,
+        preserveTop,
         rows,
       });
       return rows;
@@ -917,6 +952,7 @@ function composeFloatingHistoryViewport(
     panelHeight,
     narrowWidth,
     fullWidth,
+    preserveTop,
     rows: visibleRows,
   });
   return visibleRows;
@@ -1384,16 +1420,35 @@ export function render(state: RenderState): boolean {
   state.layout.firstInputRow = firstInputRow;
   state.layout.sepBelow = sepBelow;
 
-  applyChatConversationScroll(
+  const taskPanelFlowHeight = taskLayout.panel
+    ? Math.min(messageAreaHeight, taskLayout.panel.lines.length + 1)
+    : 0;
+  const scrollUpdate = applyChatConversationScroll(
     state,
     lineAnchors,
     messageBounds,
     totalLines,
     messageAreaHeight,
     previousScrollOffset,
+    (responseStart, responseEnd) => {
+      if (taskPanelFlowHeight <= 0 || historyWidth === chatW) {
+        return responseEnd - responseStart;
+      }
+      return composeViewportFrom(
+        allLines,
+        lineAnchors,
+        canonicalSourceState(allLines, responseStart),
+        responseEnd,
+        0,
+        taskPanelFlowHeight,
+        historyWidth,
+        chatW,
+      ).length;
+    },
   );
 
-  const viewStart = getViewStart(state);
+  const viewStart = scrollUpdate.topAnchorRow ?? getViewStart(state);
+  const preserveViewportTop = scrollUpdate.topAnchorRow !== null;
 
   // Keep leading system instructions full-width, then float the task panel over
   // only the rows it actually occupies. Re-evaluate the offset if top-row
@@ -1422,6 +1477,7 @@ export function render(state: RenderState): boolean {
       panelFlowHeight,
       taskPanel ? historyWidth : chatW,
       chatW,
+      preserveViewportTop,
     );
     const topLineIndex = viewportRows[0]?.lineIndex ?? viewStart;
     const nextOffset = taskLayout.panel
