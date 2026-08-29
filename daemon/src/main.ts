@@ -39,6 +39,8 @@ import { startExternalNotificationSoftWakeService, stopExternalNotificationSoftW
 import { startDisplayIndexBackfill } from "./display-index-backfill";
 import { broadcastConversationToolPolicyUpdated, broadcastConversationUpdated } from "./conversation-events";
 import { BackgroundTaskRecovery } from "./background-task-recovery";
+import { SshForwarder } from "./ssh-forwarder";
+import { runIpcProxy } from "./ipc-proxy";
 
 // ── Startup profiling ────────────────────────────────────────────────
 
@@ -117,7 +119,20 @@ async function startDaemon(): Promise<void> {
   // since the handler needs the server instance for sending events.
   let commandHandler: import("./handler").DaemonCommandHandler | null = null;
   let backgroundTaskRecovery: BackgroundTaskRecovery | null = null;
-  const server = new DaemonServer(SOCKET_PATH, (client, cmd) => commandHandler?.(client, cmd));
+  let server!: DaemonServer;
+  const sshForwarder = new SshForwarder({
+    sendTo: (client, event) => server.sendTransportTo(client, event),
+    broadcast: event => server.broadcastTransport(event),
+    disconnectClients: () => server.disconnectClients(),
+  }, {
+    localSocketPath: SOCKET_PATH,
+    localPid: process.pid,
+  });
+  server = new DaemonServer(
+    SOCKET_PATH,
+    (client, cmd) => commandHandler?.(client, cmd),
+    sshForwarder,
+  );
   profileMark("server_constructed");
 
   const formatFatal = (err: unknown): string => err instanceof Error ? (err.stack ?? err.message) : String(err);
@@ -134,7 +149,7 @@ async function startDaemon(): Promise<void> {
       // Give connected clients the graceful shutdown reason while the socket is
       // still writable. In particular, this keeps a planned restart from also
       // looking like an unrelated transport failure in the TUI.
-      server.broadcast({ type: "daemon_shutdown", mode: shutdownMode });
+      server.broadcastTransport({ type: "daemon_shutdown", mode: shutdownMode });
       stopWatchdog();
       stopExternalNotificationSoftWakeService();
       stopChronoService();
@@ -341,6 +356,17 @@ async function startDaemon(): Promise<void> {
 const command = process.argv[2];
 
 async function main(): Promise<void> {
+  if (command === "proxy") {
+    try {
+      await runIpcProxy({ socketPath: SOCKET_PATH });
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`exocortexd proxy: ${message}`);
+      process.exit(1);
+    }
+  }
+
   if (command === "login") {
     try {
       await handleLogin(process.argv[3], process.argv[4]);

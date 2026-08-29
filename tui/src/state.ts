@@ -197,6 +197,8 @@ export interface RenderState {
   /** Hidden source-model goal lifecycle review currently owns the conversation. */
   goalReviewing: boolean;
   convId: string | null;
+  /** Selected remote daemon route. Null means the local daemon. */
+  sshRemote: { alias: string; connected: boolean } | null;
   /** Reserved identity for tool choices on the current blank conversation draft. */
   pendingToolPolicyDraftId: string | null;
   /** Folder captured when the current blank draft was started. Sidebar browsing must not retarget it. */
@@ -616,16 +618,17 @@ export function createInitialState(): RenderState {
     contextCompactionStartedAt: null,
     pendingAIHydratedFromSnapshot: false,
     suppressPendingAIMetadataStartedAt: null,
-	    provider,
-	    hasChosenProvider: configuredDefaults !== null || preferredProvider !== null,
-	    model: defaults.model,
-	    effort: defaults.effort,
-	    fastMode: defaults.fastMode,
+    provider,
+    hasChosenProvider: configuredDefaults !== null || preferredProvider !== null,
+    model: defaults.model,
+    effort: defaults.effort,
+    fastMode: defaults.fastMode,
     goal: null,
     goalReviewing: false,
     convId: null,
-	    pendingToolPolicyDraftId: null,
-	    draftFolderId: null,
+    sshRemote: null,
+    pendingToolPolicyDraftId: null,
+    draftFolderId: null,
     inputBuffer: "",
     cursorPos: 0,
     promptCurswant: null,

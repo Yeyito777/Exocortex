@@ -23,6 +23,7 @@ import { QUIT_COMMAND, EXIT_COMMAND } from "./commands/quit";
 import { RENAME_COMMAND } from "./commands/rename";
 import { REPLAY_COMMAND } from "./commands/replay";
 import { SYSTEM_COMMAND } from "./commands/system";
+import { SSH_COMMAND } from "./commands/ssh";
 import { THEME_COMMAND } from "./commands/theme";
 import { TIME_COMMAND } from "./commands/time";
 import { TOKENS_COMMAND } from "./commands/tokens";
@@ -62,6 +63,7 @@ const commands: SlashCommand[] = [
   THEME_COMMAND,
   HIDE_COMMAND,
   PING_COMMAND,
+  SSH_COMMAND,
   INSTRUCTIONS_COMMAND,
   SYSTEM_COMMAND,
   LOGIN_COMMAND,

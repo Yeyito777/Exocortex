@@ -21,9 +21,22 @@ export interface ConnectedClient {
   subscriptions: Set<string>;
   buffer: string;
   capabilities: Set<"history-pagination" | ClientCapability>;
+  /** Endpoint-switch barrier: no local daemon events may follow ssh_status. */
+  routeClosing?: boolean;
+  /** This session's ordinary protocol stream is owned by an SSH bridge. */
+  forwarding?: boolean;
 }
 
 export type CommandHandler = (client: ConnectedClient, command: Command) => void | Promise<void>;
+
+/** Optional transport-level router for protocol-transparent forwarding. */
+export interface RawCommandRouter {
+  /** Return true when the frame was consumed and must not reach the local handler. */
+  route(client: ConnectedClient, rawFrame: string, parsed: { type: string }): boolean;
+  onClientConnected?(client: ConnectedClient): void;
+  onClientDisconnected?(client: ConnectedClient): void;
+  stop?(): void | Promise<void>;
+}
 
 // ── Server ──────────────────────────────────────────────────────────
 
@@ -32,10 +45,12 @@ export class DaemonServer {
   private clients = new Map<string, ConnectedClient>();
   private handler: CommandHandler;
   private socketPath: string;
+  private router: RawCommandRouter | null;
 
-  constructor(socketPath: string, handler: CommandHandler) {
+  constructor(socketPath: string, handler: CommandHandler, router?: RawCommandRouter) {
     this.socketPath = socketPath;
     this.handler = handler;
+    this.router = router ?? null;
   }
 
   async start(): Promise<void> {
@@ -61,6 +76,7 @@ export class DaemonServer {
   }
 
   async stop(): Promise<void> {
+    await this.router?.stop?.();
     for (const client of this.clients.values()) client.socket.destroy();
     this.clients.clear();
     if (this.server) {
@@ -78,17 +94,28 @@ export class DaemonServer {
 
   private onConnection(socket: Socket): void {
     const id = `c${++clientIdCounter}`;
-    const client: ConnectedClient = { id, socket, subscriptions: new Set(), buffer: "", capabilities: new Set() };
+    const client: ConnectedClient = {
+      id,
+      socket,
+      subscriptions: new Set(),
+      buffer: "",
+      capabilities: new Set(),
+      routeClosing: false,
+      forwarding: false,
+    };
     this.clients.set(id, client);
     log("info", `server: ${id} connected (${this.clients.size} total)`);
+    this.router?.onClientConnected?.(client);
 
     socket.on("data", (data) => this.onData(client, data));
     socket.on("close", () => {
+      this.router?.onClientDisconnected?.(client);
       this.clients.delete(id);
       log("info", `server: ${id} disconnected (${this.clients.size} remaining)`);
     });
     socket.on("error", (err) => {
       log("warn", `server: ${id} error: ${err.message}`);
+      this.router?.onClientDisconnected?.(client);
       this.clients.delete(id);
     });
   }
@@ -98,7 +125,8 @@ export class DaemonServer {
 
     let idx: number;
     while ((idx = client.buffer.indexOf("\n")) !== -1) {
-      const line = client.buffer.slice(0, idx).trim();
+      const frame = client.buffer.slice(0, idx);
+      const line = frame.trim();
       client.buffer = client.buffer.slice(idx + 1);
       if (!line) continue;
 
@@ -108,6 +136,7 @@ export class DaemonServer {
           this.sendTo(client, { type: "error", message: "Invalid command: missing 'type'" });
           continue;
         }
+        if (this.router?.route(client, `${frame}\n`, parsed)) continue;
         const cmd = parsed as Command;
         const result = this.handler(client, cmd);
         if (result instanceof Promise) {
@@ -124,7 +153,19 @@ export class DaemonServer {
   // ── Event dispatch ──────────────────────────────────────────────
 
   sendTo(client: ConnectedClient, event: Event, measureBytes = false): number {
-    if (client.socket.destroyed) return 0;
+    // Forwarded sessions belong wholly to the remote daemon. Local background
+    // streams and global broadcasts must never contaminate that byte stream.
+    if (client.forwarding) return 0;
+    return this.writeEvent(client, event, measureBytes);
+  }
+
+  /** Send a local transport-control event even when the protocol is forwarded. */
+  sendTransportTo(client: ConnectedClient, event: Event): number {
+    return this.writeEvent(client, event, false);
+  }
+
+  private writeEvent(client: ConnectedClient, event: Event, measureBytes: boolean): number {
+    if (client.socket.destroyed || client.routeClosing) return 0;
     try {
       const payload = JSON.stringify(event) + "\n";
       client.socket.write(payload);
@@ -137,6 +178,24 @@ export class DaemonServer {
 
   broadcast(event: Event): void {
     for (const client of this.clients.values()) this.sendTo(client, event);
+  }
+
+  /** Broadcast a routing-control event to local and forwarded sessions alike. */
+  broadcastTransport(event: Event): void {
+    for (const client of this.clients.values()) this.sendTransportTo(client, event);
+  }
+
+  /** Gracefully close every client after already-queued status bytes are flushed. */
+  disconnectClients(): void {
+    for (const client of this.clients.values()) {
+      if (client.socket.destroyed) continue;
+      // The switch status was queued before this call. Establish a hard barrier
+      // so racing local stream/sidebar broadcasts cannot follow it on the wire.
+      client.routeClosing = true;
+      client.socket.end();
+      const timer = setTimeout(() => client.socket.destroy(), 250);
+      timer.unref?.();
+    }
   }
 
   /**

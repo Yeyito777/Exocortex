@@ -250,6 +250,10 @@ export class DaemonClient {
     this.send({ type: "ping" });
   }
 
+  ssh(action: "connect" | "status" | "cancel", alias?: string): void {
+    this.send({ type: "ssh", action, ...(alias ? { alias } : {}) });
+  }
+
   abort(convId: string, expectedStartedAt?: number): void {
     this.send({ type: "abort", convId, expectedStartedAt });
   }

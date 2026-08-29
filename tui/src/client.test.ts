@@ -17,6 +17,24 @@ afterEach(async () => {
 });
 
 describe("DaemonClient request-scoped events", () => {
+  test("serializes SSH forwarding controls over the local daemon socket", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    const writes: string[] = [];
+    internal.socket = { write: (value: string) => { writes.push(value); } };
+    internal._connected = true;
+
+    client.ssh("connect", "whale");
+    client.ssh("status");
+    client.ssh("cancel");
+
+    expect(writes.map(line => JSON.parse(line))).toEqual([
+      { type: "ssh", action: "connect", alias: "whale" },
+      { type: "ssh", action: "status" },
+      { type: "ssh", action: "cancel" },
+    ]);
+  });
+
   test("parses a fragmented event followed by another event in the same socket chunk", () => {
     const events: unknown[] = [];
     const client = new DaemonClient((event) => events.push(event));

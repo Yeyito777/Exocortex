@@ -40,7 +40,8 @@ type CommandAction =
   | { type: "theme_changed" }
   | { type: "get_system_prompt" }
   | { type: "tool_policy"; mutation?: ToolPolicyMutation }
-  | { type: "set_system_instructions"; text: string };
+  | { type: "set_system_instructions"; text: string }
+  | { type: "ssh"; action: "connect" | "status" | "cancel"; alias?: string };
 
 /** Modifiers composed around a successfully parsed primary slash command. */
 export interface CommandComposition {

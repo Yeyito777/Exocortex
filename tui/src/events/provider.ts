@@ -29,8 +29,14 @@ export function handleToolsAvailable(event: Extract<Event, { type: "tools_availa
   const registry = state.providerRegistry ?? [];
 
   let provider = registry.find((p) => p.id === state.provider) ?? null;
-  if (!state.hasChosenProvider) {
-    const authenticated = registry.filter((candidate) => state.authByProvider[candidate.id]);
+  const authenticated = registry.filter((candidate) => state.authByProvider[candidate.id]);
+  if (!provider && registry.length > 0) {
+    // Endpoint switches can replace the entire provider catalog. Never retain a
+    // provider/model selection that the newly connected daemon does not expose.
+    provider = authenticated.length === 1 ? authenticated[0] : registry[0];
+    syncChosenProvider(state, provider.id);
+    state.model = provider.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER[provider.id];
+  } else if (!state.hasChosenProvider) {
     if (authenticated.length === 1) {
       provider = authenticated[0];
       syncChosenProvider(state, provider.id);

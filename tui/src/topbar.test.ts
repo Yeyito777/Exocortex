@@ -65,4 +65,18 @@ describe("topbar rendering", () => {
 
     expect(rendered).not.toContain("goal:complete");
   });
+
+  test("shows a compact boxed SSH alias indicator", () => {
+    const state = createInitialState();
+    state.sshRemote = { alias: "whale", connected: true };
+
+    const rendered = renderTopbar(state, 40);
+
+    expect(rendered).toContain("╢ whale ╟");
+    expect(visibleLength(rendered)).toBe(40);
+
+    const narrow = renderTopbar(state, 16);
+    expect(narrow).toContain("╢ w ╟");
+    expect(visibleLength(narrow)).toBe(16);
+  });
 });

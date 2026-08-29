@@ -64,6 +64,7 @@ import { CallMediaController } from "./call-media";
 import { formatMicGainDb, loadMicGainDb, saveMicGainDb } from "./mic-gain";
 import { applyTuiStartingState, availableStartingConversationId, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
+import { createSidebarState } from "./sidebar/state";
 import { formatConnectionLostNotice } from "./events/notices";
 import {
   completeInitialConversationBackfill,
@@ -109,6 +110,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let eventLoopLagTimer: ReturnType<typeof setInterval> | null = null;
 let reconnecting = false;
 let reconnectNavigationTarget: string | null = null;
+let daemonRouteSwitchPending = false;
 let terminalSetUp = false;
 let terminalClipboardClient: TerminalClipboardClient | null = null;
 let terminalControlBuffer: TerminalControlBuffer | null = null;
@@ -348,8 +350,44 @@ function maybeRequestOlderHistory(): void {
 
 // ── Event handler (daemon → TUI) ───────────────────────────────────
 
+function resetForDaemonRouteSwitch(): void {
+  voiceInput?.cleanup();
+  callMedia?.stop();
+  clearStreamTick();
+  clearPrewarmTimer();
+  clearDeferredHistoryRenderTimer();
+  pendingNewConversationConvId = null;
+  pendingLocalInterruptConvId = null;
+  pendingEditMessageUnwind = null;
+  reconnectNavigationTarget = null;
+  pendingStartingState = null;
+  pendingVoiceSubmissions.clear();
+
+  const sidebarOpen = state.sidebar.open;
+  state.sidebar = createSidebarState();
+  state.sidebar.open = sidebarOpen;
+  state.queuedMessages = [];
+  state.pendingQueueRemovalIds.clear();
+  state.pendingAuthQueue = [];
+  state.pendingSend = { active: false, text: "" };
+  state.pendingImages = [];
+  state.toolRegistry = [];
+  state.externalToolStyles = [];
+  state.activeToolPolicy = null;
+  state.tokenStats = null;
+  state.lastStreamSeqByConv = {};
+  resetDraftConversationState(state);
+}
+
 function onDaemonEvent(event: Event): void {
   const eventStartedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
+  if (event.type === "ssh_status" && event.state === "connected" && event.switched) {
+    daemonRouteSwitchPending = true;
+    resetForDaemonRouteSwitch();
+  }
+  // The switched status is the final frame from the old endpoint. Ignore any
+  // already-in-flight old-route events until a fresh local socket reconnects.
+  if (daemonRouteSwitchPending && event.type !== "ssh_status") return;
   callMedia?.handleEvent(event);
   if (pendingEditMessageUnwind) {
     const pending = pendingEditMessageUnwind;
@@ -905,6 +943,9 @@ function handleSubmit(): void {
           break;
         case "logout":
           daemon.logout(cmdResult.provider ?? state.provider);
+          break;
+        case "ssh":
+          daemon.ssh(cmdResult.action, cmdResult.alias);
           break;
         case "handled":
           break;
@@ -1639,7 +1680,8 @@ function scheduleReconnectAttempt(): void {
 }
 
 function restoreDaemonSessionAfterReconnect(conversationWillReload: boolean): void {
-  pushSystemMessage(state, "✓ Reconnected to daemon.", "success");
+  if (daemonRouteSwitchPending) daemonRouteSwitchPending = false;
+  else pushSystemMessage(state, "✓ Reconnected to daemon.", "success");
 
   // Always refresh daemon-derived top-level state. A replayed load/unwind for
   // the active conversation provides the canonical reload itself; other queued
@@ -1690,7 +1732,9 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
-  pushSystemMessage(state, formatConnectionLostNotice(shutdownMode), theme.error);
+  if (!daemonRouteSwitchPending) {
+    pushSystemMessage(state, formatConnectionLostNotice(shutdownMode), theme.error);
+  }
   scheduleRender();
   void reconnectToDaemon();
 }

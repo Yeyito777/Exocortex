@@ -466,6 +466,23 @@ export function handleEvent(
       }
       break;
 
+    case "ssh_status":
+      if (event.state === "connected") {
+        state.sshRemote = event.mode === "remote" && event.alias
+          ? { alias: event.alias, connected: true }
+          : null;
+      } else if (event.state === "failed" && event.mode === "remote" && event.alias) {
+        state.sshRemote = { alias: event.alias, connected: false };
+      }
+      if (!event.silent) {
+        pushSystemMessage(
+          state,
+          event.message,
+          event.state === "failed" ? theme.error : event.state === "switching" ? theme.warning : theme.muted,
+        );
+      }
+      break;
+
     case "system_prompt":
       pushSystemMessage(state, event.systemPrompt);
       break;
