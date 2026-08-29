@@ -81,6 +81,7 @@ const savedStartingState = loadTuiStartingState();
 const state = createInitialState();
 if (savedStartingState) applyTuiStartingState(state, savedStartingState);
 let pendingStartingState = savedStartingState;
+let startingConversationLoad: { convId: string; reqId: string } | null = null;
 const RECONNECT_DELAY_MS = 1000;
 const STARTUP_PROFILE = process.env.EXOCORTEX_PROFILE_STARTUP === "1" || process.argv.includes("--profile-startup");
 const STARTUP_INPUT_SANITIZE_MS = 1000;
@@ -366,6 +367,7 @@ function resetForDaemonRouteSwitch(): void {
   pendingEditMessageUnwind = null;
   reconnectNavigationTarget = null;
   pendingStartingState = null;
+  startingConversationLoad = null;
   pendingVoiceSubmissions.clear();
 
   const sidebarOpen = state.sidebar.open;
@@ -393,6 +395,12 @@ function onDaemonEvent(event: Event): void {
   // The switched status is the final frame from the old endpoint. Ignore any
   // already-in-flight old-route events until a fresh local socket reconnects.
   if (daemonRouteSwitchPending && event.type !== "ssh_status") return;
+  if (event.type === "error" && event.reqId === startingConversationLoad?.reqId) {
+    // A saved conversation can be deleted while the TUI is closed. Its
+    // speculative startup load is intentionally silent; the authoritative
+    // conversations_list immediately reconciles the saved state.
+    return;
+  }
   callMedia?.handleEvent(event);
   if (pendingEditMessageUnwind) {
     const pending = pendingEditMessageUnwind;
@@ -496,9 +504,12 @@ function onDaemonEvent(event: Event): void {
       pendingStartingState = null;
       const convId = availableStartingConversationId(startingState, event.conversations);
       if (convId && state.convId === convId) {
-        prepareConversationOpen(state, convId);
-        daemon.loadConversation(convId);
+        if (startingConversationLoad?.convId !== convId) {
+          prepareConversationOpen(state, convId);
+          daemon.loadConversation(convId);
+        }
       }
+      startingConversationLoad = null;
     }
   }
 
@@ -1692,14 +1703,20 @@ function scheduleReconnectAttempt(): void {
   }, RECONNECT_DELAY_MS);
 }
 
-function restoreDaemonSessionAfterReconnect(conversationWillReload: boolean): void {
+function restoreDaemonSessionAfterReconnect(
+  conversationWillReload: boolean,
+  bootstrapAlreadyRequested = false,
+): void {
   if (daemonRouteSwitchPending) daemonRouteSwitchPending = false;
   else pushSystemMessage(state, "✓ Reconnected to daemon.", "success");
 
   // Always refresh daemon-derived top-level state. A replayed load/unwind for
   // the active conversation provides the canonical reload itself; other queued
   // commands still need a load to restore this new socket's subscription.
-  daemon.ping();
+  // A successful /ssh probe is adopted as the real transport, so its ping is
+  // already producing this bootstrap. Do not request the same multi-megabyte
+  // state a second time.
+  if (!bootstrapAlreadyRequested) daemon.ping();
   if (!conversationWillReload && state.convId) daemon.loadConversation(state.convId);
 }
 
@@ -1708,7 +1725,7 @@ async function reconnectToDaemon(): Promise<void> {
   reconnecting = true;
 
   try {
-    const { replayedCommands } = await daemon.connect();
+    const { replayedCommands, bootstrapAlreadyRequested } = await daemon.connect();
     const replayedNavigation = [...replayedCommands].reverse().find((command) => command.type === "load_conversation");
     reconnectNavigationTarget = replayedNavigation?.type === "load_conversation" ? replayedNavigation.convId : null;
     const conversationWillReload = replayedCommands.some((command) =>
@@ -1719,7 +1736,7 @@ async function reconnectToDaemon(): Promise<void> {
     );
     reconnecting = false;
     clearReconnectTimer();
-    restoreDaemonSessionAfterReconnect(conversationWillReload);
+    restoreDaemonSessionAfterReconnect(conversationWillReload, bootstrapAlreadyRequested);
     scheduleRender();
   } catch {
     if (!running) {
@@ -1822,7 +1839,19 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Request initial usage data from daemon
+  // Speculatively request the saved conversation before the much larger
+  // sidebar bootstrap. The list remains authoritative, but the common case no
+  // longer waits an extra network round trip (or for the full list payload).
+  const startingConvId = pendingStartingState?.focusedConversationId ?? null;
+  if (startingConvId && state.convId === startingConvId) {
+    prepareConversationOpen(state, startingConvId);
+    startingConversationLoad = {
+      convId: startingConvId,
+      reqId: daemon.loadConversation(startingConvId),
+    };
+  }
+
+  // Request initial usage and sidebar data from daemon.
   daemon.ping();
   startupProfileMark("ping_sent");
 

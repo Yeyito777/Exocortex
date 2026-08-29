@@ -116,6 +116,37 @@ describe("handler shutdown preparation", () => {
   });
 });
 
+describe("handler sidebar patches", () => {
+  afterEach(cleanupIds);
+
+  test("sends a one-row authoritative patch to capable clients when pinning", async () => {
+    const id = mkId("sidebar-patch");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const patches: Array<Record<string, any>> = [];
+    const server = {
+      sendTo: mock(() => {}),
+      broadcast: mock(() => {}),
+      broadcastSidebarStatePatched: mock((event: Record<string, unknown>) => { patches.push(event); }),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "pin_conversation", convId: id, pinned: true });
+
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toMatchObject({
+      type: "sidebar_state_patched",
+      conversations: [expect.objectContaining({ id, pinned: true })],
+    });
+    expect(patches[0].conversations).toHaveLength(1);
+    expect(server.broadcast).not.toHaveBeenCalledWith(expect.objectContaining({ type: "conversation_moved" }));
+  });
+});
+
 describe("handler conversation tool policy", () => {
   afterEach(cleanupIds);
 

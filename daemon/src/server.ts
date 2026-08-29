@@ -164,6 +164,25 @@ export class DaemonServer {
     }
   }
 
+  /**
+   * Send structural sidebar upserts/removals to capable clients. Older clients
+   * still receive the canonical full snapshot, materialized at most once.
+   */
+  broadcastSidebarStatePatched(
+    event: Extract<Event, { type: "sidebar_state_patched" }>,
+    legacyEvent: () => Extract<Event, { type: "conversation_moved" }>,
+  ): void {
+    let legacy: Extract<Event, { type: "conversation_moved" }> | undefined;
+    for (const client of this.clients.values()) {
+      if (client.capabilities.has("sidebar-state-patch")) {
+        this.sendTo(client, event);
+      } else {
+        legacy ??= legacyEvent();
+        this.sendTo(client, legacy);
+      }
+    }
+  }
+
   sendToSubscribers(convId: string, event: Event): void {
     for (const client of this.clients.values()) {
       if (client.subscriptions.has(convId)) this.sendTo(client, event);

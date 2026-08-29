@@ -24,7 +24,7 @@ class FakeProcess extends EventEmitter implements SshProcess {
   }
 }
 
-function respondingProbe(): FakeProcess {
+function respondingProbe(bufferedEvent?: Record<string, unknown>): FakeProcess {
   const child = new FakeProcess();
   let handled = false;
   child.stdin.on("data", () => {
@@ -33,7 +33,10 @@ function respondingProbe(): FakeProcess {
     if (newline === -1) return;
     handled = true;
     const command = JSON.parse(child.input.slice(0, newline));
-    child.stdout.write(`${JSON.stringify({ type: "pong", reqId: command.reqId })}\n`);
+    child.stdout.write(
+      `${JSON.stringify({ type: "pong", reqId: command.reqId })}\n`
+      + (bufferedEvent ? `${JSON.stringify(bufferedEvent)}\n` : ""),
+    );
   });
   return child;
 }
@@ -53,10 +56,8 @@ describe("DaemonClient SSH routing", () => {
     const client = new DaemonClient(event => events.push(event), "/tmp/local.sock", false, {
       localHostname: "localbox",
       spawnSshProcess: () => {
-        const child = spawned.length === 0 ? respondingProbe() : new FakeProcess();
-        const isSession = spawned.length > 0;
+        const child = respondingProbe({ type: "queue_updated", messages: [] });
         spawned.push(child);
-        if (isSession) queueMicrotask(() => child.emit("spawn"));
         return child;
       },
     });
@@ -98,16 +99,22 @@ describe("DaemonClient SSH routing", () => {
 
     const connected = await client.connect();
     expect(connected.replayedCommands).toEqual([]);
-    expect(spawned).toHaveLength(2);
-    expect(spawned[1].input).toContain('"type":"client_capabilities"');
-    expect(events.at(-1)).toMatchObject({
+    expect(connected.bootstrapAlreadyRequested).toBe(true);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].input).toContain('"type":"client_capabilities"');
+    expect(events.find(event => (
+      event as { type?: string; silent?: boolean }
+    ).type === "ssh_status" && (
+      event as { type?: string; silent?: boolean }
+    ).silent === true)).toMatchObject({
       type: "ssh_status",
       mode: "remote",
       alias: "whale",
       silent: true,
     });
+    await waitFor(() => events.some(event => (event as { type?: string }).type === "queue_updated"));
 
-    spawned[1].stdout.write('{"type":"pong"}\n');
+    spawned[0].stdout.write('{"type":"pong"}\n');
     await waitFor(() => events.some(event => (event as { type?: string }).type === "pong"));
 
     client.ssh("cancel");
@@ -118,7 +125,7 @@ describe("DaemonClient SSH routing", () => {
       state: "connected",
       switched: true,
     });
-    await waitFor(() => spawned[1].killed);
+    await waitFor(() => spawned[0].killed);
   });
 
   test("keeps the current route when an SSH probe fails", async () => {

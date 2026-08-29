@@ -42,15 +42,17 @@ describe("TUI SSH transport", () => {
     expect(validateSshAlias("host name")).not.toBeNull();
     expect(validateSshAlias("user@host")).not.toBeNull();
     expect(sshProxyArgs("whale")).toEqual([
-      "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+      "-T", "-C", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
       "whale", "exocortexd", "proxy",
     ]);
   });
 
-  test("probes the remote daemon over an isolated SSH process", async () => {
+  test("transfers the successful probe process instead of killing it", async () => {
     const child = respondingProbe();
-    await probeSshProxy("whale", { spawnProcess: () => child }).promise;
-    expect(child.killed).toBe(true);
+    const connection = await probeSshProxy("whale", { spawnProcess: () => child }).promise;
+    expect(connection.process).toBe(child);
+    expect(child.killed).toBe(false);
+    child.kill();
   });
 
   test("reports proxy stderr when the remote daemon cannot be reached", async () => {

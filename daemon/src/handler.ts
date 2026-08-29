@@ -60,6 +60,7 @@ import { configureChronoService } from "./chrono-service";
 import { INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { randomUUID } from "crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   buildExternalNotificationEnvelope,
   hasExternalNotificationReceipt,
@@ -103,6 +104,44 @@ export interface HandlerOptions extends HandlerLifecycle {
 export function createHandler(server: DaemonServer, options: HandlerOptions = {}): DaemonCommandHandler {
   const lifecycle = options;
   // ── Local helper functions ────────────────────────────────────────
+
+  type SidebarStateSnapshot = ReturnType<typeof convStore.listSidebarState>;
+
+  const broadcastSidebarStatePatch = (before: SidebarStateSnapshot): void => {
+    const after = convStore.listSidebarState();
+    const previousConversations = new Map(before.conversations.map(summary => [summary.id, summary]));
+    const previousFolders = new Map(before.folders.map(folder => [folder.id, folder]));
+    const nextConversationIds = new Set(after.conversations.map(summary => summary.id));
+    const nextFolderIds = new Set(after.folders.map(folder => folder.id));
+    const conversations = after.conversations.filter(summary => (
+      !isDeepStrictEqual(previousConversations.get(summary.id), summary)
+    ));
+    const folders = after.folders.filter(folder => (
+      !isDeepStrictEqual(previousFolders.get(folder.id), folder)
+    ));
+    const removedConversationIds = before.conversations
+      .filter(summary => !nextConversationIds.has(summary.id))
+      .map(summary => summary.id);
+    const removedFolderIds = before.folders
+      .filter(folder => !nextFolderIds.has(folder.id))
+      .map(folder => folder.id);
+    const event: Extract<Event, { type: "sidebar_state_patched" }> = {
+      type: "sidebar_state_patched",
+      ...(conversations.length > 0 ? { conversations } : {}),
+      ...(folders.length > 0 ? { folders } : {}),
+      ...(removedConversationIds.length > 0 ? { removedConversationIds } : {}),
+      ...(removedFolderIds.length > 0 ? { removedFolderIds } : {}),
+    };
+    const capabilitySender = (server as DaemonServer & {
+      broadcastSidebarStatePatched?: DaemonServer["broadcastSidebarStatePatched"];
+    }).broadcastSidebarStatePatched;
+    if (capabilitySender) {
+      capabilitySender.call(server, event, () => ({ type: "conversation_moved", ...after }));
+    } else {
+      // Minimal test doubles and older embedded servers retain the full snapshot.
+      server.broadcast({ type: "conversation_moved", ...after });
+    }
+  };
 
   const broadcastSidebarItemOrderUpdates = (updates: SidebarItemOrderUpdate[]): void => {
     const event: Extract<Event, { type: "sidebar_items_reordered" }> = { type: "sidebar_items_reordered", updates };
@@ -715,12 +754,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     reqId: string | undefined,
     result: convStore.UndoDeleteResult | null,
     emptyMessage: string,
+    previousSidebarState: SidebarStateSnapshot,
   ): void => {
     if (result?.type === "conversation") {
       const summary = convStore.getSummary(result.conversation.id);
       if (summary) {
         server.broadcast({ type: "conversation_restored", reqId, summary });
-        server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+        broadcastSidebarStatePatch(previousSidebarState);
         return;
       }
     } else if (result?.type === "conversations") {
@@ -728,7 +768,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const summary = convStore.getSummary(conv.id);
         if (summary) server.broadcast({ type: "conversation_restored", reqId, summary });
       }
-      server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+      broadcastSidebarStatePatch(previousSidebarState);
       return;
     } else if (result?.type === "sidebar_state") {
       for (const convId of result.deletedConvIds ?? []) {
@@ -743,7 +783,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           sendCompactHistoryUpdated(convId);
         }
       }
-      server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+      broadcastSidebarStatePatch(previousSidebarState);
       return;
     }
 
@@ -1135,8 +1175,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           const lastUsage = getLastUsage(provider.id);
           server.sendTo(client, { type: "usage_update", provider: provider.id, usage: lastUsage });
         }
-        server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
+        // The sidebar is the startup-critical payload. Token statistics can be
+        // large and are independent, so never put them ahead of first paint.
         server.sendTo(client, { type: "conversations_list", ...convStore.listSidebarState() });
+        server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
         server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages() });
         for (const provider of getProviders()) {
           if (!hasConfiguredCredentials(provider.id)) continue;
@@ -1303,6 +1345,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             ? DEFAULT_CALL_TITLE
             : (initialMessage || goalObjective || titleContext ? PENDING_TITLE : undefined)
         );
+        const previousSubagentSidebarState = cmd.subagent ? convStore.listSidebarState() : null;
         const subagentFolder = cmd.subagent
           ? convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME, { mutedOnCreate: true })
           : null;
@@ -1356,7 +1399,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           goal,
         });
         broadcastConversationUpdated(server, id);
-        if (cmd.subagent) server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+        if (previousSubagentSidebarState) broadcastSidebarStatePatch(previousSubagentSidebarState);
 
         if (cmd.startCall) await startCall(client, id, cmd.reqId, cmd.callVoice);
 
@@ -1404,7 +1447,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "client_capabilities": {
         for (const capability of cmd.capabilities) {
-          if (capability === "targeted-unwind" || capability === "sidebar-reorder-delta") client.capabilities.add(capability);
+          if (capability === "targeted-unwind"
+              || capability === "sidebar-reorder-delta"
+              || capability === "sidebar-state-patch") client.capabilities.add(capability);
         }
         break;
       }
@@ -2128,13 +2173,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "pin_conversation": {
+        const previousSidebarState = convStore.listSidebarState();
         const ok = convStore.pin(cmd.convId, cmd.pinned);
         if (ok) {
-          // Single authoritative broadcast — carries the full list with
-          // correct pinned flags and sortOrders.  A separate
-          // conversation_pinned event is unnecessary and caused flicker
-          // when the TUI re-sorted with stale sortOrder values.
-          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+          // One authoritative patch carries the final pinned flag and order. A
+          // separate conversation_pinned event caused flicker with stale order.
+          broadcastSidebarStatePatch(previousSidebarState);
         }
         break;
       }
@@ -2176,11 +2220,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "clone_conversation": {
+        const previousSidebarState = convStore.listSidebarState();
         const cloned = convStore.clone(cmd.convId);
         if (cloned) {
           log("info", `handler: cloned conversation ${cmd.convId} → ${cloned.id}`);
           server.broadcast({ type: "conversation_restored", reqId: cmd.reqId, summary: cloned });
-          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+          broadcastSidebarStatePatch(previousSidebarState);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
         }
@@ -2190,10 +2235,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       // ── Folder/sidebar organization commands ──────────────────────
 
       case "create_folder": {
+        const previousSidebarState = convStore.listSidebarState();
         const folder = convStore.createFolder(cmd.name, cmd.parentId ?? null, cmd.items ?? []);
         if (folder) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId });
-          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+          broadcastSidebarStatePatch(previousSidebarState);
           log("info", `handler: created folder ${folder.id} (${folder.name})`);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Folder name cannot be empty" });
@@ -2202,10 +2248,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "rename_folder": {
+        const previousSidebarState = convStore.listSidebarState();
         const ok = convStore.renameFolder(cmd.folderId, cmd.name);
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId });
-          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+          broadcastSidebarStatePatch(previousSidebarState);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Folder ${cmd.folderId} not found` });
         }
@@ -2213,22 +2260,25 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "pin_folder": {
+        const previousSidebarState = convStore.listSidebarState();
         if (convStore.pinFolder(cmd.folderId, cmd.pinned)) {
-          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+          broadcastSidebarStatePatch(previousSidebarState);
         }
         break;
       }
 
       case "mute_folder": {
+        const previousSidebarState = convStore.listSidebarState();
         if (convStore.muteFolder(cmd.folderId, cmd.muted)) {
-          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+          broadcastSidebarStatePatch(previousSidebarState);
         }
         break;
       }
 
       case "pin_sidebar_items": {
+        const previousSidebarState = convStore.listSidebarState();
         if (convStore.pinSidebarItems(cmd.pins)) {
-          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+          broadcastSidebarStatePatch(previousSidebarState);
         }
         break;
       }
@@ -2240,20 +2290,22 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "move_sidebar_items": {
+        const previousSidebarState = convStore.listSidebarState();
         if (convStore.moveSidebarItems(cmd.items, cmd.parentId, cmd.before, { preservePinned: cmd.preservePinned, placement: cmd.placement })) {
-          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+          broadcastSidebarStatePatch(previousSidebarState);
         }
         break;
       }
 
       case "delete_folder": {
+        const previousSidebarState = convStore.listSidebarState();
         const mode = cmd.mode ?? "recursive";
         const deletedConvIds = mode === "recursive" ? convStore.listFolderConversationIds(cmd.folderId) : [];
         if (convStore.deleteFolder(cmd.folderId, mode)) {
           for (const convId of deletedConvIds) {
             server.broadcast({ type: "conversation_deleted", convId });
           }
-          server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+          broadcastSidebarStatePatch(previousSidebarState);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Folder ${cmd.folderId} not found` });
         }
@@ -2261,12 +2313,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "undo_delete": {
-        broadcastSidebarUndoResult(client, cmd.reqId, convStore.undoDelete(), "Nothing to undo");
+        const previousSidebarState = convStore.listSidebarState();
+        broadcastSidebarUndoResult(client, cmd.reqId, convStore.undoDelete(), "Nothing to undo", previousSidebarState);
         break;
       }
 
       case "redo_delete": {
-        broadcastSidebarUndoResult(client, cmd.reqId, convStore.redoDelete(), "Nothing to redo");
+        const previousSidebarState = convStore.listSidebarState();
+        broadcastSidebarUndoResult(client, cmd.reqId, convStore.redoDelete(), "Nothing to redo", previousSidebarState);
         break;
       }
 

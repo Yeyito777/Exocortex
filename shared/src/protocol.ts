@@ -283,7 +283,7 @@ export interface PrewarmConversationCommand {
   convId: string;
 }
 
-export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta";
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch";
 
 /** Connection-scoped feature negotiation for backwards-compatible events. */
 export interface ClientCapabilitiesCommand {
@@ -1421,6 +1421,19 @@ export interface SidebarItemsReorderedEvent {
   updates: SidebarItemOrderUpdate[];
 }
 
+/**
+ * Compact authoritative sidebar mutation. Entries are upserts; omitted entries
+ * retain their current value. Removals are explicit so folder creation, moves,
+ * pinning, and deletion do not require resending every conversation summary.
+ */
+export interface SidebarStatePatchedEvent {
+  type: "sidebar_state_patched";
+  conversations?: ConversationSummary[];
+  folders?: FolderSummary[];
+  removedConversationIds?: string[];
+  removedFolderIds?: string[];
+}
+
 export interface UserMessageEvent {
   type: "user_message";
   convId: string;
@@ -1790,6 +1803,7 @@ export type Event =
   | ConversationPinnedEvent
   | ConversationMovedEvent
   | SidebarItemsReorderedEvent
+  | SidebarStatePatchedEvent
   | QueueUpdatedEvent
   | QueueNoticeEvent
   | UserMessageEvent

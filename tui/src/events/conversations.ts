@@ -5,6 +5,7 @@ import { clearAllQueuedMessagesForConversation } from "../queue";
 import {
   focusConversationById,
   applySidebarItemOrderUpdates,
+  applySidebarStatePatch,
   rememberEnteredConversation,
   syncSelectedIndex,
   updateConversation,
@@ -182,6 +183,10 @@ export function handleConversationMoved(event: Extract<Event, { type: "conversat
 
 export function handleSidebarItemsReordered(event: Extract<Event, { type: "sidebar_items_reordered" }>, state: RenderState): void {
   applySidebarItemOrderUpdates(state.sidebar, event.updates);
+}
+
+export function handleSidebarStatePatched(event: Extract<Event, { type: "sidebar_state_patched" }>, state: RenderState): void {
+  applySidebarStatePatch(state.sidebar, event);
 }
 
 export function handleConversationLoaded(

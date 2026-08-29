@@ -1,5 +1,5 @@
 import type { ConversationSummary, FolderSummary } from "../messages";
-import type { SidebarItemOrderUpdate } from "../protocol";
+import type { SidebarItemOrderUpdate, SidebarStatePatchedEvent } from "../protocol";
 import { isMovableSidebarItem, sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { compareSidebarOrder } from "./order";
 import { focusTargetAfterRemovingSidebarItems } from "./removal";
@@ -33,6 +33,21 @@ export function applySidebarItemOrderUpdates(sidebar: SidebarState, updates: Sid
   }
   if (!changed) return;
   syncSelectedIndex(sidebar);
+}
+
+/** Apply authoritative structural upserts/removals without a full sidebar snapshot. */
+export function applySidebarStatePatch(sidebar: SidebarState, patch: SidebarStatePatchedEvent): void {
+  const conversations = new Map(sidebar.conversations.map(summary => [summary.id, summary]));
+  const folders = new Map(sidebar.folders.map(folder => [folder.id, folder]));
+  for (const id of patch.removedConversationIds ?? []) conversations.delete(id);
+  for (const id of patch.removedFolderIds ?? []) folders.delete(id);
+  for (const summary of patch.conversations ?? []) conversations.set(summary.id, summary);
+  for (const folder of patch.folders ?? []) folders.set(folder.id, folder);
+  updateConversationList(
+    sidebar,
+    [...conversations.values()].sort(compareSidebarOrder),
+    [...folders.values()].sort(compareSidebarOrder),
+  );
 }
 
 function activeLowerQuery(sidebar: SidebarState): string | null {

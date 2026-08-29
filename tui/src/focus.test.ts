@@ -98,6 +98,29 @@ test("authoritative sidebar reorder deltas update only the moved rows and preser
   expect(state.sidebar.selectedIndex).toBe(0);
 });
 
+test("structural sidebar patches upsert and remove only named entries", () => {
+  const state = createInitialState();
+  state.sidebar.conversations = [conversation("keep", 1), conversation("remove", 2)];
+  state.sidebar.folders = [folder("old-folder", 3)];
+  state.sidebar.selectedItem = { type: "conversation", id: "keep" };
+  state.sidebar.selectedId = "keep";
+
+  handleEvent({
+    type: "sidebar_state_patched",
+    conversations: [conversation("keep", 4, { title: "updated" })],
+    folders: [folder("new-folder", 1)],
+    removedConversationIds: ["remove"],
+    removedFolderIds: ["old-folder"],
+  }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+  expect(state.sidebar.conversations).toEqual([
+    conversation("keep", 4, { title: "updated" }),
+  ]);
+  expect(state.sidebar.folders).toEqual([folder("new-folder", 1)]);
+  expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "keep" });
+  expect(state.sidebar.selectedIndex).toBe(0);
+});
+
 function renderHistoryForTest(state: ReturnType<typeof createInitialState>, cols = 120): void {
   const rendered = buildMessageLines(state, cols);
   state.historyLines = rendered.lines;

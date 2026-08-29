@@ -14,6 +14,7 @@ export interface SshProcess {
   stderr: Readable;
   on(event: string, listener: (...args: any[]) => void): this;
   once(event: string, listener: (...args: any[]) => void): this;
+  off(event: string, listener: (...args: any[]) => void): this;
   kill(signal?: NodeJS.Signals | number): boolean;
 }
 
@@ -22,6 +23,10 @@ export type SpawnSshProcess = (alias: string) => SshProcess;
 export function sshProxyArgs(alias: string): string[] {
   return [
     "-T",
+    // The protocol is large, repetitive JSON (a real sidebar can exceed 1 MB).
+    // Let the persistent SSH transport compress it instead of paying that cost
+    // on every bootstrap, conversation open, and legacy snapshot.
+    "-C",
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=10",
     alias,
@@ -58,8 +63,15 @@ export function sshStderrSuffix(stderr: string): string {
   return trimmed ? `: ${trimmed}` : "";
 }
 
+export interface ProbedSshConnection {
+  process: SshProcess;
+  /** Protocol bytes received after the matching pong in the same data chunk. */
+  bufferedStdout: string;
+  stderr: string;
+}
+
 export interface SshProbe {
-  promise: Promise<void>;
+  promise: Promise<ProbedSshConnection>;
   cancel(reason: string): void;
 }
 
@@ -70,15 +82,16 @@ export interface SshProbeOptions {
 
 /**
  * Verify that an alias reaches an Exocortex daemon before replacing the TUI's
- * current route. The probe owns a short-lived SSH process and never exposes its
- * protocol stream to the application event handler.
+ * current route. On success ownership of the already-authenticated process is
+ * transferred to the caller so switching routes does not pay a second SSH
+ * handshake. The stream is paused and detached from the probe before resolving.
  */
 export function probeSshProxy(alias: string, options: SshProbeOptions = {}): SshProbe {
   const spawnProcess = options.spawnProcess ?? spawnSshProxy;
   const timeoutMs = options.timeoutMs ?? DEFAULT_SSH_PROBE_TIMEOUT_MS;
   let cancelProbe = (_reason: string): void => {};
 
-  const promise = new Promise<void>((resolve, reject) => {
+  const promise = new Promise<ProbedSshConnection>((resolve, reject) => {
     let process: SshProcess;
     try {
       process = spawnProcess(alias);
@@ -91,23 +104,10 @@ export function probeSshProxy(alias: string, options: SshProbeOptions = {}): Ssh
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const timer = setTimeout(() => finish(new Error(
-      `timed out after ${Math.ceil(timeoutMs / 1000)}s${sshStderrSuffix(stderr)}`,
-    )), timeoutMs);
-    timer.unref?.();
+    let timer: ReturnType<typeof setTimeout>;
 
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try { process.kill(); } catch { /* already gone */ }
-      if (error) reject(error);
-      else resolve();
-    };
-
-    cancelProbe = reason => finish(new Error(reason));
-    process.stderr.on("data", chunk => { stderr = appendSshStderr(stderr, chunk); });
-    process.stdout.on("data", chunk => {
+    const onStderr = (chunk: Buffer | string) => { stderr = appendSshStderr(stderr, chunk); };
+    const onStdout = (chunk: Buffer | string) => {
       if (settled) return;
       stdout += typeof chunk === "string" ? chunk : chunk.toString("utf8");
       if (stdout.length > PROBE_OUTPUT_LIMIT) {
@@ -130,16 +130,50 @@ export function probeSshProxy(alias: string, options: SshProbeOptions = {}): Ssh
           return;
         }
       }
-    });
-    process.once("error", error => finish(new Error(`${error.message}${sshStderrSuffix(stderr)}`)));
-    process.once("close", (code: number | null, signal: NodeJS.Signals | null) => {
+    };
+    const onProcessError = (error: Error) => finish(new Error(`${error.message}${sshStderrSuffix(stderr)}`));
+    const onProcessClose = (code: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return;
       const result = signal ? `signal ${signal}` : `exit ${code ?? "unknown"}`;
       finish(new Error(`SSH proxy closed before the daemon replied (${result})${sshStderrSuffix(stderr)}`));
-    });
-    process.stdin.once("error", error => finish(new Error(
+    };
+    const onStdinError = (error: Error) => finish(new Error(
       `cannot write SSH probe: ${error.message}${sshStderrSuffix(stderr)}`,
-    )));
+    ));
+
+    const detach = () => {
+      process.stderr.off("data", onStderr);
+      process.stdout.off("data", onStdout);
+      process.off("error", onProcessError);
+      process.off("close", onProcessClose);
+      process.stdin.off("error", onStdinError);
+    };
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      detach();
+      if (error) {
+        try { process.kill(); } catch { /* already gone */ }
+        reject(error);
+        return;
+      }
+      process.stdout.pause();
+      process.stderr.pause();
+      resolve({ process, bufferedStdout: stdout, stderr });
+    };
+
+    cancelProbe = reason => finish(new Error(reason));
+    process.stderr.on("data", onStderr);
+    process.stdout.on("data", onStdout);
+    process.once("error", onProcessError);
+    process.once("close", onProcessClose);
+    process.stdin.once("error", onStdinError);
+    timer = setTimeout(() => finish(new Error(
+      `timed out after ${Math.ceil(timeoutMs / 1000)}s${sshStderrSuffix(stderr)}`,
+    )), timeoutMs);
+    timer.unref?.();
     try {
       process.stdin.write(`${JSON.stringify({ type: "ping", reqId })}\n`);
     } catch (error) {

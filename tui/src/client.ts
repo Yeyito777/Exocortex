@@ -22,6 +22,7 @@ import {
   spawnSshProxy,
   sshStderrSuffix,
   validateSshAlias,
+  type ProbedSshConnection,
   type SpawnSshProcess,
   type SshProcess,
 } from "./ssh-transport";
@@ -35,6 +36,8 @@ export type TranscriptionErrorCallback = (message: string) => void;
 export interface ConnectResult {
   /** Commands that entered the offline queue before this socket became ready. */
   replayedCommands: Command[];
+  /** The adopted SSH probe already requested the normal daemon bootstrap. */
+  bootstrapAlreadyRequested?: boolean;
 }
 
 interface ClientTransport {
@@ -106,6 +109,7 @@ export class DaemonClient {
   private sshSwitchingTo: string | null = null;
   private sshSwitchGeneration = 0;
   private cancelSshProbe: ((reason: string) => void) | null = null;
+  private pendingSshConnection: (ProbedSshConnection & { alias: string }) | null = null;
 
   constructor(
     handler: EventHandler,
@@ -158,7 +162,7 @@ export class DaemonClient {
         }
         this._connected = true;
         resolved = true;
-        this.writeCommand({ type: "client_capabilities", capabilities: ["targeted-unwind", "sidebar-reorder-delta"] });
+        this.writeCommand({ type: "client_capabilities", capabilities: ["targeted-unwind", "sidebar-reorder-delta", "sidebar-state-patch"] });
         // Report the queue state atomically with the flush. Input can enqueue a
         // command while the socket attempt is still in flight, so a pre-connect
         // queue snapshot would already be stale here.
@@ -188,12 +192,20 @@ export class DaemonClient {
 
   private async connectSsh(alias: string): Promise<ConnectResult> {
     return new Promise((resolve, reject) => {
+      const probed = this.pendingSshConnection?.alias === alias
+        ? this.pendingSshConnection
+        : null;
+      if (probed) this.pendingSshConnection = null;
       let process: SshProcess;
-      try {
-        process = this.spawnSshProcess(alias);
-      } catch (error) {
-        reject(new Error(`Could not start SSH proxy for ${alias}: ${error instanceof Error ? error.message : String(error)}`));
-        return;
+      if (probed) {
+        process = probed.process;
+      } else {
+        try {
+          process = this.spawnSshProcess(alias);
+        } catch (error) {
+          reject(new Error(`Could not start SSH proxy for ${alias}: ${error instanceof Error ? error.message : String(error)}`));
+          return;
+        }
       }
 
       let active!: ActiveSshConnection;
@@ -209,7 +221,7 @@ export class DaemonClient {
       };
       active = {
         transport,
-        stderr: "",
+        stderr: probed?.stderr ?? "",
         connected: false,
         intentionalClose: false,
         finished: false,
@@ -247,7 +259,14 @@ export class DaemonClient {
       process.stdout.on("data", chunk => {
         if (!active.finished && this.socket === transport) this.onData(chunk);
       });
-      process.once("spawn", () => {
+      // Adding a data listener normally resumes a Readable. Keep an adopted
+      // probe paused until the reconnect continuation has cleared route-switch
+      // suppression in main.ts, then replay its unconsumed bootstrap bytes.
+      if (probed) {
+        process.stdout.pause();
+        process.stderr.resume();
+      }
+      const activate = () => {
         if (active.finished) return;
         if (this.sshAlias !== alias || this.intentionalDisconnect) {
           active.intentionalClose = true;
@@ -258,10 +277,20 @@ export class DaemonClient {
         active.connected = true;
         this._connected = true;
         this.handler(this.connectedRouteStatus(false, true));
-        this.writeCommand({ type: "client_capabilities", capabilities: ["targeted-unwind", "sidebar-reorder-delta"] });
+        this.writeCommand({ type: "client_capabilities", capabilities: ["targeted-unwind", "sidebar-reorder-delta", "sidebar-state-patch"] });
         const replayedCommands = this.flushPendingCommands();
-        resolve({ replayedCommands });
-      });
+        resolve({ replayedCommands, ...(probed ? { bootstrapAlreadyRequested: true } : {}) });
+      };
+      if (probed) {
+        activate();
+        queueMicrotask(() => {
+          if (active.finished || this.socket !== transport) return;
+          if (probed.bufferedStdout) this.onData(probed.bufferedStdout);
+          process.stdout.resume();
+        });
+      } else {
+        process.once("spawn", activate);
+      }
       process.once("error", error => finish(error.message));
       process.once("close", (code: number | null, signal: NodeJS.Signals | null) => {
         const result = signal ? `signal ${signal}` : `exit ${code ?? "unknown"}`;
@@ -291,6 +320,7 @@ export class DaemonClient {
   disconnect(): void {
     this.intentionalDisconnect = true;
     this.abortPendingSshSwitch("TUI disconnected");
+    this.discardPendingSshConnection();
     if (this.activeSshConnection) this.activeSshConnection.intentionalClose = true;
     this.socket?.end();
     this.socket?.destroy();
@@ -487,7 +517,13 @@ export class DaemonClient {
     });
     this.cancelSshProbe = probe.cancel;
     try {
-      await probe.promise;
+      const connection = await probe.promise;
+      if (generation !== this.sshSwitchGeneration || this.sshSwitchingTo !== alias) {
+        try { connection.process.kill(); } catch { /* already gone */ }
+        return;
+      }
+      this.discardPendingSshConnection();
+      this.pendingSshConnection = { ...connection, alias };
     } catch (error) {
       if (generation !== this.sshSwitchGeneration) return;
       this.cancelSshProbe = null;
@@ -498,7 +534,10 @@ export class DaemonClient {
       return;
     }
 
-    if (generation !== this.sshSwitchGeneration || this.sshSwitchingTo !== alias) return;
+    if (generation !== this.sshSwitchGeneration || this.sshSwitchingTo !== alias) {
+      this.discardPendingSshConnection();
+      return;
+    }
     this.cancelSshProbe = null;
     this.sshSwitchingTo = null;
     this.sshAlias = alias;
@@ -525,6 +564,7 @@ export class DaemonClient {
 
     const previous = this.sshAlias;
     this.sshAlias = null;
+    this.discardPendingSshConnection();
     log("info", `ssh transport: cancelled remote route ${previous}; using local daemon`);
     this.handler({
       ...this.connectedRouteStatus(true),
@@ -540,6 +580,13 @@ export class DaemonClient {
     const cancel = this.cancelSshProbe;
     this.cancelSshProbe = null;
     cancel?.(reason);
+  }
+
+  private discardPendingSshConnection(): void {
+    const pending = this.pendingSshConnection;
+    this.pendingSshConnection = null;
+    if (!pending) return;
+    try { pending.process.kill(); } catch { /* already gone */ }
   }
 
   private closeCurrentTransportForRouteSwitch(): void {
