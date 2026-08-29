@@ -17,21 +17,23 @@ afterEach(async () => {
 });
 
 describe("DaemonClient request-scoped events", () => {
-  test("serializes SSH forwarding controls over the local daemon socket", () => {
-    const client = new DaemonClient(() => {});
+  test("handles SSH status controls in the TUI without writing daemon protocol", () => {
+    const events: unknown[] = [];
+    const client = new DaemonClient(event => events.push(event), undefined, false, {
+      localHostname: "localbox",
+    });
     const internal = client as any;
     const writes: string[] = [];
     internal.socket = { write: (value: string) => { writes.push(value); } };
     internal._connected = true;
 
-    client.ssh("connect", "whale");
     client.ssh("status");
     client.ssh("cancel");
 
-    expect(writes.map(line => JSON.parse(line))).toEqual([
-      { type: "ssh", action: "connect", alias: "whale" },
-      { type: "ssh", action: "status" },
-      { type: "ssh", action: "cancel" },
+    expect(writes).toEqual([]);
+    expect(events).toEqual([
+      expect.objectContaining({ type: "ssh_status", mode: "local", state: "connected", switched: false }),
+      expect.objectContaining({ type: "ssh_status", mode: "local", state: "connected", switched: false }),
     ]);
   });
 

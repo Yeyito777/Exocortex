@@ -1225,17 +1225,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         break;
       }
 
-      case "ssh": {
-        // The transport router consumes this before local command dispatch. Keep
-        // a defensive response for embedders that construct a handler without it.
-        server.sendTo(client, {
-          type: "error",
-          reqId: cmd.reqId,
-          message: "SSH forwarding is not available on this daemon server.",
-        });
-        break;
-      }
-
       // ── Conversation lifecycle commands ───────────────────────────
 
       case "new_conversation": {

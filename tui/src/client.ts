@@ -1,12 +1,13 @@
 /**
- * Unix socket client for connecting to exocortexd.
+ * Client for connecting to exocortexd through a local socket or an SSH proxy.
  *
- * JSON-lines protocol over a Unix domain socket.
+ * Both transports carry the same JSON-lines protocol.
  */
 
-import { connect, type Socket } from "net";
+import { connect } from "net";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
+import { hostname } from "os";
 import type { Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, ToolPolicyMutation, TrimMode, SidebarItemRef } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
@@ -14,6 +15,16 @@ import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-pro
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import { log } from "./log";
 import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
+import {
+  DEFAULT_SSH_PROBE_TIMEOUT_MS,
+  appendSshStderr,
+  probeSshProxy,
+  spawnSshProxy,
+  sshStderrSuffix,
+  validateSshAlias,
+  type SpawnSshProcess,
+  type SshProcess,
+} from "./ssh-transport";
 
 export type EventHandler = (event: Event) => void;
 export type LlmCompleteCallback = (text: string) => void;
@@ -26,6 +37,26 @@ export interface ConnectResult {
   replayedCommands: Command[];
 }
 
+interface ClientTransport {
+  write(data: string): unknown;
+  end(): unknown;
+  destroy(): unknown;
+}
+
+interface ActiveSshConnection {
+  transport: ClientTransport;
+  stderr: string;
+  connected: boolean;
+  intentionalClose: boolean;
+  finished: boolean;
+}
+
+export interface DaemonClientTransportOptions {
+  spawnSshProcess?: SpawnSshProcess;
+  sshProbeTimeoutMs?: number;
+  localHostname?: string;
+}
+
 type ReplayableQueueCommand = Extract<Command, { type: "queue_message" | "unqueue_message" }>;
 type ReplayableUnwindCommand = Extract<Command, { type: "unwind_conversation" }>;
 function replayableQueueCommandKey(command: Command): string | null {
@@ -35,7 +66,10 @@ function replayableQueueCommandKey(command: Command): string | null {
 }
 
 export class DaemonClient {
-  private socket: Socket | null = null;
+  // `socket` is kept as the transport field name because most client logic only
+  // needs write/end/destroy. It is either a Unix socket or an SSH process facade.
+  private socket: ClientTransport | null = null;
+  private activeSshConnection: ActiveSshConnection | null = null;
   private buffer = "";
   private handler: EventHandler;
   private _connected = false;
@@ -65,19 +99,38 @@ export class DaemonClient {
   private pendingConversationHistoryLoads = new Map<string, { convId: string; requestSource: "initial-backfill" | "viewport"; startedAt: number }>();
   private pendingToolOutputLoads = new Map<string, { convId: string; requested: number | null; startedAt: number }>();
   private nextReqId = 0;
+  private readonly spawnSshProcess: SpawnSshProcess;
+  private readonly sshProbeTimeoutMs: number;
+  private readonly localHostname: string;
+  private sshAlias: string | null = null;
+  private sshSwitchingTo: string | null = null;
+  private sshSwitchGeneration = 0;
+  private cancelSshProbe: ((reason: string) => void) | null = null;
 
   constructor(
     handler: EventHandler,
     overrideSocketPath?: string,
     private readonly performanceProfilingEnabled = PERFORMANCE_PROFILING_ENABLED,
+    transportOptions: DaemonClientTransportOptions = {},
   ) {
     this.handler = handler;
     this.socketPath = overrideSocketPath ?? socketPath();
+    this.spawnSshProcess = transportOptions.spawnSshProcess ?? spawnSshProxy;
+    this.sshProbeTimeoutMs = transportOptions.sshProbeTimeoutMs ?? DEFAULT_SSH_PROBE_TIMEOUT_MS;
+    this.localHostname = transportOptions.localHostname ?? hostname();
   }
 
   get connected(): boolean { return this._connected; }
+  get remoteAlias(): string | null { return this.sshAlias; }
 
   async connect(): Promise<ConnectResult> {
+    this.intentionalDisconnect = false;
+    this.announcedShutdownMode = null;
+    this.buffer = "";
+    return this.sshAlias ? this.connectSsh(this.sshAlias) : this.connectLocal();
+  }
+
+  private async connectLocal(): Promise<ConnectResult> {
     return new Promise((resolve, reject) => {
       // Named pipes on Windows don't exist as files — skip the filesystem check
       if (!isWindows && !existsSync(this.socketPath)) {
@@ -85,15 +138,24 @@ export class DaemonClient {
         return;
       }
 
-      this.intentionalDisconnect = false;
-      this.announcedShutdownMode = null;
-      this.buffer = "";
-
       const socket = connect(this.socketPath);
+      // Keep the in-flight transport addressable so a local /ssh route switch
+      // can cancel it before net.Socket emits connect.
+      this.socket = socket;
       let resolved = false;
+      let rejected = false;
+      const fail = (error: Error) => {
+        if (resolved || rejected) return;
+        rejected = true;
+        reject(error);
+      };
 
       socket.on("connect", () => {
-        this.socket = socket;
+        if (this.socket !== socket || this.sshAlias || this.intentionalDisconnect) {
+          fail(new Error("Local daemon connection was superseded by another route."));
+          socket.destroy();
+          return;
+        }
         this._connected = true;
         resolved = true;
         this.writeCommand({ type: "client_capabilities", capabilities: ["targeted-unwind", "sidebar-reorder-delta"] });
@@ -103,19 +165,109 @@ export class DaemonClient {
         const replayedCommands = this.flushPendingCommands();
         resolve({ replayedCommands });
       });
-      socket.on("data", (data) => this.onData(data));
-      socket.on("close", () => this.handleSocketClose(socket, resolved));
+      socket.on("data", (data) => {
+        if (this.socket === socket) this.onData(data);
+      });
+      socket.on("close", () => {
+        this.handleSocketClose(socket, resolved);
+        fail(new Error("Local daemon connection closed before it became ready."));
+      });
       socket.on("error", (err) => {
-        this._connected = false;
+        if (this.socket === socket) this._connected = false;
         if (!resolved) {
           const code = (err as NodeJS.ErrnoException).code;
           if (isWindows && (code === "ENOENT" || code === "ECONNREFUSED")) {
-            reject(this.socketMissingError());
+            fail(this.socketMissingError());
           } else {
-            reject(new Error(`Failed to connect: ${err.message}`));
+            fail(new Error(`Failed to connect: ${err.message}`));
           }
         }
       });
+    });
+  }
+
+  private async connectSsh(alias: string): Promise<ConnectResult> {
+    return new Promise((resolve, reject) => {
+      let process: SshProcess;
+      try {
+        process = this.spawnSshProcess(alias);
+      } catch (error) {
+        reject(new Error(`Could not start SSH proxy for ${alias}: ${error instanceof Error ? error.message : String(error)}`));
+        return;
+      }
+
+      let active!: ActiveSshConnection;
+      const transport: ClientTransport = {
+        write: data => process.stdin.write(data),
+        end: () => {
+          try { process.stdin.end(); } catch { /* already closed */ }
+          try { process.kill(); } catch { /* already gone */ }
+        },
+        destroy: () => {
+          try { process.kill(); } catch { /* already gone */ }
+        },
+      };
+      active = {
+        transport,
+        stderr: "",
+        connected: false,
+        intentionalClose: false,
+        finished: false,
+      };
+      this.socket = transport;
+      this.activeSshConnection = active;
+
+      const finish = (reason: string) => {
+        if (active.finished) return;
+        active.finished = true;
+        const wasCurrent = this.socket === transport;
+        if (wasCurrent && !active.intentionalClose) {
+          const message = active.connected
+            ? `SSH connection to ${alias} was lost: ${reason}${sshStderrSuffix(active.stderr)}`
+            : `Could not connect through SSH alias ${alias}: ${reason}${sshStderrSuffix(active.stderr)}`;
+          this.handler({
+            type: "ssh_status",
+            mode: "remote",
+            state: "failed",
+            alias,
+            switched: false,
+            message,
+          });
+        }
+        try { process.kill(); } catch { /* already gone */ }
+        this.handleSocketClose(transport, active.connected);
+        if (!active.connected) reject(new Error(
+          `Could not connect through SSH alias ${alias}: ${reason}${sshStderrSuffix(active.stderr)}`,
+        ));
+      };
+
+      process.stderr.on("data", chunk => {
+        active.stderr = appendSshStderr(active.stderr, chunk);
+      });
+      process.stdout.on("data", chunk => {
+        if (!active.finished && this.socket === transport) this.onData(chunk);
+      });
+      process.once("spawn", () => {
+        if (active.finished) return;
+        if (this.sshAlias !== alias || this.intentionalDisconnect) {
+          active.intentionalClose = true;
+          finish("SSH route was superseded");
+          try { process.kill(); } catch { /* already gone */ }
+          return;
+        }
+        active.connected = true;
+        this._connected = true;
+        this.handler(this.connectedRouteStatus(false, true));
+        this.writeCommand({ type: "client_capabilities", capabilities: ["targeted-unwind", "sidebar-reorder-delta"] });
+        const replayedCommands = this.flushPendingCommands();
+        resolve({ replayedCommands });
+      });
+      process.once("error", error => finish(error.message));
+      process.once("close", (code: number | null, signal: NodeJS.Signals | null) => {
+        const result = signal ? `signal ${signal}` : `exit ${code ?? "unknown"}`;
+        finish(`SSH proxy closed (${result})`);
+      });
+      process.stdin.once("error", error => finish(`SSH stdin error: ${error.message}`));
     });
   }
 
@@ -123,12 +275,13 @@ export class DaemonClient {
     this.onDisconnect = handler;
   }
 
-  private handleSocketClose(socket: Socket, connected: boolean): void {
+  private handleSocketClose(socket: ClientTransport, connected: boolean): void {
     const wasCurrentSocket = this.socket === socket;
     const shutdownMode = wasCurrentSocket ? this.announcedShutdownMode : null;
     if (wasCurrentSocket) {
       this._connected = false;
       this.socket = null;
+      if (this.activeSshConnection?.transport === socket) this.activeSshConnection = null;
       this.buffer = "";
       this.announcedShutdownMode = null;
     }
@@ -137,9 +290,12 @@ export class DaemonClient {
 
   disconnect(): void {
     this.intentionalDisconnect = true;
+    this.abortPendingSshSwitch("TUI disconnected");
+    if (this.activeSshConnection) this.activeSshConnection.intentionalClose = true;
     this.socket?.end();
     this.socket?.destroy();
     this.socket = null;
+    this.activeSshConnection = null;
     this._connected = false;
     this.buffer = "";
     this.announcedShutdownMode = null;
@@ -251,7 +407,145 @@ export class DaemonClient {
   }
 
   ssh(action: "connect" | "status" | "cancel", alias?: string): void {
-    this.send({ type: "ssh", action, ...(alias ? { alias } : {}) });
+    switch (action) {
+      case "status":
+        this.handler(this.connectedRouteStatus(false));
+        return;
+      case "cancel":
+        this.cancelSshRouteSwitch();
+        return;
+      case "connect":
+        void this.switchToSshAlias(alias ?? "");
+        return;
+    }
+  }
+
+  private connectedRouteStatus(switched: boolean, silent = false): Extract<Event, { type: "ssh_status" }> {
+    if (this.sshAlias) {
+      return {
+        type: "ssh_status",
+        mode: "remote",
+        state: "connected",
+        alias: this.sshAlias,
+        switched,
+        ...(silent ? { silent: true } : {}),
+        message: `Connected daemon: SSH alias ${this.sshAlias} (remote Exocortex daemon).`,
+      };
+    }
+    return {
+      type: "ssh_status",
+      mode: "local",
+      state: "connected",
+      switched,
+      ...(silent ? { silent: true } : {}),
+      message: `Connected daemon: local ${this.localHostname} (socket ${this.socketPath}).`,
+    };
+  }
+
+  private currentRouteStatus(
+    state: "switching" | "failed",
+    message: string,
+  ): Extract<Event, { type: "ssh_status" }> {
+    return {
+      type: "ssh_status",
+      mode: this.sshAlias ? "remote" : "local",
+      state,
+      ...(this.sshAlias ? { alias: this.sshAlias } : {}),
+      switched: false,
+      message,
+    };
+  }
+
+  private async switchToSshAlias(alias: string): Promise<void> {
+    const validationError = validateSshAlias(alias);
+    if (validationError) {
+      this.handler(this.currentRouteStatus("failed", validationError));
+      return;
+    }
+    if (this.sshSwitchingTo) {
+      this.handler(this.currentRouteStatus(
+        "failed",
+        `Already switching to SSH alias ${this.sshSwitchingTo}.`,
+      ));
+      return;
+    }
+    if (alias === this.sshAlias) {
+      this.handler(this.connectedRouteStatus(false));
+      return;
+    }
+
+    const generation = ++this.sshSwitchGeneration;
+    this.sshSwitchingTo = alias;
+    this.handler(this.currentRouteStatus(
+      "switching",
+      `Connecting to remote Exocortex daemon through SSH alias ${alias}…`,
+    ));
+
+    const probe = probeSshProxy(alias, {
+      spawnProcess: this.spawnSshProcess,
+      timeoutMs: this.sshProbeTimeoutMs,
+    });
+    this.cancelSshProbe = probe.cancel;
+    try {
+      await probe.promise;
+    } catch (error) {
+      if (generation !== this.sshSwitchGeneration) return;
+      this.cancelSshProbe = null;
+      this.sshSwitchingTo = null;
+      const message = `Could not connect through SSH alias ${alias}: ${error instanceof Error ? error.message : String(error)}`;
+      log("warn", `ssh transport: ${message}`);
+      this.handler(this.currentRouteStatus("failed", message));
+      return;
+    }
+
+    if (generation !== this.sshSwitchGeneration || this.sshSwitchingTo !== alias) return;
+    this.cancelSshProbe = null;
+    this.sshSwitchingTo = null;
+    this.sshAlias = alias;
+    log("info", `ssh transport: selected remote daemon via ${alias}`);
+    this.handler(this.connectedRouteStatus(true));
+    this.closeCurrentTransportForRouteSwitch();
+  }
+
+  private cancelSshRouteSwitch(): void {
+    if (this.sshSwitchingTo) {
+      const pending = this.sshSwitchingTo;
+      this.abortPendingSshSwitch(`SSH switch to ${pending} cancelled.`);
+      const status = this.connectedRouteStatus(false);
+      this.handler({
+        ...status,
+        message: `SSH switch to ${pending} cancelled. ${status.message}`,
+      });
+      return;
+    }
+    if (!this.sshAlias) {
+      this.handler(this.connectedRouteStatus(false));
+      return;
+    }
+
+    const previous = this.sshAlias;
+    this.sshAlias = null;
+    log("info", `ssh transport: cancelled remote route ${previous}; using local daemon`);
+    this.handler({
+      ...this.connectedRouteStatus(true),
+      message: `SSH connection to ${previous} cancelled. ${this.connectedRouteStatus(false).message}`,
+    });
+    this.closeCurrentTransportForRouteSwitch();
+  }
+
+  private abortPendingSshSwitch(reason: string): void {
+    if (!this.sshSwitchingTo && !this.cancelSshProbe) return;
+    this.sshSwitchGeneration += 1;
+    this.sshSwitchingTo = null;
+    const cancel = this.cancelSshProbe;
+    this.cancelSshProbe = null;
+    cancel?.(reason);
+  }
+
+  private closeCurrentTransportForRouteSwitch(): void {
+    if (this.activeSshConnection) this.activeSshConnection.intentionalClose = true;
+    try { this.socket?.end(); } catch { /* already closed */ }
+    try { this.socket?.destroy(); } catch { /* already closed */ }
   }
 
   abort(convId: string, expectedStartedAt?: number): void {
