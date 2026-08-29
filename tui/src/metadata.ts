@@ -42,9 +42,13 @@ function formatTokenCount(tokens: number): string {
  * Format: model · N tokens · Xs
  *
  * @param metadata  The metadata to render (null = no output).
+ * @param options.active  Keep elapsed time live even if endedAt is persisted.
  * @returns Lines to append below the message content.
  */
-export function renderMetadata(metadata: MessageMetadata | null): string[] {
+export function renderMetadata(
+  metadata: MessageMetadata | null,
+  options: { active?: boolean; now?: number } = {},
+): string[] {
   if (!metadata) return [];
 
   const parts: string[] = [];
@@ -56,7 +60,8 @@ export function renderMetadata(metadata: MessageMetadata | null): string[] {
   parts.push(`${formatTokenCount(metadata.tokens)} tokens`);
 
   // Duration
-  const elapsed = (metadata.endedAt ?? Date.now()) - metadata.startedAt;
+  const now = options.now ?? Date.now();
+  const elapsed = (options.active ? now : metadata.endedAt ?? now) - metadata.startedAt;
   parts.push(formatDuration(elapsed));
 
   const line = parts.join(" | ");

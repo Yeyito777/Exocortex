@@ -9,6 +9,7 @@
 import { CONTEXT_COMPACTION_FINISHED_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
 import type { RenderState } from "./state";
 import { renderMetadata } from "./metadata";
+import { activeDurableSleepAssistant } from "./durable-sleep-metadata";
 import { theme } from "./theme";
 import {
   renderBlockCached,
@@ -291,6 +292,7 @@ export function buildMessageLines(
   const copyLines: Array<WrapCopyLine | null> = [];
   const messageBounds: MessageBound[] = [];
   const lineAnchors: RenderLineAnchor[] = [];
+  const durableSleepAssistant = activeDurableSleepAssistant(state);
   const startMessageIndex = Math.max(0, Math.min(options.startMessageIndex ?? 0, state.messages.length));
   const erroredToolCallIds = new Set<string>();
   for (let messageIndex = startMessageIndex; messageIndex < state.messages.length; messageIndex++) {
@@ -439,7 +441,7 @@ export function buildMessageLines(
         : assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
       const metadataLines = isCallTranscript
         ? renderMetadata(metadata)
-        : nextContinuesAssistantSegment ? [] : renderMetadata(metadata);
+        : nextContinuesAssistantSegment ? [] : renderMetadata(metadata, { active: msg === durableSleepAssistant });
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
       const contentEnd = lines.length;
       for (let i = 0; i < metadataLines.length; i++) {
