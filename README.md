@@ -85,6 +85,11 @@ exocortexd status
 exocortexd restart
 ```
 
+Inside the TUI, `/ssh <alias>` connects directly to that host's Exocortex
+daemon through `exocortexd proxy`; `/ssh cancel` returns to the local daemon.
+The selected route belongs to that TUI process, so other TUIs can remain local
+or connect to different aliases at the same time.
+
 #### Update
 
 ```bash

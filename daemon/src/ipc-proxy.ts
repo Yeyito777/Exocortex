@@ -1,8 +1,8 @@
 /**
  * Transparent stdio bridge to this machine's Exocortex daemon socket.
  *
- * It is intentionally protocol-unaware. `ssh host exocortexd proxy` uses this
- * helper so the SSH channel carries exactly the daemon's JSON-lines stream.
+ * It is intentionally protocol- and transport-unaware. External wrappers use
+ * this helper to carry exactly the daemon's JSON-lines stream over stdio.
  * Diagnostics belong on stderr; stdout is reserved for daemon events.
  */
 

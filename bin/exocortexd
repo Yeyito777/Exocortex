@@ -321,7 +321,7 @@ handle_stop() {
 
 case "${1:-}" in
   proxy)
-    # SSH transport helper: stdout must contain daemon protocol bytes only.
+    # Generic stdio transport helper: stdout contains daemon protocol bytes only.
     # Bypass run-daemon.sh because dependency-install progress would corrupt the
     # stream. A running daemon necessarily already has hydrated dependencies.
     cd "$PROJECT_DIR/daemon"
