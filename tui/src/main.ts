@@ -854,6 +854,14 @@ function handleSubmit(): void {
             else pushSystemMessage(state, "No local TUI call is active for this conversation.");
           }
           break;
+        case "mute_requested":
+          if (state.convId) {
+            const muted = callMedia?.toggleMuted(state.convId) ?? null;
+            pushSystemMessage(state, muted === null
+              ? "No local TUI call is active for this conversation."
+              : muted ? "Microphone muted." : "Microphone unmuted.");
+          }
+          break;
         case "mic_gain_changed": {
           callMedia?.setMicGainDb(cmdResult.gainDb);
           try {
@@ -1727,6 +1735,7 @@ async function reconnectToDaemon(): Promise<void> {
 function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): void {
   voiceInput?.cleanup();
   callMedia?.stop();
+  state.activeCallIdsByConversation.clear();
   // The client retains an ambiguous unwind with its operation UUID and replays
   // it after reconnect. Keep the optimistic gate until that correlated result;
   // the normal reconnect load may still reveal the canonical state meanwhile.

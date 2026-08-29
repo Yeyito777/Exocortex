@@ -126,6 +126,8 @@ export interface OrchestrationCallbacks {
   onBackgroundTaskComplete?: (completion: BackgroundTaskCompletion) => void;
   /** Test seam for provider streaming across compaction and assistant requests. */
   streamMessageFn?: typeof streamMessage;
+  /** Optional realtime consumer for user-facing assistant text as it streams. */
+  onAssistantTextChunk?: (chunk: string) => void;
 }
 
 // ── Message history/replay helpers ─────────────────────────────────
@@ -198,6 +200,7 @@ interface AssistantTurnOptions {
     callId: string;
     originalUserUtterance: string;
     backendTask: string;
+    transcriptDelta: Array<{ role: "user" | "assistant"; text: string }>;
     speaker?: RealtimeCallSpeakerAttribution;
   };
   /** Optional owner lifecycle that can cancel this turn without daemon IPC. */
@@ -248,6 +251,7 @@ export async function orchestrateRealtimeDelegation(
     callId: string;
     originalUserUtterance: string;
     backendTask: string;
+    transcriptDelta: Array<{ role: "user" | "assistant"; text: string }>;
     speaker?: RealtimeCallSpeakerAttribution;
   },
   startedAt: number,
@@ -628,6 +632,7 @@ async function orchestrateAssistantTurn(
       realtimeDelegation.originalUserUtterance,
       realtimeDelegation.backendTask,
       realtimeDelegation.speaker,
+      realtimeDelegation.transcriptDelta,
     );
     if (!convStore.promoteRealtimeTranscript(
       convId,
@@ -1183,6 +1188,7 @@ async function orchestrateAssistantTurn(
     },
     onTextChunk(chunk) {
       server.sendToSubscribers(convId, { type: "text_chunk", convId, streamSeq: convStore.nextStreamSeq(convId), text: chunk });
+      ext.onAssistantTextChunk?.(chunk);
       const block = ensurePartialContentTail("text");
       if (block.type === "text") block.text += chunk;
       convStore.appendToStreamingBlock(convId, "text", chunk);

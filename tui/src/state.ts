@@ -53,7 +53,7 @@ export interface QueuedMessage {
    * The daemon owns both stream-relative delivery and the global-idle `/queue`
    * FIFO. The TUI retains only an optimistic/display projection.
    */
-  source?: "daemon" | "global-idle";
+  source?: "daemon" | "global-idle" | "realtime";
   /** Machine-readable provenance for daemon/model-authored queued prompts. */
   automation?: UserMessageAutomation;
   /** New-conversation /queue entries reserve a client conversation id here. */
@@ -177,6 +177,8 @@ export interface RenderState {
   callAssistantDraft: { callId: string; message: AIMessage; final: boolean } | null;
   /** Live captured speech projected ahead of its canonical persisted user turn. */
   callUserDraft: { callId: string; message: UserMessage; final: boolean } | null;
+  /** Active realtime call IDs grouped by conversation, including external adapters. */
+  activeCallIdsByConversation: Map<string, Set<string>>;
   /** Start time for the transient native context-compaction spinner. */
   contextCompactionStartedAt: number | null;
   /** True when pendingAI was hydrated from a daemon snapshot rather than live local chunks. */
@@ -615,6 +617,7 @@ export function createInitialState(): RenderState {
     pendingAI: null,
     callAssistantDraft: null,
     callUserDraft: null,
+    activeCallIdsByConversation: new Map(),
     contextCompactionStartedAt: null,
     pendingAIHydratedFromSnapshot: false,
     suppressPendingAIMetadataStartedAt: null,

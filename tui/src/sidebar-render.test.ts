@@ -26,6 +26,42 @@ function conversation(id: string, sortOrder: number, overrides: Partial<Conversa
 }
 
 describe("sidebar rendering", () => {
+  test("appends the purple remote alias to the contextual sidebar title", () => {
+    const sidebar = createSidebarState();
+
+    const localHeader = renderSidebar(sidebar, 8, true, null)[0];
+    const rootRemoteHeader = renderSidebar(
+      sidebar,
+      8,
+      true,
+      null,
+      new Set(),
+      null,
+      new Set(),
+      "whale",
+    )[0];
+
+    expect(localHeader).toContain(`${theme.text}${theme.bold} Conversations`);
+    expect(rootRemoteHeader).toContain(`${theme.text}${theme.bold} Conversations — ${theme.goal}whale`);
+    expect(visibleLength(rootRemoteHeader)).toBe(SIDEBAR_WIDTH);
+
+    sidebar.folders = [{ id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
+    sidebar.currentFolderId = "work";
+    const folderRemoteHeader = renderSidebar(
+      sidebar,
+      8,
+      true,
+      null,
+      new Set(),
+      null,
+      new Set(),
+      "whale",
+    )[0];
+
+    expect(folderRemoteHeader).toContain(`${theme.text}${theme.bold} Work/ — ${theme.goal}whale`);
+    expect(visibleLength(folderRemoteHeader)).toBe(SIDEBAR_WIDTH);
+  });
+
   test("keeps visual selection marker muted on the current conversation", () => {
     const sidebar = createSidebarState();
     sidebar.conversations = [
@@ -114,6 +150,25 @@ describe("sidebar rendering", () => {
     const folderRow = rows.find(row => row.includes("Work"));
 
     expect(folderRow).toContain(`${theme.warning}◉ `);
+  });
+
+  test("renders a distinct active-call indicator on conversations and containing folders", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
+    sidebar.conversations = [
+      conversation("calling", 0, { title: "Calling", folderId: "folder" }),
+      conversation("plain", 1, { title: "Plain", folderId: "folder" }),
+    ];
+    const activeCalls = new Set(["calling"]);
+
+    let rows = renderSidebar(sidebar, 8, true, null, new Set(), null, activeCalls);
+    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.tool}☎ `);
+
+    sidebar.currentFolderId = "folder";
+    rows = renderSidebar(sidebar, 8, true, null, new Set(), null, activeCalls);
+    expect(rows.find(row => row.includes("Calling"))).toContain(`${theme.tool}☎ `);
+    expect(rows.find(row => row.includes("Plain"))).not.toContain("☎");
+    expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
   });
 
   test("counts streaming conversations recursively on folder indicators", () => {

@@ -104,7 +104,7 @@ export function openEditMessageModal(state: RenderState): void {
 
   // Collect queued messages
   const queuedInInsertionOrder = state.convId
-    ? state.queuedMessages.filter(qm => qm.convId === state.convId)
+    ? state.queuedMessages.filter(qm => qm.convId === state.convId && qm.source !== "realtime")
     : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId);
   const mostRecentQueuedMessage = queuedInInsertionOrder.at(-1);
   const queued = queuedMessagesInDisplayOrder(queuedInInsertionOrder);

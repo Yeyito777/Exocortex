@@ -56,16 +56,13 @@ make install
 
 1. Installs the locked Bun dependencies.
 2. Symlinks `exocortexd` and `exocortex` into `~/.local/bin`.
-3. Installs, enables, and starts `exocortex-daemon.service` as a systemd user
+3. Adds the Exocortex and Bun binary directories to the login shell's startup
+   file (`~/.zshenv` for zsh or `~/.bashrc` for bash). This also makes
+   `exocortexd proxy` available to non-interactive SSH commands.
+4. Installs, enables, and starts `exocortex-daemon.service` as a systemd user
    service.
 
-Make sure `~/.local/bin` is on `PATH`:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Add that line to `~/.bashrc` or `~/.zshrc` if necessary.
+Open a new shell after installation so the updated `PATH` is loaded.
 
 #### Authenticate and launch
 

@@ -21,6 +21,7 @@ let captureBuffer = Buffer.alloc(0);
 let remoteSink = null;
 let micGainDb = 0;
 let micGainLinear = 1;
+let micMuted = false;
 const intentionallyStoppedChildren = new WeakSet();
 
 function send(message) {
@@ -96,7 +97,8 @@ function startCapture() {
       captureBuffer = captureBuffer.subarray(BYTES_PER_CHUNK);
       const samples = new Int16Array(FRAMES_PER_CHUNK * CHANNEL_COUNT);
       Buffer.from(samples.buffer).set(frame);
-      applyMicGain(samples);
+      if (micMuted) samples.fill(0);
+      else applyMicGain(samples);
       try {
         source.onData({
           samples,
@@ -191,6 +193,11 @@ async function handle(message) {
   }
   if (message.type === "mic_gain") {
     setMicGainDb(message.gainDb);
+    return;
+  }
+  if (message.type === "mic_muted") {
+    if (typeof message.muted !== "boolean") throw new Error("Microphone mute state must be a boolean.");
+    micMuted = message.muted;
     return;
   }
   throw new Error(`Unknown media-adapter command: ${String(message.type)}`);

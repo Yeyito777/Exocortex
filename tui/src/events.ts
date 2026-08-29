@@ -136,6 +136,21 @@ export function handleEvent(
       if (event.message) pushSystemMessage(state, event.message, event.state === "error" ? theme.error : theme.muted);
       break;
 
+    case "call_activity":
+      if (!event.active) {
+        const calls = state.activeCallIdsByConversation.get(event.convId);
+        calls?.delete(event.callId);
+        if (calls?.size === 0) state.activeCallIdsByConversation.delete(event.convId);
+      } else {
+        let calls = state.activeCallIdsByConversation.get(event.convId);
+        if (!calls) {
+          calls = new Set();
+          state.activeCallIdsByConversation.set(event.convId, calls);
+        }
+        calls.add(event.callId);
+      }
+      break;
+
     case "call_transcript":
       handleCallTranscript(event, state);
       break;

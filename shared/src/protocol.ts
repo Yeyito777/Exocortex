@@ -700,8 +700,8 @@ export interface QueuedMessageInfo {
   command?: QueuedCommandInvocation;
   timing: QueueTiming;
   images?: ImageAttachment[];
-  /** Ordinary stream queues are delivered next-turn/message-end; global-idle entries wait on waitTarget. */
-  source: "daemon" | "global-idle";
+  /** Ordinary stream queues are delivered next-turn/message-end; global-idle entries wait and realtime entries are display-only handoffs. */
+  source: "daemon" | "global-idle" | "realtime";
   /** Present when this queued prompt was authored by Exocortex automation rather than a user/client. */
   automation?: UserMessageAutomation;
   target?: "conversation" | "new-conversation";
@@ -1535,6 +1535,14 @@ export interface CallStateEvent {
   message?: string;
 }
 
+/** Global lightweight lifecycle used for sidebar activity across subscriptions. */
+export interface CallActivityEvent {
+  type: "call_activity";
+  convId: string;
+  callId: string;
+  active: boolean;
+}
+
 /** WebRTC answer SDP returned to the media adapter that supplied the offer. */
 export interface CallSdpAnswerEvent {
   type: "call_sdp_answer";
@@ -1814,6 +1822,7 @@ export type Event =
   | ContextCompactionStatusEvent
   | SystemMessageEvent
   | CallStateEvent
+  | CallActivityEvent
   | CallSdpAnswerEvent
   | CallTranscriptEvent
   | ToolsAvailableEvent

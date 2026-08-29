@@ -289,6 +289,23 @@ describe("/mic", () => {
   });
 });
 
+describe("/mute", () => {
+  test("requests a microphone mute toggle for the active conversation", () => {
+    const state = createInitialState();
+    state.convId = "conv-call";
+
+    expect(tryCommand("/mute", state)).toEqual({ type: "mute_requested" });
+    expect(state.inputBuffer).toBe("");
+  });
+
+  test("rejects arguments and requires an active conversation", () => {
+    const state = createInitialState();
+    expect(tryCommand("/mute", state)).toEqual({ type: "handled" });
+    state.convId = "conv-call";
+    expect(tryCommand("/mute now", state)).toEqual({ type: "handled" });
+  });
+});
+
 describe("/default-model command", () => {
   test("saves an explicit provider/model/effort/fast default and applies it to a draft", () => {
     const state = createInitialState();
