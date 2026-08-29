@@ -38,7 +38,6 @@ export interface Theme {
   warning: string;     // Queued/suspended activity indicator
   success: string;     // Completed/unread activity indicator
   goal: string;        // Hidden goal-controller review indicator
-  remote: string;      // Connected remote-daemon alias in the top bar
   prompt: string;      // Input prompt ❯
   tool: string;        // Tool call labels
   command: string;     // Valid slash commands & macros in prompt

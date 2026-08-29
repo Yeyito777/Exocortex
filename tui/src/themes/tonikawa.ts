@@ -29,7 +29,6 @@ export const tonikawa: Theme = {
   warning:  `${ESC}38;2;214;166;93m`,    // #d6a65d
   success:  `${ESC}38;2;135;182;149m`,   // #87b695
   goal:     `${ESC}38;2;199;146;234m`,   // #c792ea purple
-  remote:   `${ESC}38;2;199;146;234m`,   // #c792ea purple
   prompt:   `${ESC}38;2;228;127;172m`,   // #e47fac (rose pink)
   tool:     `${ESC}38;2;185;154;216m`,   // #b99ad8 (dusty lavender)
   command:  `${ESC}38;2;240;175;201m`,   // #f0afc9 (light blush)

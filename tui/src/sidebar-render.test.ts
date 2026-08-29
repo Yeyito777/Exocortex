@@ -26,6 +26,27 @@ function conversation(id: string, sortOrder: number, overrides: Partial<Conversa
 }
 
 describe("sidebar rendering", () => {
+  test("replaces the root title with the remote alias in the original purple", () => {
+    const sidebar = createSidebarState();
+
+    const localHeader = renderSidebar(sidebar, 8, true, null)[0];
+    const remoteHeader = renderSidebar(
+      sidebar,
+      8,
+      true,
+      null,
+      new Set(),
+      null,
+      new Set(),
+      "whale",
+    )[0];
+
+    expect(localHeader).toContain(`${theme.text}${theme.bold} Conversations`);
+    expect(remoteHeader).toContain(`${theme.goal}${theme.bold} whale`);
+    expect(remoteHeader).not.toContain("Conversations");
+    expect(visibleLength(remoteHeader)).toBe(SIDEBAR_WIDTH);
+  });
+
   test("keeps visual selection marker muted on the current conversation", () => {
     const sidebar = createSidebarState();
     sidebar.conversations = [

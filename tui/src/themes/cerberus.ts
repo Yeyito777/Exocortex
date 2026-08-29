@@ -29,7 +29,6 @@ export const cerberus: Theme = {
   warning:  `${ESC}38;2;255;167;38m`,     // #ffa726
   success:  `${ESC}38;2;102;187;106m`,    // #66bb6a
   goal:     `${ESC}38;2;199;146;234m`,    // #c792ea purple
-  remote:   `${ESC}38;2;199;146;234m`,    // #c792ea purple
   prompt:   `${ESC}38;2;211;47;47m`,      // #d32f2f (red)
   tool:     `${ESC}38;2;176;100;100m`,    // #b06464 (muted rose)
   command:  `${ESC}38;2;239;154;154m`,    // #ef9a9a (light red)

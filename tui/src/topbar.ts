@@ -25,20 +25,8 @@ function convLabel(state: RenderState): string {
 export function renderTopbar(state: RenderState, width?: number): string {
   const w = width ?? state.cols;
 
-  const remoteAliasWidth = Math.min(18, Math.max(0, w - termWidth(" Exocortex ")));
-  const remoteAlias = state.sshRemote && remoteAliasWidth > 0
-    // At the minimum indicator width retain a recognizable alias initial instead
-    // of replacing the entire destination with a generic ellipsis.
-    ? remoteAliasWidth === 1
-      ? state.sshRemote.alias[0] ?? ""
-      : truncateToWidth(state.sshRemote.alias, remoteAliasWidth)
-    : "";
-  const remoteIndicatorPlain = remoteAlias ? ` ${remoteAlias}` : "";
-  const remoteIndicatorStyled = remoteAlias
-    ? ` ${(state.sshRemote?.connected ? theme.remote : theme.warning)}${theme.bold}${remoteAlias}${theme.reset}${theme.topbarBg}`
-    : "";
-  const titleStyled = `${theme.bold} Exocortex${theme.boldOff}${remoteIndicatorStyled}`;
-  const titlePlain = ` Exocortex${remoteIndicatorPlain}`;
+  const titleStyled = `${theme.bold} Exocortex${theme.boldOff}`;
+  const titlePlain = " Exocortex";
   let label = convLabel(state);
 
   let rightLabel = "";

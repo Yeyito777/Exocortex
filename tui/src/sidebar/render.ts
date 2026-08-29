@@ -150,6 +150,7 @@ export function renderSidebar(
   globalIdleConvIds: ReadonlySet<string> = new Set(),
   optimisticStreamingConvId: string | null = null,
   activeCallConvIds: ReadonlySet<string> = new Set(),
+  remoteAlias: string | null = null,
 ): string[] {
   const rows: string[] = [];
   const innerWidth = SIDEBAR_WIDTH - 1; // -1 for right border │
@@ -158,9 +159,15 @@ export function renderSidebar(
 
   // Row 1: header / breadcrumb
   const folder = currentFolder(sidebar);
-  const header = folder ? ` ${truncateSidebarTitle(folder.name, innerWidth - 1)}/` : " Conversations";
+  const remoteHeader = !folder && remoteAlias
+    ? truncateSidebarTitle(remoteAlias, innerWidth - 1)
+    : null;
+  const header = folder
+    ? ` ${truncateSidebarTitle(folder.name, innerWidth - 1)}/`
+    : ` ${remoteHeader ?? "Conversations"}`;
+  const headerFg = remoteHeader ? theme.goal : theme.text;
   rows.push(
-    theme.sidebarBg + theme.text + theme.bold + pad(header, innerWidth)
+    theme.sidebarBg + headerFg + theme.bold + pad(header, innerWidth)
     + theme.reset + borderBg + borderFg + "│" + theme.reset,
   );
 

@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 
 import { createInitialState } from "./state";
 import { visibleLength } from "./textwidth";
-import { theme } from "./theme";
 import { renderTopbar } from "./topbar";
 
 describe("topbar rendering", () => {
@@ -67,23 +66,13 @@ describe("topbar rendering", () => {
     expect(rendered).not.toContain("goal:complete");
   });
 
-  test("shows a plain SSH alias indicator in the theme's remote color", () => {
+  test("leaves the SSH alias out of the top bar", () => {
     const state = createInitialState();
     state.sshRemote = { alias: "whale", connected: true };
 
     const rendered = renderTopbar(state, 40);
 
-    expect(rendered).toContain(`${theme.remote}${theme.bold}whale`);
-    expect(rendered).not.toContain("╢");
-    expect(rendered).not.toContain("╟");
+    expect(rendered).not.toContain("whale");
     expect(visibleLength(rendered)).toBe(40);
-
-    const narrow = renderTopbar(state, 16);
-    expect(narrow).toContain(`${theme.remote}${theme.bold}whale`);
-    expect(visibleLength(narrow)).toBe(16);
-
-    const veryNarrow = renderTopbar(state, 12);
-    expect(veryNarrow).toContain(`${theme.remote}${theme.bold}w`);
-    expect(visibleLength(veryNarrow)).toBe(12);
   });
 });
