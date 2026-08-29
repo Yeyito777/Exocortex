@@ -48,6 +48,7 @@ import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
 import { openTargetDetached } from "./openable";
 import { msUntilNextElapsedSecond } from "./time";
+import { activeDurableSleepMetadataStartedAt } from "./durable-sleep-metadata";
 import type { DaemonShutdownMode, Event, QueueTiming } from "./protocol";
 import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
 import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
@@ -322,6 +323,10 @@ function resetStreamTick(): void {
   const startedAt = state.pendingAI?.metadata?.startedAt;
   if (isStreaming(state) && typeof startedAt === "number") {
     tickDelays.push(msUntilNextElapsedSecond(startedAt));
+  }
+  const durableSleepStartedAt = activeDurableSleepMetadataStartedAt(state);
+  if (durableSleepStartedAt !== null) {
+    tickDelays.push(msUntilNextElapsedSecond(durableSleepStartedAt));
   }
   for (const task of focusedConversationTasks(state)) {
     const delay = msUntilTaskPanelEntryUpdate(task);

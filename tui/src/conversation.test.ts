@@ -142,6 +142,60 @@ describe("context compaction status", () => {
   });
 });
 
+describe("durable Chrono sleep metadata", () => {
+  test("continues the committed assistant duration after the provider stream closes", () => {
+    const now = Date.now();
+    const state = createInitialState();
+    state.convId = "conv-sleep";
+    state.sidebar.conversations = [{
+      id: state.convId,
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 1,
+      title: "Durable sleep",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: [{
+        id: "chrono:sleep:sleep-call",
+        kind: "chrono",
+        title: "Sleeping",
+        startedAt: now - 9_000,
+        dueAt: now + 10 * 60_000,
+        chronoMode: "sleep",
+      }],
+    }];
+    state.messages.push({
+      role: "assistant",
+      blocks: [{
+        type: "tool_call",
+        toolCallId: "sleep-call",
+        toolName: "chrono",
+        input: { action: "sleep", duration: "10m" },
+        summary: "sleep: 10m",
+      }],
+      metadata: {
+        startedAt: now - 10_250,
+        endedAt: now - 9_250,
+        model: state.model,
+        tokens: 12,
+      },
+    });
+
+    const metadataLine = buildMessageLines(state, 100).lines.map(stripAnsi)
+      .find(line => line.includes("12 tokens"));
+
+    expect(metadataLine).toContain("10s");
+    expect(metadataLine).not.toContain("1s");
+  });
+});
+
 describe("older history loading status", () => {
   test("renders the animated Loading row above the loaded window", () => {
     const state = createInitialState();

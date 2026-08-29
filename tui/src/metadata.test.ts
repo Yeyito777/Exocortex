@@ -78,4 +78,15 @@ describe("renderMetadata", () => {
 
     expect(line).toContain("Gpt-5.4 | 42 tokens | 2w 1d 23h 23m 2s");
   });
+
+  test("keeps elapsed time live when a completed provider round is still active", () => {
+    const [line] = renderMetadata({
+      startedAt: 1_000,
+      endedAt: 2_000,
+      model: "gpt-5.4",
+      tokens: 42,
+    }, { active: true, now: 6_000 });
+
+    expect(line).toContain("Gpt-5.4 | 42 tokens | 5s");
+  });
 });

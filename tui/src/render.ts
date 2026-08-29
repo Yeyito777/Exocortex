@@ -55,6 +55,7 @@ import {
   moveTo,
 } from "./frame";
 import { pinBottomRelativeScrollOffset } from "./viewportscroll";
+import { durableSleepMetadataFrame } from "./durable-sleep-metadata";
 
 interface HistoryRenderCacheEntry {
   width: number;
@@ -69,6 +70,7 @@ interface HistoryRenderCacheEntry {
   voiceMessageFrameIndex: number | null;
   voiceMessagePhase: string | null;
   historyLoadingFrame: number | null;
+  durableSleepMetadataFrame: number | null;
   showToolOutput: boolean;
   toolRegistryRef: RenderState["toolRegistry"];
   externalToolStylesRef: RenderState["externalToolStyles"];
@@ -92,6 +94,7 @@ function canReuseHistoryRender(
   cached: HistoryRenderCacheEntry,
   state: RenderState,
   width: number,
+  currentDurableSleepMetadataFrame: number | null,
 ): boolean {
   return cached.width === width
     && cached.convId === state.convId
@@ -105,6 +108,7 @@ function canReuseHistoryRender(
     && cached.voiceMessageFrameIndex === (state.voiceMessage?.frameIndex ?? null)
     && cached.voiceMessagePhase === (state.voiceMessage?.phase ?? null)
     && cached.historyLoadingFrame === historyLoadingFrame(state)
+    && cached.durableSleepMetadataFrame === currentDurableSleepMetadataFrame
     && cached.showToolOutput === state.showToolOutput
     && cached.toolRegistryRef === state.toolRegistry
     && cached.externalToolStylesRef === state.externalToolStyles
@@ -182,8 +186,9 @@ function getHistoryRender(
     return buildMessageLines(state, width);
   }
 
+  const currentDurableSleepMetadataFrame = durableSleepMetadataFrame(state);
   const cached = historyRenderCache.get(state);
-  if (cached && canReuseHistoryRender(cached, state, width)) {
+  if (cached && canReuseHistoryRender(cached, state, width, currentDurableSleepMetadataFrame)) {
     return cached.result;
   }
 
@@ -220,6 +225,7 @@ function getHistoryRender(
     voiceMessageFrameIndex: state.voiceMessage?.frameIndex ?? null,
     voiceMessagePhase: state.voiceMessage?.phase ?? null,
     historyLoadingFrame: historyLoadingFrame(state),
+    durableSleepMetadataFrame: currentDurableSleepMetadataFrame,
     showToolOutput: state.showToolOutput,
     toolRegistryRef: state.toolRegistry,
     externalToolStylesRef: state.externalToolStyles,

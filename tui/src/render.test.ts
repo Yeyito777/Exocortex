@@ -197,6 +197,62 @@ describe("render caching and frame diffing", () => {
     expect(state.historyLines).not.toBe(firstLines);
   });
 
+  test("invalidates cached history on each durable-sleep metadata second", () => {
+    const now = Date.now();
+    const state = makeState();
+    state.convId = "conv-sleep";
+    const assistant = state.messages[1];
+    if (assistant.role !== "assistant") throw new Error("expected assistant message");
+    assistant.blocks.push({
+      type: "tool_call",
+      toolCallId: "sleep-call",
+      toolName: "chrono",
+      input: { action: "sleep", duration: "10m" },
+      summary: "sleep: 10m",
+    });
+    assistant.metadata = {
+      startedAt: now - 10_250,
+      endedAt: now - 9_250,
+      model: state.model,
+      tokens: 12,
+    };
+    state.sidebar.conversations = [{
+      id: state.convId,
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 2,
+      title: "Durable sleep",
+      marked: false,
+      pinned: false,
+      streaming: false,
+      unread: false,
+      sortOrder: 0,
+      tasks: [{
+        id: "chrono:sleep:sleep-call",
+        kind: "chrono",
+        title: "Sleeping",
+        startedAt: now - 9_000,
+        dueAt: now + 10 * 60_000,
+        chronoMode: "sleep",
+      }],
+    }];
+
+    renderSilently(state);
+    const firstLines = state.historyLines;
+    expect(stripAnsi(firstLines.join("\n"))).toContain("12 tokens | 10s");
+
+    // Advance the elapsed frame without replacing any cache-tracked references.
+    assistant.metadata.startedAt -= 1_000;
+    renderSilently(state);
+
+    expect(state.historyLines).not.toBe(firstLines);
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("12 tokens | 11s");
+  });
+
   test("manual invalidation rebuilds cached history after in-place message edits", () => {
     const state = makeState();
 
