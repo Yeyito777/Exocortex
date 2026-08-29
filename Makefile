@@ -13,15 +13,15 @@ REPO_DIR  := $(CURDIR)
 
 # ── Targets ──────────────────────────────────────────────────────────
 
-.PHONY: install uninstall check-bun deps links service login \
+.PHONY: install uninstall check-bun deps links shell-path service login \
         remove-links remove-service status windows clean-windows
 
-install: check-bun deps links service
+install: check-bun deps links shell-path service
 	@printf '\n  ✓ Exocortex installed.\n'
 	@printf '    Commands: exocortexd, exocortex\n'
 	@printf '    Service:  exocortex-daemon.service (systemd user)\n\n'
 	@printf '  Next steps:\n'
-	@printf '    1. Ensure ~/.local/bin is in your PATH\n'
+	@printf '    1. Open a new shell to load the installed PATH\n'
 	@printf '    2. Run: exocortexd login\n'
 	@printf '    3. Run: exocortex\n\n'
 
@@ -52,6 +52,10 @@ links:
 	@ln -sf $(REPO_DIR)/bin/exocortexd $(BIN_DIR)/exocortexd
 	@ln -sf $(REPO_DIR)/bin/exocortex  $(BIN_DIR)/exocortex
 	@printf '  ✓ Linked exocortexd, exocortex → $(BIN_DIR)/\n'
+
+shell-path:
+	@BIN_DIR="$(BIN_DIR)" BUN_BIN="$$(command -v bun)" \
+		bash "$(REPO_DIR)/scripts/setup/install-shell-path.sh"
 
 remove-links:
 	@rm -f $(BIN_DIR)/exocortexd $(BIN_DIR)/exocortex

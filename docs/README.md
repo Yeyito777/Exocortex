@@ -35,6 +35,8 @@ make install
 This will:
 - Install dependencies (`bun install`)
 - Symlink `exocortexd`, `exocortex`, and `exo` into `~/.local/bin/`
+- Add the Exocortex and Bun binary directories to the interactive and
+  non-interactive `PATH` for bash or zsh
 - Install and start a systemd user service for the daemon
 
 Then authenticate (one-time):
@@ -59,8 +61,7 @@ Launch the TUI:
 exocortex
 ```
 
-> **Note:** Make sure `~/.local/bin` is in your `PATH`.
-> Add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc if needed.
+> **Note:** Open a new shell after installation so the updated `PATH` is loaded.
 
 To uninstall:
 
