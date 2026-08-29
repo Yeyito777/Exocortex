@@ -26,11 +26,11 @@ function conversation(id: string, sortOrder: number, overrides: Partial<Conversa
 }
 
 describe("sidebar rendering", () => {
-  test("replaces the root title with the remote alias in the original purple", () => {
+  test("appends the purple remote alias to the contextual sidebar title", () => {
     const sidebar = createSidebarState();
 
     const localHeader = renderSidebar(sidebar, 8, true, null)[0];
-    const remoteHeader = renderSidebar(
+    const rootRemoteHeader = renderSidebar(
       sidebar,
       8,
       true,
@@ -42,9 +42,24 @@ describe("sidebar rendering", () => {
     )[0];
 
     expect(localHeader).toContain(`${theme.text}${theme.bold} Conversations`);
-    expect(remoteHeader).toContain(`${theme.goal}${theme.bold} whale`);
-    expect(remoteHeader).not.toContain("Conversations");
-    expect(visibleLength(remoteHeader)).toBe(SIDEBAR_WIDTH);
+    expect(rootRemoteHeader).toContain(`${theme.text}${theme.bold} Conversations — ${theme.goal}whale`);
+    expect(visibleLength(rootRemoteHeader)).toBe(SIDEBAR_WIDTH);
+
+    sidebar.folders = [{ id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
+    sidebar.currentFolderId = "work";
+    const folderRemoteHeader = renderSidebar(
+      sidebar,
+      8,
+      true,
+      null,
+      new Set(),
+      null,
+      new Set(),
+      "whale",
+    )[0];
+
+    expect(folderRemoteHeader).toContain(`${theme.text}${theme.bold} Work/ — ${theme.goal}whale`);
+    expect(visibleLength(folderRemoteHeader)).toBe(SIDEBAR_WIDTH);
   });
 
   test("keeps visual selection marker muted on the current conversation", () => {

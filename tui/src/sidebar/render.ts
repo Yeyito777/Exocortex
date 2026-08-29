@@ -137,6 +137,12 @@ function truncateSidebarTitle(text: string, maxWidth: number): string {
   return truncateToWidth(text, maxWidth);
 }
 
+function contextualSidebarTitle(folderName: string | null, maxWidth: number): string {
+  if (folderName === null) return truncateSidebarTitle("Conversations", maxWidth);
+  if (maxWidth <= 1) return "/";
+  return `${truncateSidebarTitle(folderName, maxWidth - 1)}/`;
+}
+
 /** Pad or truncate a string to exactly `width` terminal columns. */
 function pad(text: string, width: number): string {
   return padRightToWidth(text, width);
@@ -159,15 +165,22 @@ export function renderSidebar(
 
   // Row 1: header / breadcrumb
   const folder = currentFolder(sidebar);
-  const remoteHeader = !folder && remoteAlias
-    ? truncateSidebarTitle(remoteAlias, innerWidth - 1)
-    : null;
-  const header = folder
-    ? ` ${truncateSidebarTitle(folder.name, innerWidth - 1)}/`
-    : ` ${remoteHeader ?? "Conversations"}`;
-  const headerFg = remoteHeader ? theme.goal : theme.text;
+  const separator = " — ";
+  const aliasMaxWidth = Math.min(12, innerWidth - termWidth(` ${separator}`) - 1);
+  const alias = remoteAlias
+    ? truncateSidebarTitle(remoteAlias, aliasMaxWidth)
+    : "";
+  const titleMaxWidth = alias
+    ? innerWidth - termWidth(` ${separator}${alias}`)
+    : innerWidth - 1;
+  const title = contextualSidebarTitle(folder?.name ?? null, titleMaxWidth);
+  const headerPlain = alias ? ` ${title}${separator}${alias}` : ` ${title}`;
+  const headerPadding = " ".repeat(Math.max(0, innerWidth - termWidth(headerPlain)));
+  const headerStyled = alias
+    ? `${theme.text}${theme.bold} ${title}${separator}${theme.goal}${alias}${headerPadding}`
+    : `${theme.text}${theme.bold}${pad(headerPlain, innerWidth)}`;
   rows.push(
-    theme.sidebarBg + headerFg + theme.bold + pad(header, innerWidth)
+    theme.sidebarBg + headerStyled
     + theme.reset + borderBg + borderFg + "│" + theme.reset,
   );
 
