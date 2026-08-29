@@ -3,6 +3,7 @@ import { spawn } from "child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { repoRoot } from "@exocortex/shared/paths";
 import type { LoadedTool, Manifest } from "./external-tools";
 import {
   buildDaemonSpawnSpec,
@@ -267,6 +268,21 @@ describe("getExternalToolHints", () => {
     ];
     expect(getExternalToolHintsForNames(["gmail"], loaded)).toBe("## gmail\nGmail hint");
     expect(getExternalToolHintsForNames([], loaded)).toBe("");
+  });
+
+  test("resolves Exocortex source directory placeholders when building hints", () => {
+    const hints = getExternalToolHints([
+      makeTool({
+        manifest: {
+          name: "google",
+          systemHint: "Source: <exocortex-source-dir>/external-tools/google-cli; root: <exocortex-source-dir>",
+        },
+      }),
+    ]);
+
+    expect(hints).toBe(
+      `## google\nSource: ${repoRoot()}/external-tools/google-cli; root: ${repoRoot()}`,
+    );
   });
 });
 

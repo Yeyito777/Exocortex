@@ -117,7 +117,7 @@ directories when they need different labels or colors.
 {
   "name": "tool-name",
   "bin": "./bin/tool-name",
-  "systemHint": "You have access to ... Run `tool-name -h` for usage.",
+  "systemHint": "You have access to ... (source at <exocortex-source-dir>/external-tools/tool-name). Run `tool-name -h` for usage.",
   "display": {
     "label": "Tool Name",
     "color": "#hexcolor"
@@ -128,6 +128,9 @@ directories when they need different labels or colors.
 - **name**: The command name as typed in bash. Must match the binary basename.
 - **bin**: Relative path to the executable. Its parent directory is added to PATH.
 - **systemHint**: Injected into the system prompt so the model knows the tool exists.
+  Use `<exocortex-source-dir>` for paths rooted at the Exocortex checkout; the
+  daemon replaces every occurrence with the actual source directory when it
+  builds model context. Do not hard-code a user's checkout path.
 - **display**: TUI styling for bash sub-command matching (label + hex color).
 
 External tools intentionally remain ordinary executables invoked through the
