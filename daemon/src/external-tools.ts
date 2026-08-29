@@ -7,7 +7,7 @@
  */
 
 import { mkdirSync } from "fs";
-import { externalToolsDir as getExternalToolsDir, worktreeName } from "@exocortex/shared/paths";
+import { externalToolsDir as getExternalToolsDir, repoRoot, worktreeName } from "@exocortex/shared/paths";
 import type { ExternalToolStyle } from "@exocortex/shared/messages";
 import { log } from "./log";
 import { rewriteExternalToolShellCommandForToolsWithAuth } from "./external-tools-shell";
@@ -25,6 +25,13 @@ export { buildDaemonSpawnSpec, getDaemonStatePaths, isLikelyManagedDaemonPid, ki
 
 const BASE_PATH = process.env.PATH ?? "";
 const DEBOUNCE_MS = 1_000;
+const EXOCORTEX_SOURCE_DIR_PLACEHOLDER = "<exocortex-source-dir>";
+
+function resolveSystemHintPaths(systemHint: string): string {
+  // Resolve lazily while building model context so manifests stay portable when
+  // the Exocortex checkout moves or is installed under a different home directory.
+  return systemHint.replaceAll(EXOCORTEX_SOURCE_DIR_PLACEHOLDER, repoRoot());
+}
 
 let tools: LoadedTool[] = [];
 let watcher: ExternalToolWatcher | null = null;
@@ -153,7 +160,7 @@ export async function manageExternalToolDaemon(toolName: string, action: Externa
 /** Aggregated system hints from all loaded external tools. */
 export function getExternalToolHints(loadedTools: readonly LoadedTool[] = tools): string {
   const hints = loadedTools.flatMap((tool) => tool.manifest.systemHint
-    ? [`## ${tool.manifest.name}\n${tool.manifest.systemHint}`]
+    ? [`## ${tool.manifest.name}\n${resolveSystemHintPaths(tool.manifest.systemHint)}`]
     : []);
   return hints.length > 0 ? hints.join("\n") : "";
 }
