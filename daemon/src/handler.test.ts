@@ -145,6 +145,36 @@ describe("handler sidebar patches", () => {
     expect(patches[0].conversations).toHaveLength(1);
     expect(server.broadcast).not.toHaveBeenCalledWith(expect.objectContaining({ type: "conversation_moved" }));
   });
+
+  test("rehydrates the requesting client when a sidebar move cannot be applied", async () => {
+    const sent: Array<Record<string, any>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      broadcastSidebarStatePatched: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "move_sidebar_items",
+      reqId: "stale-move",
+      items: [{ type: "folder", id: "missing-folder" }],
+      parentId: null,
+    });
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "conversations_list",
+      reqId: "stale-move",
+      conversations: expect.any(Array),
+      folders: expect.any(Array),
+    }));
+    expect(server.broadcastSidebarStatePatched).not.toHaveBeenCalled();
+  });
 });
 
 describe("handler conversation tool policy", () => {
