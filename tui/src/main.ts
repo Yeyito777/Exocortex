@@ -1746,7 +1746,11 @@ async function reconnectToDaemon(): Promise<void> {
   reconnecting = true;
 
   try {
-    const { replayedCommands, bootstrapAlreadyRequested } = await daemon.connect();
+    const {
+      replayedCommands,
+      bootstrapAlreadyRequested,
+      releaseBootstrapEvents,
+    } = await daemon.connect();
     const replayedNavigation = [...replayedCommands].reverse().find((command) => command.type === "load_conversation");
     reconnectNavigationTarget = replayedNavigation?.type === "load_conversation" ? replayedNavigation.convId : null;
     const conversationWillReload = replayedCommands.some((command) =>
@@ -1758,6 +1762,11 @@ async function reconnectToDaemon(): Promise<void> {
     reconnecting = false;
     clearReconnectTimer();
     restoreDaemonSessionAfterReconnect(conversationWillReload, bootstrapAlreadyRequested);
+    // The adopted probe already has the remote ping bootstrap in flight. Release
+    // it only after restoreDaemonSessionAfterReconnect lifts route-switch event
+    // suppression; otherwise tools_available is dropped and historical tool calls
+    // use the theme's generic purple until a later model request rebroadcasts it.
+    releaseBootstrapEvents?.();
     scheduleRender();
   } catch {
     if (!running) {

@@ -53,10 +53,24 @@ describe("DaemonClient SSH routing", () => {
   test("selects a remote transport for only one TUI while another stays local", async () => {
     const spawned: FakeProcess[] = [];
     const events: unknown[] = [];
-    const client = new DaemonClient(event => events.push(event), "/tmp/local.sock", false, {
+    let routeSwitchEventsSuppressed = false;
+    const client = new DaemonClient(event => {
+      if (event.type === "ssh_status" && event.state === "connected" && event.switched) {
+        routeSwitchEventsSuppressed = true;
+      }
+      if (routeSwitchEventsSuppressed && event.type !== "ssh_status") return;
+      events.push(event);
+    }, "/tmp/local.sock", false, {
       localHostname: "localbox",
       spawnSshProcess: () => {
-        const child = respondingProbe({ type: "queue_updated", messages: [] });
+        const child = respondingProbe({
+          type: "tools_available",
+          providers: [],
+          tools: [{ name: "bash", label: "$", color: "#d19a66" }],
+          authByProvider: { openai: false, deepseek: false, opencode: false },
+          authInfoByProvider: {},
+          externalToolStyles: [{ cmd: "gmail", label: "Gmail", color: "#ea4335" }],
+        });
         spawned.push(child);
         return child;
       },
@@ -120,7 +134,18 @@ describe("DaemonClient SSH routing", () => {
       alias: "whale",
       silent: true,
     });
-    await waitFor(() => events.some(event => (event as { type?: string }).type === "queue_updated"));
+    expect(events.some(event => (event as { type?: string }).type === "tools_available")).toBe(false);
+
+    // main.ts first resets endpoint-scoped state and lifts this guard, then
+    // explicitly releases the adopted ping bootstrap. Tool colors must survive
+    // that first /ssh switch without paying for another ping or SSH handshake.
+    routeSwitchEventsSuppressed = false;
+    connected.releaseBootstrapEvents?.();
+    await waitFor(() => events.some(event => (event as { type?: string }).type === "tools_available"));
+    expect(events.find(event => (event as { type?: string }).type === "tools_available")).toMatchObject({
+      tools: [{ name: "bash", color: "#d19a66" }],
+      externalToolStyles: [{ cmd: "gmail", color: "#ea4335" }],
+    });
 
     spawned[0].stdout.write('{"type":"pong"}\n');
     await waitFor(() => events.some(event => (event as { type?: string }).type === "pong"));

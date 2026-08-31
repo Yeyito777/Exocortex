@@ -38,6 +38,12 @@ export interface ConnectResult {
   replayedCommands: Command[];
   /** The adopted SSH probe already requested the normal daemon bootstrap. */
   bootstrapAlreadyRequested?: boolean;
+  /**
+   * Release bootstrap events retained by an adopted SSH probe. Route switches
+   * call this only after the TUI has reset old-endpoint state and lifted its
+   * stale-event guard, so the remote tool registry cannot be discarded.
+   */
+  releaseBootstrapEvents?: () => void;
 }
 
 interface ClientTransport {
@@ -260,12 +266,21 @@ export class DaemonClient {
         if (!active.finished && this.socket === transport) this.onData(chunk);
       });
       // Adding a data listener normally resumes a Readable. Keep an adopted
-      // probe paused until the reconnect continuation has cleared route-switch
-      // suppression in main.ts, then replay its unconsumed bootstrap bytes.
+      // probe paused until the reconnect continuation explicitly clears
+      // route-switch suppression in main.ts. A microtask is not sufficient here:
+      // connect()'s nested promise continuations may run after that microtask.
       if (probed) {
         process.stdout.pause();
         process.stderr.resume();
       }
+      let bootstrapEventsReleased = false;
+      const releaseBootstrapEvents = () => {
+        if (bootstrapEventsReleased) return;
+        bootstrapEventsReleased = true;
+        if (active.finished || this.socket !== transport) return;
+        if (probed?.bufferedStdout) this.onData(probed.bufferedStdout);
+        process.stdout.resume();
+      };
       const activate = () => {
         if (active.finished) return;
         if (this.sshAlias !== alias || this.intentionalDisconnect) {
@@ -279,15 +294,16 @@ export class DaemonClient {
         this.handler(this.connectedRouteStatus(false, true));
         this.writeCommand({ type: "client_capabilities", capabilities: ["targeted-unwind", "sidebar-reorder-delta", "sidebar-state-patch"] });
         const replayedCommands = this.flushPendingCommands();
-        resolve({ replayedCommands, ...(probed ? { bootstrapAlreadyRequested: true } : {}) });
+        resolve({
+          replayedCommands,
+          ...(probed ? {
+            bootstrapAlreadyRequested: true,
+            releaseBootstrapEvents,
+          } : {}),
+        });
       };
       if (probed) {
         activate();
-        queueMicrotask(() => {
-          if (active.finished || this.socket !== transport) return;
-          if (probed.bufferedStdout) this.onData(probed.bufferedStdout);
-          process.stdout.resume();
-        });
       } else {
         process.once("spawn", activate);
       }
