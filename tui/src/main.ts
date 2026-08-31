@@ -5,7 +5,7 @@
  * and forwards user input. All AI, auth, and streaming logic lives in
  * the daemon — this is purely a presentation layer.
  *
- * Usage: bun run src/main.ts
+ * Usage: bun run src/main.ts [--ssh <alias>]
  */
 
 import { randomUUID } from "node:crypto";
@@ -75,8 +75,21 @@ import {
   leaveConversationView,
   prepareConversationOpen,
 } from "./conversationscroll";
+import { applyTuiLaunchOptions, parseTuiLaunchArgs, TUI_USAGE, type TuiLaunchOptions } from "./launchargs";
 
 // ── State ───────────────────────────────────────────────────────────
+
+let launchOptions: TuiLaunchOptions;
+try {
+  launchOptions = parseTuiLaunchArgs(process.argv.slice(2));
+} catch (error) {
+  console.error(`${error instanceof Error ? error.message : String(error)}\n\n${TUI_USAGE}`);
+  process.exit(2);
+}
+if (launchOptions.showHelp) {
+  console.log(TUI_USAGE);
+  process.exit(0);
+}
 
 const savedStartingState = loadTuiStartingState();
 const state = createInitialState();
@@ -84,7 +97,7 @@ if (savedStartingState) applyTuiStartingState(state, savedStartingState);
 let pendingStartingState = savedStartingState;
 let startingConversationLoad: { convId: string; reqId: string } | null = null;
 const RECONNECT_DELAY_MS = 1000;
-const STARTUP_PROFILE = process.env.EXOCORTEX_PROFILE_STARTUP === "1" || process.argv.includes("--profile-startup");
+const STARTUP_PROFILE = process.env.EXOCORTEX_PROFILE_STARTUP === "1" || launchOptions.profileStartup;
 const STARTUP_INPUT_SANITIZE_MS = 1000;
 
 type StartupProfileMark = { event: string; elapsedMs: number } & Record<string, unknown>;
@@ -1948,6 +1961,10 @@ async function main(): Promise<void> {
     // geometry, so repaint the invalidated full frame immediately.
     renderImmediately();
   });
+
+  // Match entering `/ssh <alias>` once startup is complete. Going through the
+  // normal route-switch path keeps local fallback and all SSH status UI intact.
+  applyTuiLaunchOptions(launchOptions, daemon);
 
   const initialRenderStartedAt = performance.now();
   render(state);

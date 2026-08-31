@@ -90,6 +90,13 @@ daemon through `exocortexd proxy`; `/ssh cancel` returns to the local daemon.
 The selected route belongs to that TUI process, so other TUIs can remain local
 or connect to different aliases at the same time.
 
+To select the SSH route as soon as the TUI launches, pass the same alias on the
+command line:
+
+```bash
+exocortex --ssh <alias>
+```
+
 #### Update
 
 ```bash

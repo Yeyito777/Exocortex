@@ -9,7 +9,7 @@ start "" /B exocortexd.exe >nul 2>&1
 
 timeout /t 2 /nobreak >nul
 
-exocortex.exe
+exocortex.exe %*
 
 taskkill /F /IM exocortexd.exe >nul 2>&1
 
