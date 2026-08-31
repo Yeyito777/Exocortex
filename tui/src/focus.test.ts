@@ -1191,7 +1191,7 @@ describe("sidebar folders", () => {
     ]);
   });
 
-  test("moving a conversation into a visible folder keeps focus near the removed row, preferring above", () => {
+  test("moving a conversation with F updates its folder and nearby focus optimistically", () => {
     const state = createInitialState();
     state.sidebar.open = true;
     state.panelFocus = "sidebar";
@@ -1209,20 +1209,73 @@ describe("sidebar folders", () => {
       items: [{ type: "conversation", id: "conv-a" }],
       parentId: "folder-work",
     });
-    expect(state.sidebar.pendingFocusItem).toEqual({ type: "conversation", id: "top" });
+    expect(state.sidebar.conversations.find(conversation => conversation.id === "conv-a")?.folderId).toBe("folder-work");
+    expect(state.sidebar.pendingFocusItem).toBeNull();
+    expect(state.sidebar.selectedItem as { type: string; id?: string } | null).toEqual({ type: "conversation", id: "top" });
 
     handleEvent({
-      type: "conversation_moved",
-      folders: state.sidebar.folders,
-      conversations: [
-        conversation("top", 0),
-        conversation("conv-a", 1, { folderId: "folder-work" }),
-        conversation("conv-b", 2),
-      ],
+      type: "sidebar_state_patched",
+      conversations: [conversation("conv-a", 1, { folderId: "folder-work" })],
     }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
 
     expect(state.sidebar.currentFolderId).toBeNull();
+    expect(state.sidebar.conversations.find(conversation => conversation.id === "conv-a")?.sortOrder).toBe(1);
     expect(state.sidebar.selectedItem as { type: string; id?: string } | null).toEqual({ type: "conversation", id: "top" });
+  });
+
+  test("moving a folder with F updates its parent before the daemon responds", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.folders = [
+      { id: "folder-archive", name: "Archive", parentId: null, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 0 },
+      { id: "folder-project", name: "Project", parentId: null, createdAt: 2, updatedAt: 2, pinned: true, sortOrder: 1 },
+    ];
+    state.sidebar.conversations = [conversation("below", 2)];
+    state.sidebar.selectedItem = { type: "folder", id: "folder-project" };
+
+    expect(handleFocusedKey({ type: "char", char: "F" }, state)).toEqual({ type: "handled" });
+    for (const ch of "Archive") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
+      type: "move_sidebar_items",
+      items: [{ type: "folder", id: "folder-project" }],
+      parentId: "folder-archive",
+      before: undefined,
+    });
+
+    expect(state.sidebar.folders.find(folder => folder.id === "folder-project")).toMatchObject({
+      parentId: "folder-archive",
+      pinned: false,
+    });
+    expect(state.sidebar.selectedItem).toEqual({ type: "folder", id: "folder-archive" });
+  });
+
+  test("an authoritative list rolls back an optimistic F move that the daemon could not apply", () => {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    const archive = folder("folder-archive", 0, { name: "Archive", createdAt: 1, updatedAt: 1 });
+    const project = folder("folder-project", 1, { name: "Project", createdAt: 2, updatedAt: 2 });
+    state.sidebar.folders = [archive, project];
+    state.sidebar.selectedItem = { type: "folder", id: "folder-project" };
+
+    handleFocusedKey({ type: "char", char: "F" }, state);
+    for (const ch of "Archive") handleFocusedKey({ type: "char", char: ch }, state);
+    handleFocusedKey({ type: "enter" }, state);
+    expect(project.parentId).toBe("folder-archive");
+
+    handleEvent({
+      type: "conversations_list",
+      conversations: [],
+      folders: [
+        { ...archive },
+        { ...project, parentId: null, sortOrder: 1, updatedAt: 2 },
+      ],
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.sidebar.folders.find(folder => folder.id === "folder-project")?.parentId).toBeNull();
   });
 
   test("moving a conversation out requests insertion immediately before the source folder", () => {

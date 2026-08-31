@@ -2,6 +2,8 @@ import type { KeyEvent } from "../input";
 import { findFolderDestination } from "./folders";
 import { currentFolderRef, requestFocusAfterMovingItemsOutOfView, topLevelCurrentFolderRef } from "./folderactions";
 import { cycleMovePromptAutocomplete, updateMovePromptAutocomplete } from "./moveautocomplete";
+import { applyOptimisticSidebarItemsMove } from "./optimisticmove";
+import { focusSidebarItem } from "./selection";
 import type { SidebarState } from "./state";
 import type { SidebarKeyResult } from "./types";
 import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "../graphemes";
@@ -37,6 +39,12 @@ export function handleSidebarPromptKey(sidebar: SidebarState, key: KeyEvent): Si
           : undefined;
       if (destination !== undefined && destination !== sidebar.currentFolderId) {
         requestFocusAfterMovingItemsOutOfView(sidebar, prompt.items);
+      }
+      if (destination !== undefined) {
+        const locallyMoved = applyOptimisticSidebarItemsMove(sidebar, prompt.items, destination, before);
+        const pendingFocusItem = sidebar.pendingFocusItem;
+        sidebar.pendingFocusItem = null;
+        if (locallyMoved && pendingFocusItem) focusSidebarItem(sidebar, pendingFocusItem);
       }
       return destination !== undefined
         ? { type: "move_sidebar_items", items: prompt.items, parentId: destination, before }

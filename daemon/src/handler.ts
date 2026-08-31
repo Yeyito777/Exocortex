@@ -2293,6 +2293,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const previousSidebarState = convStore.listSidebarState();
         if (convStore.moveSidebarItems(cmd.items, cmd.parentId, cmd.before, { preservePinned: cmd.preservePinned, placement: cmd.placement })) {
           broadcastSidebarStatePatch(previousSidebarState);
+        } else {
+          // An optimistic TUI may already have projected this move. Return a
+          // complete authoritative sidebar when stale/invalid input prevents the
+          // mutation so the initiating client can immediately roll it back.
+          server.sendTo(client, { type: "conversations_list", reqId: cmd.reqId, ...convStore.listSidebarState() });
         }
         break;
       }
