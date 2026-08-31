@@ -67,6 +67,7 @@ import { applyTuiStartingState, availableStartingConversationId, captureTuiStart
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
 import { formatConnectionLostNotice } from "./events/notices";
+import { RemotePathCompletionController } from "./remote-path-completion";
 import {
   completeInitialConversationBackfill,
   forgetConversationScroll,
@@ -118,6 +119,7 @@ let terminalClipboardClient: TerminalClipboardClient | null = null;
 let terminalControlBuffer: TerminalControlBuffer | null = null;
 let voiceInput: VoiceInputController | null = null;
 let callMedia: CallMediaController | null = null;
+let remotePathCompletion: RemotePathCompletionController | null = null;
 let pendingVoiceQueuePrompt = false;
 let pendingNewConversationConvId: string | null = null;
 let pendingLocalInterruptConvId: string | null = null;
@@ -395,6 +397,13 @@ function onDaemonEvent(event: Event): void {
   // The switched status is the final frame from the old endpoint. Ignore any
   // already-in-flight old-route events until a fresh local socket reconnects.
   if (daemonRouteSwitchPending && event.type !== "ssh_status") return;
+  if (event.type === "path_directory_entries" || event.type === "error") {
+    const pathResult = remotePathCompletion?.handleEvent(event, state);
+    if (pathResult?.consumed) {
+      if (pathResult.uiChanged) renderAfterLocalUiMutation();
+      return;
+    }
+  }
   if (event.type === "error" && event.reqId === startingConversationLoad?.reqId) {
     // A saved conversation can be deleted while the TUI is closed. Its
     // speculative startup load is intentionally silent; the authoritative
@@ -469,6 +478,12 @@ function onDaemonEvent(event: Event): void {
 
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
+  if (event.type === "ssh_status" && (event.state === "connected" || event.state === "failed")) {
+    remotePathCompletion?.setRemoteAlias(state.sshRemote?.alias ?? null);
+    // The silent status is emitted by the newly active transport. Any prompt
+    // typed during reconnect can now resume its non-queued remote prefetch.
+    if (event.state === "connected" && event.silent) remotePathCompletion?.observePrompt(state);
+  }
   reattachVisiblePendingVoiceSubmissions();
   if (PERFORMANCE_PROFILING_ENABLED && event.type === "tool_outputs_loaded") {
     const applyMs = performance.now() - eventStartedAt;
@@ -1468,10 +1483,16 @@ function handleKey(key: KeyEvent): void {
   if (voiceInput?.handleKey(key)) return;
   if (key.event === "release") return;
 
-  const result = handleFocusedKey(key, state, renderAfterLocalUiMutation);
+  const result = handleFocusedKey(
+    key,
+    state,
+    renderAfterLocalUiMutation,
+    state.sshRemote ? remotePathCompletion ?? undefined : undefined,
+  );
   if (voicePromptBufferBefore !== null) {
     voiceInput?.syncPromptEdit(voicePromptBufferBefore);
   }
+  if (result.type === "handled" && state.sshRemote) remotePathCompletion?.observePrompt(state);
   maybeScheduleOpenAIPrewarm(inputBefore);
 
   switch (result.type) {
@@ -1814,6 +1835,9 @@ function restoreTerminal(): void {
 async function main(): Promise<void> {
   startupProfileMark("main_begin");
   daemon = new DaemonClient(onDaemonEvent);
+  remotePathCompletion = new RemotePathCompletionController(
+    (directory, prefix) => daemon.requestPathDirectory(directory, prefix),
+  );
   daemon.onConnectionLost(handleDaemonConnectionLost);
   callMedia = new CallMediaController(daemon, {
     micGainDb: loadMicGainDb(),

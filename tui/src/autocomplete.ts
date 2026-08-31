@@ -20,8 +20,9 @@ import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
 import { MACRO_LIST, getMacroArgs } from "./macros";
 import { INLINE_COMMANDS, getInlineCommandArgs } from "./inlineeffort";
 import { readdirSync } from "fs";
-import { resolve, dirname, basename } from "path";
+import { resolve } from "path";
 import { homedir } from "os";
+import type { PathDirectoryEntry } from "./protocol";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -35,6 +36,15 @@ export interface AutocompleteState {
   tokenStart: number;
   /** Filtered matches (cached — recomputed on each keystroke, stable during Tab cycling). */
   matches: CompletionItem[];
+}
+
+/**
+ * Optional non-local filesystem source. A null result is a cache miss; the
+ * provider calls `onReady` after hydrating it so the original Tab can finish.
+ */
+export interface PathCompletionProvider {
+  getFilesystemMatches(pathToken: string): CompletionItem[] | null;
+  requestFilesystemMatches(pathToken: string, onReady?: () => void): void;
 }
 
 // ── Argument matching helper ─────────────────────────────────────
@@ -360,12 +370,31 @@ export function acceptAutocomplete(state: RenderState): void {
  * Multiple matches: fills the common prefix and shows a popup.
  * Returns true if a completion was attempted.
  */
-export function tryPathComplete(state: RenderState): boolean {
+export function tryPathComplete(
+  state: RenderState,
+  provider?: PathCompletionProvider,
+): boolean {
   const extracted = extractPathToken(state.inputBuffer, state.cursorPos);
   if (!extracted) return false;
 
   const { token, start } = extracted;
-  const fsMatches = getFilesystemMatches(token);
+  const fsMatches = provider
+    ? provider.getFilesystemMatches(token)
+    : getFilesystemMatches(token);
+
+  if (fsMatches === null) {
+    // Never fall back to the TUI host while routed through SSH. Finish this Tab
+    // asynchronously only if the prompt is still exactly where the user left it.
+    const expectedBuffer = state.inputBuffer;
+    const expectedCursorPos = state.cursorPos;
+    provider!.requestFilesystemMatches(token, () => {
+      if (state.inputBuffer !== expectedBuffer
+          || state.cursorPos !== expectedCursorPos
+          || state.autocomplete !== null) return;
+      tryPathComplete(state, provider);
+    });
+    return true;
+  }
 
   // For /-prefixed tokens, also include macro and inline-command matches
   let macroMatches: CompletionItem[] = [];
@@ -411,7 +440,7 @@ export function tryPathComplete(state: RenderState): boolean {
  * Scans backwards from cursor to whitespace or start.
  * Returns null if the token doesn't look like a path.
  */
-function extractPathToken(
+export function extractPathToken(
   input: string,
   cursorPos: number,
 ): { token: string; start: number } | null {
@@ -433,49 +462,66 @@ function extractPathToken(
   return null;
 }
 
-/** Get filesystem matches for a path prefix. */
-function getFilesystemMatches(pathToken: string): CompletionItem[] {
+export interface PathTokenParts {
+  directory: string;
+  prefix: string;
+}
+
+/** Split a supported path token into its prompt-spelled directory and basename. */
+export function pathTokenParts(pathToken: string): PathTokenParts | null {
+  if (pathToken === "~") return { directory: "~/", prefix: "" };
+  const slash = pathToken.lastIndexOf("/");
+  if (slash < 0) return null;
+  return {
+    directory: pathToken.slice(0, slash + 1),
+    prefix: pathToken.slice(slash + 1),
+  };
+}
+
+/** Convert a cacheable directory listing into prompt insertion candidates. */
+export function filesystemMatchesFromEntries(
+  pathToken: string,
+  entries: readonly PathDirectoryEntry[],
+): CompletionItem[] {
+  const parts = pathTokenParts(pathToken);
+  if (!parts) return [];
+  const { directory, prefix } = parts;
+  return entries
+    .filter(entry => entry.name.startsWith(prefix) && (prefix.startsWith(".") || !entry.name.startsWith(".")))
+    .sort((a, b) => {
+      const aDir = a.type === "dir" ? 0 : 1;
+      const bDir = b.type === "dir" ? 0 : 1;
+      if (aDir !== bDir) return aDir - bDir;
+      return a.name.localeCompare(b.name);
+    })
+    .map(entry => ({
+      name: `${directory}${entry.name}${entry.type === "dir" ? "/" : ""}`,
+      desc: entry.type,
+    }));
+}
+
+/** Get filesystem matches for a path prefix on the TUI's local host. */
+export function getFilesystemMatches(pathToken: string): CompletionItem[] {
   if (pathToken === "~") {
     return [{ name: "~/", desc: "dir" }];
   }
 
+  const parts = pathTokenParts(pathToken);
+  if (!parts) return [];
+
   const home = homedir();
-  let expanded = pathToken;
-  if (expanded === "~" || expanded.startsWith("~/")) {
-    expanded = home + expanded.slice(1);
-  }
-
-  let dir: string;
-  let prefix: string;
-
-  if (expanded.endsWith("/")) {
-    dir = resolve(expanded);
-    prefix = "";
-  } else {
-    dir = dirname(resolve(expanded));
-    prefix = basename(expanded);
+  let expandedDirectory = parts.directory;
+  if (expandedDirectory.startsWith("~/")) {
+    expandedDirectory = home + expandedDirectory.slice(1);
   }
 
   try {
-    const entries = readdirSync(dir, { withFileTypes: true });
-    const filtered = entries
-      .filter(e => e.name.startsWith(prefix) && (prefix.startsWith(".") || !e.name.startsWith(".")))
-      .sort((a, b) => {
-        // Directories first, then alphabetical
-        const aDir = a.isDirectory() ? 0 : 1;
-        const bDir = b.isDirectory() ? 0 : 1;
-        if (aDir !== bDir) return aDir - bDir;
-        return a.name.localeCompare(b.name);
-      });
-
-    const tokenDir = pathToken.endsWith("/")
-      ? pathToken
-      : pathToken.slice(0, pathToken.length - prefix.length);
-
-    return filtered.map(e => {
-      const isDir = e.isDirectory();
-      return { name: tokenDir + e.name + (isDir ? "/" : ""), desc: isDir ? "dir" : "file" };
-    });
+    const entries = readdirSync(resolve(expandedDirectory), { withFileTypes: true })
+      .map<PathDirectoryEntry>(entry => ({
+        name: entry.name,
+        type: entry.isDirectory() ? "dir" : "file",
+      }));
+    return filesystemMatchesFromEntries(pathToken, entries);
   } catch {
     return [];
   }

@@ -102,6 +102,14 @@ describe("DaemonClient SSH routing", () => {
     expect(connected.bootstrapAlreadyRequested).toBe(true);
     expect(spawned).toHaveLength(1);
     expect(spawned[0].input).toContain('"type":"client_capabilities"');
+    const pathReqId = client.requestPathDirectory("~/Workspace/", "exo");
+    expect(pathReqId?.startsWith("path_")).toBe(true);
+    expect(spawned[0].input).toContain(JSON.stringify({
+      type: "list_path_directory",
+      reqId: pathReqId,
+      directory: "~/Workspace/",
+      prefix: "exo",
+    }));
     expect(events.find(event => (
       event as { type?: string; silent?: boolean }
     ).type === "ssh_status" && (
@@ -156,5 +164,11 @@ describe("DaemonClient SSH routing", () => {
     expect(localClosed).toBe(false);
     expect(events.at(-1)).toMatchObject({ type: "ssh_status", mode: "local", state: "failed" });
     expect((events.at(-1) as { message: string }).message).toContain("Permission denied");
+  });
+
+  test("does not queue ephemeral path reads while disconnected", () => {
+    const client = new DaemonClient(() => {}, "/tmp/local.sock", false);
+    expect(client.requestPathDirectory("~/", "W")).toBeNull();
+    expect((client as any).pendingCommands).toEqual([]);
   });
 });

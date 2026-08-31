@@ -9,7 +9,7 @@
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
 import { resolveAction } from "./keybinds";
-import { updateAutocomplete, cycleAutocomplete, tryPathComplete } from "./autocomplete";
+import { updateAutocomplete, cycleAutocomplete, tryPathComplete, type PathCompletionProvider } from "./autocomplete";
 import { getSymbol } from "./symbols";
 import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./graphemes";
 import { sliceByWidthFrom, termWidth } from "./textwidth";
@@ -119,7 +119,11 @@ export function movePromptCursorVerticalWithCurswant(
 }
 
 /** Handle a key event in the prompt. Returns a typed result object. */
-export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyResult {
+export function handlePromptKey(
+  state: RenderState,
+  key: KeyEvent,
+  pathCompletionProvider?: PathCompletionProvider,
+): PromptKeyResult {
   const action = resolveAction(key);
 
   // Tab → cycle autocomplete forward, or try path completion
@@ -127,7 +131,7 @@ export function handlePromptKey(state: RenderState, key: KeyEvent): PromptKeyRes
     if (state.autocomplete) {
       cycleAutocomplete(state, 1);
     } else {
-      tryPathComplete(state);
+      tryPathComplete(state, pathCompletionProvider);
     }
     resetPromptCurswant(state);
     return HANDLED;

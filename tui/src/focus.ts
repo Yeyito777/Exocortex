@@ -44,7 +44,7 @@ import {
 import { pushUndo } from "./undo";
 import { placeAtVisibleBottom } from "./historycursor";
 import { openableTargetAtHistoryCursor } from "./historyopenable";
-import { acceptAutocomplete } from "./autocomplete";
+import { acceptAutocomplete, type PathCompletionProvider } from "./autocomplete";
 import { handleQueuePromptKey } from "./queue";
 import { handleEditMessageKey, openEditMessageModal } from "./editmessage";
 import { readClipboardImage } from "./clipboard";
@@ -184,6 +184,7 @@ export function handleFocusedKey(
   key: KeyEvent,
   state: RenderState,
   onAsyncUiMutation?: AsyncUiMutationCallback,
+  pathCompletionProvider?: PathCompletionProvider,
 ): KeyResult {
   // Ctrl-C is always quit, regardless of focused panel, prompt/modal, or vim state.
   if (key.type === "ctrl-c") return { type: "quit" };
@@ -512,7 +513,7 @@ export function handleFocusedKey(
   if (state.panelFocus === "sidebar" && state.sidebar.open) {
     return handleSidebarFocused(key, state);
   } else {
-    return handleChatFocused(key, state);
+    return handleChatFocused(key, state, pathCompletionProvider);
   }
 }
 
@@ -537,8 +538,12 @@ function handleSidebarFocused(key: KeyEvent, state: RenderState): KeyResult {
 
 // ── Chat panel (non-vim path) ──────────────────────────────────────
 
-function handleChatFocused(key: KeyEvent, state: RenderState): KeyResult {
-  const result = handleChatKey(key, state);
+function handleChatFocused(
+  key: KeyEvent,
+  state: RenderState,
+  pathCompletionProvider?: PathCompletionProvider,
+): KeyResult {
+  const result = handleChatKey(key, state, pathCompletionProvider);
 
   switch (result.type) {
     case "submit":

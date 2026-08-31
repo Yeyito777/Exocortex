@@ -19,6 +19,36 @@ export interface PingCommand {
   reqId?: string;
 }
 
+/**
+ * Read one filesystem directory for prompt-line path completion.
+ *
+ * `directory` remains in the spelling used by the prompt (for example `~/src/`
+ * or `../`) so the client can cache and reuse the result without learning the
+ * daemon host's absolute home/cwd paths.
+ */
+export interface ListPathDirectoryCommand {
+  type: "list_path_directory";
+  reqId: string;
+  directory: string;
+  /** Entry-name prefix already typed after the final slash. */
+  prefix: string;
+}
+
+export interface PathDirectoryEntry {
+  name: string;
+  type: "dir" | "file";
+}
+
+export interface PathDirectoryListing {
+  /** Prompt-spelled directory token corresponding to these entries. */
+  directory: string;
+  /** Every returned entry starts with this prefix. */
+  prefix: string;
+  entries: PathDirectoryEntry[];
+  /** True when an unusually large directory was bounded for IPC safety. */
+  truncated?: boolean;
+}
+
 export type DaemonShutdownMode = "stop" | "restart";
 
 /** Service wrapper handshake before it sends the daemon its shutdown signal. */
@@ -886,6 +916,7 @@ export interface LogoutCommand {
 
 export type Command =
   | PingCommand
+  | ListPathDirectoryCommand
   | ClientCapabilitiesCommand
   | PrepareShutdownCommand
   | RestartDaemonCommand
@@ -969,6 +1000,16 @@ export type Command =
 export interface PongEvent {
   type: "pong";
   reqId?: string;
+}
+
+/**
+ * A requested directory plus bounded one-level lookahead for likely matching
+ * child directories. Each listing is independently cacheable by the TUI.
+ */
+export interface PathDirectoryEntriesEvent {
+  type: "path_directory_entries";
+  reqId: string;
+  listings: PathDirectoryListing[];
 }
 
 /** Sent before a graceful daemon shutdown so clients can classify the disconnect. */
@@ -1760,6 +1801,7 @@ export interface ErrorEvent {
 
 export type Event =
   | PongEvent
+  | PathDirectoryEntriesEvent
   | DaemonShutdownEvent
   | AckEvent
   | ConversationCreatedEvent

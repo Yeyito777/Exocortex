@@ -11,6 +11,7 @@ import type { RenderState } from "./state";
 import { focusPrompt } from "./state";
 import { resolveAction } from "./keybinds";
 import { handlePromptKey, type PromptKeyResult } from "./promptline";
+import type { PathCompletionProvider } from "./autocomplete";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -21,9 +22,13 @@ export type ChatKeyResult = PromptKeyResult;
 
 // ── Key routing ─────────────────────────────────────────────────────
 
-export function handleChatKey(key: KeyEvent, state: RenderState): ChatKeyResult {
+export function handleChatKey(
+  key: KeyEvent,
+  state: RenderState,
+  pathCompletionProvider?: PathCompletionProvider,
+): ChatKeyResult {
   if (state.chatFocus === "prompt") {
-    return handlePromptFocused(key, state);
+    return handlePromptFocused(key, state, pathCompletionProvider);
   } else {
     return handleHistoryFocused(key, state);
   }
@@ -31,11 +36,15 @@ export function handleChatKey(key: KeyEvent, state: RenderState): ChatKeyResult 
 
 // ── Prompt focus ────────────────────────────────────────────────────
 
-function handlePromptFocused(key: KeyEvent, state: RenderState): ChatKeyResult {
+function handlePromptFocused(
+  key: KeyEvent,
+  state: RenderState,
+  pathCompletionProvider?: PathCompletionProvider,
+): ChatKeyResult {
   const action = resolveAction(key);
 
   // Delegate to promptline — returns a typed result directly
-  const result = handlePromptKey(state, key);
+  const result = handlePromptKey(state, key, pathCompletionProvider);
   if (result.type !== "unhandled") return result;
 
   // Unhandled by promptline (up/down on first/last line) → scroll

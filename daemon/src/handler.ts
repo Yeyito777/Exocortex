@@ -76,6 +76,7 @@ import {
 import { BtwSessionManager } from "./btw";
 import { enqueueExternalNotificationSoftWake } from "./external-notification-soft-wakes";
 import { RealtimeCallManager } from "./call/manager";
+import { listPathDirectoryWithLookahead } from "./path-completion";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
@@ -1188,6 +1189,16 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           if (changed) broadcastToolsAvailable();
         }).catch((err) => {
           log("warn", `handler: provider refresh failed: ${err instanceof Error ? err.message : err}`);
+        });
+        break;
+      }
+
+      case "list_path_directory": {
+        const listings = await listPathDirectoryWithLookahead(cmd.directory, cmd.prefix);
+        server.sendTo(client, {
+          type: "path_directory_entries",
+          reqId: cmd.reqId,
+          listings,
         });
         break;
       }

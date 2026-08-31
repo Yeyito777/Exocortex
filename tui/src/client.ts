@@ -436,6 +436,18 @@ export class DaemonClient {
     this.send({ type: "ping" });
   }
 
+  /**
+   * Ephemeral filesystem lookup for prompt completion. Unlike user mutations,
+   * this must never be queued across a route switch: a request intended for an
+   * SSH daemon must not be replayed later against the local host.
+   */
+  requestPathDirectory(directory: string, prefix: string): string | null {
+    if (!this.socket || !this._connected) return null;
+    const reqId = `path_${++this.nextReqId}_${Date.now()}`;
+    this.writeCommand({ type: "list_path_directory", reqId, directory, prefix });
+    return reqId;
+  }
+
   ssh(action: "connect" | "status" | "cancel", alias?: string): void {
     switch (action) {
       case "status":
