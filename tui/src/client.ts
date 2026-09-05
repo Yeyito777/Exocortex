@@ -15,6 +15,7 @@ import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-pro
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import { log } from "./log";
 import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
+import { HistoryCache } from "./history-cache";
 import {
   DEFAULT_SSH_PROBE_TIMEOUT_MS,
   appendSshStderr,
@@ -80,6 +81,7 @@ export class DaemonClient {
   private socket: ClientTransport | null = null;
   private activeSshConnection: ActiveSshConnection | null = null;
   private buffer = "";
+  private readonly historyCache = new HistoryCache();
   private handler: EventHandler;
   private _connected = false;
   private socketPath: string;
@@ -134,6 +136,7 @@ export class DaemonClient {
   get remoteAlias(): string | null { return this.sshAlias; }
 
   async connect(): Promise<ConnectResult> {
+    this.historyCache.resetPending();
     this.intentionalDisconnect = false;
     this.announcedShutdownMode = null;
     this.buffer = "";
@@ -569,6 +572,7 @@ export class DaemonClient {
     this.cancelSshProbe = null;
     this.sshSwitchingTo = null;
     this.sshAlias = alias;
+    this.historyCache.clear();
     log("info", `ssh transport: selected remote daemon via ${alias}`);
     this.handler(this.connectedRouteStatus(true));
     this.closeCurrentTransportForRouteSwitch();
@@ -592,6 +596,7 @@ export class DaemonClient {
 
     const previous = this.sshAlias;
     this.sshAlias = null;
+    this.historyCache.clear();
     this.discardPendingSshConnection();
     log("info", `ssh transport: cancelled remote route ${previous}; using local daemon`);
     this.handler({
@@ -959,7 +964,10 @@ export class DaemonClient {
   }
 
   private writeCommand(command: Command): void {
-    this.socket?.write(JSON.stringify(command) + "\n");
+    const outgoing = this.sshAlias && (command.type === "load_conversation" || command.type === "load_conversation_history")
+      ? this.historyCache.prepare(command)
+      : command;
+    this.socket?.write(JSON.stringify(outgoing) + "\n");
   }
 
   private flushPendingCommands(): Command[] {
@@ -1030,7 +1038,9 @@ export class DaemonClient {
       if (!line) continue;
       try {
         const parseStartedAt = this.performanceProfilingEnabled ? performance.now() : 0;
-        const event = JSON.parse(line) as Event;
+        const parsed = JSON.parse(line) as Event;
+        const event = this.historyCache.receive(parsed, command => this.writeCommand(command));
+        if (!event) continue;
         if (event.type === "daemon_shutdown") {
           // This is transport metadata rather than a user-facing event. Retain it
           // until close so the reconnecting TUI can distinguish a planned daemon

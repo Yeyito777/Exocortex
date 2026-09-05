@@ -2152,6 +2152,59 @@ describe("handler load_conversation late-join streaming snapshots", () => {
   });
   afterEach(cleanupIds);
 
+  test("conditionally reuses opening and backfill entries while serving canonical changes", async () => {
+    const { historyEntryHash } = await import("@exocortex/shared/history-delta");
+    const convId = mkId("cached-history");
+    create(convId, "openai", "gpt-5.4");
+    for (let turn = 0; turn < 7; turn++) {
+      appendMessages(convId, [
+        { role: "user", content: `user ${turn} `.repeat(200), metadata: null },
+        { role: "assistant", content: `assistant ${turn} `.repeat(200), metadata: null },
+      ]);
+    }
+    const sent: Array<any> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: unknown) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const client = { capabilities: new Set<string>() };
+    const load = async (command: Parameters<typeof handle>[1]) => {
+      sent.length = 0;
+      await handle(client as never, command);
+      return sent[0];
+    };
+    const open = { type: "load_conversation" as const, convId, turns: 5 };
+    const first = await load(open);
+    const hashes = first.entries.map((entry: unknown) => historyEntryHash(JSON.stringify(entry)));
+    const warm = await load({ ...open, cachedEntryHashes: hashes });
+    expect(warm.entries).toEqual([]);
+    expect(warm.entryOrder).toHaveLength(first.entries.length);
+    expect(warm.historyStartIndex).toBe(first.historyStartIndex);
+    expect(server.subscribe).toHaveBeenCalledWith(client, convId);
+
+    const history = { type: "load_conversation_history" as const, convId, turns: 10,
+      beforeEntryIndex: first.historyStartIndex, requestSource: "initial-backfill" as const };
+    const backfill = await load(history);
+    const warmBackfill = await load({ ...history,
+      cachedEntryHashes: backfill.entries.map((entry: unknown) => historyEntryHash(JSON.stringify(entry))) });
+    expect(warmBackfill.entries).toEqual([]);
+    expect(warmBackfill.entryOrder).toHaveLength(backfill.entries.length);
+    expect(warmBackfill.historyEndIndex).toBe(backfill.historyEndIndex);
+
+    appendMessages(convId, [{ role: "user", content: "new turn ".repeat(200), metadata: null }]);
+    const changed = await load({ ...open, cachedEntryHashes: hashes });
+    expect(changed.entries).toHaveLength(1);
+    const reconstructed = changed.entryOrder.map((index: number) => index < 0
+      ? first.entries[-index - 1] : changed.entries[index]);
+    const canonical = await load(open);
+    expect(reconstructed).toEqual(canonical.entries);
+    expect(changed.historyTotalEntries).toBe(canonical.historyTotalEntries);
+    expect(canonical.entryOrder).toBeUndefined();
+  });
+
   test("opens with five turns and serves older turns before the returned cursor", async () => {
     const convId = mkId("paged-history");
     create(convId, "openai", "gpt-5.4");
