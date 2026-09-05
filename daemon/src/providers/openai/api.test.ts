@@ -97,6 +97,32 @@ afterEach(() => {
 });
 
 describe("OpenAI replay input", () => {
+  test("sends an unchanged Sol checkpoint to Astra on the same account, but rejects another account", async () => {
+    const accountScope = accountScopeForKey("checkpoint-account")!;
+    const messages: ApiMessage[] = [{role: "assistant", content: [], providerData: {openai: {
+      replayScope: {model: "gpt-5.6-sol", accountScope},
+      compactionItems: [{encryptedContent: "original-opaque-checkpoint"}],
+    }}}, {role: "user", content: "continue"}];
+    const before = structuredClone(messages);
+    const calls = mockOpenAIWebSocket([{events: [
+      {type: "response.created", response: {id: "portable-response"}},
+      {type: "response.completed", response: {id: "portable-response", output: []}},
+    ]}]);
+    const callbacks = {onText: () => {}, onThinking: () => {}};
+    await streamMessageWithSession(
+      {accessToken: "token", accountId: "acct", accountKey: "checkpoint-account"},
+      messages, "gpt-6-astra", callbacks, {accountScope},
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sent.join("\n")).toContain("original-opaque-checkpoint");
+    expect(messages).toEqual(before);
+    await expect(streamMessageWithSession(
+      {accessToken: "other-token", accountId: "other", accountKey: "other-account"},
+      messages, "gpt-6-astra", callbacks, {accountScope},
+    )).rejects.toThrow(/different account/i);
+    expect(calls).toHaveLength(1);
+  });
+
   test("refuses encrypted replay when the verified request account or model scope changed", async () => {
     const accountA = accountScopeForKey("stable-account-a")!;
     const accountB = accountScopeForKey("stable-account-b")!;
@@ -118,7 +144,7 @@ describe("OpenAI replay input", () => {
       "gpt-5.6-sol",
       callbacks,
       { accountScope: accountB },
-    )).rejects.toThrow(/different model or account scope/i);
+    )).rejects.toThrow(/different account/i);
 
     await expect(streamMessageWithSession(
       { accessToken: "token-b", accountId: "acct-b", accountKey: "stable-account-b" },

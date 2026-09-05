@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   AUTO_COMPACTION_FRACTION,
+  assertBoundedContextReplay,
   buildConversationApiContext,
   compactContextMessages,
   estimateContextTokens,
@@ -18,6 +19,7 @@ import {
   type StoredMessage,
 } from "./messages";
 import type { streamMessage } from "./api";
+import { NonRetryableProviderError } from "./providers/errors";
 
 function history(): StoredMessage[] {
   return [
@@ -291,11 +293,12 @@ describe("automatic context compaction state", () => {
     expect(isValidActiveContext(native, messages)).toBe(false);
   });
 
-  test("native checkpoints require the same OpenAI model and account; plaintext is portable only without scoped replay", () => {
+  test("native checkpoints are model-portable within one OpenAI account; plaintext crosses providers only without scoped replay", () => {
     const active = activeContext(history());
     expect(isActiveContextCompatible(active, "openai", "gpt-5.6-sol", "account-a")).toBe(true);
     expect(isActiveContextCompatible(active, "openai", "gpt-5.6-sol", "account-b")).toBe(false);
-    expect(isActiveContextCompatible(active, "openai", "gpt-5.5", "account-a")).toBe(false);
+    expect(isActiveContextCompatible(active, "openai", "gpt-5.5", "account-a")).toBe(true);
+    expect(isActiveContextCompatible(active, "openai", "gpt-6-astra", "account-a")).toBe(true);
     expect(isActiveContextCompatible(active, "deepseek", "deepseek-v4-pro")).toBe(false);
 
     active.kind = "plaintext";
@@ -411,7 +414,7 @@ describe("automatic context compaction state", () => {
     ]);
   });
 
-  test("falls back to the retained full transcript when a native checkpoint is incompatible", () => {
+  test("hard fails without discarding the checkpoint when its provider is incompatible", () => {
     const conv = createConversation("switch-provider", "openai", "gpt-5.6-sol");
     conv.messages = history();
     conv.messages[2].content = [{ type: "thinking", thinking: "visible old reasoning", signature: "sig" }];
@@ -424,14 +427,65 @@ describe("automatic context compaction state", () => {
     conv.provider = "deepseek";
     conv.model = "deepseek-v4-pro";
 
-    const replay = buildConversationApiContext(conv);
-    expect(replay.usedActiveContext).toBe(false);
-    expect(replay.messages.map((message) => message.content)).toEqual([
-      "old question",
-      [{ type: "text", text: "[Prior assistant reasoning summary]\nvisible old reasoning" }],
-      "new question",
-    ]);
-    expect(replay.messages.every((message) => message.providerData === undefined)).toBe(true);
+    const before = structuredClone(conv);
+    expect(() => buildConversationApiContext(conv)).toThrow(/Refusing to rebuild or compact the full conversation archive/);
+    expect(conv).toEqual(before);
+  });
+
+  test("reuses native checkpoints across models, retaining the tail and sanitizing old reasoning", () => {
+    for (const stamped of [false, true]) {
+      const conv = createConversation("portable-native", "openai", "gpt-6-astra");
+      conv.messages = history();
+      conv.activeContext = activeContext(conv.messages);
+      if (stamped) conv.activeContext.messages[1].providerData!.openai.replayScope = {
+        model: "gpt-5.6-sol", accountScope: "account-a",
+      };
+      conv.messages.push({role: "assistant", content: [], metadata: null, providerData: {openai: {
+        replayScope: {model: "gpt-5.6-sol", accountScope: "account-a"},
+        reasoningItems: [{id: "old", encryptedContent: "old-reasoning", summaries: ["safe summary"]}],
+      }}});
+      const before = structuredClone(conv);
+      const replay = buildConversationApiContext(conv, "account-a");
+      expect(replay.usedActiveContext).toBe(true);
+      expect(replay.messages[1].providerData?.openai.compactionItems?.[0]?.encryptedContent).toBe("opaque");
+      expect(replay.tailMessages[0].content).toBe("new question");
+      expect(replay.tailMessages[1].providerData).toBeUndefined();
+      expect(conv).toEqual(before);
+      expect(() => buildConversationApiContext(conv, "account-b")).toThrow(/incompatible/);
+      expect(() => buildConversationApiContext(conv)).toThrow(/incompatible/);
+    }
+  });
+
+  test("invalid checkpoint hard fails repeatedly without archive reconstruction", () => {
+    const conv = createConversation("invalid-native", "openai", "gpt-6-astra");
+    conv.messages = history();
+    conv.activeContext = activeContext(conv.messages);
+    conv.activeContext.transcriptPrefixHash = "invalid";
+    const before = structuredClone(conv);
+    for (let i = 0; i < 2; i++) expect(() => buildConversationApiContext(conv, "account-a")).toThrow(/invalid/);
+    expect(conv).toEqual(before);
+  });
+
+  test("oversized input fails before any compaction provider request or fallback", async () => {
+    let requests = 0;
+    const streamMessageFn = (async () => { requests++; throw new Error("must not submit"); }) as typeof streamMessage;
+    await expect(compactContextMessages([{role: "user", content: "x".repeat(100_000)}], {
+      provider: "openai", model: "gpt-6-astra", contextLimit: 10_000, streamMessageFn,
+    })).rejects.toThrow(/Refusing oversized/);
+    expect(requests).toBe(0);
+    expect(() => assertBoundedContextReplay(12_474_934, 272_000)).toThrow(/Refusing oversized/);
+    expect(() => assertBoundedContextReplay(Infinity, 272_000)).toThrow(/Refusing oversized/);
+    expect(() => assertBoundedContextReplay(1_000_000, null)).toThrow(/Refusing oversized/);
+    expect(() => assertBoundedContextReplay(280_000, 272_000)).not.toThrow();
+  });
+
+  test("a rejected checkpoint hard fails without a plaintext fallback request", async () => {
+    let requests = 0;
+    const streamMessageFn = (async () => { requests++; throw new NonRetryableProviderError("invalid encrypted checkpoint"); }) as typeof streamMessage;
+    await expect(compactContextMessages(activeContext(history()).messages, {
+      provider: "openai", model: "gpt-6-astra", contextLimit: 272_000, streamMessageFn,
+    })).rejects.toThrow(/invalid encrypted checkpoint/);
+    expect(requests).toBe(1);
   });
 
   test("uses the Codex-style ninety percent automatic threshold", () => {
@@ -719,7 +773,7 @@ describe("automatic context compaction state", () => {
     })).rejects.toThrow("Plaintext compaction did not complete");
   });
 
-  test("hierarchically summarizes every oversized plaintext segment without dropping the prefix", async () => {
+  test("hierarchically summarizes a bounded tool-round overshoot without dropping the prefix", async () => {
     let calls = 0;
     const fakeStream: typeof streamMessage = async (_provider, requestMessages) => {
       calls += 1;
@@ -738,9 +792,9 @@ describe("automatic context compaction state", () => {
     };
 
     const result = await compactContextMessages([
-      { role: "user", content: `EARLY_REQUIRED_MARKER\n${"a".repeat(70_000)}` },
-      { role: "assistant", content: `middle\n${"b".repeat(70_000)}` },
-      { role: "user", content: `LATE_REQUIRED_MARKER\n${"c".repeat(70_000)}` },
+      { role: "user", content: `EARLY_REQUIRED_MARKER\n${"a".repeat(20_000)}` },
+      { role: "assistant", content: `middle\n${"b".repeat(20_000)}` },
+      { role: "user", content: `LATE_REQUIRED_MARKER\n${"c".repeat(20_000)}` },
     ], {
       provider: "deepseek",
       model: "deepseek-v4-pro",
@@ -772,7 +826,7 @@ describe("automatic context compaction state", () => {
 
     const result = await compactContextMessages([{
       role: "user",
-      content: `DENSE_EARLY${"界".repeat(80_000)}DENSE_LATE`,
+      content: `DENSE_EARLY${"界".repeat(76_000)}DENSE_LATE`,
     }], {
       provider: "deepseek",
       model: "deepseek-v4-pro",

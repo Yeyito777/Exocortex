@@ -164,9 +164,13 @@ function assertReplayScopeForSession(
     const hasEncryptedReplay = (openai?.compactionItems?.length ?? 0) > 0
       || (openai?.reasoningItems?.length ?? 0) > 0;
     if (!hasEncryptedReplay || !openai?.replayScope) continue;
-    if (openai.replayScope.model !== model || openai.replayScope.accountScope !== actualAccountScope) {
+    const portableCheckpoint = (openai.compactionItems?.length ?? 0) > 0
+      && (openai.reasoningItems?.length ?? 0) === 0
+      && actualAccountScope != null;
+    if ((!portableCheckpoint && openai.replayScope.model !== model)
+        || openai.replayScope.accountScope !== actualAccountScope) {
       throw new NonRetryableProviderError(
-        "Refusing to replay OpenAI encrypted state under a different model or account scope.",
+        "Refusing to replay OpenAI encrypted state under a different account, or model-scoped reasoning under a different model.",
       );
     }
   }

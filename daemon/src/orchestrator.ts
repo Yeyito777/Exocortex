@@ -28,6 +28,7 @@ import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredH
 import type { RealtimeCallSpeakerAttribution, StreamingStopReason } from "./protocol";
 import { buildRealtimeDelegationMessage } from "./realtime-delegation";
 import {
+  assertBoundedContextReplay,
   buildConversationApiContext,
   compactContextMessages,
   estimateContextTokens,
@@ -780,28 +781,26 @@ async function orchestrateAssistantTurn(
 
   // The visible transcript remains append-only. Provider replay may start from
   // a compact checkpoint and append only the transcript tail written since it.
-  if (conv.activeContext && !isValidActiveContextCached(conv.activeContext, conv.messages)) {
-    let quarantinePath: string;
-    try {
-      quarantinePath = quarantineActiveContext(
+  const accountScope = conv.provider === "openai" ? getCurrentOpenAIAccountScope() ?? undefined : undefined;
+  let apiMessages: ApiMessage[] = [];
+  let contextPreparationError: unknown;
+  try {
+    if (conv.activeContext && !isValidActiveContextCached(conv.activeContext, conv.messages)) {
+      const quarantinePath = quarantineActiveContext(
         convId,
         conv.activeContext,
         "Active context failed integrity validation before provider replay",
       );
-    } catch (error) {
-      throw new Error(
-        `Active context failed validation and could not be safely quarantined: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      log("warn", `orchestrator: copied invalid active context for ${convId} to ${quarantinePath}; refusing archive replay`);
+      // Preserve the checkpoint in place as well: clearing it would make the
+      // next /replay silently submit the full archive again.
     }
-    log("warn", `orchestrator: quarantined invalid active context for ${convId} at ${quarantinePath}; replaying the complete transcript`);
-    conv.activeContext = null;
-    conv.lastContextTokens = null;
-    convStore.markDirty(convId);
-    convStore.flush(convId);
+    apiMessages = buildConversationApiContext(conv, accountScope).messages;
+  } catch (error) {
+    // Surface preparation failures through the normal turn error/finally path
+    // below, so streaming state, subscriptions and the abort controller settle.
+    contextPreparationError = error;
   }
-  const accountScope = conv.provider === "openai" ? getCurrentOpenAIAccountScope() ?? undefined : undefined;
-  const initialContext = buildConversationApiContext(conv, accountScope);
-  let apiMessages: ApiMessage[] = initialContext.messages;
 
   // Track whether any next-turn messages were injected mid-stream.
   // When true, the success path sends history_updated so the TUI
@@ -1395,6 +1394,7 @@ async function orchestrateAssistantTurn(
   startStreamingSnapshotHeartbeat();
 
   try {
+    if (contextPreparationError) throw contextPreparationError;
     const requestOverheadTokens = Math.ceil((systemPrompt.length + JSON.stringify(toolDefs).length) / 4);
     const estimatedMessages = estimateContextTokens(apiMessages, conv.provider);
     let projectedTokens = estimatedMessages + requestOverheadTokens;
@@ -1416,26 +1416,10 @@ async function orchestrateAssistantTurn(
       }
     }
 
-    const incompatibleCheckpoint = conv.activeContext != null
-      && !isActiveContextCompatible(conv.activeContext, conv.provider, conv.model, accountScope);
+    assertBoundedContextReplay(projectedTokens, contextLimit);
     if (manualCompaction) {
       apiMessages = await performContextCompaction(apiMessages, "manual", projectedTokens);
       syncActiveContext(apiMessages);
-      convStore.markDirty(convId);
-      convStore.flush(convId);
-    } else if (incompatibleCheckpoint) {
-      // Never leak an opaque OpenAI checkpoint into another provider. The
-      // context builder returned sanitized transcript history. Preserve that
-      // exact transcript when it fits; summarize with the destination provider
-      // only when its own window actually requires a checkpoint.
-      if (shouldAutoCompact(projectedTokens, contextLimit)) {
-        apiMessages = await performContextCompaction(apiMessages, "provider_switch", projectedTokens);
-        syncActiveContext(apiMessages);
-      } else {
-        liveConv.activeContext = null;
-        liveConv.lastContextTokens = null;
-        log("info", `orchestrator: discarded incompatible checkpoint for ${convId}; sanitized transcript fits destination context (${projectedTokens}/${contextLimit ?? "unknown"})`);
-      }
       convStore.markDirty(convId);
       convStore.flush(convId);
     } else if (shouldAutoCompact(projectedTokens, contextLimit)) {

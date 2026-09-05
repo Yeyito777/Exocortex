@@ -16,6 +16,8 @@ import {
 } from "./messages";
 import { contextMessageChars } from "./context-token-attribution";
 import type { ProviderTurnSession, ServiceTier, StreamCallbacks, StreamOptions, StreamRequestBudget } from "./providers/types";
+import { isNonRetryableProviderError, isContextWindowProviderError } from "./providers/errors";
+import { getMaxContext } from "./providers/registry";
 
 export const AUTO_COMPACTION_FRACTION = 0.9;
 const OPENAI_RETAINED_USER_TOKENS = 64_000;
@@ -120,12 +122,19 @@ function isMessageProviderDataCompatible(
   model: ModelId,
   accountScope: string | undefined,
   allowLegacyUnscoped: boolean,
+  allowLegacyCompaction = false,
 ): boolean {
   if (!hasProviderScopedReplayDataInMessage(message)) return true;
   if (provider !== "openai") return false;
   const scope = message.providerData?.openai?.replayScope;
-  if (!scope) return allowLegacyUnscoped;
-  return scope.model === model && scope.accountScope === accountScope;
+  const compactionOnly = (message.providerData?.openai?.compactionItems?.length ?? 0) > 0
+    && (message.providerData?.openai?.reasoningItems?.length ?? 0) === 0;
+  if (!scope) return allowLegacyUnscoped || (compactionOnly && allowLegacyCompaction);
+  // Native compaction items are portable across OpenAI models on the same
+  // account (live-verified Sol -> Astra). Ordinary reasoning items still use
+  // their original model scope; do not broaden that separate replay contract.
+  return scope.accountScope === accountScope
+    && (scope.model === model || (compactionOnly && accountScope != null));
 }
 
 function asApiMessage(
@@ -203,16 +212,20 @@ export function isActiveContextCompatible(
     active.model,
     active.accountScope,
   );
-  if (active.kind === "openai_native" && !exactOpenAIScope) return false;
+  const sameOpenAIAccount = provider === "openai" && active.provider === provider
+    && active.accountScope === accountScope
+    && (accountScope != null || active.model === model);
+  if (active.kind === "openai_native" && !sameOpenAIAccount) return false;
   if (!hasProviderScopedReplayData(active.messages)) return true;
   return active.messages.every((message) => isMessageProviderDataCompatible(
     message,
     provider,
     model,
     accountScope,
-    // Older checkpoints predate per-message stamps. Their persisted checkpoint
-    // scope is sufficient proof, but only on an exact OpenAI match.
+    // Older checkpoints predate per-message stamps. Their enclosing scope
+    // proves reasoning only on an exact match, compaction on the same account.
     exactOpenAIScope,
+    sameOpenAIAccount,
   ));
 }
 
@@ -226,7 +239,14 @@ export function buildConversationApiContext(conv: Conversation, accountScope?: s
   const activeValid = active != null && isValidActiveContextCached(active, conv.messages);
   const activeCompatible = active != null && activeValid
     && isActiveContextCompatible(active, conv.provider, conv.model, accountScope);
-  if (!active || !activeValid || !activeCompatible) {
+  if (active && (!activeValid || !activeCompatible)) {
+    throw new Error(
+      `Cannot replay conversation: its saved checkpoint is ${!activeValid ? "invalid" : "incompatible with the selected provider/account or replay scope"}. `
+      + "The checkpoint and transcript have been preserved. Refusing to rebuild or compact the full conversation archive. "
+      + "Restore a valid checkpoint or switch back to its original provider/account/model, then /replay.",
+    );
+  }
+  if (!active) {
     // Provider data is scoped independently on every assistant response. This
     // also protects ordinary, never-compacted transcripts after model/account
     // switches and conservatively sanitizes legacy unscoped encrypted data.
@@ -236,6 +256,7 @@ export function buildConversationApiContext(conv: Conversation, accountScope?: s
         message,
         !isMessageProviderDataCompatible(message, conv.provider, conv.model, accountScope, false),
       ));
+    assertBoundedContextReplay(estimateContextTokens(messages, conv.provider), getMaxContext(conv.provider, conv.model));
     return { messages, usedActiveContext: false, tailMessages: messages };
   }
 
@@ -265,8 +286,10 @@ export function buildConversationApiContext(conv: Conversation, accountScope?: s
       ),
     ));
   }
+  const messages = [...structuredClone(active.messages), ...tailMessages];
+  assertBoundedContextReplay(estimateContextTokens(messages, conv.provider), getMaxContext(conv.provider, conv.model));
   return {
-    messages: [...structuredClone(active.messages), ...tailMessages],
+    messages,
     usedActiveContext: true,
     tailMessages,
   };
@@ -275,6 +298,20 @@ export function buildConversationApiContext(conv: Conversation, accountScope?: s
 export function estimateContextTokens(messages: ApiMessage[], provider: ProviderId): number {
   const chars = messages.reduce((sum, message) => sum + contextMessageChars(message as Conversation["messages"][number], provider), 0);
   return Math.max(0, Math.ceil(chars / 4));
+}
+
+/** A safety ceiling, not the normal compaction threshold. Allow estimator
+ * error / a tool-round overshoot, never an unbounded archive reconstruction.
+ * Unknown-window models get the same bounded fallback as plaintext summaries.
+ */
+export function assertBoundedContextReplay(projectedTokens: number, contextLimit?: number | null): void {
+  const ceiling = 2 * (contextLimit != null && contextLimit > 0 ? contextLimit : 160_000);
+  if (!Number.isFinite(projectedTokens) || projectedTokens > ceiling) {
+    throw new Error(
+      `Refusing oversized context replay/compaction (${projectedTokens} estimated tokens; safety limit ${ceiling}). `
+      + "No archive will be submitted or automatically re-summarized. Restore a bounded checkpoint, then /replay.",
+    );
+  }
 }
 
 export function shouldAutoCompact(projectedTokens: number, contextLimit: number | null | undefined): boolean {
@@ -690,6 +727,11 @@ export async function compactContextMessages(
   messages: ApiMessage[],
   options: ContextCompactionOptions,
 ): Promise<ContextCompactionResult> {
+  assertBoundedContextReplay(
+    estimateContextTokens(messages, options.provider)
+      + Math.ceil(((options.system?.length ?? 0) + JSON.stringify(options.tools ?? []).length) / 4),
+    options.contextLimit,
+  );
   if (options.provider === "openai") {
     const requestBudget: StreamRequestBudget = {
       maxAttempts: NATIVE_REQUEST_MAX_ATTEMPTS,
@@ -702,6 +744,11 @@ export async function compactContextMessages(
         return await nativeOpenAICompaction(messages, options, requestBudget);
       } catch (error) {
         if (options.signal?.aborted) throw error;
+        // A rejected opaque checkpoint cannot be repaired by asking the same
+        // model for a plaintext summary of it. Surface the terminal error; never
+        // discard the checkpoint or fall back to the canonical archive.
+        if (hasOpaqueCompactionItem(messages) && isNonRetryableProviderError(error)
+            && !isContextWindowProviderError(error)) throw error;
         nativeFailure = error;
         if (!(error instanceof InvalidNativeCompactionResponseError)) break;
         if (requestBudget.attempts >= INVALID_NATIVE_RESPONSE_MAX_ATTEMPTS) {

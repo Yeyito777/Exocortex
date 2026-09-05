@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, createConversation, historyPrefixHash, type StoredMessage } from "./messages";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
 import { clonedConversationValue } from "./conversation-clone";
+import { buildConversationApiContext } from "./context-compaction";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -60,6 +61,32 @@ function logicalState(store: SqliteConversationStore, id: string) {
 }
 
 describe("SQLite transaction fault boundaries", () => {
+  test("retains invalid checkpoints across load/save so replay cannot silently rebuild the archive", () => {
+    const { path } = pathFor("invalid-checkpoint");
+    const store = new SqliteConversationStore({path});
+    try {
+      const conv = savedFixture(store, "invalid-checkpoint");
+      conv.activeContext = {
+        version: 1, kind: "openai_native", provider: "openai", model: conv.model,
+        accountScope: "account-a",
+        messages: [{role: "assistant", content: [], providerData: {openai: {
+          compactionItems: [{encryptedContent: "preserve-me"}],
+        }}}],
+        transcriptHistoryCount: 2, transcriptPrefixHash: "invalid-prefix",
+        windowId: `${conv.id}:1`, windowNumber: 1, compactedAt: 1, compactionCount: 1,
+      };
+      store.save(conv);
+      const loaded = store.load(conv.id)!;
+      expect(loaded.activeContext).toEqual(conv.activeContext);
+      expect(() => buildConversationApiContext(loaded, "account-a")).toThrow(/checkpoint is invalid/);
+      loaded.title = "unrelated metadata update";
+      store.save(loaded);
+      const reloaded = store.load(conv.id)!;
+      expect(reloaded.activeContext).toEqual(conv.activeContext);
+      expect(() => buildConversationApiContext(reloaded, "account-a")).toThrow(/checkpoint is invalid/);
+    } finally { store.close(); }
+  });
+
   test("clones normalized rows atomically and rebinds clone-specific state", () => {
     const { path } = pathFor("direct-clone");
     const points: string[] = [];

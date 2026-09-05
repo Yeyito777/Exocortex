@@ -2045,11 +2045,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }
         const nextEffort = normalizeEffort(nextProvider, cmd.model, conv.effort);
         const nextFastMode = supportsFastMode(nextProvider, cmd.model) ? conv.fastMode : false;
-        // Keep the old checkpoint long enough for the orchestrator to detect an
-        // incompatible replay. On the next turn it rebuilds from the canonical
-        // transcript, sanitizes scoped provider data, and only compacts if the
-        // destination window actually needs it. No hidden handler-side model
-        // request exists outside the normal abort/restart lifecycle.
+        // Keep the checkpoint: native OpenAI compaction can cross models on
+        // the same account. An incompatible/invalid checkpoint hard-fails on
+        // the next turn instead of rebuilding the unbounded canonical archive.
+        // Model selection itself never submits a provider request.
         const ok = convStore.setModel(cmd.convId, nextProvider, cmd.model, nextEffort, nextFastMode);
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });

@@ -1135,8 +1135,12 @@ export class SqliteConversationStore implements ConversationRepository {
       const messages = this.loadMessages(id);
       const activeRow = this.db.query<{ payload_json: string }, [string]>("SELECT payload_json FROM active_contexts WHERE conversation_id=?").get(id);
       const persistedActive = activeRow ? JSON.parse(activeRow.payload_json) as NonNullable<Conversation["activeContext"]> : null;
-      const activeContext = persistedActive && isValidActiveContextCached(persistedActive, messages) ? persistedActive : null;
-      if (persistedActive && !activeContext) log("warn", `sqlite: discarded invalid active context for ${id}; full transcript will be replayed`);
+      const activeContext = persistedActive;
+      const invalidActiveContext = persistedActive != null && !isValidActiveContextCached(persistedActive, messages);
+      // Retain invalid checkpoints so replay can fail closed and quarantine
+      // them. Dropping one here silently turned the archive into model input,
+      // and a subsequent save could delete the only surviving checkpoint.
+      if (invalidActiveContext) log("warn", `sqlite: retained invalid active context for ${id}; provider replay will be refused`);
       const conv: Conversation = {
         id: row.id,
         provider: row.provider,
@@ -1147,7 +1151,7 @@ export class SqliteConversationStore implements ConversationRepository {
         ...(activeContext ? { activeContext } : {}),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-        lastContextTokens: persistedActive && !activeContext ? null : row.last_context_tokens,
+        lastContextTokens: invalidActiveContext ? null : row.last_context_tokens,
         marked: row.marked === 1,
         pinned: row.pinned === 1,
         muted: row.muted === 1,
