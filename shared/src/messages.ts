@@ -55,7 +55,7 @@ export const DEFAULT_PROVIDER_ORDER: readonly ProviderId[] = [DEFAULT_PROVIDER_I
 
 /** Preferred default model per provider when the app needs a fallback selection. */
 export const DEFAULT_MODEL_BY_PROVIDER = {
-  openai: "gpt-5.6-sol",
+  openai: "gpt-6-astra",
   deepseek: "deepseek-v4-pro",
   opencode: "ox-alpha",
 } as const satisfies Record<ProviderId, ModelId>;
@@ -67,6 +67,7 @@ export const DEFAULT_EFFORT: EffortLevel = "high";
 
 /** Default effort fallback when the app only knows the provider/model ids. */
 export function defaultEffortForModelId(providerId: ProviderId, model: ModelId): EffortLevel {
+  if (providerId === "openai" && model === "gpt-6-astra") return "low";
   if (providerId === "openai" && model === "gpt-daybreak-blue-latest") return "low";
   if (providerId === "openai" && (/^gpt-5\.6-/.test(model) || /^gpt-5\.5(?:-|$)/.test(model))) return "medium";
   return DEFAULT_EFFORT;
@@ -94,7 +95,9 @@ export function supportsImageInputsForModel(
 export const MAX_CONTEXT: Record<string, number> = {
   "gpt-5": 400_000,
   // These OpenAI models run through the ChatGPT Codex backend. Their public
-  // API context window is larger and should be modeled separately if added.
+  // API and configurable maximum context windows differ and should be modeled
+  // separately if Exocortex adds those modes.
+  "gpt-6-astra": 272_000,
   "gpt-5.6-sol": 372_000,
   "gpt-5.6-terra": 372_000,
   "gpt-5.6-luna": 372_000,

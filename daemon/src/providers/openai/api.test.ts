@@ -269,6 +269,82 @@ describe("OpenAI replay input", () => {
     expect((body.reasoning as { effort?: string }).effort).toBe("max");
   });
 
+  test("builds the Codex Responses Lite contract for GPT-6 Astra", () => {
+    const body = buildRequestBodyForTest([
+      { role: "user", content: "solve this" },
+    ], "gpt-6-astra", 1234, {
+      system: "Work through the task completely.",
+      effort: "ultra",
+      serviceTier: "fast",
+      tools: [{
+        name: "inspect",
+        description: "Inspect a target",
+        input_schema: {
+          type: "object",
+          properties: { target: { type: "string" } },
+          required: ["target"],
+        },
+      }],
+    });
+
+    expect(body.instructions).toBeUndefined();
+    expect(body.tools).toBeUndefined();
+    expect(body.parallel_tool_calls).toBe(false);
+    expect(body.service_tier).toBe("priority");
+    expect(body.text).toEqual({ verbosity: "low" });
+    expect(body.reasoning).toMatchObject({
+      effort: "xhigh",
+      summary: "detailed",
+      context: "all_turns",
+    });
+    expect(body.client_metadata).toMatchObject({
+      ws_request_header_x_openai_internal_codex_responses_lite: "true",
+    });
+    expect(body.input).toEqual([
+      {
+        type: "additional_tools",
+        role: "developer",
+        tools: [{
+          type: "namespace",
+          name: "functions",
+          description: "",
+          tools: [{
+            type: "function",
+            name: "inspect",
+            description: "Inspect a target",
+            parameters: {
+              type: "object",
+              properties: { target: { type: "string" } },
+              required: ["target"],
+            },
+            strict: false,
+          }],
+        }],
+      },
+      {
+        type: "message",
+        role: "developer",
+        content: [{
+          type: "input_text",
+          text: "Work through the task completely.\n\n<multi_agent_mode>Proactive multi-agent delegation is active.</multi_agent_mode>",
+        }],
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "solve this" }],
+      },
+    ]);
+  });
+
+  test("sends GPT-6 Astra max effort without translating it", () => {
+    const body = buildRequestBodyForTest([
+      { role: "user", content: "hello" },
+    ], "gpt-6-astra", 1234, { effort: "max" });
+
+    expect((body.reasoning as { effort?: string }).effort).toBe("max");
+  });
+
   test("Ultra enables proactive delegation for Sol and Terra but not Luna", () => {
     for (const model of ["gpt-5.6-sol", "gpt-5.6-terra"]) {
       const body = buildRequestBodyForTest([

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { selectOpenAIModelsForTest } from "./models";
 
 describe("OpenAI model selection", () => {
-  test("adds the GPT-5.6 fallbacks while keeping the currently listed older family", () => {
+  test("adds the GPT-6 Astra and GPT-5.6 fallbacks while keeping the currently listed older family", () => {
     const models = selectOpenAIModelsForTest([
       {
         slug: "gpt-5.4",
@@ -45,6 +45,7 @@ describe("OpenAI model selection", () => {
     ]);
 
     expect(models.map((model) => model.id)).toEqual([
+      "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -55,15 +56,24 @@ describe("OpenAI model selection", () => {
       "gpt-5.3-codex-spark",
     ]);
     expect(models[0]).toMatchObject({
+      id: "gpt-6-astra",
+      label: "GPT-6-Astra",
+      maxContext: 272_000,
+      defaultEffort: "low",
+      supportsImages: true,
+      supportsFastMode: true,
+    });
+    expect(models[0]?.supportedEfforts.map((item) => item.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(models[1]).toMatchObject({
       id: "gpt-5.6-sol",
       maxContext: 372_000,
       defaultEffort: "medium",
       supportsImages: true,
     });
-    expect(models[0]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
     expect(models[1]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
-    expect(models[2]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
-    expect(models[3]).toMatchObject({
+    expect(models[2]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(models[3]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+    expect(models[4]).toMatchObject({
       id: "gpt-daybreak-blue-latest",
       label: "Daybreak Blue",
       maxContext: 272_000,
@@ -71,9 +81,9 @@ describe("OpenAI model selection", () => {
       supportsImages: true,
       supportsFastMode: false,
     });
-    expect(models[3]?.supportedEfforts.map((item) => item.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
-    expect(models[7]?.maxContext).toBe(128_000);
-    expect(models[7]?.supportsImages).toBe(false);
+    expect(models[4]?.supportedEfforts.map((item) => item.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(models[8]?.maxContext).toBe(128_000);
+    expect(models[8]?.supportsImages).toBe(false);
   });
 
   test("does not re-add gpt-5.3-codex-spark when the Codex endpoint explicitly hides it", () => {
@@ -88,6 +98,7 @@ describe("OpenAI model selection", () => {
     ]);
 
     expect(models.map((model) => model.id)).toEqual([
+      "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -96,6 +107,65 @@ describe("OpenAI model selection", () => {
       "gpt-5.4",
       "gpt-5.4-mini",
     ]);
+  });
+
+  test("keeps the Codex GPT-6 Astra metadata and prefers it over older families", () => {
+    const models = selectOpenAIModelsForTest([
+      {
+        slug: "gpt-6-astra",
+        display_name: "GPT-6-Astra",
+        supported_in_api: true,
+        visibility: "list",
+        priority: 1,
+        context_window: 272_000,
+        default_reasoning_level: "low",
+        supported_reasoning_levels: [
+          { effort: "low", description: "Fast responses with lighter reasoning" },
+          { effort: "medium", description: "Balanced" },
+          { effort: "high", description: "Deep" },
+          { effort: "xhigh", description: "Extra deep" },
+          { effort: "max", description: "Hardest problems" },
+          { effort: "ultra", description: "Automatic delegation" },
+        ],
+      },
+      {
+        slug: "gpt-5.6-sol",
+        display_name: "GPT-5.6-Sol",
+        supported_in_api: true,
+        visibility: "list",
+        priority: 6,
+      },
+    ]);
+
+    expect(models[0]).toEqual({
+      id: "gpt-6-astra",
+      label: "GPT-6-Astra",
+      maxContext: 272_000,
+      supportedEfforts: [
+        { effort: "low", description: "Fast responses with lighter reasoning" },
+        { effort: "medium", description: "Balanced" },
+        { effort: "high", description: "Deep" },
+        { effort: "xhigh", description: "Extra deep" },
+        { effort: "max", description: "Hardest problems" },
+        { effort: "ultra", description: "Automatic delegation" },
+      ],
+      defaultEffort: "low",
+      supportsImages: true,
+      supportsFastMode: true,
+    });
+    expect(models.some((model) => model.id === "gpt-5.6-sol")).toBe(true);
+  });
+
+  test("does not re-add GPT-6 Astra when the Codex endpoint explicitly hides it", () => {
+    const models = selectOpenAIModelsForTest([{
+      slug: "gpt-6-astra",
+      display_name: "GPT-6-Astra",
+      supported_in_api: true,
+      visibility: "hide",
+      priority: 1,
+    }]);
+
+    expect(models.some((model) => model.id === "gpt-6-astra")).toBe(false);
   });
 
   test("exposes hidden Daybreak Blue with its Codex endpoint metadata", () => {
@@ -153,8 +223,15 @@ describe("OpenAI model selection", () => {
     expect(daybreak?.supportedEfforts.map((item) => item.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
   });
 
-  test("does not expose the broad GPT-5.6 alias even when upstream lists it", () => {
+  test("does not expose broad GPT family aliases even when upstream lists them", () => {
     const models = selectOpenAIModelsForTest([
+      {
+        slug: "gpt-6",
+        display_name: "GPT-6",
+        supported_in_api: true,
+        visibility: "list",
+        priority: 0,
+      },
       {
         slug: "gpt-5.6",
         display_name: "GPT-5.6",
@@ -171,8 +248,10 @@ describe("OpenAI model selection", () => {
       },
     ]);
 
+    expect(models.map((model) => model.id)).not.toContain("gpt-6");
     expect(models.map((model) => model.id)).not.toContain("gpt-5.6");
-    expect(models.map((model) => model.id).slice(0, 3)).toEqual([
+    expect(models.map((model) => model.id).slice(0, 4)).toEqual([
+      "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -232,6 +311,7 @@ describe("OpenAI model selection", () => {
     ]);
 
     expect(models.map((model) => model.id)).toEqual([
+      "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",

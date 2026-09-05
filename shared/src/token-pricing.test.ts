@@ -2,6 +2,32 @@ import { describe, expect, test } from "bun:test";
 import { resolveModelTokenPricing } from "./token-pricing";
 
 describe("model token pricing", () => {
+  test("uses exact published GPT-6 Astra standard, fast, and long-context rates", () => {
+    expect(resolveModelTokenPricing("gpt-6-astra")).toEqual({
+      provider: "openai",
+      basisModel: "gpt-6-astra",
+      serviceTier: "standard",
+      rateClass: "standard",
+      longContext: false,
+      inputUsdPerMillion: 10,
+      cachedInputUsdPerMillion: 1,
+      cacheMissInputUsdPerMillion: 12.5,
+      outputUsdPerMillion: 50,
+    });
+    expect(resolveModelTokenPricing("gpt-6-astra", {
+      serviceTier: "fast",
+      inputTokens: 272_001,
+    })).toMatchObject({
+      serviceTier: "fast",
+      rateClass: "fast-long",
+      longContext: true,
+      inputUsdPerMillion: 40,
+      cachedInputUsdPerMillion: 4,
+      cacheMissInputUsdPerMillion: 50,
+      outputUsdPerMillion: 150,
+    });
+  });
+
   test("uses exact published GPT-5.6 rates, including cache writes", () => {
     expect(resolveModelTokenPricing("gpt-5.6-sol")).toEqual({
       provider: "openai",

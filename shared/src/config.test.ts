@@ -42,11 +42,11 @@ describe("realtime voice config", () => {
 });
 
 describe("conversation defaults config", () => {
-  test("uses GPT-5.6 Sol medium fast-off as the product conversation default", () => {
+  test("uses GPT-6 Astra low fast-off as the product conversation default", () => {
     expect(productConversationDefaults()).toEqual({
       provider: "openai",
-      model: "gpt-5.6-sol",
-      effort: "medium",
+      model: "gpt-6-astra",
+      effort: "low",
       fastMode: false,
     });
     expect(effectiveConversationDefaults({})).toEqual(productConversationDefaults());

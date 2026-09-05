@@ -61,22 +61,23 @@ describe("tui defaults", () => {
     expect(state.hasChosenProvider).toBe(true);
   });
 
-  test("gpt-5.6 Sol has a known context window for default-state UI fallbacks", () => {
-    expect(MAX_CONTEXT[DEFAULT_MODEL_BY_PROVIDER.openai]).toBe(372_000);
+  test("GPT-6 Astra has a known Codex context window for default-state UI fallbacks", () => {
+    expect(MAX_CONTEXT[DEFAULT_MODEL_BY_PROVIDER.openai]).toBe(272_000);
   });
 
-  test("gpt-5.6-style defaults normalize to medium effort", () => {
+  test("GPT-6 Astra defaults normalize to low effort", () => {
     expect(normalizeEffortForModel({
       supportedEfforts: [
         { effort: "low", description: "low" },
         { effort: "medium", description: "medium" },
         { effort: "high", description: "high" },
       ],
-      defaultEffort: "medium",
-    }, null)).toBe("medium");
+      defaultEffort: "low",
+    }, null)).toBe("low");
   });
 
-  test("fallback default effort is medium for gpt-5.6 and gpt-5.5-family OpenAI models", () => {
+  test("fallback default effort follows the OpenAI model tier", () => {
+    expect(defaultEffortForModelId("openai", "gpt-6-astra")).toBe("low");
     expect(defaultEffortForModelId("openai", "gpt-5.6-sol")).toBe("medium");
     expect(defaultEffortForModelId("openai", "gpt-5.6-terra")).toBe("medium");
     expect(defaultEffortForModelId("openai", "gpt-5.6-luna")).toBe("medium");

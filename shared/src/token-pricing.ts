@@ -12,7 +12,7 @@ export interface ModelTokenPricing {
   longContext: boolean;
   inputUsdPerMillion: number | null;
   cachedInputUsdPerMillion: number | null;
-  /** Provider cache-miss/cache-write rate. For GPT-5.6 this is the cache-write premium. */
+  /** Provider cache-miss/cache-write rate. For GPT-6/5.6 this is the cache-write premium. */
   cacheMissInputUsdPerMillion: number | null;
   outputUsdPerMillion: number | null;
 }
@@ -53,7 +53,7 @@ const rates = (
 });
 
 /**
- * Exact API pricing references checked 2026-08-25:
+ * Exact API pricing references checked 2026-09-05:
  * - https://developers.openai.com/api/docs/pricing
  * - https://developers.openai.com/api/docs/guides/prompt-caching
  * - individual OpenAI model pages under /api/docs/models/
@@ -61,10 +61,10 @@ const rates = (
  *
  * This is deliberately an exact-ID catalog. Unknown/dynamically advertised
  * models stay unpriced rather than inheriting a guessed family rate. For
- * GPT-5.6, cache misses are provider-reported cache writes and have their own
- * 1.25x rate. Earlier OpenAI models have no cache-write premium, so their cache
- * miss rate is the ordinary input rate. A null rate records an unpublished
- * category instead of manufacturing one.
+ * GPT-6 Astra and GPT-5.6, cache misses are provider-reported cache writes and
+ * have their own 1.25x rate. Earlier OpenAI models have no cache-write premium,
+ * so their cache miss rate is the ordinary input rate. A null rate records an
+ * unpublished category instead of manufacturing one.
  */
 const STATIC_PRICING = new Map<ModelId, StaticPricingDefinition>();
 
@@ -72,7 +72,18 @@ function register(ids: readonly ModelId[], definition: StaticPricingDefinition):
   for (const id of ids) STATIC_PRICING.set(id, definition);
 }
 
-const GPT_5_6_LONG_CONTEXT_THRESHOLD = 272_000;
+const OPENAI_LONG_CONTEXT_THRESHOLD_TOKENS = 272_000;
+
+const GPT_6_ASTRA: StaticPricingDefinition = {
+  provider: "openai",
+  basisModel: "gpt-6-astra",
+  standard: rates(10, 1, 12.5, 50),
+  standardLong: rates(20, 2, 25, 75),
+  fast: rates(20, 2, 25, 100),
+  fastLong: rates(40, 4, 50, 150),
+  longContextThresholdTokens: OPENAI_LONG_CONTEXT_THRESHOLD_TOKENS,
+};
+register(["gpt-6-astra"], GPT_6_ASTRA);
 
 const GPT_5_6_SOL: StaticPricingDefinition = {
   provider: "openai",
@@ -81,7 +92,7 @@ const GPT_5_6_SOL: StaticPricingDefinition = {
   standardLong: rates(8, 0.8, 10, 30),
   fast: rates(8, 0.8, 10, 40),
   fastLong: rates(16, 1.6, 20, 60),
-  longContextThresholdTokens: GPT_5_6_LONG_CONTEXT_THRESHOLD,
+  longContextThresholdTokens: OPENAI_LONG_CONTEXT_THRESHOLD_TOKENS,
 };
 register(["gpt-5.6-sol", "gpt-5.6"], GPT_5_6_SOL);
 register(["gpt-daybreak-blue-latest"], { ...GPT_5_6_SOL, basisModel: "gpt-5.6-sol" });
@@ -93,7 +104,7 @@ const GPT_5_6_TERRA: StaticPricingDefinition = {
   standardLong: rates(4, 0.4, 5, 18),
   fast: rates(4, 0.4, 5, 24),
   fastLong: rates(8, 0.8, 10, 36),
-  longContextThresholdTokens: GPT_5_6_LONG_CONTEXT_THRESHOLD,
+  longContextThresholdTokens: OPENAI_LONG_CONTEXT_THRESHOLD_TOKENS,
 };
 register(["gpt-5.6-terra"], GPT_5_6_TERRA);
 
@@ -104,7 +115,7 @@ const GPT_5_6_LUNA: StaticPricingDefinition = {
   standardLong: rates(0.4, 0.04, 0.5, 1.8),
   fast: rates(0.4, 0.04, 0.5, 2.4),
   fastLong: rates(0.8, 0.08, 1, 3.6),
-  longContextThresholdTokens: GPT_5_6_LONG_CONTEXT_THRESHOLD,
+  longContextThresholdTokens: OPENAI_LONG_CONTEXT_THRESHOLD_TOKENS,
 };
 register(["gpt-5.6-luna"], GPT_5_6_LUNA);
 

@@ -5,6 +5,7 @@ interface OpenAIModelCapabilityOverride {
   supportsImages?: boolean;
   supportsMaxReasoningEffort?: boolean;
   supportsUltraReasoningEffort?: boolean;
+  ultraReasoningEffortForRequest?: "xhigh" | "max";
   usesResponsesLite?: boolean;
   supportsFastServiceTier?: boolean;
   defaultVerbosity?: "low" | "medium" | "high";
@@ -13,6 +14,13 @@ interface OpenAIModelCapabilityOverride {
 // Model-level wire quirks verified against the Codex Responses endpoint.
 // Keep these here so request building and UI metadata stay in sync.
 const OPENAI_MODEL_CAPABILITY_OVERRIDES = new Map<ModelId, OpenAIModelCapabilityOverride>([
+  ["gpt-6-astra", {
+    supportsMaxReasoningEffort: true,
+    supportsUltraReasoningEffort: true,
+    ultraReasoningEffortForRequest: "xhigh",
+    usesResponsesLite: true,
+    defaultVerbosity: "low",
+  }],
   ["gpt-5.6-sol", {
     supportsUltraReasoningEffort: true,
   }],
@@ -55,6 +63,11 @@ export function usesOpenAIResponsesLite(model: ModelId): boolean {
 
 export function supportsOpenAIUltraReasoningEffort(model: ModelId): boolean {
   return openAIModelCapabilityOverride(model)?.supportsUltraReasoningEffort === true;
+}
+
+export function openAIUltraReasoningEffortForRequest(model: ModelId): "xhigh" | "max" {
+  return openAIModelCapabilityOverride(model)?.ultraReasoningEffortForRequest
+    ?? (supportsOpenAIMaxReasoningEffort(model) ? "max" : "xhigh");
 }
 
 export function supportsOpenAIFastServiceTier(model: ModelId): boolean {

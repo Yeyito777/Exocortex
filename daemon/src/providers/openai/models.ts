@@ -7,6 +7,10 @@ import { OPENAI_CODEX_CLIENT_VERSION, OPENAI_MODELS_URL } from "./constants";
 import { buildOpenAIJsonHeaders } from "./http";
 
 const DEFAULT_OPENAI_CONTEXT_TOKENS = 272_000;
+// Codex advertises a 272K default context window for GPT-6 Astra on the
+// ChatGPT backend (and an 872K configurable maximum that Exocortex does not
+// currently expose as a per-conversation setting).
+const GPT_6_ASTRA_CONTEXT_TOKENS = 272_000;
 // Exocortex uses the ChatGPT Codex backend, where GPT-5.6 has a 372K
 // context window. The public OpenAI API exposes a separate 1.05M window.
 const GPT_5_6_CODEX_CONTEXT_TOKENS = 372_000;
@@ -28,6 +32,12 @@ const GPT_5_6_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
 
 const GPT_5_6_ULTRA_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
   ...GPT_5_6_OPENAI_EFFORTS,
+  { effort: "ultra", description: "Maximum reasoning with automatic task delegation" },
+];
+
+const GPT_6_ASTRA_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
+  ...FALLBACK_OPENAI_EFFORTS,
+  { effort: "max", description: "Maximum reasoning depth for the hardest problems" },
   { effort: "ultra", description: "Maximum reasoning with automatic task delegation" },
 ];
 
@@ -55,6 +65,7 @@ function fallbackOpenAIModel(
 }
 
 export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
+  fallbackOpenAIModel("gpt-6-astra", GPT_6_ASTRA_CONTEXT_TOKENS, GPT_6_ASTRA_OPENAI_EFFORTS, "low"),
   fallbackOpenAIModel("gpt-5.6-sol", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_ULTRA_OPENAI_EFFORTS),
   fallbackOpenAIModel("gpt-5.6-terra", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_ULTRA_OPENAI_EFFORTS),
   fallbackOpenAIModel("gpt-5.6-luna", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
@@ -65,8 +76,9 @@ export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
   fallbackOpenAIModel("gpt-5.3-codex-spark", CODEX_SPARK_CONTEXT_TOKENS),
 ];
 
-const PRIMARY_OPENAI_MODEL_FAMILIES = ["gpt-5.6", "gpt-5.5", "gpt-5.4"] as const;
+const PRIMARY_OPENAI_MODEL_FAMILIES = ["gpt-6", "gpt-5.6", "gpt-5.5", "gpt-5.4"] as const;
 const PREFERRED_OPENAI_MODEL_ORDER = [
+  "gpt-6-astra",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -109,9 +121,9 @@ function isOpenAIModelInFamily(modelSlug: string, family: PrimaryOpenAIModelFami
 }
 
 function isUnsupportedOpenAIModel(modelSlug: string): boolean {
-  // Do not expose the broad GPT-5.6 alias; users should choose a concrete
-  // GPT-5.6 tier explicitly: Sol, Terra, or Luna.
-  return modelSlug === "gpt-5.6";
+  // Codex advertises explicit tier slugs. Do not surface broad family aliases
+  // alongside those concrete choices.
+  return modelSlug === "gpt-6" || modelSlug === "gpt-5.6";
 }
 
 function preferredOpenAIPrimaryFamily(models: OpenAICodexModel[]): PrimaryOpenAIModelFamily {
@@ -131,6 +143,7 @@ function isPreferredOpenAIModel(model: OpenAICodexModel, preferredFamily: Primar
 }
 
 function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel | undefined): EffortLevel {
+  if (modelSlug === "gpt-6-astra") return apiDefaultEffort ?? "low";
   if (modelSlug === "gpt-daybreak-blue-latest") return apiDefaultEffort ?? "low";
   // Product preference: use medium effort for GPT-5.6/5.5-family models, even if
   // upstream model metadata reports a higher default.
@@ -142,6 +155,7 @@ function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel
 }
 
 function fallbackEffortsForModel(modelSlug: string): ReasoningEffortInfo[] {
+  if (modelSlug === "gpt-6-astra") return GPT_6_ASTRA_OPENAI_EFFORTS;
   if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) {
     return supportsOpenAIUltraReasoningEffort(modelSlug)
       ? GPT_5_6_ULTRA_OPENAI_EFFORTS
@@ -165,6 +179,7 @@ function supportedEffortsForModel(modelSlug: string, apiEfforts: ReasoningEffort
 }
 
 function fallbackContextWindow(modelSlug: string): number {
+  if (modelSlug === "gpt-6-astra") return GPT_6_ASTRA_CONTEXT_TOKENS;
   if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) return GPT_5_6_CODEX_CONTEXT_TOKENS;
   if (modelSlug === "gpt-daybreak-blue-latest") return DAYBREAK_BLUE_CONTEXT_TOKENS;
   if (modelSlug === "gpt-5.3-codex-spark") return CODEX_SPARK_CONTEXT_TOKENS;
@@ -265,7 +280,7 @@ export async function fetchOpenAIModels(): Promise<ModelInfo[]> {
   const preferredModels = selectPreferredOpenAIModels(data.models ?? []);
 
   if (preferredModels.length === 0) {
-    log("warn", "openai models: Codex endpoint returned no preferred GPT-5 family models, keeping fallback list");
+    log("warn", "openai models: Codex endpoint returned no preferred GPT family models, keeping fallback list");
     return FALLBACK_OPENAI_MODELS;
   }
 

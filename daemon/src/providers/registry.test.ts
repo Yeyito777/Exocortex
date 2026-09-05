@@ -14,6 +14,7 @@ describe("provider registry defaults", () => {
   });
 
   test("tracks per-model image input support", () => {
+    expect(supportsImageInputs("openai", "gpt-6-astra")).toBe(true);
     expect(supportsImageInputs("openai", "gpt-5.5")).toBe(true);
     expect(supportsImageInputs("openai", "gpt-5.3-codex-spark")).toBe(false);
     expect(supportsImageInputs("deepseek", "deepseek-v4-pro")).toBe(false);

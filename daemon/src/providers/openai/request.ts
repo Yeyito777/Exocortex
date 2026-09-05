@@ -3,6 +3,7 @@ import type { StreamOptions } from "../types";
 import { buildPromptCacheBodyFields } from "./cache";
 import {
   defaultOpenAIVerbosity,
+  openAIUltraReasoningEffortForRequest,
   supportsOpenAIFastServiceTier,
   supportsOpenAIMaxReasoningEffort,
   supportsOpenAIReasoningSummary,
@@ -76,9 +77,10 @@ function mapEffort(effort: EffortLevel | undefined, model: ModelId): string {
     case "low": return "low";
     case "medium": return "medium";
     case "xhigh": return "xhigh";
-    // Codex exposes Ultra as a client-side automatic-delegation mode while the
-    // Responses wire contract receives Max reasoning.
-    case "ultra":
+    // Codex exposes Ultra as a client-side automatic-delegation mode. The
+    // underlying wire effort is model metadata: Astra uses xhigh, while the
+    // GPT-5.6 tiers use max.
+    case "ultra": return openAIUltraReasoningEffortForRequest(model);
     case "max": return supportsOpenAIMaxReasoningEffort(model) ? "max" : "xhigh";
     case "high":
     default:

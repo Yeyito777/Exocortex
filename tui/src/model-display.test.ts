@@ -17,6 +17,10 @@ describe("formatModelDisplayName", () => {
     expect(formatModelDisplayName("ox-alpha")).toBe("Ox Alpha");
   });
 
+  test("formats the GPT-6 Astra model id like the Codex catalog", () => {
+    expect(formatModelDisplayName("gpt-6-astra")).toBe("GPT-6-Astra");
+  });
+
   test("formats the hidden Daybreak Blue model id", () => {
     expect(formatModelDisplayName("gpt-daybreak-blue-latest")).toBe("Daybreak Blue");
   });
