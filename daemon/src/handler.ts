@@ -207,6 +207,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   const inferProviderForModel = (model: string | undefined): import("./messages").ProviderId | undefined => {
     const lowered = model?.trim().toLowerCase();
     if (!lowered) return undefined;
+    if (isKnownModel("openrouter", lowered)) return "openrouter";
     if (lowered === "pro" || lowered === "flash" || lowered.startsWith("deepseek-") || lowered.startsWith("v4-")) return "deepseek";
     if (lowered.startsWith("gpt-") || lowered.startsWith("o1") || lowered.startsWith("o3") || lowered.startsWith("o4")) return "openai";
     if (lowered === "ox" || lowered === "ox-alpha" || lowered === "ox-alpha-free") return "opencode";

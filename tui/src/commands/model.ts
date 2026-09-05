@@ -1,6 +1,6 @@
 import { clearPrompt } from "../promptstate";
-import { getProviderInfo, isStreaming, pushSystemMessage } from "../state";
-import { DEFAULT_EFFORT, type ModelId, type ProviderId } from "../messages";
+import { getModelInfo, getProviderInfo, isStreaming, pushSystemMessage } from "../state";
+import { type ModelId, type ProviderId } from "../messages";
 import {
   applyProviderModelSelection,
   availableProviders,
@@ -54,7 +54,7 @@ export const MODEL_COMMAND: SlashCommand = {
     if (parts.length === 2) {
       const currentModel = provider === state.provider ? state.model : defaultModelForProvider(state, provider) ?? "(unknown)";
       const efforts = effortItems(state, provider, currentModel);
-      pushSystemMessage(state, `Current: ${currentModel}\nAvailable: ${providerModels(state, provider).join(", ") || "(waiting for daemon)"}\nEffort: ${efforts.map((item) => item.name).join(", ") || DEFAULT_EFFORT}${providerAllowsCustomModels(state, provider) ? "\nThis provider also accepts custom model ids." : ""}`);
+      pushSystemMessage(state, `Current: ${currentModel}\nAvailable: ${providerModels(state, provider).join(", ") || "(waiting for daemon)"}\nEffort: ${efforts.map((item) => item.name).join(", ") || "not supported"}${providerAllowsCustomModels(state, provider) ? "\nThis provider also accepts custom model ids." : ""}`);
       clearPrompt(state);
       return { type: "handled" };
     }
@@ -71,6 +71,9 @@ export const MODEL_COMMAND: SlashCommand = {
     const effortSuffix = selection.effortChanged ? ` (effort ${state.effort})` : "";
     const fastSuffix = selection.fastDisabled ? " (fast off)" : "";
     pushSystemMessage(state, `Model set to ${state.provider}/${state.model}${effortSuffix}${fastSuffix}`);
+    if (getModelInfo(state, provider, model)?.supportsTools === false) {
+      pushSystemMessage(state, "This endpoint is chat-only: tools and external actions are unavailable.", "warning");
+    }
 
     if (selection.contextWarning) {
       pushSystemMessage(state, selection.contextWarning, "warning");

@@ -1,6 +1,9 @@
 import { log } from "../../log";
 import type { ApiToolCall, ContentBlock, StreamCallbacks, StreamResult } from "../types";
 
+/** An explicit upstream SSE error is terminal, not a broken transport to replay. */
+export class OpenAICompatibleStreamError extends Error {}
+
 interface ToolCallState {
   id: string;
   name: string;
@@ -113,6 +116,7 @@ function handleChoice(state: ReadState, choice: Record<string, unknown>, cb: Str
   const delta = asRecord(choice.delta);
   if (delta) {
     if (typeof delta.reasoning_content === "string") appendReasoning(state, delta.reasoning_content, cb);
+    else if (typeof delta.reasoning === "string") appendReasoning(state, delta.reasoning, cb);
     if (typeof delta.content === "string") appendText(state, delta.content, cb);
     for (const toolCall of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) handleToolCallDelta(state, toolCall);
   }
@@ -120,6 +124,7 @@ function handleChoice(state: ReadState, choice: Record<string, unknown>, cb: Str
   const message = asRecord(choice.message);
   if (message) {
     if (typeof message.reasoning_content === "string") appendReasoning(state, message.reasoning_content, cb);
+    else if (typeof message.reasoning === "string") appendReasoning(state, message.reasoning, cb);
     if (typeof message.content === "string") appendText(state, message.content, cb);
     for (const toolCall of Array.isArray(message.tool_calls) ? message.tool_calls : []) handleToolCallDelta(state, toolCall);
   }
@@ -131,6 +136,10 @@ function handleChoice(state: ReadState, choice: Record<string, unknown>, cb: Str
 }
 
 function handleStreamEvent(state: ReadState, event: Record<string, unknown>, cb: StreamCallbacks, providerLabel: string): void {
+  if (event.error) {
+    const error = asRecord(event.error);
+    throw new OpenAICompatibleStreamError(`${providerLabel} stream error: ${typeof error?.message === "string" ? error.message : "upstream request failed"}`);
+  }
   handleUsage(state, event.usage);
   if (event.service_tier === "priority" || event.service_tier === "fast") {
     state.billingServiceTier = "fast";

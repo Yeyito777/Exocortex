@@ -12,6 +12,7 @@ function loginDescription(provider: ProviderId): string {
     case "openai": return "Sign in with OpenAI";
     case "deepseek": return "Save a DeepSeek API key";
     case "opencode": return "Check public OpenCode Zen access";
+    case "openrouter": return "Save an OpenRouter API key";
   }
 }
 
@@ -93,15 +94,15 @@ export const LOGIN_COMMAND: SlashCommand = {
     let target: string | undefined;
     let method: OpenAILoginMethod | undefined;
 
-    if (provider === "deepseek") {
+    if (provider === "deepseek" || provider === "openrouter") {
       apiKey = arg;
       if (!apiKey) {
-        pushSystemMessage(state, deepSeekLoginInstruction());
+        pushSystemMessage(state, provider === "deepseek" ? deepSeekLoginInstruction() : "Create a key at https://openrouter.ai/settings/keys, then run /login openrouter <api-key>.");
         clearPrompt(state);
         return { type: "handled" };
       }
       if (extra) {
-        pushSystemMessage(state, "Usage: /login deepseek <api-key>");
+        pushSystemMessage(state, `Usage: /login ${provider} <api-key>`);
         clearPrompt(state);
         return { type: "handled" };
       }

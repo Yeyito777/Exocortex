@@ -11,7 +11,7 @@
 
 // ── Providers / Models ──────────────────────────────────────────────
 
-export type ProviderId = "openai" | "deepseek" | "opencode";
+export type ProviderId = "openai" | "deepseek" | "opencode" | "openrouter";
 
 /** Provider-scoped model identifier. */
 export type ModelId = string;
@@ -34,6 +34,8 @@ export interface ModelInfo {
   defaultEffort: EffortLevel;
   /** Whether the model accepts image inputs. Omitted means "assume yes" for backwards compatibility. */
   supportsImages?: boolean;
+  /** False means chat-only: do not offer executable tools. Omitted preserves legacy support. */
+  supportsTools?: boolean;
   /** Whether the model supports its provider's fast service tier. Omitted means inherit the provider capability. */
   supportsFastMode?: boolean;
 }
@@ -51,13 +53,14 @@ export interface ProviderInfo {
 export const DEFAULT_PROVIDER_ID: ProviderId = "openai";
 
 /** Preferred provider ordering for UI fallbacks and provider registries. */
-export const DEFAULT_PROVIDER_ORDER: readonly ProviderId[] = [DEFAULT_PROVIDER_ID, "deepseek", "opencode"];
+export const DEFAULT_PROVIDER_ORDER: readonly ProviderId[] = [DEFAULT_PROVIDER_ID, "deepseek", "opencode", "openrouter"];
 
 /** Preferred default model per provider when the app needs a fallback selection. */
 export const DEFAULT_MODEL_BY_PROVIDER = {
   openai: "gpt-6-astra",
   deepseek: "deepseek-v4-pro",
   opencode: "ox-alpha",
+  openrouter: "nousresearch/hermes-4-405b",
 } as const satisfies Record<ProviderId, ModelId>;
 
 // ── Effort ─────────────────────────────────────────────────────────
@@ -67,6 +70,7 @@ export const DEFAULT_EFFORT: EffortLevel = "high";
 
 /** Default effort fallback when the app only knows the provider/model ids. */
 export function defaultEffortForModelId(providerId: ProviderId, model: ModelId): EffortLevel {
+  if (providerId === "openrouter") return model.startsWith("nousresearch/hermes-4-") ? "high" : "none";
   if (providerId === "openai" && model === "gpt-6-astra") return "low";
   if (providerId === "openai" && model === "gpt-daybreak-blue-latest") return "low";
   if (providerId === "openai" && (/^gpt-5\.6-/.test(model) || /^gpt-5\.5(?:-|$)/.test(model))) return "medium";

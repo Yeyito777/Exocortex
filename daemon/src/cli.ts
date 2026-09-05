@@ -24,7 +24,7 @@ export async function handleLogin(providerArg?: string, loginArg?: string): Prom
   console.log(`\n  Exocortex — Authentication (${provider})\n`);
 
   const method = provider === "openai" ? parseOpenAILoginMethod(loginArg) : undefined;
-  const apiKey = provider === "deepseek" ? loginArg : undefined;
+  const apiKey = provider === "deepseek" || provider === "openrouter" ? loginArg : undefined;
 
   const { status, email } = await ensureAuthenticated(provider, {
     onProgress: (msg) => console.log(`  ${msg}`),

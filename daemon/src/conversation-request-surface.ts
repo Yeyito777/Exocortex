@@ -3,6 +3,7 @@ import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { buildSystemPrompt } from "./system";
 import { resolveConversationToolPolicy } from "./tool-policy";
 import { getToolDefs } from "./tools/registry";
+import { getModelInfo } from "./providers/registry";
 
 /**
  * Build the cache-sensitive model surface for an ordinary conversation turn.
@@ -22,7 +23,8 @@ export function buildConversationRequestSurface(
   const subagentMaxDepth = options.subagentMaxDepth ?? conversation.subagentMaxDepth ?? null;
   const scopedPromptOptions = scopedSubagentPromptOptions(conversation, subagentMaxDepth);
   const resolvedToolPolicy = resolveConversationToolPolicy(conversation, subagentMaxDepth);
-  const toolNames = resolvedToolPolicy.internalToolNames;
+  const chatOnly = getModelInfo(conversation.provider, conversation.model)?.supportsTools === false;
+  const toolNames = chatOnly ? [] : resolvedToolPolicy.internalToolNames;
   return {
     system: buildSystemPrompt({
       conversationInstructions: options.conversationInstructions,
@@ -31,8 +33,8 @@ export function buildConversationRequestSurface(
       subagentMaxDepth,
       ...(scopedPromptOptions ?? {}),
       toolNames,
-      includeExternalToolHints: true,
-      externalToolNames: resolvedToolPolicy.externalToolNames,
+      includeExternalToolHints: !chatOnly,
+      externalToolNames: chatOnly ? [] : resolvedToolPolicy.externalToolNames,
     }),
     tools: getToolDefs(toolNames, options.conversationId),
     toolNames,

@@ -67,7 +67,7 @@ describe("DaemonClient SSH routing", () => {
           type: "tools_available",
           providers: [],
           tools: [{ name: "bash", label: "$", color: "#d19a66" }],
-          authByProvider: { openai: false, deepseek: false, opencode: false },
+          authByProvider: { openai: false, deepseek: false, opencode: false, openrouter: false },
           authInfoByProvider: {},
           externalToolStyles: [{ cmd: "gmail", label: "Gmail", color: "#ea4335" }],
         });

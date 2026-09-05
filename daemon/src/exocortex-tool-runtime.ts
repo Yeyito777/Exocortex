@@ -314,6 +314,7 @@ function subagentTitleInput(input: Record<string, unknown>): string {
 function inferProviderForModel(model: string | undefined): ProviderId | undefined {
   const lowered = model?.trim().toLowerCase();
   if (!lowered) return undefined;
+  if (isKnownModel("openrouter", lowered)) return "openrouter";
   if (lowered === "pro" || lowered === "flash" || lowered.startsWith("deepseek-") || lowered.startsWith("v4-")) return "deepseek";
   if (lowered.startsWith("gpt-") || lowered.startsWith("o1") || lowered.startsWith("o3") || lowered.startsWith("o4")) return "openai";
   return undefined;
@@ -321,7 +322,7 @@ function inferProviderForModel(model: string | undefined): ProviderId | undefine
 
 function providerInput(value: unknown): ProviderId | undefined {
   if (value === undefined || value === null || value === "") return undefined;
-  if (value === "openai" || value === "deepseek") return value;
+  if (value === "openai" || value === "deepseek" || value === "opencode" || value === "openrouter") return value;
   throw new Error(`Unknown provider: ${String(value)}`);
 }
 
@@ -334,7 +335,7 @@ function parseRequestedModel(providerValue: unknown, modelValue: unknown): Reque
   let provider = providerInput(providerValue);
   let model = typeof modelValue === "string" && modelValue.trim() ? modelValue.trim() : undefined;
 
-  if (model?.includes("/")) {
+  if (model?.includes("/") && /^(openai|deepseek|opencode|openrouter)\//i.test(model)) {
     const slash = model.indexOf("/");
     const specProvider = providerInput(model.slice(0, slash).trim().toLowerCase());
     const specModel = model.slice(slash + 1).trim();
@@ -1891,7 +1892,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       inputSchema: commandSchema({
         text: { type: "string", description: "User prompt." },
         system: { type: "string", description: "Optional system prompt." },
-        provider: { type: "string", enum: ["openai", "deepseek"] },
+        provider: { type: "string", enum: ["openai", "deepseek", "opencode", "openrouter"] },
         model: { type: "string", description: "Optional model or provider/model spec." },
         max_tokens: { type: "integer", minimum: 1, maximum: 128000, default: 16000 },
       }, ["text"]),
@@ -1953,7 +1954,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       name: "stats",
       description: "Query detailed token accounting, cached provider usage windows, and current conversation context usage.",
       inputSchema: commandSchema({
-        provider: { type: "string", enum: ["openai", "deepseek"] },
+        provider: { type: "string", enum: ["openai", "deepseek", "opencode", "openrouter"] },
         conversation_id: { type: "string", description: "Defaults to the active conversation." },
         include_days: { type: "boolean", default: false },
       }),

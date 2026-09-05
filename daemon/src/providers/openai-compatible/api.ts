@@ -3,7 +3,7 @@ import { createAbortError, isAbortLikeError } from "../../abort";
 import { AuthError } from "../errors";
 import type { StreamCallbacks, StreamOptions, StreamResult } from "../types";
 import type { OpenAICompatibleRequestBody } from "./request";
-import { readOpenAICompatibleStream } from "./stream";
+import { OpenAICompatibleStreamError, readOpenAICompatibleStream } from "./stream";
 
 const STREAM_STALL_TIMEOUT_MS = 120_000;
 const MAX_RETRIES = 6;
@@ -115,6 +115,7 @@ export async function streamOpenAICompatibleWithApiKey(
     try {
       return await readOpenAICompatibleStream(res, callbacks, STREAM_STALL_TIMEOUT_MS, transport.providerLabel);
     } catch (err) {
+      if (err instanceof OpenAICompatibleStreamError) throw err;
       if (signal?.aborted || isAbortLikeError(err)) throw err;
       if (retryAttempt < MAX_RETRIES
         && await retryBackoff(retryAttempt++, err instanceof Error ? err.message : String(err), callbacks, signal)) continue;

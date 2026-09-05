@@ -43,6 +43,8 @@ function titleModelForProvider(provider: ProviderId): string {
       return "deepseek-v4-flash";
     case "opencode":
       return "ox-alpha";
+    case "openrouter":
+      return "nousresearch/hermes-4-70b";
   }
 }
 

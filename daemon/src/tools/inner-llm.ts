@@ -19,6 +19,7 @@ const SUMMARY_MODEL_BY_PROVIDER: Record<ProviderId, ModelId> = {
   openai: "gpt-5.6-terra",
   deepseek: "deepseek-v4-flash",
   opencode: "ox-alpha",
+  openrouter: "nousresearch/hermes-4-70b",
 };
 
 const SUMMARY_SERVICE_TIER_BY_PROVIDER: Partial<Record<ProviderId, ServiceTier>> = {

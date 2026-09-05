@@ -101,6 +101,7 @@ export function getAuthByProvider(): Record<ProviderId, boolean> {
     openai: hasConfiguredCredentials("openai"),
     deepseek: hasConfiguredCredentials("deepseek"),
     opencode: hasConfiguredCredentials("opencode"),
+    openrouter: hasConfiguredCredentials("openrouter"),
   };
 }
 
@@ -171,5 +172,6 @@ export function getAuthInfoByProvider(): Record<ProviderId, ProviderAuthInfo> {
     openai: getAuthInfo("openai"),
     deepseek: getAuthInfo("deepseek"),
     opencode: getAuthInfo("opencode"),
+    openrouter: getAuthInfo("openrouter"),
   };
 }

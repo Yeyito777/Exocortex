@@ -89,7 +89,7 @@ describe("SSH status events", () => {
         }],
       }],
       tools: [],
-      authByProvider: { openai: true, deepseek: false, opencode: false },
+      authByProvider: { openai: true, deepseek: false, opencode: false, openrouter: false },
       authInfoByProvider: state.authInfoByProvider,
     }, state, daemon);
 

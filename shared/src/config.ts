@@ -78,6 +78,8 @@ export interface ProvidersConfig {
   openai?: OpenAIProviderConfig;
   deepseek?: DeepSeekProviderConfig;
   opencode?: OpenCodeProviderConfig;
+  /** OpenRouter API base URL override (API keys belong in provider auth or OPENROUTER_API_KEY). */
+  openrouter?: { baseUrl?: string };
   /** Preserve unknown provider config blocks. */
   [provider: string]: unknown;
 }
@@ -261,7 +263,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isProviderId(value: unknown): value is ProviderId {
-  return value === "openai" || value === "deepseek" || value === "opencode";
+  return value === "openai" || value === "deepseek" || value === "opencode" || value === "openrouter";
 }
 
 function isEffortLevel(value: unknown): value is EffortLevel {

@@ -356,6 +356,8 @@ function formatProviderLabel(provider: ProviderId): string {
       return "DeepSeek";
     case "opencode":
       return "OpenCode Zen";
+    case "openrouter":
+      return "OpenRouter";
   }
 }
 
@@ -445,7 +447,7 @@ function buildCostBreakdownMessage(stats: TokenStatsSnapshot): string {
     grouped.set(row.provider, rows);
   }
 
-  const providerOrder: ProviderId[] = ["openai", "deepseek", "opencode"];
+  const providerOrder: ProviderId[] = ["openai", "deepseek", "opencode", "openrouter"];
   const sortedProviders = [...grouped.keys()].sort((a, b) => {
     const aIndex = providerOrder.indexOf(a);
     const bIndex = providerOrder.indexOf(b);

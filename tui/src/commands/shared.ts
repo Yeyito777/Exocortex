@@ -49,7 +49,7 @@ export function providerModelItems(state: RenderState, provider = state.provider
   const models = info?.models ?? [];
   return models.map((model) => ({
     name: model.id,
-    desc: model.id === info?.defaultModel ? `${model.label} (default)` : model.label,
+    desc: `${model.label}${model.id === info?.defaultModel ? " (default)" : ""}${model.supportsTools === false ? " · chat only, no tools" : ""}`,
   }));
 }
 

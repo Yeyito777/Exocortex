@@ -189,7 +189,7 @@ function readManifest(id: string): DisplayPageManifest | null {
         || typeof parsed.buildId !== "string"
         || !/^\d+-[0-9a-f-]{36}$/.test(parsed.buildId)
         || !parsed.source
-        || (parsed.provider !== "openai" && parsed.provider !== "deepseek")
+        || (parsed.provider !== "openai" && parsed.provider !== "deepseek" && parsed.provider !== "opencode" && parsed.provider !== "openrouter")
         || typeof parsed.model !== "string"
         || !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(String(parsed.effort))
         || typeof parsed.fastMode !== "boolean"

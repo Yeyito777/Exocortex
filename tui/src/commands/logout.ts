@@ -10,6 +10,7 @@ function logoutDescription(provider: ProviderId): string {
     case "openai": return "Log out from OpenAI";
     case "deepseek": return "Forget the saved DeepSeek API key";
     case "opencode": return "Public access requires no login";
+    case "openrouter": return "Remove your OpenRouter API key";
   }
 }
 

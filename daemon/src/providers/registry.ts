@@ -35,6 +35,7 @@ function getFallbackProvidersById(): Record<ProviderId, ProviderInfo> {
     openai: buildFallbackProviderInfo("openai"),
     deepseek: buildFallbackProviderInfo("deepseek"),
     opencode: buildFallbackProviderInfo("opencode"),
+    openrouter: buildFallbackProviderInfo("openrouter"),
   };
   return fallbackProvidersByIdCache;
 }
@@ -45,6 +46,7 @@ function getFallbackProviders(): ProviderInfo[] {
 }
 
 const MODEL_ID_ALIASES: Record<ProviderId, Record<string, ModelId>> = {
+  openrouter: {},
   openai: {},
   deepseek: {
     pro: "deepseek-v4-pro",

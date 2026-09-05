@@ -118,7 +118,7 @@ export const exo: Tool = {
       },
       provider: {
         type: "string",
-        enum: ["openai", "deepseek"],
+        enum: ["openai", "deepseek", "opencode", "openrouter"],
         description: "Optional provider for a new send.",
       },
       model: {
