@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { DaemonClient } from "./client";
 import type { SshProcess } from "./ssh-transport";
+import { encodeHistoryDelta, type HistoryResponse } from "@exocortex/shared/history-delta";
 
 class FakeProcess extends EventEmitter implements SshProcess {
   stdin = new PassThrough();
@@ -50,6 +51,61 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("DaemonClient SSH routing", () => {
+  test("reconstructs incremental history before delivery and isolates caches by route", async () => {
+    const spawned: FakeProcess[] = [];
+    const received: Extract<HistoryResponse, { type: "conversation_loaded" }>[] = [];
+    const requests: Array<any> = [];
+    const wireResponses: HistoryResponse[] = [];
+    const client = new DaemonClient(event => {
+      if (event.type === "conversation_loaded") received.push(event);
+    }, "/tmp/local.sock", false, {
+      spawnSshProcess: () => {
+        const child = respondingProbe();
+        spawned.push(child);
+        child.stdin.on("data", chunk => {
+          for (const line of chunk.toString().trim().split("\n")) {
+            const cmd = JSON.parse(line);
+            if (cmd.type !== "load_conversation") continue;
+            requests.push(cmd);
+            const full: HistoryResponse = { type: "conversation_loaded", reqId: cmd.reqId, convId: cmd.convId,
+              provider: "openai", model: "gpt-5.4", effort: "high", fastMode: false,
+              entries: [{ type: "user", text: "long transcript ".repeat(1000), metadata: null }],
+              contextTokens: requests.length, toolOutputsIncluded: false };
+            const wire = encodeHistoryDelta(full, cmd.cachedEntryHashes);
+            wireResponses.push(wire);
+            child.stdout.write(`${JSON.stringify(wire)}\n`);
+          }
+        });
+        return child;
+      },
+    });
+    try {
+      client.ssh("connect", "first");
+      await waitFor(() => client.remoteAlias === "first");
+      (await client.connect()).releaseBootstrapEvents?.();
+      client.loadConversation("same-id");
+      await waitFor(() => received.length === 1);
+      client.loadConversation("same-id");
+      await waitFor(() => received.length === 2);
+      expect(requests[0].cachedEntryHashes).toBeUndefined();
+      expect(requests[1].cachedEntryHashes).toHaveLength(1);
+      expect(wireResponses[1].entries).toEqual([]);
+      expect(received[1].entries).toEqual(received[0].entries);
+      expect(received[1].contextTokens).toBe(2);
+      expect(received[1].entryOrder).toBeUndefined();
+
+      client.ssh("connect", "second");
+      await waitFor(() => client.remoteAlias === "second");
+      (await client.connect()).releaseBootstrapEvents?.();
+      client.loadConversation("same-id");
+      await waitFor(() => received.length === 3);
+      expect(requests[2].cachedEntryHashes).toBeUndefined();
+      expect(wireResponses[2].entries).toHaveLength(1);
+    } finally {
+      client.disconnect();
+    }
+  });
+
   test("selects a remote transport for only one TUI while another stays local", async () => {
     const spawned: FakeProcess[] = [];
     const events: unknown[] = [];

@@ -8,6 +8,7 @@
  */
 
 import { log } from "./log";
+import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import type { RealtimeCallAdapter, RealtimeCallParticipant } from "@exocortex/shared/protocol";
@@ -567,6 +568,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     reqId?: string,
     turns?: number,
     metrics?: ConversationLoadMetrics,
+    cachedEntryHashes?: string[],
   ) => {
     const paginated = target.capabilities?.has("history-pagination") || turns !== undefined;
     if (paginated) {
@@ -579,7 +581,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const sendStartedAt = metrics ? performance.now() : 0;
         const btw = btwManager.getSnapshot(page.convId);
         const pending = convStore.getPendingStreamSnapshot(page.convId);
-        const responseBytes = server.sendTo(target, {
+        const responseBytes = server.sendTo(target, encodeHistoryDelta({
           type: "conversation_loaded",
           reqId,
           convId: page.convId,
@@ -606,7 +608,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           goal: summary?.goal ?? null,
           btw,
           toolPolicySnapshot: convStore.getToolPolicySnapshot(page.convId) ?? undefined,
-        }, metrics !== undefined);
+        }, cachedEntryHashes), metrics !== undefined);
         if (metrics) {
           metrics.snapshot = snapshotDiagnostics ?? {};
           metrics.compactMs = 0;
@@ -635,7 +637,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const responseEntries = page ? [...page.pinnedEntries, ...page.entries] : compactData.entries;
     const sendStartedAt = metrics ? performance.now() : 0;
     const btw = btwManager.getSnapshot(data.convId);
-    const responseBytes = server.sendTo(target, {
+    const responseBytes = server.sendTo(target, encodeHistoryDelta({
       type: "conversation_loaded",
       reqId,
       convId: compactData.convId,
@@ -658,7 +660,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       goal: summary?.goal ?? null,
       btw,
       toolPolicySnapshot: convStore.getToolPolicySnapshot(data.convId) ?? undefined,
-    }, metrics !== undefined);
+    }, cachedEntryHashes), metrics !== undefined);
     if (metrics) {
       metrics.snapshot = snapshotDiagnostics ?? {};
       metrics.compactMs = compactMs;
@@ -679,13 +681,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     reqId?: string,
     requestSource?: "initial-backfill" | "viewport",
     metrics?: ConversationLoadMetrics,
+    cachedEntryHashes?: string[],
   ): boolean => {
     {
       const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
       const page = convStore.getStoredDisplayPage(convId, turns, beforeEntryIndex, snapshotDiagnostics);
       if (page) {
         const sendStartedAt = metrics ? performance.now() : 0;
-        const responseBytes = server.sendTo(target, {
+        const responseBytes = server.sendTo(target, encodeHistoryDelta({
           type: "conversation_history_loaded",
           reqId,
           convId,
@@ -696,7 +699,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           historyEndIndex: page.endIndex,
           historyTotalEntries: page.totalEntries,
           hasOlderHistory: page.hasOlder,
-        }, metrics !== undefined);
+        }, cachedEntryHashes), metrics !== undefined);
         if (metrics) {
           metrics.snapshot = snapshotDiagnostics ?? {};
           metrics.compactMs = 0;
@@ -720,7 +723,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const page = pageDisplayHistory(compactData.entries, turns, beforeEntryIndex);
     const paginateMs = metrics ? performance.now() - paginateStartedAt : 0;
     const sendStartedAt = metrics ? performance.now() : 0;
-    const responseBytes = server.sendTo(target, {
+    const responseBytes = server.sendTo(target, encodeHistoryDelta({
       type: "conversation_history_loaded",
       reqId,
       convId,
@@ -731,7 +734,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       historyEndIndex: page.endIndex,
       historyTotalEntries: page.totalEntries,
       hasOlderHistory: page.hasOlder,
-    }, metrics !== undefined);
+    }, cachedEntryHashes), metrics !== undefined);
     if (metrics) {
       metrics.snapshot = snapshotDiagnostics ?? {};
       metrics.compactMs = compactMs;
@@ -2733,7 +2736,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }
         if (cmd.turns !== undefined) client.capabilities?.add("history-pagination");
         const metrics = PERFORMANCE_PROFILING_ENABLED ? createConversationLoadMetrics() : undefined;
-        const loaded = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns, metrics);
+        const loaded = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns, metrics, cmd.cachedEntryHashes);
         if (!loaded) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           if (PERFORMANCE_PROFILING_ENABLED) {
@@ -2822,6 +2825,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           cmd.reqId,
           cmd.requestSource,
           metrics,
+          cmd.cachedEntryHashes,
         );
         if (!sent) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });

@@ -338,7 +338,15 @@ export interface ListConversationsCommand {
   reqId?: string;
 }
 
-export interface LoadConversationCommand {
+/** Opt-in to incremental history responses. SHA-256 (lowercase hex) of each
+ * JSON.stringify(displayEntry), in cache order; at most 2048 entries. The client
+ * must retain these exact immutable entries until this request completes.
+ * Omitted/invalid hashes receive the normal full response. */
+export interface CachedHistoryRequest {
+  cachedEntryHashes?: string[];
+}
+
+export interface LoadConversationCommand extends CachedHistoryRequest {
   type: "load_conversation";
   reqId?: string;
   convId: string;
@@ -348,7 +356,7 @@ export interface LoadConversationCommand {
   turns?: number;
 }
 
-export interface LoadConversationHistoryCommand {
+export interface LoadConversationHistoryCommand extends CachedHistoryRequest {
   type: "load_conversation_history";
   reqId?: string;
   convId: string;
@@ -1334,7 +1342,14 @@ export interface ToolOutputInfo {
   output: string;
 }
 
-export interface ConversationLoadedEvent {
+/** Present only in responses to cachedEntryHashes. Nonnegative indices select
+ * entries; negative indices select request cache entries via -index - 1.
+ * Clients must reconstruct entries before passing the event to UI handlers. */
+export interface CachedHistoryResponse {
+  entryOrder?: number[];
+}
+
+export interface ConversationLoadedEvent extends CachedHistoryResponse {
   type: "conversation_loaded";
   reqId?: string;
   convId: string;
@@ -1370,7 +1385,7 @@ export interface ConversationLoadedEvent {
   toolPolicySnapshot?: ToolPolicySnapshot;
 }
 
-export interface ConversationHistoryLoadedEvent {
+export interface ConversationHistoryLoadedEvent extends CachedHistoryResponse {
   type: "conversation_history_loaded";
   reqId?: string;
   convId: string;
