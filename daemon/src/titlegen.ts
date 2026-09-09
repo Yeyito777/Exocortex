@@ -33,12 +33,12 @@ export const PENDING_TITLE = "pending";
 const MARK_EMOJI_SET = new Set(["🕐", "🔥", "🧪", "📝", "🐛", "💡", "🔒", "✅", "📡"]);
 const activeTitleJobs = new Set<string>();
 
-function titleModelForProvider(provider: ProviderId): string {
+export function titleModelForProvider(provider: ProviderId): string {
   switch (provider) {
     case "openai":
-      // Title generation was previously a mini-tier utility task; keep it on the
-      // working GPT-5.4 mini model until a usable GPT-5.5 mini arrives.
-      return "gpt-5.4-mini";
+      // Use the lightweight GPT-5.6 tier supported by ChatGPT/Codex accounts.
+      // GPT-5.4 mini is rejected by that endpoint, even if listed locally.
+      return "gpt-5.6-luna";
     case "deepseek":
       return "deepseek-v4-flash";
     case "opencode":
