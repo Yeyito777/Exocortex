@@ -40,6 +40,7 @@ export function createOpenAITurnSession(): OpenAITurnSession {
 }
 
 export async function prewarmOpenAIConversation(promptCacheKey: string): Promise<void> {
+  if (Date.now() < httpFallbackUntilMs) return;
   const turnSession = new OpenAITurnSession();
   const callbacks: StreamCallbacks = {
     onText: () => {},
@@ -56,6 +57,8 @@ export async function prewarmOpenAIConversation(promptCacheKey: string): Promise
 }
 
 export function clearOpenAIWebSocketSessionCacheForTest(): void {
+  httpFallbackUntilMs = 0;
+  httpFallbackTurnSessions = new WeakSet<OpenAITurnSession>();
   for (const state of reusableTurnSessions.values()) {
     closeReusableTurnSession(state);
   }
@@ -74,6 +77,12 @@ const MAX_RETRIES = 8;
 const USAGE_LIMIT_RESET_BUFFER_MS = 2_000;
 const RETRIABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504, 507, 520, 521, 522, 523, 524]);
 const WEBSOCKET_IDLE_TIMEOUT_MS = 5 * 60_000;
+// A regional proxy can serve HTTPS while its WebSocket upstream is down.
+// Share a short circuit breaker with titlegen/one-shot calls, then probe WS
+// again automatically. Tool follow-ups stay on HTTPS for their logical turn.
+const HTTP_FALLBACK_COOLDOWN_MS = 5 * 60_000;
+let httpFallbackUntilMs = 0;
+let httpFallbackTurnSessions = new WeakSet<OpenAITurnSession>();
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE = "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.";
 
@@ -398,6 +407,7 @@ async function streamMessageHttpWithSession(
   options: StreamOptions = {},
 ): Promise<StreamResult> {
   assertReplayScopeForSession(messages, model, session, options.accountScope);
+  const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
   const requestCallbacks = callbacksForSession(callbacks, session);
   const requestBody = buildRequestBody(messages, model, options);
   const headers: Record<string, string> = {
@@ -408,6 +418,8 @@ async function streamMessageHttpWithSession(
   // The Codex HTTP endpoint streams Server-Sent Events. The websocket beta
   // header switches the backend into websocket mode and can make HTTP fail.
   delete headers["OpenAI-Beta"];
+  const turnState = turnSession?.getTurnState();
+  if (turnState) headers["x-codex-turn-state"] = turnState;
   if (usesOpenAIResponsesLite(model)) {
     headers[OPENAI_RESPONSES_LITE_HEADER] = "true";
   }
@@ -431,6 +443,8 @@ async function streamMessageHttpWithSession(
     throw new OpenAIWebSocketHttpError(res.status, res.headers, body);
   }
 
+  const nextTurnState = res.headers.get("x-codex-turn-state");
+  if (nextTurnState) turnSession?.recordTurnState(nextTurnState);
   const result = await readOpenAIResponsesHttpSse(res, requestCallbacks, options.signal);
   stampReplayScope(result, model, session);
   const input = Array.isArray(requestBody.input) ? requestBody.input : [];
@@ -551,6 +565,10 @@ export class OpenAITurnSession implements ProviderTurnSession {
     // Match Codex's OnceLock behavior: the first value in a logical turn wins,
     // and later metadata events cannot silently reroute the same turn.
     if (!this.state.turnState) this.state.turnState = turnState;
+  }
+
+  getTurnState(): string | null {
+    return this.state.turnState;
   }
 
   private removeReusableStateFromCache(): void {
@@ -1014,6 +1032,12 @@ export async function streamMessageWithSession(
   const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
   const requestCallbacks = callbacksForSession(callbacks, session);
   let retryAttempt = 0;
+  let useHttp = Date.now() < httpFallbackUntilMs
+    || (turnSession != null && httpFallbackTurnSessions.has(turnSession));
+  if (useHttp && turnSession) {
+    httpFallbackTurnSessions.add(turnSession);
+    turnSession.resetConnection();
+  }
   let silentStaleReconnects = 0;
   let retriedWithoutIncremental = false;
   const maxRetries = options.compaction ? Math.min(MAX_RETRIES, 2) : MAX_RETRIES;
@@ -1041,6 +1065,12 @@ export async function streamMessageWithSession(
     let connectionReused = false;
     let attemptedIncremental = false;
     try {
+      if (signal?.aborted) throw createAbortError();
+      if (useHttp) {
+        // Full replay, never a previous_response_id from a different transport.
+        // Keep this inside the shared retry/auth/usage-limit loop.
+        return await streamMessageHttpWithSession(session, messages, model, callbacks, options);
+      }
       consumeCompactionRequestAttempt(options);
       if (turnSession) {
         const lease = await turnSession.getSocketLease(session, requestCallbacks, options);
@@ -1097,6 +1127,20 @@ export async function streamMessageWithSession(
       else socket?.destroy();
       if (signal?.aborted || isAbortLikeError(err)) throw err;
       if (isOpenAIAuthFailure(err)) throw err;
+      if (!useHttp && !socket && !options.compaction
+        && err instanceof OpenAIWebSocketHttpError
+        && ((err.status >= 500 && isRetriableOpenAIHttpError(err)) || err.status === 426)) {
+        // Only a rejected handshake is safe to switch automatically: no model
+        // request was sent. Never turn a mid-response failure, auth rejection,
+        // policy error, or rate limit into a cross-transport replay.
+        useHttp = true;
+        httpFallbackUntilMs = Date.now() + HTTP_FALLBACK_COOLDOWN_MS;
+        if (turnSession) httpFallbackTurnSessions.add(turnSession);
+        const message = `OpenAI WebSocket handshake failed (HTTP ${err.status}); switching to HTTPS`;
+        log("warn", `openai api: ${message}; preferring HTTPS for 5 minutes`);
+        requestCallbacks.onRetry?.(1, maxRetries, message, 0, { kind: "transient" });
+        continue;
+      }
       const retryableCompactionContextError = options.compaction === true
         && isContextWindowProviderError(err);
       if (isNonRetryableProviderError(err) && !retryableCompactionContextError) throw err;
@@ -1131,7 +1175,7 @@ export async function streamMessageWithSession(
       }
       if (err instanceof OpenAIWebSocketHttpError) {
         const connectionLimitMessage = parseOpenAIWebSocketConnectionLimitError(err.body);
-        if (connectionLimitMessage) {
+        if (!useHttp && connectionLimitMessage) {
           if (canRetryTransport()) {
             log("warn", `openai api: websocket connection limit reached; reconnecting (attempt ${retryAttempt + 1}/${maxRetries})`);
             await retryTransport(connectionLimitMessage);

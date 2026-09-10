@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { defaultExocortexConfig, writeExocortexConfig } from "@exocortex/shared/config";
 import type { ApiMessage } from "../../messages";
 import {
@@ -9,6 +9,7 @@ import {
   isRetriableOpenAIStatusForTest,
   mergeReasoningSummariesForTest,
   parseOpenAIUsageLimitErrorForTest,
+  prewarmOpenAIConversation,
   readOpenAIEventsForTest,
   setOpenAIWebSocketIdleTimeoutMsForTest,
   shouldRetryOpenAIUsageLimitResetForTest,
@@ -94,6 +95,142 @@ afterEach(() => {
   clearCloudflareCookiesForTest();
   clearProviderAuth("openai");
   writeExocortexConfig(defaultExocortexConfig());
+});
+
+function httpCompletion(output: unknown[] = [{ type: "message", id: "msg_http", content: [{ type: "output_text", text: "OK" }] }], headers?: HeadersInit): Response {
+  const events = [
+    { type: "response.created", response: { id: "resp_http" } },
+    { type: "response.completed", response: { id: "resp_http", output, usage: { input_tokens: 3, output_tokens: 1 } } },
+  ];
+  return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), { headers });
+}
+
+describe("OpenAI automatic HTTPS fallback", () => {
+  const session = { accessToken: "test-token", accountId: "acct" };
+  const messages: ApiMessage[] = [{ role: "user", content: "hello" }];
+  const callbacks = { onText: () => {}, onThinking: () => {} };
+
+  for (const status of [502, 503, 504, 426]) {
+    test(`falls back on handshake ${status} for one-shot calls and shares the cooldown`, async () => {
+      const calls = mockOpenAIWebSocket([{ error: new OpenAIWebSocketHttpError(status, new Headers(), "upstream unavailable") }]);
+      const requests: RequestInit[] = [];
+      globalThis.fetch = mock(async (_input, init) => {
+        requests.push(init!);
+        return httpCompletion();
+      }) as unknown as typeof fetch;
+      const onRetry = mock(() => {});
+      const result = await streamMessageWithSession(session, messages, "gpt-6-astra", { ...callbacks, onRetry });
+      expect(result.text).toBe("OK");
+      expect(result.requestDiagnostics?.fallbackReason).toBe("http_sse");
+      expect(calls).toHaveLength(1);
+      expect(calls[0].sent).toHaveLength(0);
+      expect(onRetry).toHaveBeenCalledTimes(1);
+      const headers = new Headers(requests[0].headers);
+      expect(headers.get("OpenAI-Beta")).toBeNull();
+      expect(headers.get(OPENAI_RESPONSES_LITE_HEADER)).toBe("true");
+      expect(headers.get("Authorization")).toBe("Bearer test-token");
+      expect(headers.get("ChatGPT-Account-ID")).toBe("acct");
+      // Titlegen/inner completions use another model and no turn-session.
+      expect((await streamMessageWithSession(session, messages, "gpt-5.6-luna", callbacks)).text).toBe("OK");
+      await prewarmOpenAIConversation("no-ws-during-cooldown");
+      expect(calls).toHaveLength(1);
+      expect(requests).toHaveLength(2);
+    });
+  }
+
+  test("tool follow-ups full-replay on HTTPS, preserve turn routing, and WS recovers after cooldown", async () => {
+    const now = spyOn(Date, "now").mockReturnValue(1_000_000);
+    const turnSession = createOpenAITurnSession();
+    try {
+      const calls = mockOpenAIWebSocket([
+        { error: new OpenAIWebSocketHttpError(503, new Headers(), "unavailable") },
+        { events: [{ type: "response.completed", response: { id: "recovered", output: [] } }] },
+      ]);
+      const requests: RequestInit[] = [];
+      globalThis.fetch = mock(async (_input, init) => {
+        requests.push(init!);
+        return requests.length === 1
+          ? httpCompletion([{ type: "function_call", call_id: "call_1", name: "bash", arguments: '{"cmd":"echo hi"}' }], { "x-codex-turn-state": "http-turn" })
+          : httpCompletion(undefined, { "x-codex-turn-state": "ignored-later-route" });
+      }) as unknown as typeof fetch;
+      const options = { turnSession, promptCacheKey: "http-tool-conv", tools: [{ name: "bash", description: "Run command", input_schema: { type: "object", properties: { cmd: { type: "string" } } } }] };
+      const first = await streamMessageWithSession(session, messages, "gpt-5.6-sol", callbacks, options);
+      expect(first.toolCalls).toEqual([{ id: "call_1", name: "bash", input: { cmd: "echo hi" } }]);
+      now.mockReturnValue(1_000_000 + 6 * 60_000);
+      const followUp: ApiMessage[] = [
+        ...messages,
+        { role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "bash", input: { cmd: "echo hi" } }], providerData: first.assistantProviderData },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "hi", is_error: false }] },
+      ];
+      expect((await streamMessageWithSession(session, followUp, "gpt-5.6-sol", callbacks, options)).text).toBe("OK");
+      expect(calls).toHaveLength(1); // Same turn stays on HTTPS after cooldown.
+      const body = JSON.parse(String(requests[1].body));
+      expect(body.previous_response_id).toBeUndefined();
+      expect(body.input).toContainEqual({ type: "function_call_output", call_id: "call_1", output: "hi" });
+      expect(body.input[0]).toMatchObject({ role: "user" });
+      expect(body.tools.length).toBeGreaterThan(0);
+      expect(new Headers(requests[1].headers).get("x-codex-turn-state")).toBe("http-turn");
+      expect(turnSession.getTurnState()).toBe("http-turn");
+      turnSession.close();
+      expect(turnSession.getTurnState()).toBeNull();
+      await streamMessageWithSession(session, messages, "gpt-5.6-luna", callbacks);
+      expect(calls).toHaveLength(2); // New calls probe WebSockets again.
+      expect(requests).toHaveLength(2);
+    } finally {
+      now.mockRestore();
+      turnSession.destroy();
+    }
+  });
+
+  test("HTTPS failures retain normal transient retries", async () => {
+    mockOpenAIWebSocket([{ error: new OpenAIWebSocketHttpError(503, new Headers(), "unavailable") }]);
+    let httpCalls = 0;
+    globalThis.fetch = mock(async () => ++httpCalls === 1
+      ? new Response("temporary", { status: 503 }) : httpCompletion()) as unknown as typeof fetch;
+    const retries: string[] = [];
+    const result = await streamMessageWithSession(session, messages, "gpt-5.6-luna", {
+      ...callbacks, onRetry: (_n, _max, message) => retries.push(message),
+    });
+    expect(result.text).toBe("OK");
+    expect(httpCalls).toBe(2);
+    expect(retries[1]).toBe("HTTP 503");
+  });
+
+  test("abort during fallback notification does not issue an HTTPS request", async () => {
+    mockOpenAIWebSocket([{ error: new OpenAIWebSocketHttpError(503, new Headers(), "unavailable") }]);
+    const fetchMock = mock(async () => httpCompletion());
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const ac = new AbortController();
+    await expect(streamMessageWithSession(session, messages, "gpt-5.6-luna", {
+      ...callbacks, onRetry: () => ac.abort(),
+    }, { signal: ac.signal })).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  for (const status of [400, 401, 403, 429]) {
+    test(`does not bypass auth/policy/rate-limit HTTP ${status} with fallback`, async () => {
+      mockOpenAIWebSocket([{ error: new OpenAIWebSocketHttpError(status, new Headers(), "rejected") }]);
+      const fetchMock = mock(async () => httpCompletion());
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      const ac = new AbortController();
+      await expect(streamMessageWithSession(session, messages, "gpt-5.6-luna", {
+        ...callbacks, onRetry: () => ac.abort(),
+      }, { signal: ac.signal })).rejects.toThrow();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  }
+
+  test("does not cross-transport replay a failure after the websocket request was sent", async () => {
+    const calls = mockOpenAIWebSocket([{ nextMessage: async () => { throw new OpenAIWebSocketHttpError(503, new Headers(), "mid-response"); } }]);
+    const fetchMock = mock(async () => httpCompletion());
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const ac = new AbortController();
+    await expect(streamMessageWithSession(session, messages, "gpt-5.6-luna", {
+      ...callbacks, onRetry: () => ac.abort(),
+    }, { signal: ac.signal })).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls[0].sent).toHaveLength(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("OpenAI replay input", () => {
