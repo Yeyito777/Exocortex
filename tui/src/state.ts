@@ -201,6 +201,8 @@ export interface RenderState {
   convId: string | null;
   /** Selected remote daemon route. Null means the local daemon. */
   sshRemote: { alias: string; connected: boolean } | null;
+  /** Route transition UI is independent of chat messages and startup loads. */
+  sshConnecting: { phase: "probing" | "loading"; message: string } | null;
   /** Reserved identity for tool choices on the current blank conversation draft. */
   pendingToolPolicyDraftId: string | null;
   /** Folder captured when the current blank draft was started. Sidebar browsing must not retarget it. */
@@ -630,6 +632,7 @@ export function createInitialState(): RenderState {
     goalReviewing: false,
     convId: null,
     sshRemote: null,
+    sshConnecting: null,
     pendingToolPolicyDraftId: null,
     draftFolderId: null,
     inputBuffer: "",

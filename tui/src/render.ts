@@ -21,6 +21,7 @@ import {
 } from "./conversationscroll";
 import { renderTopbar } from "./topbar";
 import { conversationActionMenuAnchorRow, renderConversationActionMenu, renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
+import { createSidebarState } from "./sidebar/state";
 import { isGlobalIdleQueuedMessage } from "./queue";
 import { getSidebarSearchBarViewport } from "./sidebarsearch";
 import { buildMessageLines, type BuildMessageLinesResult, type RenderLineSegment } from "./conversation";
@@ -1285,6 +1286,28 @@ function buildCursorPayload(
  * completed window jumps to its restored position.
  */
 export function render(state: RenderState): boolean {
+  if (state.sshConnecting) {
+    // Paint progress outside the transcript: a speculative startup load can
+    // replace messages while SSH is probing, but must never erase this view.
+    const { cols, rows } = state;
+    const frameRows = createFrameRows(rows, (theme.appBg ?? "") + clearLine);
+    const sidebarWidth = state.sidebar.open ? SIDEBAR_WIDTH : 0;
+    if (state.sidebar.open) {
+      const sidebarRows = renderSidebar(createSidebarState(), rows, false, null);
+      sidebarRows.forEach((line, index) => appendFrameRowWrite(frameRows, index + 1, 1, line));
+    }
+    const width = Math.max(1, cols - sidebarWidth - 2);
+    const spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][Math.floor(Date.now() / 80) % 10];
+    const { lines } = wordWrap(`${spinner} ${state.sshConnecting.message}`, width);
+    lines.forEach((line, index) => appendFrameRowWrite(
+      frameRows, index + 3, sidebarWidth + 2, `${theme.warning}${line}${theme.reset}`,
+    ));
+    wordWrap("Esc to cancel · Ctrl+C to quit", width).lines.forEach((line, index) => appendFrameRowWrite(
+      frameRows, lines.length + index + 4, sidebarWidth + 2, `${theme.dim}${line}${theme.reset}`,
+    ));
+    flushFrame(state, { rows: frameRows, cursor: hide_cursor, scrollRegion: null, viewStart: 0 });
+    return true;
+  }
   if (isConversationScrollRestoreWaitingForInitialBackfill(state)) return false;
 
   const { cols, rows } = state;

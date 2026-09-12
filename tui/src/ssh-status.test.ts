@@ -11,6 +11,44 @@ const daemon = {
 };
 
 describe("SSH status events", () => {
+  test("keeps progress through local startup loads and remote transport activation until bootstrap", () => {
+    const state = createInitialState();
+    handleEvent({
+      type: "ssh_status", mode: "local", state: "switching", switched: false,
+      message: "Connecting through SSH alias whale…",
+    }, state, daemon);
+    // Local startup data can replace the transcript while the probe is running.
+    state.messages = [];
+    handleEvent({ type: "conversations_list", conversations: [] }, state, daemon);
+    expect(state.sshConnecting).toEqual({ phase: "probing", message: "Connecting through SSH alias whale…" });
+
+    handleEvent({
+      type: "ssh_status", mode: "remote", alias: "whale", state: "connected",
+      switched: true, message: "Connected daemon: SSH alias whale.",
+    }, state, daemon);
+    expect(state.sshConnecting?.phase).toBe("loading");
+    handleEvent({
+      type: "ssh_status", mode: "remote", alias: "whale", state: "connected",
+      switched: false, silent: true, message: "Connected daemon: SSH alias whale.",
+    }, state, daemon);
+    expect(state.sshConnecting?.phase).toBe("loading");
+    handleEvent({ type: "conversations_list", conversations: [] }, state, daemon);
+    expect(state.sshConnecting).toBeNull();
+  });
+
+  test.each(["failed", "connected"] as const)("clears probe progress on %s (failure or cancellation)", status => {
+    const state = createInitialState();
+    handleEvent({
+      type: "ssh_status", mode: "local", state: "switching", switched: false,
+      message: "Connecting through SSH alias whale…",
+    }, state, daemon);
+    handleEvent({
+      type: "ssh_status", mode: "local", state: status, switched: false,
+      message: "Returned to local daemon.",
+    }, state, daemon);
+    expect(state.sshConnecting).toBeNull();
+  });
+
   test("sets and clears the remote indicator while printing daemon info", () => {
     const state = createInitialState();
     handleEvent({

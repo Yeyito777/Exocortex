@@ -331,7 +331,7 @@ function renderDelayForEvent(event: Event): number {
 /** Re-render active stream/task durations on the next exact second boundary. */
 function resetStreamTick(): void {
   clearStreamTick();
-  if (state.contextCompactionStartedAt != null || state.historyLoadingOlder) {
+  if (state.sshConnecting || state.contextCompactionStartedAt != null || state.historyLoadingOlder) {
     streamTickTimer = setTimeout(scheduleRender, 80);
     return;
   }
@@ -1489,6 +1489,12 @@ function deleteConversationFromUi(convId: string): void {
 }
 
 function handleKey(key: KeyEvent): void {
+  if (state.sshConnecting) {
+    if (key.event === "release") return;
+    if (key.type === "ctrl-c") cleanup();
+    if (key.type === "escape") daemon.ssh("cancel");
+    return;
+  }
   const inputBefore = state.inputBuffer;
   const voicePromptBufferBefore = state.voicePromptJobs.length > 0 || state.voicePrompt?.phase === "transcribing"
     ? state.inputBuffer
@@ -1665,6 +1671,8 @@ function handleKey(key: KeyEvent): void {
 }
 
 function handleMouse(ev: MouseEvent): void {
+  // Hidden old-route controls must not remain clickable during the transition.
+  if (state.sshConnecting) return;
   if (voiceInput?.isBlockingMouse()) return;
 
   // Motion events: only render if something visual changed (focus switch, drag selection)

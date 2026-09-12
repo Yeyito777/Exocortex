@@ -71,6 +71,40 @@ function makeState(): RenderState {
 }
 
 describe("render caching and frame diffing", () => {
+  test("SSH progress hides old content, survives transcript replacement, and restores it on cancellation", () => {
+    const state = makeState();
+    state.sidebar.open = true;
+    state.sidebar.conversations = [{
+      id: "local", provider: state.provider, model: state.model,
+      effort: state.effort, fastMode: state.fastMode, createdAt: 1, updatedAt: 2,
+      messageCount: 1, title: "Old local conversation", marked: false,
+      pinned: false, streaming: false, unread: false, sortOrder: 0,
+    }];
+    const before = captureRenderOutput(state);
+    expect(before).toContain("Old local conversation");
+    state.sshConnecting = { phase: "probing", message: "Connecting through SSH alias whale…" };
+    const progress = captureRenderOutput(state);
+    expect(progress).toContain("Connecting through SSH alias whale");
+    expect(progress).toContain("Esc to cancel");
+    expect(progress).not.toContain("Old local conversation");
+    expect(progress).not.toContain("hello");
+    expect(progress).toContain(hide_cursor);
+    // Even saved-scroll backfill must not suppress the connecting frame.
+    state.convId = "local";
+    state.conversationScroll.pendingRestore = {
+      convId: "local", mode: "percentage", percentage: 0.25, waitForInitialBackfill: true,
+    };
+    state.messages = [{ role: "user", text: "Startup transcript", metadata: null }];
+    invalidateFrame(state);
+    expect(captureRenderOutput(state)).toContain("Connecting through SSH alias whale");
+    state.conversationScroll.pendingRestore = null;
+    state.sshConnecting = null;
+    const restored = captureRenderOutput(state);
+    expect(restored).toContain("Old local conversation");
+    expect(restored).toContain("Startup transcript");
+    expect(restored).not.toContain("Connecting through SSH alias whale");
+  });
+
   test("does not present the partial opening window before restoring a saved position", () => {
     const state = makeState();
     state.convId = "source";

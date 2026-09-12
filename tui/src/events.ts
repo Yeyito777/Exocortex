@@ -207,6 +207,9 @@ export function handleEvent(
 
     case "conversations_list":
       handleConversationsList(event, state);
+      // Old-route lists may still arrive during the probe. Only the selected
+      // route's bootstrap (after the switched status) completes the transition.
+      if (state.sshConnecting?.phase === "loading") state.sshConnecting = null;
       break;
 
     case "conversation_updated":
@@ -487,6 +490,20 @@ export function handleEvent(
       break;
 
     case "ssh_status":
+      if (event.state === "switching") {
+        state.sshConnecting = { phase: "probing", message: event.message };
+      } else if (event.state === "connected" && event.switched) {
+        state.sshConnecting = {
+          phase: "loading",
+          message: event.mode === "remote"
+            ? `Loading remote Exocortex daemon through SSH alias ${event.alias}…`
+            : "Loading local Exocortex daemon…",
+        };
+      } else if (event.state === "failed" || !event.silent) {
+        // A failed probe or cancellation returns to the untouched old view.
+        // Silent transport activation is not readiness: wait for its bootstrap.
+        state.sshConnecting = null;
+      }
       if (event.state === "connected") {
         state.sshRemote = event.mode === "remote" && event.alias
           ? { alias: event.alias, connected: true }
