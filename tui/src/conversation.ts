@@ -440,8 +440,8 @@ export function buildMessageLines(
         ? msg.metadata
         : assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
       const metadataLines = isCallTranscript
-        ? renderMetadata(metadata)
-        : nextContinuesAssistantSegment ? [] : renderMetadata(metadata, { active: msg === durableSleepAssistant });
+        ? renderMetadata(metadata, { width: availableWidth })
+        : nextContinuesAssistantSegment ? [] : renderMetadata(metadata, { width: availableWidth, active: msg === durableSleepAssistant });
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
       const contentEnd = lines.length;
       for (let i = 0; i < metadataLines.length; i++) {
@@ -512,7 +512,7 @@ export function buildMessageLines(
       && !terminalNoticePendingStop
     ));
     const metadata = pendingAssistantSegmentMetadata(state) ?? pendingAssistantRunMetadata(state);
-    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(metadata) : [];
+    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(metadata, { width: availableWidth }) : [];
     const compactionStartedAt = state.contextCompactionStartedAt;
     const compactionActive = compactionStartedAt != null;
     if (metadataLines.length > 0 || compactionActive) trimTrailingBlankAssistantContent(start);
@@ -563,7 +563,7 @@ export function buildMessageLines(
     for (const block of msg.blocks) {
       pushBlock(block, "assistant_block", renderAssistantBlock(block));
     }
-    const metadataLines = renderMetadata(msg.metadata);
+    const metadataLines = renderMetadata(msg.metadata, { width: availableWidth });
     if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
     const contentEnd = lines.length;
     for (let i = 0; i < metadataLines.length; i++) {

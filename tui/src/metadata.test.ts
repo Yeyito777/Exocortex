@@ -1,7 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import { renderMetadata } from "./metadata";
+import { visibleLength } from "./textwidth";
+import { theme } from "./theme";
 
 describe("renderMetadata", () => {
+  test("fits metadata and its indent into terminal columns, including Unicode and tiny panes", () => {
+    for (const model of ["gpt-6-astra", "模型👩‍💻é-super-long-model-name"]) {
+      const metadata = { startedAt: 0, endedAt: 289_000, model, tokens: 3161 };
+      const [full] = renderMetadata(metadata);
+      for (let width = 0; width <= visibleLength(full) + 1; width++) {
+        const lines = renderMetadata(metadata, { width });
+        expect(lines).toHaveLength(1);
+        expect(visibleLength(lines[0])).toBeLessThanOrEqual(width);
+        expect(lines[0].endsWith(theme.reset)).toBe(true);
+        if (width > 0 && width < visibleLength(full)) expect(lines[0]).toContain("…");
+        if (width >= visibleLength(full)) expect(lines[0]).toBe(full);
+      }
+    }
+    expect(renderMetadata(null, { width: 24 })).toEqual([]);
+  });
+
   test("renders formatted provider model names", () => {
     const [line] = renderMetadata({
       startedAt: 1_000,

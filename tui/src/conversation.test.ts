@@ -18,6 +18,33 @@ describe("plain word wrapping", () => {
   });
 });
 
+describe("assistant metadata pane boundaries", () => {
+  for (const source of ["history", "pending", "transcript", "call draft"] as const) {
+    test(`constrains ${source} metadata after shrinking and restores it after growing`, () => {
+      const state = createInitialState();
+      const message = createPendingAI(1_000, "gpt-6-astra");
+      message.blocks = [{ type: "text", text: "Done." }];
+      message.metadata!.tokens = 3161;
+      message.metadata!.endedAt = 290_000;
+      if (source === "transcript" || source === "call draft") {
+        message.metadata!.kind = REALTIME_TRANSCRIPT_KIND;
+      }
+      if (source === "pending") state.pendingAI = message;
+      else if (source === "call draft") state.callAssistantDraft = { callId: "test", final: false, message };
+      else state.messages = [message];
+
+      for (const width of [80, 24, 12, 80]) {
+        const rendered = buildMessageLines(state, width);
+        const lines = rendered.lines.filter((_, i) => rendered.lineAnchors[i].segment === "assistant_metadata");
+        expect(lines).toHaveLength(1);
+        expect(visibleLength(lines[0])).toBeLessThanOrEqual(width);
+        if (width < 37) expect(lines[0]).toContain("…");
+        else expect(stripAnsi(lines[0])).toContain("GPT-6-Astra | 3,161 tokens |");
+      }
+    });
+  }
+});
+
 describe("system instructions spacing", () => {
   test("renders one blank row between the instructions box and a following user message", () => {
     const state = createInitialState();

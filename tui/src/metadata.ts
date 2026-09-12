@@ -7,6 +7,7 @@
 
 import { formatModelDisplayName, type MessageMetadata } from "./messages";
 import { theme } from "./theme";
+import { truncateToWidth } from "./textwidth";
 
 // ── Formatting ──────────────────────────────────────────────────────
 
@@ -43,11 +44,12 @@ function formatTokenCount(tokens: number): string {
  *
  * @param metadata  The metadata to render (null = no output).
  * @param options.active  Keep elapsed time live even if endedAt is persisted.
+ * @param options.width  Available pane columns, including the assistant indent.
  * @returns Lines to append below the message content.
  */
 export function renderMetadata(
   metadata: MessageMetadata | null,
-  options: { active?: boolean; now?: number } = {},
+  options: { active?: boolean; now?: number; width?: number } = {},
 ): string[] {
   if (!metadata) return [];
 
@@ -64,6 +66,8 @@ export function renderMetadata(
   const elapsed = (options.active ? now : metadata.endedAt ?? now) - metadata.startedAt;
   parts.push(formatDuration(elapsed));
 
-  const line = parts.join(" | ");
-  return [`  ${theme.dim}${line}${theme.reset}`];
+  // Metadata is single-line chrome, not a wrapped content block. Include the
+  // indent in its column budget so it cannot paint into a neighboring pane.
+  const line = truncateToWidth(`  ${parts.join(" | ")}`, options.width ?? Infinity);
+  return [`${theme.dim}${line}${theme.reset}`];
 }
