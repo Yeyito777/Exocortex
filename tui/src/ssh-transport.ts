@@ -29,6 +29,13 @@ export function sshProxyArgs(alias: string): string[] {
     "-C",
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=10",
+    // A suspended laptop can leave TCP apparently connected long after its
+    // network/NAT session is gone. Bound that silence so the TUI's existing
+    // reconnect loop runs instead of waiting for the OS TCP timeout.
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=3",
+    // Do not inherit a shared master whose keepalive policy we cannot control.
+    "-o", "ControlPath=none",
     alias,
     "exocortexd", "proxy",
   ];

@@ -43,6 +43,8 @@ describe("TUI SSH transport", () => {
     expect(validateSshAlias("user@host")).not.toBeNull();
     expect(sshProxyArgs("whale")).toEqual([
       "-T", "-C", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+      "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+      "-o", "ControlPath=none",
       "whale", "exocortexd", "proxy",
     ]);
   });

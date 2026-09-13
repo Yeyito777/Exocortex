@@ -25,7 +25,6 @@ import {
   validateSshAlias,
   type ProbedSshConnection,
   type SpawnSshProcess,
-  type SshProcess,
 } from "./ssh-transport";
 
 export type EventHandler = (event: Event) => void;
@@ -37,7 +36,7 @@ export type TranscriptionErrorCallback = (message: string) => void;
 export interface ConnectResult {
   /** Commands that entered the offline queue before this socket became ready. */
   replayedCommands: Command[];
-  /** The adopted SSH probe already requested the normal daemon bootstrap. */
+  /** The SSH readiness probe already requested the normal daemon bootstrap. */
   bootstrapAlreadyRequested?: boolean;
   /**
    * Release bootstrap events retained by an adopted SSH probe. Route switches
@@ -199,23 +198,47 @@ export class DaemonClient {
     });
   }
 
-  private async connectSsh(alias: string): Promise<ConnectResult> {
-    return new Promise((resolve, reject) => {
-      const probed = this.pendingSshConnection?.alias === alias
-        ? this.pendingSshConnection
-        : null;
-      if (probed) this.pendingSshConnection = null;
-      let process: SshProcess;
-      if (probed) {
-        process = probed.process;
-      } else {
-        try {
-          process = this.spawnSshProcess(alias);
-        } catch (error) {
-          reject(new Error(`Could not start SSH proxy for ${alias}: ${error instanceof Error ? error.message : String(error)}`));
-          return;
-        }
+  private async probeSshReconnect(alias: string): Promise<ProbedSshConnection> {
+    const probe = probeSshProxy(alias, {
+      spawnProcess: this.spawnSshProcess,
+      timeoutMs: this.sshProbeTimeoutMs,
+    });
+    // Keep even an unauthenticated attempt cancellable by disconnect/route
+    // switches. Spawning ssh is not readiness: never flush the offline queue
+    // until a correlated pong proves the remote daemon is reachable.
+    const transport: ClientTransport = {
+      write: () => {},
+      end: () => probe.cancel("SSH connection attempt cancelled"),
+      destroy: () => probe.cancel("SSH connection attempt cancelled"),
+    };
+    this.socket = transport;
+    this._connected = false;
+    try {
+      const connection = await probe.promise;
+      if (this.socket !== transport || this.sshAlias !== alias || this.intentionalDisconnect) {
+        try { connection.process.kill(); } catch { /* already gone */ }
+        throw new Error("SSH route was superseded");
       }
+      return connection;
+    } catch (error) {
+      if (this.socket === transport && this.sshAlias === alias && !this.intentionalDisconnect) {
+        this.handler(this.currentRouteStatus("failed", `Could not connect through SSH alias ${alias}: ${error instanceof Error ? error.message : String(error)}`));
+      }
+      this.handleSocketClose(transport, false);
+      throw error;
+    }
+  }
+
+  private async connectSsh(alias: string): Promise<ConnectResult> {
+    let probed: ProbedSshConnection;
+    if (this.pendingSshConnection?.alias === alias) {
+      probed = this.pendingSshConnection;
+      this.pendingSshConnection = null;
+    } else {
+      probed = await this.probeSshReconnect(alias);
+    }
+    return new Promise((resolve, reject) => {
+      const process = probed.process;
 
       let active!: ActiveSshConnection;
       const transport: ClientTransport = {
@@ -230,7 +253,7 @@ export class DaemonClient {
       };
       active = {
         transport,
-        stderr: probed?.stderr ?? "",
+        stderr: probed.stderr,
         connected: false,
         intentionalClose: false,
         finished: false,
@@ -272,16 +295,14 @@ export class DaemonClient {
       // probe paused until the reconnect continuation explicitly clears
       // route-switch suppression in main.ts. A microtask is not sufficient here:
       // connect()'s nested promise continuations may run after that microtask.
-      if (probed) {
-        process.stdout.pause();
-        process.stderr.resume();
-      }
+      process.stdout.pause();
+      process.stderr.resume();
       let bootstrapEventsReleased = false;
       const releaseBootstrapEvents = () => {
         if (bootstrapEventsReleased) return;
         bootstrapEventsReleased = true;
         if (active.finished || this.socket !== transport) return;
-        if (probed?.bufferedStdout) this.onData(probed.bufferedStdout);
+        if (probed.bufferedStdout) this.onData(probed.bufferedStdout);
         process.stdout.resume();
       };
       const activate = () => {
@@ -299,23 +320,17 @@ export class DaemonClient {
         const replayedCommands = this.flushPendingCommands();
         resolve({
           replayedCommands,
-          ...(probed ? {
-            bootstrapAlreadyRequested: true,
-            releaseBootstrapEvents,
-          } : {}),
+          bootstrapAlreadyRequested: true,
+          releaseBootstrapEvents,
         });
       };
-      if (probed) {
-        activate();
-      } else {
-        process.once("spawn", activate);
-      }
       process.once("error", error => finish(error.message));
       process.once("close", (code: number | null, signal: NodeJS.Signals | null) => {
         const result = signal ? `signal ${signal}` : `exit ${code ?? "unknown"}`;
         finish(`SSH proxy closed (${result})`);
       });
       process.stdin.once("error", error => finish(`SSH stdin error: ${error.message}`));
+      activate();
     });
   }
 

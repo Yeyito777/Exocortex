@@ -51,6 +51,112 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("DaemonClient SSH routing", () => {
+  test("reconnect waits for the daemon pong before replay and preserves bootstrap events", async () => {
+    const first = respondingProbe();
+    const retry = new FakeProcess();
+    const events: any[] = [];
+    let attempts = 0;
+    let losses = 0;
+    const client = new DaemonClient(event => events.push(event), "/tmp/local.sock", false, {
+      spawnSshProcess: () => ++attempts === 1 ? first : retry,
+    });
+    client.onConnectionLost(() => { losses++; });
+    try {
+      client.ssh("connect", "whale");
+      await waitFor(() => client.remoteAlias === "whale");
+      (await client.connect()).releaseBootstrapEvents?.();
+      first.emit("close", 255, null); // OpenSSH keepalive failure after network loss
+      expect(client.connected).toBe(false);
+      expect(losses).toBe(1);
+      client.send({ type: "list_conversations" });
+
+      let ready = false;
+      const connecting = client.connect().then(result => { ready = true; return result; });
+      retry.emit("spawn");
+      await Bun.sleep(1);
+      expect(ready).toBe(false);
+      expect(client.connected).toBe(false);
+      const ping = JSON.parse(retry.input.trim());
+      expect(ping.type).toBe("ping");
+      retry.stdout.write('{"type":"pong","reqId":"wrong"}\n');
+      await Bun.sleep(1);
+      expect(ready).toBe(false);
+      expect(retry.input).not.toContain("list_conversations");
+
+      retry.stdout.write(`${JSON.stringify({ type: "pong", reqId: ping.reqId })}\n{"type":"conversations_list","conversations":[]}\n`);
+      const result = await connecting;
+      expect(client.connected).toBe(true);
+      expect(result.replayedCommands).toEqual([{ type: "list_conversations" }]);
+      expect(result.bootstrapAlreadyRequested).toBe(true);
+      expect(retry.input.match(/list_conversations/g)).toHaveLength(1);
+      expect(events.some(event => event.type === "conversations_list")).toBe(false);
+      result.releaseBootstrapEvents?.();
+      await waitFor(() => events.some(event => event.type === "conversations_list"));
+      first.emit("close", 255, null);
+      expect(client.connected).toBe(true);
+      expect(losses).toBe(1);
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  test("a blackholed reconnect times out without consuming queued commands and can retry", async () => {
+    const first = respondingProbe();
+    const stalled = new FakeProcess();
+    const recovered = respondingProbe();
+    const processes = [first, stalled, recovered];
+    const client = new DaemonClient(() => {}, "/tmp/local.sock", false, {
+      spawnSshProcess: () => processes.shift()!,
+      sshProbeTimeoutMs: 20,
+    });
+    try {
+      client.ssh("connect", "whale");
+      await waitFor(() => client.remoteAlias === "whale");
+      (await client.connect()).releaseBootstrapEvents?.();
+      first.emit("close", 255, null);
+      client.send({ type: "list_conversations" });
+      const connecting = client.connect();
+      stalled.emit("spawn");
+      await expect(connecting).rejects.toThrow("timed out");
+      expect(stalled.killed).toBe(true);
+      expect(client.connected).toBe(false);
+      expect(stalled.input).not.toContain("list_conversations");
+      const result = await client.connect();
+      result.releaseBootstrapEvents?.();
+      expect(result.replayedCommands).toEqual([{ type: "list_conversations" }]);
+      expect(client.connected).toBe(true);
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  for (const action of ["disconnect", "cancel-route"] as const) {
+    test(`${action} cancels an in-flight reconnect without reviving its route`, async () => {
+      const first = respondingProbe();
+      const stalled = new FakeProcess();
+      let attempts = 0;
+      const client = new DaemonClient(() => {}, "/tmp/local.sock", false, {
+        spawnSshProcess: () => ++attempts === 1 ? first : stalled,
+      });
+      try {
+        client.ssh("connect", "whale");
+        await waitFor(() => client.remoteAlias === "whale");
+        (await client.connect()).releaseBootstrapEvents?.();
+        first.emit("close", 255, null);
+        const connecting = client.connect();
+        if (action === "disconnect") client.disconnect();
+        else client.ssh("cancel");
+        await expect(connecting).rejects.toThrow("cancelled");
+        expect(stalled.killed).toBe(true);
+        expect(client.connected).toBe(false);
+        expect(stalled.input).not.toContain("client_capabilities");
+        if (action === "cancel-route") expect(client.remoteAlias).toBeNull();
+      } finally {
+        client.disconnect();
+      }
+    });
+  }
+
   test("reconstructs incremental history before delivery and isolates caches by route", async () => {
     const spawned: FakeProcess[] = [];
     const received: Extract<HistoryResponse, { type: "conversation_loaded" }>[] = [];
