@@ -10,6 +10,7 @@ import {
 } from "../sidebarsearch";
 
 export interface SidebarRowsState {
+  updateAvailable?: boolean;
   conversations: ConversationSummary[];
   folders: FolderSummary[];
   currentFolderId: string | null;
@@ -66,7 +67,12 @@ export function buildDisplayRows(sidebar: SidebarRowsState): DisplayRow[] {
 export function sidebarListRows(totalRows: number, sidebar: SidebarRowsState): number {
   const promptAutocompleteRows = sidebarPromptAutocompleteVisibleRows(sidebar.prompt ?? null, Boolean(sidebar.search?.barOpen), totalRows);
   const bottomBarRows = sidebar.search?.barOpen ? 1 : sidebar.prompt ? 1 + promptAutocompleteRows : 0;
-  return Math.max(0, totalRows - 2 - bottomBarRows);
+  return Math.max(0, totalRows - 2 - bottomBarRows - sidebarUpdateRows(totalRows, sidebar));
+}
+
+/** Editing bars take precedence, including on very small terminals. */
+export function sidebarUpdateRows(totalRows: number, sidebar: SidebarRowsState): number {
+  return sidebar.updateAvailable && !sidebar.search?.barOpen && !sidebar.prompt && totalRows >= 5 ? 2 : 0;
 }
 
 export function findDisplayEntry(

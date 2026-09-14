@@ -7,7 +7,7 @@ import {
   getSidebarPromptBar,
   sidebarPromptAutocompleteVisibleRows,
 } from "./prompt";
-import { buildDisplayRows, revealPrecedingSectionLabel, sidebarListRows } from "./rows";
+import { buildDisplayRows, revealPrecedingSectionLabel, sidebarListRows, sidebarUpdateRows } from "./rows";
 import { selectedDisplayRow, selectedVisualItems } from "./selection";
 import type { SidebarState } from "./state";
 import {
@@ -391,6 +391,14 @@ export function renderSidebar(
     }
     rows.push(
       getSidebarPromptBar(sidebar.prompt, innerWidth) +
+      theme.reset + borderBg + borderFg + "│" + theme.reset,
+    );
+  }
+
+  if (sidebarUpdateRows(totalRows, sidebar)) {
+    rows.push(theme.sidebarBg + borderFg + "─".repeat(innerWidth) + borderBg + "┤" + theme.reset);
+    rows.push(
+      theme.sidebarBg + theme.success + pad(" ↑ Update available", innerWidth) +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   }

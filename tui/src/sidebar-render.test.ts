@@ -4,6 +4,9 @@ import type { ConversationSummary } from "./messages";
 import { SIDEBAR_WIDTH } from "./sidebar/layout";
 import { theme } from "./theme";
 import { visibleLength } from "./textwidth";
+import { sidebarHitTest } from "./sidebar/hit";
+import { sidebarListRows } from "./sidebar/rows";
+import { openSidebarSearchBar } from "./sidebarsearch";
 
 function conversation(id: string, sortOrder: number, overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
@@ -26,6 +29,40 @@ function conversation(id: string, sortOrder: number, overrides: Partial<Conversa
 }
 
 describe("sidebar rendering", () => {
+  test("update notice is anchored to the bottom and never hits overflowing entries", () => {
+    const sidebar = createSidebarState();
+    sidebar.updateAvailable = true;
+    sidebar.conversations = Array.from({ length: 30 }, (_, i) => conversation(String(i), i));
+    const rows = renderSidebar(sidebar, 12, true, null);
+    expect(rows).toHaveLength(12);
+    expect(rows[11]).toContain("↑ Update available");
+    expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
+    expect(sidebarListRows(12, sidebar)).toBe(8);
+    expect(sidebarHitTest(10, 12, sidebar)).not.toBeNull();
+    expect(sidebarHitTest(11, 12, sidebar)).toBeNull();
+    expect(sidebarHitTest(12, 12, sidebar)).toBeNull();
+    expect(sidebarHitTest(13, 12, sidebar)).toBeNull();
+    sidebar.updateAvailable = false;
+    expect(renderSidebar(sidebar, 12, true, null).join("")).not.toContain("Update available");
+    expect(sidebarListRows(12, sidebar)).toBe(10);
+  });
+
+  test("small terminals and editing bars retain their space", () => {
+    const sidebar = createSidebarState();
+    sidebar.updateAvailable = true;
+    expect(renderSidebar(sidebar, 4, true, null)).toHaveLength(4);
+    expect(renderSidebar(sidebar, 4, true, null).join("")).not.toContain("Update available");
+    sidebar.prompt = { purpose: "create_folder", input: "", cursorPos: 0, items: [] };
+    expect(sidebarListRows(12, sidebar)).toBe(9);
+    expect(renderSidebar(sidebar, 12, true, null).join("")).not.toContain("Update available");
+    sidebar.prompt = null;
+    openSidebarSearchBar(sidebar, "forward");
+    expect(sidebarListRows(12, sidebar)).toBe(9);
+    const rows = renderSidebar(sidebar, 12, true, null);
+    expect(rows).toHaveLength(12);
+    expect(rows.join("")).not.toContain("Update available");
+  });
+
   test("appends the purple remote alias to the contextual sidebar title", () => {
     const sidebar = createSidebarState();
 
