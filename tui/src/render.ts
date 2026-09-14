@@ -1302,9 +1302,6 @@ export function render(state: RenderState): boolean {
     lines.forEach((line, index) => appendFrameRowWrite(
       frameRows, index + 3, sidebarWidth + 2, `${theme.warning}${line}${theme.reset}`,
     ));
-    wordWrap("Esc to cancel · Ctrl+C to quit", width).lines.forEach((line, index) => appendFrameRowWrite(
-      frameRows, lines.length + index + 4, sidebarWidth + 2, `${theme.dim}${line}${theme.reset}`,
-    ));
     flushFrame(state, { rows: frameRows, cursor: hide_cursor, scrollRegion: null, viewStart: 0 });
     return true;
   }

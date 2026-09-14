@@ -85,7 +85,8 @@ describe("render caching and frame diffing", () => {
     state.sshConnecting = { phase: "probing", message: "Connecting through SSH alias whale…" };
     const progress = captureRenderOutput(state);
     expect(progress).toContain("Connecting through SSH alias whale");
-    expect(progress).toContain("Esc to cancel");
+    expect(progress).not.toContain("Esc to cancel");
+    expect(progress).not.toContain("Ctrl+C to quit");
     expect(progress).not.toContain("Old local conversation");
     expect(progress).not.toContain("hello");
     expect(progress).toContain(hide_cursor);
