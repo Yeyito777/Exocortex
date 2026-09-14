@@ -117,7 +117,7 @@ export interface LayoutCache {
   /** Screen rectangle occupied by the non-interactive task panel. */
   taskPanelRect: { top: number; bottom: number; left: number; right: number } | null;
   /** Canonical history row and source/display offsets rendered on each message-area row. */
-  historyViewportRows: Array<{ lineIndex: number; startCol: number; displayPrefixWidth: number } | null>;
+  historyViewportRows: Array<{ lineIndex: number; startCol: number; displayPrefixWidth: number; endCol?: number } | null>;
   chatCol: number;         // 1-based column where chat area starts
   sepAbove: number;        // first row below the message area (search bar or separator)
   firstInputRow: number;   // row number of first input line
@@ -338,6 +338,8 @@ export interface RenderState {
   folderInstructionsDoc: FolderInstructionsDocumentState | null;
   /** Current mouse cursor shape — used to avoid redundant cursor shape OSC writes. */
   mouseCursor: "pointer" | "text" | "hand";
+  /** Open only on release at the original link, never when dragging to select. */
+  mouseLinkPress?: { row: number; col: number; target: string } | null;
 }
 
 /** Visible assistant streaming and hidden goal review both serialize user sends. */

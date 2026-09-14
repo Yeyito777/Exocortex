@@ -6,7 +6,7 @@ import { padRightToWidth, padVisibleRightToWidth, termWidth, truncateToWidth } f
 import { theme } from "../theme";
 import type { BtwPanelState } from "./state";
 import type { MessageBound, RenderLineAnchor } from "../conversation";
-import type { WrapCopyLine } from "../textwrap";
+import type { WrapCopyLine, WrapResult } from "../textwrap";
 import { clampCursor, contentBounds, logicalLineRange, stripAnsi } from "../historycursor";
 import { renderLineWithCursor, renderLineWithSearch, renderLineWithSelection } from "../cursorrender";
 import { findSearchMatches } from "../search";
@@ -78,7 +78,7 @@ function renderBtwContent(
   const pushRendered = (
     owner: object,
     segment: RenderLineAnchor["segment"],
-    rendered: { lines: string[]; cont: boolean[]; join: string[]; copy?: Array<WrapCopyLine | null> },
+    rendered: WrapResult,
   ) => {
     let logicalIndex = -1;
     let subIndex = 0;
@@ -94,6 +94,7 @@ function renderBtwContent(
       join.push(rendered.join[index]);
       copy.push(rendered.copy?.[index] ?? null);
       lineAnchors.push({ owner, segment, index: logicalIndex, subIndex });
+      if (rendered.links?.[index]?.length) lineAnchors[lineAnchors.length - 1].links = rendered.links[index];
     }
   };
   const pushBlank = (owner: object, segment: RenderLineAnchor["segment"]) => {

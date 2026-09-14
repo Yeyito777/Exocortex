@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultOpenersConfig, readExocortexConfig } from "@exocortex/shared/config";
+import { isWebUrl, trimUrlPunctuation } from "./links";
 
 export interface OpenableTargetMatch {
   target: string;
@@ -163,8 +164,8 @@ function collectUrlMatches(text: string): OpenableTargetMatch[] {
   for (const match of text.matchAll(URL_RE)) {
     const raw = match[0];
     const start = match.index ?? 0;
-    const target = trimTrailingTargetPunctuation(raw);
-    if (!target) continue;
+    const target = trimUrlPunctuation(raw);
+    if (!isWebUrl(target)) continue;
     matches.push({ target, start, end: start + target.length });
   }
   return matches;
@@ -210,7 +211,7 @@ export function resolveOpenCommand(target: string): OpenCommand | null {
   const openers = readOpenersConfig();
 
   if (/^https?:\/\//i.test(target)) {
-    return openers.url ? commandFromConfig(openers.url, target) : null;
+    return openers.url && isWebUrl(target) ? commandFromConfig(openers.url, target) : null;
   }
 
   const rule = ruleForPath(target, openers.rules);

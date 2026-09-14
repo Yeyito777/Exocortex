@@ -23,6 +23,7 @@ export const tonikawa: Theme = {
 
   // Foreground colors
   accent:   `${ESC}38;2;228;127;172m`,   // #e47fac
+  link:     `${ESC}38;2;228;127;172m`,   // #e47fac
   text:     `${ESC}38;2;238;233;237m`,   // #eee9ed
   muted:    `${ESC}38;2;141;128;138m`,   // #8d808a
   error:    `${ESC}38;2;224;108;117m`,   // #e06c75

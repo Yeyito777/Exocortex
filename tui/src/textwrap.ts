@@ -5,9 +5,11 @@
  * logical text without adding or losing separators at soft-wrap boundaries.
  */
 import { sliceByWidthFrom } from "./textwidth";
+import type { LinkSpan } from "./links";
 
 export interface WrapResult {
   lines: string[];
+  links?: LinkSpan[][];
   /** true for visual lines that are continuations of the previous logical line. */
   cont: boolean[];
   /** separator to reinsert before each continuation line when reconstructing plain text. */

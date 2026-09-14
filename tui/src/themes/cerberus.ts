@@ -23,6 +23,7 @@ export const cerberus: Theme = {
 
   // Foreground colors
   accent:   `${ESC}38;2;211;47;47m`,     // #d32f2f
+  link:     `${ESC}38;2;239;154;154m`,   // #ef9a9a
   text:     `${ESC}38;2;224;224;224m`,    // #e0e0e0
   muted:    `${ESC}38;2;102;102;102m`,    // #666666
   error:    `${ESC}38;2;244;67;54m`,      // #f44336
