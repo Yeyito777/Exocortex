@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 export const UPDATE_CHECK_INTERVAL_MS = 120_000;
+export const DAEMON_STATUS_INTERVAL_MS = 10_000;
 const UPSTREAM = "Yeyito777/Exocortex";
 export type UpdateRequest = (url: string, init: RequestInit) => Promise<Response>;
 export type UpdateStatus = "none" | "update_available" | "restart_needed" | "disabled" | "unknown";
@@ -65,18 +66,35 @@ async function compareUpstream(root: string, head: string, request: UpdateReques
  * Capture the running daemon's revision ONCE, at startup, not on the first
  * request. A pull changes disk HEAD but must not change this process identity.
  */
-export function createUpdateStatusChecker(root: string, request: UpdateRequest = fetch): () => Promise<UpdateStatus> {
+export function createUpdateStatusChecker(
+  root: string,
+  request: UpdateRequest = fetch,
+  now: () => number = () => performance.now(),
+): () => Promise<UpdateStatus> {
   const startedHead = eligibleUpdateHead(root);
   let inFlight: Promise<UpdateStatus> | null = null;
+  // Shared by every client of this daemon. Cache failures too, so offline or
+  // rate-limited hosts aren't retried at the faster local-status cadence.
+  let upstream: { head: string; available: boolean | null; expiresAt: number } | null = null;
   const check = async (): Promise<UpdateStatus> => {
     const [running, disk] = await Promise.all([startedHead, eligibleUpdateHead(root)]);
-    if (!running || !disk) return "disabled";
+    if (!running || !disk) {
+      upstream = null;
+      return "disabled";
+    }
     // Restart takes precedence, works offline, and does not wait on GitHub.
-    if (running !== disk) return "restart_needed";
-    const available = await compareUpstream(root, disk, request);
+    if (running !== disk) {
+      upstream = null;
+      return "restart_needed";
+    }
+    const cached = upstream?.head === disk && now() < upstream.expiresAt ? upstream : null;
+    const available = cached ? cached.available : await compareUpstream(root, disk, request);
     const current = await eligibleUpdateHead(root);
-    if (!current) return "disabled";
-    if (current !== running) return "restart_needed";
+    if (!current || current !== running) {
+      upstream = null;
+      return current ? "restart_needed" : "disabled";
+    }
+    if (!cached) upstream = { head: disk, available, expiresAt: now() + UPDATE_CHECK_INTERVAL_MS };
     return available === null ? "unknown" : available ? "update_available" : "none";
   };
   return () => {

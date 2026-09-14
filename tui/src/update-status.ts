@@ -1,4 +1,4 @@
-import { UPDATE_CHECK_INTERVAL_MS, type UpdateStatus } from "@exocortex/shared/updatecheck";
+import { DAEMON_STATUS_INTERVAL_MS, type UpdateStatus } from "@exocortex/shared/updatecheck";
 import { DaemonClient } from "./client";
 
 export interface UpdateSnapshot {
@@ -47,7 +47,7 @@ export class UpdateStatusMonitor {
     private readonly active: () => Promise<UpdateStatus>,
     private readonly local: () => Promise<UpdateStatus>,
     private readonly onChange: (snapshot: UpdateSnapshot) => void,
-    intervalMs = UPDATE_CHECK_INTERVAL_MS,
+    intervalMs = DAEMON_STATUS_INTERVAL_MS,
   ) {
     this.alias = alias;
     this.snapshot.remote = alias ? "unknown" : null;

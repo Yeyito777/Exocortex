@@ -53,6 +53,50 @@ describe("mainline update eligibility", () => {
 });
 
 describe("GitHub comparison", () => {
+  test("frequent status queries share GitHub results until the two-minute cache expires", async () => {
+    const root = repo();
+    let time = 0;
+    let requests = 0;
+    let ahead = false;
+    const checker = createUpdateStatusChecker(root, async () => {
+      requests++;
+      return Response.json({ status: ahead ? "ahead" : "identical", ahead_by: ahead ? 1 : 0 });
+    }, () => time);
+    expect(await Promise.all([checker(), checker()])).toEqual(["none", "none"]);
+    expect(requests).toBe(1);
+    ahead = true;
+    for (time = 10_000; time < UPDATE_CHECK_INTERVAL_MS; time += 10_000) {
+      expect(await checker()).toBe("none");
+    }
+    expect(requests).toBe(1);
+    expect(await checker()).toBe("update_available");
+    expect(requests).toBe(2);
+    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "downloaded update");
+    time += 10_000;
+    expect(await checker()).toBe("restart_needed");
+    expect(requests).toBe(2); // Disk checks bypass even a fresh GitHub cache.
+  });
+
+  test("failed GitHub checks are throttled too, without delaying restart detection", async () => {
+    const root = repo();
+    let time = 0;
+    let requests = 0;
+    const checker = createUpdateStatusChecker(root, async () => {
+      requests++;
+      throw new Error("offline");
+    }, () => time);
+    expect(await checker()).toBe("unknown");
+    time = 10_000;
+    expect(await checker()).toBe("unknown");
+    expect(requests).toBe(1);
+    time = UPDATE_CHECK_INTERVAL_MS;
+    expect(await checker()).toBe("unknown");
+    expect(requests).toBe(2);
+    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "offline update");
+    expect(await checker()).toBe("restart_needed");
+    expect(requests).toBe(2);
+  });
+
   test("daemon revision is captured once; downloaded updates need restart even offline", async () => {
     const root = repo();
     let requests = 0;

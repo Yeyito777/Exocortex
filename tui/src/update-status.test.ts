@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { UpdateStatusMonitor, type UpdateSnapshot } from "./update-status";
-import type { UpdateStatus } from "@exocortex/shared/updatecheck";
+import { DAEMON_STATUS_INTERVAL_MS, UPDATE_CHECK_INTERVAL_MS, type UpdateStatus } from "@exocortex/shared/updatecheck";
 
 const pause = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
 
 describe("update status routing", () => {
+  test("daemon polling is ten seconds while GitHub refreshes remain two minutes", () => {
+    expect(DAEMON_STATUS_INTERVAL_MS).toBe(10_000);
+    expect(UPDATE_CHECK_INTERVAL_MS).toBe(120_000);
+  });
+
   test("polls local immediately and periodically without an extra local connection", async () => {
     let activeCalls = 0;
     let localCalls = 0;

@@ -28,10 +28,15 @@ The daemon captures its eligible revision once during startup, not when a TUI
 first asks. Restarting it captures the new revision. A daemon predating this
 feature must itself be upgraded and restarted before it can report status.
 
-The TUI checks asynchronously at startup, every 120 seconds, and after route
+The TUI checks daemon/restart status asynchronously at startup, every 10 seconds, and after route
 changes/reconnects. Requests don't overlap on a route; late replies from an old
 route are discarded. SSH's local status uses a separate, short-lived local
 socket connection, without changing the active route.
+
+Each daemon caches GitHub comparison results for 120 seconds across all clients,
+including failed requests. Disk revision checks bypass that cache, so downloaded
+updates show **Restart needed** on the next fast status check without another
+GitHub request.
 
 The wire request is `ping` with `updateStatusOnly: true`. Updated daemons respond
 with a correlated `pong` carrying `updateStatus`, without conversation or usage
