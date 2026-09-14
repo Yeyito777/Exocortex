@@ -14,7 +14,7 @@ import { backgroundTaskRecordPath, removeBackgroundTaskRecord, suppressBackgroun
 import type { Tool, ToolExecutionContext, ToolResult } from "./types";
 import { safeSlice } from "./util";
 import { spawnShellRunner } from "./shell-runner";
-import { killProcessGroup } from "./bash";
+import { bash, killProcessGroup } from "./bash";
 import { getDaemonShutdownMode } from "../daemon-lifecycle";
 
 interface Session {
@@ -326,7 +326,7 @@ export const execCommand: Tool = {
     max_output_tokens: { type: "integer", minimum: 1, maximum: 30000, description: "Approximate output token budget. Defaults to 10000." },
   } },
   systemHint: "Use exec_command for shell commands, reading files, and searching (prefer rg for search). Use workdir to select a directory. Commands run locally with the daemon's permissions, not inside a Codex sandbox. External CLIs remain ordinary shell commands. A session_id means the process is still running: use write_stdin to send input or collect new output, chrono wait with the returned task_id for completion, or exo stop_task to stop it. Commands have a one-hour hard limit; output files are capped at 16 MiB. Stdin sessions belong to this conversation and do not survive daemon restarts, though detached tasks and their output can be recovered.",
-  display: { label: "$", color: "#89ddff" },
+  display: bash.display,
   summarize: input => ({ label: "$", detail: String(input.cmd ?? "") }), execute: executeCommand,
 };
 
@@ -339,7 +339,7 @@ export const writeStdin: Tool = {
     yield_time_ms: { type: "integer", minimum: 0, maximum: 300000, description: "Wait before returning output. Writes default to 250 ms (max 30000); empty polls default to 5000 ms (max 300000)." },
     max_output_tokens: { type: "integer", minimum: 1, maximum: 30000, description: "Approximate output token budget. Defaults to 10000." },
   } },
-  display: { label: "Stdin", color: "#89ddff" }, summarize: input => ({ label: "Stdin", detail: String(input.session_id ?? "") }), execute: executeStdin,
+  display: { label: "Stdin", color: bash.display.color }, summarize: input => ({ label: "Stdin", detail: String(input.session_id ?? "") }), execute: executeStdin,
 };
 
 export const unifiedExecInternalsForTest = {
