@@ -13,7 +13,7 @@ import {
 
 describe("conversation tool policy", () => {
   test("normal conversations default to installed internal tools", () => {
-    const conv = createConversation("root", "openai", "gpt-5.6-sol");
+    const conv = createConversation("root", "deepseek", "deepseek/pro");
     const resolved = resolveConversationToolPolicy(conv);
     expect(resolved.source).toBe("default");
     expect(resolved.configurableInternalToolNames).toContain("bash");
@@ -33,7 +33,7 @@ describe("conversation tool policy", () => {
     };
     const restore = setLoadedExternalToolsForTest([loaded]);
     try {
-      const conv = createConversation("root-external", "openai", "gpt-5.6-sol");
+      const conv = createConversation("root-external", "deepseek", "deepseek/pro");
       expect(resolveConversationToolPolicy(conv).externalToolNames).toEqual(["google"]);
       expect(buildToolPolicySnapshot(conv).external).toEqual([
         { name: "google", label: "Google", enabled: true },
@@ -56,7 +56,7 @@ describe("conversation tool policy", () => {
     }));
     const restore = setLoadedExternalToolsForTest(loaded);
     try {
-      const conv = createConversation("new-external", "openai", "gpt-5.6-sol");
+      const conv = createConversation("new-external", "deepseek", "deepseek/pro");
       conv.toolPolicy = {
         internal: ["read"],
         external: [],
@@ -79,7 +79,7 @@ describe("conversation tool policy", () => {
   });
 
   test("legacy scoped defaults remain research-only unless edits were delegated", () => {
-    const conv = createConversation("child", "openai", "gpt-5.6-sol");
+    const conv = createConversation("child", "deepseek", "deepseek/pro");
     conv.subagentMaxDepth = 0;
     conv.subagentPolicy = { parentConversationId: "root", allowEdits: false, parentSystemInstructions: "" };
     expect(resolveConversationToolPolicy(conv).configurableInternalToolNames).toEqual(["read", "glob", "grep", "browse"]);
@@ -91,7 +91,7 @@ describe("conversation tool policy", () => {
   });
 
   test("an exact selection controls schemas and exo still respects max depth", () => {
-    const conv = createConversation("selected", "openai", "gpt-5.6-sol");
+    const conv = createConversation("selected", "deepseek", "deepseek/pro");
     conv.subagentMaxDepth = 0;
     conv.subagentPolicy = { parentConversationId: "root", allowEdits: false, parentSystemInstructions: "" };
     conv.toolPolicy = { internal: ["read", "write", "exo"], external: [] };
@@ -99,7 +99,7 @@ describe("conversation tool policy", () => {
   });
 
   test("regular policy status ignores an exhausted budget retained from a delegated turn", () => {
-    const conv = createConversation("regular-after-delegation", "openai", "gpt-5.6-sol");
+    const conv = createConversation("regular-after-delegation", "deepseek", "deepseek/pro");
     conv.subagentMaxDepth = 0;
     conv.toolPolicy = { internal: ["read", "write", "exo"], external: [] };
 
@@ -109,7 +109,7 @@ describe("conversation tool policy", () => {
   });
 
   test("mutating a regular policy preserves exo after an exhausted delegated turn", async () => {
-    const conv = createConversation("regular-mutation-after-delegation", "openai", "gpt-5.6-sol");
+    const conv = createConversation("regular-mutation-after-delegation", "deepseek", "deepseek/pro");
     conv.subagentMaxDepth = 0;
     conv.toolPolicy = { internal: ["read", "write", "exo"], external: [] };
 
@@ -123,7 +123,7 @@ describe("conversation tool policy", () => {
   });
 
   test("enable, disable, and reset produce persisted exact policies", async () => {
-    const conv = createConversation("mutations", "openai", "gpt-5.6-sol");
+    const conv = createConversation("mutations", "deepseek", "deepseek/pro");
     conv.toolPolicy = { internal: ["read", "glob", "grep", "browse"], external: [] };
 
     const withWrite = await applyToolPolicyMutation(conv, { action: "enable", tools: [{ kind: "internal", name: "write" }] });
@@ -135,7 +135,7 @@ describe("conversation tool policy", () => {
   });
 
   test("snapshot distinguishes enabled and disabled tools and warns about bash", () => {
-    const conv = createConversation("snapshot", "openai", "gpt-5.6-sol");
+    const conv = createConversation("snapshot", "deepseek", "deepseek/pro");
     conv.toolPolicy = { internal: ["read", "bash"], external: [] };
     const snapshot = buildToolPolicySnapshot(conv);
     expect(snapshot.source).toBe("explicit");
@@ -160,7 +160,7 @@ describe("conversation tool policy", () => {
     };
     const restore = setLoadedExternalToolsForTest([loaded]);
     try {
-      const conv = createConversation("external-mutation", "openai", "gpt-5.6-sol");
+      const conv = createConversation("external-mutation", "deepseek", "deepseek/pro");
       conv.toolPolicy = { internal: ["read"], external: [] };
       const enabled = await applyToolPolicyMutation(conv, {
         action: "enable",
@@ -194,7 +194,7 @@ describe("conversation tool policy", () => {
     }));
     const restore = setLoadedExternalToolsForTest(loaded);
     try {
-      const conv = createConversation("external-child", "openai", "gpt-5.6-sol");
+      const conv = createConversation("external-child", "deepseek", "deepseek/pro");
       conv.subagentMaxDepth = 0;
       conv.subagentPolicy = { parentConversationId: "root", allowEdits: false, parentSystemInstructions: "" };
       conv.toolPolicy = {

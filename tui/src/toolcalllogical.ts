@@ -502,6 +502,10 @@ export function renderToolCallLogicalLines(
   externalToolStyles: ExternalToolStyle[],
   toolInput?: Record<string, unknown>,
 ): ToolCallLogicalLine[] {
+  if (toolName === "exec_command") {
+    return renderToolCallLogicalLines("bash", summary, toolRegistry, externalToolStyles,
+      toolInput ? { ...toolInput, command: toolInput.cmd } : undefined);
+  }
   const display = resolveToolDisplay(toolName, summary, toolRegistry, externalToolStyles);
   const stdinRange = toolName === "bash" ? bashStdinLineRange(summary, toolInput) : null;
 

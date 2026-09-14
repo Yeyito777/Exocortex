@@ -333,7 +333,7 @@ function inputStartsWith(input: unknown[], prefix: unknown[]): boolean {
 
 function isKnownPreviousResponseOutputItem(item: unknown): boolean {
   if (!isRecord(item)) return false;
-  if (item.type === "reasoning" || item.type === "function_call" || item.type === "compaction") return true;
+  if (item.type === "reasoning" || item.type === "function_call" || item.type === "custom_tool_call" || item.type === "compaction") return true;
   return item.type === "message" && item.role === "assistant";
 }
 

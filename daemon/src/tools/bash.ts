@@ -15,7 +15,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { writeFileSync } from "fs";
 import { open, rm } from "fs/promises";
 import { tmpdir } from "os";
-import { basename, join } from "path";
+import { join } from "path";
 import { randomUUID } from "crypto";
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
 import { getString, getNumber, getBoolean, safeSlice, summarizeParams } from "./util";
@@ -24,6 +24,7 @@ import { formatToolAbortMessage } from "../abort";
 import { isWindows, socketPath } from "@exocortex/shared/paths";
 import { rewriteExternalToolShellCommandForExecution } from "../external-tools";
 import { log } from "../log";
+import { spawnShellRunner } from "./shell-runner";
 import { getDaemonShutdownMode } from "../daemon-lifecycle";
 import {
   backgroundTaskRecordPath,
@@ -378,32 +379,12 @@ async function executeBashImpl(
     : {};
 
   return new Promise((resolve) => {
-    const runnerPath = isolatedRunnerPathForTest ?? join(import.meta.dir, "bash-runner.ts");
-    const isCompiledWindowsExecutable = isWindows
-      && !/^bun(?:\.exe)?$/i.test(basename(process.execPath));
-    const runnerArgs = isCompiledWindowsExecutable && !isolatedRunnerPathForTest
-      ? ["__exocortex_bash_runner"]
-      : [runnerPath];
     let runner: ChildProcessWithoutNullStreams;
     try {
-      const useTransientSystemdUnit = process.platform === "linux"
-        && Boolean(process.env.INVOCATION_ID)
-        && process.env.EXOCORTEX_DISABLE_TRANSIENT_BASH_UNITS !== "1"
-        && !isolatedRunnerPathForTest;
-      const executable = useTransientSystemdUnit ? "systemd-run" : process.execPath;
-      const executableArgs = useTransientSystemdUnit
-        ? [
-            "--user",
-            "--quiet",
-            "--collect",
-            "--pipe",
-            `--unit=exocortex-bash-${process.pid}-${executionId}`,
-            process.execPath,
-            ...runnerArgs,
-          ]
-        : runnerArgs;
-      runner = spawn(executable, executableArgs, {
+      runner = spawnShellRunner({
         cwd,
+        executionId,
+        runnerPathOverride: isolatedRunnerPathForTest,
         env: {
           ...process.env,
           ...(context?.conversationId ? { EXOCORTEX_PARENT_CONV_ID: context.conversationId } : {}),
@@ -413,8 +394,6 @@ async function executeBashImpl(
           EXOCORTEX_WORKSPACE: cwd,
           ...inputEnv,
         },
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: isWindows,
       });
     } catch (err) {
       restoreBackgroundTaskNotifications(intentionalStops);

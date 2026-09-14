@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { resolveToolDisplay, resolveBashExternalMatch } from "./toolstyles";
 import type { ExternalToolStyle, ToolDisplayInfo } from "./messages";
 import { hexToAnsi } from "./theme";
+import { renderToolCallLogicalLines } from "./toolcalllogical";
 
 const registry: ToolDisplayInfo[] = [
   { name: "bash", label: "$", color: "#d19a66" },
@@ -14,6 +15,12 @@ const externalToolStyles: ExternalToolStyle[] = [
 ];
 
 describe("bash external tool styling", () => {
+  test("Codex exec_command retains CLI labels and segmented command rendering", () => {
+    expect(resolveToolDisplay("exec_command", "gmail search newer_than:1d", registry, externalToolStyles).label).toBe("Gmail");
+    const command = "pwd; gmail search newer_than:1d";
+    expect(renderToolCallLogicalLines("exec_command", command, registry, externalToolStyles, { cmd: command }))
+      .toEqual(renderToolCallLogicalLines("bash", command, registry, externalToolStyles, { command }));
+  });
   test("matches direct external tool invocation", () => {
     const display = resolveToolDisplay("bash", "exo status --json", registry, externalToolStyles);
 

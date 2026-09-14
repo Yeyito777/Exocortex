@@ -130,6 +130,11 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
   if (_userAddendum) parts.push(_userAddendum);
   if (options.conversationInstructions) parts.push("# Conversation instructions\n" + options.conversationInstructions);
 
+  // User addenda and external manifests may still use the older tool names.
+  if (options.toolNames?.includes("exec_command")) parts.push(
+    "# Provider tool compatibility\nThis session uses Codex coding primitives. References in older instructions or CLI documentation to the bash tool mean exec_command (cmd/workdir, yield_time_ms); literal stdin can be passed using a shell heredoc or write_stdin. Read/search text with exec_command and standard commands, view images with view_image, and edit files with raw apply_patch. The legacy read/write/edit/patch/glob/grep/bash tools are not exposed in this session. The goal internal tool is currently disabled.",
+  );
+
   return parts;
 }
 

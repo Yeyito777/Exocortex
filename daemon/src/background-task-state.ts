@@ -20,7 +20,7 @@ export interface PersistedBackgroundTask {
   state: "running" | "completed";
   taskId: string;
   ownerConversationId: string;
-  toolName: "bash";
+  toolName: "bash" | "exec_command";
   title: string;
   startedAt: number;
   backgroundedAt: number;
@@ -36,6 +36,7 @@ export interface PersistedBackgroundTask {
 }
 
 export interface BackgroundTaskRecoveryMetadata {
+  toolName?: "bash" | "exec_command";
   recordPath: string;
   taskId: string;
   ownerConversationId: string;
@@ -93,7 +94,7 @@ function isRecord(value: unknown): value is PersistedBackgroundTask {
     && (record.state === "running" || record.state === "completed")
     && typeof record.taskId === "string"
     && typeof record.ownerConversationId === "string"
-    && record.toolName === "bash"
+    && (record.toolName === "bash" || record.toolName === "exec_command")
     && typeof record.title === "string"
     && typeof record.startedAt === "number"
     && typeof record.backgroundedAt === "number"

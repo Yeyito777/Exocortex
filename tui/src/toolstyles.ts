@@ -391,7 +391,7 @@ export function resolveToolDisplay(
 ): ResolvedToolDisplay {
   const info = registry.find(t => t.name === toolName);
 
-  if (toolName === "bash" && externalToolStyles) {
+  if ((toolName === "bash" || toolName === "exec_command") && externalToolStyles) {
     const match = matchExternalTool(summary, externalToolStyles);
     if (match) return match;
   }

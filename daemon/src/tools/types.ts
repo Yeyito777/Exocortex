@@ -151,6 +151,9 @@ export interface Tool {
   /** JSON Schema for the tool's input parameters. */
   inputSchema: Record<string, unknown>;
 
+  /** Provider-native custom-tool format; execution still receives {input: text}. */
+  freeform?: { type: "grammar"; syntax: "lark"; definition: string };
+
   /** Optional system prompt fragment — appended to base system prompt. */
   systemHint?: string;
 

@@ -14,6 +14,7 @@ import { OPENAI_RESPONSES_LITE_WS_METADATA_KEY } from "./constants";
 import { buildCodexClientMetadata } from "./identity";
 import type { OpenAIReasoningItem } from "./types";
 import { isValidImagePayload } from "../../image-validation";
+import { openAIToolCallItem } from "./tool-wire";
 
 export type OpenAIInputItem =
   | { type: "message"; role: "user"; content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string }> }
@@ -22,6 +23,8 @@ export type OpenAIInputItem =
   | { type: "additional_tools"; role: "developer"; tools: OpenAIResponsesLiteTool[] }
   | { type: "function_call"; call_id: string; name: string; arguments: string; id?: string }
   | { type: "function_call_output"; call_id: string; output: string }
+  | { type: "custom_tool_call"; call_id: string; name: string; input: string }
+  | { type: "custom_tool_call_output"; call_id: string; output: string }
   | { type: "reasoning"; id: string; encrypted_content?: string | null; summary: Array<{ type: "summary_text"; text: string }> }
   | { type: "compaction"; id?: string; encrypted_content: string; internal_chat_message_metadata_passthrough?: unknown }
   | { type: "compaction_trigger" };
@@ -44,14 +47,13 @@ interface OpenAIRequestShape {
   };
   text?: { verbosity: "low" | "medium" | "high" };
   service_tier?: string;
-  tools?: Array<{
-    type: string;
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-    strict: boolean;
-  }>;
+  tools?: OpenAIWireTool[];
 }
+
+type OpenAIWireTool = OpenAIResponsesLiteFunctionTool | {
+  type: "custom"; name: string; description: string;
+  format: { type: "grammar"; syntax: "lark"; definition: string };
+};
 
 interface OpenAIResponsesLiteFunctionTool {
   type: "function";
@@ -65,7 +67,7 @@ interface OpenAIResponsesLiteNamespaceTool {
   type: "namespace";
   name: "functions";
   description: "";
-  tools: OpenAIResponsesLiteFunctionTool[];
+  tools: OpenAIWireTool[];
 }
 
 type OpenAIResponsesLiteTool = OpenAIResponsesLiteNamespaceTool;
@@ -162,6 +164,9 @@ function extractToolResultImages(content: string | unknown[]): Array<{ mediaType
 export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
   const input: OpenAIInputItem[] = [];
   const imageLimiter = createImageReplayLimiter(messages);
+  const customCallIds = new Set(messages.flatMap(message => typeof message.content === "string" ? [] : message.content
+    .filter(block => block.type === "tool_use" && block.name === "apply_patch")
+    .map(block => (block as Extract<ApiContentBlock, { type: "tool_use" }>).id)));
 
   for (const message of messages) {
     if (message.role === "user") {
@@ -184,7 +189,7 @@ export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
         for (const result of toolResults) {
           const output = extractToolResultText(result.content);
           input.push({
-            type: "function_call_output",
+            type: customCallIds.has(result.tool_use_id) ? "custom_tool_call_output" : "function_call_output",
             call_id: result.tool_use_id,
             output,
           });
@@ -267,12 +272,7 @@ export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
 
     for (const block of contentBlocks) {
       if (block.type !== "tool_use") continue;
-      input.push({
-        type: "function_call",
-        call_id: block.id,
-        name: block.name,
-        arguments: JSON.stringify(block.input),
-      });
+      input.push(openAIToolCallItem(block));
     }
   }
 
@@ -281,24 +281,20 @@ export function buildOpenAIInput(messages: ApiMessage[]): OpenAIInputItem[] {
 
 function buildOpenAITools(tools: StreamOptions["tools"]): OpenAIRequestShape["tools"] {
   if (!tools || tools.length === 0) return undefined;
-  return (tools as Array<{ name: string; description: string; input_schema: Record<string, unknown> }>).map((tool) => ({
+  return (tools as Array<{ name: string; description: string; input_schema: Record<string, unknown>; freeform?: Extract<OpenAIWireTool, { type: "custom" }>["format"] }>).map((tool): OpenAIWireTool => tool.freeform ? {
+    type: "custom", name: tool.name, description: tool.description, format: tool.freeform,
+  } : {
     type: "function",
     name: tool.name,
     description: tool.description,
     parameters: tool.input_schema,
     strict: false,
-  }));
+  });
 }
 
 function buildResponsesLiteTools(tools: StreamOptions["tools"]): OpenAIResponsesLiteTool[] {
   if (!tools || tools.length === 0) return [];
-  const functions = (tools as Array<{ name: string; description: string; input_schema: Record<string, unknown> }>).map((tool) => ({
-    type: "function" as const,
-    name: tool.name,
-    description: tool.description,
-    parameters: tool.input_schema,
-    strict: false,
-  }));
+  const functions = buildOpenAITools(tools)!;
   return [{
     type: "namespace",
     name: "functions",

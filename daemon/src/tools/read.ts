@@ -156,7 +156,7 @@ async function getImageDimensions(filePath: string): Promise<{ width: number; he
   }
 }
 
-async function readImageFile(filePath: string): Promise<ToolResult> {
+export async function readImageFile(filePath: string): Promise<ToolResult> {
   try {
     const file = Bun.file(filePath);
     if (!await file.exists()) return { output: `Error: file not found: ${filePath}`, isError: true };
