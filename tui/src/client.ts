@@ -14,6 +14,7 @@ import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import { log } from "./log";
+import type { UpdateStatus } from "@exocortex/shared/updatecheck";
 import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
 import { HistoryCache } from "./history-cache";
 import {
@@ -109,6 +110,7 @@ export class DaemonClient {
   private pendingConversationHistoryLoads = new Map<string, { convId: string; requestSource: "initial-backfill" | "viewport"; startedAt: number }>();
   private pendingToolOutputLoads = new Map<string, { convId: string; requested: number | null; startedAt: number }>();
   private nextReqId = 0;
+  private updateRequests = new Map<string, (status: UpdateStatus) => void>();
   private readonly spawnSshProcess: SpawnSshProcess;
   private readonly sshProbeTimeoutMs: number;
   private readonly localHostname: string;
@@ -342,6 +344,7 @@ export class DaemonClient {
     const wasCurrentSocket = this.socket === socket;
     const shutdownMode = wasCurrentSocket ? this.announcedShutdownMode : null;
     if (wasCurrentSocket) {
+      this.clearUpdateRequests();
       this._connected = false;
       this.socket = null;
       if (this.activeSshConnection?.transport === socket) this.activeSshConnection = null;
@@ -352,6 +355,7 @@ export class DaemonClient {
   }
 
   disconnect(): void {
+    this.clearUpdateRequests();
     this.intentionalDisconnect = true;
     this.abortPendingSshSwitch("TUI disconnected");
     this.discardPendingSshConnection();
@@ -468,6 +472,29 @@ export class DaemonClient {
 
   ping(): void {
     this.send({ type: "ping" });
+  }
+
+  /** Read-only and never queued/replayed across endpoints. */
+  requestUpdateStatus(timeoutMs = 25_000): Promise<UpdateStatus> {
+    if (!this.socket || !this._connected) return Promise.resolve("unknown");
+    const reqId = `update_${randomUUID()}`;
+    return new Promise(resolve => {
+      const timer = setTimeout(() => finish("unknown"), timeoutMs);
+      timer.unref();
+      const finish = (status: UpdateStatus) => {
+        clearTimeout(timer);
+        this.updateRequests.delete(reqId);
+        resolve(status);
+      };
+      this.updateRequests.set(reqId, finish);
+      try {
+        this.socket!.write(JSON.stringify({ type: "ping", reqId, updateStatusOnly: true }) + "\n");
+      } catch { finish("unknown"); }
+    });
+  }
+
+  private clearUpdateRequests(): void {
+    for (const finish of this.updateRequests.values()) finish("unknown");
   }
 
   /**
@@ -1054,6 +1081,14 @@ export class DaemonClient {
       try {
         const parseStartedAt = this.performanceProfilingEnabled ? performance.now() : 0;
         const parsed = JSON.parse(line) as Event;
+        if (parsed.type === "pong" && parsed.reqId?.startsWith("update_")) {
+          const status = parsed.updateStatus;
+          this.updateRequests.get(parsed.reqId)?.(
+            status === "none" || status === "disabled" || status === "update_available" || status === "restart_needed"
+              ? status : "unknown",
+          );
+          continue;
+        }
         const event = this.historyCache.receive(parsed, command => this.writeCommand(command));
         if (!event) continue;
         if (event.type === "daemon_shutdown") {

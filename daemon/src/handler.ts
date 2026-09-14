@@ -8,6 +8,7 @@
  */
 
 import { log } from "./log";
+import { getDaemonUpdateStatus } from "./update-status";
 import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
@@ -1166,6 +1167,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       // ── Connection/bootstrap commands ──────────────────────────────
 
       case "ping": {
+        if (cmd.updateStatusOnly) {
+          server.sendTo(client, { type: "pong", reqId: cmd.reqId, updateStatus: await getDaemonUpdateStatus() });
+          break;
+        }
         server.sendTo(client, { type: "pong", reqId: cmd.reqId });
         const externalStyles = getExternalToolStyles();
         server.sendTo(client, {

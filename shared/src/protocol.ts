@@ -10,6 +10,7 @@
 
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, ToolPolicyMutation, ToolPolicySnapshot, UserMessageAutomation } from "./messages";
 import type { RealtimeVoice } from "./realtime";
+import type { UpdateStatus } from "./updatecheck";
 export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, ToolPolicyMutation, ToolPolicySnapshot, UserMessageAutomation };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
@@ -17,6 +18,8 @@ export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMeta
 export interface PingCommand {
   type: "ping";
   reqId?: string;
+  /** Read-only update query without the normal conversation/usage bootstrap. */
+  updateStatusOnly?: boolean;
 }
 
 /**
@@ -1008,6 +1011,8 @@ export type Command =
 export interface PongEvent {
   type: "pong";
   reqId?: string;
+  /** Omitted by older daemons; clients must treat that as unknown, not current. */
+  updateStatus?: UpdateStatus;
 }
 
 /**

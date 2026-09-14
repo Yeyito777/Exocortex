@@ -10,7 +10,7 @@ import {
 } from "../sidebarsearch";
 
 export interface SidebarRowsState {
-  updateAvailable?: boolean;
+  updateStatus?: import("../update-status").UpdateSnapshot;
   conversations: ConversationSummary[];
   folders: FolderSummary[];
   currentFolderId: string | null;
@@ -72,7 +72,12 @@ export function sidebarListRows(totalRows: number, sidebar: SidebarRowsState): n
 
 /** Editing bars take precedence, including on very small terminals. */
 export function sidebarUpdateRows(totalRows: number, sidebar: SidebarRowsState): number {
-  return sidebar.updateAvailable && !sidebar.search?.barOpen && !sidebar.prompt && totalRows >= 5 ? 2 : 0;
+  const status = sidebar.updateStatus;
+  if (!status || sidebar.search?.barOpen || sidebar.prompt) return 0;
+  if (status.remote !== null) {
+    return totalRows >= 6 && !(status.remote === "disabled" && status.local === "disabled") ? 3 : 0;
+  }
+  return totalRows >= 5 && (status.local === "update_available" || status.local === "restart_needed") ? 2 : 0;
 }
 
 export function findDisplayEntry(

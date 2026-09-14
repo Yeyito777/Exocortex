@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "exports": {
+    "./updatecheck": "./src/updatecheck.ts",
     "./auth": "./src/auth.ts",
     "./messages": "./src/messages.ts",
     "./config": "./src/config.ts",

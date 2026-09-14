@@ -5,7 +5,7 @@ import type { SidebarSearchState } from "../sidebarsearch";
 import type { ConversationActionMenuState } from "./conversationactions";
 
 export interface SidebarState {
-  updateAvailable?: boolean;
+  updateStatus?: import("../update-status").UpdateSnapshot;
   open: boolean;
   conversations: ConversationSummary[];
   folders: FolderSummary[];

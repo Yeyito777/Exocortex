@@ -18,6 +18,15 @@ import { theme } from "../theme";
 import { hasInProgressModelWork, isDurablySleeping, shouldDisplayConversationTask } from "../taskvisibility";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import type { ConversationTaskSummary } from "../messages";
+import type { UpdateStatus } from "@exocortex/shared/updatecheck";
+
+const UPDATE_LABELS: Record<UpdateStatus, string> = {
+  none: "None",
+  update_available: "Update available",
+  restart_needed: "Restart needed",
+  disabled: "Disabled",
+  unknown: "Unknown",
+};
 
 interface FolderAggregate {
   count: number;
@@ -396,11 +405,23 @@ export function renderSidebar(
   }
 
   if (sidebarUpdateRows(totalRows, sidebar)) {
-    rows.push(theme.sidebarBg + borderFg + "─".repeat(innerWidth) + borderBg + "┤" + theme.reset);
-    rows.push(
-      theme.sidebarBg + theme.accent + pad(" ↑ Update available", innerWidth) +
-      theme.reset + borderBg + borderFg + "│" + theme.reset,
-    );
+    // This status section is passive chrome, not part of the focused list.
+    const footerBorder = theme.borderUnfocused;
+    rows.push(theme.sidebarBg + footerBorder + "─".repeat(innerWidth) + borderBg + "┤" + theme.reset);
+    const status = sidebar.updateStatus!;
+    const line = (prefix: string, value: UpdateStatus) => {
+      const color = value === "update_available" || value === "restart_needed" ? theme.accent : theme.muted;
+      rows.push(
+        theme.sidebarBg + color + pad(prefix + UPDATE_LABELS[value], innerWidth) +
+        theme.reset + borderBg + footerBorder + "│" + theme.reset,
+      );
+    };
+    if (status.remote !== null) {
+      line(" Remote: ", status.remote);
+      line(" Local: ", status.local);
+    } else {
+      line(status.local === "restart_needed" ? " ↻ " : " ↑ ", status.local);
+    }
   }
 
   return rows;

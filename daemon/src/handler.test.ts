@@ -39,6 +39,8 @@ const orchestrateReplayConversation = mock(async () => makeAssistantOutcome());
 const orchestrateRealtimeDelegation = mock(async () => makeAssistantOutcome());
 const orchestrateCompactConversation = mock(async () => makeAssistantOutcome());
 const orchestrateGoalCycle = mock(async () => {});
+const getDaemonUpdateStatus = mock(async () => "restart_needed" as const);
+mock.module("./update-status", () => ({ getDaemonUpdateStatus }));
 
 mock.module("./orchestrator", () => ({
   orchestrateSendMessage,
@@ -49,6 +51,23 @@ mock.module("./orchestrator", () => ({
 }));
 
 const { createHandler } = await import("./handler");
+
+test("status-only ping returns the host's runtime status without sidebar/usage bootstrap", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const server = {
+    sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+    broadcast: mock(() => {}),
+    sendToSubscribers: mock(() => {}),
+    sendToSubscribersExcept: mock(() => {}),
+    subscribe: mock(() => {}),
+    unsubscribe: mock(() => {}),
+    hasSubscribers: mock(() => false),
+  };
+  const handle = createHandler(server as never);
+  await handle({} as never, { type: "ping", reqId: "status-only", updateStatusOnly: true });
+  expect(sent).toEqual([{ type: "pong", reqId: "status-only", updateStatus: "restart_needed" }]);
+  expect(server.broadcast).not.toHaveBeenCalled();
+});
 
 const IDS: string[] = [];
 

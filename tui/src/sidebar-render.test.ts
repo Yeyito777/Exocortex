@@ -29,9 +29,70 @@ function conversation(id: string, sortOrder: number, overrides: Partial<Conversa
 }
 
 describe("sidebar rendering", () => {
+  test("restart needed replaces the local update notice", () => {
+    const sidebar = createSidebarState();
+    sidebar.updateStatus = { local: "restart_needed", remote: null };
+    const rows = renderSidebar(sidebar, 12, true, null);
+    expect(rows).toHaveLength(12);
+    expect(rows[11]).toContain("↻ Restart needed");
+    expect(rows.join("")).not.toContain("Update available");
+  });
+
+  test("SSH shows Remote then Local, reserving both status lines from hit testing", () => {
+    const sidebar = createSidebarState();
+    sidebar.conversations = Array.from({ length: 30 }, (_, i) => conversation(String(i), i));
+    sidebar.updateStatus = { local: "none", remote: "restart_needed" };
+    const rows = renderSidebar(sidebar, 12, true, null);
+    expect(rows).toHaveLength(12);
+    expect(rows[10]).toContain("Remote: Restart needed");
+    expect(rows[11]).toContain("Local: None");
+    expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
+    expect(sidebarListRows(12, sidebar)).toBe(7);
+    expect(sidebarHitTest(9, 12, sidebar)).not.toBeNull();
+    for (const row of [10, 11, 12]) expect(sidebarHitTest(row, 12, sidebar)).toBeNull();
+    expect(renderSidebar(sidebar, 5, true, null)).toHaveLength(5);
+    expect(renderSidebar(sidebar, 5, true, null).join("")).not.toContain("Remote:");
+    openSidebarSearchBar(sidebar, "forward");
+    expect(renderSidebar(sidebar, 12, true, null)).toHaveLength(12);
+    expect(renderSidebar(sidebar, 12, true, null).join("")).not.toContain("Remote:");
+  });
+
+  test("footer borders stay muted when sidebar focus changes in every theme", () => {
+    const sidebar = createSidebarState();
+    const original = { ...theme };
+    try {
+      for (const palette of Object.values(themes)) {
+        Object.assign(theme, palette);
+        for (const remote of [null, "none", "restart_needed"] as const) {
+          sidebar.updateStatus = { local: "restart_needed", remote };
+          const count = remote === null ? 2 : 3;
+          const focused = renderSidebar(sidebar, 12, true, null).slice(-count);
+          const blurred = renderSidebar(sidebar, 12, false, null).slice(-count);
+          expect(focused).toEqual(blurred);
+          expect(focused[0]).toContain(theme.sidebarBg + theme.borderUnfocused);
+          expect(focused.every(row => row.includes(theme.borderUnfocused))).toBe(true);
+        }
+      }
+    } finally { Object.assign(theme, original); }
+  });
+
+  test("None is known-current, Unknown is not current, and disabled worktrees stay hidden", () => {
+    const sidebar = createSidebarState();
+    for (const local of ["none", "unknown", "disabled"] as const) {
+      sidebar.updateStatus = { local, remote: null };
+      expect(sidebarListRows(12, sidebar)).toBe(10);
+    }
+    sidebar.updateStatus = { local: "disabled", remote: "disabled" };
+    expect(sidebarListRows(12, sidebar)).toBe(10);
+    sidebar.updateStatus = { local: "none", remote: "none" };
+    expect(renderSidebar(sidebar, 12, true, null)[10]).toContain("Remote: None");
+    sidebar.updateStatus.remote = "unknown";
+    expect(renderSidebar(sidebar, 12, true, null)[10]).toContain("Remote: Unknown");
+  });
+
   test("update notice follows the active theme accent on every render", () => {
     const sidebar = createSidebarState();
-    sidebar.updateAvailable = true;
+    sidebar.updateStatus = { local: "update_available", remote: null };
     const original = { ...theme };
     try {
       for (const palette of Object.values(themes)) {
@@ -46,7 +107,7 @@ describe("sidebar rendering", () => {
 
   test("update notice is anchored to the bottom and never hits overflowing entries", () => {
     const sidebar = createSidebarState();
-    sidebar.updateAvailable = true;
+    sidebar.updateStatus = { local: "update_available", remote: null };
     sidebar.conversations = Array.from({ length: 30 }, (_, i) => conversation(String(i), i));
     const rows = renderSidebar(sidebar, 12, true, null);
     expect(rows).toHaveLength(12);
@@ -57,14 +118,14 @@ describe("sidebar rendering", () => {
     expect(sidebarHitTest(11, 12, sidebar)).toBeNull();
     expect(sidebarHitTest(12, 12, sidebar)).toBeNull();
     expect(sidebarHitTest(13, 12, sidebar)).toBeNull();
-    sidebar.updateAvailable = false;
+    sidebar.updateStatus.local = "none";
     expect(renderSidebar(sidebar, 12, true, null).join("")).not.toContain("Update available");
     expect(sidebarListRows(12, sidebar)).toBe(10);
   });
 
   test("small terminals and editing bars retain their space", () => {
     const sidebar = createSidebarState();
-    sidebar.updateAvailable = true;
+    sidebar.updateStatus = { local: "update_available", remote: null };
     expect(renderSidebar(sidebar, 4, true, null)).toHaveLength(4);
     expect(renderSidebar(sidebar, 4, true, null).join("")).not.toContain("Update available");
     sidebar.prompt = { purpose: "create_folder", input: "", cursorPos: 0, items: [] };
