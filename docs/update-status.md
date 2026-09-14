@@ -6,7 +6,8 @@ right border continues the sidebar's focus accent through the footer.
 Search and editing bars temporarily take precedence on the same rows.
 
 On the local route, the footer is hidden unless an update or restart is needed.
-On `/ssh <alias>`, it shows two independent lines, in this order:
+On `/ssh <alias>`, the entire footer is hidden when both statuses are **None**.
+Otherwise, it shows two independent lines, in this order:
 
 ```
 Remote: Restart needed

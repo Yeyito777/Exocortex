@@ -92,7 +92,13 @@ describe("sidebar rendering", () => {
     sidebar.updateStatus = { local: "disabled", remote: "disabled" };
     expect(sidebarListRows(12, sidebar)).toBe(10);
     sidebar.updateStatus = { local: "none", remote: "none" };
-    expect(renderSidebar(sidebar, 12, true, null)[10]).toContain("Remote: None");
+    expect(sidebarListRows(12, sidebar)).toBe(10);
+    const currentRows = renderSidebar(sidebar, 12, true, null);
+    expect(currentRows).toHaveLength(12);
+    expect(currentRows.join("")).not.toContain("Remote:");
+    expect(currentRows.join("")).not.toContain("Local:");
+    const withoutStatus = renderSidebar({ ...sidebar, updateStatus: undefined }, 12, true, null);
+    expect(currentRows).toEqual(withoutStatus);
     sidebar.updateStatus.remote = "unknown";
     expect(renderSidebar(sidebar, 12, true, null)[10]).toContain("Remote: Unknown");
   });

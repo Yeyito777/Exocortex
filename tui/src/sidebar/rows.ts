@@ -75,6 +75,7 @@ export function sidebarUpdateRows(totalRows: number, sidebar: SidebarRowsState):
   const status = sidebar.updateStatus;
   if (!status || sidebar.search?.barOpen || sidebar.prompt) return 0;
   if (status.remote !== null) {
+    if (status.remote === "none" && status.local === "none") return 0;
     return totalRows >= 6 && !(status.remote === "disabled" && status.local === "disabled") ? 3 : 0;
   }
   return totalRows >= 5 && (status.local === "update_available" || status.local === "restart_needed") ? 2 : 0;
