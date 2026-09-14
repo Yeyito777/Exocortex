@@ -1,5 +1,8 @@
 import { formatMarkdownChunks, stripMarkdown, termWidth, sliceByWidth, visibleLength } from "./formatting";
 import { renderInlineMath } from "./math";
+import { wrapLinkedParagraphs } from "./linkwrap";
+import type { LinkSpan } from "../links";
+import { stripAnsi } from "../historymotions";
 
 /**
  * Detects markdown table rows (start and end with |)
@@ -187,7 +190,8 @@ function wrapCellContent(text: string, width: number): CellWrapResult {
 export function renderTableBlock(
   tableLines: string[],
   maxWidth: number,
-  bgRestore?: string
+  bgRestore?: string,
+  links: LinkSpan[][] = [],
 ): string[] {
   const hasSeparator = tableLines.some(l => isTableSeparator(l));
   if (!hasSeparator || tableLines.length < 2) {
@@ -254,20 +258,28 @@ export function renderTableBlock(
     } else {
       // Data row — wrap each cell, then render line-by-line
       const cells = dataRows[i];
-      const wrapped = colWidths.map((w, c) => wrapCellContent(cells[c] || "", w));
+      const linked = colWidths.map((w, c) => bgRestore && /https?:\/\//i.test(cells[c] || "")
+        ? wrapLinkedParagraphs([cells[c]], w, bgRestore) : null);
+      const wrapped = colWidths.map((w, c) => linked[c] ?? wrapCellContent(cells[c] || "", w));
       const formatted = bgRestore
-        ? wrapped.map(wc => formatMarkdownChunks(wc.lines, wc.join, bgRestore))
+        ? wrapped.map((wc, c) => linked[c]?.lines ?? formatMarkdownChunks(wc.lines, wc.join, bgRestore))
         : wrapped.map(wc => wc.lines);
       const rowHeight = Math.max(1, ...wrapped.map(wc => wc.lines.length));
 
       for (let ln = 0; ln < rowHeight; ln++) {
+        const rowLinks: LinkSpan[] = [];
+        let offset = 1;
         const parts = colWidths.map((w, c) => {
           const cellLine = wrapped[c]?.lines[ln] || "";
           const renderedCellLine = formatted[c]?.[ln] || "";
           const visLen = bgRestore ? visibleLength(renderedCellLine) : termWidth(stripMarkdown(cellLine));
           const pad = " ".repeat(Math.max(0, w - visLen));
-          return " " + renderedCellLine + pad + " ";
+          for (const span of linked[c]?.links[ln] ?? []) rowLinks.push({ ...span, start: span.start + offset + 1, end: span.end + offset + 1 });
+          const part = " " + renderedCellLine + pad + " ";
+          offset += stripAnsi(part).length + 1;
+          return part;
         });
+        links[result.length] = rowLinks;
         result.push("│" + parts.join("│") + "│");
       }
     }

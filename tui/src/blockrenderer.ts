@@ -135,6 +135,7 @@ function renderBlock(
   const cont: boolean[] = [];
   const join: string[] = [];
   const copy: WrapResult["copy"] = [];
+  const links: NonNullable<WrapResult["links"]> = [];
 
   switch (block.type) {
     case "thinking": {
@@ -168,6 +169,7 @@ function renderBlock(
         // formatting, and word wrapping — output is fully formatted.
         const md = markdownWordWrap(text, contentWidth, theme.reset);
         for (let i = 0; i < md.lines.length; i++) {
+          links[lines.length] = (md.links?.[i] ?? []).map(span => ({ ...span, start: span.start + 2, end: span.end + 2 }));
           lines.push(`  ${md.lines[i]}`);
           cont.push(md.cont[i]);
           join.push(md.join[i]);
@@ -235,7 +237,7 @@ function renderBlock(
     }
   }
 
-  return { lines, cont, join, copy };
+  return { lines, cont, join, copy, links };
 }
 
 const USER_BUBBLE_PADDING = 1;

@@ -32,6 +32,7 @@ export interface Theme {
 
   // Foreground colors
   accent: string;      // Primary accent
+  link: string;        // Clickable HTTP(S) links
   text: string;        // Default text
   muted: string;       // Muted gray (explicit fg color, not dim attribute)
   error: string;       // Errors, interruptions

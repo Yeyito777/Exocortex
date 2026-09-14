@@ -1,7 +1,9 @@
-import { findOpenableTargetMatches } from "./openable";
+import { findOpenableTargetMatches, resolveOpenCommand } from "./openable";
 import { activeHistorySurface } from "./historysurface";
 import { contentBounds, logicalLineRange, stripAnsi } from "./historymotions";
 import type { RenderState } from "./state";
+import type { HistorySurface } from "./historysurface";
+import type { HistoryCursor } from "./historycursor";
 
 /**
  * Return the configured-openable target currently under the history cursor.
@@ -12,9 +14,19 @@ import type { RenderState } from "./state";
  */
 export function openableTargetAtHistoryCursor(state: RenderState): string | null {
   const surface = activeHistorySurface(state);
-  const row = surface.cursor.row;
+  return openableTargetAtHistoryPosition(surface, surface.cursor);
+}
+
+export function openableTargetAtHistoryPosition(
+  surface: Pick<HistorySurface, "lines" | "wrapContinuation" | "wrapJoiners" | "lineAnchors">,
+  position: HistoryCursor,
+): string | null {
+  const row = position.row;
   const lines = surface.lines;
   if (row < 0 || row >= lines.length) return null;
+
+  const link = surface.lineAnchors[row]?.links?.find(span => position.col >= span.start && position.col < span.end);
+  if (link) return resolveOpenCommand(link.target) ? link.target : null;
 
   const range = surface.wrapContinuation.length > 0
     ? logicalLineRange(row, surface.wrapContinuation)
@@ -32,7 +44,7 @@ export function openableTargetAtHistoryCursor(state: RenderState): string | null
     logicalText += segment;
 
     if (r !== row) continue;
-    const col = surface.cursor.col;
+    const col = position.col;
     if (col < bounds.start || col > bounds.end) return null;
     cursorOffset = segmentStart + Math.max(0, Math.min(col - bounds.start, segment.length - 1));
   }

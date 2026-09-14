@@ -1725,6 +1725,9 @@ function handleMouse(ev: MouseEvent): void {
     case "pin_conversation":
       daemon.pinConversation(result.convId, result.pinned);
       break;
+    case "open_target":
+      openTargetDetached(result.target);
+      break;
     case "handled":
       break;
     // Ignore result types that are not currently emitted by mouse interactions.

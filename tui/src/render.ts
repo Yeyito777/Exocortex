@@ -1547,6 +1547,7 @@ export function render(state: RenderState): boolean {
         lineIndex: viewportRows[index].lineIndex,
         startCol: viewportRows[index].startCol,
         displayPrefixWidth: viewportRows[index].displayPrefixWidth,
+        endCol: viewportRows[index].startCol + stripAnsi(viewportRows[index].line).length - viewportRows[index].displayPrefixWidth,
       }
       : null,
   );

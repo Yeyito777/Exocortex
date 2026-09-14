@@ -87,6 +87,7 @@ export function compactionFinishedDivider(availableWidth: number): string {
 }
 import { termWidth } from "./textwidth";
 import { wordWrap, type WrapCopyLine, type WrapResult } from "./textwrap";
+import type { LinkSpan } from "./links";
 import { isNewConversationQueuedMessage, queuedMessagesInDisplayOrder, queueTimingLabel } from "./queue";
 
 export { wordWrap, type WrapResult } from "./textwrap";
@@ -239,6 +240,8 @@ export type RenderLineSegment =
   | "user_margin_top";
 
 export interface RenderLineAnchor {
+  /** Clickable ranges in this rendered row, retained with cached row metadata. */
+  links?: LinkSpan[];
   /** Stable owner identity for this rendered segment (message/block/queued item). */
   owner: object;
   /** Segment within the owner (content, metadata, margins, etc). */
@@ -345,6 +348,7 @@ export function buildMessageLines(
         subIndex++;
       }
       pushAnchoredLine(br.lines[i], br.cont[i], br.join[i], owner, segment, logicalIndex, subIndex, br.copy?.[i] ?? null);
+      if (br.links?.[i]?.length) lineAnchors[lineAnchors.length - 1].links = br.links[i];
     }
   };
 
